@@ -67,25 +67,29 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let base = try B.build(input())
     try check(tuples(base) == [
         // Anthropic first: 0.8 remaining with 4h to reset outscores Codex's 0.6 over 48h.
+        // max is offered by default (2026-10-13): it is the reference effort.
         "claude-chat/sonnet/medium/read_only", "claude/sonnet/medium/read_only", "claude/sonnet/medium/workspace_write",
-        "claude-chat/fable/low/read_only", "claude-chat/fable/xhigh/read_only",
+        "claude-chat/fable/low/read_only", "claude-chat/fable/xhigh/read_only", "claude-chat/fable/max/read_only",
         "claude/fable/low/read_only", "claude/fable/low/workspace_write",
         "claude/fable/xhigh/read_only", "claude/fable/xhigh/workspace_write",
-        "claude-chat/claude-opus-5-5/xhigh/read_only", "claude/claude-opus-5-5/xhigh/read_only",
-        "claude/claude-opus-5-5/xhigh/workspace_write",
+        "claude/fable/max/read_only", "claude/fable/max/workspace_write",
+        "claude-chat/claude-opus-5-5/xhigh/read_only", "claude-chat/claude-opus-5-5/max/read_only",
+        "claude/claude-opus-5-5/xhigh/read_only", "claude/claude-opus-5-5/xhigh/workspace_write",
+        "claude/claude-opus-5-5/max/read_only", "claude/claude-opus-5-5/max/workspace_write",
         // Codex by native priority (gpt-6-sol before gpt-5.6-luna), not by action name.
         "codex/gpt-6-sol/low/read_only", "codex/gpt-6-sol/low/workspace_write",
         "codex/gpt-6-sol/medium/read_only", "codex/gpt-6-sol/medium/workspace_write",
         "codex/gpt-5.6-luna/low/read_only", "codex/gpt-5.6-luna/low/workspace_write",
+        "codex/gpt-5.6-luna/max/read_only", "codex/gpt-5.6-luna/max/workspace_write",
     ], "pool, native model preference, surface, effort, scope order: \(tuples(base))")
     try check(base.pools.map(\.pool) == ["anthropic_shared", "openai_codex"] &&
               base.pools[0].score.map { abs($0 - 0.2) < 1e-9 } == true &&
               base.pools[1].score.map { abs($0 - 0.0125) < 1e-9 } == true, "pool score = share x remaining / hours")
-    try check(reasons(base) == ["claude:effort_requires_explicit_request:2", "claude:model_unavailable:1",
-                                "codex:effort_requires_explicit_request:2"], "per-provider exclusions: \(reasons(base))")
+    try check(reasons(base) == ["claude:model_unavailable:1", "codex:effort_requires_explicit_request:1"],
+              "per-provider exclusions; only ultra waits for an explicit request: \(reasons(base))")
     let legacy = legacyRows(input(), chatRefused: false)
     let legacyComparable = try Set(legacy.filter { $0["surface"] as? String != "gpt-chat" &&
-        !["max", "ultra", "ultracode"].contains($0["effort"] as? String ?? "") }.map(rowBytes))
+        !["ultra", "ultracode"].contains($0["effort"] as? String ?? "") }.map(rowBytes))
     try check(try Set(base.candidates.map(rowBytes)) == legacyComparable && legacyComparable.count == base.candidates.count,
               "every row keeps the former id hash tuple and exact field bytes")
     try check(legacy.contains { $0["surface"] as? String == "gpt-chat" } &&
@@ -94,8 +98,10 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(try tuples(B.build(input())) == tuples(base), "same inputs, same order")
     let data = try B.catalogData(base, taskID: "task-fixture", requestSHA256: C.digest(Data(writeRequest.utf8)))
     let decoded = try C.decodeCatalog(data)
-    try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 3,
+    try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 2,
               "builder bytes decode through the strict contract with exclusions")
+    try check(decoded.routingIntent == nil && !String(decoding: data, as: UTF8.self).contains("routing_intent"),
+              "a catalog without an explicit owner constraint carries no routing_intent")
 
     // Claude lists one native row under several names (alias and resolved
     // ID), each with its own configured efforts. Every name shares the row's
@@ -116,6 +122,20 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     aliases.claudeModels = aliases.claudeModels.map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts) }
     try check(tuples(try B.build(aliases)).last == "claude/claude-sonnet-5-5/xhigh/read_only",
               "without an observed native row the list position is the rank")
+    // Within one native row the name with the highest reference effort comes
+    // first, whatever its spelling: the host takes a pool's first model as its
+    // reference, so the alias configured at max is never hidden behind the
+    // resolved ID configured only up to xhigh.
+    var opusNames = input("Explain the login function", chat: false, readOnly: true)
+    opusNames.profiles = [.init(action: "o_full_xhigh", provider: "claude", model: "claude-opus-5-5", effort: "xhigh"),
+        .init(action: "o_alias_max", provider: "claude", model: "opus", effort: "max"),
+        .init(action: "p_sonnet_max", provider: "claude", model: "sonnet", effort: "max")]
+    opusNames.claudeModels = [.init(model: "claude-opus-5-5", supportedEfforts: ["xhigh", "max"], nativeRank: 0),
+        .init(model: "opus", supportedEfforts: ["xhigh", "max"], nativeRank: 0),
+        .init(model: "sonnet", supportedEfforts: ["max"], nativeRank: 1)]
+    let opusOut = try B.build(opusNames)
+    try check(tuples(opusOut) == ["claude/opus/max/read_only", "claude/claude-opus-5-5/xhigh/read_only",
+        "claude/sonnet/max/read_only"], "the name carrying the reference effort leads its native row: \(tuples(opusOut))")
 
     // Unknown or stale quota goes last, with the reset noted as unknown.
     var stale = input(); stale.claudeQuota = nil
@@ -147,7 +167,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     var exhausted = input(); exhausted.codexQuota = quota("acct-codex", used: 100, resetIn: 2)
     let exhaustedOut = try B.build(exhausted)
     try check(!exhaustedOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
-              reasons(exhaustedOut).contains("codex:quota_zero:3"), "a zero-remaining pool is excluded and counted")
+              reasons(exhaustedOut).contains("codex:quota_zero:4"), "a zero-remaining pool is excluded and counted")
 
     // ---- GPT is never emitted --------------------------------------------
     for preference in ["auto", "codex", "claude", "claude-chat", "gpt-chat", "chatgpt"] {
@@ -173,7 +193,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               reasons(zeroCodex).contains("codex:capacity_zero:5"), "a 0% pool is excluded under Auto")
     try check(B.providersToProbe(input(plan: .init(codex: 0, claude: 100))) == ["claude"], "a 0% pool is never probed")
     let namedCodex = try B.build(input(preference: "codex", plan: .init(codex: 0, claude: 100)))
-    try check(namedCodex.candidates.count == 6 && !reasons(namedCodex).contains { $0.contains("capacity_zero") },
+    try check(namedCodex.candidates.count == 8 && !reasons(namedCodex).contains { $0.contains("capacity_zero") },
               "an explicitly named provider overrides its 0% capacity")
     var shared = input(plan: .init(codex: 100, claude: 1))
     shared.codexQuota = quota("acct-codex", used: 50, resetIn: 10)
@@ -287,9 +307,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(!question.candidates.isEmpty && question.candidates.allSatisfy { $0["quota_pool"] as? String == "openai_codex" } &&
               !reasons(question).contains { $0.contains("explicit_constraint_unavailable") },
               "a model question is not a constraint: \(reasons(question))")
+    // Saying max is not needed sets no constraint: the catalog is the default
+    // one (max is the reference effort), and ultra still waits for a request.
     let notNeeded = try B.build(input("최대 리즈닝 필요 없어, 간단히 답해"))
-    try check(!notNeeded.candidates.isEmpty && !notNeeded.candidates.contains { ["max", "ultra"].contains($0["effort"] as? String ?? "") },
-              "max is withheld when the owner says it is not needed: \(tuples(notNeeded))")
+    try check(!notNeeded.candidates.isEmpty && notNeeded.intent.isEmpty &&
+              notNeeded.candidates.contains { $0["effort"] as? String == "max" } &&
+              !notNeeded.candidates.contains { ["ultra", "ultracode"].contains($0["effort"] as? String ?? "") },
+              "a negated effort is no constraint; ultra stays withheld: \(tuples(notNeeded))")
     let opusMax = try B.build(input("opus max로 해줘"))
     try check(!opusMax.candidates.isEmpty && opusMax.candidates.allSatisfy { $0["model"] as? String == "claude-opus-5-5" &&
               $0["effort"] as? String == "max" }, "explicit model+effort keeps exactly that tuple: \(tuples(opusMax))")
@@ -299,6 +323,31 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let ultra = try B.build(input("울트라로 돌려"))
     try check(!ultra.candidates.isEmpty && ultra.candidates.allSatisfy { $0["effort"] as? String == "ultra" && $0["model"] as? String == "gpt-6-sol" },
               "Korean Ultra directive keeps only ultra rows")
+    // The explicit constraint travels with the catalog, so the host names the
+    // route explicit and may bind the ultra effort the owner asked for.
+    let ultraData = try B.catalogData(ultra, taskID: "task-fixture", requestSHA256: C.digest(Data("울트라로 돌려".utf8)))
+    let ultraObject = try JSONSerialization.jsonObject(with: ultraData) as! [String: Any]
+    try check((ultraObject["routing_intent"] as? [String: Any])?["effort"] as? String == "ultra" &&
+              (ultraObject["routing_intent"] as? [String: Any])?["model_family"] is NSNull,
+              "routing_intent carries both keys, null when unset")
+    let ultraCatalog = try C.decodeCatalog(ultraData)
+    try check(ultraCatalog.routingIntent == .init(effort: "ultra", modelFamily: nil) &&
+              (try C.decodeCatalog(C.encode(ultraCatalog))) == ultraCatalog &&
+              String(decoding: try C.encode(ultraCatalog), as: UTF8.self).contains(#""model_family":null"#),
+              "routing_intent decodes and re-encodes with explicit nulls")
+    let opusIntent = try C.decodeCatalog(B.catalogData(try B.build(input("opus max로 해줘")), taskID: "task-fixture",
+        requestSHA256: C.digest(Data("opus max로 해줘".utf8))))
+    try check(opusIntent.routingIntent == .init(effort: "max", modelFamily: "opus"), "an effort and a family travel together")
+    for bad in [C.RoutingIntentConstraint(effort: nil, modelFamily: nil), .init(effort: "none", modelFamily: nil),
+                .init(effort: "max", modelFamily: "Opus 5"), .init(effort: "ultracode", modelFamily: nil)] {
+        var invalid = ultraCatalog; invalid.routingIntent = bad
+        do { _ = try C.decodeCatalog(C.encode(invalid)); try check(false, "invalid routing_intent accepted: \(bad)") }
+        catch { checks += 1 }
+    }
+    var extraIntent = ultraObject
+    extraIntent["routing_intent"] = ["effort": "ultra", "model_family": NSNull(), "guess": "max"]
+    do { _ = try C.decodeCatalog(JSONSerialization.data(withJSONObject: extraIntent)); try check(false, "extra intent key accepted") }
+    catch { checks += 1 }
     let haiku = try B.build(input("haiku로 돌려"))
     let haikuReasons = Set(haiku.exclusions.map(\.reason))
     try check(haiku.candidates.isEmpty && haikuReasons.contains("explicit_constraint_unavailable") &&
@@ -321,18 +370,23 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(B.intent(explicitIntent).isEmpty && B.intent(input("opus max로 해줘")) == RoutingIntent(effort: "max", modelFamily: "opus"),
               "intent is read only outside explicit route tests")
 
-    // ---- max/ultra need an explicit request ------------------------------
-    try check(!base.candidates.contains { ["max", "ultra", "ultracode"].contains($0["effort"] as? String ?? "") },
-              "max/ultra/ultracode are not offered without an explicit effort word")
+    // ---- ultra needs an explicit request; max is the default reference ----
+    try check(!base.candidates.contains { ["ultra", "ultracode"].contains($0["effort"] as? String ?? "") },
+              "ultra/ultracode are not offered without an explicit effort word")
+    try check(base.candidates.contains { $0["effort"] as? String == "max" && $0["quota_pool"] as? String == "openai_codex" } &&
+              base.candidates.contains { $0["effort"] as? String == "max" && $0["quota_pool"] as? String == "anthropic_shared" },
+              "max is offered in both pools without an explicit effort word")
+    try check(!B.explicitOnlyEfforts.contains("max") && B.explicitOnlyEfforts == ["ultra", "ultracode"],
+              "only above-max efforts are explicit-only")
 
     // ---- Empty with exclusions; unexplained empty is malformed ------------
     var signedOut = input(plan: .init(codex: 0, claude: 100)); signedOut.auth["claude"] = .signedOut
     let blocked = try B.build(signedOut)
-    try check(blocked.candidates.isEmpty && Set(blocked.exclusions.map(\.reason)) == ["capacity_zero", "signed_out", "effort_requires_explicit_request"],
+    try check(blocked.candidates.isEmpty && Set(blocked.exclusions.map(\.reason)) == ["capacity_zero", "signed_out"],
               "signed-out Claude plus a 0% Codex is an explained empty catalog: \(reasons(blocked))")
     var nonSubscription = input(); nonSubscription.auth["codex"] = .nonSubscription; nonSubscription.auth["claude"] = nil
     let nonSub = try B.build(nonSubscription)
-    try check(reasons(nonSub).contains("codex:non_subscription:3") && reasons(nonSub).contains("claude:signed_out:5"),
+    try check(reasons(nonSub).contains("codex:non_subscription:4") && reasons(nonSub).contains("claude:signed_out:7"),
               "API-key/unknown billing and unobserved sign-in are distinct reasons: \(reasons(nonSub))")
     var hidden = input(preference: "codex"); hidden.showCodex = false
     try check(reasons(try B.build(hidden)) == ["codex:codex_hidden:5"], "hidden Codex is a recorded reason")
@@ -359,7 +413,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(!chatOnly.candidates.isEmpty && chatOnly.candidates.allSatisfy { $0["surface"] as? String == "claude-chat" && $0["scope"] as? String == "read_only" },
               "an explicit Claude chat choice yields only gated chat rows")
     let refused = try B.build(input(preference: "claude-chat", chat: false))
-    try check(refused.candidates.isEmpty && reasons(refused).contains("claude:chat_gate_refused:5"),
+    try check(refused.candidates.isEmpty && reasons(refused).contains("claude:chat_gate_refused:7"),
               "an explicit Claude chat choice the gate refuses holds with chat_gate_refused: \(reasons(refused))")
     try check(B.providersToProbe(input(preference: "claude-chat", chat: false)).isEmpty, "a refused chat choice probes nothing")
     let anthropic = try B.build(input(preference: "claude"))

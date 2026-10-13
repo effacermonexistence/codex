@@ -304,6 +304,30 @@ func runRCCRuntimeContractFixture() throws {
     try reject("routing decision cannot disagree with the dispatched config") { try C.validate(badRouted) }
     badRouted = routed; badRouted.children[0].routingDecision?.quotaRemainingFraction = 1.5
     try reject("quota fraction stays within 0...1") { try C.validate(badRouted) }
+    // A REVAS ladder route (2026-10-13): optional, graded only, strictly below
+    // the reference, and the child runs the cheap effort or the reference.
+    try check(!String(decoding: try C.encode(routed), as: UTF8.self).contains("ladder"),
+              "a decision without a ladder keeps its former wire shape")
+    var laddered = routed
+    laddered.children[0].routingDecision?.ladder = .init(cheapEffort: config.effort, referenceEffort: .max)
+    try check(try C.decodeSnapshot(C.encode(laddered)) == laddered, "a ladder decision roundtrips with its child")
+    var escalated = laddered; escalated.children[0].selectedConfig = nil
+    escalated.children[0].routingDecision?.effort = .max
+    try C.validate(escalated); checks += 1
+    badRouted = laddered; badRouted.children[0].routingDecision?.ladder = .init(cheapEffort: .max, referenceEffort: config.effort)
+    try reject("a ladder effort must be below its reference") { try C.validate(badRouted) }
+    badRouted = laddered; badRouted.children[0].routingDecision?.routeClass = nil
+    try reject("only a graded node is laddered") { try C.validate(badRouted) }
+    badRouted = escalated; badRouted.children[0].routingDecision?.effort = .ultra
+    try reject("a laddered child runs only the cheap or the reference effort") { try C.validate(badRouted) }
+    var ladderObject = try JSONSerialization.jsonObject(with: C.encode(laddered)) as! [String: Any]
+    var ladderChildren = ladderObject["children"] as! [[String: Any]]
+    var ladderDecision = ladderChildren[0]["routing_decision"] as! [String: Any]
+    ladderDecision["ladder"] = ["cheap_effort": config.effort.rawValue, "reference_effort": "max", "evidence": 20]
+    ladderChildren[0]["routing_decision"] = ladderDecision; ladderObject["children"] = ladderChildren
+    try reject("a ladder rejects an unknown field") {
+        _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: ladderObject))
+    }
     var routedObject = try JSONSerialization.jsonObject(with: C.encode(routed)) as! [String: Any]
     var routedChildren = routedObject["children"] as! [[String: Any]]
     var routedDecision = routedChildren[0]["routing_decision"] as! [String: Any]
@@ -340,11 +364,11 @@ func runRCCRuntimeContractFixture() throws {
     const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-wire-'));
     const sha=s=>createHash('sha256').update(s).digest('hex');
     const emittedTickets=[];
-    async function produce(verified,count,graded=false){
+    async function produce(verified,count,graded=false,ladder=false){
       const host={workspace:root,context:null,provider_preference:'auto',codex_session_id:'native-codex-fixture',
         claude_session_id:null,require_read_only:true,owner_policy:null,explicit_routes:null};
       const request='Exercise the fixture adapter through the real durable runtime.';
-      const task={schema:1,task_id:graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
+      const task={schema:1,task_id:ladder?'task-node-ladder':graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
         request_sha256:sha(request),objective:request,policy_sha256:sha('fixture policy'),
         source_fingerprint:hostContextFingerprint(host),mode:'auto',material_refs:[],
         budget:{max_attempts:2,max_parallel:4,max_cost_units:null,max_duration_ms:60000},host_context:host,
@@ -356,12 +380,17 @@ func runRCCRuntimeContractFixture() throws {
         availability:'available',availability_observed_at_ms:now-100,availability_valid_until_ms:now+30000,
         quota_remaining_fraction:0.7,quota_observed_at_ms:now-100,quota_valid_until_ms:now+30000,
         quality_state:'policy_admitted',estimated_cost_units:1};
+      // A ladder fixture adds the reference row (same model at max); a fake
+      // verifier registry and fake ledger parity admit the cheaper low row.
+      const candidates=ladder?[candidate,{...candidate,id:'fake-codex-max',effort:'max',configuration_sha256:sha('fixture config max')}]:[candidate];
       // A graded node carries route_class; the real core binds the row.
       const nodes=Array.from({length:count},(_,i)=>({id:'n'+(i+1),instruction:'Return '+(2*(i+1)),
         dependencies:[],kind:'agent',...(graded?{route_class:'standard'}:{candidate_id:candidate.id}),
         scope:'read_only',owned_paths:[],context_refs:[]}));
-      const runtime=await createRCCRuntime({stateDir:join(root,graded?'graded':verified?'verified':'unverified'),
-        catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates:[candidate]}),
+      const runtime=await createRCCRuntime({stateDir:join(root,ladder?'ladder':graded?'graded':verified?'verified':'unverified'),
+        ...(ladder?{verifierRegistry:new Map([['standard:read_only:agent',async()=>({passed:true,reason:'fixture'})]]),
+          ledgerStats:()=>({verified_passes:20,verifier_failures:0})}:{}),
+        catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates}),
         plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes}),
         execute:async ticket=>{emittedTickets.push(ticket);return ({schema:1,task_id:ticket.task_id,node_id:ticket.node_id,attempt_id:ticket.attempt_id,
           candidate_id:ticket.candidate_id,configuration_sha256:ticket.configuration_sha256,
@@ -383,7 +412,7 @@ func runRCCRuntimeContractFixture() throws {
       }finally{await runtime.close();}
     }
     try{process.stdout.write(JSON.stringify({completed:await produce(true,4),unverified:await produce(false,1),
-      graded:await produce(false,1,true),tickets:emittedTickets}));}
+      graded:await produce(false,1,true),laddered:await produce(false,1,true,true),tickets:emittedTickets}));}
     finally{await rm(root,{recursive:true,force:true});}
     """
     let wireProcess = Process(), wireOutput = Pipe(), wireErrors = Pipe()
@@ -406,7 +435,7 @@ func runRCCRuntimeContractFixture() throws {
     let actualTickets = try (nativeSnapshots["tickets"] as! [[String: Any]]).map {
         try C.decodeTicket(JSONSerialization.data(withJSONObject: $0))
     }
-    try check(actualTickets.count == 6, "REAL Node execution tickets all pass the strict Swift schema")
+    try check(actualTickets.count == 7, "REAL Node execution tickets all pass the strict Swift schema")
     // Host routing receipts (2026-10-13): the real core's graded and
     // adapter-bound decisions decode under the strict child shape.
     let nativeGraded = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["graded"]!))
@@ -418,6 +447,15 @@ func runRCCRuntimeContractFixture() throws {
     try check(nativeCompleted.children.allSatisfy { $0.routingDecision?.routeClass == nil && $0.routingDecision?.reason == "adapter_bound" },
               "REAL Node adapter-bound rows are recorded as bound, not graded")
     try check(try C.decodeSnapshot(C.encode(nativeGraded)) == nativeGraded, "routing decision roundtrips through Swift")
+    try check(gradedDecision?.reason == "resolver;route_reference;pool_rank_0;effort_low;agent_surface" && gradedDecision?.ladder == nil,
+              "REAL Node reference decision names its route, pool and surface")
+    let nativeLaddered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["laddered"]!))
+    let nativeLadderDecision = nativeLaddered.children.first?.routingDecision
+    try check(nativeLaddered.state == .returnedUnverified && nativeLadderDecision?.effort == .low &&
+              nativeLadderDecision?.ladder == C.RoutingDecision.Ladder(cheapEffort: .low, referenceEffort: .max) &&
+              nativeLadderDecision?.reason.hasPrefix("resolver;route_ladder;") == true &&
+              nativeLaddered.children.first?.selectedConfig?.effort == .low,
+              "REAL Node ladder decision (fake registry and parity) decodes under the strict child shape")
     let soloTickets = actualTickets.filter { $0.taskID == "task-node-unverified" }
     try check(soloTickets.count == 1 && soloTickets[0].nativeResumeSessionID == "native-codex-fixture",
               "REAL core-issued single full-agent ticket retains its exact host session")

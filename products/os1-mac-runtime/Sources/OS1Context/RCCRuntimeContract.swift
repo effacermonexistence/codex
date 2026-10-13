@@ -256,6 +256,22 @@ public enum RCCRuntimeContract {
             self.provider = provider; self.reason = reason; self.count = count
         }
     }
+    /// The owner's explicit routing constraint (`RoutingIntent`) the native
+    /// builder already applied to the rows. Optional on the catalog: absent
+    /// without a constraint and in older catalogs. Both keys are always
+    /// written (null when unset), the shape the JS core checks exactly.
+    public struct RoutingIntentConstraint: Codable, Equatable, Sendable {
+        public static let efforts: Set<String> = ["low", "medium", "high", "xhigh", "max", "ultra"]
+        public var effort: String?
+        public var modelFamily: String?
+        public init(effort: String?, modelFamily: String?) { self.effort = effort; self.modelFamily = modelFamily }
+        enum CodingKeys: String, CodingKey { case effort, modelFamily = "model_family" }
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(effort, forKey: .effort)
+            try container.encode(modelFamily, forKey: .modelFamily)
+        }
+    }
     public struct Catalog: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -264,12 +280,17 @@ public enum RCCRuntimeContract {
         /// Optional: absent in older catalogs. Required (non-empty) when no
         /// candidate is routable, so an empty catalog is never opaque.
         public var exclusions: [Exclusion]?
+        /// Optional (2026-10-13): present only with an explicit owner constraint.
+        public var routingIntent: RoutingIntentConstraint?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
-                    exclusions: [Exclusion]? = nil) {
+                    exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
-            self.exclusions = exclusions
+            self.exclusions = exclusions; self.routingIntent = routingIntent
         }
-        enum CodingKeys: String, CodingKey { case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256" }
+        enum CodingKeys: String, CodingKey {
+            case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256"
+            case routingIntent = "routing_intent"
+        }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
         public var id: String
@@ -539,11 +560,24 @@ public enum RCCRuntimeContract {
         }
     }
     /// Why the OpenClaw Core host bound this exact row (2026-10-13). The local
-    /// planner grades a node (route_class); the host resolves the row. This is
-    /// a routing receipt, not observed execution or a quality claim. A nil
-    /// route class means a row bound by the trusted adapter, not graded.
+    /// planner grades a node (route_class, a task-family label); the host
+    /// binds the pool's reference route (or an explicit owner constraint).
+    /// This is a routing receipt, not observed execution or a quality claim.
+    /// A nil route class means a row bound by the trusted adapter, not graded.
     public struct RoutingDecision: Codable, Equatable, Sendable {
         public static let routeClasses: Set<String> = ["trivial", "standard", "deep"]
+        /// A cheaper effort of the same model admitted by the REVAS ladder
+        /// gate (registered verifier plus ledger parity). Optional, present
+        /// only on a ladder route; the decision effort is the cheap effort, or
+        /// the reference effort after a verifier failure re-dispatched it.
+        public struct Ladder: Codable, Equatable, Sendable {
+            public var cheapEffort: Effort
+            public var referenceEffort: Effort
+            public init(cheapEffort: Effort, referenceEffort: Effort) {
+                self.cheapEffort = cheapEffort; self.referenceEffort = referenceEffort
+            }
+            enum CodingKeys: String, CodingKey { case cheapEffort = "cheap_effort", referenceEffort = "reference_effort" }
+        }
         public var routeClass: String?
         public var resolvedCandidateID: String
         public var surface: Surface
@@ -552,14 +586,15 @@ public enum RCCRuntimeContract {
         public var quotaPool: QuotaPool
         public var reason: String
         public var quotaRemainingFraction: Double?
+        public var ladder: Ladder?
         public init(routeClass: String?, resolvedCandidateID: String, surface: Surface, model: String, effort: Effort,
-                    quotaPool: QuotaPool, reason: String, quotaRemainingFraction: Double?) {
+                    quotaPool: QuotaPool, reason: String, quotaRemainingFraction: Double?, ladder: Ladder? = nil) {
             self.routeClass = routeClass; self.resolvedCandidateID = resolvedCandidateID; self.surface = surface
             self.model = model; self.effort = effort; self.quotaPool = quotaPool; self.reason = reason
-            self.quotaRemainingFraction = quotaRemainingFraction
+            self.quotaRemainingFraction = quotaRemainingFraction; self.ladder = ladder
         }
         enum CodingKeys: String, CodingKey {
-            case surface, model, effort, reason
+            case surface, model, effort, reason, ladder
             case routeClass = "route_class", resolvedCandidateID = "resolved_candidate_id"
             case quotaPool = "quota_pool", quotaRemainingFraction = "quota_remaining_fraction"
         }
@@ -768,6 +803,12 @@ public enum RCCRuntimeContract {
                   exclusions.allSatisfy({ Exclusion.providers.contains($0.provider) && Exclusion.reasons.contains($0.reason) &&
                       (1...10_000).contains($0.count) }) else { throw Rejection.invalidObservation }
         }
+        if let intent = value.routingIntent {
+            guard intent.effort != nil || intent.modelFamily != nil,
+                  intent.effort.map({ RoutingIntentConstraint.efforts.contains($0) }) ?? true,
+                  intent.modelFamily.map({ $0.range(of: "^[a-z][a-z0-9]{1,31}$", options: .regularExpression) != nil }) ?? true
+            else { throw Rejection.invalidObservation }
+        }
         // An empty catalog must say why; otherwise it is a malformed binding.
         guard !value.candidates.isEmpty || value.exclusions != nil else { throw Rejection.invalidIdentity }
         for candidate in value.candidates { try validate(candidate) }
@@ -971,6 +1012,16 @@ public enum RCCRuntimeContract {
                       child.selectedConfig.map({ $0.surface == decision.surface && $0.model == decision.model &&
                           $0.effort == decision.effort && $0.quotaPool == decision.quotaPool }) ?? true
                 else { throw Rejection.invalidSnapshot }
+                if let ladder = decision.ladder {
+                    // Only a graded node is laddered, below its reference, and
+                    // it runs either the cheap effort or, once, the reference.
+                    let order = RCCNativeCatalogBuilder.effortOrder
+                    guard decision.routeClass != nil,
+                          let cheap = order.firstIndex(of: ladder.cheapEffort.rawValue),
+                          let reference = order.firstIndex(of: ladder.referenceEffort.rawValue), cheap < reference,
+                          decision.effort == ladder.cheapEffort || decision.effort == ladder.referenceEffort
+                    else { throw Rejection.invalidSnapshot }
+                }
             }
             guard child.instruction.map({ text($0) }) ?? true, child.dependencies.map({ unique($0, max: maximumNodes) }) ?? true,
                   child.startedAtMS.map({ $0 >= 0 }) ?? true, child.finishedAtMS.map({ $0 >= (child.startedAtMS ?? 0) }) ?? true,
@@ -1040,7 +1091,8 @@ public enum RCCRuntimeContract {
     private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id", "capacity_plan"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape), "capacity_plan": capacityPlanShape])
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape)])
+    private static let routingIntentShape = Shape.object(["effort", "model_family"])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])
@@ -1051,7 +1103,8 @@ public enum RCCRuntimeContract {
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
     private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
-    private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction"])
+    private static let ladderShape = Shape.object(["cheap_effort", "reference_effort"])
+    private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder"], ["ladder": ladderShape])
     private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision"], ["selected_config": configShape, "routing_decision": routingDecisionShape])
     private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])

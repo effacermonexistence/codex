@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile, readFile, symlink, link } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, rm, stat, writeFile, readFile, symlink, link } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,8 +8,9 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { canonicalHostContext, createRCCRuntime, dispatchable, effectiveExplicitRoutes, hostContextFingerprint,
-  resolveRoutePlan } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import { canonicalHostContext, cheaperRouteAdmission, createRCCRuntime, dispatchable, effectiveExplicitRoutes,
+  hostContextFingerprint, LADDER_MIN_VERIFIED_PASSES, openRoutingLedger, resolveRoutePlan,
+  routeFamily } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
 async function fixture(t) {
@@ -1554,66 +1555,132 @@ test('resolver is deterministic: same input, same exact tuple and decision', () 
   const first = resolveRoutePlan(structuredClone(proposed), request, rows, now);
   const second = resolveRoutePlan(structuredClone(proposed), request, rows, now);
   assert.deepEqual(first, second);
-  assert.deepEqual(first.plan.nodes.map(n => n.candidate_id), ['codex-sol-medium', 'codex-sol-xhigh']);
+  // route_class is a family label only: both classes get the pool reference.
+  assert.deepEqual(first.plan.nodes.map(n => n.candidate_id), ['codex-sol-xhigh', 'codex-sol-xhigh']);
   assert.ok(first.plan.nodes.every(n => !Object.hasOwn(n, 'route_class')));
-  assert.deepEqual(first.decisions.a, {route_class: 'standard', resolved_candidate_id: 'codex-sol-medium',
-    surface: 'codex', model: 'gpt-5.7-sol', effort: 'medium', quota_pool: 'openai_codex',
-    reason: 'resolver;pool_rank_0;effort_exact', quota_remaining_fraction: 0.7});
+  assert.deepEqual(first.decisions.a, {route_class: 'standard', resolved_candidate_id: 'codex-sol-xhigh',
+    surface: 'codex', model: 'gpt-5.7-sol', effort: 'xhigh', quota_pool: 'openai_codex',
+    reason: 'resolver;route_reference;pool_rank_0;effort_xhigh;agent_surface', quota_remaining_fraction: 0.7});
+  assert.deepEqual(first.routes.a, {kind: 'reference', reference_effort: 'xhigh', ladder: null});
   // Catalog row order, not the object's key order or a model name, decides.
   const reordered = catalog(request, routingCatalog().map(value =>
     Object.fromEntries(Object.entries(value).reverse())));
   assert.deepEqual(resolveRoutePlan(structuredClone(proposed), request, reordered, now).plan, first.plan);
+  // A graded exact-arithmetic node binds the local row; an agent node never does.
+  const local = candidate('local-exact', 'local', 'none', {model: 'local-deterministic', effort: 'none'});
+  const mixed = resolveRoutePlan(plan(request, [graded('d', 'trivial', {kind: 'deterministic', instruction: '2+3'}),
+    graded('a', 'trivial')]), request, catalog(request, [local, ...routingCatalog()]), now,
+  {verifierRegistry: new Map([['trivial:read_only:local', async () => ({passed: true})]]),
+    ledgerStats: () => ({verified_passes: 99, verifier_failures: 0})});
+  assert.equal(mixed.decisions.d.resolved_candidate_id, 'local-exact');
+  assert.equal(mixed.decisions.d.reason, 'resolver;route_reference;pool_rank_0;effort_none;local_exact');
+  assert.equal(mixed.decisions.a.resolved_candidate_id, 'codex-sol-xhigh');
 });
 
-test('route_class maps to effort: trivial stays at low, deep picks xhigh not max', () => {
+test('every route_class binds the pool reference: top model at its highest effort up to max', () => {
+  // Owner objective (2026-10-13): reference quality = the newest top model at
+  // max reasoning. route_class never lowers the model or the effort.
   const request = task('/tmp', 'Grade effort', 'auto');
   const rows = routingCatalog();
   rows.splice(4, 0, row('codex-sol-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
     row('codex-sol-ultra', 'openai_codex', 'gpt-5.7-sol', 'ultra'));
+  rows.push(row('claude-opus-max', 'anthropic_shared', 'claude-opus-5-5', 'max'));
   const now = Date.now();
-  const resolve = routeClass => resolveRoutePlan(plan(request, [graded('n', routeClass)]), request,
-    catalog(request, rows), now).decisions.n;
-  assert.equal(resolve('trivial').effort, 'low');
-  assert.equal(resolve('standard').effort, 'medium');
-  assert.equal(resolve('deep').effort, 'xhigh');
-  assert.equal(resolve('deep').resolved_candidate_id, 'codex-sol-xhigh');
-  // The exact effort on a less-preferred model of the same pool wins over a
-  // near effort on the preferred one.
-  const noSolLow = rows.filter(value => value.id !== 'codex-sol-low');
-  const luna = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request,
-    catalog(request, noSolLow), now).decisions.n;
-  assert.equal(luna.resolved_candidate_id, 'codex-luna-low');
-  assert.match(luna.reason, /effort_exact/);
-  // Without the exact effort the nearest higher one wins over a lower one.
-  const noLow = rows.filter(value => value.effort !== 'low');
-  const trivial = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request,
-    catalog(request, noLow), now).decisions.n;
-  assert.equal(trivial.effort, 'medium');
-  assert.match(trivial.reason, /effort_nearest_higher/);
-  // An explicit-intent catalog (the native builder kept only "max") is
-  // respected, never substituted: even a trivial node gets the max row.
-  const maxOnly = [row('codex-sol-max', 'openai_codex', 'gpt-5.7-sol', 'max')];
-  assert.equal(resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request,
-    catalog(request, maxOnly), now).decisions.n.resolved_candidate_id, 'codex-sol-max');
-  // A model-family intent catalog (only Opus rows) stays inside that family.
-  const opusOnly = rows.filter(value => value.model === 'claude-opus-5-5');
-  assert.deepEqual(['trivial', 'standard', 'deep'].map(routeClass => resolveRoutePlan(
-    plan(request, [graded('n', routeClass)]), request, catalog(request, opusOnly), now).decisions.n.model),
-  ['claude-opus-5-5', 'claude-opus-5-5', 'claude-opus-5-5']);
+  const resolve = (routeClass, value = rows, intent) => resolveRoutePlan(plan(request, [graded('n', routeClass)]), request,
+    {...catalog(request, value), ...(intent ? {routing_intent: intent} : {})}, now).decisions.n;
+  // Codex reference: gpt-5.7-sol (first in catalog order) at max, whatever the class.
+  for (const routeClass of ['trivial', 'standard', 'deep']) {
+    const decision = resolve(routeClass);
+    assert.equal(decision.resolved_candidate_id, 'codex-sol-max', routeClass);
+    assert.equal(decision.reason, 'resolver;route_reference;pool_rank_0;effort_max;agent_surface', routeClass);
+  }
+  // Claude reference: claude-opus-5-5 at max, also for every class.
+  const claude = rows.filter(value => value.quota_pool === 'anthropic_shared');
+  assert.deepEqual(['trivial', 'standard', 'deep'].map(routeClass => resolve(routeClass, claude).resolved_candidate_id),
+    ['claude-opus-max', 'claude-opus-max', 'claude-opus-max']);
+  // Without a max row the reference is the highest offered effort, never a
+  // lower model that happens to offer more.
+  assert.equal(resolve('trivial', routingCatalog()).resolved_candidate_id, 'codex-sol-xhigh');
+  // ultra is never the default reference: an ultra-only model offers no
+  // reference without the owner's explicit ultra request.
+  const ultraOnly = [row('codex-sol-ultra', 'openai_codex', 'gpt-5.7-sol', 'ultra')];
+  assert.throws(() => resolve('deep', ultraOnly), /no_dispatchable_candidate:read_only/);
+  const ultra = resolve('trivial', ultraOnly, {effort: 'ultra', model_family: null});
+  assert.equal(ultra.resolved_candidate_id, 'codex-sol-ultra');
+  assert.equal(ultra.reason, 'resolver;route_explicit;intent_effort_ultra;pool_rank_0;effort_ultra;agent_surface');
+  // An explicit effort is a hard constraint: the owner's "low" runs at low.
+  const lowRows = rows.filter(value => value.effort === 'low');
+  const low = resolve('deep', lowRows, {effort: 'low', model_family: null});
+  assert.equal(low.resolved_candidate_id, 'codex-sol-low');
+  assert.match(low.reason, /^resolver;route_explicit;intent_effort_low;pool_rank_0;effort_low;/);
+  // An explicit model family runs that family at its reference effort.
+  const opusRows = rows.filter(value => value.model === 'claude-opus-5-5');
+  const opus = resolve('trivial', opusRows, {effort: null, model_family: 'opus'});
+  assert.equal(opus.resolved_candidate_id, 'claude-opus-max');
+  assert.match(opus.reason, /^resolver;route_explicit;intent_family_opus;pool_rank_0;effort_max;/);
+  // Both an effort and a family: exactly that tuple.
+  const opusXhigh = resolve('deep', opusRows.filter(value => value.effort === 'xhigh'),
+    {effort: 'xhigh', model_family: 'opus'});
+  assert.equal(opusXhigh.resolved_candidate_id, 'claude-opus-xhigh');
 });
 
-test('read-only work prefers the gated chat lane; writes stay on agent surfaces in pool order', () => {
+test('catalog routing_intent is optional and strictly shaped; a malformed one holds before planning', async t => {
+  const dir = await fixture(t);
+  const cases = [[{effort: 'max', model_family: 'opus'}, 'completed'], [undefined, 'completed'],
+    [{effort: 'none', model_family: null}, 'held'], [{effort: null, model_family: null}, 'held'],
+    [{effort: 'max', model_family: 'Opus!'}, 'held'], [{effort: 'max'}, 'held'],
+    [{effort: 'max', model_family: null, extra: 1}, 'held']];
+  for (const [index, [intent, state]] of cases.entries()) {
+    const request = task(dir, 'Explain one function ' + index);
+    let planned = 0;
+    const runtime = await createRCCRuntime({stateDir: join(dir, 'intent-' + index),
+      catalog: async value => ({...catalog(value, routingCatalog()), ...(intent ? {routing_intent: intent} : {})}),
+      plan: async () => { planned++; return plan(request, [graded('n', 'deep')]); },
+      execute: async ticket => execution(ticket), verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, state, `${JSON.stringify(intent)}: ${done.error}`);
+    if (state === 'held') { assert.equal(done.error, 'catalog_binding_invalid'); assert.equal(planned, 0); }
+  }
+});
+
+test('inside the Anthropic pool read-only work takes the chat row of the SAME model and effort', () => {
   const request = task('/tmp', 'Answer briefly', 'auto', {write: true});
-  const rows = [...routingCatalog(),
-    row('claude-chat-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium', {surface: 'claude-chat'})];
-  const resolved = resolveRoutePlan(plan(request, [graded('read', 'standard'),
-    graded('write', 'standard', {scope: 'workspace_write', ownedPaths: ['**']})]), request, catalog(request, rows), Date.now());
-  assert.equal(resolved.decisions.read.resolved_candidate_id, 'claude-chat-medium');
-  assert.match(resolved.decisions.read.reason, /chat_lane_read_only/);
-  assert.equal(resolved.decisions.write.resolved_candidate_id, 'codex-sol-write-medium');
-  // Without a chat row, read-only work follows the catalog's pool order.
+  const now = Date.now();
+  const anthropicFirst = [
+    row('claude-chat-opus-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh', {surface: 'claude-chat'}),
+    row('claude-chat-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium', {surface: 'claude-chat'}),
+    row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('claude-opus-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh'),
+    row('claude-opus-write-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh',
+      {scope: 'workspace_write', allowedPaths: ['**']}),
+    ...routingCatalog().filter(value => value.quota_pool === 'openai_codex')];
+  const resolve = rows => resolveRoutePlan(plan(request, [graded('read', 'standard'),
+    graded('write', 'standard', {scope: 'workspace_write', ownedPaths: ['**']})]), request, catalog(request, rows), now);
+  const resolved = resolve(anthropicFirst);
+  assert.equal(resolved.decisions.read.resolved_candidate_id, 'claude-chat-opus-xhigh');
+  assert.equal(resolved.decisions.read.reason, 'resolver;route_reference;pool_rank_0;effort_xhigh;chat_lane_same_route');
+  // Writes never take the chat lane: the agent row of the same reference.
+  assert.equal(resolved.decisions.write.resolved_candidate_id, 'claude-opus-write-xhigh');
+  assert.match(resolved.decisions.write.reason, /;agent_surface$/);
+  // A chat row only at a LOWER effort is not the same route: the agent row
+  // at the reference effort is used instead.
+  const lowerChat = anthropicFirst.filter(value => value.id !== 'claude-chat-opus-xhigh');
+  const fallback = resolve(lowerChat).decisions.read;
+  assert.equal(fallback.resolved_candidate_id, 'claude-opus-xhigh');
+  assert.equal(fallback.effort, 'xhigh');
+  assert.match(fallback.reason, /;agent_surface$/);
+  // An undispatchable chat row also falls back to the agent row, same route.
+  const staleChat = anthropicFirst.map(value => value.id === 'claude-chat-opus-xhigh' ?
+    {...value, availability: 'unavailable'} : value);
+  assert.equal(resolve(staleChat).decisions.read.resolved_candidate_id, 'claude-opus-xhigh');
+  // The chat lane never moves work across pools: Codex first means Codex.
+  const codexFirst = [...routingCatalog().filter(value => value.quota_pool === 'openai_codex'),
+    row('claude-chat-opus-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh', {surface: 'claude-chat'})];
   const ordinary = resolveRoutePlan(plan(request, [graded('read', 'standard')]), request,
-    catalog(request, routingCatalog()), Date.now());
+    catalog(request, codexFirst), now);
+  assert.equal(ordinary.decisions.read.resolved_candidate_id, 'codex-sol-xhigh');
   assert.equal(ordinary.decisions.read.quota_pool, 'openai_codex');
 });
 
@@ -1629,13 +1696,34 @@ test('pool order is respected and the second pool is chosen when the first canno
     assert.equal(rows.some(value => dispatchable(value, request, now) && value.quota_pool === 'openai_codex'), false, name);
     const decision = resolveRoutePlan(plan(request, node), request, catalog(request, rows), now).decisions.n;
     assert.equal(decision.quota_pool, 'anthropic_shared', name);
-    assert.equal(decision.resolved_candidate_id, 'claude-opus-medium', name);
-    assert.match(decision.reason, /pool_rank_1/, name);
+    assert.equal(decision.resolved_candidate_id, 'claude-opus-xhigh', name);
+    assert.equal(decision.reason,
+      'resolver;route_reference;pool_rank_1;skipped_pool_rank_0_reference_undispatchable;effort_xhigh;agent_surface', name);
   }
+  // Both references can dispatch: the catalog's pool order decides whose
+  // quota is spent (equal-quality references), here Anthropic listed first.
+  const anthropicFirst = [...routingCatalog().filter(value => value.quota_pool === 'anthropic_shared'),
+    ...routingCatalog().filter(value => value.quota_pool === 'openai_codex')];
+  const first = resolveRoutePlan(plan(request, node), request, catalog(request, anthropicFirst), now).decisions.n;
+  assert.equal(first.resolved_candidate_id, 'claude-opus-xhigh');
+  assert.match(first.reason, /;pool_rank_0;effort_xhigh;/);
+  assert.equal(resolveRoutePlan(plan(request, node), request, catalog(request, routingCatalog()), now)
+    .decisions.n.resolved_candidate_id, 'codex-sol-xhigh');
+  // An undispatchable top model is never replaced by a lower model of its
+  // pool (gpt-5.7-luna stays fresh): the other pool's reference runs.
+  const solDown = routingCatalog().map(value => value.model === 'gpt-5.7-sol' ? {...value, availability: 'unavailable'} : value);
+  assert.ok(solDown.some(value => value.model === 'gpt-5.7-luna' && dispatchable(value, request, now)));
+  assert.equal(resolveRoutePlan(plan(request, node), request, catalog(request, solDown), now)
+    .decisions.n.resolved_candidate_id, 'claude-opus-xhigh');
+  // Only the reference effort counts: a fresh lower effort of the same model
+  // does not stand in for a stale reference row.
+  const xhighDown = routingCatalog().map(value => value.id === 'codex-sol-xhigh' ? {...value, quota_remaining_fraction: null} : value);
+  assert.equal(resolveRoutePlan(plan(request, node), request, catalog(request, xhighDown), now)
+    .decisions.n.resolved_candidate_id, 'claude-opus-xhigh');
   // A dropped GPT row is never chosen even when it is first and fresh.
-  const gpt = [row('gpt-row', 'openai_codex', 'gpt-5.7-sol', 'medium', {surface: 'gpt-chat'}), ...routingCatalog()];
+  const gpt = [row('gpt-row', 'openai_codex', 'gpt-5.7-sol', 'xhigh', {surface: 'gpt-chat'}), ...routingCatalog()];
   assert.equal(resolveRoutePlan(plan(request, node), request, catalog(request, gpt), now)
-    .decisions.n.resolved_candidate_id, 'codex-sol-medium');
+    .decisions.n.resolved_candidate_id, 'codex-sol-xhigh');
 });
 
 test('nothing dispatchable holds before planning with per-pool reasons', async t => {
@@ -1653,9 +1741,24 @@ test('nothing dispatchable holds before planning with per-pool reasons', async t
   await runtime.submit(request);
   const held = await wait(runtime, request);
   assert.equal(held.state, 'held');
+  // Per pool, the reason of its REFERENCE rows (Codex: gpt-5.7-sol at high).
   assert.equal(held.error, 'no_dispatchable_candidate:anthropic_shared=quota_unknown_or_exhausted,' +
-    'openai_codex=quota_unknown_or_exhausted+unavailable');
+    'openai_codex=unavailable');
   assert.equal(planned, 0); assert.equal(executed, 0);
+  // A lower model that could run does not count: nothing below the
+  // reference is ever bound, so the hold comes before any planner call.
+  const lowerOnly = task(dir, 'Explain another function');
+  let lowerPlanned = 0;
+  const lower = await createRCCRuntime({stateDir: join(dir, 'lower'),
+    catalog: async value => catalog(value, [row('codex-top', 'openai_codex', 'gpt-5.7-sol', 'max', {quota: null}),
+      row('codex-next', 'openai_codex', 'gpt-5.7-luna', 'max')]),
+    plan: async () => { lowerPlanned++; return plan(lowerOnly, [graded('n', 'standard')]); },
+    execute: async () => { executed++; throw Error('must not dispatch'); }});
+  t.after(async () => { await lower.close(); });
+  await lower.submit(lowerOnly);
+  const lowerHeld = await wait(lower, lowerOnly);
+  assert.equal(lowerHeld.error, 'no_dispatchable_candidate:openai_codex=quota_unknown_or_exhausted');
+  assert.equal(lowerPlanned, 0); assert.equal(executed, 0);
   // A graded node in a scope with no dispatchable row holds with that scope.
   const write = task(dir, 'Change one file', 'auto', {write: true});
   const scoped = await createRCCRuntime({stateDir: join(dir, 'scoped'),
@@ -1692,9 +1795,12 @@ test('pre-dispatch failure re-resolves to another pool, at most twice, never for
   const dir = await fixture(t);
   // Refresh N makes every row before index N-2 unavailable: each chosen row
   // vanishes once, so the bound of two re-resolutions is what stops the node.
-  const rows = [row('a1', 'openai_codex', 'm', 'medium'), row('b1', 'anthropic_shared', 'm', 'medium'),
-    row('a2', 'openai_codex', 'm2', 'medium'), row('b2', 'anthropic_shared', 'm2', 'medium'),
-    row('a3', 'openai_codex', 'm3', 'medium')];
+  // Only reference routes are candidates: Codex's top model m (a1), and
+  // Anthropic's top model m as its chat row (b1) and agent row (b2). The
+  // lower models a2/a3 are never bound.
+  const rows = [row('a1', 'openai_codex', 'm', 'medium'),
+    row('b1', 'anthropic_shared', 'm', 'medium', {surface: 'claude-chat'}), row('b2', 'anthropic_shared', 'm', 'medium'),
+    row('a2', 'openai_codex', 'm2', 'medium'), row('a3', 'openai_codex', 'm3', 'medium')];
   const progressive = calls => rows.map((value, index) => index < calls - 1 ?
     {...value, availability: 'unavailable'} : value);
   const request = task(dir, 'Explain one function');
@@ -1711,9 +1817,12 @@ test('pre-dispatch failure re-resolves to another pool, at most twice, never for
   const events = runtime.events({schema: 1, task_id: request.task_id});
   const resolved = events.filter(x => x.kind === 'candidate_re_resolved');
   assert.equal(resolved.length, 2);
-  assert.deepEqual(resolved.map(x => x.snapshot.children[0].candidate_id), ['b1', 'a2']);
-  assert.match(resolved[0].snapshot.children[0].routing_decision.reason,
-    /^re_resolved_after:candidate_unavailable;other_pool;pool_rank_1;effort_exact$/);
+  assert.deepEqual(resolved.map(x => x.snapshot.children[0].candidate_id), ['b1', 'b2']);
+  assert.equal(resolved[0].snapshot.children[0].routing_decision.reason,
+    're_resolved_after:candidate_unavailable;other_pool;route_reference;pool_rank_1;effort_medium;chat_lane_same_route');
+  assert.equal(resolved[1].snapshot.children[0].routing_decision.reason,
+    're_resolved_after:candidate_unavailable;same_pool_only;route_reference;pool_rank_1;' +
+    'skipped_pool_rank_0_reference_undispatchable;effort_medium;agent_surface');
 
   // One re-resolution that succeeds: exhausted Codex quota moves to Claude.
   const moved = task(dir, 'Explain another function');
@@ -1726,7 +1835,7 @@ test('pre-dispatch failure re-resolves to another pool, at most twice, never for
   t.after(async () => { await mover.close(); });
   await mover.submit(moved);
   const done = await wait(mover, moved);
-  assert.equal(done.state, 'completed'); assert.deepEqual(dispatched, ['claude-opus-medium']);
+  assert.equal(done.state, 'completed'); assert.deepEqual(dispatched, ['claude-opus-xhigh']);
   assert.match(done.children[0].routing_decision.reason, /^re_resolved_after:candidate_quota_unknown_or_exhausted;other_pool/);
 
   // Explicit route tests and adapter-bound nodes keep the old fail-closed hold.
@@ -1818,8 +1927,8 @@ test('pre-execution quota rejection: read-only moves to the other pool, a dispat
   assert.deepEqual(dispatched, ['claude-opus-medium', 'codex-sol-medium']);
   assert.equal(planned, 1, 'the planner never re-chooses a host-resolved row');
   assert.equal(done.children[0].routing_decision.quota_pool, 'openai_codex');
-  assert.match(done.children[0].routing_decision.reason,
-    /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;pool_rank_0;effort_exact$/);
+  assert.equal(done.children[0].routing_decision.reason,
+    're_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;pool_rank_0;effort_medium;agent_surface');
   const events = reader.events({schema: 1, task_id: read.task_id});
   assert.equal(events.filter(x => x.kind === 'candidate_re_resolved').length, 1);
   assert.equal(events.some(x => x.kind === 'child_effects_uncertain' || x.kind === 'dispatch_effects_uncertain'), false);
@@ -1846,8 +1955,8 @@ test('pre-execution quota rejection: read-only moves to the other pool, a dispat
   const familyDone = await wait(familyRuntime, scoped);
   assert.equal(familyDone.state, 'completed');
   assert.deepEqual(scopedDispatched, ['claude-opus-medium', 'codex-sol-medium']);
-  assert.match(familyDone.children[0].routing_decision.reason,
-    /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;pool_rank_1;effort_exact$/);
+  assert.equal(familyDone.children[0].routing_decision.reason,
+    're_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;pool_rank_1;effort_medium;agent_surface');
 
   // A dispatched write that hit the quota keeps today's report: effects are
   // uncertain, nothing is re-dispatched and no other pool is tried.
@@ -2041,7 +2150,8 @@ test('a slow planner never changes the pool or holds: rows are ranked at the cat
     const done = await wait(runtime, request);
     assert.equal(done.state, 'completed', `${name}: ${done.error}`);
     assert.deepEqual(dispatched, ['claude-opus-medium'], name);
-    assert.equal(done.children[0].routing_decision.reason, 'resolver;pool_rank_0;effort_exact', name);
+    assert.equal(done.children[0].routing_decision.reason,
+      'resolver;route_reference;pool_rank_0;effort_medium;agent_surface', name);
     assert.ok(calls >= 2, 'the dispatch-time refresh still re-checks freshness');
   }
 });
@@ -2163,8 +2273,10 @@ test('a repaired node validates against fresh rows while siblings keep the rows 
 
 test('pre-execution quota rejections are not charged to the attempt budget, and stay bounded', async t => {
   const dir = await fixture(t);
-  const rows = [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
-    row('claude-sonnet-medium', 'anthropic_shared', 'claude-sonnet-5', 'medium'),
+  // Three reference routes: Anthropic's top model as its chat row and its
+  // agent row (same model and effort), and Codex's top model.
+  const rows = [row('claude-opus-chat', 'anthropic_shared', 'claude-opus-5-5', 'medium', {surface: 'claude-chat'}),
+    row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
     row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
   for (const [name, rejections, state, error, count] of [
     ['two then success', 2, 'completed', null, 3],
@@ -2199,6 +2311,22 @@ test('pre-execution quota rejections are not charged to the attempt budget, and 
   const boundDone = await wait(adapter, bound);
   assert.equal(boundDone.state, 'failed'); assert.equal(boundDone.error, 'verified_not_dispatched_retry_exhausted');
   assert.deepEqual(boundDispatched, ['a', 'b', 'c'], 'budget 2 charged attempts plus one free quota rejection');
+  // When both pools' references were rejected, a lower model is never the
+  // fallback: the node holds visibly instead of running below the reference.
+  const lowerRows = [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('claude-sonnet-medium', 'anthropic_shared', 'claude-sonnet-5', 'medium'),
+    row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  const noLower = task(dir, 'Explain one function without a lower model');
+  const lowerDispatched = [];
+  const lowerRuntime = await createRCCRuntime({stateDir: join(dir, 'no-lower'),
+    catalog: async value => catalog(value, lowerRows),
+    plan: async () => plan(noLower, [graded('n', 'deep')]),
+    execute: async ticket => { lowerDispatched.push(ticket.candidate_id); return quotaRejected(ticket); }});
+  t.after(async () => { await lowerRuntime.close(); });
+  await lowerRuntime.submit(noLower);
+  const lowerHeld = await wait(lowerRuntime, noLower);
+  assert.equal(lowerHeld.state, 'held'); assert.equal(lowerHeld.error, 'no_dispatchable_candidate:read_only');
+  assert.deepEqual(lowerDispatched, ['claude-opus-medium', 'codex-sol-medium']);
 });
 
 test('an explicit route held as unavailable names the catalog exclusions for that provider', async t => {
@@ -2220,8 +2348,8 @@ test('an explicit route held as unavailable names the catalog exclusions for tha
 // ---- Review fixes, second round (2026-10-13) -------------------------------
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-test('route_class effort outranks model preference inside a pool, for alias and full-ID names alike', () => {
-  const request = task('/tmp', 'Grade effort per native model', 'auto');
+test('the pool reference is its first model in catalog order, for alias and full-ID names alike', () => {
+  const request = task('/tmp', 'Reference per native model', 'auto');
   const now = Date.now();
   const pick = (rows, routeClass) => {
     const decision = resolveRoutePlan(plan(request, [graded('n', routeClass)]), request,
@@ -2230,29 +2358,29 @@ test('route_class effort outranks model preference inside a pool, for alias and 
   };
   const classes = ['trivial', 'standard', 'deep'];
   // Production Claude profiles: the alias and the resolved ID of one native
-  // model carry different effort sets. Neither name may hide the other's.
-  const sonnet = [row('s-alias-medium', 'anthropic_shared', 'sonnet', 'medium'),
-    row('s-full-low', 'anthropic_shared', 'claude-sonnet-5-5', 'low'),
-    row('s-full-xhigh', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh')];
+  // model carry different effort sets. The native builder lists the names of
+  // one native row together, the name with the highest reference effort
+  // first, so that name carries the native row's reference.
+  const sonnet = [row('s-full-low', 'anthropic_shared', 'claude-sonnet-5-5', 'low'),
+    row('s-full-xhigh', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh'),
+    row('s-alias-medium', 'anthropic_shared', 'sonnet', 'medium')];
   assert.deepEqual(classes.map(value => pick(sonnet, value)),
-    ['claude-sonnet-5-5/low', 'sonnet/medium', 'claude-sonnet-5-5/xhigh']);
-  const opus = [row('o-alias-xhigh', 'anthropic_shared', 'opus', 'xhigh'),
+    ['claude-sonnet-5-5/xhigh', 'claude-sonnet-5-5/xhigh', 'claude-sonnet-5-5/xhigh']);
+  const opus = [row('o-alias-max', 'anthropic_shared', 'opus', 'max'),
     row('o-full-low', 'anthropic_shared', 'claude-opus-5-5', 'low'),
     row('o-full-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh')];
-  assert.deepEqual(classes.map(value => pick(opus, value)), ['claude-opus-5-5/low', 'opus/xhigh', 'opus/xhigh'],
-    'no medium anywhere: the nearest higher effort, then model preference');
-  // Different models: the most-preferred model WITH the target effort.
+  assert.deepEqual(classes.map(value => pick(opus, value)), ['opus/max', 'opus/max', 'opus/max']);
+  // Different models: the most-preferred model, never a lower model because
+  // it offers some other effort.
   const mixed = [row('sonnet-medium', 'anthropic_shared', 'sonnet', 'medium'),
     row('fable-low', 'anthropic_shared', 'fable', 'low'), row('fable-xhigh', 'anthropic_shared', 'fable', 'xhigh'),
     row('opus-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh')];
-  assert.deepEqual(classes.map(value => pick(mixed, value)), ['fable/low', 'sonnet/medium', 'fable/xhigh']);
-  const fableFirst = [row('fable-low', 'anthropic_shared', 'fable', 'low'),
-    row('fable-xhigh', 'anthropic_shared', 'fable', 'xhigh'), row('sonnet-medium', 'anthropic_shared', 'sonnet', 'medium')];
-  assert.equal(pick(fableFirst, 'standard'), 'sonnet/medium', 'standard is not run at the deep effort');
-  // Pool order still outranks effort: the first pool's nearest effort wins.
+  assert.deepEqual(classes.map(value => pick(mixed, value)), ['sonnet/medium', 'sonnet/medium', 'sonnet/medium']);
+  // Pool order decides between pools; each pool brings only its reference.
   const pools = [row('codex-low', 'openai_codex', 'gpt-5.7-sol', 'low'),
+    row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
     row('claude-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh')];
-  assert.equal(pick(pools, 'deep'), 'gpt-5.7-sol/low');
+  assert.deepEqual(classes.map(value => pick(pools, value)), ['gpt-5.7-sol/max', 'gpt-5.7-sol/max', 'gpt-5.7-sol/max']);
 });
 
 test('a row that left the catalog re-resolves at once instead of waiting behind another task on its old pool', async t => {
@@ -2371,4 +2499,304 @@ test('spreading still works after the bound rows outlive their validity window: 
   assert.ok(started.c.at < 2_000, `c started at ${started.c.at} ms, behind a`);
   // Bind, a, x, the one spread re-check for c, and c's dispatch.
   assert.ok(calls <= 5, `catalog calls ${calls}`);
+});
+
+// ---- REVAS ladder gate and routing ledger (2026-10-13) ---------------------
+// A cheaper effort is admitted only with a registered task verifier for the
+// family and ledger parity. Production registers no verifier, so every node
+// runs its reference route; these fixtures use a fake registry and fake stats.
+const parity = (passes, failures = 0) => () => ({verified_passes: passes, verifier_failures: failures});
+const registry = (...families) => new Map(families.map(family => [family, async () => ({passed: true, reason: 'fake'})]));
+
+test('cheaperRouteAdmission never admits without a verifier, without 20 passes, or with any failure', () => {
+  const family = routeFamily('standard', 'read_only', 'claude-chat');
+  assert.equal(family, 'standard:read_only:chat');
+  assert.equal(routeFamily(null, 'workspace_write', 'codex'), 'unclassified:workspace_write:agent');
+  assert.equal(LADDER_MIN_VERIFIED_PASSES, 20);
+  const base = {family, scope: 'read_only', model: 'claude-opus-5-5', referenceEffort: 'max',
+    cheaperEfforts: ['low', 'medium', 'max', 'ultra'], verifierRegistry: registry(family), ledgerStats: parity(20)};
+  assert.deepEqual(cheaperRouteAdmission(base),
+    {route: 'ladder', cheap_effort: 'low', reference_effort: 'max', reason: 'ladder_parity_evidence'});
+  const refused = [
+    [{verifierRegistry: null}, 'ladder_no_registered_verifier'],
+    [{verifierRegistry: new Map()}, 'ladder_no_registered_verifier'],
+    [{verifierRegistry: registry('deep:read_only:chat')}, 'ladder_no_registered_verifier'],
+    [{verifierRegistry: new Map([[family, 'not a function']])}, 'ladder_no_registered_verifier'],
+    [{scope: 'workspace_write'}, 'ladder_write_scope'],
+    [{ledgerStats: parity(19)}, 'ladder_insufficient_parity_evidence'],
+    [{ledgerStats: parity(1_000, 1)}, 'ladder_insufficient_parity_evidence'],
+    [{ledgerStats: () => { throw Error('ledger offline'); }}, 'ladder_insufficient_parity_evidence'],
+    [{ledgerStats: () => ({verified_passes: '25', verifier_failures: 0})}, 'ladder_insufficient_parity_evidence'],
+    [{ledgerStats: () => null}, 'ladder_insufficient_parity_evidence'],
+    [{ledgerStats: null}, 'ladder_no_ledger_evidence'],
+    [{cheaperEfforts: ['max', 'ultra']}, 'ladder_no_cheaper_route'],
+    [{referenceEffort: 'unknown'}, 'ladder_no_cheaper_route']];
+  for (const [change, reason] of refused)
+    assert.deepEqual(cheaperRouteAdmission({...base, ...change}), {route: 'reference', reason}, JSON.stringify(change));
+  // The cheapest effort with parity wins; one without parity is skipped.
+  const stats = (asked, model, effort) => asked === family && model === 'claude-opus-5-5' ?
+    {verified_passes: effort === 'medium' ? 25 : 3, verifier_failures: 0} : null;
+  assert.equal(cheaperRouteAdmission({...base, ledgerStats: stats}).cheap_effort, 'medium');
+});
+
+test('the resolver admits a ladder only with registry plus parity; writes and explicit intents stay reference', () => {
+  const request = task('/tmp', 'Explain one function', 'auto', {write: true});
+  const now = Date.now();
+  const rows = [row('chat-low', 'anthropic_shared', 'claude-opus-5-5', 'low', {surface: 'claude-chat'}),
+    row('chat-max', 'anthropic_shared', 'claude-opus-5-5', 'max', {surface: 'claude-chat'}),
+    row('claude-low', 'anthropic_shared', 'claude-opus-5-5', 'low'),
+    row('claude-max', 'anthropic_shared', 'claude-opus-5-5', 'max'),
+    row('claude-write-low', 'anthropic_shared', 'claude-opus-5-5', 'low', {scope: 'workspace_write', allowedPaths: ['**']}),
+    row('claude-write-max', 'anthropic_shared', 'claude-opus-5-5', 'max', {scope: 'workspace_write', allowedPaths: ['**']})];
+  const families = ['standard:read_only:chat', 'standard:workspace_write:agent'];
+  const resolve = (options, value = catalog(request, rows)) => resolveRoutePlan(plan(request, [graded('read', 'standard'),
+    graded('write', 'standard', {scope: 'workspace_write', ownedPaths: ['**']})]), request, value, now, options);
+  const admitted = resolve({verifierRegistry: registry(...families), ledgerStats: parity(20)});
+  assert.equal(admitted.decisions.read.resolved_candidate_id, 'chat-low');
+  assert.deepEqual(admitted.decisions.read.ladder, {cheap_effort: 'low', reference_effort: 'max'});
+  assert.equal(admitted.decisions.read.reason,
+    'resolver;route_ladder;pool_rank_0;effort_low;ladder_reference_effort_max;chat_lane_same_route');
+  assert.deepEqual(admitted.routes.read, {kind: 'ladder', reference_effort: 'max',
+    ladder: {cheap_effort: 'low', reference_effort: 'max', reference_candidate_id: 'chat-max'}});
+  // Writes are always reference, whatever the registry and ledger say.
+  assert.equal(admitted.decisions.write.resolved_candidate_id, 'claude-write-max');
+  assert.equal(Object.hasOwn(admitted.decisions.write, 'ladder'), false);
+  assert.equal(admitted.routes.write.kind, 'reference');
+  for (const [name, options] of [['no registry', {}], ['empty registry', {verifierRegistry: new Map(), ledgerStats: parity(99)}],
+    ['19 passes', {verifierRegistry: registry(...families), ledgerStats: parity(19)}],
+    ['one failure', {verifierRegistry: registry(...families), ledgerStats: parity(50, 1)}],
+    ['other family', {verifierRegistry: registry('deep:read_only:chat'), ledgerStats: parity(50)}]]) {
+    const decision = resolve(options).decisions.read;
+    assert.equal(decision.resolved_candidate_id, 'chat-max', name);
+    assert.equal(Object.hasOwn(decision, 'ladder'), false, name);
+    assert.match(decision.reason, /^resolver;route_reference;/, name);
+  }
+  assert.match(resolve({verifierRegistry: registry(...families), ledgerStats: parity(19)}).decisions.read.reason,
+    /;ladder_insufficient_parity_evidence;/);
+  // An explicit owner constraint fixes the route: no ladder below it.
+  const explicit = resolve({verifierRegistry: registry(...families), ledgerStats: parity(99)},
+    {...catalog(request, rows), routing_intent: {effort: null, model_family: 'opus'}});
+  assert.equal(explicit.decisions.read.resolved_candidate_id, 'chat-max');
+  assert.match(explicit.decisions.read.reason, /^resolver;route_explicit;intent_family_opus;/);
+});
+
+async function ladderRuntime(t, dir, name, {verify, stats = parity(20), rows, write = false, budget = 1}) {
+  const request = task(dir, 'Explain one function: ' + name, 'auto', {write});
+  request.budget.max_attempts = budget;
+  const dispatched = [], verified = [];
+  const runtime = await createRCCRuntime({stateDir: join(dir, name.replace(/\W+/g, '-')),
+    verifierRegistry: new Map([[write ? 'standard:workspace_write:agent' : 'standard:read_only:agent',
+      async input => { verified.push(input.selected_config.effort); return verify(input); }]]),
+    ledgerStats: stats,
+    catalog: async value => catalog(value, rows),
+    plan: async () => plan(request, [graded('n', 'standard', write ? {scope: 'workspace_write', ownedPaths: ['**']} : {})]),
+    execute: async ticket => { dispatched.push(ticket.selected_config.effort);
+      return execution(ticket, {output: `answer at ${ticket.selected_config.effort}`, task_verified: false,
+        task_quality: 'execution_only'}); },
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  return {request, runtime, dispatched, verified, done: await wait(runtime, request)};
+}
+const ladderRows = [row('codex-low', 'openai_codex', 'gpt-5.7-sol', 'low'),
+  row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
+  row('codex-write-low', 'openai_codex', 'gpt-5.7-sol', 'low', {scope: 'workspace_write', allowedPaths: ['**']}),
+  row('codex-write-max', 'openai_codex', 'gpt-5.7-sol', 'max', {scope: 'workspace_write', allowedPaths: ['**']})];
+const ledgerRecords = async stateDir => {
+  const text = await readFile(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), 'utf8');
+  return text.trim().split('\n').map(line => JSON.parse(line));
+};
+
+test('a verified ladder output is adopted; a failed one re-dispatches once at the reference, uncharged', async t => {
+  const dir = await fixture(t);
+  // Pass: the cheaper route is adopted after its verifier passes.
+  const pass = await ladderRuntime(t, dir, 'pass', {verify: async () => ({passed: true, reason: 'fake pass'}),
+    rows: ladderRows});
+  assert.equal(pass.done.state, 'completed', pass.done.error);
+  assert.deepEqual(pass.dispatched, ['low']); assert.deepEqual(pass.verified, ['low']);
+  assert.equal(pass.done.result.output, 'answer at low');
+  assert.deepEqual(pass.done.children[0].routing_decision.ladder, {cheap_effort: 'low', reference_effort: 'max'});
+  const passLedger = await ledgerRecords(join(dir, 'pass'));
+  assert.deepEqual(passLedger.map(record => [record.effort, record.route_kind, record.verifier_outcome]),
+    [['low', 'ladder', 'pass']]);
+  // Fail: the cheaper output is discarded and the node runs once at the
+  // reference route (same model, same pool), even with max_attempts 1.
+  const fail = await ladderRuntime(t, dir, 'fail once', {rows: ladderRows,
+    verify: async input => ({passed: input.selected_config.effort === 'max', reason: 'fake'})});
+  assert.equal(fail.done.state, 'completed', fail.done.error);
+  assert.deepEqual(fail.dispatched, ['low', 'max']); assert.deepEqual(fail.verified, ['low', 'max']);
+  assert.equal(fail.done.result.output, 'answer at max', 'the failed cheaper output is never adopted');
+  const decision = fail.done.children[0].routing_decision;
+  assert.equal(decision.effort, 'max'); assert.equal(decision.resolved_candidate_id, 'codex-max');
+  assert.equal(decision.reason, 'ladder_escalated_after_verifier_failure;route_reference;effort_max;agent_surface');
+  assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max'});
+  const events = fail.runtime.events({schema: 1, task_id: fail.request.task_id});
+  assert.equal(events.filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
+  assert.equal(events.some(event => event.kind === 'candidate_re_resolved'), false);
+  assert.deepEqual((await ledgerRecords(join(dir, 'fail-once'))).map(record =>
+    [record.effort, record.route_kind, record.verifier_outcome, record.reference_effort]),
+  [['low', 'ladder', 'fail', 'max'], ['max', 'reference', 'pass', 'max']]);
+  // Bounded once: a reference route that also fails its verifier is not
+  // escalated again (there is nothing above the reference).
+  const always = await ladderRuntime(t, dir, 'always fail', {rows: ladderRows,
+    verify: async () => ({passed: false, reason: 'fake fail'})});
+  assert.deepEqual(always.dispatched, ['low', 'max']);
+  assert.equal(always.done.result?.output, 'answer at max');
+  assert.equal(always.runtime.events({schema: 1, task_id: always.request.task_id})
+    .filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
+  // A throwing or malformed verifier counts as a failure, never as a pass.
+  const broken = await ladderRuntime(t, dir, 'broken verifier', {rows: ladderRows,
+    verify: async input => { if (input.selected_config.effort === 'low') throw Error('verifier crashed');
+      return {passed: 'yes'}; }});
+  assert.deepEqual(broken.dispatched, ['low', 'max']);
+  assert.equal(broken.done.result?.output, 'answer at max');
+  // No parity evidence: the reference runs first and only once.
+  const noParity = await ladderRuntime(t, dir, 'no parity', {rows: ladderRows, stats: parity(19),
+    verify: async () => ({passed: true, reason: 'fake pass'})});
+  assert.deepEqual(noParity.dispatched, ['max']);
+  assert.equal(Object.hasOwn(noParity.done.children[0].routing_decision, 'ladder'), false);
+});
+
+test('a write node is never laddered or escalated, whatever the registry and ledger say', async t => {
+  const dir = await fixture(t);
+  const write = await ladderRuntime(t, dir, 'write', {write: true, rows: ladderRows, stats: parity(500),
+    verify: async () => ({passed: false, reason: 'fake fail'})});
+  assert.equal(write.done.state, 'completed', write.done.error);
+  assert.deepEqual(write.dispatched, ['max']);
+  assert.deepEqual(write.verified, [], 'no node verifier runs for a write');
+  assert.equal(write.done.children[0].routing_decision.reason, 'resolver;route_reference;pool_rank_0;effort_max;agent_surface');
+  assert.equal(write.runtime.events({schema: 1, task_id: write.request.task_id})
+    .some(event => event.kind === 'ladder_escalated_to_reference'), false);
+});
+
+test('a ladder whose reference row cannot be restored holds instead of adopting the failed output', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Explain one function with a vanished reference');
+  const dispatched = [];
+  const runtime = await createRCCRuntime({stateDir: dir,
+    verifierRegistry: new Map([['standard:read_only:agent', async () => ({passed: false, reason: 'fake fail'})]]),
+    ledgerStats: parity(20), catalog: async value => catalog(value, ladderRows),
+    plan: async () => plan(request, [graded('n', 'standard')]),
+    execute: async ticket => { dispatched.push(ticket.candidate_id); return execution(ticket); },
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  // Corrupt the internal reference pointer before the verifier answers.
+  const original = runtime._escalateLadder.bind(runtime);
+  runtime._escalateLadder = (taskID, nodeID, attemptID) => {
+    runtime._update(taskID, 'fixture_reference_pointer_removed', state => {
+      state.children[0].ladder.reference_candidate_id = 'missing-row'; });
+    return original(taskID, nodeID, attemptID);
+  };
+  await runtime.submit(request);
+  const held = await wait(runtime, request);
+  assert.equal(held.state, 'held'); assert.equal(held.error, 'ladder_reference_unavailable');
+  assert.deepEqual(dispatched, ['codex-low']);
+  assert.equal(held.result, null, 'the failed cheaper output is not returned as a result');
+});
+
+test('routing ledger: one private record per settled attempt, ids and routing facts only', async t => {
+  const dir = await fixture(t);
+  const secret = 'Explain the function named PRIVATE-REQUEST-TEXT';
+  const request = task(dir, secret);
+  const rows = [row('claude-quota', 'anthropic_shared', 'claude-opus-5-5', 'max'),
+    row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max', {quota: 0.42})];
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, rows),
+    plan: async () => plan(request, [graded('n', 'deep')]),
+    execute: async ticket => ticket.selected_config.quota_pool === 'anthropic_shared' ? quotaRejected(ticket) :
+      execution(ticket, {output: 'PRIVATE-OUTPUT-TEXT', usage: {input_tokens: 11, output_tokens: 7, reasoning_tokens: 3}}),
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  const directory = join(dir, 'routing-ledger'), file = join(directory, 'routing-ledger.jsonl');
+  assert.equal((await lstat(directory)).mode & 0o777, 0o700);
+  assert.equal((await lstat(file)).mode & 0o777, 0o600);
+  const text = await readFile(file, 'utf8');
+  for (const forbidden of ['PRIVATE-REQUEST-TEXT', 'PRIVATE-OUTPUT-TEXT', dir, '/private/fixture', 'Do one bounded task'])
+    assert.equal(text.includes(forbidden), false, forbidden);
+  const records = await ledgerRecords(dir);
+  assert.equal(records.length, 2, 'one record per attempt: the quota rejection and the success');
+  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'dispatched_at_ms', 'effort',
+    'execution_verified', 'family', 'ladder', 'model', 'node_id', 'quota_pool', 'quota_remaining_fraction',
+    'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'surface', 'surface_kind',
+    'task_id', 'task_quality', 'usage', 'verifier_outcome']);
+  assert.deepEqual(records.map(record => [record.quota_pool, record.attempt_state, record.execution_verified]),
+    [['anthropic_shared', 'verified_not_dispatched', false], ['openai_codex', 'completed', true]]);
+  const [, success] = records;
+  assert.equal(success.task_id, request.task_id); assert.equal(success.node_id, 'n');
+  assert.equal(success.attempt_id, done.children[0].attempt_id);
+  assert.equal(success.family, 'deep:read_only:agent'); assert.equal(success.route_class, 'deep');
+  assert.equal(success.model, 'gpt-5.7-sol'); assert.equal(success.effort, 'max');
+  assert.equal(success.reference_effort, 'max'); assert.equal(success.route_kind, 'reference');
+  assert.equal(success.ladder, null); assert.equal(success.quota_remaining_fraction, 0.42);
+  assert.deepEqual(success.usage, {input_tokens: 11, output_tokens: 7, reasoning_tokens: 3});
+  assert.equal(success.task_quality, 'task_verified'); assert.equal(success.verifier_outcome, 'not_registered');
+  assert.ok(success.settled_at_ms >= success.dispatched_at_ms);
+});
+
+test('a routing ledger write failure is logged and never fails or holds the task', async t => {
+  const dir = await fixture(t);
+  for (const [name, sabotage] of [
+    // The ledger directory path is occupied by a regular file.
+    ['file', async stateDir => writeFile(join(stateDir, 'routing-ledger'), 'not a directory', {mode: 0o600})],
+    // The ledger file is a symlink to a file it must never write through.
+    ['symlink', async stateDir => {
+      await mkdir(join(stateDir, 'routing-ledger'), {mode: 0o700});
+      await writeFile(join(stateDir, 'decoy.txt'), 'decoy', {mode: 0o600});
+      await symlink(join(stateDir, 'decoy.txt'), join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'));
+    }],
+    // A world-readable ledger directory is not private.
+    ['public', async stateDir => mkdir(join(stateDir, 'routing-ledger'), {mode: 0o755}).then(() =>
+      chmod(join(stateDir, 'routing-ledger'), 0o755))]]) {
+    const stateDir = join(dir, name);
+    await mkdir(stateDir, {mode: 0o700});
+    await sabotage(stateDir);
+    const request = task(dir, 'Explain one function ' + name);
+    const logged = [];
+    const runtime = await createRCCRuntime({stateDir, ledgerLog: code => logged.push(code),
+      catalog: async value => catalog(value, routingCatalog()),
+      plan: async () => plan(request, [graded('n', 'standard')]),
+      execute: async ticket => execution(ticket), verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'completed', `${name}: ${done.error}`);
+    assert.ok(logged.length >= 1, `${name}: the failure was logged`);
+    assert.ok(logged.every(code => /^[A-Za-z0-9_]{1,64}$/.test(code)), `${name}: ${logged}`);
+  }
+  assert.equal(await readFile(join(dir, 'symlink', 'decoy.txt'), 'utf8'), 'decoy', 'never written through a link');
+});
+
+test('routing ledger stats count one family at one model/effort and rotate within a bound', async t => {
+  const dir = await fixture(t);
+  const ledger = openRoutingLedger(dir, {maxBytes: 8_192});
+  const record = (family, effort, outcome, verified = true) => ({schema: 1, task_id: 'task-x', node_id: 'n',
+    attempt_id: randomUUID(), family, model: 'claude-opus-5-5', effort, verifier_outcome: outcome,
+    execution_verified: verified});
+  assert.deepEqual(ledger.stats('standard:read_only:chat', 'claude-opus-5-5', 'low'),
+    {verified_passes: 0, verifier_failures: 0}, 'no ledger yet is no evidence');
+  for (let i = 0; i < 120; i++) ledger.append(record('standard:read_only:chat', 'low', 'pass'));
+  ledger.append(record('standard:read_only:chat', 'low', 'fail'));
+  ledger.append(record('standard:read_only:chat', 'low', 'pass', false));
+  ledger.append(record('deep:read_only:chat', 'low', 'fail'));
+  ledger.append(record('standard:read_only:chat', 'medium', 'fail'));
+  ledger.append(record('standard:read_only:chat', 'low', 'not_registered'));
+  const files = (await readdir(join(dir, 'routing-ledger'))).sort();
+  assert.deepEqual(files, ['routing-ledger.1.jsonl', 'routing-ledger.jsonl'], 'rotated to one previous generation');
+  for (const name of files) {
+    const info = await stat(join(dir, 'routing-ledger', name));
+    assert.ok(info.size <= 8_192, `${name} ${info.size} bytes`); assert.equal(info.mode & 0o777, 0o600);
+  }
+  const counted = ledger.stats('standard:read_only:chat', 'claude-opus-5-5', 'low');
+  assert.equal(counted.verifier_failures, 1);
+  assert.ok(counted.verified_passes > 0 && counted.verified_passes < 120, 'the oldest generation was dropped');
+  assert.deepEqual(ledger.stats('deep:read_only:chat', 'claude-opus-5-5', 'low'), {verified_passes: 0, verifier_failures: 1});
+  // An unsafe ledger reads as no evidence, so the ladder stays closed.
+  await chmod(join(dir, 'routing-ledger'), 0o755);
+  assert.deepEqual(ledger.stats('standard:read_only:chat', 'claude-opus-5-5', 'low'), {verified_passes: 0, verifier_failures: 0});
+  assert.throws(() => ledger.append(record('standard:read_only:chat', 'low', 'pass')), /routing_ledger_directory_not_private/);
+  await chmod(join(dir, 'routing-ledger'), 0o700);
+  assert.throws(() => ledger.append({schema: 1, padding: 'x'.repeat(9_000)}), /routing_ledger_record_oversize/);
 });

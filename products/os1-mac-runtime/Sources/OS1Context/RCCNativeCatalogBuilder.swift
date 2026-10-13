@@ -18,8 +18,14 @@ import Foundation
 ///   route test).
 /// - An explicit effort/model-family word in the owner's request (see
 ///   `RoutingIntent`) restricts rows; if nothing matches the catalog is empty
-///   with `explicit_constraint_unavailable`, never a substitute.
-/// - Without an explicit effort word, max/ultra/ultracode are not offered.
+///   with `explicit_constraint_unavailable`, never a substitute. The catalog
+///   then carries that constraint as `routing_intent`, so the host names the
+///   route explicit (and may bind an explicitly asked ultra effort).
+/// - Without an explicit effort word, ultra/ultracode are not offered. max is
+///   offered (2026-10-13): the host's default route is each pool's REFERENCE,
+///   its most-preferred model at the highest offered effort up to max, so
+///   the result matches the newest top model at max reasoning. Lower efforts
+///   stay in the catalog for explicit owner requests and the REVAS ladder.
 /// - An explicit route test (`explicitRouteSurfaces` set) keeps its former
 ///   candidate set: the whole fan-out sentence is not read as one intent, and
 ///   no effort is withheld; only GPT, capacity and the chat gate apply.
@@ -32,7 +38,10 @@ import Foundation
 public enum RCCNativeCatalogBuilder {
     public static let maximumCandidates = 256
     public static let effortOrder = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
-    static let explicitOnlyEfforts: Set<String> = ["max", "ultra", "ultracode"]
+    /// Above max: offered only when the owner explicitly asks. max itself is
+    /// the default reference effort and is never withheld.
+    public static let explicitOnlyEfforts: Set<String> = ["ultra", "ultracode"]
+    static let maximumReferenceEffort = "max"
 
     public struct Profile: Equatable, Sendable {
         public var action: String
@@ -289,30 +298,44 @@ public enum RCCNativeCatalogBuilder {
         }
 
         // Every name of one native Claude row shares that row's rank, so its
-        // rows sit together in the catalog and the resolver compares their
-        // efforts as one model: an alias with a narrow profile can no longer
-        // rank above the same model's resolved ID (or another model) and hide
-        // the route_class target effort configured under the other name.
+        // rows sit together in the catalog. Within one rank the name with the
+        // highest reference effort comes first: the host takes a pool's first
+        // model in catalog order as its reference, so an alias with a narrow
+        // profile can never hide the max effort configured under another name.
         func modelRank(_ row: Row) -> Int {
             if row.provider == "codex" { return input.codexModels.first { $0.slug == row.model }?.priority ?? Int.max }
             guard let index = input.claudeModels.firstIndex(where: { $0.model == row.model }) else { return Int.max }
             return input.claudeModels[index].nativeRank ?? index
         }
+        func effortRank(_ effort: String) -> Int { effortOrder.firstIndex(of: effort) ?? Int.max }
+        // The host's reference effort of one model: its highest offered effort
+        // up to max; above max only when nothing else is offered (an explicit
+        // ultra request). Same rule as `referenceEffort` in rcc-runtime.mjs.
+        var offeredEfforts: [String: [Int]] = [:]
+        for row in rows { offeredEfforts[row.provider + "\0" + row.model, default: []].append(effortRank(row.effort)) }
+        let maximumReference = effortRank(maximumReferenceEffort)
+        func referenceRank(_ row: Row) -> Int {
+            let offered = offeredEfforts[row.provider + "\0" + row.model] ?? []
+            return offered.filter { $0 <= maximumReference }.max() ?? offered.max() ?? -1
+        }
+        func modelKeyLess(_ a: Row, _ b: Row) -> Bool {
+            if modelRank(a) != modelRank(b) { return modelRank(a) < modelRank(b) }
+            if referenceRank(a) != referenceRank(b) { return referenceRank(a) > referenceRank(b) }
+            return a.model < b.model
+        }
         // Pool order: share x remaining / hours-to-reset, unknown quota last.
-        // A pool is scored by the model the host resolver prefers in it: the
-        // most-preferred model whose quota is known (an unknown-quota row
-        // cannot dispatch; the resolver binds it whenever it has the node's
-        // route_class effort), not the model with the most quota left. With
-        // model-scoped windows those differ, and scoring the wrong one would
-        // spend a nearly exhausted model while the other pool has room.
+        // A pool is scored by its reference model, the one the host resolver
+        // binds in it (its first model in catalog order), not by the model
+        // with the most quota left. With model-scoped windows those differ,
+        // and scoring the wrong one would spend a nearly exhausted model while
+        // the other pool has room. A reference with unknown quota cannot
+        // dispatch, and nothing lower is bound instead, so its pool ranks last.
         var rankings: [PoolRanking] = []
         for provider in ["codex", "claude"] {
             let poolRows = rows.filter { $0.provider == provider }
             guard !poolRows.isEmpty else { continue }
             let share = Double(capacity(provider, input.capacityPlan)) / 100
-            let best = poolRows.filter { $0.remaining != nil }.min {
-                (modelRank($0), $0.model) < (modelRank($1), $1.model)
-            }
+            let best = poolRows.min(by: modelKeyLess)
             let quota = provider == "codex" ? input.codexQuota : input.claudeQuota
             let reset = best.flatMap { quota?.limitingReset(accountID: input.accountIDs[provider] ?? "", model: $0.model, now: input.now) }
             let hours = reset.map { max(0, $0.timeIntervalSince(input.now) / 3600) } ?? 168
@@ -329,11 +352,10 @@ public enum RCCNativeCatalogBuilder {
             }
         }
         let poolRank = Dictionary(uniqueKeysWithValues: rankings.enumerated().map { ($0.element.pool, $0.offset) })
-        func effortRank(_ effort: String) -> Int { effortOrder.firstIndex(of: effort) ?? Int.max }
         rows.sort { a, b in
-            let keyA = [poolRank[pool(a.provider)] ?? Int.max, modelRank(a)], keyB = [poolRank[pool(b.provider)] ?? Int.max, modelRank(b)]
-            if keyA != keyB { return keyA.lexicographicallyPrecedes(keyB) }
-            if a.model != b.model { return a.model < b.model }
+            let poolA = poolRank[pool(a.provider)] ?? Int.max, poolB = poolRank[pool(b.provider)] ?? Int.max
+            if poolA != poolB { return poolA < poolB }
+            if a.model != b.model { return modelKeyLess(a, b) }
             let tailA = [a.surface == "claude" ? 1 : 0, effortRank(a.effort), a.scope == "read_only" ? 0 : 1]
             let tailB = [b.surface == "claude" ? 1 : 0, effortRank(b.effort), b.scope == "read_only" ? 0 : 1]
             if tailA != tailB { return tailA.lexicographicallyPrecedes(tailB) }
@@ -358,12 +380,17 @@ public enum RCCNativeCatalogBuilder {
     }
 
     /// The exact catalog bytes `os1 rcc-catalog` prints. `exclusions` appears
-    /// only when non-empty, so a catalog without exclusions is unchanged.
+    /// only when non-empty and `routing_intent` only with an explicit owner
+    /// constraint, so a catalog without either keeps its former shape.
     public static func catalogData(_ output: Output, taskID: String, requestSHA256: String) throws -> Data {
         var object: [String: Any] = ["schema": 1, "task_id": taskID, "request_sha256": requestSHA256,
                                      "candidates": output.candidates]
         if !output.exclusions.isEmpty {
             object["exclusions"] = output.exclusions.map { ["provider": $0.provider, "reason": $0.reason, "count": $0.count] }
+        }
+        if !output.intent.isEmpty {
+            object["routing_intent"] = ["effort": output.intent.effort.map { $0 as Any } ?? NSNull(),
+                                        "model_family": output.intent.modelFamily.map { $0 as Any } ?? NSNull()]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }

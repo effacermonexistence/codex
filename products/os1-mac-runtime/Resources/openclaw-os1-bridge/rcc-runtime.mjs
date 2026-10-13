@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { closeSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync,
+  writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
@@ -30,13 +31,35 @@ const PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION = 'provider_quota_rejected_before
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
-// Deterministic host routing (2026-10-13). The local planner grades each node
-// with a coarse route_class; the host maps it to an exact catalog row. The
-// catalog's own row order already encodes pool preference (capacity share,
-// fresh quota, reset time) and native model preference.
+// Deterministic host routing (2026-10-13). The catalog's own row order already
+// encodes pool preference (capacity share, fresh quota, reset time) and native
+// model preference. Owner objective: the result must have the SAME quality as
+// the newest top model at its highest (max) reasoning while spending less
+// quota, a Pareto improvement only. So every node binds a pool's REFERENCE
+// route (its most-preferred model at the highest offered effort up to max);
+// the planner's route_class only labels the task family and never lowers the
+// model or the effort. A cheaper effort is admitted only by the REVAS ladder
+// gate (cheaperRouteAdmission) with a registered verifier and parity evidence.
 const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
 export const ROUTE_CLASSES = Object.freeze(['trivial', 'standard', 'deep']);
-const ROUTE_CLASS_TARGET_EFFORT = Object.freeze({trivial: 'low', standard: 'medium', deep: 'xhigh'});
+const MAX_REFERENCE_EFFORT = EFFORT_ORDER.indexOf('max');
+// Above max: chosen only when the owner explicitly asked (catalog routing_intent).
+const EXPLICIT_ONLY_EFFORTS = new Set(['ultra', 'ultracode']);
+const INTENT_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const INTENT_FAMILY = /^[a-z][a-z0-9]{1,31}$/;
+// REVAS ladder gate: a cheaper effort of the SAME model in the SAME pool needs
+// a registered task verifier for the family and this much ledger parity.
+export const LADDER_MIN_VERIFIED_PASSES = 20;
+const LADDER_MAX_VERIFIER_FAILURES = 0;
+// Routing ledger: one bounded, private, append-only JSONL record per settled
+// attempt (ids and routing facts only; no request text, output or path).
+const LEDGER_DIRECTORY = 'routing-ledger';
+const LEDGER_FILE = 'routing-ledger.jsonl';
+const LEDGER_ROTATED_FILE = 'routing-ledger.1.jsonl';
+const MAX_LEDGER_BYTES = 4_194_304;
+const MAX_LEDGER_RECORD_BYTES = 8_192;
+// A registered node verifier that does not answer in time counts as a failure.
+const NODE_VERIFIER_TIMEOUT_MS = 60_000;
 // Separate from the attempt budget: how often one node's host-resolved row may
 // be replaced after a pre-dispatch failure, always within the same scope.
 const MAX_RE_RESOLUTIONS = 2;
@@ -311,91 +334,202 @@ function scopesAllowed(task) {
   return task.host_context?.require_read_only === true ? ['read_only'] : ['read_only', 'workspace_write'];
 }
 
+/** Whether a catalog row can carry this node at all (scope, surface kind and
+ * write authority), before any dispatchability or avoidance. `anyPaths` is
+ * for the availability summary, which has no planned paths yet. */
+function eligibleRow(c, node, {widenWrites = false, anyPaths = false} = {}) {
+  if (c.scope !== node.scope || !hostRoutable(c)) return false;
+  if (node.kind === 'deterministic' ? !(c.surface === 'local' && c.transport === 'local' &&
+      c.quota_pool === 'none' && c.tools.length === 0) : c.surface === 'local') return false;
+  return node.scope !== 'workspace_write' || anyPaths || coversOwnedPaths(c, node.owned_paths) ||
+    (widenWrites && c.allowed_paths.includes('**'));
+}
+function surfaceKind(surface) { return surface === 'local' ? 'local' : surface.endsWith('-chat') ? 'chat' : 'agent'; }
+/** The task-family label used by the verifier registry and the ledger. */
+export function routeFamily(routeClass, scope, surface) {
+  return `${routeClass ?? 'unclassified'}:${scope}:${surfaceKind(surface)}`;
+}
+function routingIntent(catalog) { return catalog?.routing_intent ?? null; }
+/** The reference effort of one model's rows. An explicit owner effort that
+ * the model offers is a hard constraint. Otherwise the highest offered effort
+ * up to max; ultra/ultracode only when the owner explicitly asked for one.
+ * Null when the model offers nothing usable by default. */
+function referenceEffort(rows, intent) {
+  const offered = rows.map(c => c.effort);
+  if (intent?.effort && offered.includes(intent.effort)) return intent.effort;
+  const capped = offered.filter(effort => EFFORT_ORDER.indexOf(effort) <= MAX_REFERENCE_EFFORT);
+  const pool = capped.length ? capped : EXPLICIT_ONLY_EFFORTS.has(intent?.effort) ? offered : [];
+  return pool.length ? EFFORT_ORDER[Math.max(...pool.map(effort => EFFORT_ORDER.indexOf(effort)))] : null;
+}
+/** Per quota pool, in catalog order: the pool's reference model (its first,
+ * i.e. most-preferred, model in catalog order among rows that can carry this
+ * node) with that model's rows and reference effort. Dispatchability is NOT
+ * used to pick the model: an undispatchable top model makes its pool unusable
+ * for this node instead of silently substituting a lower model. */
+function poolReferences(node, catalog, options = {}) {
+  const intent = routingIntent(catalog);
+  const pools = new Map();
+  catalog.candidates.forEach((candidate, index) => {
+    if (!eligibleRow(candidate, node, options)) return;
+    if (!pools.has(candidate.quota_pool))
+      pools.set(candidate.quota_pool, {pool: candidate.quota_pool, model: candidate.model, rows: []});
+    const entry = pools.get(candidate.quota_pool);
+    if (candidate.model === entry.model) entry.rows.push({candidate, index});
+  });
+  return [...pools.values()].map(entry => ({...entry,
+    effort: referenceEffort(entry.rows.map(row => row.candidate), intent)}));
+}
+function referenceRows(reference) {
+  return reference.effort === null ? [] :
+    reference.rows.filter(row => row.candidate.effort === reference.effort).map(row => row.candidate);
+}
+
 /** What can run now, without any candidate ID: the non-explicit planner sees
- * only this summary, never the catalog. */
+ * only this summary, never the catalog. Agent work counts only where a pool's
+ * reference route can dispatch, because nothing lower is ever bound. */
 export function routingAvailability(task, catalog, now = Date.now()) {
-  const rows = catalog.candidates.filter(c => hostRoutable(c) && dispatchable(c, task, now));
-  const agent = rows.filter(c => c.surface !== 'local');
-  return {
-    scopes: ['read_only', 'workspace_write'].filter(scope => agent.some(c => c.scope === scope)),
-    chat_lane: agent.some(c => c.scope === 'read_only' && c.surface.endsWith('-chat')),
-    providers: [...new Set(agent.map(c => providerOfPool(c.quota_pool)))].sort(),
-    deterministic: rows.some(c => c.surface === 'local' && c.scope === 'read_only' &&
-      c.transport === 'local' && c.quota_pool === 'none' && c.tools.length === 0),
-  };
+  const scopes = [], providers = new Set();
+  let chatLane = false;
+  for (const scope of ['read_only', 'workspace_write']) {
+    for (const reference of poolReferences({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
+      const runnable = referenceRows(reference).filter(c => dispatchable(c, task, now));
+      if (!runnable.length) continue;
+      if (!scopes.includes(scope)) scopes.push(scope);
+      providers.add(providerOfPool(reference.pool));
+      if (scope === 'read_only' && runnable.some(c => c.surface.endsWith('-chat'))) chatLane = true;
+    }
+  }
+  return {scopes, chat_lane: chatLane, providers: [...providers].sort(),
+    deterministic: catalog.candidates.some(c => hostRoutable(c) && dispatchable(c, task, now) &&
+      c.surface === 'local' && c.scope === 'read_only' &&
+      c.transport === 'local' && c.quota_pool === 'none' && c.tools.length === 0)};
 }
 
 /** Null when something in an allowed scope can run; otherwise the visible
- * hold reason with the per-pool failure of every routable row in scope. */
+ * hold reason with, per pool, the failure of its reference rows in scope. */
 function noDispatchableReason(task, catalog, now) {
   const scopes = scopesAllowed(task);
-  const rows = catalog.candidates.filter(c => hostRoutable(c) && scopes.includes(c.scope));
-  if (rows.some(c => dispatchable(c, task, now))) return null;
+  const local = catalog.candidates.filter(c => hostRoutable(c) && scopes.includes(c.scope) && c.surface === 'local');
+  if (local.some(c => dispatchable(c, task, now))) return null;
   const byPool = new Map();
-  for (const c of rows) {
-    const reasons = byPool.get(c.quota_pool) ?? new Set();
-    reasons.add(dispatchFailure(c, task, now).replace(/^candidate_/, ''));
-    byPool.set(c.quota_pool, reasons);
+  const note = (pool, reason) => byPool.set(pool, (byPool.get(pool) ?? new Set()).add(reason));
+  for (const c of local) note(c.quota_pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
+  for (const scope of scopes) {
+    for (const reference of poolReferences({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
+      const rows = referenceRows(reference);
+      if (rows.some(c => dispatchable(c, task, now))) return null;
+      if (!rows.length) note(reference.pool, 'no_reference');
+      for (const c of rows) note(reference.pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
+    }
   }
   return 'no_dispatchable_candidate:' + (byPool.size === 0 ? 'no_candidate_in_scope' :
     [...byPool.keys()].sort().map(pool => `${pool}=${[...byPool.get(pool)].sort().join('+')}`).join(','));
 }
 
-function lexicographicallyLess(a, b) {
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i];
-  return false;
-}
-function routingDecision(routeClass, candidate, reason) {
-  return {route_class: routeClass, resolved_candidate_id: candidate.id, surface: candidate.surface,
-    model: candidate.model, effort: candidate.effort, quota_pool: candidate.quota_pool, reason,
-    quota_remaining_fraction: candidate.quota_remaining_fraction};
+/** The REVAS ladder gate, front-loaded and pure. A cheaper effort of the SAME
+ * model in the SAME pool may replace the reference only when the node is
+ * read-only, a task verifier is registered for the family, and the ledger
+ * shows parity at that cheaper route: at least LADDER_MIN_VERIFIED_PASSES
+ * verified passes and no verifier failure for the family. The cheapest such
+ * effort is admitted; anything else (unknown stats included) is reference. */
+export function cheaperRouteAdmission({family, scope, model = null, referenceEffort: reference = null,
+                                       cheaperEfforts = [], verifierRegistry = null, ledgerStats = null} = {}) {
+  if (scope !== 'read_only') return {route: 'reference', reason: 'ladder_write_scope'};
+  if (!(verifierRegistry instanceof Map) || typeof family !== 'string' ||
+      typeof verifierRegistry.get(family) !== 'function')
+    return {route: 'reference', reason: 'ladder_no_registered_verifier'};
+  const ceiling = EFFORT_ORDER.indexOf(reference);
+  const cheaper = [...new Set(cheaperEfforts)].filter(effort => EFFORTS.has(effort) &&
+    EFFORT_ORDER.indexOf(effort) < ceiling).sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
+  if (ceiling < 0 || cheaper.length === 0) return {route: 'reference', reason: 'ladder_no_cheaper_route'};
+  if (typeof ledgerStats !== 'function') return {route: 'reference', reason: 'ladder_no_ledger_evidence'};
+  for (const effort of cheaper) {
+    let stats = null;
+    try { stats = ledgerStats(family, model, effort); } catch { stats = null; }
+    if (plain(stats) && int(stats.verified_passes, 0, Number.MAX_SAFE_INTEGER) &&
+        int(stats.verifier_failures, 0, Number.MAX_SAFE_INTEGER) &&
+        stats.verified_passes >= LADDER_MIN_VERIFIED_PASSES &&
+        stats.verifier_failures <= LADDER_MAX_VERIFIER_FAILURES)
+      return {route: 'ladder', cheap_effort: effort, reference_effort: reference, reason: 'ladder_parity_evidence'};
+  }
+  return {route: 'reference', reason: 'ladder_insufficient_parity_evidence'};
 }
 
-/** Pick the exact row for one node. Key, lowest first:
- * (avoided pool, chat lane for read_only, pool order, effort distance to the
- * route_class target, model order, catalog index). Ranks come from the
- * catalog order. Within a pool the route_class effort decides first: the
- * most-preferred model that has the exact target effort wins over a more
- * preferred model that lacks it, so a narrow profile on one model (or on one
- * name of a native model) never hides the target effort configured on
- * another. Higher effort is preferred over lower when no exact match.
- * `widenWrites` lets a graded writer that named concrete paths bind a
- * whole-workspace row; the caller then records owned_paths ["**"], because a
- * native writer is not confined to the paths a planner listed. */
+function routingDecision(routeClass, candidate, reason, ladder = null) {
+  const decision = {route_class: routeClass, resolved_candidate_id: candidate.id, surface: candidate.surface,
+    model: candidate.model, effort: candidate.effort, quota_pool: candidate.quota_pool, reason,
+    quota_remaining_fraction: candidate.quota_remaining_fraction};
+  // Present only for a ladder route, so every other decision keeps its shape.
+  if (ladder) decision.ladder = {cheap_effort: ladder.cheap_effort, reference_effort: ladder.reference_effort};
+  return decision;
+}
+
+/** Pick the exact row for one node.
+ * Pools go in catalog order (capacity share x remaining / hours to reset,
+ * computed by the native builder); an avoided pool goes last. Each pool
+ * offers only its reference route: its most-preferred model at the
+ * reference effort. The first pool whose reference can dispatch wins; equal
+ * quality references make this a choice of whose quota is spent, never of
+ * quality. Within the pool a read-only node takes the gated chat row of the
+ * SAME model and effort when one can dispatch, else the agent row. An
+ * explicit owner constraint (catalog routing_intent) is already applied to
+ * the rows and names the route explicit. With `ladder` ({verifierRegistry,
+ * ledgerStats}) a graded read-only node may take a cheaper effort of the same
+ * model and surface, only through cheaperRouteAdmission. route_class never
+ * moves the model or the effort. `widenWrites` lets a graded writer that
+ * named concrete paths bind a whole-workspace row; the caller then records
+ * owned_paths ["**"], because a native writer is not confined to the paths a
+ * planner listed. */
 function selectRouteCandidate(node, routeClass, task, catalog, now,
-                              {avoidPool = null, avoidIDs = [], widenWrites = false} = {}) {
-  const target = EFFORT_ORDER.indexOf(ROUTE_CLASS_TARGET_EFFORT[routeClass]);
-  const poolFirst = new Map(), modelFirst = new Map();
-  catalog.candidates.forEach((c, index) => {
-    if (!poolFirst.has(c.quota_pool)) poolFirst.set(c.quota_pool, index);
-    const model = c.quota_pool + '\0' + c.model;
-    if (!modelFirst.has(model)) modelFirst.set(model, index);
-  });
-  const poolOrdinal = new Map([...poolFirst.keys()].map((pool, ordinal) => [pool, ordinal]));
-  let best = null;
-  catalog.candidates.forEach((c, index) => {
-    if (c.scope !== node.scope || avoidIDs.includes(c.id) || !hostRoutable(c) ||
-        !dispatchable(c, task, now)) return;
-    if (node.kind === 'deterministic' ? !(c.surface === 'local' && c.transport === 'local' &&
-        c.quota_pool === 'none' && c.tools.length === 0) : c.surface === 'local') return;
-    if (node.scope === 'workspace_write' && !coversOwnedPaths(c, node.owned_paths) &&
-        !(widenWrites && c.allowed_paths.includes('**'))) return;
-    const effort = EFFORT_ORDER.indexOf(c.effort);
-    const distance = Math.abs(effort - target);
-    const effortScore = effort === target ? 0 : effort > target ? 1 + distance : 100 + distance;
-    const key = [avoidPool !== null && c.quota_pool === avoidPool ? 1 : 0,
-      node.scope === 'read_only' && c.surface.endsWith('-chat') ? 0 : 1,
-      poolFirst.get(c.quota_pool), effortScore, modelFirst.get(c.quota_pool + '\0' + c.model), index];
-    if (best === null || lexicographicallyLess(key, best.key)) best = {candidate: c, key, effortScore};
-  });
-  if (best === null) throw new RCCRuntimeError('no_dispatchable_candidate:' + node.scope);
-  const [avoided, surfaceRank] = best.key;
-  const why = [surfaceRank === 0 ? 'chat_lane_read_only' : 'pool_rank_' + poolOrdinal.get(best.candidate.quota_pool),
-    best.effortScore === 0 ? 'effort_exact' : best.effortScore < 100 ? 'effort_nearest_higher' : 'effort_nearest_lower'];
-  if (avoidPool !== null) why.unshift(avoided ? 'same_pool_only' : 'other_pool');
-  const widened = node.scope === 'workspace_write' && !coversOwnedPaths(best.candidate, node.owned_paths);
-  if (widened) why.push('owned_paths_workspace');
-  return {candidate: best.candidate, why: why.join(';'), widened};
+                              {avoidPool = null, avoidIDs = [], widenWrites = false, ladder = null} = {}) {
+  const ordinal = new Map();
+  for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
+  const intent = routingIntent(catalog);
+  const usable = row => !avoidIDs.includes(row.candidate.id) && dispatchable(row.candidate, task, now);
+  const chatFirst = row => node.scope === 'read_only' && row.candidate.surface.endsWith('-chat') ? 0 : 1;
+  const best = rows => rows.filter(usable)
+    .sort((a, b) => (chatFirst(a) - chatFirst(b)) || (a.index - b.index))[0] ?? null;
+  const avoided = reference => avoidPool !== null && reference.pool === avoidPool ? 1 : 0;
+  const ranked = poolReferences(node, catalog, {widenWrites})
+    .sort((a, b) => (avoided(a) - avoided(b)) || (ordinal.get(a.pool) - ordinal.get(b.pool)));
+  const skipped = [];
+  for (const reference of ranked) {
+    const rank = 'pool_rank_' + ordinal.get(reference.pool);
+    const atReference = reference.effort === null ? null :
+      best(reference.rows.filter(row => row.candidate.effort === reference.effort));
+    if (!atReference) {
+      skipped.push(`skipped_${rank}_${reference.effort === null ? 'no_reference' : 'reference_undispatchable'}`);
+      continue;
+    }
+    let chosen = atReference.candidate, kind = intent ? 'explicit' : 'reference', ladderRoute = null, note = null;
+    const family = routeFamily(routeClass, node.scope, chosen.surface);
+    if (ladder && !intent && node.kind === 'agent' && ROUTE_CLASSES.includes(routeClass)) {
+      const sameSurface = reference.rows.filter(row => row.candidate.surface === chosen.surface && usable(row));
+      const admission = cheaperRouteAdmission({family, scope: node.scope, model: reference.model,
+        referenceEffort: reference.effort, cheaperEfforts: sameSurface.map(row => row.candidate.effort),
+        verifierRegistry: ladder.verifierRegistry, ledgerStats: ladder.ledgerStats});
+      const cheap = admission.route === 'ladder' ?
+        best(sameSurface.filter(row => row.candidate.effort === admission.cheap_effort)) : null;
+      if (cheap) {
+        chosen = cheap.candidate; kind = 'ladder';
+        ladderRoute = {cheap_effort: admission.cheap_effort, reference_effort: reference.effort,
+          reference_candidate_id: atReference.candidate.id};
+      } else if (!['ladder_no_registered_verifier', 'ladder_write_scope'].includes(admission.reason)) note = admission.reason;
+    }
+    const why = ['route_' + kind];
+    if (intent?.effort) why.push('intent_effort_' + intent.effort);
+    if (intent?.model_family) why.push('intent_family_' + intent.model_family);
+    why.push(rank, ...skipped, 'effort_' + chosen.effort);
+    if (ladderRoute) why.push('ladder_reference_effort_' + ladderRoute.reference_effort);
+    if (note) why.push(note);
+    why.push({chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(chosen.surface)] ?? 'agent_surface');
+    if (avoidPool !== null) why.unshift(reference.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+    const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
+    if (widened) why.push('owned_paths_workspace');
+    return {candidate: chosen, why: why.join(';'), widened, kind, referenceEffort: reference.effort,
+      ladder: ladderRoute};
+  }
+  throw new RCCRuntimeError('no_dispatchable_candidate:' + node.scope);
 }
 
 /** Graded writers on overlapping paths run one after another, in plan order:
@@ -430,11 +564,16 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
  * Explicit route tests are never resolved here. Pure: same input, same output.
  * `now` is the catalog's bind time, not the time the planner returned: a slow
  * local planner must not change which pool is chosen. Freshness is enforced
- * again at dispatch, after the pre-dispatch catalog refresh. */
-export function resolveRoutePlan(plan, task, catalog, now = Date.now()) {
+ * again at dispatch, after the pre-dispatch catalog refresh. `routes` is the
+ * host's internal record per graded node: route kind (reference, explicit or
+ * ladder), the reference effort and, for a ladder, the reference row it
+ * escalates to. A ladder needs a non-empty verifierRegistry (Map of family
+ * to verifier) and ledgerStats(family, model, effort); production has none. */
+export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null, ledgerStats = null} = {}) {
   if (task.mode === 'explicit_routing_test' || !plain(plan) || !Array.isArray(plan.nodes))
-    return {plan, decisions: {}};
-  const decisions = {};
+    return {plan, decisions: {}, routes: {}};
+  const ladder = verifierRegistry instanceof Map && verifierRegistry.size > 0 ? {verifierRegistry, ledgerStats} : null;
+  const decisions = {}, routes = {};
   const gradedIDs = new Set();
   const nodes = plan.nodes.map(node => {
     if (plain(node) && Object.hasOwn(node, 'route_class')) {
@@ -442,8 +581,9 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now()) {
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
       const {route_class: routeClass, ...rest} = node;
-      const choice = selectRouteCandidate(node, routeClass, task, catalog, now, {widenWrites: true});
-      decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why);
+      const choice = selectRouteCandidate(node, routeClass, task, catalog, now, {widenWrites: true, ladder});
+      decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder);
+      routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
       gradedIDs.add(node.id);
       return {...rest, dependencies: [...rest.dependencies],
         owned_paths: choice.widened ? ['**'] : rest.owned_paths, candidate_id: choice.candidate.id};
@@ -458,7 +598,77 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now()) {
   });
   for (const id of serializeGradedWriters(nodes, gradedIDs))
     decisions[id] = {...decisions[id], reason: decisions[id].reason + ';workspace_writer_serialized'};
-  return {plan: {...plan, nodes}, decisions};
+  return {plan: {...plan, nodes}, decisions, routes};
+}
+
+/** The private, bounded routing ledger in the Core state directory: one
+ * append-only JSONL record per settled attempt, in an owner-only directory
+ * (0700) and file (0600), opened without following links, rotated to one
+ * previous generation at MAX_LEDGER_BYTES. `stats` counts the verified passes
+ * and verifier failures of one family at one model/effort; anything it cannot
+ * read safely counts as no evidence. Synchronous: callers catch every error. */
+export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) {
+  assert(typeof stateDir === 'string' && isAbsolute(stateDir) &&
+    int(maxBytes, MAX_LEDGER_RECORD_BYTES, MAX_LEDGER_BYTES), 'routing_ledger_invalid');
+  const directory = join(stateDir, LEDGER_DIRECTORY);
+  const current = join(directory, LEDGER_FILE), rotated = join(directory, LEDGER_ROTATED_FILE);
+  function privateDirectory(create) {
+    if (create) mkdirSync(directory, {recursive: true, mode: 0o700});
+    const st = lstatSync(directory);
+    assert(st.isDirectory() && !st.isSymbolicLink() && st.uid === process.getuid() &&
+      (st.mode & 0o077) === 0, 'routing_ledger_directory_not_private');
+  }
+  function privateFile(fd) {
+    const st = fstatSync(fd);
+    assert(st.isFile() && st.uid === process.getuid() && st.nlink === 1, 'routing_ledger_file_invalid');
+    return st;
+  }
+  const append = record => {
+    const line = stable(record) + '\n';
+    const bytes = Buffer.byteLength(line);
+    assert(bytes <= MAX_LEDGER_RECORD_BYTES, 'routing_ledger_record_oversize');
+    privateDirectory(true);
+    const flags = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+    let fd = openSync(current, flags, 0o600);
+    try {
+      const st = privateFile(fd);
+      fchmodSync(fd, 0o600);
+      if (st.size + bytes > maxBytes) {
+        closeSync(fd); fd = null;
+        renameSync(current, rotated);
+        fd = openSync(current, flags | constants.O_EXCL, 0o600);
+        privateFile(fd); fchmodSync(fd, 0o600);
+      }
+      writeSync(fd, line);
+    } finally { if (fd !== null) closeSync(fd); }
+  };
+  function lines(path) {
+    let fd;
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+    try {
+      const st = privateFile(fd);
+      assert((st.mode & 0o077) === 0 && st.size <= maxBytes, 'routing_ledger_file_invalid');
+      return readFileSync(fd, 'utf8').split('\n');
+    } finally { closeSync(fd); }
+  }
+  const stats = (family, model, effort) => {
+    const result = {verified_passes: 0, verifier_failures: 0};
+    try {
+      try { privateDirectory(false); } catch (error) { if (error.code === 'ENOENT') return result; throw error; }
+      for (const path of [rotated, current]) for (const line of lines(path)) {
+        if (!line) continue;
+        let record;
+        try { record = JSON.parse(line); } catch { continue; }
+        if (!plain(record) || record.schema !== 1 || record.family !== family || record.model !== model ||
+            record.effort !== effort) continue;
+        if (record.verifier_outcome === 'pass' && record.execution_verified === true) result.verified_passes++;
+        else if (record.verifier_outcome === 'fail') result.verifier_failures++;
+      }
+    } catch { return {verified_passes: 0, verifier_failures: 0}; }
+    return result;
+  };
+  return Object.freeze({directory, path: current, rotatedPath: rotated, append, stats});
 }
 
 function exactConfig(candidate) {
@@ -473,14 +683,24 @@ function validExclusions(exclusions) {
       int(item.count, 1, 10_000)) &&
     new Set(exclusions.map(item => `${item.provider}\0${item.reason}`)).size === exclusions.length;
 }
+/** The owner's explicit routing constraint the native builder already
+ * applied to the rows (optional, absent without one): it makes a route
+ * explicit and is the only way above-max efforts become a reference. */
+function validRoutingIntent(intent) {
+  return keys(intent, ['effort', 'model_family']) &&
+    (intent.effort === null || INTENT_EFFORTS.has(intent.effort)) &&
+    (intent.model_family === null || (typeof intent.model_family === 'string' && INTENT_FAMILY.test(intent.model_family))) &&
+    (intent.effort !== null || intent.model_family !== null);
+}
 function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
-    Object.keys(catalog).every(key => required.includes(key) || key === 'exclusions') &&
+    Object.keys(catalog).every(key => required.includes(key) || key === 'exclusions' || key === 'routing_intent') &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
     catalog.request_sha256 === task.request_sha256 && Array.isArray(catalog.candidates) &&
     catalog.candidates.length <= 256 &&
     (catalog.exclusions === undefined || validExclusions(catalog.exclusions)) &&
+    (catalog.routing_intent === undefined || validRoutingIntent(catalog.routing_intent)) &&
     (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
   // An empty catalog is an explicit, explained hold rather than an opaque
@@ -650,11 +870,15 @@ function repairCatalog(snapshot, plan, fresh, changedIDs) {
 /** Attempts charged to the retry budget. A verified pre-execution provider
  * quota rejection did no work and is not charged for a host-resolved node,
  * whose moves are bounded by MAX_RE_RESOLUTIONS instead; any other node gets
- * at most one such free attempt, as the legacy runner's quota limit did. */
+ * at most one such free attempt, as the legacy runner's quota limit did.
+ * The one cheaper ladder attempt whose verifier failed is the Core's own
+ * bet, not the owner's: its single reference re-dispatch is never charged. */
 function chargedAttempts(child, resolver) {
-  const free = (child.attempt_history ?? []).filter(entry => entry.state === 'verified_not_dispatched' &&
+  const history = child.attempt_history ?? [];
+  const free = history.filter(entry => entry.state === 'verified_not_dispatched' &&
     entry.error === PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION).length;
-  return child.attempts - Math.min(free, resolver ? MAX_RE_RESOLUTIONS : 1);
+  const ladder = history.some(entry => entry.state === 'ladder_verifier_failed') ? 1 : 0;
+  return child.attempts - Math.min(free, resolver ? MAX_RE_RESOLUTIONS : 1) - ladder;
 }
 
 /** Routes displayed by an explicit-route hold: the routes that still run,
@@ -709,12 +933,24 @@ function alive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
+/** `verifierRegistry`: Map of task family (routeFamily) to an async node
+ * verifier ({schema, task_id, node_id, family, instruction, output,
+ * native_receipt, selected_config} -> {passed: boolean, reason}). Production
+ * registers none, so every graded node runs its reference route. `ledgerStats`
+ * overrides the ledger reader the ladder gate uses (tests only); `ledgerLog`
+ * receives a ledger write failure code, which never fails or holds a task. */
 export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
-                                         maximumWorkers = 4, cancelGraceMs = 5_000} = {}) {
+                                         maximumWorkers = 4, cancelGraceMs = 5_000,
+                                         verifierRegistry = null, ledgerStats = null, ledgerLog = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(cancelGraceMs, 100, 30_000), 'cancel_grace_invalid');
+  const registry = verifierRegistry ?? new Map();
+  assert(registry instanceof Map && [...registry].every(([family, verify]) =>
+    typeof family === 'string' && family.length <= 128 && typeof verify === 'function'), 'verifier_registry_invalid');
+  assert(ledgerStats === null || typeof ledgerStats === 'function', 'ledger_stats_invalid');
+  assert(ledgerLog === null || typeof ledgerLog === 'function', 'ledger_log_invalid');
   await mkdir(stateDir, {recursive: true, mode: 0o700});
   const directory = await lstat(stateDir);
   assert(directory.isDirectory() && !directory.isSymbolicLink() &&
@@ -749,10 +985,12 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
     }, false);
   } catch (error) { db.close(); throw error; }
 
+  const ledger = openRoutingLedger(stateDir);
   const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation,
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, cancelGraceMs,
-                                 transaction});
+                                 transaction, verifierRegistry: registry, ledger,
+                                 ledgerStats: ledgerStats ?? ledger.stats, ledgerLog});
   runtime.reconcileRestart();
   runtime.startQueued();
   return runtime;
@@ -761,7 +999,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
-               maximumWorkers, cancelGraceMs, transaction}) {
+               maximumWorkers, cancelGraceMs, transaction, verifierRegistry, ledger, ledgerStats, ledgerLog}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -769,6 +1007,8 @@ class RCCRuntime {
     this.reconcileInstallation = reconcileInstallation;
     this.cancelInstallation = cancelInstallation;
     this.verifyTask = verifyTask; this.emit = emit;
+    this.verifierRegistry = verifierRegistry; this.ledger = ledger;
+    this.ledgerStats = ledgerStats; this.ledgerLog = ledgerLog;
     this.maximumWorkers = maximumWorkers; this.cancelGraceMs = cancelGraceMs;
     this.transaction = transaction;
     this.runningTasks = new Map(); this.controllers = new Map();
@@ -1043,6 +1283,10 @@ class RCCRuntime {
           child.stage.state = 'effects_uncertain';
         for (const child of snapshot.children) if (child.state === 'waiting' &&
           child.continuation?.state === 'pending') child.state = 'held';
+        // A returned node whose family verifier had not answered is neither
+        // adopted nor replayed: it stays visible as held.
+        for (const child of snapshot.children) if (child.state === 'waiting' &&
+          child.attempt_history?.at(-1)?.state === 'node_verifier_pending') child.state = 'held';
       });
     }
     for (const row of rows) this._releaseSafeLeases(row.task_id);
@@ -1344,16 +1588,17 @@ class RCCRuntime {
       else this._hold(taskID, 'planner_unavailable');
       return;
     }
-    let plan, decisions;
+    let plan, decisions, routes;
     try {
       // The injected planner adapter selects only task-relevant policy and
       // context for the local model. It receives the immutable host state,
       // never a model-authored replacement for that state. Outside explicit
       // route tests it grades nodes; the host then binds exact rows.
       const proposed = await this.plan({task: immutable(task), catalog: immutable(catalog)});
-      const resolved = resolveRoutePlan(proposed, task, catalog, boundAt);
+      const resolved = resolveRoutePlan(proposed, task, catalog, boundAt,
+        {verifierRegistry: this.verifierRegistry, ledgerStats: this.ledgerStats});
       plan = validatePlan(resolved.plan, task, catalog);
-      decisions = resolved.decisions;
+      decisions = resolved.decisions; routes = resolved.routes;
     } catch (error) {
       const reason = error instanceof RCCRuntimeError ? error.code : 'planner_failed';
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, reason);
@@ -1377,6 +1622,9 @@ class RCCRuntime {
               route.surface === catalog.candidates.find(candidate => candidate.id === node.candidate_id).surface &&
               route.instruction === node.instruction).surface : null,
         routing_decision: decisions[node.id] ?? null, re_resolutions: 0, avoided_candidate_ids: [],
+        // Host-internal route record (never public): reference/explicit/ladder.
+        route_kind: routes[node.id]?.kind ?? null, reference_effort: routes[node.id]?.reference_effort ?? null,
+        ladder: routes[node.id]?.ladder ? {...routes[node.id].ladder, escalated: false} : null,
         instruction: node.instruction,
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
@@ -1482,6 +1730,8 @@ class RCCRuntime {
       target.attempt_id = null; target.selected_config = null;
       target.re_resolutions = (target.re_resolutions ?? 0) + 1;
       target.avoided_candidate_ids = avoidIDs;
+      // A re-resolved node always runs a reference route, never a ladder.
+      target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort; target.ladder = null;
       target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
         `re_resolved_after:${reason};${choice.why}`);
     });
@@ -1555,6 +1805,8 @@ class RCCRuntime {
         // A snapshot from before the counter has moved once if it has moved.
         target.spreads = (target.spreads ?? (target.spread === true ? 1 : 0)) + 1;
         target.candidate_id = choice.candidate.id; target.spread = true;
+        // The other pool's reference route: a spread never keeps a ladder.
+        target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort; target.ladder = null;
         target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
           `spread_for_parallelism;${choice.why}`);
       });
@@ -2049,103 +2301,247 @@ class RCCRuntime {
         child.continuation.state = 'dispatched';
         child.attempt_history.push({attempt_id: continuationAttemptID,
           candidate_id: candidate.id, state: 'continuation_dispatch_started',
-          native_receipt: null, usage: null});
+          native_receipt: null, usage: null, ledger: this._ledgerRoute(state, child, candidate)});
       });
-      const controller = new AbortController();
-      this.controllers.set(continuationAttemptID, {taskID, controller});
-      let result;
+      let settled = null;
       try {
-        result = this._validateExecution(await this.executeContinuation(immutable(ticket), controller.signal), ticket);
-      } catch (error) {
+        const controller = new AbortController();
+        this.controllers.set(continuationAttemptID, {taskID, controller});
+        let result;
+        try {
+          result = this._validateExecution(await this.executeContinuation(immutable(ticket), controller.signal), ticket);
+          settled = result;
+        } catch (error) {
+          this.controllers.delete(continuationAttemptID);
+          if (!this.closed && !TERMINAL.has(this._load(taskID)?.state))
+            this._update(taskID, 'continuation_effects_uncertain', state => {
+              const child = state.children.find(c => c.id === node.id);
+              child.state = 'effects_uncertain'; child.continuation.state = 'effects_uncertain';
+              child.attempt_history.at(-1).state = 'effects_uncertain';
+              state.state = 'effects_uncertain';
+              state.error = error instanceof RCCRuntimeError ? error.code : 'continuation_outcome_unknown';
+            });
+          return;
+        }
         this.controllers.delete(continuationAttemptID);
-        if (!this.closed && !TERMINAL.has(this._load(taskID)?.state))
-          this._update(taskID, 'continuation_effects_uncertain', state => {
+        if (this.closed || TERMINAL.has(this._load(taskID)?.state)) return;
+        if (this._load(taskID).cancel_requested || this.stopping) {
+          this._update(taskID, 'continuation_cancel_reconciled', state => {
+            const child = state.children.find(c => c.id === node.id);
+            const safe = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+              result.side_effects === 'none' && result.native_receipt !== null;
+            child.state = safe ? 'cancelled' : 'effects_uncertain';
+            child.continuation.state = child.state;
+            child.attempt_history.at(-1).state = child.state;
+            child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            state.state = child.state; state.error = safe ? 'continuation_cancelled_before_dispatch' :
+              'continuation_cancel_effects_uncertain';
+          });
+          return;
+        }
+        if (result.status !== 'succeeded' || !result.execution_verified) {
+          if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+              result.side_effects === 'none' && result.native_receipt !== null)
+            this._holdContinuation(taskID, node.id, 'continuation_verified_not_dispatched');
+          else this._update(taskID, 'continuation_failed_after_dispatch', state => {
             const child = state.children.find(c => c.id === node.id);
             child.state = 'effects_uncertain'; child.continuation.state = 'effects_uncertain';
-            child.attempt_history.at(-1).state = 'effects_uncertain';
-            state.state = 'effects_uncertain';
-            state.error = error instanceof RCCRuntimeError ? error.code : 'continuation_outcome_unknown';
+            state.state = 'effects_uncertain'; state.error = 'continuation_dispatched_failure_no_replay';
           });
-        return;
-      }
-      this.controllers.delete(continuationAttemptID);
-      if (this.closed || TERMINAL.has(this._load(taskID)?.state)) return;
-      if (this._load(taskID).cancel_requested || this.stopping) {
-        this._update(taskID, 'continuation_cancel_reconciled', state => {
-          const child = state.children.find(c => c.id === node.id);
-          const safe = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
-            result.side_effects === 'none' && result.native_receipt !== null;
-          child.state = safe ? 'cancelled' : 'effects_uncertain';
-          child.continuation.state = child.state;
-          child.attempt_history.at(-1).state = child.state;
-          child.attempt_history.at(-1).native_receipt = result.native_receipt;
-          state.state = child.state; state.error = safe ? 'continuation_cancelled_before_dispatch' :
-            'continuation_cancel_effects_uncertain';
-        });
-        return;
-      }
-      if (result.status !== 'succeeded' || !result.execution_verified) {
-        if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
-            result.side_effects === 'none' && result.native_receipt !== null)
-          this._holdContinuation(taskID, node.id, 'continuation_verified_not_dispatched');
-        else this._update(taskID, 'continuation_failed_after_dispatch', state => {
-          const child = state.children.find(c => c.id === node.id);
-          child.state = 'effects_uncertain'; child.continuation.state = 'effects_uncertain';
-          state.state = 'effects_uncertain'; state.error = 'continuation_dispatched_failure_no_replay';
-        });
-        return;
-      }
-      if (!boundedText(result.output, MAX_OUTPUT_BYTES)) {
-        this._holdContinuation(taskID, node.id, 'continuation_empty_result'); return;
-      }
-      reports.push({kind: phase, adoption: result.handback?.adoption ?? 'returned', output: result.output});
-      if (result.native_summary) nativeSummaries.push(result.native_summary);
-      this._update(taskID, 'continuation_returned', state => {
-        const child = state.children.find(c => c.id === node.id);
-        child.attempt_history.at(-1).state = 'continuation_returned';
-        child.attempt_history.at(-1).native_receipt = result.native_receipt;
-        child.attempt_history.at(-1).usage = result.usage ?? null;
-        child.state = 'waiting'; child.continuation.state = 'pending'; child.dispatched_at_ms = null;
-        child.output = reports.map((report, index) =>
-          `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption}, not task-verified):\n${report.output}`).join('\n\n');
-        child.native_receipt = result.native_receipt;
-        child.native_summary = result.native_summary ?? null;
-        child.native_summaries = [...nativeSummaries]; child.usage = result.usage ?? null;
-        child.continuation_history.push({phase, attempt_id: result.attempt_id,
-          adoption: result.handback?.adoption ?? 'returned', output: result.output,
-          native_receipt: result.native_receipt, native_summary: result.native_summary ?? null,
-          usage: result.usage ?? null});
-      });
-      if (result.handback) {
-        if (phase === 'full_access_required' && result.handback.kind === 'os1_change_required') {
-          prior = result; phase = 'os1_change_required'; continue;
+          return;
         }
-        this._holdContinuation(taskID, node.id, 'continuation_marker_cycle_or_unexpected'); return;
-      }
-      if (result.repair_source) {
-        await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
+        if (!boundedText(result.output, MAX_OUTPUT_BYTES)) {
+          this._holdContinuation(taskID, node.id, 'continuation_empty_result'); return;
+        }
+        reports.push({kind: phase, adoption: result.handback?.adoption ?? 'returned', output: result.output});
+        if (result.native_summary) nativeSummaries.push(result.native_summary);
+        this._update(taskID, 'continuation_returned', state => {
+          const child = state.children.find(c => c.id === node.id);
+          child.attempt_history.at(-1).state = 'continuation_returned';
+          child.attempt_history.at(-1).native_receipt = result.native_receipt;
+          child.attempt_history.at(-1).usage = result.usage ?? null;
+          child.state = 'waiting'; child.continuation.state = 'pending'; child.dispatched_at_ms = null;
+          child.output = reports.map((report, index) =>
+            `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption}, not task-verified):\n${report.output}`).join('\n\n');
+          child.native_receipt = result.native_receipt;
+          child.native_summary = result.native_summary ?? null;
+          child.native_summaries = [...nativeSummaries]; child.usage = result.usage ?? null;
+          child.continuation_history.push({phase, attempt_id: result.attempt_id,
+            adoption: result.handback?.adoption ?? 'returned', output: result.output,
+            native_receipt: result.native_receipt, native_summary: result.native_summary ?? null,
+            usage: result.usage ?? null});
+        });
+        if (result.handback) {
+          if (phase === 'full_access_required' && result.handback.kind === 'os1_change_required') {
+            prior = result; phase = 'os1_change_required'; continue;
+          }
+          this._holdContinuation(taskID, node.id, 'continuation_marker_cycle_or_unexpected'); return;
+        }
+        if (result.repair_source) {
+          await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
+          return;
+        }
+        if (phase === 'full_access_required' && initialResult.handback.kind === 'both') {
+          this._holdContinuation(taskID, node.id, 'os1_change_not_confirmed_after_full_access'); return;
+        }
+        const output = reports.map((report, index) =>
+          `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption}, not task-verified):\n${report.output}`).join('\n\n');
+        if (!boundedText(output, MAX_OUTPUT_BYTES)) {
+          this._holdContinuation(taskID, node.id, 'continuation_combined_output_oversize'); return;
+        }
+        this._update(taskID, 'continuation_candidate_returned', state => {
+          const child = state.children.find(c => c.id === node.id);
+          child.state = 'completed'; child.output = output; child.finished_at_ms = Date.now();
+          child.execution_verified = true; child.task_quality = 'execution_only';
+          child.parity_state = 'unverified'; child.native_receipt = result.native_receipt;
+          child.native_summary = result.native_summary;
+          child.native_summaries = [...nativeSummaries]; child.usage = result.usage ?? null;
+          child.continuation.state = 'returned';
+        });
         return;
+      } finally {
+        // A continuation is its own provider attempt: one ledger record.
+        this._recordLedger(taskID, node.id, continuationAttemptID, settled, 'not_registered');
       }
-      if (phase === 'full_access_required' && initialResult.handback.kind === 'both') {
-        this._holdContinuation(taskID, node.id, 'os1_change_not_confirmed_after_full_access'); return;
-      }
-      const output = reports.map((report, index) =>
-        `${index === 0 ? 'Initial execution report' : `Continuation ${index}`} (${report.adoption}, not task-verified):\n${report.output}`).join('\n\n');
-      if (!boundedText(output, MAX_OUTPUT_BYTES)) {
-        this._holdContinuation(taskID, node.id, 'continuation_combined_output_oversize'); return;
-      }
-      this._update(taskID, 'continuation_candidate_returned', state => {
-        const child = state.children.find(c => c.id === node.id);
-        child.state = 'completed'; child.output = output; child.finished_at_ms = Date.now();
-        child.execution_verified = true; child.task_quality = 'execution_only';
-        child.parity_state = 'unverified'; child.native_receipt = result.native_receipt;
-        child.native_summary = result.native_summary;
-        child.native_summaries = [...nativeSummaries]; child.usage = result.usage ?? null;
-        child.continuation.state = 'returned';
-      });
-      return;
     }
     this._holdContinuation(taskID, node.id, 'continuation_phase_limit_reached');
+  }
+
+  /** Route facts for the routing ledger, fixed when an attempt dispatches. */
+  _ledgerRoute(snapshot, child, candidate) {
+    const explicitRoute = snapshot.task.mode === 'explicit_routing_test';
+    const routeClass = !explicitRoute && ROUTE_CLASSES.includes(child.routing_decision?.route_class) ?
+      child.routing_decision.route_class : null;
+    const kind = explicitRoute ? 'explicit_route' : routeClass === null ? 'adapter_bound' : child.route_kind ?? 'unrecorded';
+    return {route_class: routeClass, route_kind: kind, surface: candidate.surface,
+      quota_pool: candidate.quota_pool, model: candidate.model, effort: candidate.effort, scope: candidate.scope,
+      reference_effort: routeClass === null ? null : child.reference_effort ?? null,
+      ladder: kind === 'ladder' && child.ladder ?
+        {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort} : null,
+      quota_remaining_fraction: candidate.quota_remaining_fraction, dispatched_at_ms: child.dispatched_at_ms ?? null};
+  }
+  /** Append one routing-ledger record for a settled attempt: ids, route,
+   * usage, quota at dispatch, execution/quality flags and verifier outcome.
+   * No request text, output or path. A write failure is logged, never thrown:
+   * the ledger must not fail or hold a task. */
+  _recordLedger(taskID, nodeID, attemptID, result, verifierOutcome) {
+    if (this.closed) return;
+    try {
+      const child = this._load(taskID)?.children.find(c => c.id === nodeID);
+      const entry = child?.attempt_history.find(attempt => attempt.attempt_id === attemptID);
+      const route = entry?.ledger;
+      if (!route) return;
+      this.ledger.append({schema: 1, task_id: taskID, node_id: nodeID, attempt_id: attemptID,
+        family: routeFamily(route.route_class, route.scope, route.surface), route_class: route.route_class,
+        scope: route.scope, surface_kind: surfaceKind(route.surface), surface: route.surface,
+        quota_pool: route.quota_pool, model: route.model, effort: route.effort, route_kind: route.route_kind,
+        reference_effort: route.reference_effort, ladder: route.ladder, usage: result?.usage ?? null,
+        quota_remaining_fraction: route.quota_remaining_fraction,
+        execution_verified: result?.execution_verified === true, task_quality: result?.task_quality ?? null,
+        verifier_outcome: verifierOutcome, attempt_state: entry.state,
+        dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now()});
+    } catch (error) {
+      const raw = error instanceof RCCRuntimeError ? error.code : error?.code;
+      const code = typeof raw === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(raw) ? raw : 'routing_ledger_write_failed';
+      try {
+        if (this.ledgerLog) this.ledgerLog(code);
+        else process.stderr.write(`os1-rcc: routing ledger write failed (${code}); the task continues\n`);
+      } catch { /* Logging is best effort as well. */ }
+    }
+  }
+  /** The registered verifier for a graded read-only node's family, if any. */
+  _nodeVerifier(snapshot, nodeID, candidate) {
+    const child = this._resolverNode(snapshot, nodeID);
+    if (!child || candidate.scope !== 'read_only' || this.verifierRegistry.size === 0) return null;
+    const family = routeFamily(child.routing_decision.route_class, candidate.scope, candidate.surface);
+    const verify = this.verifierRegistry.get(family);
+    return typeof verify === 'function' ? {verify, family} : null;
+  }
+  /** Run the family verifier on a returned read-only node. Pass adopts it;
+   * a ladder route that fails re-dispatches once at its reference route; a
+   * failed cheaper output is never adopted. Returns the ledger outcome. */
+  async _verifyNode(taskID, node, candidate, result, {verify, family}) {
+    let passed = false, timer;
+    try {
+      const verdict = await Promise.race([verify(immutable({schema: 1, task_id: taskID, node_id: node.id,
+        family, instruction: node.instruction, output: result.output, native_receipt: result.native_receipt ?? null,
+        selected_config: exactConfig(candidate)})), new Promise(resolve => {
+        timer = setTimeout(() => resolve(null), NODE_VERIFIER_TIMEOUT_MS); timer.unref?.();
+      })]);
+      passed = plain(verdict) && verdict.passed === true;
+    } catch { passed = false; }
+    finally { clearTimeout(timer); }
+    const outcome = passed ? 'pass' : 'fail';
+    if (this.closed) return outcome;
+    const state = this._load(taskID);
+    const child = state?.children.find(c => c.id === node.id);
+    if (!state || TERMINAL.has(state.state) || child?.state !== 'waiting' || child.attempt_id !== result.attempt_id)
+      return outcome;
+    if (!passed && child.route_kind === 'ladder') {
+      let reason = 'ladder_verifier_failed_reference_unavailable';
+      if (child.ladder && !child.ladder.escalated && candidate.scope === 'read_only' &&
+          !state.cancel_requested && !this.stopping) {
+        try { this._escalateLadder(taskID, node.id, result.attempt_id); return outcome; }
+        catch (error) { if (error instanceof RCCRuntimeError) reason = error.code; }
+      }
+      if (!this.closed && !TERMINAL.has(this._load(taskID)?.state))
+        this._update(taskID, 'ladder_escalation_unavailable', snapshot => {
+          const target = snapshot.children.find(c => c.id === node.id);
+          if (target?.state === 'waiting') {
+            target.state = 'held'; target.node_verifier = outcome;
+            const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+            if (attempt) { attempt.state = 'ladder_verifier_failed'; attempt.verifier = outcome; }
+          }
+          snapshot.state = 'held'; snapshot.error = reason;
+        });
+      return outcome;
+    }
+    this._update(taskID, passed ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
+      const target = snapshot.children.find(c => c.id === node.id);
+      if (target?.state !== 'waiting' || target.attempt_id !== result.attempt_id) return;
+      target.state = 'completed'; target.node_verifier = outcome;
+      const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+      if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; }
+    });
+    return outcome;
+  }
+  /** Once, read-only only: the cheaper ladder output failed its verifier, so
+   * the node returns to the queue bound to its reference row (same model,
+   * same pool, reference effort). The returned output is never adopted, and
+   * nothing with uncertain effects is replayed. Dispatch then refreshes the
+   * catalog and, if the reference row cannot run, re-resolves as usual. */
+  _escalateLadder(taskID, nodeID, attemptID) {
+    const snapshot = this._load(taskID);
+    const child = snapshot.children.find(c => c.id === nodeID);
+    const node = snapshot.plan.nodes.find(n => n.id === nodeID);
+    const find = id => snapshot.catalog.candidates.find(c => c.id === id) ?? snapshot.bound_rows?.[id];
+    const cheap = node && find(node.candidate_id);
+    const reference = find(child.ladder?.reference_candidate_id);
+    assert(node && cheap && reference && node.scope === 'read_only' && reference.scope === 'read_only' &&
+      reference.id !== cheap.id && reference.model === cheap.model && reference.quota_pool === cheap.quota_pool &&
+      reference.effort === child.ladder.reference_effort, 'ladder_reference_unavailable');
+    const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
+      n.id === nodeID ? {...n, candidate_id: reference.id} : n)};
+    const rows = snapshot.catalog.candidates.some(c => c.id === reference.id) ? snapshot.catalog :
+      {...snapshot.catalog, candidates: [...snapshot.catalog.candidates, reference]};
+    const plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, rows, [nodeID]));
+    this._update(taskID, 'ladder_escalated_to_reference', state => {
+      assert(!state.cancel_requested && !TERMINAL.has(state.state), 'ladder_escalation_raced_cancel');
+      const target = state.children.find(c => c.id === nodeID);
+      assert(target.state === 'waiting' && target.attempt_id === attemptID, 'ladder_escalation_raced_state');
+      state.plan = plan;
+      state.bound_rows = {...(state.bound_rows ?? {}), [reference.id]: immutable(reference)};
+      const attempt = target.attempt_history.find(entry => entry.attempt_id === attemptID);
+      if (attempt) { attempt.state = 'ladder_verifier_failed'; attempt.verifier = 'fail'; }
+      Object.assign(target, {state: 'queued', candidate_id: reference.id, attempt_id: null, selected_config: null,
+        dispatched_at_ms: null, finished_at_ms: null, output: null, execution_verified: false,
+        task_quality: 'unverified', parity_state: 'unverified', native_receipt: null, native_summary: null,
+        usage: null, repair_needed: false, route_kind: 'reference', node_verifier: 'fail'});
+      target.ladder = {...target.ladder, escalated: true};
+      target.routing_decision = routingDecision(target.routing_decision.route_class, reference,
+        'ladder_escalated_after_verifier_failure;route_reference;effort_' + reference.effort + ';' +
+        (reference.surface.endsWith('-chat') ? 'chat_lane_same_route' : 'agent_surface'), target.ladder);
+    });
   }
 
   async _executeNode(taskID, node, candidate) {
@@ -2175,112 +2571,128 @@ class RCCRuntime {
         child.dispatched_at_ms = Date.now();
         child.started_at_ms ??= child.dispatched_at_ms;
         child.selected_config = exactConfig(candidate);
+        // The route facts the routing ledger records for this attempt, fixed
+        // at dispatch (a later escalation or re-resolution changes the child).
         child.attempt_history.push({attempt_id: attemptID, candidate_id: candidate.id,
-          state: 'dispatch_started', native_receipt: null, usage: null});
+          state: 'dispatch_started', native_receipt: null, usage: null,
+          ledger: this._ledgerRoute(snapshot, child, candidate)});
         if (candidate.estimated_cost_units !== null) snapshot.spent_cost_units += candidate.estimated_cost_units;
       });
-      const controller = new AbortController();
-      this.controllers.set(attemptID, {taskID, controller});
-      let result;
-      try { result = this._validateExecution(await this.execute(immutable(ticket), controller.signal), ticket); }
-      catch (error) {
-        this.controllers.delete(attemptID);
-        if (!this.closed) this._update(taskID, 'dispatch_effects_uncertain', snapshot => {
-          const child = snapshot.children.find(c => c.id === node.id);
-          child.state = 'effects_uncertain'; snapshot.state = 'effects_uncertain';
-          snapshot.error = error instanceof RCCRuntimeError ? error.code : 'executor_return_unknown';
-        });
-        return;
-      }
-      this.controllers.delete(attemptID);
-      if (this.closed) return;
-      const current = this._load(taskID);
-      if (TERMINAL.has(current.state)) return;
-      if (current.cancel_requested || this.stopping) {
-        this._update(taskID, 'cancel_reconciled', snapshot => {
-          const child = snapshot.children.find(c => c.id === node.id);
-          const safe = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
-            result.side_effects === 'none' && result.native_receipt !== null;
-          child.state = safe ? 'cancelled' : 'effects_uncertain';
-          child.finished_at_ms = Date.now();
-          child.attempt_history.at(-1).state = child.state;
-          child.attempt_history.at(-1).native_receipt = result.native_receipt;
-          child.usage = result.usage ?? null;
-          child.attempt_history.at(-1).usage = result.usage ?? null;
-          snapshot.state = safe ? 'cancelled' : 'effects_uncertain';
-          snapshot.error = safe ? 'cancelled_before_backend_dispatch' : 'cancel_effects_uncertain';
-        });
-        return;
-      }
-      if (result.handback) {
-        await this._continueHandback(taskID, node, candidate, result);
-        return;
-      }
-      if (result.repair_source) {
-        await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
-        return;
-      }
-      if (result.status === 'succeeded') {
-        this._update(taskID, 'child_returned', snapshot => {
-          const child = snapshot.children.find(c => c.id === node.id);
-          child.output = result.output; child.execution_verified = result.execution_verified;
-          child.task_quality = result.task_quality; child.parity_state = result.parity_state;
-          child.native_receipt = result.native_receipt;
-          child.native_summary = result.native_summary ?? null;
-          child.usage = result.usage ?? null;
-          child.finished_at_ms = Date.now();
-          child.state = result.execution_verified &&
-            ['execution_only', 'task_verified'].includes(result.task_quality) &&
-            boundedText(result.output, MAX_OUTPUT_BYTES) ? 'completed' : 'held';
-          child.attempt_history.at(-1).state = child.state;
-          child.attempt_history.at(-1).native_receipt = result.native_receipt;
-          child.attempt_history.at(-1).usage = result.usage ?? null;
-        });
-        return;
-      }
-      if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
-          result.side_effects === 'none' && result.native_receipt !== null) {
-        const typedError = typeof result.error === 'string' && /^[a-z0-9_]{1,64}$/.test(result.error) ?
-          result.error : null;
-        const recorded = current.children.find(c => c.id === node.id);
-        const charged = chargedAttempts({attempts: recorded.attempts, attempt_history: [
-          ...recorded.attempt_history.slice(0, -1), {state: 'verified_not_dispatched', error: typedError}]},
-        resolver);
-        if (charged < task.budget.max_attempts) {
-          this._update(taskID, 'safe_retry_requires_subset_plan', snapshot => {
+      let result = null, verifierOutcome = 'not_registered';
+      try {
+        const controller = new AbortController();
+        this.controllers.set(attemptID, {taskID, controller});
+        try { result = this._validateExecution(await this.execute(immutable(ticket), controller.signal), ticket); }
+        catch (error) {
+          this.controllers.delete(attemptID);
+          if (!this.closed) this._update(taskID, 'dispatch_effects_uncertain', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
-            child.state = 'queued'; child.dispatched_at_ms = null; child.repair_needed = true;
-            child.attempt_history.at(-1).state = 'verified_not_dispatched';
-            child.attempt_history.at(-1).native_receipt = result.native_receipt;
-            // A typed pre-execution reason (for example a provider quota
-            // rejection) names the host re-resolution; free text never does.
-            child.attempt_history.at(-1).error = typedError;
-            child.usage = result.usage ?? null;
-            child.attempt_history.at(-1).usage = result.usage ?? null;
+            child.state = 'effects_uncertain'; snapshot.state = 'effects_uncertain';
+            snapshot.error = error instanceof RCCRuntimeError ? error.code : 'executor_return_unknown';
           });
           return;
         }
-        this._update(taskID, 'child_failed_without_effect', snapshot => {
+        this.controllers.delete(attemptID);
+        if (this.closed) return;
+        const current = this._load(taskID);
+        if (TERMINAL.has(current.state)) return;
+        if (current.cancel_requested || this.stopping) {
+          this._update(taskID, 'cancel_reconciled', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            const safe = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+              result.side_effects === 'none' && result.native_receipt !== null;
+            child.state = safe ? 'cancelled' : 'effects_uncertain';
+            child.finished_at_ms = Date.now();
+            child.attempt_history.at(-1).state = child.state;
+            child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            child.usage = result.usage ?? null;
+            child.attempt_history.at(-1).usage = result.usage ?? null;
+            snapshot.state = safe ? 'cancelled' : 'effects_uncertain';
+            snapshot.error = safe ? 'cancelled_before_backend_dispatch' : 'cancel_effects_uncertain';
+          });
+          return;
+        }
+        if (result.handback) {
+          await this._continueHandback(taskID, node, candidate, result);
+          return;
+        }
+        if (result.repair_source) {
+          await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
+          return;
+        }
+        if (result.status === 'succeeded') {
+          // A registered family verifier runs before the child is deliverable:
+          // the child waits (not completed) so the task cannot settle on an
+          // output a ladder may still have to replace.
+          const verifier = this._nodeVerifier(current, node.id, candidate);
+          this._update(taskID, 'child_returned', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            child.output = result.output; child.execution_verified = result.execution_verified;
+            child.task_quality = result.task_quality; child.parity_state = result.parity_state;
+            child.native_receipt = result.native_receipt;
+            child.native_summary = result.native_summary ?? null;
+            child.usage = result.usage ?? null;
+            child.finished_at_ms = Date.now();
+            const returned = result.execution_verified &&
+              ['execution_only', 'task_verified'].includes(result.task_quality) &&
+              boundedText(result.output, MAX_OUTPUT_BYTES);
+            child.state = !returned ? 'held' : verifier ? 'waiting' : 'completed';
+            if (child.state === 'waiting') child.dispatched_at_ms = null;
+            child.attempt_history.at(-1).state = child.state === 'waiting' ? 'node_verifier_pending' : child.state;
+            child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            child.attempt_history.at(-1).usage = result.usage ?? null;
+          });
+          if (verifier && this._load(taskID)?.children.find(c => c.id === node.id)?.state === 'waiting')
+            verifierOutcome = await this._verifyNode(taskID, node, candidate, result, verifier);
+          return;
+        }
+        if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+            result.side_effects === 'none' && result.native_receipt !== null) {
+          const typedError = typeof result.error === 'string' && /^[a-z0-9_]{1,64}$/.test(result.error) ?
+            result.error : null;
+          const recorded = current.children.find(c => c.id === node.id);
+          const charged = chargedAttempts({attempts: recorded.attempts, attempt_history: [
+            ...recorded.attempt_history.slice(0, -1), {state: 'verified_not_dispatched', error: typedError}]},
+          resolver);
+          if (charged < task.budget.max_attempts) {
+            this._update(taskID, 'safe_retry_requires_subset_plan', snapshot => {
+              const child = snapshot.children.find(c => c.id === node.id);
+              child.state = 'queued'; child.dispatched_at_ms = null; child.repair_needed = true;
+              child.attempt_history.at(-1).state = 'verified_not_dispatched';
+              child.attempt_history.at(-1).native_receipt = result.native_receipt;
+              // A typed pre-execution reason (for example a provider quota
+              // rejection) names the host re-resolution; free text never does.
+              child.attempt_history.at(-1).error = typedError;
+              child.usage = result.usage ?? null;
+              child.attempt_history.at(-1).usage = result.usage ?? null;
+            });
+            return;
+          }
+          this._update(taskID, 'child_failed_without_effect', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            child.state = 'failed'; child.attempt_history.at(-1).state = 'failed';
+            child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            child.usage = result.usage ?? null;
+            child.attempt_history.at(-1).usage = result.usage ?? null;
+            child.finished_at_ms = Date.now();
+            snapshot.state = 'failed'; snapshot.error = 'verified_not_dispatched_retry_exhausted';
+          });
+          return;
+        }
+        this._update(taskID, 'child_effects_uncertain', snapshot => {
           const child = snapshot.children.find(c => c.id === node.id);
-          child.state = 'failed'; child.attempt_history.at(-1).state = 'failed';
+          child.state = 'effects_uncertain'; child.attempt_history.at(-1).state = 'effects_uncertain';
           child.attempt_history.at(-1).native_receipt = result.native_receipt;
           child.usage = result.usage ?? null;
           child.attempt_history.at(-1).usage = result.usage ?? null;
           child.finished_at_ms = Date.now();
-          snapshot.state = 'failed'; snapshot.error = 'verified_not_dispatched_retry_exhausted';
+          snapshot.state = 'effects_uncertain'; snapshot.error = 'dispatched_failure_no_replay';
         });
         return;
+      } finally {
+        // One ledger record per settled attempt. It never fails or holds a task.
+        this._recordLedger(taskID, node.id, attemptID, result, verifierOutcome);
       }
-      this._update(taskID, 'child_effects_uncertain', snapshot => {
-        const child = snapshot.children.find(c => c.id === node.id);
-        child.state = 'effects_uncertain'; child.attempt_history.at(-1).state = 'effects_uncertain';
-        child.attempt_history.at(-1).native_receipt = result.native_receipt;
-        child.usage = result.usage ?? null;
-        child.attempt_history.at(-1).usage = result.usage ?? null;
-        child.finished_at_ms = Date.now();
-        snapshot.state = 'effects_uncertain'; snapshot.error = 'dispatched_failure_no_replay';
-      });
-      return;
     }
     // Reached only when the charged budget was already spent before this
     // dispatch: fail closed instead of leaving a queued node behind.
