@@ -8,6 +8,11 @@ public enum RCCRuntimeContract {
     public static let schema = 1
     public static let maximumWireBytes = 8_388_608
     public static let maximumNodes = 64
+    /// The one typed execution-record reason that lets Core move a node to
+    /// another pool after the backend process started: the provider's own
+    /// stream proved a quota rejection before any work, on a read-only attempt
+    /// with an unchanged workspace. Valid only on that no-effect report.
+    public static let providerQuotaRejectedBeforeExecution = "provider_quota_rejected_before_execution"
     public enum Rejection: String, Error, Sendable {
         case invalidSchema, invalidIdentity, invalidHash, invalidInput, unsupportedField
         case invalidConfiguration, invalidObservation, invalidPlan, configurationMismatch
@@ -242,7 +247,7 @@ public enum RCCRuntimeContract {
     public struct Exclusion: Codable, Equatable, Sendable {
         public static let reasons: Set<String> = ["signed_out", "non_subscription", "model_unavailable", "quota_zero",
             "capacity_zero", "codex_hidden", "effort_requires_explicit_request", "explicit_constraint_unavailable",
-            "chat_gate_refused", "gpt_dropped"]
+            "chat_gate_refused", "gpt_dropped", "quota_backoff"]
         public static let providers: Set<String> = ["codex", "claude"]
         public var provider: String
         public var reason: String
@@ -906,6 +911,11 @@ public enum RCCRuntimeContract {
         }
         if value.dispatchStage == .notDispatched && value.sideEffects != .none { throw Rejection.invalidExecutionRecord }
         if value.status == .effectsUncertain && value.sideEffects == .none { throw Rejection.invalidExecutionRecord }
+        if value.error == providerQuotaRejectedBeforeExecution {
+            guard value.status == .failed, value.dispatchStage == .notDispatched, value.sideEffects == .none,
+                  !value.executionVerified, value.nativeReceipt != nil,
+                  value.selectedConfig.scope == .readOnly else { throw Rejection.invalidExecutionRecord }
+        }
         if let handback = value.handback {
             guard value.executionVerified, value.status == .succeeded, !value.taskVerified, value.parityState == .unverified,
                   value.selectedConfig.scope == .workspaceWrite, value.selectedConfig.permissionProfile == .workspaceWrite,

@@ -1778,6 +1778,126 @@ test('verified not-dispatched quota rejection re-resolves to the other pool with
     /^re_resolved_after:provider_quota_rejected_before_execution;other_pool/);
 });
 
+// S7: the Swift adapter reports a Claude quota rejection its own stream places
+// before any work, on a read-only attempt with an unchanged workspace, as
+// not_dispatched/none with this typed reason, and leaves a cooldown so the
+// next catalog has no Claude row. A write keeps the effects-uncertain report.
+const quotaRejected = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
+  side_effects: 'none', output: "You've hit your weekly limit", execution_verified: false, task_verified: false,
+  task_quality: 'failed', error: 'provider_quota_rejected_before_execution',
+  native_receipt: '/private/fixture/quota-' + ticket.attempt_id,
+  acknowledged_config: ticket.selected_config, observed_config: null});
+
+test('pre-execution quota rejection: read-only moves to the other pool, a dispatched write stays effects_uncertain', async t => {
+  const dir = await fixture(t);
+  const read = task(dir, 'Explain one function');
+  const readRows = [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  let cooled = false, planned = 0; const dispatched = [];
+  const reader = await createRCCRuntime({stateDir: join(dir, 'read'),
+    // After the rejection the host's cooldown removes Claude and says why.
+    catalog: async value => cooled ? {...catalog(value, readRows.filter(r => r.quota_pool === 'openai_codex')),
+      exclusions: [{provider: 'claude', reason: 'quota_backoff', count: 1}]} : catalog(value, readRows),
+    plan: async () => { planned++; return plan(read, [graded('n', 'standard')]); },
+    execute: async ticket => {
+      dispatched.push(ticket.candidate_id);
+      if (ticket.selected_config.quota_pool !== 'anthropic_shared') return execution(ticket);
+      cooled = true; return quotaRejected(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await reader.close(); });
+  await reader.submit(read);
+  const done = await wait(reader, read);
+  assert.equal(done.state, 'completed');
+  assert.deepEqual(dispatched, ['claude-opus-medium', 'codex-sol-medium']);
+  assert.equal(planned, 1, 'the planner never re-chooses a host-resolved row');
+  assert.equal(done.children[0].routing_decision.quota_pool, 'openai_codex');
+  assert.match(done.children[0].routing_decision.reason,
+    /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;pool_rank_0;effort_exact$/);
+  const events = reader.events({schema: 1, task_id: read.task_id});
+  assert.equal(events.filter(x => x.kind === 'candidate_re_resolved').length, 1);
+  assert.equal(events.some(x => x.kind === 'child_effects_uncertain' || x.kind === 'dispatch_effects_uncertain'), false);
+
+  // A model-scoped cooldown removes only the rejected family. Its row is gone
+  // from the refreshed catalog, yet the node still moves to the OTHER pool
+  // rather than to the next Anthropic model that still ranks first.
+  const scoped = task(dir, 'Explain another function');
+  const scopedRows = [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('claude-sonnet-medium', 'anthropic_shared', 'claude-sonnet-5', 'medium'),
+    row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  let familyCooled = false; const scopedDispatched = [];
+  const familyRuntime = await createRCCRuntime({stateDir: join(dir, 'family'),
+    catalog: async value => familyCooled ? {...catalog(value, scopedRows.slice(1)),
+      exclusions: [{provider: 'claude', reason: 'quota_backoff', count: 1}]} : catalog(value, scopedRows),
+    plan: async () => plan(scoped, [graded('n', 'standard')]),
+    execute: async ticket => {
+      scopedDispatched.push(ticket.candidate_id);
+      if (ticket.candidate_id !== 'claude-opus-medium') return execution(ticket);
+      familyCooled = true; return quotaRejected(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await familyRuntime.close(); });
+  await familyRuntime.submit(scoped);
+  const familyDone = await wait(familyRuntime, scoped);
+  assert.equal(familyDone.state, 'completed');
+  assert.deepEqual(scopedDispatched, ['claude-opus-medium', 'codex-sol-medium']);
+  assert.match(familyDone.children[0].routing_decision.reason,
+    /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;pool_rank_1;effort_exact$/);
+
+  // A dispatched write that hit the quota keeps today's report: effects are
+  // uncertain, nothing is re-dispatched and no other pool is tried.
+  const write = task(dir, 'Change one file', 'auto', {write: true});
+  const writeRows = [row('claude-opus-write', 'anthropic_shared', 'claude-opus-5-5', 'medium',
+    {scope: 'workspace_write', allowedPaths: ['**']}),
+  row('codex-sol-write', 'openai_codex', 'gpt-5.7-sol', 'medium', {scope: 'workspace_write', allowedPaths: ['**']})];
+  let writes = 0;
+  const writer = await createRCCRuntime({stateDir: join(dir, 'write'),
+    catalog: async value => catalog(value, writeRows),
+    plan: async () => plan(write, [graded('n', 'standard', {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: async ticket => { writes++; return execution(ticket, {status: 'effects_uncertain',
+      dispatch_stage: 'dispatched', side_effects: 'possible', output: "You've hit your weekly limit",
+      execution_verified: false, task_verified: false, task_quality: 'failed',
+      error: 'native_outcome_uncertain_preserved', native_receipt: '/private/fixture/write-' + ticket.attempt_id,
+      acknowledged_config: ticket.selected_config, observed_config: null}); }});
+  t.after(async () => { await writer.close(); });
+  await writer.submit(write);
+  const uncertain = await wait(writer, write);
+  assert.equal(uncertain.state, 'effects_uncertain');
+  assert.equal(uncertain.error, 'dispatched_failure_no_replay');
+  assert.equal(writes, 1);
+  assert.equal(writer.events({schema: 1, task_id: write.task_id}).some(x => x.kind === 'candidate_re_resolved'), false);
+
+  // The reason never launders a write: a write-scope report that claims it is
+  // refused as an invalid receipt and stays effects_uncertain, never replayed.
+  const forged = task(dir, 'Change another file', 'auto', {write: true});
+  let forgedRuns = 0;
+  const strict = await createRCCRuntime({stateDir: join(dir, 'forged'),
+    catalog: async value => catalog(value, writeRows),
+    plan: async () => plan(forged, [graded('n', 'standard', {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: async ticket => { forgedRuns++; return quotaRejected(ticket); }});
+  t.after(async () => { await strict.close(); });
+  await strict.submit(forged);
+  const refused = await wait(strict, forged);
+  assert.equal(refused.state, 'effects_uncertain');
+  assert.equal(refused.error, 'execution_receipt_invalid');
+  assert.equal(forgedRuns, 1);
+  assert.equal(strict.events({schema: 1, task_id: forged.task_id}).some(x => x.kind === 'candidate_re_resolved'), false);
+});
+
+test('quota_backoff is an accepted exclusion reason; an all-cooled catalog holds with it', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Explain one function', 'auto', {provider: 'claude'});
+  let executed = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => ({...catalog(value, []), exclusions: [{provider: 'claude', reason: 'quota_backoff', count: 5}]}),
+    plan: async () => { throw Error('must not plan'); },
+    execute: async () => { executed++; throw Error('must not dispatch'); }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const held = await wait(runtime, request);
+  assert.equal(held.state, 'held');
+  assert.equal(held.error, 'no_routable_candidate:quota_backoff');
+  assert.equal(executed, 0);
+});
+
 test('adapter-bound subset repair validates against the refreshed catalog', async t => {
   const dir = await fixture(t);
   const request = task(dir, 'Read current project status');

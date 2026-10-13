@@ -17837,6 +17837,10 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
             model: $0.value.model, effort: $0.value.effort) })
     let book = BackendAccounts.load()
     for provider in ["codex", "claude"] { input.accountIDs[provider] = BackendAccounts.active(provider: provider, in: book).id }
+    // A cooldown left by a real Claude quota rejection (local receipt files
+    // only; no provider call) excludes that family before any probe.
+    input.claudeAccountQuotaBackoff = ClaudeQuotaBackoff.active() != nil
+    input.claudeQuotaBackoffFamilies = Set(ClaudeQuotaBackoff.activeModels())
     let probe = RCCNativeCatalogBuilder.providersToProbe(input)
     if probe.contains("codex") {
         let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
@@ -18058,6 +18062,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         throw OS1Error.message("RCC selected account/config no longer authorized")
     }
     var dispatched = false
+    // The execution workspace and its hash before dispatch, so a failure can
+    // prove the workspace unchanged (pre-execution quota rejection).
+    var executionWorkspace: String?
+    var executionWorkspaceBefore: String?
     var sourceConfined = false
     var protectedSourceAtDispatch: OS1SourceWatch?
     var sourceBeforeClean = false
@@ -18134,6 +18142,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // it is a selected lane: never hand a tool-free lane the real workspace.
         let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true) : h.workspace
         let before = workspaceHash(workspace)
+        executionWorkspace = workspace; executionWorkspaceBefore = before
         var measuredUsage: CompletionMeasuredUsage?
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
         \nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. Do not call os1 run/self-repair/self-update, install, restart, merge or push. When source changes are ready, preserve existing changes, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes. The original OpenClaw task performs separate mechanical staging and installation receipt checks; source/build alone is not installed or finished. If a checker/policy/installer needs changing, report it for separate stable review rather than weakening it to pass.
@@ -18260,13 +18269,32 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                     parentAttemptID: t.attemptID, adoption: .rejected)
             }
         }
+        // A classified Claude quota failure leaves the same cooldown the
+        // legacy runner left, so the next catalog excludes that family (or
+        // the account) instead of offering it again.
+        let rejected = error as? RejectedProviderExecution
+        let quotaExhausted = backendBlocker(error) == .quotaExhausted
+        if let cooldown = RCCNativeAttemptOutcome.claudeBackoffScope(provider: provider,
+            quotaExhausted: quotaExhausted, scope: rejected?.quotaScope) {
+            try? RCCNativeAttemptOutcome.recordClaudeBackoff(cooldown)
+        }
+        // A quota rejection the provider's own stream places before any work,
+        // on a read-only attempt whose workspace is provably unchanged, is a
+        // verified no-effect attempt Core may move to the other pool. Writes
+        // keep the effects-uncertain report.
+        let beforeExecution = quotaExhausted && rejected?.quotaRejectedBeforeExecution == true &&
+            t.selectedConfig.scope == .readOnly
+        let unchanged = beforeExecution && executionWorkspace.map { workspaceHash($0) == executionWorkspaceBefore } == true
         // Native execution success and answer adoption are independent. A
         // known finished candidate may be rejected without becoming an
         // invented lost/uncertain execution, or being erased by strict decode.
-        record.status = knownFinishedCandidate ? .succeeded : dispatched && t.selectedConfig.scope == .workspaceWrite ? .effectsUncertain : .failed
-        record.dispatchStage = dispatched ? .dispatched : .notDispatched
-        record.sideEffects = dispatched && t.selectedConfig.scope == .workspaceWrite ? .possible : .none
-        record.error = dispatched ? "native_outcome_uncertain_preserved" : "native_configuration_or_authorization_unavailable"
+        let report = RCCNativeAttemptOutcome.failure(knownFinishedCandidate: knownFinishedCandidate,
+            dispatched: dispatched, scope: t.selectedConfig.scope,
+            quotaRejectedBeforeExecution: beforeExecution, workspaceUnchanged: unchanged)
+        record.status = report.status
+        record.dispatchStage = report.dispatchStage
+        record.sideEffects = report.sideEffects
+        record.error = report.error
     }
     let data = try RCCRuntimeContract.encode(record)
     try data.write(to: receipt, options: [.atomic]); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receipt.path)

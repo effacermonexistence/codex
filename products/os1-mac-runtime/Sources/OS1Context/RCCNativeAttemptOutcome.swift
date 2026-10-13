@@ -1,0 +1,71 @@
+import Foundation
+
+/// How `os1 rcc-execute` reports a native attempt that did not return a
+/// finished, adopted candidate. Pure: the adapter supplies what it observed.
+///
+/// One failure is narrower than "dispatched": the Claude CLI started, but its
+/// own stream proves the quota rejection came before any model or tool work
+/// (`ExecutionStream.claudeQuotaRejectedBeforeExecution`). For a read-only
+/// attempt whose execution workspace hash is unchanged nothing could have
+/// happened, so the attempt is reported `not_dispatched` with side effects
+/// `none` and the typed reason `provider_quota_rejected_before_execution`.
+/// OpenClaw Core then treats it as a pre-dispatch failure and re-resolves the
+/// node to the other quota pool. A write attempt keeps the existing report
+/// (effects uncertain): a write is never re-dispatched on a provider's word.
+public enum RCCNativeAttemptOutcome {
+    public static let providerQuotaRejectedBeforeExecution = RCCRuntimeContract.providerQuotaRejectedBeforeExecution
+    public static let outcomeUncertain = "native_outcome_uncertain_preserved"
+    public static let configurationUnavailable = "native_configuration_or_authorization_unavailable"
+
+    public struct Report: Equatable, Sendable {
+        public var status: RCCRuntimeContract.ExecutionStatus
+        public var dispatchStage: RCCRuntimeContract.DispatchStage
+        public var sideEffects: RCCRuntimeContract.SideEffects
+        public var error: String
+        public init(status: RCCRuntimeContract.ExecutionStatus, dispatchStage: RCCRuntimeContract.DispatchStage,
+                    sideEffects: RCCRuntimeContract.SideEffects, error: String) {
+            self.status = status; self.dispatchStage = dispatchStage; self.sideEffects = sideEffects; self.error = error
+        }
+    }
+
+    /// - knownFinishedCandidate: the rejected execution still has a verified,
+    ///   finished native answer (a post-check refusal, never relabelled).
+    /// - dispatched: the backend's dispatch callback fired.
+    /// - quotaRejectedBeforeExecution: a classified quota failure whose stream
+    ///   proves no model or tool work ran before the rejection.
+    /// - workspaceUnchanged: the execution workspace hash after the failure
+    ///   equals the hash taken before dispatch (false when not observed).
+    public static func failure(knownFinishedCandidate: Bool, dispatched: Bool, scope: RCCRuntimeContract.Scope,
+                               quotaRejectedBeforeExecution: Bool, workspaceUnchanged: Bool) -> Report {
+        if quotaRejectedBeforeExecution, !knownFinishedCandidate, scope == .readOnly, workspaceUnchanged {
+            return .init(status: .failed, dispatchStage: .notDispatched, sideEffects: .none,
+                         error: providerQuotaRejectedBeforeExecution)
+        }
+        let uncertainWrite = dispatched && scope == .workspaceWrite
+        return .init(status: knownFinishedCandidate ? .succeeded : uncertainWrite ? .effectsUncertain : .failed,
+                     dispatchStage: dispatched ? .dispatched : .notDispatched,
+                     sideEffects: uncertainWrite ? .possible : .none,
+                     error: dispatched ? outcomeUncertain : configurationUnavailable)
+    }
+
+    /// The Claude cooldown a classified quota failure leaves for the next
+    /// catalog, mirroring the legacy runner: a CLI sentence that names the
+    /// dispatched family cools only that family; unknown or mixed evidence
+    /// cools the account. nil for any other provider or failure.
+    public static func claudeBackoffScope(provider: String, quotaExhausted: Bool,
+                                          scope: ClaudeQuotaScope?) -> ClaudeQuotaScope? {
+        provider == "claude" && quotaExhausted ? (scope ?? .account) : nil
+    }
+
+    /// Writes that cooldown receipt. `directory` is injectable for fixtures;
+    /// the default is the same directory `ModelAvailability` reads.
+    public static func recordClaudeBackoff(_ scope: ClaudeQuotaScope,
+                                           directory: URL = ClaudeQuotaBackoff.defaultDirectory,
+                                           now: Date = Date()) throws {
+        switch scope {
+        case .model(let family): try ClaudeQuotaBackoff.record(model: family, directory: directory, now: now)
+        case .account:
+            try ClaudeQuotaBackoff.record(at: directory.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now)
+        }
+    }
+}

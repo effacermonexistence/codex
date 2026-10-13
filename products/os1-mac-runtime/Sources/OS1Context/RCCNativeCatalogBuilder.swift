@@ -20,6 +20,9 @@ import Foundation
 ///   with `explicit_constraint_unavailable`, never a substitute.
 /// - Without an explicit effort word, max/ultra/ultracode are not offered.
 /// - `claude-chat` rows exist only when the narrow chat-lane predicate holds.
+/// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
+///   execution rejection) excludes the cooled family, or every Claude profile
+///   when it is account-wide, with `quota_backoff`; it is never probed.
 /// - Every excluded profile is counted per provider and reason, so an empty
 ///   catalog is an explained hold, not an opaque binding error.
 public enum RCCNativeCatalogBuilder {
@@ -76,6 +79,12 @@ public enum RCCNativeCatalogBuilder {
         public var codexQuota: BackendHealth.QuotaSnapshot? = nil
         public var claudeQuota: BackendHealth.QuotaSnapshot? = nil
         public var accountIDs: [String: String] = [:]
+        /// Active Claude quota cooldowns observed by the host. A real
+        /// execution rejection outranks the metadata-only inventory: `true`
+        /// cools every Claude profile; a family name
+        /// (`BackendRecovery.claudeModelFamily`) cools only that family.
+        public var claudeAccountQuotaBackoff = false
+        public var claudeQuotaBackoffFamilies: Set<String> = []
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -161,6 +170,12 @@ public enum RCCNativeCatalogBuilder {
         if !intent.admits(model: profile.model, effort: profile.effort) { return .intentFiltered }
         if normalizedPreference(input.providerPreference) == "claude-chat", !(input.chatLaneEligible && !input.hasMaterialRefs) {
             return .excluded("chat_gate_refused")
+        }
+        // The provider already rejected this family (or the account) for
+        // quota; offering it again only repeats the rejection.
+        if profile.provider == "claude", input.claudeAccountQuotaBackoff ||
+            input.claudeQuotaBackoffFamilies.contains(BackendRecovery.claudeModelFamily(profile.model)) {
+            return .excluded("quota_backoff")
         }
         return .admitted
     }

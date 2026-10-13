@@ -21,7 +21,12 @@ const DROPPED_ROUTE_SURFACES = new Set(['chatgpt', 'gpt-chat']);
 const EXCLUSION_PROVIDERS = new Set(['codex', 'claude']);
 const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unavailable', 'quota_zero',
   'capacity_zero', 'codex_hidden', 'effort_requires_explicit_request', 'explicit_constraint_unavailable',
-  'chat_gate_refused', 'gpt_dropped']);
+  'chat_gate_refused', 'gpt_dropped', 'quota_backoff']);
+// The one typed execution reason that lets a started backend process count as
+// a verified no-effect attempt: the provider's own stream proved a quota
+// rejection before any work, on a read-only attempt with an unchanged
+// workspace. Core then re-resolves the node to another pool.
+const PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION = 'provider_quota_rejected_before_execution';
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
@@ -1350,11 +1355,16 @@ class RCCRuntime {
     assert(child && node && child.state === 'queued' && child.continuation == null &&
       child.stage == null, 're_resolution_unavailable');
     assert((child.re_resolutions ?? 0) < MAX_RE_RESOLUTIONS, 're_resolution_exhausted');
+    // The refresh has already replaced snapshot.catalog, and a cooled or
+    // vanished row is absent from it; the child's own routing decision still
+    // names the pool of the row that failed, so the other pool stays preferred.
     const failed = fresh.candidates.find(c => c.id === node.candidate_id) ??
       snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
+    const decided = child.routing_decision.resolved_candidate_id === node.candidate_id ?
+      child.routing_decision.quota_pool : null;
     const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
     const choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, fresh,
-      Date.now(), {avoidPool: failed?.quota_pool ?? null, avoidIDs});
+      Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, snapshot.task, fresh);
@@ -1728,6 +1738,12 @@ class RCCRuntime {
     'execution_receipt_invalid');
     if (result.status === 'succeeded' && result.task_verified)
       assert(boundedText(result.output, MAX_OUTPUT_BYTES), 'verified_empty_output');
+    // A write is never re-dispatched on a provider's word: the reason is valid
+    // only on a read-only, not-dispatched, no-effect report with a receipt.
+    if (result.error === PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION)
+      assert(result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+        result.side_effects === 'none' && !result.execution_verified && result.native_receipt != null &&
+        ticket.selected_config.scope === 'read_only', 'execution_receipt_invalid');
     if (result.execution_verified) assert(result.status === 'succeeded' &&
       result.dispatch_stage === 'dispatched' && result.acknowledged_config != null &&
       result.native_receipt != null, 'executed_config_unacknowledged');

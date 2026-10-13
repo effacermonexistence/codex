@@ -26,6 +26,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--installed-resource-seal-only") { try runInstalledResourceSealFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--rcc-native-catalog-builder-only") { try runRCCNativeCatalogBuilderFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-projection-only") { try runRCCRuntimeProjectionFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-display-only") { try runRCCNativeDisplayReceiptsFixtures(); return }
         if CommandLine.arguments.contains("--openclaw-agent-controller-only") { try runOpenClawAgentControllerFixture(); return }
@@ -47,6 +48,7 @@ final class SourceContextTests {
         try runLocalTaskInterpretationFixtures()
         try runRCCRuntimeContractFixture()
         try runRCCNativeCatalogBuilderFixtures()
+        try runRCCNativeAttemptOutcomeFixtures()
         try runRCCRuntimeProjectionFixtures()
         try runRCCNativeDisplayReceiptsFixtures()
         try runOpenClawAgentControllerFixture()
