@@ -97,6 +97,26 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 3,
               "builder bytes decode through the strict contract with exclusions")
 
+    // Claude lists one native row under several names (alias and resolved
+    // ID), each with its own configured efforts. Every name shares the row's
+    // rank, so its rows sit together ahead of a less-preferred model and the
+    // resolver compares their efforts as one model.
+    var aliases = input("Explain the login function", chat: false, readOnly: true)
+    aliases.profiles = [.init(action: "s_alias_medium", provider: "claude", model: "sonnet", effort: "medium"),
+        .init(action: "s_full_low", provider: "claude", model: "claude-sonnet-5-5", effort: "low"),
+        .init(action: "s_full_xhigh", provider: "claude", model: "claude-sonnet-5-5", effort: "xhigh"),
+        .init(action: "t_fable_low", provider: "claude", model: "fable", effort: "low"),
+        .init(action: "t_fable_xhigh", provider: "claude", model: "fable", effort: "xhigh")]
+    aliases.claudeModels = [.init(model: "sonnet", supportedEfforts: ["medium"], nativeRank: 0),
+        .init(model: "fable", supportedEfforts: ["low", "xhigh"], nativeRank: 1),
+        .init(model: "claude-sonnet-5-5", supportedEfforts: ["low", "xhigh"], nativeRank: 0)]
+    try check(tuples(try B.build(aliases)) == ["claude/claude-sonnet-5-5/low/read_only", "claude/claude-sonnet-5-5/xhigh/read_only",
+        "claude/sonnet/medium/read_only", "claude/fable/low/read_only", "claude/fable/xhigh/read_only"],
+              "names of one native row share its rank: \(tuples(try B.build(aliases)))")
+    aliases.claudeModels = aliases.claudeModels.map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts) }
+    try check(tuples(try B.build(aliases)).last == "claude/claude-sonnet-5-5/xhigh/read_only",
+              "without an observed native row the list position is the rank")
+
     // Unknown or stale quota goes last, with the reset noted as unknown.
     var stale = input(); stale.claudeQuota = nil
     let staleOut = try B.build(stale)
@@ -222,6 +242,37 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         ("최대 리즈닝으로 이 설정 파일 고쳐줘", "max", nil), ("use max reasoning to fix the config", "max", nil),
         ("this is urgent, use high reasoning", "high", nil), ("xhigh로 config 고쳐", "xhigh", nil),
         ("claude opus로 해", nil, "opus"), ("최대 리즈닝으로 해줄 수 있어?", "max", nil),
+        // A task noun later in an ordinary instruction is not a question
+        // about the setting, and "Do …" is an imperative.
+        ("max reasoning: refactor the config loader", "max", nil),
+        ("xhigh reasoning, add support for the new token API", "xhigh", nil),
+        ("high reasoning: fix the rate limits handling", "high", nil),
+        ("Do a max reasoning pass over this diff", "max", nil),
+        ("맥스 리즈닝, 이 함수 뭐하는지 설명해", "max", nil), ("최대 리즈닝 써서 뭐가 문제인지 찾아줘", "max", nil),
+        ("최대 리즈닝: 설정 파일 로더 리팩터링해", "max", nil), ("최대 리즈닝을 설정해줘", "max", nil),
+        ("최대 리즈닝 쓸 수 있어?", "max", nil),
+        // A question about the setting itself still sets nothing.
+        ("do you support max reasoning?", nil, nil), ("max reasoning이 필요할까?", nil, nil),
+        ("opus max 가격이 얼마야?", nil, nil),
+        // Saying the effort is not wanted never asks for it.
+        ("최대 리즈닝 필요 없어, 간단히 답해", nil, nil), ("max reasoning 안 써도 돼", nil, nil),
+        ("최대 리즈닝까지 할 필요는 없어", nil, nil), ("최대 추론은 과해, 그냥 답해", nil, nil),
+        ("고민 많이 하지 말고, 최대 리즈닝 안 해도 돼", nil, nil),
+        ("max reasoning not needed, just answer briefly", nil, nil), ("max reasoning is unnecessary here", nil, nil),
+        ("high reasoning 필요 없는 간단한 질문", nil, nil), ("no need for max reasoning here", nil, nil),
+        ("최대 리즈닝으로 안 되는 버그 고쳐", "max", nil),
+        // A generic verb names a model when the family ends the phrase or a
+        // version/"for"/"to" follows; a version then a particle is a directive.
+        ("Use Opus 5.5 for this review", nil, "opus"), ("opus 5.5로 리뷰해줘", nil, "opus"),
+        ("run this on sonnet 5", nil, "sonnet"), ("use sonnet for this", nil, "sonnet"),
+        ("Do a deep review using opus", nil, "opus"), ("switch to fable", nil, "fable"),
+        ("run it on opus please", nil, "opus"), ("comment on sonnet 18", nil, nil), ("write a poem with haiku", nil, nil),
+        // Asking about or describing a model is not running on it, unless the
+        // sentence also says to run on it.
+        ("what is claude opus?", nil, nil), ("Claude Opus 5.5 출시일 알려줘", nil, nil),
+        ("Claude Opus의 장점을 설명해줘", nil, nil), ("explain the claude sonnet model pricing", nil, nil),
+        ("GPT-6 Sol 모델이 뭐가 좋아?", nil, nil), ("gpt-5.6-luna 모델 컨텍스트 창 크기?", nil, nil),
+        ("claude opus로 이 함수 설명해줘", nil, "opus"), ("use opus to explain this function", nil, "opus"),
     ]
     for (text, effort, family) in intents {
         let parsed = RoutingIntent.parse(text)
@@ -230,6 +281,15 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     }
     try check(RoutingIntent.model("gpt-6.1-sol", belongsTo: "sol") && !RoutingIntent.model("gpt-consol", belongsTo: "sol") &&
               RoutingIntent.model("claude-fable-5-1", belongsTo: "fable"), "a family matches a whole model token")
+    // A question about a Claude model on the Codex tile still runs on Codex:
+    // it is not a family constraint that empties the catalog.
+    let question = try B.build(input("what is claude opus?", preference: "codex"))
+    try check(!question.candidates.isEmpty && question.candidates.allSatisfy { $0["quota_pool"] as? String == "openai_codex" } &&
+              !reasons(question).contains { $0.contains("explicit_constraint_unavailable") },
+              "a model question is not a constraint: \(reasons(question))")
+    let notNeeded = try B.build(input("최대 리즈닝 필요 없어, 간단히 답해"))
+    try check(!notNeeded.candidates.isEmpty && !notNeeded.candidates.contains { ["max", "ultra"].contains($0["effort"] as? String ?? "") },
+              "max is withheld when the owner says it is not needed: \(tuples(notNeeded))")
     let opusMax = try B.build(input("opus max로 해줘"))
     try check(!opusMax.candidates.isEmpty && opusMax.candidates.allSatisfy { $0["model"] as? String == "claude-opus-5-5" &&
               $0["effort"] as? String == "max" }, "explicit model+effort keeps exactly that tuple: \(tuples(opusMax))")
@@ -380,8 +440,12 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               !directed("이슈 클로즈 해줘", ProviderNameAliases.claudeDirected) &&
               !directed("포지션 클로즈해", ProviderNameAliases.claudeDirected) &&
               directed("코덱한테 이거 시켜", ProviderNameAliases.codexDirected) &&
-              directed("코덱센트 시켜", ProviderNameAliases.codexDirected),
-              "the directed detector: 클로즈 ('close') only before a dative particle; bare dictated 코덱 is Codex")
+              directed("코덱 에게 시켜", ProviderNameAliases.codexDirected) &&
+              directed("코덱센트 시켜", ProviderNameAliases.codexDirected) &&
+              directed("코덱스로 돌려", ProviderNameAliases.codexDirected) &&
+              !directed("이 영상 h 264 코덱으로 인코딩해", ProviderNameAliases.codexDirected) &&
+              !directed("코덱 설정 확인해", ProviderNameAliases.codexDirected),
+              "the directed detector: 클로즈 ('close') and bare 코덱 ('codec') only before a dative particle")
 
     print("RCC native catalog builder: \(checks) checks OK; model calls 0")
 }

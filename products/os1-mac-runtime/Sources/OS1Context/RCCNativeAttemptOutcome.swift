@@ -6,9 +6,9 @@ import Foundation
 /// One failure is narrower than "dispatched": the Claude CLI started, but its
 /// own stream proves the quota rejection came before any model or tool work
 /// (`ExecutionStream.claudeQuotaRejectedBeforeExecution`). For a read-only
-/// attempt whose execution workspace hash is unchanged nothing could have
-/// happened, so the attempt is reported `not_dispatched` with side effects
-/// `none` and the typed reason `provider_quota_rejected_before_execution`.
+/// attempt whose workspace evidence holds (`workspaceEvidenceHolds`) nothing
+/// could have happened, so the attempt is reported `not_dispatched` with side
+/// effects `none` and the typed reason `provider_quota_rejected_before_execution`.
 /// OpenClaw Core then treats it as a pre-dispatch failure and re-resolves the
 /// node to the other quota pool. A write attempt keeps the existing report
 /// (effects uncertain): a write is never re-dispatched on a provider's word.
@@ -33,8 +33,8 @@ public enum RCCNativeAttemptOutcome {
     /// - dispatched: the backend's dispatch callback fired.
     /// - quotaRejectedBeforeExecution: a classified quota failure whose stream
     ///   proves no model or tool work ran before the rejection.
-    /// - workspaceUnchanged: the execution workspace hash after the failure
-    ///   equals the hash taken before dispatch (false when not observed).
+    /// - workspaceUnchanged: the workspace part of the no-effect proof holds
+    ///   for this attempt (`workspaceEvidenceHolds`; false when not observed).
     public static func failure(knownFinishedCandidate: Bool, dispatched: Bool, scope: RCCRuntimeContract.Scope,
                                quotaRejectedBeforeExecution: Bool, workspaceUnchanged: Bool) -> Report {
         if quotaRejectedBeforeExecution, !knownFinishedCandidate, scope == .readOnly, workspaceUnchanged {
@@ -46,6 +46,19 @@ public enum RCCNativeAttemptOutcome {
                      dispatchStage: dispatched ? .dispatched : .notDispatched,
                      sideEffects: uncertainWrite ? .possible : .none,
                      error: dispatched ? outcomeUncertain : configurationUnavailable)
+    }
+
+    /// Whether the workspace part of the no-effect proof is about THIS
+    /// attempt. An isolated workspace (the chat lane's private answer
+    /// workspace) belongs to the attempt alone: its hash must be unchanged
+    /// (and observed). The shared workspace does not: Core runs a read-only
+    /// node beside a writer of the same workspace (another node or another
+    /// task), so a whole-workspace hash taken around this attempt also sees
+    /// that writer's edits and proves nothing about this attempt. There the
+    /// proof is the stream attestation (no model or tool work, zero usage)
+    /// under the read-only permission profile, which `failure` requires.
+    public static func workspaceEvidenceHolds(isolatedWorkspace: Bool, before: String?, after: String?) -> Bool {
+        !isolatedWorkspace || (before != nil && before == after)
     }
 
     /// The Claude cooldown a classified quota failure leaves for the next

@@ -249,6 +249,9 @@ enum ModelAvailability {
                 native: ["opus", "sonnet", "fable"]).map(\.model) == ["opus", "sonnet", "fable", "zeta"],
             inventoryOrdered([ClaudeModelCapability(model: "b", supportedEfforts: []), ClaudeModelCapability(model: "a", supportedEfforts: [])],
                 native: []).map(\.model) == ["b", "a"],
+            // Every name of one native row shares that row's rank.
+            nativeRowRanks(claudeRows([fable, sonnet])) ==
+                ["claude-fable-5-1": 0, "fable": 0, "sonnet": 1, "claude-sonnet-5": 1],
         ] + inventoryCacheChecks(claudeRows([sonnet])) + [
             deferAlternateInventory(preference: "codex", codexReady: true, workflow: false),
             !deferAlternateInventory(preference: "auto", codexReady: true, workflow: false),
@@ -491,6 +494,19 @@ enum ModelAvailability {
     static func inventoryOrdered(_ capabilities: [ClaudeModelCapability], workspace: String) -> [ClaudeModelCapability] {
         guard let native = ClaudeInventoryCache.shared.models(workspace: workspace, maxAge: 600) else { return capabilities }
         return inventoryOrdered(capabilities, native: native.map(\.model))
+    }
+    /// The native row each Claude model name came from, as that row's ordinal
+    /// in the native inventory. One row is listed under several names (value,
+    /// resolved ID, family alias), all carrying the same invocation; every one
+    /// of them gets the same rank, so the RCC catalog treats them as one model.
+    static func nativeRowRanks(_ native: [NativeClaudeModel]) -> [String: Int] {
+        var rows: [String] = []
+        var ranks: [String: Int] = [:]
+        for entry in native {
+            if !rows.contains(entry.invocation) { rows.append(entry.invocation) }
+            if ranks[entry.model] == nil { ranks[entry.model] = rows.firstIndex(of: entry.invocation) }
+        }
+        return ranks
     }
     static func inventoryOrdered(_ capabilities: [ClaudeModelCapability], native: [String]) -> [ClaudeModelCapability] {
         let rank = Dictionary(native.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })

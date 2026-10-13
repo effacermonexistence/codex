@@ -45,6 +45,10 @@ const RE_RESOLVABLE_FAILURES = new Set(['candidate_unavailable', 'candidate_quot
 // A native catalog probe that failed (not a binding/configuration change) is
 // retried this many times before the task is held.
 const MAX_TRANSIENT_REFRESH_FAILURES = 3;
+// How often one not-yet-dispatched graded node may move between pools for
+// parallelism (not a failure, so not a re-resolution). Bounded so two pools
+// whose leases keep flipping can never move a node forever.
+const MAX_POOL_SPREADS = 4;
 const AVAILABILITY = new Set(['available', 'unavailable', 'unknown']);
 const DISPATCH = new Set(['not_dispatched', 'dispatched', 'unknown']);
 const SIDE_EFFECTS = new Set(['none', 'possible', 'confirmed']);
@@ -348,9 +352,13 @@ function routingDecision(routeClass, candidate, reason) {
 }
 
 /** Pick the exact row for one node. Key, lowest first:
- * (avoided pool, chat lane for read_only, pool order, model order, effort
- * distance to the route_class target, catalog index). Ranks come from the
- * catalog order. Higher effort is preferred over lower when no exact match.
+ * (avoided pool, chat lane for read_only, pool order, effort distance to the
+ * route_class target, model order, catalog index). Ranks come from the
+ * catalog order. Within a pool the route_class effort decides first: the
+ * most-preferred model that has the exact target effort wins over a more
+ * preferred model that lacks it, so a narrow profile on one model (or on one
+ * name of a native model) never hides the target effort configured on
+ * another. Higher effort is preferred over lower when no exact match.
  * `widenWrites` lets a graded writer that named concrete paths bind a
  * whole-workspace row; the caller then records owned_paths ["**"], because a
  * native writer is not confined to the paths a planner listed. */
@@ -377,7 +385,7 @@ function selectRouteCandidate(node, routeClass, task, catalog, now,
     const effortScore = effort === target ? 0 : effort > target ? 1 + distance : 100 + distance;
     const key = [avoidPool !== null && c.quota_pool === avoidPool ? 1 : 0,
       node.scope === 'read_only' && c.surface.endsWith('-chat') ? 0 : 1,
-      poolFirst.get(c.quota_pool), modelFirst.get(c.quota_pool + '\0' + c.model), effortScore, index];
+      poolFirst.get(c.quota_pool), effortScore, modelFirst.get(c.quota_pool + '\0' + c.model), index];
     if (best === null || lexicographicallyLess(key, best.key)) best = {candidate: c, key, effortScore};
   });
   if (best === null) throw new RCCRuntimeError('no_dispatchable_candidate:' + node.scope);
@@ -766,6 +774,8 @@ class RCCRuntime {
     this.runningTasks = new Map(); this.controllers = new Map();
     this.installationObservations = new Map();
     this.poolReservations = new Set(); this.activeWriteWorkspaces = new Set();
+    // Per task: the catalog bind instant a pool spread already re-probed.
+    this.spreadProbes = new Map();
     this.activeWorkers = 0; this.closed = false; this.stopping = false;
     this.quiescing = false;
   }
@@ -1299,10 +1309,12 @@ class RCCRuntime {
       return;
     }
     if (this._load(taskID).cancel_requested) { this._markCancelled(taskID); return; }
-    this._update(taskID, 'catalog_bound', snapshot => { snapshot.catalog = catalog; });
     // The time this catalog was bound. Host resolution after planning ranks
     // against this instant, so planner latency never changes the pool.
     const boundAt = Date.now();
+    this._update(taskID, 'catalog_bound', snapshot => {
+      snapshot.catalog = catalog; snapshot.catalog_bound_at_ms = boundAt;
+    });
     if (task.mode === 'explicit_routing_test') {
       const now = boundAt;
       const unavailable = effectiveExplicitRoutes(task).find(route =>
@@ -1369,7 +1381,7 @@ class RCCRuntime {
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
     if (typeof this.execute !== 'function') { this._hold(taskID, 'executor_unavailable'); return; }
-    await this._scheduleDAG(taskID);
+    try { await this._scheduleDAG(taskID); } finally { this.spreadProbes.delete(taskID); }
   }
 
   _completeLocalExact(taskID, kind, output) {
@@ -1476,36 +1488,72 @@ class RCCRuntime {
   }
   /** Deterministic resolution binds independent nodes of one route_class to
    * the same row, and one pool takes one lease at a time. When THIS task's own
-   * running node holds that pool, move a not-yet-dispatched graded node once to
+   * running node holds that pool, move a not-yet-dispatched graded node to
    * the best dispatchable row of another admitted pool whose lease is free.
-   * Uses the bound catalog only (no native probe); dispatch still refreshes
-   * and re-checks. Not a failure, so it does not spend re-resolutions. */
-  _spreadAcrossPools(taskID, snapshot, node, planned) {
-    const child = this._resolverNode(snapshot, node.id);
-    if (!child || child.state !== 'queued' || child.attempts !== 0 || child.spread === true ||
-        child.continuation != null || child.stage != null || child.repair_needed) return false;
-    const poolKey = this._poolKey(planned);
-    if (!poolKey || !this.poolReservations.has(poolKey)) return false;
-    const owner = this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey);
-    if (owner?.task_id !== snapshot.task.task_id) return false;
-    let choice, plan;
-    try {
-      choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, snapshot.catalog,
-        Date.now(), {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id]});
-      if (choice.candidate.quota_pool === planned.quota_pool || !this._leasePossible(choice.candidate, snapshot.task))
+   * A node that already moved this way is re-evaluated on every wait: the
+   * move is advisory (only the dispatch reservation is authoritative), so
+   * when another task takes its new pool before it dispatches, it moves on to
+   * a pool that is free now (its original one included) instead of waiting
+   * for that task. Not a failure, so it does not spend re-resolutions; moves
+   * are bounded by MAX_POOL_SPREADS. Ranks against the bound catalog, with no
+   * native probe while that catalog is fresh. A waiting node never refreshes,
+   * so once the bound rows have outlived their validity window a move the
+   * bound catalog admitted is re-checked with one refresh per catalog bind,
+   * never a probe per wait; dispatch still refreshes and re-checks. */
+  async _spreadAcrossPools(taskID, snapshot, node, planned) {
+    const eligible = (state, candidateID) => {
+      const child = this._resolverNode(state, node.id);
+      return child && child.state === 'queued' && child.attempts === 0 && child.candidate_id === candidateID &&
+        (child.spreads ?? (child.spread === true ? 1 : 0)) < MAX_POOL_SPREADS &&
+        child.continuation == null && child.stage == null && !child.repair_needed ? child : null;
+    };
+    const child = eligible(snapshot, node.candidate_id);
+    if (!child) return false;
+    if (child.spread !== true) {
+      // The first move only parallelizes this task's own work.
+      const poolKey = this._poolKey(planned);
+      if (!poolKey || !this.poolReservations.has(poolKey)) return false;
+      const owner = this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey);
+      if (owner?.task_id !== snapshot.task.task_id) return false;
+    }
+    const pick = (catalog, now) => {
+      try {
+        const choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, catalog,
+          now, {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id]});
+        return choice.candidate.quota_pool !== planned.quota_pool &&
+          this._leasePossible(choice.candidate, snapshot.task) ? choice : null;
+      } catch { return null; }
+    };
+    let state = snapshot;
+    let choice = pick(state.catalog, Date.now());
+    const boundAt = state.catalog_bound_at_ms;
+    if (!choice && Number.isSafeInteger(boundAt) && this.spreadProbes.get(taskID) !== boundAt &&
+        pick(state.catalog, boundAt)) {
+      this.spreadProbes.set(taskID, boundAt);
+      try { await this._refreshCatalog(taskID); } catch { return false; }
+      state = this._load(taskID);
+      if (!state || state.cancel_requested || TERMINAL.has(state.state) || !eligible(state, node.candidate_id))
         return false;
-      const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
-        n.id === node.id ? {...n, candidate_id: choice.candidate.id} : n)};
-      plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, snapshot.catalog, [node.id]));
-    } catch { return false; }
+      choice = pick(state.catalog, Date.now());
+    }
+    if (!choice) return false;
+    let plan;
     try {
-      this._update(taskID, 'candidate_spread_across_pools', state => {
-        assert(!state.cancel_requested && !TERMINAL.has(state.state), 'spread_raced_cancel');
-        const target = state.children.find(c => c.id === node.id);
+      const next = {...state.plan, nodes: state.plan.nodes.map(n =>
+        n.id === node.id ? {...n, candidate_id: choice.candidate.id} : n)};
+      plan = validatePlan(next, state.task, repairCatalog(state, next, state.catalog, [node.id]));
+    } catch { return false; }
+    const catalog = state.catalog;
+    try {
+      this._update(taskID, 'candidate_spread_across_pools', current => {
+        assert(!current.cancel_requested && !TERMINAL.has(current.state), 'spread_raced_cancel');
+        const target = current.children.find(c => c.id === node.id);
         assert(target.state === 'queued' && target.attempts === 0 && target.candidate_id === node.candidate_id,
           'spread_raced_dispatch');
-        state.plan = plan;
-        state.bound_rows = boundRows({nodes: [{candidate_id: choice.candidate.id}]}, snapshot.catalog, state.bound_rows);
+        current.plan = plan;
+        current.bound_rows = boundRows({nodes: [{candidate_id: choice.candidate.id}]}, catalog, current.bound_rows);
+        // A snapshot from before the counter has moved once if it has moved.
+        target.spreads = (target.spreads ?? (target.spread === true ? 1 : 0)) + 1;
         target.candidate_id = choice.candidate.id; target.spread = true;
         target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
           `spread_for_parallelism;${choice.why}`);
@@ -1531,9 +1579,10 @@ class RCCRuntime {
       if (updated) assert(stable(exactConfig(updated)) === stable(exactConfig(row)),
         'candidate_configuration_changed');
     }
+    const refreshedAt = Date.now();
     this._update(taskID, 'catalog_refreshed_before_dispatch', snapshot => {
       assert(!snapshot.cancel_requested && !TERMINAL.has(snapshot.state), 'catalog_refresh_raced_cancel');
-      snapshot.catalog = fresh;
+      snapshot.catalog = fresh; snapshot.catalog_bound_at_ms = refreshedAt;
     });
     return fresh;
   }
@@ -1752,12 +1801,17 @@ class RCCRuntime {
           });
           continue;
         }
-        const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id) ??
-          snapshot.bound_rows?.[node.candidate_id];
+        // The lease probe looks only at a row the current catalog still
+        // offers. A row that left it (quota_zero, quota_backoff) names a pool
+        // this node will not run on: the node goes straight to the refresh,
+        // where a host-resolved node re-resolves, instead of waiting behind
+        // another task's lease on the pool it left. bound_rows stays for
+        // validation only.
+        const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
         if (planned && !this._leasePossible(planned, snapshot.task)) {
           // Independent graded work waits for the busy pool only when the
           // other admitted pool cannot take it now either.
-          if (this._spreadAcrossPools(taskID, snapshot, node, planned)) { reResolved = true; break; }
+          if (await this._spreadAcrossPools(taskID, snapshot, node, planned)) { reResolved = true; break; }
           continue;
         }
         const resolverNode = this._resolverNode(snapshot, node.id);

@@ -1577,8 +1577,15 @@ test('route_class maps to effort: trivial stays at low, deep picks xhigh not max
   assert.equal(resolve('standard').effort, 'medium');
   assert.equal(resolve('deep').effort, 'xhigh');
   assert.equal(resolve('deep').resolved_candidate_id, 'codex-sol-xhigh');
+  // The exact effort on a less-preferred model of the same pool wins over a
+  // near effort on the preferred one.
+  const noSolLow = rows.filter(value => value.id !== 'codex-sol-low');
+  const luna = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request,
+    catalog(request, noSolLow), now).decisions.n;
+  assert.equal(luna.resolved_candidate_id, 'codex-luna-low');
+  assert.match(luna.reason, /effort_exact/);
   // Without the exact effort the nearest higher one wins over a lower one.
-  const noLow = rows.filter(value => value.id !== 'codex-sol-low');
+  const noLow = rows.filter(value => value.effort !== 'low');
   const trivial = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request,
     catalog(request, noLow), now).decisions.n;
   assert.equal(trivial.effort, 'medium');
@@ -2208,4 +2215,160 @@ test('an explicit route held as unavailable names the catalog exclusions for tha
   const held = await wait(runtime, request);
   assert.equal(held.state, 'held');
   assert.equal(held.error, 'explicit_route_surface_unavailable:codex:capacity_zero+signed_out');
+});
+
+// ---- Review fixes, second round (2026-10-13) -------------------------------
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('route_class effort outranks model preference inside a pool, for alias and full-ID names alike', () => {
+  const request = task('/tmp', 'Grade effort per native model', 'auto');
+  const now = Date.now();
+  const pick = (rows, routeClass) => {
+    const decision = resolveRoutePlan(plan(request, [graded('n', routeClass)]), request,
+      catalog(request, rows), now).decisions.n;
+    return `${decision.model}/${decision.effort}`;
+  };
+  const classes = ['trivial', 'standard', 'deep'];
+  // Production Claude profiles: the alias and the resolved ID of one native
+  // model carry different effort sets. Neither name may hide the other's.
+  const sonnet = [row('s-alias-medium', 'anthropic_shared', 'sonnet', 'medium'),
+    row('s-full-low', 'anthropic_shared', 'claude-sonnet-5-5', 'low'),
+    row('s-full-xhigh', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh')];
+  assert.deepEqual(classes.map(value => pick(sonnet, value)),
+    ['claude-sonnet-5-5/low', 'sonnet/medium', 'claude-sonnet-5-5/xhigh']);
+  const opus = [row('o-alias-xhigh', 'anthropic_shared', 'opus', 'xhigh'),
+    row('o-full-low', 'anthropic_shared', 'claude-opus-5-5', 'low'),
+    row('o-full-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh')];
+  assert.deepEqual(classes.map(value => pick(opus, value)), ['claude-opus-5-5/low', 'opus/xhigh', 'opus/xhigh'],
+    'no medium anywhere: the nearest higher effort, then model preference');
+  // Different models: the most-preferred model WITH the target effort.
+  const mixed = [row('sonnet-medium', 'anthropic_shared', 'sonnet', 'medium'),
+    row('fable-low', 'anthropic_shared', 'fable', 'low'), row('fable-xhigh', 'anthropic_shared', 'fable', 'xhigh'),
+    row('opus-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh')];
+  assert.deepEqual(classes.map(value => pick(mixed, value)), ['fable/low', 'sonnet/medium', 'fable/xhigh']);
+  const fableFirst = [row('fable-low', 'anthropic_shared', 'fable', 'low'),
+    row('fable-xhigh', 'anthropic_shared', 'fable', 'xhigh'), row('sonnet-medium', 'anthropic_shared', 'sonnet', 'medium')];
+  assert.equal(pick(fableFirst, 'standard'), 'sonnet/medium', 'standard is not run at the deep effort');
+  // Pool order still outranks effort: the first pool's nearest effort wins.
+  const pools = [row('codex-low', 'openai_codex', 'gpt-5.7-sol', 'low'),
+    row('claude-xhigh', 'anthropic_shared', 'claude-opus-5-5', 'xhigh')];
+  assert.equal(pick(pools, 'deep'), 'gpt-5.7-sol/low');
+});
+
+test('a row that left the catalog re-resolves at once instead of waiting behind another task on its old pool', async t => {
+  const dir = await fixture(t);
+  const holder = task(dir, 'Hold the Claude pool');
+  const request = task(dir, 'Change one file and explain another', 'auto', {write: true});
+  const claudeRead = row('claude-read', 'anthropic_shared', 'claude-opus-5-5', 'medium');
+  const codexRead = row('codex-read', 'openai_codex', 'gpt-5.7-sol', 'medium');
+  const codexWrite = row('codex-write', 'openai_codex', 'gpt-5.7-sol', 'medium',
+    {scope: 'workspace_write', allowedPaths: ['**']});
+  let calls = 0, holderRunning = false, t0 = 0;
+  const started = {};
+  let releaseHolder; const holderGate = new Promise(resolve => { releaseHolder = resolve; });
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'state'), maximumWorkers: 4,
+    catalog: async value => {
+      if (value.task_id === holder.task_id) return catalog(value, [claudeRead]);
+      calls++;
+      // After the bind read the host drops the Claude row (quota_backoff).
+      return catalog(value, calls === 1 ? [claudeRead, codexRead, codexWrite] : [codexRead, codexWrite]);
+    },
+    plan: async ({task: value}) => value.task_id === holder.task_id ? plan(holder, [graded('h', 'standard')]) :
+      plan(request, [graded('w', 'standard', {scope: 'workspace_write', ownedPaths: ['**']}), graded('r', 'standard')]),
+    execute: async ticket => {
+      if (ticket.task_id === holder.task_id) { holderRunning = true; await holderGate; return execution(ticket); }
+      started[ticket.node_id] = {at: Date.now() - t0, pool: ticket.selected_config.quota_pool};
+      await sleep(50);
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { releaseHolder(); await runtime.close(); });
+  await runtime.submit(holder);
+  for (let i = 0; i < 200 && !holderRunning; i++) await sleep(10);
+  assert.ok(holderRunning, 'the other task holds the Claude pool');
+  t0 = Date.now();
+  setTimeout(releaseHolder, 2_500);
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.equal(started.r.pool, 'openai_codex');
+  assert.ok(started.r.at < 1_500, `r waited ${started.r.at} ms behind the other task's lease on the pool it left`);
+  const r = done.children.find(child => child.id === 'r');
+  assert.match(r.routing_decision.reason, /^re_resolved_after:candidate_missing;other_pool;/);
+});
+
+test('a node that spread moves on when another task takes its new pool, instead of waiting for that task', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Inspect two independent files');
+  const other = task(dir, 'Inspect one more file');
+  const claudeRows = routingCatalog().filter(value => value.quota_pool === 'anthropic_shared');
+  let calls = 0, t0 = Date.now();
+  const started = {};
+  let releaseOther; const otherGate = new Promise(resolve => { releaseOther = resolve; });
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'state'), maximumWorkers: 4,
+    catalog: async value => {
+      if (value.task_id === other.task_id) return catalog(value, claudeRows);
+      // A slow native refresh: the window in which another task can take
+      // the pool this node just moved to.
+      if (++calls > 1) await sleep(500);
+      return catalog(value, routingCatalog());
+    },
+    plan: async ({task: value}) => {
+      if (value.task_id !== other.task_id) return plan(request, [graded('a', 'standard'), graded('b', 'standard')]);
+      await sleep(750);
+      return plan(other, [graded('z', 'standard')]);
+    },
+    execute: async ticket => {
+      const id = ticket.task_id === other.task_id ? 'z' : ticket.node_id;
+      started[id] = {at: Date.now() - t0, pool: ticket.selected_config.quota_pool};
+      if (id === 'z') { await otherGate; return execution(ticket); }
+      await sleep(500);
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { releaseOther(); await runtime.close(); });
+  t0 = Date.now();
+  await runtime.submit(request);
+  await runtime.submit(other);
+  setTimeout(releaseOther, 4_000);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.equal(started.z.pool, 'anthropic_shared');
+  assert.ok(started.z.at < started.b.at, 'the other task took the pool b had moved to');
+  assert.equal(started.a.pool, 'openai_codex');
+  assert.equal(started.b.pool, 'openai_codex', 'b moved back to the pool that became free');
+  assert.ok(started.b.at < 3_000, `b waited ${started.b.at} ms for the other task`);
+  const b = done.children.find(child => child.id === 'b');
+  assert.match(b.routing_decision.reason, /^spread_for_parallelism;other_pool;/);
+  const events = runtime.events({schema: 1, task_id: request.task_id});
+  assert.equal(events.filter(x => x.kind === 'candidate_spread_across_pools').length, 2);
+  assert.equal(events.some(x => x.kind === 'candidate_re_resolved'), false);
+});
+
+test('spreading still works after the bound rows outlive their validity window: one refresh, not one per wait', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Inspect three files, one after another');
+  let calls = 0, t0 = Date.now();
+  const started = {};
+  const runtime = await createRCCRuntime({stateDir: dir, maximumWorkers: 4,
+    // Every native read is valid for 400 ms only.
+    catalog: async value => { calls++; return catalog(value, routingCatalog().map(item => shortLived(item, 400))); },
+    plan: async () => plan(request, [graded('a', 'standard'), graded('x', 'standard'),
+      graded('c', 'standard', {dependencies: ['x']})]),
+    execute: async ticket => {
+      started[ticket.node_id] = {at: Date.now() - t0, pool: ticket.selected_config.quota_pool};
+      await sleep(ticket.node_id === 'a' ? 2_500 : 700);
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  t0 = Date.now();
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.equal(started.a.pool, 'openai_codex');
+  assert.equal(started.x.pool, 'anthropic_shared');
+  // c became ready when x finished, long after the last refresh's rows
+  // expired, while a still held Codex and the Anthropic pool was idle.
+  assert.equal(started.c.pool, 'anthropic_shared');
+  assert.ok(started.c.at < 2_000, `c started at ${started.c.at} ms, behind a`);
+  // Bind, a, x, the one spread re-check for c, and c's dispatch.
+  assert.ok(calls <= 5, `catalog calls ${calls}`);
 });

@@ -56,6 +56,29 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
                         quotaRejectedBeforeExecution: true, workspaceUnchanged: true).status == .succeeded,
               "a known finished candidate is never relabelled as not dispatched")
 
+    // ---- The workspace evidence is about THIS attempt ---------------------
+    // Core runs a read-only node beside a writer of the same workspace (a
+    // sibling spread to the other pool, or another task). That writer's edit
+    // changes the whole-workspace hash during this attempt; it must not turn a
+    // verified pre-execution quota rejection into effects_uncertain.
+    try check(O.workspaceEvidenceHolds(isolatedWorkspace: false, before: "before", after: nil) &&
+              O.workspaceEvidenceHolds(isolatedWorkspace: false, before: "before", after: "after-writer") &&
+              O.workspaceEvidenceHolds(isolatedWorkspace: false, before: nil, after: nil),
+              "a shared workspace's hash is not evidence about this attempt")
+    try check(O.workspaceEvidenceHolds(isolatedWorkspace: true, before: "before", after: "before") &&
+              !O.workspaceEvidenceHolds(isolatedWorkspace: true, before: "before", after: "after") &&
+              !O.workspaceEvidenceHolds(isolatedWorkspace: true, before: nil, after: nil),
+              "the attempt's own isolated workspace must be observed unchanged")
+    let concurrentWriter = O.failure(knownFinishedCandidate: false, dispatched: true, scope: .readOnly,
+        quotaRejectedBeforeExecution: true,
+        workspaceUnchanged: O.workspaceEvidenceHolds(isolatedWorkspace: false, before: "before", after: "after-writer"))
+    try check(concurrentWriter == noEffect,
+              "an attested read-only rejection beside a concurrent writer still moves to the other pool")
+    try check(O.failure(knownFinishedCandidate: false, dispatched: true, scope: .workspaceWrite,
+                        quotaRejectedBeforeExecution: true,
+                        workspaceUnchanged: O.workspaceEvidenceHolds(isolatedWorkspace: false, before: "a", after: "a")).status == .effectsUncertain,
+              "a write is never relabelled, whatever the workspace evidence")
+
     // ---- Contract: the reason is valid only on the no-effect read-only report
     let hash = C.digest(Data("fixture".utf8))
     func config(_ scope: C.Scope) -> C.ExactConfig {

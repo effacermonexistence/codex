@@ -280,11 +280,12 @@ public enum ProviderNameAliases {
     public static let codex = "codex|" + codexKorean
     public static let claude = "claude|" + claudeKoreanSpellings + "|" + claudeDictation
     /// The app's directed-provider detector changes which account pays, so it
-    /// is stricter than the fan-out table: "클로즈" is also the loanword for
-    /// "close" ("PR 클로즈해줘"), so it names Claude only before a dative
-    /// particle ("클로즈한테"); the bare dictated "코덱" still names Codex.
+    /// is stricter than the fan-out table. Two dictation spellings are also
+    /// ordinary loanwords, so each names its provider only before a dative
+    /// particle: "클로즈" is "close" ("PR 클로즈해줘") and the bare "코덱" is
+    /// "codec" ("h.264 코덱으로 인코딩해"); "클로즈한테"/"코덱한테" still do.
     public static let claudeDirected = #"클로[드더]|클로즈(?=\s*(?:코드\s*)?(?:한테|에게|께))"#
-    public static let codexDirected = codexKorean + "|코덱"
+    public static let codexDirected = codexKorean + #"|코덱(?=\s*(?:한테|에게|께))"#
 }
 
 public enum ProviderSurfaceError: Error, CustomStringConvertible {

@@ -52,11 +52,18 @@ public enum RCCNativeCatalogBuilder {
             self.slug = slug; self.supportedEfforts = supportedEfforts; self.priority = priority
         }
     }
-    /// One native Claude model row, given in native inventory order.
+    /// One configured Claude model name, given in native inventory order.
+    /// Claude lists one native row under several names (its value, resolved
+    /// ID and family alias), each mapped to its own configured efforts.
+    /// `nativeRank` is that row's ordinal in the native inventory, shared by
+    /// every name of the row; nil when unobserved (the list index is used).
     public struct ClaudeModel: Equatable, Sendable {
         public var model: String
         public var supportedEfforts: [String]
-        public init(model: String, supportedEfforts: [String]) { self.model = model; self.supportedEfforts = supportedEfforts }
+        public var nativeRank: Int?
+        public init(model: String, supportedEfforts: [String], nativeRank: Int? = nil) {
+            self.model = model; self.supportedEfforts = supportedEfforts; self.nativeRank = nativeRank
+        }
     }
     public enum Auth: Equatable, Sendable { case signedOut, nonSubscription, subscription }
 
@@ -281,15 +288,21 @@ public enum RCCNativeCatalogBuilder {
             }
         }
 
+        // Every name of one native Claude row shares that row's rank, so its
+        // rows sit together in the catalog and the resolver compares their
+        // efforts as one model: an alias with a narrow profile can no longer
+        // rank above the same model's resolved ID (or another model) and hide
+        // the route_class target effort configured under the other name.
         func modelRank(_ row: Row) -> Int {
-            row.provider == "codex"
-                ? input.codexModels.first { $0.slug == row.model }?.priority ?? Int.max
-                : input.claudeModels.firstIndex { $0.model == row.model } ?? Int.max
+            if row.provider == "codex" { return input.codexModels.first { $0.slug == row.model }?.priority ?? Int.max }
+            guard let index = input.claudeModels.firstIndex(where: { $0.model == row.model }) else { return Int.max }
+            return input.claudeModels[index].nativeRank ?? index
         }
         // Pool order: share x remaining / hours-to-reset, unknown quota last.
-        // A pool is scored by the model the host resolver actually binds first
-        // in it: the most-preferred model whose quota is known (an unknown-quota
-        // row cannot dispatch), not the model with the most quota left. With
+        // A pool is scored by the model the host resolver prefers in it: the
+        // most-preferred model whose quota is known (an unknown-quota row
+        // cannot dispatch; the resolver binds it whenever it has the node's
+        // route_class effort), not the model with the most quota left. With
         // model-scoped windows those differ, and scoring the wrong one would
         // spend a nearly exhausted model while the other pool has room.
         var rankings: [PoolRanking] = []

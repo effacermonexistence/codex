@@ -57,8 +57,8 @@ private func explicitlyRequestedProvider(in request: String) -> ProviderChoice? 
     // Names come from the one shared spelling table (`ProviderNameAliases`),
     // the same one the fan-out parser uses. This detector changes which
     // account pays, so it uses the table's stricter directed spellings: no
-    // "클라우드" ("cloud"), "클로즈" ("close") only before a dative particle,
-    // and the bare dictated "코덱".
+    // "클라우드" ("cloud"), and "클로즈" ("close") and the bare dictated "코덱"
+    // ("codec") only before a dative particle.
     let codexName = "(?:" + ProviderNameAliases.codexDirected + ")"
     let claudeName = "(?:" + ProviderNameAliases.claudeDirected + ")"
     let codexPatterns = [
@@ -531,6 +531,8 @@ private func providerIntentSelfTest() throws {
         "이 PR 클로즈해줘",
         "이슈 클로즈 해줘",
         "포지션 클로즈해",
+        "이 영상 h.264 코덱으로 인코딩해",
+        "코덱 설정 확인해",
         "Codex and Claude are both backends",
         "이 버그를 고치고 테스트해",
     ]

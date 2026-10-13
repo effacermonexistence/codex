@@ -17855,8 +17855,12 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     }
     if probe.contains("claude") {
         let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.routable ?? []
-        input.claudeModels = ModelAvailability.inventoryOrdered(claude, workspace: host.workspace)
-            .map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts) }
+        // One inventory read for both the order and the native row of each
+        // configured name (alias and resolved ID of one row share a rank).
+        let native = ClaudeInventoryCache.shared.models(workspace: host.workspace, maxAge: 600)
+        let ranks = native.map(ModelAvailability.nativeRowRanks) ?? [:]
+        input.claudeModels = (native.map { ModelAvailability.inventoryOrdered(claude, native: $0.map(\.model)) } ?? claude)
+            .map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts, nativeRank: ranks[$0.model]) }
         input.claudeQuota = ModelAvailability.claudeQuota(workspace: host.workspace)
     }
     // Authentication is provider state, not per-model state. Observe each
@@ -18292,12 +18296,18 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             try? RCCNativeAttemptOutcome.recordClaudeBackoff(cooldown)
         }
         // A quota rejection the provider's own stream places before any work,
-        // on a read-only attempt whose workspace is provably unchanged, is a
-        // verified no-effect attempt Core may move to the other pool. Writes
-        // keep the effects-uncertain report.
+        // on a read-only attempt, is a verified no-effect attempt Core may move
+        // to the other pool. Writes keep the effects-uncertain report. The
+        // workspace hash is evidence only for an isolated (chat-lane)
+        // workspace: a writer running beside this read-only attempt in the
+        // shared workspace changes that hash without this attempt doing
+        // anything, and must not turn the move into effects_uncertain.
         let beforeExecution = quotaExhausted && rejected?.quotaRejectedBeforeExecution == true &&
             t.selectedConfig.scope == .readOnly
-        let unchanged = beforeExecution && executionWorkspace.map { workspaceHash($0) == executionWorkspaceBefore } == true
+        let isolated = executionWorkspace != h.workspace
+        let unchanged = beforeExecution && executionWorkspace != nil &&
+            RCCNativeAttemptOutcome.workspaceEvidenceHolds(isolatedWorkspace: isolated, before: executionWorkspaceBefore,
+                after: isolated ? executionWorkspace.map(workspaceHash) : nil)
         // Native execution success and answer adoption are independent. A
         // known finished candidate may be rejected without becoming an
         // invented lost/uncertain execution, or being erased by strict decode.
