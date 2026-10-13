@@ -109,6 +109,19 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let resetOut = try B.build(unknownReset)
     try check(resetOut.pools.first { $0.pool == "openai_codex" }?.resetUnknown == true &&
               resetOut.pools.first { $0.pool == "openai_codex" }?.hoursToReset == 168, "unknown reset uses 168h and is recorded")
+    // A model-scoped window: the pool is scored by the model the resolver
+    // binds first (sonnet, first in Claude's inventory), not by the model with
+    // the most quota left (fable).
+    var scopedWindow = input()
+    scopedWindow.codexQuota = quota("acct-codex", used: 40, resetIn: 100)
+    scopedWindow.claudeQuota = .init(accountID: "acct-claude", observedAt: now.addingTimeInterval(-5), source: .claudeNative,
+        windows: [.init(bucket: "weekly", usedPercent: 15, resetsAt: now.addingTimeInterval(100 * 3600)),
+                  .init(bucket: "weekly_model", usedPercent: 97, resetsAt: now.addingTimeInterval(100 * 3600), model: "sonnet")])
+    let scopedOut = try B.build(scopedWindow)
+    try check(scopedOut.pools.map(\.pool) == ["openai_codex", "anthropic_shared"] &&
+              scopedOut.pools[1].remainingFraction.map { abs($0 - 0.03) < 1e-9 } == true,
+              "a nearly exhausted first-preference model ranks its pool by that model: \(scopedOut.pools)")
+    try check(tuples(scopedOut).first == "codex/gpt-6-sol/low/read_only", "the pool with room for its first model leads")
     var tie = input(); tie.codexQuota = quota("acct-codex", used: 20, resetIn: 4)
     try check(try B.build(tie).pools.first?.pool == "openai_codex", "an exact score tie prefers openai_codex")
     var exhausted = input(); exhausted.codexQuota = quota("acct-codex", used: 100, resetIn: 2)
@@ -145,6 +158,43 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     var shared = input(plan: .init(codex: 100, claude: 1))
     shared.codexQuota = quota("acct-codex", used: 50, resetIn: 10)
     try check(try B.build(shared).pools.first?.pool == "openai_codex", "capacity share weighs the pool score")
+    // An explicit route test names its providers: a 0% pool a route names is
+    // still offered (and probed), while an unnamed 0% pool stays excluded.
+    let fanoutText = "1+1 Codex한테. 2+2 Claude Code한테. 라우팅 시켜서 답변 받아와"
+    var explicitZero = input(fanoutText, plan: .init(codex: 0, claude: 100))
+    explicitZero.explicitRouteSurfaces = ["codex", "claude"]
+    let explicitZeroOut = try B.build(explicitZero)
+    try check(explicitZeroOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
+              !reasons(explicitZeroOut).contains { $0.contains("capacity_zero") } &&
+              B.providersToProbe(explicitZero) == ["codex", "claude"], "a route naming a 0% provider keeps it: \(reasons(explicitZeroOut))")
+    var explicitClaudeOnly = explicitZero; explicitClaudeOnly.explicitRouteSurfaces = ["claude-chat"]
+    try check(reasons(try B.build(explicitClaudeOnly)).contains("codex:capacity_zero:5"),
+              "a 0% provider no route names stays excluded")
+    // Authorization: the server denies 0%, so a named 0% provider is sent at
+    // 100; an unnamed one is refused before any request.
+    try check(B.authorizationCapacity(nil, provider: "codex", preference: "auto", explicitSurfaces: nil) == .init(codex: 100, claude: 100) &&
+              B.authorizationCapacity(.init(codex: 0, claude: 100), provider: "codex", preference: "codex", explicitSurfaces: nil) == .init(codex: 100, claude: 100) &&
+              B.authorizationCapacity(.init(codex: 0, claude: 100), provider: "codex", preference: "gpt-chat", explicitSurfaces: nil) == .init(codex: 100, claude: 100) &&
+              B.authorizationCapacity(.init(codex: 0, claude: 40), provider: "codex", preference: "auto", explicitSurfaces: ["codex"]) == .init(codex: 100, claude: 40) &&
+              B.authorizationCapacity(.init(codex: 0, claude: 100), provider: "codex", preference: "auto", explicitSurfaces: nil) == nil &&
+              B.authorizationCapacity(.init(codex: 70, claude: 0), provider: "claude", preference: "claude-chat", explicitSurfaces: nil) == .init(codex: 70, claude: 100) &&
+              B.authorizationCapacity(.init(codex: 30, claude: 60), provider: "claude", preference: "auto", explicitSurfaces: nil) == .init(codex: 30, claude: 60),
+              "authorization capacity: named 0% is sent at 100, unnamed 0% is refused, any other plan unchanged")
+    // Every catalog-admitted row gets a positive authorization capacity.
+    let admittedCases: [(String, [String]?, C.CapacityPlan)] = [("codex", nil, .init(codex: 0, claude: 100)),
+        ("auto", ["codex", "claude"], .init(codex: 0, claude: 100)), ("claude", nil, .init(codex: 100, claude: 0)),
+        ("claude-chat", nil, .init(codex: 100, claude: 0)), ("auto", nil, .init(codex: 0, claude: 100))]
+    for (preference, explicitSurfaces, plan) in admittedCases {
+        var value = input(preference: preference, plan: plan)
+        value.explicitRouteSurfaces = explicitSurfaces
+        for row in try B.build(value).candidates {
+            let provider = row["quota_pool"] as? String == "openai_codex" ? "codex" : "claude"
+            let plan = B.authorizationCapacity(value.capacityPlan, provider: provider, preference: preference,
+                                               explicitSurfaces: explicitSurfaces)
+            try check(plan.map { provider == "codex" ? $0.codex > 0 : $0.claude > 0 } == true,
+                      "admitted \(provider) row authorizes with a positive capacity under \(preference)")
+        }
+    }
 
     // ---- Explicit intent -------------------------------------------------
     let intents: [(String, String?, String?)] = [
@@ -160,6 +210,18 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         ("솔로로 해", nil, nil), ("ultra-wide 모니터 추천", nil, nil), ("max reasoning 말고 그냥 해", nil, nil),
         ("opus랑 sonnet 비교해줘", nil, nil), ("ultracode 설명해줘", nil, nil), ("solve this puzzle", nil, nil),
         ("테라바이트 단위로 계산해", nil, nil), ("opus max 아니면 high reasoning", nil, "opus"),
+        // Talking about a setting, or an ordinary noun, is not a constraint.
+        ("what is the max thinking budget for claude?", nil, nil),
+        ("summarize the max reasoning tokens setting in config", nil, nil),
+        ("클로드 최대 리즈닝 설정이 뭐야?", nil, nil), ("Codex xhigh 지원해?", nil, nil),
+        ("this is a high effort task, please fix the bug", nil, nil),
+        ("explain the terra luna 2.0 crash", nil, nil), ("use astra db to store the sessions", nil, nil),
+        ("answer with haiku please", nil, nil), ("write a review of Fable 3", nil, nil),
+        ("fable 5.1 vs opus 비교해줘", nil, nil), ("is xhigh supported here", nil, nil),
+        // A directive still wins over a setting word in the same clause.
+        ("최대 리즈닝으로 이 설정 파일 고쳐줘", "max", nil), ("use max reasoning to fix the config", "max", nil),
+        ("this is urgent, use high reasoning", "high", nil), ("xhigh로 config 고쳐", "xhigh", nil),
+        ("claude opus로 해", nil, "opus"), ("최대 리즈닝으로 해줄 수 있어?", "max", nil),
     ]
     for (text, effort, family) in intents {
         let parsed = RoutingIntent.parse(text)
@@ -186,6 +248,18 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(haikuCatalog.candidates.isEmpty && haikuCatalog.exclusions == haiku.exclusions &&
               String(decoding: haikuData, as: UTF8.self).contains("\"exclusions\""), "empty-with-exclusions catalog decodes")
     try check(B.providersToProbe(input("haiku로 돌려")) == ["claude"], "a family constraint probes only its provider")
+    // An explicit route test keeps its former candidate set: the fan-out
+    // sentence is not one intent for every route and no effort is withheld.
+    var explicitIntent = input("1+1 코덱스 sol한테. 2+2 클로드 opus max로 해", plan: nil)
+    explicitIntent.explicitRouteSurfaces = ["codex", "claude"]
+    let explicitIntentOut = try B.build(explicitIntent)
+    try check(explicitIntentOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
+              explicitIntentOut.candidates.contains { $0["quota_pool"] as? String == "anthropic_shared" } &&
+              explicitIntentOut.candidates.contains { $0["effort"] as? String == "max" } &&
+              !reasons(explicitIntentOut).contains { $0.contains("effort_requires_explicit_request") || $0.contains("explicit_constraint") },
+              "explicit routes ignore owner-text intent and keep max rows: \(reasons(explicitIntentOut))")
+    try check(B.intent(explicitIntent).isEmpty && B.intent(input("opus max로 해줘")) == RoutingIntent(effort: "max", modelFamily: "opus"),
+              "intent is read only outside explicit route tests")
 
     // ---- max/ultra need an explicit request ------------------------------
     try check(!base.candidates.contains { ["max", "ultra", "ultracode"].contains($0["effort"] as? String ?? "") },
@@ -271,19 +345,43 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     // ---- Explicit fan-out: GPT parts are dropped, not substituted -----------
     let fanout = RouteFanout.plan("1+1 GPT한테. 2+2 Codex한테. 3+3 Claude한테. 4+4 Claude Code한테.")
     let partition = RouteFanout.droppingGPT(fanout?.targets ?? [])
-    try check(partition.kept.map(\.surface) == [.codex, .claudeChat, .claude] && partition.dropped.map(\.surface) == [.chatgpt],
-              "one GPT part is dropped; the other three still run")
+    try check(partition.kept.map(\.surface) == [.codex, .claudeChat, .claude] && partition.dropped.map(\.surface) == [.chatgpt] &&
+              partition.remapped.isEmpty, "one GPT part is dropped; the other three still run")
     let notice = RouteFanout.gptDroppedNotice(partition.dropped, remaining: partition.kept.count)
     try check(notice.contains("1+1") && notice.contains("3"), "the drop notice names the dropped part and the remaining count")
     let allGPT = RouteFanout.droppingGPT(RouteFanout.plan("1+1 GPT한테. 2+2 gpt-chat한테.")?.targets ?? [])
     try check(allGPT.kept.isEmpty && allGPT.dropped.map(\.surface) == [.chatgpt, .gptChat],
               "an all-GPT fan-out keeps nothing, so Core holds it visibly")
+    // A part addressed to Codex as a chat lane names Codex, not GPT: it runs
+    // on Codex with a notice, never dropped as GPT.
+    for text in ["1+1 코덱스 채팅한테. 2+2 클로드한테.", "1+1 Codex chat한테. 2+2 Claude한테."] {
+        let codexChat = RouteFanout.droppingGPT(RouteFanout.plan(text)?.targets ?? [])
+        try check(codexChat.kept.map { "\($0.surface.rawValue):\($0.payload)" } == ["codex:1+1", "claude-chat:2+2"] &&
+                  codexChat.dropped.isEmpty && codexChat.remapped.count == 1 &&
+                  RouteFanout.codexChatRemappedNotice(codexChat.remapped).contains("1+1"),
+                  "a Codex-named chat part runs on Codex: \(text)")
+    }
+    let bothCodex = RouteFanout.droppingGPT(RouteFanout.plan("1+1 Codex chat한테. 2+2 코덱스 채팅한테.")?.targets ?? [])
+    try check(bothCodex.kept.map(\.surface) == [.codex, .codex] && bothCodex.dropped.isEmpty,
+              "two Codex-named chat parts both run on Codex, nothing is held")
+    let repeated = RouteFanout.droppingGPT(RouteFanout.plan("1+1 Codex chat한테. 1+1 Codex한테.")?.targets ?? [])
+    try check(repeated.kept.map { "\($0.surface.rawValue):\($0.payload)" } == ["codex:1+1"],
+              "a remapped part never duplicates an existing Codex route")
     try check(ProviderSurface.Backend.openAI.surfaces == [.codex] && ProviderSurface.Backend.openAI.resolve("gpt-chat") == .codex &&
               ProviderSurface.Backend.openAI.resolve("chatgpt") == .codex, "the OpenAI tile no longer offers GPT")
     try check("클로드한테 시켜".range(of: ProviderNameAliases.claude, options: .regularExpression) != nil &&
               "클로드한테 시켜".range(of: ProviderNameAliases.claudeKoreanSpellings, options: .regularExpression) != nil &&
               "클라우드로 백업".range(of: ProviderNameAliases.claudeKoreanSpellings, options: .regularExpression) == nil,
               "one alias table: 클로드 is Claude everywhere; the cloud word stays out of account detection")
+    func directed(_ text: String, _ pattern: String) -> Bool { text.range(of: pattern, options: .regularExpression) != nil }
+    try check(directed("클로즈한테 이거 시켜", ProviderNameAliases.claudeDirected) &&
+              directed("클로드 코드한테 시켜", ProviderNameAliases.claudeDirected) &&
+              !directed("이 pr 클로즈해줘", ProviderNameAliases.claudeDirected) &&
+              !directed("이슈 클로즈 해줘", ProviderNameAliases.claudeDirected) &&
+              !directed("포지션 클로즈해", ProviderNameAliases.claudeDirected) &&
+              directed("코덱한테 이거 시켜", ProviderNameAliases.codexDirected) &&
+              directed("코덱센트 시켜", ProviderNameAliases.codexDirected),
+              "the directed detector: 클로즈 ('close') only before a dative particle; bare dictated 코덱 is Codex")
 
     print("RCC native catalog builder: \(checks) checks OK; model calls 0")
 }

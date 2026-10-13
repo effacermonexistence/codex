@@ -5,11 +5,19 @@ import Foundation
 ///
 /// A word counts only beside a context that makes it a routing constraint:
 /// a reasoning/effort word ("최대 리즈닝", "reasoning: high"), a model family
-/// ("opus max", "gpt-6-sol", "fable 5.1") or, for Ultra, a Korean directive
-/// particle ("울트라로"). "max file size", "높은 건물", "솔직히" and "solo" are
-/// not constraints. Two different efforts or two different families cancel
-/// each other instead of being guessed between, and a negated mention
-/// ("opus 말고", "not max reasoning") is ignored.
+/// ("opus max", "gpt-6-sol", "fable 5.1 모델로") or, for Ultra, a Korean
+/// directive particle ("울트라로"). "max file size", "높은 건물", "솔직히" and
+/// "solo" are not constraints. Two different efforts or two different
+/// families cancel each other instead of being guessed between, and a negated
+/// mention ("opus 말고", "not max reasoning") is ignored.
+///
+/// Talking ABOUT a setting is not asking for it: "what is the max thinking
+/// budget?", "클로드 최대 리즈닝 설정이 뭐야?", "Codex xhigh 지원해?" and "a high
+/// effort task" set nothing, unless a directive form ("최대 리즈닝으로",
+/// "use max reasoning") is also there. A family word needs a product/model
+/// word or a directive ("claude opus", "use daybreak model", "소네트로 돌려",
+/// "astra 6 써줘"): "use astra db", "answer with haiku", "Fable 3" and
+/// "terra luna 2.0" are ordinary nouns.
 public struct RoutingIntent: Equatable, Sendable {
     /// One of low, medium, high, xhigh, max, ultra.
     public var effort: String?
@@ -61,8 +69,25 @@ public struct RoutingIntent: Equatable, Sendable {
         ("daybreak", #"(?<![a-z0-9])daybreak(?![a-z])|(?<![가-힣])데이브레이크"#),
     ]
     /// A product or model word immediately before a family ("gpt-6-sol",
-    /// "claude opus", "model fable", "use luna").
-    static let familyLeftContext = #"(?:gpt|claude|클로드|codex|코덱스|model|모델|use|using|with|run|on)[\s\-:./]*(?:[0-9]+(?:[.\-][0-9]+)*[\s\-./]*)?$"#
+    /// "claude opus", "model fable"). Generic verbs ("use", "with") are not
+    /// enough: "use astra db" names a database.
+    static let familyLeftContext = #"(?:gpt|claude|클로드|codex|코덱스|model|모델)[\s\-:./]*(?:[0-9]+(?:[.\-][0-9]+)*[\s\-./]*)?$"#
+    /// A version is part of a model name only when a model word or a directive
+    /// follows it ("fable 5.1 모델로", "astra 6 써줘"); "Fable 3" and
+    /// "luna 2.0 crash" are not routing.
+    static let versionQualified = #"^[\s\-]*[0-9]+(?:[.\-][0-9]+)*(?![0-9])\s*(?:model|모델|(?:(?:으로|로|한테|에게)\s*)?(?:돌려|해|실행|써|사용|시켜|보내|맡겨|부탁|run))"#
+    /// Asking about a setting, not setting it: these words in the same clause
+    /// after the effort word ("…budget", "…설정이 뭐야", "…지원해?").
+    static let inquiryAfter = #"^[^.!?\n]{0,40}?(?:budget|tokens?|settings?|config(?:uration)?|options?|limits?|supports?|supported|설정|옵션|한도|토큰|지원|뭐|무엇|얼마|어떻게|차이)"#
+    /// A question opener starting the same clause ("what is the max…",
+    /// "is xhigh supported"), never a mid-clause "is" ("this is urgent").
+    static let inquiryBefore = #"(?:^|[.!?\n,]\s*)(?:what|which|how|does|do|is|are|can|whats|what's)(?![a-z])[^.!?\n,]{0,48}$"#
+    /// The effort describes a noun, not the answer: "a high effort task".
+    static let descriptiveAfter = #"^[\s,:=]*(?:의|한|인)?\s*(?:리즈닝|추론|reasoning|effort|thinking)\s*(?:task|job|work|problem|question|request|작업|문제|질문|요청)(?![a-z])"#
+    /// A directive form that outranks an inquiry word in the same clause:
+    /// "최대 리즈닝으로 …", "리즈닝 최대로", "use/with/at max reasoning".
+    static let directiveAfter = #"^[\s,:=]*(?:(?:의|한|인)?\s*(?:리즈닝|추론|reasoning|effort|thinking)\s*)?(?:으로|로)(?=\s|$|[,.!?]|해|돌|실행|써|사용|시켜|답|풀|처리|진행|부탁|가자|하자)"#
+    static let directiveBefore = #"(?<![a-z])(?:use|using|with|at|set(?:\s+[a-z]+){0,3}\s+to)\s+(?:a\s+|an\s+|the\s+)?$"#
     /// Directive particles: "오퍼스로 돌려", "luna한테 시켜".
     static let directive = #"^\s*(?:으로|로|한테|에게)\s*(?:돌려|해|실행|써|사용|시켜|보내|맡겨|부탁|run)"#
     static let negationAfter = #"^[\s,:=]*(?:(?:으로|로|의|은|는|을|를)\s*)?(?:(?:리즈닝|추론|reasoning|effort|thinking|모델|model)\s*)?(?:(?:으로|로|은|는|을|를)\s*)?(?:말고|빼고|쓰지\s*마|하지\s*마|없이|금지|아니(?:고|라)|is\s+not|isn'?t)"#
@@ -126,16 +151,20 @@ public struct RoutingIntent: Equatable, Sendable {
             // Ultra directive ("울트라로 해").
             let standalone = effort == "xhigh" && matches(ns.substring(with: range), #"^x[\s\-]?high$"#)
                 || effort == "ultra" && matches(after(range, 4), #"^\s*(?:으로|로)(?![가-힣])"#)
-            if followedByContext || precededByContext || precededByFamily || standalone {
-                effortIntents.insert(effort)
-            }
+            guard followedByContext || precededByContext || precededByFamily || standalone else { continue }
+            // A question or a setting mention is not a request for the effort,
+            // unless the same mention is also phrased as a directive.
+            let directive = matches(after(range, 24), directiveAfter) || matches(before(range, 24), directiveBefore)
+            let inquiry = matches(after(range, 48), inquiryAfter) || matches(before(range, range.location), inquiryBefore)
+            if matches(after(range, 32), descriptiveAfter) || (inquiry && !directive) { continue }
+            effortIntents.insert(effort)
         }
 
         var familyIntents = Set<String>()
         for (family, range) in families where !negated(range) {
             let left = matches(before(range, 24), familyLeftContext)
             let next = after(range, 24)
-            let version = matches(next, #"^[\s\-]*[0-9]+(?:[.\-][0-9]+)*(?![0-9])"#)
+            let version = matches(next, versionQualified)
             let modelWord = matches(next, #"^\s*(?:model|모델)"#)
             let withEffort = efforts.contains { effort in
                 let end = range.location + range.length

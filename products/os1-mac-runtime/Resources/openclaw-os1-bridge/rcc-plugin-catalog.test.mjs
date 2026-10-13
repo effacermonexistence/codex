@@ -335,3 +335,23 @@ test('a planner-chosen candidate ID is refused outside an explicit route test', 
   const exact = {schema: 1, nodes: [{id: 'n1', candidate_id: 'cfg-000'}]};
   assert.equal(assertPlannerRouteChoice(explicit, exact), exact);
 });
+
+test('graded writers own the whole workspace when every runnable writer row is "**"', () => {
+  const writable = task(); writable.host_context.require_read_only = false;
+  const rows = catalog(2);
+  rows.candidates[1] = {...rows.candidates[1], scope: 'workspace_write', permission_profile: 'workspace_write',
+    allowed_paths: ['**']};
+  const writer = buildRoutePlanSchema(writable, rows, NOW).properties.nodes.items.oneOf[1].properties.owned_paths;
+  assert.deepEqual(writer, {type: 'array', minItems: 1, maxItems: 1, items: {type: 'string', enum: ['**']}});
+  const input = buildBoundedPlannerInput({task: writable, catalog: rows, feedback: {},
+    policyText: 'RCC writer fixture', now: NOW});
+  assert.ok(input.instructions.includes('owned_paths ["**"]'));
+  assert.equal(input.instructions.includes('name the owned_paths they change'), false);
+  // A narrower writer row keeps concrete paths; explicit tests are unchanged.
+  rows.candidates[1] = {...rows.candidates[1], allowed_paths: ['Sources']};
+  const narrow = buildRoutePlanSchema(writable, rows, NOW).properties.nodes.items.oneOf[1].properties.owned_paths;
+  assert.deepEqual(narrow, {type: 'array', minItems: 1, maxItems: 64, items: {type: 'string'}});
+  const explicit = explicitTask(); explicit.host_context.require_read_only = false;
+  rows.candidates[1] = {...rows.candidates[1], allowed_paths: ['**']};
+  assert.equal(buildRoutePlanSchema(explicit, rows).properties.nodes.items.oneOf[1].properties.owned_paths.maxItems, 64);
+});

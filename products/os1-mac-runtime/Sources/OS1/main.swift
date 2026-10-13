@@ -17835,6 +17835,12 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
         chatLaneEligible: chatEligible,
         profiles: (config.executionProfiles ?? [:]).map { .init(action: $0.key, provider: $0.value.provider,
             model: $0.value.model, effort: $0.value.effort) })
+    // An explicit route test keeps its candidate set: a route naming a
+    // provider overrides its 0% capacity, and the fan-out sentence is not one
+    // effort/model intent for every route.
+    if request.mode == .explicitRoutingTest {
+        input.explicitRouteSurfaces = (host.explicitRoutes ?? []).map(\.surface.rawValue)
+    }
     let book = BackendAccounts.load()
     for provider in ["codex", "claude"] { input.accountIDs[provider] = BackendAccounts.active(provider: provider, in: book).id }
     // A cooldown left by a real Claude quota rejection (local receipt files
@@ -18096,7 +18102,14 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             codexAccountID: BackendAccounts.active(provider: "codex", in: BackendAccounts.load()).id,
             claudeAccountID: BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id)
         // The owner's capacity mix when the host carried one; absent = 100/100.
-        let capacity = h.capacityPlan ?? .init(codex: 100, claude: 100)
+        // A provider the catalog admitted at 0% only because the owner named
+        // it is authorized at 100 (the server denies 0); one never named at 0%
+        // is refused here, as the catalog refused it.
+        guard let capacity = RCCNativeCatalogBuilder.authorizationCapacity(h.capacityPlan, provider: provider,
+            preference: h.providerPreference,
+            explicitSurfaces: h.explicitRoutes.map { $0.map(\.surface.rawValue) }) else {
+            throw OS1Error.message("RCC selected provider has 0% capacity and was not named; nothing dispatched")
+        }
         let request = StartExecutionRequest(task: objective, providerPreference: provider,
             capacityPlan: .init(codex: capacity.codex, claude: capacity.claude), executorContractVersion: config.executorContract.version,
             executorContractSHA256: config.executorContract.sha256, availableCodexModels: codex.models, executionContext: input)
@@ -18317,19 +18330,21 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         surface = .codex
     }
     // A GPT-named part of an explicit fan-out is dropped, visibly; the other
-    // named routes still run. Only when EVERY part named GPT is the original
-    // list sent, so Core holds it with the dropped routes shown.
+    // named routes still run. A part addressed as "Codex chat" names Codex and
+    // runs there, visibly. Only when EVERY part named GPT is the original list
+    // sent, so Core holds it with the dropped routes shown.
     let fanout = RouteFanout.plan(prompt)
     var explicit = fanout?.targets.map { target in
         RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: target.surface.rawValue)!, instruction: target.payload)
     }
     if let targets = fanout?.targets {
         let partition = RouteFanout.droppingGPT(targets)
+        if !partition.remapped.isEmpty { routingNotices.append(RouteFanout.codexChatRemappedNotice(partition.remapped)) }
         if !partition.dropped.isEmpty {
             routingNotices.append(RouteFanout.gptDroppedNotice(partition.dropped, remaining: partition.kept.count))
-            if !partition.kept.isEmpty {
-                explicit = partition.kept.map { RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: $0.surface.rawValue)!, instruction: $0.payload) }
-            }
+        }
+        if !partition.kept.isEmpty, !partition.dropped.isEmpty || !partition.remapped.isEmpty {
+            explicit = partition.kept.map { RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: $0.surface.rawValue)!, instruction: $0.payload) }
         }
     }
     // An explicit Claude chat choice the chat gate refuses is held by Core

@@ -236,6 +236,10 @@ enum ModelAvailability {
             !claudeRows([defaults, sonnet]).contains { $0.model == "opus" },
             claudeRows([["value": "fable"]]).isEmpty,
             claudeRows([fable.merging(["supportedEffortLevels": ["ultra"]]) { _, n in n }]).isEmpty,
+            // One native row with several configured names keeps a fixed
+            // order (value, resolved id, family alias) in every process.
+            claudeRows([fable, sonnet]).map(\.model) ==
+                ["claude-fable-5-1", "fable", "sonnet", "claude-sonnet-5"],
             excludingModelLimited(["fable", "opus", "sonnet", "claude-fable-5-1[1m]"].map {
                 ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) }, limited: ["fable"]).map(\.model) == ["opus", "sonnet"],
             excludingModelLimited([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limited: []).count == 1,
@@ -356,7 +360,12 @@ enum ModelAvailability {
             let alias = ["fable", "sonnet", "opus", "haiku"].first { family in
                 value == family || value.hasPrefix(family + "[") || resolved.hasPrefix("claude-" + family + "-")
             }
-            for model in Set([value, resolved] + (alias.map { [$0] } ?? [])) where isSafeModelIdentifier(model) {
+            // A fixed order (native value, resolved id, family alias), never a
+            // Set: Set iteration is seeded per process, and this order ranks
+            // the configured Claude models in the RCC catalog.
+            var names: [String] = []
+            for name in [value, resolved] + (alias.map { [$0] } ?? []) where !names.contains(name) { names.append(name) }
+            for model in names where isSafeModelIdentifier(model) {
                 if !result.contains(where: { $0.model == model }) {
                     result.append(NativeClaudeModel(model: model, invocation: value, efforts: efforts))
                 }

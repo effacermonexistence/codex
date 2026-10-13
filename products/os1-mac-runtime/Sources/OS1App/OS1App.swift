@@ -55,11 +55,12 @@ private func explicitlyRequestedProvider(in request: String) -> ProviderChoice? 
     // This recognizes only directed backend requests; merely discussing a
     // provider keeps the private RCC auto route in control.
     // Names come from the one shared spelling table (`ProviderNameAliases`),
-    // the same one the fan-out parser uses. The Claude dictation alias
-    // "클라우드" is left out here: it is also the ordinary word for "cloud", and
-    // this detector changes which account pays.
-    let codexName = "(?:" + ProviderNameAliases.codexKorean + ")"
-    let claudeName = "(?:" + ProviderNameAliases.claudeKoreanSpellings + ")"
+    // the same one the fan-out parser uses. This detector changes which
+    // account pays, so it uses the table's stricter directed spellings: no
+    // "클라우드" ("cloud"), "클로즈" ("close") only before a dative particle,
+    // and the bare dictated "코덱".
+    let codexName = "(?:" + ProviderNameAliases.codexDirected + ")"
+    let claudeName = "(?:" + ProviderNameAliases.claudeDirected + ")"
     let codexPatterns = [
         codexName + #"\s*(?:(?:한테|에게|로|으로)(?:\s|\S){0,24}(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁)|(?:가|이)?\s*(?:뭐\s*)?(?:시켜|시키|맡겨|보내|돌려|실행|해|하게|말|부탁))"#,
         #"(?:시켜|시키|맡겨|보내|돌려|실행|부탁)(?:\s|\S){0,18}"# + codexName,
@@ -511,6 +512,7 @@ private func providerIntentSelfTest() throws {
     }
     let codexRequests = [
         "코덱스한테 말시켜봐",
+        "코덱한테 이거 시켜",
         "코덱세한테 뭐 시켜봐",
         "1 더하기 1 코덱선트 시켜라니까",
         "코덱센트 시켜서 확인해",
@@ -519,12 +521,16 @@ private func providerIntentSelfTest() throws {
     ]
     let claudeRequests = [
         "클로드한테 레드팀 시켜",
+        "클로즈한테 이거 시켜",
         "이거 클로더 코드로 해",
         "ask Claude Code to review this",
         "use Claude for this task",
     ]
     let autoRequests = [
         "코덱스 사용량과 클로드 사용량을 비교해줘",
+        "이 PR 클로즈해줘",
+        "이슈 클로즈 해줘",
+        "포지션 클로즈해",
         "Codex and Claude are both backends",
         "이 버그를 고치고 테스트해",
     ]

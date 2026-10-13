@@ -4,7 +4,7 @@ import { open, mkdir, lstat, writeFile, readFile, chmod, unlink } from 'node:fs/
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
-import { createRCCRuntime, effectiveExplicitRoutes, RCCRuntimeError, ROUTE_CLASSES,
+import { createRCCRuntime, dispatchable, effectiveExplicitRoutes, RCCRuntimeError, ROUTE_CLASSES,
   routingAvailability } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -45,6 +45,12 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
       {type: 'string', const: 'agent'} :
       {type: 'string', enum: ['agent', 'deterministic']};
   const choice = explicit ? 'candidate_id' : 'route_class';
+  // A native writer row owns the whole workspace ("**"): it is not confined to
+  // the paths a planner lists. When every writer that can run now is such a
+  // row, a graded writer must say so instead of naming concrete paths.
+  const writeRows = explicit ? [] : catalog.candidates.filter(c => c.scope === 'workspace_write' &&
+    !['chatgpt', 'gpt-chat'].includes(c.surface) && dispatchable(c, task, now));
+  const wholeWorkspace = writeRows.length > 0 && writeRows.every(c => c.allowed_paths?.includes('**'));
   const node = scope => ({type: 'object', additionalProperties: false,
     required: ['id', 'instruction', 'dependencies', 'kind', choice,
       'scope', 'owned_paths', 'context_refs'],
@@ -55,7 +61,8 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
         {type: 'string', enum: [...ROUTE_CLASSES]},
       scope: {type: 'string', const: scope},
       owned_paths: scope === 'read_only' ?
-        {type: 'array', maxItems: 0, items: {type: 'string'}} :
+        {type: 'array', maxItems: 0, items: {type: 'string'}} : wholeWorkspace ?
+        {type: 'array', minItems: 1, maxItems: 1, items: {type: 'string', enum: ['**']}} :
         {type: 'array', minItems: 1, maxItems: 64, items: {type: 'string'}},
       context_refs: contextRefs}});
   const readOnly = task.host_context?.require_read_only === true || !offered.workspace_write;
@@ -278,7 +285,7 @@ export function expandCandidateCatalog(compact) {
 }
 
 const EXPLICIT_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Choose exact candidate IDs only; each ID already fixes model, effort, tools, quota and scope. Candidate catalog is lossless grouped data: each group.common uses common_keys, each group.variants row uses variant_keys (including the original index); do not omit, alias or invent an ID. Prefer the smallest total resources sufficient for this task, not a fixed strongest model. Unknown cost/quality stays unknown; policy_admitted means permission admission, NOT measured quality parity. Independent work may be parallel; dependent work must name dependencies. Explicit routes require exactly one independent node per supplied surface/instruction, without alias, substitution or payload rewrite. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",candidate_id,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
-const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = lookup, short factual answer or formatting; standard = normal coding or analysis; deep = hard multi-step design, debugging or proof. Grade the node, not the user: a short request can be deep and a long one trivial. The host then chooses the exact model, reasoning effort, surface and quota pool for each node from route_class and scope; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; workspace_write nodes name the owned_paths they change. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
+const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = lookup, short factual answer or formatting; standard = normal coding or analysis; deep = hard multi-step design, debugging or proof. Grade the node, not the user: a short request can be deep and a long one trivial. The host then chooses the exact model, reasoning effort, surface and quota pool for each node from route_class and scope; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; a workspace_write node owns the whole workspace, owned_paths ["**"], unless the response schema allows narrower paths, and the host runs writers one at a time. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
 
 export function buildBoundedPlannerInput({task, catalog, feedback, policyText, now = Date.now()}) {
   const explicit = task.mode === 'explicit_routing_test';
@@ -352,7 +359,14 @@ async function readExactNativeReceipt(path, stateDir) {
 export async function verifyExactExplicitArithmetic({task, plan, children}, {stateDir} = {}) {
   const verdict = (verified, output, reason) => ({schema: 1, task_id: task.task_id,
     task_verified: verified, output, parity_state: 'unverified', reason});
-  const routes = effectiveExplicitRoutes(task);
+  // New plans bind exactly the routes that still run. A plan admitted before
+  // GPT stopped being routed was built from the full original list and is
+  // verified against it (its GPT nodes ran on the then-approved rows).
+  const effective = effectiveExplicitRoutes(task);
+  const original = task.host_context?.explicit_routes;
+  const routes = Array.isArray(effective) && Array.isArray(plan?.nodes) &&
+    plan.nodes.length !== effective.length && Array.isArray(original) &&
+    plan.nodes.length === original.length ? original : effective;
   if (task.mode !== 'explicit_routing_test' || !Array.isArray(routes) ||
       routes.length === 0 || !Array.isArray(plan?.nodes) || !Array.isArray(children) ||
       routes.length !== plan.nodes.length || routes.length !== children.length ||

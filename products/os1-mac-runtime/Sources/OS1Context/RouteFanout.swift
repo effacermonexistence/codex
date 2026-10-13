@@ -54,8 +54,34 @@ public struct RouteFanout: Equatable, Sendable {
     /// still run. Parsing still recognises GPT names, so "1+1 GPT한테" is a
     /// named part that is visibly dropped rather than a sentence sent whole.
     public static func isDroppedGPT(_ surface: ProviderSurface) -> Bool { surface == .chatgpt || surface == .gptChat }
-    public static func droppingGPT(_ targets: [Target]) -> (kept: [Target], dropped: [Target]) {
-        (targets.filter { !isDroppedGPT($0.surface) }, targets.filter { isDroppedGPT($0.surface) })
+    /// A part addressed as "Codex chat"/"코덱스 채팅" names Codex, not GPT: the
+    /// bounded chat lane went with GPT, so it runs on Codex itself, visibly,
+    /// like `--provider gpt-chat`. Only GPT/ChatGPT-named parts (including the
+    /// literal "gpt-chat") are dropped.
+    public static func namesCodex(_ target: Target) -> Bool {
+        target.surface == .gptChat &&
+            target.mention.range(of: #"codex|코덱스"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    /// `kept` is what still runs, in order, with Codex-named chat parts as
+    /// `codex` and no repeated surface/payload pair; `remapped` lists those
+    /// Codex-named parts as written.
+    public static func droppingGPT(_ targets: [Target]) -> (kept: [Target], dropped: [Target], remapped: [Target]) {
+        var kept: [Target] = [], dropped: [Target] = [], remapped: [Target] = []
+        for target in targets {
+            var routed = target
+            if namesCodex(target) {
+                remapped.append(target)
+                routed = Target(surface: .codex, mention: target.mention, payload: target.payload)
+            } else if isDroppedGPT(target.surface) { dropped.append(target); continue }
+            if !kept.contains(where: { $0.surface == routed.surface && $0.payload == routed.payload }) { kept.append(routed) }
+        }
+        return (kept, dropped, remapped)
+    }
+    /// The owner-facing line for Codex-named chat parts that now run on Codex.
+    public static func codexChatRemappedNotice(_ remapped: [Target]) -> String {
+        let parts = remapped.map { "\($0.mention): \($0.payload)" }.joined(separator: ", ")
+        return os1Tr("Codex 채팅 레인은 GPT와 함께 라우팅에서 빠져, 이 부분은 Codex로 실행합니다(\(parts)).",
+                     "The Codex chat lane is no longer routed with GPT, so these parts run on Codex (\(parts)).")
     }
     /// The owner-facing line for dropped GPT parts. Names each dropped part by
     /// what was written, so nothing disappears silently.

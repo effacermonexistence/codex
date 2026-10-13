@@ -1928,8 +1928,10 @@ test('graded nodes on one pool never overlap; waiting nodes do not re-probe the 
   const dir = await fixture(t);
   const request = task(dir, 'Inspect three independent files');
   let catalogCalls = 0, active = 0, peak = 0, executed = 0;
+  // One admitted pool only: the second pool's spreading (below) cannot apply.
+  const codexOnly = routingCatalog().filter(value => value.quota_pool === 'openai_codex');
   const runtime = await createRCCRuntime({stateDir: dir, maximumWorkers: 4,
-    catalog: async value => { catalogCalls++; return catalog(value, routingCatalog()); },
+    catalog: async value => { catalogCalls++; return catalog(value, codexOnly); },
     plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard'), graded('c', 'trivial')]),
     execute: async ticket => {
       executed++; active++; peak = Math.max(peak, active);
@@ -1943,6 +1945,40 @@ test('graded nodes on one pool never overlap; waiting nodes do not re-probe the 
   assert.ok(done.children.every(child => child.selected_config.quota_pool === 'openai_codex'));
   // One initial read and one refresh per dispatch; none while the pool is busy.
   assert.ok(catalogCalls <= 4, `catalog calls ${catalogCalls}`);
+});
+
+test('independent graded nodes spread to the idle second pool, one lease per pool, no extra probe', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Inspect three independent files');
+  let catalogCalls = 0, executed = 0;
+  const running = new Map(); let overlap = 0, peak = 0;
+  const runtime = await createRCCRuntime({stateDir: dir, maximumWorkers: 4,
+    catalog: async value => { catalogCalls++; return catalog(value, routingCatalog()); },
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard'), graded('c', 'trivial')]),
+    execute: async ticket => {
+      executed++;
+      const pool = ticket.selected_config.quota_pool;
+      if (running.get(pool)) overlap++;
+      running.set(pool, (running.get(pool) ?? 0) + 1);
+      peak = Math.max(peak, [...running.values()].reduce((a, b) => a + b, 0));
+      await new Promise(resolve => setTimeout(resolve, 150));
+      running.set(pool, running.get(pool) - 1);
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed'); assert.equal(executed, 3);
+  assert.equal(overlap, 0, 'never two attempts on one pool at once');
+  assert.equal(peak, 2, 'the idle Anthropic pool took one independent node');
+  const byID = Object.fromEntries(done.children.map(child => [child.id, child]));
+  assert.equal(byID.a.selected_config.quota_pool, 'openai_codex');
+  assert.equal(byID.b.selected_config.quota_pool, 'anthropic_shared');
+  assert.match(byID.b.routing_decision.reason, /^spread_for_parallelism;other_pool;/);
+  assert.ok(catalogCalls <= 4, `catalog calls ${catalogCalls}`);
+  const events = runtime.events({schema: 1, task_id: request.task_id});
+  assert.ok(events.filter(x => x.kind === 'candidate_spread_across_pools').length >= 1);
+  assert.equal(events.some(x => x.kind === 'candidate_re_resolved'), false, 'spreading is not a failure re-resolution');
 });
 
 test('a failed native catalog probe before dispatch is retried, and bounded', async t => {
@@ -1969,4 +2005,207 @@ test('a failed native catalog probe before dispatch is retried, and bounded', as
   const held = await wait(stuck, failing);
   assert.equal(held.error, 'catalog_refresh_failed'); assert.equal(executed, 0);
   assert.equal(failingCalls, 4);
+});
+
+// ---- Review fixes (2026-10-13) ------------------------------------------
+const shortLived = (value, ms) => ({...value, availability_valid_until_ms: Date.now() + ms,
+  quota_valid_until_ms: value.quota_valid_until_ms === null ? null : Date.now() + ms});
+
+test('a slow planner never changes the pool or holds: rows are ranked at the catalog bind time', async t => {
+  const dir = await fixture(t);
+  const rows = () => [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  for (const [name, shorten] of [
+    // A cached Claude quota leaves the first-ranked pool a short window.
+    ['first pool short', value => value.quota_pool === 'anthropic_shared'],
+    // Every row's window lapses while the local planner is still running.
+    ['every row short', () => true]]) {
+    const request = task(dir, 'Explain one function ' + name);
+    let calls = 0; const dispatched = [];
+    const runtime = await createRCCRuntime({stateDir: join(dir, name.replace(/ /g, '-')),
+      catalog: async value => { calls++; return catalog(value, calls === 1 ?
+        rows().map(item => shorten(item) ? shortLived(item, 250) : item) : rows()); },
+      plan: async () => { await new Promise(resolve => setTimeout(resolve, 500));
+        return plan(request, [graded('n', 'standard')]); },
+      execute: async ticket => { dispatched.push(ticket.candidate_id); return execution(ticket); },
+      verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'completed', `${name}: ${done.error}`);
+    assert.deepEqual(dispatched, ['claude-opus-medium'], name);
+    assert.equal(done.children[0].routing_decision.reason, 'resolver;pool_rank_0;effort_exact', name);
+    assert.ok(calls >= 2, 'the dispatch-time refresh still re-checks freshness');
+  }
+});
+
+test('legacy explicit snapshots recover requested_surface from the original GPT-including route list', async t => {
+  const dir = await fixture(t);
+  for (const [name, routes] of [
+    ['mixed', [{surface: 'chatgpt', instruction: '1+1'}, {surface: 'codex', instruction: '2+2'},
+      {surface: 'claude', instruction: '3+3'}, {surface: 'claude-chat', instruction: '4+4'}]],
+    // A repeated instruction must not shift a later ordinal onto the GPT route.
+    ['repeated', [{surface: 'chatgpt', instruction: '2+2'}, {surface: 'codex', instruction: '2+2'}]]]) {
+    const request = task(dir, 'Route probes ' + name, 'explicit_routing_test', {explicitRoutes: routes});
+    const stateDir = join(dir, name);
+    const first = await createRCCRuntime({stateDir,
+      catalog: async () => { throw Error('catalog offline'); }});
+    await first.submit(request);
+    const held = await wait(first, request);
+    assert.equal(held.state, 'held');
+    // A new hold shows only the routes that would still run, labelled.
+    assert.deepEqual(held.children.map(child => child.requested_surface),
+      routes.filter(route => route.surface !== 'chatgpt').map(route => route.surface));
+    await first.close();
+    // The pre-field shape: one child per ORIGINAL route, no display field.
+    const db = new DatabaseSync(join(stateDir, 'rcc-runtime.sqlite'));
+    const legacy = JSON.parse(db.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(request.task_id).snapshot);
+    const template = legacy.children[0];
+    legacy.children = routes.map((route, index) => {
+      const child = {...template, id: `requested-${index + 1}`, instruction: route.instruction};
+      delete child.requested_surface;
+      return child;
+    });
+    db.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(legacy), request.task_id);
+    db.close();
+    const reopened = await createRCCRuntime({stateDir});
+    t.after(async () => { await reopened.close(); });
+    const status = reopened.status({schema: 1, task_id: request.task_id});
+    assert.deepEqual(status.children.map(child => child.requested_surface), routes.map(route => route.surface), name);
+  }
+});
+
+test('a graded writer that names concrete paths binds the whole-workspace native row; overlapping writers serialize', async t => {
+  const dir = await fixture(t);
+  const writeRow = (id, pool, model) => row(id, pool, model, 'medium', {scope: 'workspace_write', allowedPaths: ['**']});
+  const rows = [writeRow('codex-write', 'openai_codex', 'gpt-5.7-sol'),
+    writeRow('claude-write', 'anthropic_shared', 'claude-opus-5-5'),
+    row('codex-read', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  const request = task(dir, 'Fix the bug in Sources/OS1/main.swift', 'auto', {write: true});
+  // Pure resolution: the concrete path widens to the row's real authority.
+  const pure = resolveRoutePlan(plan(request, [graded('w', 'standard',
+    {scope: 'workspace_write', ownedPaths: ['Sources/OS1/main.swift']})]), request, catalog(request, rows), Date.now());
+  assert.deepEqual(pure.plan.nodes[0].owned_paths, ['**']);
+  assert.equal(pure.plan.nodes[0].candidate_id, 'codex-write');
+  assert.match(pure.decisions.w.reason, /owned_paths_workspace/);
+  assert.throws(() => resolveRoutePlan(plan(request, [graded('w', 'standard',
+    {scope: 'workspace_write', ownedPaths: ['.']})]), request, catalog(request, rows), Date.now()), /plan_node_invalid/);
+
+  const tickets = [];
+  let active = 0, peak = 0;
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'writers'),
+    catalog: async value => catalog(value, rows),
+    plan: async () => plan(request, [
+      graded('first', 'standard', {scope: 'workspace_write', ownedPaths: ['Sources/OS1/main.swift']}),
+      graded('second', 'standard', {scope: 'workspace_write', ownedPaths: ['Sources/OS1App/OS1App.swift']})]),
+    execute: async ticket => {
+      tickets.push(ticket); active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 60)); active--;
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.equal(tickets.length, 2); assert.equal(peak, 1);
+  assert.ok(tickets.every(ticket => JSON.stringify(ticket.owned_paths) === '["**"]'));
+  const second = done.children.find(child => child.id === 'second');
+  assert.deepEqual(second.dependencies, ['first']);
+  assert.match(second.routing_decision.reason, /workspace_writer_serialized/);
+});
+
+test('a repaired node validates against fresh rows while siblings keep the rows they were admitted with', async t => {
+  const dir = await fixture(t);
+  // Drain: a completes on Codex and exhausts it; b (after a) moves to Claude.
+  const drainRows = [row('codex-a', 'openai_codex', 'gpt-5.7-sol', 'medium'),
+    row('claude-b', 'anthropic_shared', 'claude-opus-5-5', 'medium')];
+  const drained = task(dir, 'Explain two dependent functions');
+  let codexSpent = false; const drainDispatched = [];
+  const drain = await createRCCRuntime({stateDir: join(dir, 'drain'),
+    catalog: async value => catalog(value, codexSpent ? drainRows.slice(1) : drainRows),
+    plan: async () => plan(drained, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})]),
+    execute: async ticket => { drainDispatched.push(ticket.candidate_id); codexSpent = true; return execution(ticket); },
+    verifyTask: taskVerdict});
+  t.after(async () => { await drain.close(); });
+  await drain.submit(drained);
+  const drainDone = await wait(drain, drained);
+  assert.equal(drainDone.state, 'completed', drainDone.error);
+  assert.deepEqual(drainDispatched, ['codex-a', 'claude-b']);
+
+  // A pre-execution quota rejection cools the Claude row both nodes share.
+  const rows = [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  const request = task(dir, 'Explain another two functions');
+  let cooled = false; const dispatched = [];
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'cooled'),
+    catalog: async value => cooled ? {...catalog(value, rows.slice(1)),
+      exclusions: [{provider: 'claude', reason: 'quota_backoff', count: 1}]} : catalog(value, rows),
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})]),
+    execute: async ticket => {
+      dispatched.push(ticket.candidate_id);
+      if (ticket.selected_config.quota_pool !== 'anthropic_shared') return execution(ticket);
+      cooled = true; return quotaRejected(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.deepEqual(dispatched, ['claude-opus-medium', 'codex-sol-medium', 'codex-sol-medium']);
+  assert.ok(done.children.every(child => child.selected_config.quota_pool === 'openai_codex'));
+});
+
+test('pre-execution quota rejections are not charged to the attempt budget, and stay bounded', async t => {
+  const dir = await fixture(t);
+  const rows = [row('claude-opus-medium', 'anthropic_shared', 'claude-opus-5-5', 'medium'),
+    row('claude-sonnet-medium', 'anthropic_shared', 'claude-sonnet-5', 'medium'),
+    row('codex-sol-medium', 'openai_codex', 'gpt-5.7-sol', 'medium')];
+  for (const [name, rejections, state, error, count] of [
+    ['two then success', 2, 'completed', null, 3],
+    ['always rejected', 9, 'failed', 'verified_not_dispatched_re_resolution_exhausted', 3]]) {
+    const request = task(dir, 'Explain one function ' + name);
+    const dispatched = [];
+    const runtime = await createRCCRuntime({stateDir: join(dir, name.replace(/ /g, '-')),
+      catalog: async value => catalog(value, rows),
+      plan: async () => plan(request, [graded('n', 'standard')]),
+      execute: async ticket => { dispatched.push(ticket.candidate_id);
+        return dispatched.length <= rejections ? quotaRejected(ticket) : execution(ticket); },
+      verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, state, `${name}: ${done.error}`);
+    assert.equal(done.error, error, name);
+    assert.equal(dispatched.length, count, name);
+    assert.equal(new Set(dispatched).size, dispatched.length, `${name}: never the same row twice`);
+  }
+  // An adapter-bound node gets one free quota attempt, like the legacy runner.
+  const bound = task(dir, 'Bound node quota');
+  const boundRows = [candidate('a'), candidate('b'), candidate('c')];
+  const boundDispatched = [];
+  const adapter = await createRCCRuntime({stateDir: join(dir, 'bound'),
+    catalog: async value => catalog(value, boundRows),
+    plan: async ({repair}) => plan(bound, [node('only', !repair ? 'a' :
+      boundDispatched.length === 1 ? 'b' : 'c')]),
+    execute: async ticket => { boundDispatched.push(ticket.candidate_id); return quotaRejected(ticket); }});
+  t.after(async () => { await adapter.close(); });
+  await adapter.submit(bound);
+  const boundDone = await wait(adapter, bound);
+  assert.equal(boundDone.state, 'failed'); assert.equal(boundDone.error, 'verified_not_dispatched_retry_exhausted');
+  assert.deepEqual(boundDispatched, ['a', 'b', 'c'], 'budget 2 charged attempts plus one free quota rejection');
+});
+
+test('an explicit route held as unavailable names the catalog exclusions for that provider', async t => {
+  const dir = await fixture(t);
+  const routes = [{surface: 'codex', instruction: '1+1'}, {surface: 'claude', instruction: '2+2'}];
+  const request = task(dir, 'Route two probes', 'explicit_routing_test', {explicitRoutes: routes});
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => ({...catalog(value, [candidate('claude-code', 'claude', 'anthropic_shared')]),
+      exclusions: [{provider: 'codex', reason: 'capacity_zero', count: 2},
+        {provider: 'codex', reason: 'signed_out', count: 1}]}),
+    plan: async () => { throw Error('must hold before planning'); }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const held = await wait(runtime, request);
+  assert.equal(held.state, 'held');
+  assert.equal(held.error, 'explicit_route_surface_unavailable:codex:capacity_zero+signed_out');
 });

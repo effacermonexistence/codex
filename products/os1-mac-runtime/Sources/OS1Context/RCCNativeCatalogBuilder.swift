@@ -14,11 +14,15 @@ import Foundation
 ///
 /// - GPT is no longer routed: no `gpt-chat`/`chatgpt` row is emitted.
 /// - A pool whose owner capacity is 0 is excluded unless the owner named that
-///   provider's surface.
+///   provider's surface (the host preference, or a route of an explicit
+///   route test).
 /// - An explicit effort/model-family word in the owner's request (see
 ///   `RoutingIntent`) restricts rows; if nothing matches the catalog is empty
 ///   with `explicit_constraint_unavailable`, never a substitute.
 /// - Without an explicit effort word, max/ultra/ultracode are not offered.
+/// - An explicit route test (`explicitRouteSurfaces` set) keeps its former
+///   candidate set: the whole fan-out sentence is not read as one intent, and
+///   no effort is withheld; only GPT, capacity and the chat gate apply.
 /// - `claude-chat` rows exist only when the narrow chat-lane predicate holds.
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
@@ -85,6 +89,8 @@ public enum RCCNativeCatalogBuilder {
         /// (`BackendRecovery.claudeModelFamily`) cools only that family.
         public var claudeAccountQuotaBackoff = false
         public var claudeQuotaBackoffFamilies: Set<String> = []
+        /// The surfaces an explicit route test names, or nil outside one.
+        public var explicitRouteSurfaces: [String]? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -147,10 +153,31 @@ public enum RCCNativeCatalogBuilder {
         return provider == "codex" ? plan.codex : plan.claude
     }
     /// The owner named this provider's surface (not Auto), which overrides a
-    /// 0% capacity for that provider.
-    static func named(_ provider: String, preference: String) -> Bool {
-        let preference = normalizedPreference(preference)
-        return provider == "codex" ? preference == "codex" : ["claude", "claude-chat"].contains(preference)
+    /// 0% capacity for that provider: the host preference, or one route of an
+    /// explicit route test. A GPT route names nothing: it is dropped.
+    public static func named(_ provider: String, preference: String, explicitSurfaces: [String]? = nil) -> Bool {
+        func names(_ surface: String) -> Bool {
+            provider == "codex" ? surface == "codex" : ["claude", "claude-chat"].contains(surface)
+        }
+        return names(normalizedPreference(preference)) || (explicitSurfaces ?? []).contains(where: names)
+    }
+    /// The capacity plan the execution authorization receives for a row of
+    /// `provider`. The server denies a provider whose capacity is 0, so a
+    /// provider the catalog admitted only because the owner named it is sent
+    /// at 100 (the former fixed plan); one the owner did not name at 0 is
+    /// refused here (nil), exactly as the catalog excluded it. Absent = 100/100.
+    public static func authorizationCapacity(_ plan: RCCRuntimeContract.CapacityPlan?, provider: String,
+                                             preference: String, explicitSurfaces: [String]?) -> RCCRuntimeContract.CapacityPlan? {
+        guard var value = plan else { return .init(codex: 100, claude: 100) }
+        guard capacity(provider, value) == 0 else { return value }
+        guard named(provider, preference: preference, explicitSurfaces: explicitSurfaces) else { return nil }
+        if provider == "codex" { value.codex = 100 } else { value.claude = 100 }
+        return value
+    }
+    /// The owner-text intent the builder applies. An explicit route test has
+    /// none: each route's payload is not a routing constraint for every route.
+    public static func intent(_ input: Input) -> RoutingIntent {
+        input.explicitRouteSurfaces == nil ? RoutingIntent.parse(input.request) : RoutingIntent()
     }
 
     // MARK: Admission
@@ -163,10 +190,13 @@ public enum RCCNativeCatalogBuilder {
         guard ["codex", "claude"].contains(profile.provider) else { return .skip }
         guard providerSurfaces(profile.provider).contains(where: { admits(preference: input.providerPreference, surface: $0) }) else { return .skip }
         if profile.provider == "codex", !input.showCodex { return .excluded("codex_hidden") }
-        if capacity(profile.provider, input.capacityPlan) == 0, !named(profile.provider, preference: input.providerPreference) {
+        if capacity(profile.provider, input.capacityPlan) == 0,
+           !named(profile.provider, preference: input.providerPreference, explicitSurfaces: input.explicitRouteSurfaces) {
             return .excluded("capacity_zero")
         }
-        if intent.effort == nil, explicitOnlyEfforts.contains(profile.effort) { return .excluded("effort_requires_explicit_request") }
+        if input.explicitRouteSurfaces == nil, intent.effort == nil, explicitOnlyEfforts.contains(profile.effort) {
+            return .excluded("effort_requires_explicit_request")
+        }
         if !intent.admits(model: profile.model, effort: profile.effort) { return .intentFiltered }
         if normalizedPreference(input.providerPreference) == "claude-chat", !(input.chatLaneEligible && !input.hasMaterialRefs) {
             return .excluded("chat_gate_refused")
@@ -183,14 +213,14 @@ public enum RCCNativeCatalogBuilder {
     /// Providers worth a native probe under the current preference, capacity,
     /// visibility, intent and chat gate.
     public static func providersToProbe(_ input: Input) -> Set<String> {
-        let intent = RoutingIntent.parse(input.request)
+        let intent = intent(input)
         return Set(input.profiles.filter { staticAdmission($0, input, intent) == .admitted }.map(\.provider))
     }
 
     // MARK: Build
 
     public static func build(_ input: Input) throws -> Output {
-        let intent = RoutingIntent.parse(input.request)
+        let intent = intent(input)
         var excluded: [String: [String: Int]] = [:]
         var intentFiltered: [String: Int] = [:]
         func exclude(_ provider: String, _ reason: String) { excluded[provider, default: [:]][reason, default: 0] += 1 }
@@ -251,13 +281,25 @@ public enum RCCNativeCatalogBuilder {
             }
         }
 
+        func modelRank(_ row: Row) -> Int {
+            row.provider == "codex"
+                ? input.codexModels.first { $0.slug == row.model }?.priority ?? Int.max
+                : input.claudeModels.firstIndex { $0.model == row.model } ?? Int.max
+        }
         // Pool order: share x remaining / hours-to-reset, unknown quota last.
+        // A pool is scored by the model the host resolver actually binds first
+        // in it: the most-preferred model whose quota is known (an unknown-quota
+        // row cannot dispatch), not the model with the most quota left. With
+        // model-scoped windows those differ, and scoring the wrong one would
+        // spend a nearly exhausted model while the other pool has room.
         var rankings: [PoolRanking] = []
         for provider in ["codex", "claude"] {
             let poolRows = rows.filter { $0.provider == provider }
             guard !poolRows.isEmpty else { continue }
             let share = Double(capacity(provider, input.capacityPlan)) / 100
-            let best = poolRows.filter { $0.remaining != nil }.max { ($0.remaining ?? 0) < ($1.remaining ?? 0) }
+            let best = poolRows.filter { $0.remaining != nil }.min {
+                (modelRank($0), $0.model) < (modelRank($1), $1.model)
+            }
             let quota = provider == "codex" ? input.codexQuota : input.claudeQuota
             let reset = best.flatMap { quota?.limitingReset(accountID: input.accountIDs[provider] ?? "", model: $0.model, now: input.now) }
             let hours = reset.map { max(0, $0.timeIntervalSince(input.now) / 3600) } ?? 168
@@ -274,11 +316,6 @@ public enum RCCNativeCatalogBuilder {
             }
         }
         let poolRank = Dictionary(uniqueKeysWithValues: rankings.enumerated().map { ($0.element.pool, $0.offset) })
-        func modelRank(_ row: Row) -> Int {
-            row.provider == "codex"
-                ? input.codexModels.first { $0.slug == row.model }?.priority ?? Int.max
-                : input.claudeModels.firstIndex { $0.model == row.model } ?? Int.max
-        }
         func effortRank(_ effort: String) -> Int { effortOrder.firstIndex(of: effort) ?? Int.max }
         rows.sort { a, b in
             let keyA = [poolRank[pool(a.provider)] ?? Int.max, modelRank(a)], keyB = [poolRank[pool(b.provider)] ?? Int.max, modelRank(b)]

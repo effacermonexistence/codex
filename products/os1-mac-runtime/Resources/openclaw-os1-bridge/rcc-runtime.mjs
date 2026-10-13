@@ -350,8 +350,12 @@ function routingDecision(routeClass, candidate, reason) {
 /** Pick the exact row for one node. Key, lowest first:
  * (avoided pool, chat lane for read_only, pool order, model order, effort
  * distance to the route_class target, catalog index). Ranks come from the
- * catalog order. Higher effort is preferred over lower when no exact match. */
-function selectRouteCandidate(node, routeClass, task, catalog, now, {avoidPool = null, avoidIDs = []} = {}) {
+ * catalog order. Higher effort is preferred over lower when no exact match.
+ * `widenWrites` lets a graded writer that named concrete paths bind a
+ * whole-workspace row; the caller then records owned_paths ["**"], because a
+ * native writer is not confined to the paths a planner listed. */
+function selectRouteCandidate(node, routeClass, task, catalog, now,
+                              {avoidPool = null, avoidIDs = [], widenWrites = false} = {}) {
   const target = EFFORT_ORDER.indexOf(ROUTE_CLASS_TARGET_EFFORT[routeClass]);
   const poolFirst = new Map(), modelFirst = new Map();
   catalog.candidates.forEach((c, index) => {
@@ -366,7 +370,8 @@ function selectRouteCandidate(node, routeClass, task, catalog, now, {avoidPool =
         !dispatchable(c, task, now)) return;
     if (node.kind === 'deterministic' ? !(c.surface === 'local' && c.transport === 'local' &&
         c.quota_pool === 'none' && c.tools.length === 0) : c.surface === 'local') return;
-    if (node.scope === 'workspace_write' && !coversOwnedPaths(c, node.owned_paths)) return;
+    if (node.scope === 'workspace_write' && !coversOwnedPaths(c, node.owned_paths) &&
+        !(widenWrites && c.allowed_paths.includes('**'))) return;
     const effort = EFFORT_ORDER.indexOf(c.effort);
     const distance = Math.abs(effort - target);
     const effortScore = effort === target ? 0 : effort > target ? 1 + distance : 100 + distance;
@@ -380,7 +385,33 @@ function selectRouteCandidate(node, routeClass, task, catalog, now, {avoidPool =
   const why = [surfaceRank === 0 ? 'chat_lane_read_only' : 'pool_rank_' + poolOrdinal.get(best.candidate.quota_pool),
     best.effortScore === 0 ? 'effort_exact' : best.effortScore < 100 ? 'effort_nearest_higher' : 'effort_nearest_lower'];
   if (avoidPool !== null) why.unshift(avoided ? 'same_pool_only' : 'other_pool');
-  return {candidate: best.candidate, why: why.join(';')};
+  const widened = node.scope === 'workspace_write' && !coversOwnedPaths(best.candidate, node.owned_paths);
+  if (widened) why.push('owned_paths_workspace');
+  return {candidate: best.candidate, why: why.join(';'), widened};
+}
+
+/** Graded writers on overlapping paths run one after another, in plan order:
+ * they would serialize on the workspace lease anyway, and validatePlan rejects
+ * unordered overlapping writers. Only host-graded writers are ordered here;
+ * an existing dependency (either direction) is kept as it is. Pure. */
+function serializeGradedWriters(nodes, gradedIDs) {
+  const byID = new Map(nodes.filter(plain).map(node => [node.id, node]));
+  function ancestor(id, target, seen = new Set()) {
+    const node = byID.get(id);
+    if (!node || seen.has(id) || !Array.isArray(node.dependencies)) return false;
+    seen.add(id);
+    return node.dependencies.some(parent => parent === target || ancestor(parent, target, seen));
+  }
+  const writers = nodes.filter(node => gradedIDs.has(node.id) && node.scope === 'workspace_write');
+  const added = new Set();
+  for (let later = 1; later < writers.length; later++) for (let earlier = 0; earlier < later; earlier++) {
+    const [a, b] = [writers[earlier], writers[later]];
+    if (!a.owned_paths.some(x => b.owned_paths.some(y => pathsOverlap(x, y))) ||
+        ancestor(a.id, b.id) || ancestor(b.id, a.id)) continue;
+    b.dependencies = [...b.dependencies, a.id];
+    added.add(b.id);
+  }
+  return added;
 }
 
 const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_class', 'scope',
@@ -388,20 +419,26 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
 /** Assign each graded node's exact candidate_id deterministically. A node that
  * already carries a candidate_id was bound by the trusted host adapter, not
  * by the local planner (the plugin rejects a planner-chosen ID), and is kept.
- * Explicit route tests are never resolved here. Pure: same input, same output. */
+ * Explicit route tests are never resolved here. Pure: same input, same output.
+ * `now` is the catalog's bind time, not the time the planner returned: a slow
+ * local planner must not change which pool is chosen. Freshness is enforced
+ * again at dispatch, after the pre-dispatch catalog refresh. */
 export function resolveRoutePlan(plan, task, catalog, now = Date.now()) {
   if (task.mode === 'explicit_routing_test' || !plain(plan) || !Array.isArray(plan.nodes))
     return {plan, decisions: {}};
   const decisions = {};
+  const gradedIDs = new Set();
   const nodes = plan.nodes.map(node => {
     if (plain(node) && Object.hasOwn(node, 'route_class')) {
       assert(keys(node, PLANNED_NODE_KEYS) && ID.test(node.id) && ROUTE_CLASSES.includes(node.route_class) &&
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
-        allowedPaths(node.owned_paths), 'plan_node_invalid');
+        allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
       const {route_class: routeClass, ...rest} = node;
-      const choice = selectRouteCandidate(node, routeClass, task, catalog, now);
+      const choice = selectRouteCandidate(node, routeClass, task, catalog, now, {widenWrites: true});
       decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why);
-      return {...rest, candidate_id: choice.candidate.id};
+      gradedIDs.add(node.id);
+      return {...rest, dependencies: [...rest.dependencies],
+        owned_paths: choice.widened ? ['**'] : rest.owned_paths, candidate_id: choice.candidate.id};
     }
     if (plain(node) && typeof node.candidate_id === 'string' && ID.test(node.id ?? '')) {
       const bound = catalog.candidates.find(c => c.id === node.candidate_id);
@@ -411,6 +448,8 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now()) {
     }
     return node;
   });
+  for (const id of serializeGradedWriters(nodes, gradedIDs))
+    decisions[id] = {...decisions[id], reason: decisions[id].reason + ';workspace_writer_serialized'};
   return {plan: {...plan, nodes}, decisions};
 }
 
@@ -572,6 +611,44 @@ function validatePlan(plan, task, catalog) {
   return immutable(plan);
 }
 
+/** Every row a plan node was admitted with, by ID. A later catalog may drop a
+ * row (quota_zero, quota_backoff, sign-out); the node that already ran on it,
+ * or still waits for it, stays admitted against the row it was bound to. */
+function boundRows(plan, catalog, prior = {}) {
+  const rows = {...prior};
+  for (const node of plan.nodes) {
+    const row = catalog.candidates.find(c => c.id === node.candidate_id);
+    if (row) rows[row.id] = immutable(row);
+  }
+  return rows;
+}
+/** The catalog a repaired plan is validated against: the changed nodes only
+ * against the fresh rows; every other node against its fresh row when it is
+ * still offered, else the row it was admitted with. Validating the whole plan
+ * against the fresh catalog alone would hold a task merely because a sibling's
+ * row left the catalog after that sibling ran (or while it waits its turn). */
+function repairCatalog(snapshot, plan, fresh, changedIDs) {
+  const rows = new Map(fresh.candidates.map(c => [c.id, c]));
+  const admitted = new Map([...(snapshot.catalog?.candidates ?? []).map(c => [c.id, c]),
+    ...Object.entries(snapshot.bound_rows ?? {})]);
+  for (const node of plan.nodes) {
+    if (changedIDs.includes(node.id) || rows.has(node.candidate_id)) continue;
+    const prior = admitted.get(node.candidate_id);
+    if (prior) rows.set(prior.id, prior);
+  }
+  return {...fresh, candidates: [...rows.values()]};
+}
+
+/** Attempts charged to the retry budget. A verified pre-execution provider
+ * quota rejection did no work and is not charged for a host-resolved node,
+ * whose moves are bounded by MAX_RE_RESOLUTIONS instead; any other node gets
+ * at most one such free attempt, as the legacy runner's quota limit did. */
+function chargedAttempts(child, resolver) {
+  const free = (child.attempt_history ?? []).filter(entry => entry.state === 'verified_not_dispatched' &&
+    entry.error === PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION).length;
+  return child.attempts - Math.min(free, resolver ? MAX_RE_RESOLUTIONS : 1);
+}
+
 /** Routes displayed by an explicit-route hold: the routes that still run,
  * or (when every route named GPT) the original GPT routes, so the hold shows
  * exactly what was dropped instead of an empty tree. */
@@ -584,7 +661,10 @@ function requestedSurface(snapshot, child) {
   if (child.requested_surface != null) return child.requested_surface;
   // Older snapshots have no display field. Recover only the exact original
   // explicit binding, not a model-selected alias or an observed execution.
-  const routes = heldExplicitRoutes(snapshot.task);
+  // Those children were created from the full original list (GPT routes
+  // included), so their ordinals index that immutable list, not the
+  // GPT-filtered routes a new hold or plan uses.
+  const routes = snapshot.task.host_context?.explicit_routes;
   if (snapshot.task.mode !== 'explicit_routing_test' || !Array.isArray(routes)) return null;
   const ordinal = /^requested-([1-8])$/.exec(child.id);
   if (ordinal) {
@@ -1220,8 +1300,11 @@ class RCCRuntime {
     }
     if (this._load(taskID).cancel_requested) { this._markCancelled(taskID); return; }
     this._update(taskID, 'catalog_bound', snapshot => { snapshot.catalog = catalog; });
+    // The time this catalog was bound. Host resolution after planning ranks
+    // against this instant, so planner latency never changes the pool.
+    const boundAt = Date.now();
     if (task.mode === 'explicit_routing_test') {
-      const now = Date.now();
+      const now = boundAt;
       const unavailable = effectiveExplicitRoutes(task).find(route =>
         !catalog.candidates.some(candidate => candidate.surface === route.surface &&
           candidate.availability === 'available' && candidate.availability_valid_until_ms > now &&
@@ -1229,12 +1312,19 @@ class RCCRuntime {
           (candidate.quota_pool === 'none' || (candidate.quota_pool !== 'unknown' &&
             candidate.quota_remaining_fraction > 0 && candidate.quota_valid_until_ms > now))));
       if (unavailable) {
-        this._holdExplicitRoutes(taskID, `explicit_route_surface_unavailable:${unavailable.surface}`);
+        // Name the host's recorded exclusion reasons for that provider, so a
+        // capacity, sign-in or quota exclusion is visible in the hold.
+        const provider = unavailable.surface === 'codex' ? 'codex' :
+          ['claude', 'claude-chat'].includes(unavailable.surface) ? 'claude' : null;
+        const why = [...new Set((catalog.exclusions ?? []).filter(item => item.provider === provider)
+          .map(item => item.reason))].sort();
+        this._holdExplicitRoutes(taskID, `explicit_route_surface_unavailable:${unavailable.surface}` +
+          (why.length ? ':' + why.join('+') : ''));
         return;
       }
     } else {
       // Nothing that could run now: say why per pool, before a planner call.
-      const blocked = noDispatchableReason(task, catalog, Date.now());
+      const blocked = noDispatchableReason(task, catalog, boundAt);
       if (blocked) { this._hold(taskID, blocked); return; }
     }
     if (typeof this.plan !== 'function') {
@@ -1249,7 +1339,7 @@ class RCCRuntime {
       // never a model-authored replacement for that state. Outside explicit
       // route tests it grades nodes; the host then binds exact rows.
       const proposed = await this.plan({task: immutable(task), catalog: immutable(catalog)});
-      const resolved = resolveRoutePlan(proposed, task, catalog, Date.now());
+      const resolved = resolveRoutePlan(proposed, task, catalog, boundAt);
       plan = validatePlan(resolved.plan, task, catalog);
       decisions = resolved.decisions;
     } catch (error) {
@@ -1261,6 +1351,7 @@ class RCCRuntime {
     if (this._load(taskID).cancel_requested) { this._markCancelled(taskID); return; }
     state = this._update(taskID, 'plan_admitted', snapshot => {
       snapshot.plan = plan; snapshot.state = 'running';
+      snapshot.bound_rows = boundRows(plan, catalog);
       snapshot.children = plan.nodes.map(node => ({id: node.id, state: 'queued',
         attempt_id: null, candidate_id: node.candidate_id, attempts: 0, attempt_history: [],
         repair_needed: false,
@@ -1359,6 +1450,7 @@ class RCCRuntime {
     // vanished row is absent from it; the child's own routing decision still
     // names the pool of the row that failed, so the other pool stays preferred.
     const failed = fresh.candidates.find(c => c.id === node.candidate_id) ??
+      snapshot.bound_rows?.[node.candidate_id] ??
       snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
     const decided = child.routing_decision.resolved_candidate_id === node.candidate_id ?
       child.routing_decision.quota_pool : null;
@@ -1367,11 +1459,12 @@ class RCCRuntime {
       Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
-    const plan = validatePlan(next, snapshot.task, fresh);
+    const plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, fresh, [nodeID]));
     const reason = /^[a-z0-9_]{1,64}$/.test(failure) ? failure : 'pre_dispatch_failure';
     this._update(taskID, 'candidate_re_resolved', state => {
       assert(!state.cancel_requested && !TERMINAL.has(state.state), 're_resolution_raced_cancel');
       state.plan = plan;
+      state.bound_rows = boundRows({nodes: [{candidate_id: choice.candidate.id}]}, fresh, state.bound_rows);
       const target = state.children.find(c => c.id === nodeID);
       target.candidate_id = choice.candidate.id; target.repair_needed = false;
       target.attempt_id = null; target.selected_config = null;
@@ -1381,6 +1474,45 @@ class RCCRuntime {
         `re_resolved_after:${reason};${choice.why}`);
     });
   }
+  /** Deterministic resolution binds independent nodes of one route_class to
+   * the same row, and one pool takes one lease at a time. When THIS task's own
+   * running node holds that pool, move a not-yet-dispatched graded node once to
+   * the best dispatchable row of another admitted pool whose lease is free.
+   * Uses the bound catalog only (no native probe); dispatch still refreshes
+   * and re-checks. Not a failure, so it does not spend re-resolutions. */
+  _spreadAcrossPools(taskID, snapshot, node, planned) {
+    const child = this._resolverNode(snapshot, node.id);
+    if (!child || child.state !== 'queued' || child.attempts !== 0 || child.spread === true ||
+        child.continuation != null || child.stage != null || child.repair_needed) return false;
+    const poolKey = this._poolKey(planned);
+    if (!poolKey || !this.poolReservations.has(poolKey)) return false;
+    const owner = this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey);
+    if (owner?.task_id !== snapshot.task.task_id) return false;
+    let choice, plan;
+    try {
+      choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, snapshot.catalog,
+        Date.now(), {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id]});
+      if (choice.candidate.quota_pool === planned.quota_pool || !this._leasePossible(choice.candidate, snapshot.task))
+        return false;
+      const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
+        n.id === node.id ? {...n, candidate_id: choice.candidate.id} : n)};
+      plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, snapshot.catalog, [node.id]));
+    } catch { return false; }
+    try {
+      this._update(taskID, 'candidate_spread_across_pools', state => {
+        assert(!state.cancel_requested && !TERMINAL.has(state.state), 'spread_raced_cancel');
+        const target = state.children.find(c => c.id === node.id);
+        assert(target.state === 'queued' && target.attempts === 0 && target.candidate_id === node.candidate_id,
+          'spread_raced_dispatch');
+        state.plan = plan;
+        state.bound_rows = boundRows({nodes: [{candidate_id: choice.candidate.id}]}, snapshot.catalog, state.bound_rows);
+        target.candidate_id = choice.candidate.id; target.spread = true;
+        target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
+          `spread_for_parallelism;${choice.why}`);
+      });
+    } catch { return false; }
+    return true;
+  }
   async _refreshCatalog(taskID, requiredIDs = []) {
     const prior = this._load(taskID);
     assert(prior && !prior.cancel_requested && !TERMINAL.has(prior.state), 'catalog_refresh_not_active');
@@ -1388,7 +1520,10 @@ class RCCRuntime {
     let fresh;
     try { fresh = validateCatalog(await this.catalog(immutable(prior.task)), prior.task); }
     catch (error) { throw new RCCRuntimeError(error.code ?? 'catalog_refresh_failed'); }
-    const oldRows = new Map(prior.catalog.candidates.map(c => [c.id, c]));
+    // A row a node was admitted with keeps its exact configuration even after
+    // it left and re-entered the catalog.
+    const oldRows = new Map([...Object.entries(prior.bound_rows ?? {}),
+      ...prior.catalog.candidates.map(c => [c.id, c])]);
     const newRows = new Map(fresh.candidates.map(c => [c.id, c]));
     for (const id of requiredIDs) assert(newRows.has(id), 'selected_candidate_disappeared');
     for (const [id, row] of oldRows) {
@@ -1460,14 +1595,15 @@ class RCCRuntime {
     const child = snapshot.children.find(c => c.id === childID);
     const oldNode = snapshot.plan.nodes.find(n => n.id === childID);
     if (!child?.repair_needed || !oldNode) return;
-    if (child.attempts >= snapshot.task.budget.max_attempts) {
+    if (chargedAttempts(child, Boolean(this._resolverNode(snapshot, childID))) >= snapshot.task.budget.max_attempts) {
       this._update(taskID, 'safe_retry_budget_exhausted', state => {
         state.children.find(c => c.id === childID).state = 'failed';
         state.state = 'failed'; state.error = 'verified_not_dispatched_retry_exhausted';
       });
       return;
     }
-    const failed = snapshot.catalog.candidates.find(c => c.id === oldNode.candidate_id);
+    const failed = snapshot.catalog.candidates.find(c => c.id === oldNode.candidate_id) ??
+      snapshot.bound_rows?.[oldNode.candidate_id];
     const resolverNode = this._resolverNode(snapshot, childID);
     if (resolverNode && (resolverNode.re_resolutions ?? 0) >= MAX_RE_RESOLUTIONS) {
       this._update(taskID, 'safe_re_resolution_exhausted', state => {
@@ -1501,7 +1637,8 @@ class RCCRuntime {
           failed_node_id: childID, failed_candidate_id: oldNode.candidate_id,
           failed_attempt_id: child.attempt_id,
           failure_receipt: child.attempt_history.at(-1)?.native_receipt ?? null,
-          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task, fresh);
+          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task,
+        repairCatalog(snapshot, snapshot.plan, fresh, [childID]));
       assert(proposed.nodes.length === snapshot.plan.nodes.length, 'repair_plan_shape_changed');
       const currentByID = new Map(snapshot.plan.nodes.map(n => [n.id, n]));
       for (const next of proposed.nodes) {
@@ -1525,6 +1662,7 @@ class RCCRuntime {
     this._update(taskID, 'safe_subset_replanned', state => {
       state.plan = proposed;
       const node = proposed.nodes.find(n => n.id === childID);
+      state.bound_rows = boundRows({nodes: [node]}, fresh, state.bound_rows);
       const target = state.children.find(c => c.id === childID);
       target.candidate_id = node.candidate_id; target.repair_needed = false;
       target.attempt_id = null; target.selected_config = null;
@@ -1614,8 +1752,14 @@ class RCCRuntime {
           });
           continue;
         }
-        const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
-        if (planned && !this._leasePossible(planned, snapshot.task)) continue;
+        const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id) ??
+          snapshot.bound_rows?.[node.candidate_id];
+        if (planned && !this._leasePossible(planned, snapshot.task)) {
+          // Independent graded work waits for the busy pool only when the
+          // other admitted pool cannot take it now either.
+          if (this._spreadAcrossPools(taskID, snapshot, node, planned)) { reResolved = true; break; }
+          continue;
+        }
         const resolverNode = this._resolverNode(snapshot, node.id);
         let candidate, fresh;
         try {
@@ -1952,8 +2096,14 @@ class RCCRuntime {
 
   async _executeNode(taskID, node, candidate) {
     const task = this._load(taskID).task;
-    for (let attempt = this._load(taskID).children.find(c => c.id === node.id).attempts + 1;
-         attempt <= task.budget.max_attempts; attempt++) {
+    const start = this._load(taskID);
+    const resolver = Boolean(this._resolverNode(start, node.id));
+    // One dispatch per call: every path below returns. The budget counts
+    // charged attempts, so an uncharged pre-execution quota rejection never
+    // leaves a queued node that can neither run nor fail.
+    for (let attempt = start.children.find(c => c.id === node.id).attempts + 1;
+         chargedAttempts(start.children.find(c => c.id === node.id), resolver) < task.budget.max_attempts;
+         attempt++) {
       const before = this._load(taskID);
       if (before.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
       if (Date.now() - before.created_at_ms >= task.budget.max_duration_ms) {
@@ -2036,7 +2186,13 @@ class RCCRuntime {
       }
       if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
           result.side_effects === 'none' && result.native_receipt !== null) {
-        if (attempt < task.budget.max_attempts) {
+        const typedError = typeof result.error === 'string' && /^[a-z0-9_]{1,64}$/.test(result.error) ?
+          result.error : null;
+        const recorded = current.children.find(c => c.id === node.id);
+        const charged = chargedAttempts({attempts: recorded.attempts, attempt_history: [
+          ...recorded.attempt_history.slice(0, -1), {state: 'verified_not_dispatched', error: typedError}]},
+        resolver);
+        if (charged < task.budget.max_attempts) {
           this._update(taskID, 'safe_retry_requires_subset_plan', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             child.state = 'queued'; child.dispatched_at_ms = null; child.repair_needed = true;
@@ -2044,8 +2200,7 @@ class RCCRuntime {
             child.attempt_history.at(-1).native_receipt = result.native_receipt;
             // A typed pre-execution reason (for example a provider quota
             // rejection) names the host re-resolution; free text never does.
-            child.attempt_history.at(-1).error =
-              typeof result.error === 'string' && /^[a-z0-9_]{1,64}$/.test(result.error) ? result.error : null;
+            child.attempt_history.at(-1).error = typedError;
             child.usage = result.usage ?? null;
             child.attempt_history.at(-1).usage = result.usage ?? null;
           });
@@ -2073,6 +2228,13 @@ class RCCRuntime {
       });
       return;
     }
+    // Reached only when the charged budget was already spent before this
+    // dispatch: fail closed instead of leaving a queued node behind.
+    this._update(taskID, 'safe_retry_budget_exhausted', snapshot => {
+      if (TERMINAL.has(snapshot.state)) return;
+      snapshot.children.find(c => c.id === node.id).state = 'failed';
+      snapshot.state = 'failed'; snapshot.error = 'verified_not_dispatched_retry_exhausted';
+    });
   }
 
   async _settleTask(taskID) {

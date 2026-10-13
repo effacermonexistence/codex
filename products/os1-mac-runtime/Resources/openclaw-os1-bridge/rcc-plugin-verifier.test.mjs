@@ -104,3 +104,28 @@ test('a GPT route in the host contract is dropped, not required, by the exact ve
   assert.equal(verdict.task_verified, true);
   assert.equal(verdict.reason, 'exact_explicit_route_arithmetic_receipts');
 });
+
+test('a plan admitted before GPT was dropped is verified against the full original route list', async t => {
+  const x = await fixture(t);
+  // The legacy plan had one more node, on the then-approved GPT row.
+  const routes = [{surface: 'chatgpt', instruction: '5+5'}, ...x.task.host_context.explicit_routes];
+  x.task.host_context.explicit_routes = routes;
+  const config = {...x.children[0].selected_config, surface: 'chatgpt', transport: 'chatgpt_service',
+    quota_pool: 'openai_chat'};
+  const attempt = randomUUID(), receiptPath = join(x.stateDir, 'native-receipts', randomUUID() + '.json');
+  const record = {schema: 1, task_id: x.task.task_id, node_id: 'route-0', attempt_id: attempt,
+    candidate_id: 'cfg-0', configuration_sha256: config.configuration_sha256, selected_config: config,
+    acknowledged_config: config, observed_config: null, status: 'succeeded', dispatch_stage: 'dispatched',
+    execution_verified: true, task_verified: false, task_quality: 'execution_only', side_effects: 'none',
+    parity_state: 'unverified', output: '10', native_receipt: receiptPath};
+  await writeFile(receiptPath, JSON.stringify(record), {flag: 'wx', mode: 0o600});
+  x.plan.nodes.unshift({id: 'route-0', instruction: '5+5', kind: 'agent', dependencies: [], candidate_id: 'cfg-0'});
+  x.children.unshift({id: 'route-0', instruction: '5+5', state: 'completed', attempt_id: attempt,
+    candidate_id: 'cfg-0', selected_config: config, execution_verified: true, task_quality: 'execution_only',
+    output: '10', native_receipt: receiptPath});
+  const verdict = await verifyExactExplicitArithmetic(x, {stateDir: x.stateDir});
+  assert.equal(verdict.task_verified, true, verdict.reason);
+  // A new plan still has to match the effective routes exactly.
+  x.plan.nodes.pop(); x.children.pop();
+  assert.equal((await verifyExactExplicitArithmetic(x, {stateDir: x.stateDir})).task_verified, false);
+});
