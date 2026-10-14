@@ -142,13 +142,130 @@ delivering the cheaper answer. If a frontier model can run again by the time
 the cheaper attempt fails, the part escalates to it.
 
 The tier choice itself is the admission; the former requirement of 20 verified
-ledger passes no longer applies to tier routing. The routing ledger still
+ledger passes no longer applies to tier routing (the cost gate below can only
+send a node to its reference, never admit a cheaper one). The routing ledger still
 records every attempt with its tier, effort, outcome and whether it was an
 escalation, so evidence keeps accumulating. A failed cheaper attempt also
 records what its one escalation did (`escalation_outcome`: `escalated`, or the
 reason the part was held instead, for example `ladder_reference_unavailable`),
 so the ledger tells how often the guard escalated, found no reference, or was
 blocked by reported effects.
+
+## Cost gate: tier or reference, decided from the ledger
+
+The guard above makes a failed cheaper answer cost the cheaper attempt AND the
+reference. Whether a cheaper route is still worth trying is therefore not a
+matter of taste: it follows from what the routing ledger has observed, by one
+exact comparison and one owner-tunable confidence level.
+
+### The criterion (exact for this structure)
+
+For one read-only node graded below its reference, let `mu_C` be the mean cost
+of one attempt on the cheaper route, `mu_R` the mean cost of one attempt on the
+reference, and `p` the probability that a cheaper attempt ends with a failure
+signal (and so escalates). Then
+
+- tier, expected cost: `mu_C + p * mu_R` (the cheaper attempt always, the
+  reference once with probability `p`);
+- reference directly, expected cost: `mu_R`.
+
+A failing reference is held in both arms and is never escalated again, so it
+adds the same to both sides and cancels. The tier costs more exactly when
+`mu_C + p * mu_R > mu_R`, that is when `p > 1 - mu_C / mu_R`. Nothing in this
+inequality is a chosen threshold: a cheaper route at 20% of the reference's
+cost is worth trying until it escalates more than 80% of the time; one at 90%
+of the cost stops being worth it above 10%.
+
+### Estimating p, mu_C and mu_R (no new store)
+
+The gate reads the existing routing ledger (both retained generations,
+parsed once per file change). For the node's family (route class, scope,
+surface kind) and pool:
+
+- **cheaper attempts**: the same cheaper model and effort on a `tier` route
+  that was not itself an escalation. Each settled one is an escalation trial:
+  `ladder_not_returned` / `ladder_verifier_failed` (a failure signal, escalated
+  or held) count 1, `completed` (adopted) counts 0; interrupted, cancelled,
+  effects-uncertain or never-dispatched attempts are no evidence either way.
+  The ones with recorded usage are its cost samples (an attempt without usage
+  still counts as a trial, so a missing usage report on failures cannot make
+  `p` look smaller);
+- **reference attempts**: the escalation target's model and effort in its pool
+  on a `reference` route (bound directly or escalated to) that ran to the end
+  (`completed` or `held`) with usage. Family first; when the family has fewer
+  than two, the same pool, model and effort at any class with the same scope
+  and surface kind (never a write or another surface kind).
+
+Cost is a **token proxy**: `input_tokens + output_tokens + reasoning_tokens`
+as the ledger recorded them. The Swift usage normalizer already folds cached
+input into `input_tokens` for both providers, so `cache_read_tokens` is not
+added again; the current executor does not report `reasoning_tokens`, so it
+adds 0 today (if a future executor reports it as a part of `output_tokens`,
+this sum would count it twice and must be revisited). This is **not
+subscription quota**: how much quota one token of each model spends is not
+observable here and may differ by model, and no calibration is claimed.
+
+### Posterior and decision
+
+- `p ~ Beta(1 + escalations, 1 + trials - escalations)` (uniform prior).
+- Each mean cost (the sample MEAN, because the decision is about expected
+  cost, not the median) has the posterior of a mean under the usual
+  noninformative prior: Student-t with `n - 1` degrees of freedom, located at
+  the sample mean with scale `sd / sqrt(n)`, truncated to `> 0`. As `n` grows
+  this is `Normal(mean, sd / sqrt(n))`; for few samples it is wider, so thin
+  evidence is less confident.
+- `P_more = Pr[mu_C + p * mu_R > mu_R]` is estimated by Monte Carlo with
+  `COST_GATE_DRAWS = 4000` draws (standard error at most 0.008). The generator
+  (xoshiro128**, Box-Muller normals, Marsaglia-Tsang gammas, Beta as
+  `X / (X + Y)`, Student-t as `Z / sqrt(V / df)`) is seeded from a SHA-256 of
+  the exact evidence, so identical evidence always gives the identical
+  decision and `P_more` on the same runtime.
+- The node goes **straight to the reference** (the guard's own escalation
+  target, which must be able to run now) only when `P_more >=
+  COST_GATE_CONFIDENCE`. That constant, 0.9 by default, is the one owner-tunable
+  number: how sure OS-1 must be that trying the cheaper route spends more
+  before it stops trying it. It is a confidence level, not a cost threshold.
+
+Every gated route says why in its routing reason, and its ledger records keep
+the decision (`cost_gate`: reason, `p_mean`, `cost_ratio`, `P_more`):
+
+- `cost_gate_reference:p_mean=…:cost_ratio=…:p_more=…:trials=…:escalations=…:cheap_n=…:ref_n=…:ref_family|ref_pool`
+  plus `cost_gate_cheap_<model>_<effort>` (the route it replaced);
+- `cost_gate_tier:…` (same numbers): not confident, the tier route and its
+  guard run as before;
+- `cost_gate_insufficient:trials=…:…`: fewer than two cost samples in either
+  arm (the spread is undefined) or a zero mean cost: tier;
+- `cost_gate_unavailable`: the ledger could not be read safely (not private, a
+  link, oversize), or a failure record is still waiting to be written: tier;
+- `cost_gate_no_reference`: no escalation target can run now: tier.
+
+The gate applies only to a graded read-only tier route below its reference
+with no owner effort or model-family word (a named route without its own
+words included, and then only on that route's own surface). A write, an owner
+constraint, a route already at its reference and an escalation never consult
+it. It runs the same way at bind time, at a re-resolution and when a node
+moves pools for parallelism.
+
+### What the gate does not claim
+
+- No quota calibration: the comparison is in tokens. If one token of the
+  cheaper model spends less quota than one token of the frontier model (likely,
+  but not observable here), the exact quota rule would be
+  `w * mu_C + p * mu_R > mu_R` with `w < 1`, and the token gate leans towards
+  the reference relative to it.
+- No quality parity: the gate compares cost only; the guard still catches
+  only the failure signals listed above.
+- The escalated reference is assumed to cost, in expectation, what a direct
+  reference attempt on the same family costs. Escalated tasks are the ones the
+  cheaper model failed and may be harder; family reference samples are mostly
+  such escalations. The pool fallback mixes route classes.
+- Token counts are skewed; the mean's posterior relies on the usual
+  large-sample behaviour of a mean, widened by Student-t for small `n`.
+- Once a family goes to the reference it adds no new cheaper samples: the
+  decision holds until those samples leave the ledger's retained window
+  (two generations of 4 MiB), after which the gate reads `insufficient` and
+  the tier route collects evidence again. A torn or foreign ledger line is
+  skipped as one missing sample.
 
 ## Explicit owner words
 
@@ -215,6 +332,9 @@ needs a directive verb, a version or a product word).
 - A routing decision gains an optional `tier`, and its escalation record
   (`ladder`) optional `cheap_model` / `reference_model`. Older snapshots
   decode unchanged.
+- A routing-ledger record gains an optional `cost_gate` (null when the gate did
+  not apply); the gate reads older records without it. The routing decision
+  shape is unchanged: the gate's numbers travel in its `reason`.
 - No quota, quality or parity numbers are invented: an unknown quota still
   means a row cannot run, and the tier table only repeats provider wording.
 

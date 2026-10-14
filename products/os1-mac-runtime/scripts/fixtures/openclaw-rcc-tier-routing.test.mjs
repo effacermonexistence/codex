@@ -4,12 +4,13 @@
 // fixtures with a fake executor: no provider, model, network or HOME state.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createRCCRuntime, hostContextFingerprint, MODEL_TIERS, resolveRoutePlan, routingAvailability,
-  TIER_ROUTES } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import { COST_GATE_CONFIDENCE, COST_GATE_DRAWS, COST_GATE_MIN_SAMPLES, costGateRandom, costGateRecord, costSummary,
+  createRCCRuntime, hostContextFingerprint, MODEL_TIERS, openRoutingLedger, resolveRoutePlan, routingAvailability,
+  sampleBeta, sampleGamma, TIER_ROUTES, tierCostEvidence, tierCostGate } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
 async function fixture(t) {
@@ -909,4 +910,362 @@ test('quota_scores and explicit_route_intents are strictly shaped catalog fields
       execute: () => { throw Error('must not dispatch'); }});
     assert.equal(bad.done.state, 'held', name); assert.equal(bad.done.error, 'catalog_binding_invalid', name);
   }
+});
+
+// ---- Cost gate: tier or reference, decided from the routing ledger --------
+// The derivation: a guarded read-only tier route costs mu_C + p*mu_R, the
+// reference mu_R, so the tier costs more iff p > 1 - mu_C/mu_R. The gate goes
+// straight to the reference only when the posterior Pr[that] >= 0.9.
+
+const evidence = (trials, escalations, cheapCosts, referenceCosts, level = 'family') =>
+  ({cheap: {trials, escalations, cost: costSummary(cheapCosts)}, reference: {level, cost: costSummary(referenceCosts)}});
+// n costs around a centre, deterministic and spread (no randomness in tests).
+const around = (centre, spread, n) => Array.from({length: n}, (_, i) => centre + spread * ((i % 5) - 2) / 2);
+// Regularized incomplete beta for integer a, b: Pr[Beta(a, b) <= x].
+function betaCDF(x, a, b) {
+  const n = a + b - 1;
+  let total = 0, choose = 1;
+  for (let j = 0; j <= n; j++) {
+    if (j >= a) total += choose * x ** j * (1 - x) ** (n - j);
+    choose = choose * (n - j) / (j + 1);
+  }
+  return total;
+}
+
+test('cost gate: the confidence is the one tunable; no or too little evidence keeps the tier', () => {
+  assert.equal(COST_GATE_CONFIDENCE, 0.9);
+  assert.equal(COST_GATE_DRAWS, 4000);
+  assert.equal(COST_GATE_MIN_SAMPLES, 2);
+  const none = tierCostGate(tierCostEvidence([], {}));
+  assert.equal(none.route, 'tier');
+  assert.equal(none.reason, 'cost_gate_insufficient');
+  assert.deepEqual([none.trials, none.escalations, none.cheap_n, none.reference_n, none.p_more], [0, 0, 0, 0, null]);
+  // One cost sample in either arm: its spread is undefined, so no decision.
+  for (const [cheap, reference] of [[[500], [1000, 1100]], [[500, 520], [1000]]])
+    assert.equal(tierCostGate(evidence(10, 10, cheap, reference)).reason, 'cost_gate_insufficient');
+  // A zero mean cost is no usable evidence either.
+  assert.equal(tierCostGate(evidence(4, 4, [0, 0], [1000, 1000])).reason, 'cost_gate_insufficient');
+  // Malformed evidence is unavailable, never a decision.
+  for (const bad of [null, {}, {cheap: {trials: 2, escalations: 3, cost: costSummary([1, 2])},
+    reference: {level: 'family', cost: costSummary([1, 2])}},
+    {...evidence(2, 1, [1, 2], [3, 4]), reference: {level: 'everywhere', cost: costSummary([3, 4])}}])
+    assert.deepEqual([tierCostGate(bad).route, tierCostGate(bad).reason], ['tier', 'cost_gate_unavailable']);
+});
+
+test('cost gate: a clear escalation rate goes to the reference; a rare one on a far cheaper route stays tier', () => {
+  // Every cheap attempt failed and the cheap route costs a fifth of the
+  // reference: break-even p is 0.8, the posterior is Beta(21, 1).
+  const failing = tierCostGate(evidence(20, 20, around(200, 20, 20), around(1000, 100, 10)));
+  assert.equal(failing.route, 'reference');
+  assert.equal(failing.reason, 'cost_gate_reference');
+  assert.equal(failing.p_mean, round(21 / 22));
+  assert.equal(failing.cost_ratio, 0.2);
+  assert.ok(failing.p_more >= COST_GATE_CONFIDENCE, String(failing.p_more));
+  // No escalation in 20 and a route at a twentieth of the cost: never more.
+  const cheap = tierCostGate(evidence(20, 0, around(50, 5, 20), around(1000, 100, 10)));
+  assert.equal(cheap.route, 'tier');
+  assert.equal(cheap.reason, 'cost_gate_tier');
+  assert.equal(cheap.p_mean, round(1 / 22));
+  assert.equal(cheap.p_more, 0);
+  // A cheap route costing 90% of the reference with 4 escalations in 10:
+  // break-even p is only 0.1, so the reference is cheaper with confidence.
+  const close = tierCostGate(evidence(10, 4, around(900, 30, 10), around(1000, 30, 10)));
+  assert.equal(close.route, 'reference');
+  assert.equal(close.cost_ratio, 0.9);
+  assert.ok(close.p_more >= COST_GATE_CONFIDENCE, String(close.p_more));
+});
+function round(value) { return Math.round(value * 1000) / 1000; }
+
+test('cost gate: three noisy samples near break-even are not confident, so the tier stays', () => {
+  // Point estimates: p 0.4, cost ratio 0.6, break-even 0.4: genuinely unsure.
+  const unsure = tierCostGate(evidence(3, 1, [400, 900, 650], [1500, 700, 1050]));
+  assert.equal(unsure.route, 'tier');
+  assert.equal(unsure.reason, 'cost_gate_tier');
+  assert.ok(unsure.p_more > 0.2 && unsure.p_more < 0.8, String(unsure.p_more));
+});
+
+test('cost gate: identical evidence gives the identical decision and P_more', () => {
+  const make = () => evidence(7, 3, [400, 420, 390, 450, 410, 430, 405], [900, 1100, 1000, 950]);
+  const first = tierCostGate(make()), second = tierCostGate(make());
+  assert.deepEqual(first, second);
+  first.p_more = -1; // a caller mutating its copy never changes the next answer
+  assert.deepEqual(tierCostGate(make()), second);
+  // The same evidence with more draws converges on the same probability.
+  const precise = tierCostGate(make(), {draws: 40_000});
+  assert.ok(Math.abs(precise.p_more - second.p_more) < 0.03, `${precise.p_more} ${second.p_more}`);
+  // A different confidence is a different (seeded) computation, same rule.
+  assert.equal(tierCostGate(make(), {confidence: 0.01}).route, 'reference');
+  assert.equal(tierCostGate(make(), {confidence: 1}).route, second.p_more === 1 ? 'reference' : 'tier');
+});
+
+test('cost gate: Monte Carlo agrees with the closed form when costs are exact', () => {
+  // Zero spread: P_more = Pr[p > 1 - mu_C/mu_R] = 1 - I_{1-ratio}(a, b).
+  for (const [trials, escalations, cheapCost, referenceCost] of [[20, 19, 200, 1000], [2, 2, 800, 1000],
+    [2, 1, 500, 1000], [12, 3, 700, 1000]]) {
+    const gate = tierCostGate(evidence(trials, escalations, [cheapCost, cheapCost], [referenceCost, referenceCost]));
+    const exact = 1 - betaCDF(1 - cheapCost / referenceCost, 1 + escalations, 1 + trials - escalations);
+    // Monte Carlo standard error is at most 0.008 at 4000 draws: 3 SE.
+    assert.ok(Math.abs(gate.p_more - exact) < 0.025, `${trials}/${escalations}: ${gate.p_more} vs ${exact}`);
+  }
+});
+
+test('cost gate: the Beta and Gamma samplers have the right moments', () => {
+  const random = costGateRandom('5'.repeat(64));
+  const n = 40_000;
+  const moments = draw => { let sum = 0, squares = 0;
+    for (let i = 0; i < n; i++) { const x = draw(); sum += x; squares += x * x; }
+    return [sum / n, squares / n - (sum / n) ** 2]; };
+  const [betaMean, betaVar] = moments(() => sampleBeta(random, 3, 7));
+  assert.ok(Math.abs(betaMean - 0.3) < 0.005, String(betaMean));
+  assert.ok(Math.abs(betaVar - 21 / 1100) < 0.002, String(betaVar));
+  for (const shape of [0.5, 1, 4.5]) {
+    const [mean, variance] = moments(() => sampleGamma(random, shape));
+    assert.ok(Math.abs(mean - shape) < 0.03 * Math.max(1, shape), `${shape}: ${mean}`);
+    assert.ok(Math.abs(variance - shape) < 0.08 * Math.max(1, shape), `${shape}: ${variance}`);
+  }
+  const uniform = costGateRandom('0'.repeat(64)); // an all-zero seed still runs
+  for (let i = 0; i < 1000; i++) { const u = uniform(); assert.ok(u > 0 && u < 1); }
+  assert.throws(() => costGateRandom('not hex'), /cost_gate_seed_invalid/);
+  assert.throws(() => sampleGamma(random, 0), /cost_gate_gamma_shape_invalid/);
+});
+
+const GATE_QUERY = {family: 'trivial:read_only:agent', scope: 'read_only', cheap_pool: 'openai_codex',
+  cheap_model: 'gpt-6-luna', cheap_effort: 'low', reference_family: 'trivial:read_only:agent',
+  reference_surface_kind: 'agent', reference_pool: 'openai_codex', reference_model: 'gpt-6-astra', reference_effort: 'max'};
+const ledgerRecord = changes => ({schema: 1, family: 'trivial:read_only:agent', scope: 'read_only', surface_kind: 'agent',
+  surface: 'codex', quota_pool: 'openai_codex', model: 'gpt-6-luna', effort: 'low', route_kind: 'tier',
+  escalated: false, attempt_state: 'completed', usage: {input_tokens: 100, output_tokens: 10}, ...changes});
+const REFERENCE = {model: 'gpt-6-astra', effort: 'max', route_kind: 'reference'};
+
+test('cost gate evidence: trials, escalations and token costs from the ledger, family first then the pool', () => {
+  const records = [
+    ledgerRecord({}), // adopted: trial, no escalation, cost 110
+    // escalated with a signal: cache reads already sit inside input_tokens and
+    // are not added again; reasoning tokens are added
+    ledgerRecord({attempt_state: 'ladder_not_returned', usage: {input_tokens: 200, output_tokens: 20,
+      reasoning_tokens: 5, cache_read_tokens: 150}}),
+    ledgerRecord({attempt_state: 'ladder_verifier_failed', usage: null}), // a trial, but no cost sample
+    ledgerRecord({attempt_state: 'interrupted'}), ledgerRecord({attempt_state: 'effects_uncertain'}), // no evidence
+    ledgerRecord({effort: 'medium'}), ledgerRecord({family: 'standard:read_only:agent'}),
+    ledgerRecord({quota_pool: 'anthropic_shared'}),
+    ledgerRecord({...REFERENCE, escalated: true, usage: {input_tokens: 1000, output_tokens: 100}}), // 1100, family
+    ledgerRecord({...REFERENCE, attempt_state: 'held', usage: {input_tokens: 800, output_tokens: 100}}), // 900
+    ledgerRecord({...REFERENCE, family: 'deep:read_only:agent', usage: {input_tokens: 4000, output_tokens: 1000}}),
+    ledgerRecord({...REFERENCE, attempt_state: 'effects_uncertain'}),
+    ledgerRecord({...REFERENCE, scope: 'workspace_write', family: 'trivial:workspace_write:agent'}),
+    ledgerRecord({...REFERENCE, surface_kind: 'chat', family: 'trivial:read_only:chat'}),
+    ledgerRecord({...REFERENCE, route_kind: 'explicit'}), ledgerRecord({...REFERENCE, schema: 2}),
+  ].map(costGateRecord).filter(Boolean);
+  assert.equal(records.length, 14, 'only schema-1 tier and reference attempts are kept');
+  const family = tierCostEvidence(records, GATE_QUERY);
+  assert.deepEqual(family, {cheap: {trials: 3, escalations: 2, cost: costSummary([110, 225])},
+    reference: {level: 'family', cost: costSummary([1100, 900])}});
+  // Fewer than two family reference samples: the pool at any class, same
+  // scope and surface kind (never a write or another surface kind).
+  const pool = tierCostEvidence(records.filter(record => record.attempt_state !== 'held'), GATE_QUERY);
+  assert.deepEqual(pool.reference, {level: 'pool', cost: costSummary([1100, 5000])});
+  assert.deepEqual(costSummary([110, 225]), {n: 2, mean: 167.5, sd: Math.sqrt(2 * 57.5 ** 2)});
+});
+
+test('the routing ledger serves cost-gate records: torn lines are skipped, a public file is unreadable', async t => {
+  const dir = await fixture(t);
+  const ledger = openRoutingLedger(dir);
+  assert.deepEqual(ledger.costRecords(), [], 'no ledger yet: no evidence, no error');
+  ledger.append(ledgerRecord({task_id: 't1', attempt_id: 'a1'}));
+  ledger.append(ledgerRecord({task_id: 't2', attempt_id: 'a2', ...REFERENCE}));
+  assert.deepEqual(ledger.costRecords().map(record => [record.model, record.cost]), [['gpt-6-luna', 110], ['gpt-6-astra', 110]]);
+  // A torn earlier write is one missing sample, not a disabled gate.
+  await writeFile(ledger.path, '{"schema":1,"route_kind":"ti', {flag: 'a'});
+  ledger.append(ledgerRecord({task_id: 't3', attempt_id: 'a3', attempt_state: 'ladder_not_returned'}));
+  assert.deepEqual(ledger.costRecords().map(record => record.attempt_state), ['completed', 'completed', 'ladder_not_returned']);
+  await chmod(ledger.path, 0o644);
+  assert.throws(() => ledger.costRecords(), /routing_ledger_file_invalid/);
+});
+
+test('cost gate in the resolver: a confident gate binds the guard target directly; errors keep the tier', () => {
+  const request = task('/tmp', 'Answer one question');
+  const catalog = tierCatalog(request);
+  let calls = 0, queries = [];
+  const strong = evidence(20, 20, around(200, 20, 20), around(1000, 100, 10));
+  const bind = (gateEvidence, routeClass = 'trivial', value = request, values = catalog, options = {}) =>
+    resolveRoutePlan(plan(value, [graded('n', routeClass, options)]), value, values, Date.now(),
+      {costEvidence: query => { calls++; queries.push(query); if (gateEvidence instanceof Error) throw gateEvidence;
+        return gateEvidence; }});
+  const gated = bind(strong);
+  assert.equal(calls, 1);
+  assert.deepEqual(queries[0], GATE_QUERY, 'the cheaper route against the escalation target it would use');
+  assert.equal(route(gated.decisions.n), 'openai_codex/gpt-6-astra/max');
+  assert.equal(gated.decisions.n.tier, 'frontier');
+  assert.match(gated.decisions.n.reason, new RegExp('^resolver;route_reference;class_trivial;cost_gate_reference:' +
+    'p_mean=0\\.955:cost_ratio=0\\.2:p_more=0\\.9\\d*:trials=20:escalations=20:cheap_n=20:ref_n=10:ref_family;' +
+    'cost_gate_cheap_gpt_6_luna_low;tier_frontier;pool_rank_0;effort_max;cost_gate_same_pool;agent_surface$'));
+  assert.equal(Object.hasOwn(gated.decisions.n, 'ladder'), false, 'the reference has nothing to escalate to');
+  assert.equal(gated.routes.n.kind, 'reference');
+  assert.equal(gated.routes.n.ladder, null);
+  assert.equal(gated.routes.n.cost_gate.reason, 'cost_gate_reference');
+  assert.equal(gated.plan.nodes[0].candidate_id, key('gpt-6-astra', 'max', 'read_only', 'codex'));
+  // Not confident, too little evidence, or no readable evidence: the tier
+  // route and its guard, with the gate's reason on the decision.
+  for (const [gateEvidence, token] of [[evidence(20, 0, around(50, 5, 20), around(1000, 100, 10)), /;cost_gate_tier:p_mean=0\.045:/],
+    [evidence(1, 1, [300], [1000]), /;cost_gate_insufficient:trials=1:escalations=1:cheap_n=1:ref_n=1:ref_family;/],
+    [new Error('ledger unreadable'), /;escalation_reference_same_pool;cost_gate_unavailable;agent_surface$/],
+    [null, /;cost_gate_unavailable;/]]) {
+    const kept = bind(gateEvidence);
+    assert.equal(route(kept.decisions.n), 'openai_codex/gpt-6-luna/low', String(token));
+    assert.match(kept.decisions.n.reason, token);
+    assert.equal(kept.routes.n.kind, 'tier');
+    assert.equal(kept.routes.n.ladder.reference_model, 'gpt-6-astra');
+  }
+  // No reference can run now: the gate has nothing to compare and says so.
+  calls = 0;
+  const noFrontier = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')});
+  const blind = bind(strong, 'trivial', request, noFrontier);
+  assert.equal(calls, 0);
+  assert.equal(route(blind.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.match(blind.decisions.n.reason, /;escalation_reference_unavailable;cost_gate_no_reference;agent_surface$/);
+  // A pure caller without a reader is unchanged (no token at all).
+  assert.doesNotMatch(resolve(request, catalog, 'trivial').decisions.n.reason, /cost_gate/);
+});
+
+test('cost gate: writes, owner effort or family words, deep work and named routes with their own words never consult it', async t => {
+  let calls = 0;
+  const strong = evidence(20, 20, around(200, 20, 20), around(1000, 100, 10));
+  const costEvidence = () => { calls++; return strong; };
+  const bind = (request, catalog, node) => resolveRoutePlan(plan(request, [node]), request, catalog, Date.now(),
+    {costEvidence}).decisions[node.id];
+  // A write: guarded by nothing, so never gated.
+  const writeTask = task('/tmp', 'Change one file', {write: true});
+  const write = bind(writeTask, tierCatalog(writeTask, {write: true}), graded('w', 'trivial', {scope: 'workspace_write'}));
+  assert.equal(route(write), 'openai_codex/gpt-6.1-sol/medium');
+  // An owner effort word ("최대 리즈닝") or family word: the gate never moves it.
+  const request = task('/tmp', '최대 리즈닝으로 해줘');
+  const maxOnly = models => models.map(([model, efforts]) => [model, efforts.filter(effort => effort === 'max')])
+    .filter(([, efforts]) => efforts.length);
+  const effortWord = bind(request, tierCatalog(request, {codex: maxOnly(CODEX), claude: maxOnly(CLAUDE),
+    intent: {effort: 'max', model_family: null}}), graded('n', 'trivial'));
+  assert.equal(route(effortWord), 'openai_codex/gpt-6-luna/max');
+  const familyWord = bind(request, tierCatalog(request, {codex: [], claude: CLAUDE.filter(([model]) =>
+    ['claude-opus-5-5', 'opus'].includes(model)), intent: {effort: null, model_family: 'opus'}}), graded('n', 'trivial'));
+  assert.equal(route(familyWord), 'anthropic_shared/claude-opus-5-5/low');
+  // Deep work already runs the reference.
+  const deep = bind(request, tierCatalog(request), graded('n', 'deep'));
+  assert.equal(route(deep), 'openai_codex/gpt-6-astra/max');
+  // A named route with its own effort word.
+  const explicit = explicitTask('/tmp', [FANOUT[0], FANOUT[1]]);
+  const worded = resolveRoutePlan(plan(explicit, [routeNode(0, 'trivial', [FANOUT[0], FANOUT[1]])]), explicit,
+    {...tierCatalog(explicit), explicit_route_intents: [{effort: 'max', model_family: null}, null]}, Date.now(),
+    {costEvidence}).decisions['requested-1'];
+  assert.equal(`${worded.surface}:${worded.model}/${worded.effort}`, 'codex:gpt-6-luna/max');
+  for (const decision of [write, effortWord, familyWord, deep, worded])
+    assert.doesNotMatch(decision.reason, /cost_gate/);
+  assert.equal(calls, 0, 'the gate was never consulted');
+  // A named route WITHOUT its own words is a host-graded tier route: the gate
+  // applies and keeps that route on its own surface (the chat lane's own
+  // frontier reference, never the agent surface or another pool).
+  const fanout = explicitTask('/tmp', FANOUT);
+  const named = resolveRoutePlan(plan(fanout, FANOUT.map((_, index) => routeNode(index, 'trivial'))), fanout,
+    tierCatalog(fanout, {chat: true}), Date.now(), {costEvidence}).decisions;
+  assert.equal(calls, 3);
+  assert.deepEqual(Object.values(named).map(d => `${d.surface}:${d.model}/${d.effort}`),
+    ['codex:gpt-6-astra/max', 'claude:claude-fable-5-1/max', 'claude-chat:claude-fable-5-1/max']);
+  assert.match(named['requested-3'].reason, /^resolver;route_reference;explicit_route_surface_claude_chat;class_trivial;cost_gate_reference:/);
+});
+
+// One durable runtime for several sequential tasks (the gate reads the
+// ledger the earlier tasks wrote). Each task names its catalog options.
+async function gateRuntime(t, dir, name, execute) {
+  const options = new Map(), tickets = [];
+  const runtime = await createRCCRuntime({stateDir: join(dir, name),
+    catalog: async value => tierCatalog(value, options.get(value.task_id) ?? {}),
+    plan: async ({task: value}) => plan(value, [graded('n', 'trivial')]),
+    execute: async ticket => { tickets.push(ticket); return execute(ticket, tickets.length); },
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  const submit = async (label, catalog = {}) => {
+    const request = task(dir, 'Answer one question: ' + label);
+    options.set(request.task_id, catalog);
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    return {request, done, tuples: tickets.filter(ticket => ticket.task_id === request.task_id)
+      .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`)};
+  };
+  return {runtime, submit, ledger: async () => (await readFile(join(dir, name, 'routing-ledger', 'routing-ledger.jsonl'),
+    'utf8')).trim().split('\n').map(line => JSON.parse(line))};
+}
+const tokens = (input, output = 100) => ({input_tokens: input, output_tokens: output});
+
+test('runtime: once the ledger shows the cheaper route failing, the next task binds the reference directly', async t => {
+  const dir = await fixture(t);
+  // luna answers empty (a failure signal) at ~800 tokens; astra answers at ~1000.
+  const gate = await gateRuntime(t, dir, 'bind', (ticket, count) => ticket.selected_config.model === 'gpt-6-astra' ?
+    execution(ticket, {usage: tokens(900 + count)}) : execution(ticket, {output: '', usage: tokens(700 + count)}));
+  for (const label of ['first', 'second']) {
+    const result = await gate.submit(label);
+    assert.equal(result.done.state, 'completed', result.done.error);
+    assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max'], label);
+  }
+  const third = await gate.submit('third');
+  assert.equal(third.done.state, 'completed', third.done.error);
+  assert.deepEqual(third.tuples, ['gpt-6-astra/max'], 'no cheaper attempt is paid for any more');
+  const decision = third.done.children[0].routing_decision;
+  assert.match(decision.reason, new RegExp('^resolver;route_reference;class_trivial;cost_gate_reference:p_mean=0\\.75:' +
+    'cost_ratio=0\\.8:p_more=0\\.9\\d*:trials=2:escalations=2:cheap_n=2:ref_n=2:ref_family;cost_gate_cheap_gpt_6_luna_low;' +
+    'tier_frontier;pool_rank_0;effort_max;cost_gate_same_pool;agent_surface$'));
+  assert.equal(Object.hasOwn(decision, 'ladder'), false);
+  const records = await gate.ledger();
+  assert.deepEqual(records.map(record => [record.model, record.route_kind, record.escalated, record.cost_gate?.reason ?? null]), [
+    ['gpt-6-luna', 'tier', false, 'cost_gate_insufficient'], ['gpt-6-astra', 'reference', true, null],
+    ['gpt-6-luna', 'tier', false, 'cost_gate_insufficient'], ['gpt-6-astra', 'reference', true, null],
+    ['gpt-6-astra', 'reference', false, 'cost_gate_reference']]);
+  assert.deepEqual(Object.keys(records[4].cost_gate).sort(), ['cost_ratio', 'p_mean', 'p_more', 'reason']);
+  assert.equal(records[4].cost_gate.p_mean, 0.75);
+  // Older ledger records without the field still read as evidence.
+  assert.equal(tierCostEvidence(records.map(({cost_gate: _, ...rest}) => costGateRecord(rest)).filter(Boolean),
+    GATE_QUERY).cheap.trials, 2);
+});
+
+test('runtime: a re-resolution consults the same gate for the route it moves to', async t => {
+  const dir = await fixture(t);
+  // History: with luna unavailable, trivial work bound gpt-6.1-sol low, which
+  // failed twice and escalated to astra. Codex only, so a re-resolution stays
+  // in the one pool.
+  const noLuna = {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-luna')};
+  const gate = await gateRuntime(t, dir, 're-resolution', (ticket, count) => {
+    const model = ticket.selected_config.model;
+    if (model === 'gpt-6-luna') return execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
+      output: "You've hit your weekly limit", execution_verified: false, task_quality: 'failed',
+      error: 'provider_quota_rejected_before_execution', usage: null});
+    return model === 'gpt-6-astra' ? execution(ticket, {usage: tokens(900 + count)}) :
+      execution(ticket, {output: '', usage: tokens(600 + count)});
+  });
+  for (const label of ['history one', 'history two'])
+    assert.deepEqual((await gate.submit(label, noLuna)).tuples, ['gpt-6.1-sol/low', 'gpt-6-astra/max'], label);
+  // Now luna is offered and binds (no luna evidence: insufficient); its
+  // provider rejects before execution, and the re-resolution's next row in
+  // the pool (6.1-sol low) is exactly the route the ledger shows failing.
+  const moved = await gate.submit('moved', {claude: []});
+  assert.equal(moved.done.state, 'completed', moved.done.error);
+  assert.deepEqual(moved.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
+  assert.match(moved.done.children[0].routing_decision.reason, new RegExp(
+    '^re_resolved_after:provider_quota_rejected_before_execution;same_pool_only;route_reference;class_trivial;' +
+    'cost_gate_reference:p_mean=0\\.75:cost_ratio=0\\.7:p_more=0\\.9\\d*:trials=2:escalations=2:cheap_n=2:ref_n=2:' +
+    'ref_family;cost_gate_cheap_gpt_6_1_sol_low;tier_frontier;pool_rank_0;effort_max;cost_gate_same_pool;agent_surface$'));
+  const records = await gate.ledger();
+  assert.deepEqual(records.slice(-2).map(record => [record.model, record.attempt_state, record.cost_gate?.reason ?? null]),
+    [['gpt-6-luna', 'verified_not_dispatched', 'cost_gate_insufficient'], ['gpt-6-astra', 'completed', 'cost_gate_reference']]);
+});
+
+test('runtime: a ledger file that cannot be read safely keeps the tier route (cost_gate_unavailable)', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'public-ledger');
+  await mkdir(join(stateDir, 'routing-ledger'), {recursive: true, mode: 0o700});
+  await chmod(stateDir, 0o700);
+  await writeFile(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), '', {mode: 0o644});
+  await chmod(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), 0o644);
+  const gate = await gateRuntime(t, dir, 'public-ledger', ticket => execution(ticket, {usage: tokens(500)}));
+  const result = await gate.submit('unreadable');
+  assert.equal(result.done.state, 'completed', result.done.error);
+  assert.deepEqual(result.tuples, ['gpt-6-luna/low']);
+  assert.match(result.done.children[0].routing_decision.reason,
+    /;escalation_reference_same_pool;cost_gate_unavailable;agent_surface$/);
 });
