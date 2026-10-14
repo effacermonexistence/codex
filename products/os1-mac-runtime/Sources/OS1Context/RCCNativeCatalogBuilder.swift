@@ -115,6 +115,11 @@ public enum RCCNativeCatalogBuilder {
         /// (`BackendRecovery.claudeModelFamily`) cools only that family.
         public var claudeAccountQuotaBackoff = false
         public var claudeQuotaBackoffFamilies: Set<String> = []
+        /// Codex slugs the native list reported but the host's general
+        /// catalog dropped because their quota bucket is exhausted. They are
+        /// in `codexModels` too (see `codexInventory`): they still define the
+        /// pool's reference model, and every profile on them is quota_zero.
+        public var codexQuotaExhaustedModels: Set<String> = []
         /// The surfaces an explicit route test names, or nil outside one.
         public var explicitRouteSurfaces: [String]? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
@@ -241,6 +246,17 @@ public enum RCCNativeCatalogBuilder {
         return .admitted
     }
 
+    /// The builder's Codex inventory from the host's general catalog, which
+    /// removes a quota-exhausted slug for every other caller. Removing it here
+    /// would make the next model the pool's reference (no reference_unavailable
+    /// guard could fire), so it is kept and marked exhausted instead.
+    public static func codexInventory(available: [CodexModel], quotaExcluded: [CodexModel])
+        -> (models: [CodexModel], quotaExhausted: Set<String>) {
+        let present = Set(available.map(\.slug))
+        let kept = quotaExcluded.filter { !present.contains($0.slug) }
+        return (available + kept, Set(kept.map(\.slug)))
+    }
+
     /// Providers worth a native probe under the current preference, capacity,
     /// visibility, intent and chat gate.
     public static func providersToProbe(_ input: Input) -> Set<String> {
@@ -303,6 +319,9 @@ public enum RCCNativeCatalogBuilder {
             guard nativelyAvailable(profile) else { exclude(profile.provider, "model_unavailable"); continue }
             let account = input.accountIDs[profile.provider] ?? ""
             let quota = profile.provider == "codex" ? input.codexQuota : input.claudeQuota
+            if profile.provider == "codex", input.codexQuotaExhaustedModels.contains(profile.model) {
+                exclude(profile.provider, "quota_zero"); continue
+            }
             let remaining = quota?.effectiveRemaining(accountID: account, model: profile.model, now: input.now)
             if remaining == 0 { exclude(profile.provider, "quota_zero"); continue }
             for scope in scopes {

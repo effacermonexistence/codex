@@ -11,6 +11,11 @@ import Foundation
 /// families cancel each other instead of being guessed between, and a negated
 /// mention ("opus 말고", "not max reasoning") is ignored.
 ///
+/// An effort word that describes a noun ("a low effort change", "our ultra
+/// thinking mode", "high reasoning models") or follows an article or
+/// possessive is not a request about this run either, unless an imperative
+/// verb owns the phrase ("Do a max reasoning pass").
+///
 /// Talking ABOUT a setting is not asking for it: "what is the max thinking
 /// budget?", "클로드 최대 리즈닝 설정이 뭐야?", "Codex xhigh 지원해?" and "a high
 /// effort task" set nothing, unless a directive form ("최대 리즈닝으로",
@@ -117,8 +122,17 @@ public struct RoutingIntent: Equatable, Sendable {
     /// Talking about a model, not running on it.
     static let familyInquiry = #"설명|차이|출시|뭐|무엇|장점|단점|가격|요금|비교|스펙|성능|벤치마크|컨텍스트|(?<![a-z])(?:what(?:'?s|\s+is|\s+are)|compare|comparison|vs|versus|pricing|price|cost|release|released|benchmark|explain|difference|context\s+window|spec|specs)(?![a-z])"#
     static let whQuestion = #"^\s*(?:what|which|how|whats|what's|why|who|when)(?![a-z])"#
-    /// The effort describes a noun, not the answer: "a high effort task".
-    static let descriptiveAfter = #"^[\s,:=]*(?:의|한|인)?\s*(?:리즈닝|추론|reasoning|effort|thinking)\s*(?:task|job|work|problem|question|request|작업|문제|질문|요청)(?![a-z])"#
+    /// The effort describes a noun, not the answer: "a high effort task", "a
+    /// low effort change", "minimal thinking mode toggle", "high reasoning
+    /// models". A Korean noun followed by a directive particle ("최대 리즈닝
+    /// 모드로 해줘") is still a request.
+    static let descriptiveAfter = #"^[\s,:=]*(?:의|한|인)?\s*(?:리즈닝|추론|reasoning|effort|thinking)[\s\-]*(?:(?:tasks?|jobs?|work|problems?|questions?|requests?|changes?|fix(?:es)?|edits?|tweaks?|patch(?:es)?|modes?|toggles?|switch(?:es)?|options?|flags?|features?|models?|regimes?|tiers?|variants?)(?![a-z])|(?:작업|문제|질문|요청|변경|수정|모드|토글|옵션|기능|모델)(?!\s*(?:으로|로)))"#
+    /// An article or possessive right before the effort word makes it part of
+    /// a noun phrase ("this is a low effort fix", "our ultra thinking mode"),
+    /// unless an imperative verb owns the phrase ("Do a max reasoning pass",
+    /// "use a high reasoning pass").
+    static let determinerBefore = #"(?<![a-z])(?:a|an|the|our|my|your|their|its|his|her|this|that|these|those)\s+$"#
+    static let imperativeDeterminerBefore = #"(?<![a-z])(?:do|run|make|give|take|perform|start|try|apply|want|need|use|using|with|at)\s+(?:a|an|the)\s+$"#
     /// A directive form that outranks an inquiry word in the same clause:
     /// "최대 리즈닝으로 …", "리즈닝 최대로", "use/with/at max reasoning".
     static let directiveAfter = #"^[\s,:=]*(?:(?:의|한|인)?\s*(?:리즈닝|추론|reasoning|effort|thinking)\s*)?(?:으로|로)(?=\s|$|[,.!?]|해|돌|실행|써|사용|시켜|답|풀|처리|진행|부탁|가자|하자)"#
@@ -215,7 +229,11 @@ public struct RoutingIntent: Equatable, Sendable {
                 matches(before(range, range.location), inquiryBefore) ||
                 clause.question && (matches(before(range, range.location), auxiliaryBefore) ||
                                     !matches(clause.text, requestWords))
-            if matches(after(range, 32), descriptiveAfter) || (inquiry && !directive) { continue }
+            // Describing a noun is not asking for the effort: "a low effort
+            // change", "our ultra thinking mode", "high reasoning models".
+            let determined = matches(before(range, 24), determinerBefore) &&
+                !matches(before(range, 24), imperativeDeterminerBefore)
+            if matches(after(range, 40), descriptiveAfter) || determined || (inquiry && !directive) { continue }
             effortIntents.insert(effort)
         }
 

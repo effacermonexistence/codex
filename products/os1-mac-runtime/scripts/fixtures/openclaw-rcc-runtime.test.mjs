@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile, readFile, symlink, link } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import fs, { realpathSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
@@ -3194,4 +3195,287 @@ test('routing ledger: a FIFO at a ledger path never blocks the Core event loop',
     clearInterval(timer);
     assert.ok(ticks > 0, `${name}: the event loop kept running`);
   }
+});
+
+// ---- Review round 4: ladder session isolation, failed cheap attempts, task-wide
+// exemption, early pool release and fail-closed ledger custody ---------------
+const ladderVerifier = (passAt = 'max') => new Map([['standard:read_only:agent', async input =>
+  ({passed: input.selected_config.effort === passAt, reason: 'fake'})]]);
+const claudeLadderRows = [row('claude-low', 'anthropic_shared', 'claude-opus-5-5', 'low'),
+  row('claude-max', 'anthropic_shared', 'claude-opus-5-5', 'max')];
+const indexRenameFails = ledgerIndex => {
+  const original = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === ledgerIndex) throw Object.assign(new Error('injected no space'), {code: 'ENOSPC'});
+    return original(from, to);
+  };
+  syncBuiltinESMExports();
+  return () => { fs.renameSync = original; syncBuiltinESMExports(); };
+};
+
+test('a cheap ladder attempt runs in a fresh native session; the escalated reference resumes the owner session', async t => {
+  const dir = await fixture(t);
+  for (const [surface, extras, rows] of [['codex', {codexSession: 'owner-codex-thread'}, ladderRows],
+    ['claude', {claudeSession: 'owner-claude-thread'}, claudeLadderRows]]) {
+    const request = task(dir, 'Explain one function: session ' + surface, 'auto', extras);
+    const tickets = [];
+    const runtime = await createRCCRuntime({stateDir: join(dir, 'session-' + surface),
+      verifierRegistry: ladderVerifier(), ledgerStats: parity(20), catalog: async value => catalog(value, rows),
+      plan: async () => plan(request, [graded('n', 'standard')]),
+      execute: async ticket => { tickets.push([ticket.selected_config.effort, ticket.native_resume_session_id]);
+        return execution(ticket, {output: `answer at ${ticket.selected_config.effort}`, task_verified: false,
+          task_quality: 'execution_only'}); },
+      verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'completed', `${surface}: ${done.error}`);
+    assert.deepEqual(tickets, [['low', null], ['max', extras.codexSession ?? extras.claudeSession]], surface);
+    assert.equal(done.result.output, 'answer at max', surface);
+  }
+});
+
+test('a cheap ladder attempt that failed after dispatch without effects escalates; effects or unknown dispatch stay uncertain', async t => {
+  const dir = await fixture(t);
+  for (const [name, failure, expected] of [
+    ['no effects', {side_effects: 'none', dispatch_stage: 'dispatched'}, 'completed'],
+    ['possible effects', {side_effects: 'possible', dispatch_stage: 'dispatched'}, 'effects_uncertain'],
+    ['unknown dispatch', {side_effects: 'none', dispatch_stage: 'unknown'}, 'effects_uncertain']]) {
+    const stateDir = join(dir, 'failed-' + name.replace(/\W+/g, '-'));
+    const dispatched = [];
+    const options = {stateDir, verifierRegistry: ladderVerifier(), ledgerStats: parity(20),
+      catalog: async value => catalog(value, ladderRows),
+      plan: async ({task: value}) => plan(value, [graded('n', 'standard')]),
+      execute: async ticket => { dispatched.push([ticket.task_id, ticket.selected_config.effort]);
+        return ticket.selected_config.effort === 'low' && dispatched.length === 1 ?
+          execution(ticket, {status: 'failed', output: null, execution_verified: false, task_verified: false,
+            task_quality: 'failed', native_summary: null, ...failure}) :
+          execution(ticket, {output: `answer at ${ticket.selected_config.effort}`, task_verified: false,
+            task_quality: 'execution_only'}); },
+      verifyTask: taskVerdict};
+    const runtime = await createRCCRuntime(options);
+    t.after(async () => { await runtime.close(); });
+    const request = task(dir, 'Explain one function: failed ladder ' + name);
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, expected, `${name}: ${done.error}`);
+    if (expected === 'completed') {
+      assert.deepEqual(dispatched.map(([, effort]) => effort), ['low', 'max'], name);
+      assert.equal(done.result.output, 'answer at max', name);
+      assert.equal(done.children[0].routing_decision.reason,
+        'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface', name);
+      assert.deepEqual((await ledgerRecords(stateDir)).map(record =>
+        [record.effort, record.route_kind, record.verifier_outcome, record.attempt_state]),
+      [['low', 'ladder', 'not_returned', 'ladder_not_returned'], ['max', 'reference', 'pass', 'completed']], name);
+      // The pool is not poisoned: the next task on it dispatches.
+      const next = task(dir, 'Explain one function: after failed ladder ' + name);
+      await runtime.submit(next);
+      assert.equal((await wait(runtime, next)).state, 'completed', `${name}: next task`);
+    } else {
+      assert.deepEqual(dispatched.map(([, effort]) => effort), ['low'], name);
+      assert.equal(done.error, 'dispatched_failure_no_replay', name);
+    }
+  }
+});
+
+test('the failed ladder time is exempt task-wide: a dependent node behind an escalated ladder still runs', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Explain two dependent functions: duration');
+  request.budget.max_duration_ms = 1_000;
+  const dispatched = [];
+  const runtime = await createRCCRuntime({stateDir: dir,
+    verifierRegistry: new Map([['standard:read_only:agent', async input => {
+      if (input.node_id === 'a' && input.selected_config.effort === 'low') {
+        await sleep(1_100); return {passed: false, reason: 'slow fail'}; }
+      return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
+    catalog: async value => catalog(value, ladderRows),
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})]),
+    execute: async ticket => { dispatched.push([ticket.node_id, ticket.selected_config.effort]);
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.deepEqual(dispatched, [['a', 'low'], ['a', 'max'], ['b', 'low']]);
+});
+
+test('a node verifier never holds the pool: after a cancel another task dispatches on it at once', async t => {
+  const dir = await fixture(t);
+  const started = gate(), release = gate();
+  const first = task(dir, 'Explain one function: verifier holds the pool');
+  const second = task(dir, 'Explain one function: next on the pool');
+  const dispatchedAt = new Map();
+  const runtime = await createRCCRuntime({stateDir: dir,
+    verifierRegistry: new Map([['standard:read_only:agent', async input => {
+      if (input.task_id === first.task_id) { started.resolve(); await release.promise; }
+      return {passed: true, reason: 'ok'}; }]]),
+    // No parity evidence: a reference route, whose verifier still runs.
+    ledgerStats: parity(0), catalog: async value => catalog(value, ladderRows),
+    plan: async ({task: value}) => plan(value, [graded('n', 'standard')]),
+    execute: async ticket => { dispatchedAt.set(ticket.task_id, Date.now());
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); },
+    verifyTask: taskVerdict});
+  t.after(async () => { release.resolve(); await runtime.close(); });
+  await runtime.submit(first);
+  await started.promise;
+  const cancelledAt = Date.now();
+  runtime.cancel({schema: 1, task_id: first.task_id});
+  await runtime.submit(second);
+  const done = await wait(runtime, second);
+  assert.equal(done.state, 'completed', done.error);
+  assert.ok(dispatchedAt.get(second.task_id) - cancelledAt < 2_000,
+    `the second task waited ${dispatchedAt.get(second.task_id) - cancelledAt} ms behind a verifier`);
+  release.resolve();
+});
+
+test('routing ledger index fails closed: a failed index write appends nothing; a missing index is seeded', async t => {
+  const dir = await fixture(t);
+  const family = 'standard:read_only:agent';
+  const record = outcome => ({schema: 1, task_id: 'task-x', node_id: 'n', attempt_id: randomUUID(), family,
+    model: 'm', effort: 'low', verifier_outcome: outcome, execution_verified: true});
+  const admission = ledger => cheaperRouteAdmission({family, scope: 'read_only', model: 'm', referenceEffort: 'max',
+    cheaperEfforts: ['low'], verifierRegistry: registry(family), ledgerStats: ledger.stats}).route;
+  const raw = async ledger => {
+    const lines = [];
+    for (const path of [ledger.rotatedPath, ledger.path]) {
+      try { lines.push(...(await readFile(path, 'utf8')).trim().split('\n').filter(Boolean)); } catch { /* absent */ }
+    }
+    return lines.map(line => JSON.parse(line));
+  };
+  // (A) The index write of a failure fails: nothing is appended (the caller
+  // keeps the attempt pending and retries), so rotation cannot lose it later.
+  const injected = openRoutingLedger(join(dir, 'injected'), {maxBytes: 8_192});
+  await mkdir(join(dir, 'injected'), {mode: 0o700});
+  for (let i = 0; i < 3; i++) injected.append(record('pass'));
+  const restore = indexRenameFails(injected.failureIndexPath);
+  try { assert.throws(() => injected.append(record('fail')), /injected no space/); } finally { restore(); }
+  assert.equal((await raw(injected)).some(item => item.verifier_outcome === 'fail'), false, 'no raw failure without its index');
+  assert.deepEqual((await readdir(join(dir, 'injected', 'routing-ledger'))).filter(name => name.endsWith('.tmp')), []);
+  injected.append(record('fail'));
+  for (let i = 0; i < 120; i++) injected.append(record('pass'));
+  assert.ok(injected.stats(family, 'm', 'low').verified_passes >= LADDER_MIN_VERIFIED_PASSES);
+  assert.equal(injected.stats(family, 'm', 'low').verifier_failures, 1);
+  assert.equal(admission(injected), 'reference');
+  // (B) A missing index is seeded from the raw generations, never recreated
+  // empty, so the failure survives the rotation that drops its raw line.
+  const missing = openRoutingLedger(join(dir, 'missing'), {maxBytes: 8_192});
+  await mkdir(join(dir, 'missing'), {mode: 0o700});
+  missing.append(record('fail'));
+  await unlink(missing.failureIndexPath);
+  missing.append(record('pass'));
+  for (let i = 0; i < 120; i++) missing.append(record('pass'));
+  assert.equal((await raw(missing)).some(item => item.verifier_outcome === 'fail'), false, 'the raw failure rotated away');
+  assert.equal(missing.stats(family, 'm', 'low').verifier_failures, 1);
+  assert.equal(admission(missing), 'reference');
+  // A missing index beside an unreadable raw line is seeded overflowed.
+  const torn = openRoutingLedger(join(dir, 'torn-seed'));
+  await mkdir(join(dir, 'torn-seed'), {mode: 0o700});
+  for (let i = 0; i < 25; i++) torn.append(record('pass'));
+  await appendFile(torn.path, '{"verifier_outcome":"fa');
+  await unlink(torn.failureIndexPath);
+  torn.append(record('pass'));
+  assert.equal(JSON.parse(await readFile(torn.failureIndexPath, 'utf8')).overflow, true);
+  // (C) Rotation never discards a generation whose failures the index lacks.
+  const lost = openRoutingLedger(join(dir, 'lost-entry'), {maxBytes: 8_192});
+  await mkdir(join(dir, 'lost-entry'), {mode: 0o700});
+  lost.append(record('fail'));
+  await writeFile(lost.failureIndexPath, '{"failures":{},"overflow":false,"schema":1}', {mode: 0o600});
+  for (let i = 0; i < 120; i++) lost.append(record('pass'));
+  assert.equal(JSON.parse(await readFile(lost.failureIndexPath, 'utf8')).overflow, true);
+  assert.deepEqual(lost.stats(family, 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+  assert.equal(admission(lost), 'reference');
+});
+
+test('a parity failure whose ledger write fails closes every ladder in the process until it is written', async t => {
+  const dir = await fixture(t);
+  const seed = openRoutingLedger(dir);
+  for (let i = 0; i < 20; i++) seed.append({schema: 1, task_id: 'seed', node_id: 'n', attempt_id: randomUUID(),
+    family: 'standard:read_only:agent', model: 'gpt-5.7-sol', effort: 'low', verifier_outcome: 'pass',
+    execution_verified: true});
+  const dispatched = [], logged = [];
+  const runtime = await createRCCRuntime({stateDir: dir, ledgerLog: code => logged.push(code),
+    verifierRegistry: ladderVerifier(), catalog: async value => catalog(value, ladderRows),
+    plan: async ({task: value}) => plan(value, [graded('n', 'standard')]),
+    execute: async ticket => { dispatched.push([ticket.task_id, ticket.selected_config.effort]);
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  const efforts = id => dispatched.filter(([taskID]) => taskID === id).map(([, effort]) => effort);
+  const restore = indexRenameFails(seed.failureIndexPath);
+  let restored = false;
+  t.after(() => { if (!restored) restore(); });
+  const first = task(dir, 'Explain one function: failure write fails');
+  await runtime.submit(first);
+  assert.equal((await wait(runtime, first)).state, 'completed');
+  assert.deepEqual(efforts(first.task_id), ['low', 'max'], 'the ledger had parity: the ladder ran and failed');
+  assert.ok(logged.includes('ENOSPC'), JSON.stringify(logged));
+  const second = task(dir, 'Explain one function: while the failure is unwritten');
+  await runtime.submit(second);
+  assert.equal((await wait(runtime, second)).state, 'completed');
+  assert.deepEqual(efforts(second.task_id), ['max'], 'no ladder while a parity failure is unwritten');
+  restore(); restored = true;
+  const third = task(dir, 'Explain one function: after the failure is written');
+  await runtime.submit(third);
+  assert.equal((await wait(runtime, third)).state, 'completed');
+  assert.deepEqual(efforts(third.task_id), ['max'], 'the written failure keeps the ladder closed');
+  assert.deepEqual(seed.stats('standard:read_only:agent', 'gpt-5.7-sol', 'low').verifier_failures, 1);
+  const pending = coreDB(dir);
+  t.after(() => pending.close());
+  assert.deepEqual(pending.prepare('SELECT attempt_id FROM ledger_pending').all(), []);
+});
+
+test('restart records a settled verdict as it was, never as interrupted', async t => {
+  const dir = await fixture(t);
+  // A verified ladder pass whose live append failed (transient ledger fault).
+  const passDir = join(dir, 'pass');
+  const request = task(dir, 'Explain one function: transient ledger fault');
+  const logged = [];
+  const options = {verifierRegistry: ladderVerifier('low'), ledgerStats: parity(20),
+    catalog: async value => catalog(value, ladderRows),
+    plan: async () => plan(request, [graded('n', 'standard')]), verifyTask: taskVerdict};
+  const runtime = await createRCCRuntime({stateDir: passDir, ...options, ledgerLog: code => logged.push(code),
+    execute: async ticket => {
+      await mkdir(join(passDir, 'routing-ledger'), {recursive: true, mode: 0o700});
+      await chmod(join(passDir, 'routing-ledger'), 0o755);
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }});
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.ok(logged.includes('routing_ledger_directory_not_private'), JSON.stringify(logged));
+  assert.deepEqual(runtime._load(request.task_id).children[0].attempt_history.map(entry =>
+    [entry.state, entry.verifier, entry.effort ?? entry.ledger.effort]), [['completed', 'pass', 'low']]);
+  await runtime.close();
+  await chmod(join(passDir, 'routing-ledger'), 0o700);
+  const reopened = await createRCCRuntime({stateDir: passDir, ...options, execute: async ticket => execution(ticket)});
+  t.after(async () => { await reopened.close(); });
+  assert.deepEqual((await ledgerRecords(passDir)).map(record => [record.effort, record.attempt_state, record.verifier_outcome]),
+    [['low', 'completed', 'pass']]);
+  assert.deepEqual(openRoutingLedger(passDir).stats('standard:read_only:agent', 'gpt-5.7-sol', 'low'),
+    {verified_passes: 1, verifier_failures: 0});
+
+  // A verified pre-execution quota rejection is 'not_dispatched', not a failure.
+  const quotaDir = join(dir, 'quota');
+  const quota = task(dir, 'Explain one function: quota rejection under a ledger fault');
+  const rows = [row('claude-quota', 'anthropic_shared', 'claude-opus-5-5', 'max'),
+    row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max')];
+  const quotaOptions = {verifierRegistry: ladderVerifier(), ledgerStats: parity(0),
+    catalog: async value => catalog(value, rows), plan: async () => plan(quota, [graded('n', 'standard')]),
+    verifyTask: taskVerdict};
+  const quotaRuntime = await createRCCRuntime({stateDir: quotaDir, ...quotaOptions, ledgerLog: () => {},
+    execute: async ticket => {
+      if (ticket.selected_config.quota_pool === 'anthropic_shared') {
+        await mkdir(join(quotaDir, 'routing-ledger'), {recursive: true, mode: 0o700});
+        await chmod(join(quotaDir, 'routing-ledger'), 0o755);
+        return quotaRejected(ticket);
+      }
+      await chmod(join(quotaDir, 'routing-ledger'), 0o700);
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }});
+  await quotaRuntime.submit(quota);
+  assert.equal((await wait(quotaRuntime, quota)).state, 'completed');
+  await quotaRuntime.close();
+  const quotaReopened = await createRCCRuntime({stateDir: quotaDir, ...quotaOptions, execute: async ticket => execution(ticket)});
+  t.after(async () => { await quotaReopened.close(); });
+  const quotaRecords = (await ledgerRecords(quotaDir)).map(record => [record.quota_pool, record.attempt_state, record.verifier_outcome]);
+  assert.deepEqual(quotaRecords.sort(), [['anthropic_shared', 'verified_not_dispatched', 'not_dispatched'],
+    ['openai_codex', 'completed', 'pass']]);
+  assert.equal(openRoutingLedger(quotaDir).stats('standard:read_only:agent', 'claude-opus-5-5', 'max').verifier_failures, 0);
 });

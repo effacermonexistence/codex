@@ -221,6 +221,37 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               (try route(cooled)) == "openai_codex/gpt-6-sol/max/route_reference" &&
               B.providersToProbe(cooledInput) == ["claude", "codex"],
               "a cooled top family makes its pool unusable: \(tuples(cooled)) \(reasons(cooled))")
+    // Host-shaped input (the live path, review round 4): the general Codex
+    // catalog drops a slug whose own bucket is exhausted (or a spend control
+    // stopped it while the snapshot still shows room). Kept and marked
+    // exhausted, it still defines the reference, so the pool is withheld; the
+    // next Codex model never becomes the reference at max.
+    var hostCodex = referenceInput()
+    hostCodex.profiles += [.init(action: "y_luna_max", provider: "codex", model: "gpt-5.6-luna", effort: "max")]
+    let luna = B.CodexModel(slug: "gpt-5.6-luna", supportedEfforts: ["medium", "max"], priority: 1)
+    let sol = B.CodexModel(slug: "gpt-6-sol", supportedEfforts: ["medium", "max"], priority: 0)
+    let shaped = B.codexInventory(available: [luna], quotaExcluded: [sol])
+    try check(shaped.models == [luna, sol] && shaped.quotaExhausted == ["gpt-6-sol"] &&
+              B.codexInventory(available: [sol, luna], quotaExcluded: [sol]).quotaExhausted.isEmpty,
+              "host Codex inventory keeps a quota-excluded slug, marked exhausted")
+    hostCodex.codexModels = shaped.models; hostCodex.codexQuotaExhaustedModels = shaped.quotaExhausted
+    hostCodex.claudeQuota = claudeWindows(opusUsed: 100)
+    let hostCodexOut = try B.build(hostCodex)
+    try check(hostCodexOut.candidates.isEmpty &&
+              reasons(hostCodexOut) == ["claude:quota_zero:1", "claude:reference_unavailable:2",
+                                        "codex:quota_zero:2", "codex:reference_unavailable:1"],
+              "an exhausted top Codex slug from host-shaped input withholds its pool: \(tuples(hostCodexOut)) \(reasons(hostCodexOut))")
+    var hostCodexOnly = hostCodex; hostCodexOnly.claudeQuota = claudeWindows(opusUsed: nil)
+    let hostCodexOnlyOut = try B.build(hostCodexOnly)
+    try check(!hostCodexOnlyOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
+              (try route(hostCodexOnlyOut)) == "anthropic_shared/claude-opus-5-5/max/route_reference",
+              "the other pool's top model runs, never luna as the Codex reference: \(tuples(hostCodexOnlyOut))")
+    // Host-shaped Claude input: the host now passes the configured inventory
+    // (cooled family included), so a cooled top family withholds its pool.
+    var hostClaude = referenceInput(preference: "claude"); hostClaude.claudeQuotaBackoffFamilies = ["opus"]
+    let hostClaudeOut = try B.build(hostClaude)
+    try check(hostClaudeOut.candidates.isEmpty && reasons(hostClaudeOut).contains("claude:reference_unavailable:2"),
+              "host-shaped cooled top Claude family holds: \(reasons(hostClaudeOut))")
     // The owner named Claude: after the top family is cooled the catalog is an
     // explained hold, never a lower Claude model (the re-resolution case).
     var namedCooled = referenceInput(preference: "claude"); namedCooled.claudeQuotaBackoffFamilies = ["opus"]
@@ -369,6 +400,15 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         ("최대 리즈닝까지 할 필요는 없어", nil, nil), ("최대 추론은 과해, 그냥 답해", nil, nil),
         ("고민 많이 하지 말고, 최대 리즈닝 안 해도 돼", nil, nil),
         ("max reasoning not needed, just answer briefly", nil, nil), ("max reasoning is unnecessary here", nil, nil),
+        // An effort word that describes a noun, or follows an article or a
+        // possessive, is not a request about this run (review round 4).
+        ("This is a low effort change: rename foo to bar in utils.js", nil, nil),
+        ("Add a docstring; this is a low effort fix", nil, nil),
+        ("Our app has a minimal thinking mode toggle; fix the bug where it crashes", nil, nil),
+        ("Summarize this paper on high reasoning models", nil, nil),
+        ("Our ultra thinking mode crashes on launch; fix it", nil, nil),
+        ("the max reasoning feature is broken, fix it", nil, nil), ("우리 앱의 울트라 thinking 모드가 꺼져, 고쳐줘", nil, nil),
+        ("최대 리즈닝 모드로 해줘", "max", nil), ("use a high reasoning pass for this", "high", nil),
         ("high reasoning 필요 없는 간단한 질문", nil, nil), ("no need for max reasoning here", nil, nil),
         ("최대 리즈닝으로 안 되는 버그 고쳐", "max", nil),
         // A generic verb names a model when the family ends the phrase or a

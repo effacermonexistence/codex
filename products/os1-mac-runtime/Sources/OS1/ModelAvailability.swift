@@ -542,6 +542,7 @@ enum ModelAvailability {
         var quotaResetsAt: Date?
         var quotaWindow: CodexQuotaWindow?
         var quotaSnapshot: BackendHealth.QuotaSnapshot?
+        var quotaExcluded: [CodexModelCapability] = []
         if let limits = metadata.rateLimits {
             if let observedAt = metadata.quotaObservedAt {
                 quotaSnapshot = BackendHealth.QuotaSnapshot.codexRateLimits(limits, accountID: accountID,
@@ -561,6 +562,7 @@ enum ModelAvailability {
                 RuntimeActivity.emit(.routing, publicText: os1Tr("Codex 사용량 한도 도달로 \(excluded.count)개 모델을 제외했습니다\(reset). 남은 Codex 모델: \(remaining.isEmpty ? "없음" : remaining.joined(separator: ", "))",
                                                                  "Codex usage limit reached; excluded \(excluded.count) model(s)\(CodexQuota.exhaustedGeneralResetDescription(limits).map { ", resets \($0)" } ?? ""). Remaining Codex models: \(remaining.isEmpty ? "none" : remaining.joined(separator: ", "))"))
             }
+            quotaExcluded = catalog.models.filter { excluded.contains($0.slug) }
             catalog = ActiveCodexCatalog(models: catalog.models.filter { !excluded.contains($0.slug) }, source: catalog.source)
         }
         // The account's base instructions are sent with every Codex thread; a
@@ -575,9 +577,13 @@ enum ModelAvailability {
                                                                  "Excluded Codex model(s) \(oversized.sorted().joined(separator: ", ")): the context window is too small for the account's base instructions (\(bytes / 1024)KB, about \(CodexContextBudget.requiredTokens(baseInstructionBytes: bytes) / 1000)K tokens needed)."))
                 catalog = ActiveCodexCatalog(models: catalog.models.filter { !oversized.contains($0.slug) }, source: catalog.source)
             }
+            // A model that cannot hold the base instructions never runs, with
+            // or without quota: it is not kept for the reference rule either.
+            let oversizedExcluded = CodexContextBudget.excluded(models: quotaExcluded.map { ($0.slug, windows[$0.slug]) }, baseInstructionBytes: bytes)
+            quotaExcluded.removeAll { oversizedExcluded.contains($0.slug) }
         }
         let source = notes.isEmpty ? catalog.source : catalog.source + " · " + notes.joined(separator: "; ")
         return ActiveCodexCatalog(models: catalog.models, source: source, quotaResetsAt: quotaResetsAt,
-                                  quotaWindow: quotaWindow, quotaSnapshot: quotaSnapshot)
+                                  quotaWindow: quotaWindow, quotaSnapshot: quotaSnapshot, quotaExcludedModels: quotaExcluded)
     }
 }

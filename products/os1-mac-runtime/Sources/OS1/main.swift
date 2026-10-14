@@ -156,6 +156,10 @@ struct ActiveCodexCatalog {
     /// the health card. Nil when the account probe did not report one.
     var quotaWindow: CodexQuotaWindow? = nil
     var quotaSnapshot: BackendHealth.QuotaSnapshot? = nil
+    /// Models removed from `models` only because their quota bucket (their
+    /// own or the general one) is exhausted. The RCC catalog builder still
+    /// needs them: the pool's reference model is decided before quota.
+    var quotaExcludedModels: [CodexModelCapability] = []
 }
 
 /// Health of the local backends as this preflight observed them. The Claude
@@ -17848,13 +17852,24 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     input.claudeAccountQuotaBackoff = ClaudeQuotaBackoff.active() != nil
     input.claudeQuotaBackoffFamilies = Set(ClaudeQuotaBackoff.activeModels())
     let probe = RCCNativeCatalogBuilder.providersToProbe(input)
+    // The general catalogs strip a quota-exhausted Codex slug and a cooled
+    // Claude family for every other caller. The builder must still see them:
+    // a pool's reference model is decided before quota, so its exhaustion is
+    // a quota_zero / quota_backoff hold of the whole pool (reference_unavailable),
+    // never the next model standing in as the reference.
     if probe.contains("codex") {
         let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
-        input.codexModels = codex.models.map { .init(slug: $0.slug, supportedEfforts: $0.supportedEfforts, priority: $0.priority) }
+        let shaped = RCCNativeCatalogBuilder.codexInventory(
+            available: codex.models.map { .init(slug: $0.slug, supportedEfforts: $0.supportedEfforts, priority: $0.priority) },
+            quotaExcluded: codex.quotaExcludedModels.map { .init(slug: $0.slug, supportedEfforts: $0.supportedEfforts, priority: $0.priority) })
+        input.codexModels = shaped.models
+        input.codexQuotaExhaustedModels = shaped.quotaExhausted
         input.codexQuota = codex.quotaSnapshot
     }
     if probe.contains("claude") {
-        let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.routable ?? []
+        // `configured`, not `routable`: a cooled family stays in the inventory
+        // and the builder excludes it with quota_backoff (claudeQuotaBackoffFamilies).
+        let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.configured ?? []
         // One inventory read for both the order and the native row of each
         // configured name (alias and resolved ID of one row share a rank).
         let native = ClaudeInventoryCache.shared.models(workspace: host.workspace, maxAge: 600)

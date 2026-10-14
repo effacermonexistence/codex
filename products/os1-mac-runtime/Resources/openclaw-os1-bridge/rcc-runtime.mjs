@@ -67,6 +67,9 @@ const MAX_LEDGER_FAILURE_INDEX_BYTES = 524_288;
 // failed, it ran and returned nothing deliverable, or it was interrupted
 // before its verifier answered.
 const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted']);
+// Verdicts a settled attempt stores on its history entry; a restart records
+// them as they were instead of 'interrupted'.
+const SETTLED_VERDICTS = new Set(['pass', 'fail', 'not_returned']);
 // A registered node verifier that does not answer in time counts as a failure.
 const NODE_VERIFIER_TIMEOUT_MS = 60_000;
 // The attempt states of a failed cheaper ladder attempt: its verifier failed,
@@ -687,10 +690,55 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
     try { privateFile(fd); fchmodSync(fd, 0o600); writeAll(fd, body); fsyncSync(fd); }
     catch (error) { closeSync(fd); try { unlinkSync(temp); } catch { /* best effort */ } throw error; }
     closeSync(fd);
-    renameSync(temp, index);
+    try { renameSync(temp, index); }
+    catch (error) { try { unlinkSync(temp); } catch { /* best effort */ } throw error; }
+  }
+  /** Failure counts per key in the raw generations; `unreadable` when any
+   * line or file cannot be read (it might have been a failure). */
+  function rawFailures(paths) {
+    const failures = {};
+    let unreadable = false;
+    for (const path of paths) {
+      let list;
+      try { list = lines(path); } catch { unreadable = true; continue; }
+      for (let position = 0; position < list.length; position++) {
+        if (list[position] === '' && position === list.length - 1) continue;
+        let record = null;
+        try { record = JSON.parse(list[position]); } catch { unreadable = true; continue; }
+        if (!plain(record) || record.schema !== 1) { unreadable = true; continue; }
+        if (!LEDGER_FAILURE_OUTCOMES.has(record.verifier_outcome)) continue;
+        const key = failureKey(record.family, record.model, record.effort);
+        failures[key] = (failures[key] ?? 0) + 1;
+      }
+    }
+    return {failures, unreadable};
+  }
+  /** A new index never starts empty beside raw generations that may hold
+   * failures: it is seeded from them, and overflowed (every stat then reads no
+   * evidence) when any raw line is unreadable or the keys do not fit. A
+   * missing index is never turned back into valid "no failure" evidence. */
+  function seededIndex() {
+    const {failures, unreadable} = rawFailures([rotated, current]);
+    const value = {schema: 1, overflow: unreadable, failures};
+    if (Object.keys(failures).length > MAX_LEDGER_FAILURE_KEYS ||
+        Buffer.byteLength(stable(value)) > MAX_LEDGER_FAILURE_INDEX_BYTES) return {schema: 1, overflow: true, failures: {}};
+    return value;
+  }
+  /** Before rotation discards the previous generation: the index must hold at
+   * least that generation's failures for every key, or it is overflowed. An
+   * invalid index already reads as no evidence and is never overwritten. */
+  function guardRotation() {
+    let value;
+    try { value = readIndex(); } catch { return; }
+    if (value === null) { writeIndex(seededIndex()); return; }
+    if (value.overflow) return;
+    const discarded = rawFailures([rotated]);
+    const covered = !discarded.unreadable && Object.entries(discarded.failures)
+      .every(([key, count]) => (value.failures[key] ?? 0) >= count);
+    if (!covered) writeIndex({...value, overflow: true});
   }
   function recordFailure(record) {
-    const value = readIndex() ?? {schema: 1, overflow: false, failures: {}};
+    const value = readIndex() ?? seededIndex();
     const key = failureKey(record.family, record.model, record.effort);
     const next = {...value, failures: {...value.failures, [key]: (value.failures[key] ?? 0) + 1}};
     // Too many keys to keep: every stat then fails closed, never open.
@@ -703,19 +751,21 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
     assert(line.length <= MAX_LEDGER_RECORD_BYTES, 'routing_ledger_record_oversize');
     privateDirectory(true);
     // The failure index is written first, so it always holds at least the
-    // failures the raw generations hold. A failed index write still appends
-    // the raw record and is then reported.
+    // failures the raw generations hold. A failure whose index write fails is
+    // not appended at all (fail closed): the caller keeps it pending and a
+    // restart records it again, retrying the index. A non-failure record is
+    // still appended and the index error is then reported.
     let indexError = null;
-    try {
-      if (LEDGER_FAILURE_OUTCOMES.has(record?.verifier_outcome)) recordFailure(record);
-      else {
-        // Create an empty index once; an existing (even invalid) one is never
-        // overwritten by a non-failure record, so no failure is ever lost.
+    if (LEDGER_FAILURE_OUTCOMES.has(record?.verifier_outcome)) recordFailure(record);
+    else {
+      try {
+        // Create the index once, seeded from the raw generations; an existing
+        // (even invalid) one is never overwritten by a non-failure record.
         let present = true;
         try { lstatSync(index); } catch (error) { if (error.code !== 'ENOENT') throw error; present = false; }
-        if (!present) writeIndex({schema: 1, overflow: false, failures: {}});
-      }
-    } catch (error) { indexError = error; }
+        if (!present) writeIndex(seededIndex());
+      } catch (error) { indexError = error; }
+    }
     const flags = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
     let fd = openSync(current, flags, 0o600);
     try {
@@ -723,6 +773,7 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
       fchmodSync(fd, 0o600);
       if (st.size + line.length + 1 > maxBytes) {
         closeSync(fd); fd = null;
+        guardRotation();
         renameSync(current, rotated);
         fd = openSync(current, flags | constants.O_EXCL, 0o600);
         privateFile(fd); fchmodSync(fd, 0o600);
@@ -1031,6 +1082,14 @@ function publicSnapshot(snapshot) {
     error: snapshot.error ?? null };
 }
 
+/** Wall time of failed cheaper ladder attempts (and their verifier wait),
+ * never charged to the task's duration budget. Task-wide, like the budget
+ * itself: every node is exempt, not only the laddered one. A legacy snapshot
+ * kept it per child; those values still count for the whole task. */
+function ladderExemptMs(snapshot) {
+  return (snapshot.ladder_exempt_ms ?? 0) +
+    snapshot.children.reduce((sum, child) => sum + (child.ladder_exempt_ms ?? 0), 0);
+}
 /** A returned node whose registered family verifier had not answered. */
 function verifierPendingChild(child) {
   return child.state === 'waiting' && child.attempt_history?.at(-1)?.state === 'node_verifier_pending';
@@ -1131,6 +1190,10 @@ class RCCRuntime {
     // route facts fixed at dispatch: an attempt that settles after stop is
     // still recorded once, without the closed DB.
     this.ledgerInflight = new Map();
+    // Parity failures whose ledger write failed (attempt id -> retry). While
+    // one waits, every ladder in this process reads no evidence; each later
+    // record, and each ladder admission, retries them first.
+    this.ledgerBacklog = new Map();
     this.maximumWorkers = maximumWorkers; this.cancelGraceMs = cancelGraceMs;
     this.transaction = transaction;
     this.runningTasks = new Map(); this.controllers = new Map();
@@ -1418,10 +1481,14 @@ class RCCRuntime {
   }
 
   /** Restart: record, once, every attempt an earlier owner dispatched but
-   * never recorded (it stopped or crashed before the attempt settled), as
-   * 'interrupted' when a verifier was relevant. An attempt that did settle
-   * after the stop is already in the ledger and is only cleared. A ledger
-   * failure is logged; the pending row is cleared either way. */
+   * never recorded (it stopped or crashed before the attempt settled, or its
+   * live append failed). A verdict already stored on the attempt (pass, fail,
+   * not_returned, or a verified not-dispatched rejection) is recorded as it
+   * was; only an attempt without one is 'interrupted' when a verifier was
+   * relevant. An attempt that did settle after the stop is already in the
+   * ledger and is only cleared. A ledger failure is logged; the pending row is
+   * cleared, except for a parity failure, which stays pending so the next
+   * restart retries it (a lost failure could readmit a cheaper route). */
   reconcileLedger() {
     const rows = this.transaction(() => this.db.prepare(
       'SELECT attempt_id,task_id,node_id,route FROM ledger_pending ORDER BY rowid').all());
@@ -1429,20 +1496,28 @@ class RCCRuntime {
     let recorded;
     try { recorded = this.ledger.attemptIDs(); } catch { recorded = new Set(); }
     for (const row of rows) {
+      let keep = false;
       try {
         if (!recorded.has(row.attempt_id)) {
           const route = JSON.parse(row.route);
           const child = this._load(row.task_id)?.children.find(c => c.id === row.node_id);
           const entry = child?.attempt_history?.find(item => item.attempt_id === row.attempt_id);
           const current = child?.attempt_id === row.attempt_id;
-          this._appendLedger({taskID: row.task_id, nodeID: row.node_id, attemptID: row.attempt_id, route},
-            {usage: entry?.usage ?? null, execution_verified: current && child.execution_verified === true,
-              task_quality: current ? child.task_quality ?? null : null},
-            route.verifier === true ? 'interrupted' : 'not_registered',
-            entry && !UNSETTLED_ATTEMPT_STATES.has(entry.state) ? entry.state : 'interrupted');
+          const settled = entry && !UNSETTLED_ATTEMPT_STATES.has(entry.state);
+          const outcome = route.verifier !== true ? 'not_registered' :
+            settled && SETTLED_VERDICTS.has(entry.verifier) ? entry.verifier :
+            settled && entry.state === 'verified_not_dispatched' ? 'not_dispatched' : 'interrupted';
+          const write = () => this._appendLedger({taskID: row.task_id, nodeID: row.node_id, attemptID: row.attempt_id,
+            route}, {usage: entry?.usage ?? null, execution_verified: current && child.execution_verified === true,
+            task_quality: current ? child.task_quality ?? null : null}, outcome, settled ? entry.state : 'interrupted');
+          if (LEDGER_FAILURE_OUTCOMES.has(outcome)) { keep = true; this.ledgerBacklog.set(row.attempt_id, write); }
+          write();
+          this.ledgerBacklog.delete(row.attempt_id);
+          keep = false;
         }
       } catch (error) { this._logLedger(error); }
-      this.transaction(() => this.db.prepare('DELETE FROM ledger_pending WHERE attempt_id=?').run(row.attempt_id));
+      if (!keep)
+        this.transaction(() => this.db.prepare('DELETE FROM ledger_pending WHERE attempt_id=?').run(row.attempt_id));
     }
   }
 
@@ -1750,7 +1825,7 @@ class RCCRuntime {
       // route tests it grades nodes; the host then binds exact rows.
       const proposed = await this.plan({task: immutable(task), catalog: immutable(catalog)});
       const resolved = resolveRoutePlan(proposed, task, catalog, boundAt,
-        {verifierRegistry: this.verifierRegistry, ledgerStats: this.ledgerStats});
+        {verifierRegistry: this.verifierRegistry, ledgerStats: (...key) => this._ladderStats(...key)});
       plan = validatePlan(resolved.plan, task, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
     } catch (error) {
@@ -2272,7 +2347,9 @@ class RCCRuntime {
           return;
         }
         if (!reservation) continue;
-        const work = this._executeNode(taskID, node, candidate)
+        let released = false;
+        const releaseOnce = () => { if (!released) { released = true; this._release(reservation); } };
+        const work = this._executeNode(taskID, node, candidate, releaseOnce)
           .catch(error => {
             const current = this._load(taskID);
             if (current && !TERMINAL.has(current.state)) this._update(taskID, 'node_error', state => {
@@ -2283,7 +2360,7 @@ class RCCRuntime {
               state.state = dispatched ? 'effects_uncertain' : 'held';
               state.error = error.code ?? (dispatched ? 'node_execution_unknown' : 'node_pre_dispatch_failed');
             });
-          }).finally(() => { this._release(reservation); active.delete(node.id); });
+          }).finally(() => { releaseOnce(); active.delete(node.id); });
         active.set(node.id, work);
         idleDelay = 50;
       }
@@ -2307,7 +2384,12 @@ class RCCRuntime {
     assert(HASH.test(sourceSHA ?? ''), 'policy_source_unavailable');
     const isSingleFullAgent = snapshot.plan?.nodes.length === 1 &&
       snapshot.plan.nodes[0]?.id === node.id && node.kind === 'agent';
-    const resumeSession = isSingleFullAgent && candidate.surface === 'codex' ?
+    // A cheaper ladder attempt runs in a fresh native session: its answer may
+    // be discarded, so it must never be appended to the owner's own thread,
+    // and an escalated reference then resumes that thread untouched.
+    const child = snapshot.children?.find(c => c.id === node.id);
+    const cheapLadder = child?.route_kind === 'ladder' && child.ladder != null && child.ladder.escalated !== true;
+    const resumeSession = cheapLadder ? null : isSingleFullAgent && candidate.surface === 'codex' ?
       snapshot.task.host_context.codex_session_id :
       isSingleFullAgent && candidate.surface === 'claude' ?
         snapshot.task.host_context.claude_session_id : null;
@@ -2443,7 +2525,7 @@ class RCCRuntime {
       if (snapshot.children.find(c => c.id === node.id).attempts >= snapshot.task.budget.max_attempts) {
         this._holdContinuation(taskID, node.id, 'continuation_attempt_budget_exhausted'); return;
       }
-      if (Date.now() - snapshot.created_at_ms >= snapshot.task.budget.max_duration_ms) {
+      if (Date.now() - snapshot.created_at_ms - ladderExemptMs(snapshot) >= snapshot.task.budget.max_duration_ms) {
         this._holdContinuation(taskID, node.id, 'continuation_duration_budget_exhausted'); return;
       }
       // The ticket stays bound to the same row id; the ledger records the
@@ -2648,19 +2730,48 @@ class RCCRuntime {
     const pending = this.ledgerInflight.get(attemptID);
     if (!pending) return;
     this.ledgerInflight.delete(attemptID);
-    let state = attemptState;
+    this._flushLedgerBacklog();
+    let state = attemptState, write = null;
     try {
       if (state === null) state = this.closed ? 'settled_after_stop' : this._load(pending.taskID)?.children
         .find(c => c.id === pending.nodeID)?.attempt_history.find(item => item.attempt_id === attemptID)?.state ?? null;
       // After stop a restart may already have recorded this attempt as
       // interrupted: never record it twice.
       if (this.closed && this.ledger.attemptIDs().has(attemptID)) return;
-      this._appendLedger(pending, {usage: result?.usage ?? null, execution_verified: result?.execution_verified,
-        task_quality: result?.task_quality ?? null}, verifierOutcome,
-        state === null || UNSETTLED_ATTEMPT_STATES.has(state) ? 'interrupted' : state);
-      if (!this.closed)
-        this.transaction(() => this.db.prepare('DELETE FROM ledger_pending WHERE attempt_id=?').run(attemptID));
-    } catch (error) { this._logLedger(error); }
+      const settled = state === null || UNSETTLED_ATTEMPT_STATES.has(state) ? 'interrupted' : state;
+      write = () => this._appendLedger(pending, {usage: result?.usage ?? null,
+        execution_verified: result?.execution_verified, task_quality: result?.task_quality ?? null},
+      verifierOutcome, settled);
+      write();
+    } catch (error) {
+      this._logLedger(error);
+      // The pending row stays for the restart; a parity failure also closes
+      // every ladder in this process until it is written.
+      if (write && !this.closed && LEDGER_FAILURE_OUTCOMES.has(verifierOutcome)) this.ledgerBacklog.set(attemptID, write);
+      return;
+    }
+    this._clearLedgerPending(attemptID);
+  }
+  _clearLedgerPending(attemptID) {
+    if (this.closed) return;
+    try { this.transaction(() => this.db.prepare('DELETE FROM ledger_pending WHERE attempt_id=?').run(attemptID)); }
+    catch (error) { this._logLedger(error); }
+  }
+  /** Retry parity failures whose ledger write failed, oldest first; stop at
+   * the first that still fails. */
+  _flushLedgerBacklog() {
+    for (const [attemptID, write] of this.ledgerBacklog) {
+      try { write(); } catch (error) { this._logLedger(error); return; }
+      this.ledgerBacklog.delete(attemptID);
+      this._clearLedgerPending(attemptID);
+    }
+  }
+  /** Ladder parity evidence: none while a parity failure waits to be written,
+   * so a lost failure can never readmit a cheaper route. */
+  _ladderStats(family, model, effort) {
+    if (this.ledgerBacklog.size) this._flushLedgerBacklog();
+    if (this.ledgerBacklog.size) return {verified_passes: 0, verifier_failures: 0};
+    return this.ledgerStats(family, model, effort);
   }
   /** The registered verifier for a graded read-only node's family, if any. */
   _nodeVerifier(snapshot, nodeID, candidate) {
@@ -2770,7 +2881,7 @@ class RCCRuntime {
       if (attempt) { attempt.state = outcome === 'fail' ? 'ladder_verifier_failed' : 'ladder_not_returned';
         attempt.verifier = outcome; }
       const dispatchedAt = attempt?.ledger?.dispatched_at_ms;
-      target.ladder_exempt_ms = (target.ladder_exempt_ms ?? 0) +
+      state.ladder_exempt_ms = (state.ladder_exempt_ms ?? 0) +
         (Number.isSafeInteger(dispatchedAt) ? Math.max(0, Date.now() - dispatchedAt) : 0);
       state.ladder_exempt_cost_units = (state.ladder_exempt_cost_units ?? 0) + (cheap.estimated_cost_units ?? 0);
       Object.assign(target, {state: 'queued', candidate_id: reference.id, attempt_id: null, selected_config: null,
@@ -2785,7 +2896,9 @@ class RCCRuntime {
     });
   }
 
-  async _executeNode(taskID, node, candidate) {
+  /** `releaseReservation` (idempotent) frees this node's worker slot and pool
+   * reservation once no provider work runs for it, before a node verifier. */
+  async _executeNode(taskID, node, candidate, releaseReservation = null) {
     const task = this._load(taskID).task;
     const start = this._load(taskID);
     const resolver = Boolean(this._resolverNode(start, node.id));
@@ -2799,9 +2912,10 @@ class RCCRuntime {
       if (before.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
       // A failed cheaper ladder attempt is the Core's own bet: its wall time
       // and estimated cost are not charged to the owner, as its attempt is not
-      // (a reference-only route would have dispatched when it did).
-      const exemptMs = before.children.find(c => c.id === node.id)?.ladder_exempt_ms ?? 0;
-      if (Date.now() - before.created_at_ms - exemptMs >= task.budget.max_duration_ms) {
+      // (a reference-only route would have dispatched when it did). The time
+      // is exempt task-wide, so a dependent or sibling node is never held for
+      // the ladder's wait either.
+      if (Date.now() - before.created_at_ms - ladderExemptMs(before) >= task.budget.max_duration_ms) {
         this._hold(taskID, 'task_duration_budget_exhausted'); return;
       }
       if (task.budget.max_cost_units !== null && before.spent_cost_units - (before.ladder_exempt_cost_units ?? 0) +
@@ -2910,8 +3024,13 @@ class RCCRuntime {
           if (discard) { this._ladderFailed(taskID, node, candidate, result, 'not_returned'); return; }
           if (!deliverable) return;
           verifierOutcome = 'not_registered';
-          if (verifier && this._load(taskID)?.children.find(c => c.id === node.id)?.state === 'waiting')
+          if (verifier && this._load(taskID)?.children.find(c => c.id === node.id)?.state === 'waiting') {
+            // No provider work runs while the verifier thinks: free the worker
+            // slot and the pool now, so neither a cancel nor a slow verifier
+            // holds another task's dispatch on this pool.
+            releaseReservation?.();
             verifierOutcome = await this._verifyNode(taskID, node, candidate, result, verifier);
+          }
           return;
         }
         if (result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
@@ -2946,6 +3065,27 @@ class RCCRuntime {
             child.finished_at_ms = Date.now();
             snapshot.state = 'failed'; snapshot.error = 'verified_not_dispatched_retry_exhausted';
           });
+          return;
+        }
+        // A cheaper ladder attempt that ran and failed with NO side effects is
+        // a ladder failure like an undeliverable result: nothing is replayed
+        // and its pool is not poisoned; the node escalates once to its
+        // reference. Possible or confirmed effects, or an unknown dispatch,
+        // stay effects_uncertain below.
+        const failedChild = current.children.find(c => c.id === node.id);
+        if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none' &&
+            failedChild?.route_kind === 'ladder' && failedChild.ladder != null && !failedChild.ladder.escalated &&
+            candidate.scope === 'read_only') {
+          this._update(taskID, 'child_returned', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            Object.assign(child, {output: null, execution_verified: false, task_quality: 'unverified',
+              parity_state: 'unverified', native_receipt: result.native_receipt, native_summary: null,
+              usage: result.usage ?? null, finished_at_ms: Date.now(), state: 'waiting', dispatched_at_ms: null});
+            child.attempt_history.at(-1).state = 'ladder_not_returned';
+            child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            child.attempt_history.at(-1).usage = result.usage ?? null;
+          });
+          this._ladderFailed(taskID, node, candidate, result, 'not_returned');
           return;
         }
         this._update(taskID, 'child_effects_uncertain', snapshot => {

@@ -108,6 +108,14 @@ check(native.index("input.completionFeedback = PublicCompletionFeedback(") <
       native.index('post("/v1/execution-authorizations"'),
       "task-bound feedback is present before exact-profile admission; no fake prior quality observations")
 
+catalog_host = section(MAIN, "private func rccNativeCatalog(", "private func rccContinuationParent(")
+check("claudeCatalogs(workspace: host.workspace, config: config))?.configured" in catalog_host and
+      ".routable" not in catalog_host,
+      "RCC catalog gets the configured Claude inventory: a cooled top family still defines its pool reference")
+check("RCCNativeCatalogBuilder.codexInventory(" in catalog_host and "codex.quotaExcludedModels" in catalog_host and
+      "input.codexQuotaExhaustedModels = shaped.quotaExhausted" in catalog_host,
+      "RCC catalog keeps a quota-exhausted Codex slug marked exhausted, never silently stripped")
+
 pins = {
     "index.mjs": "pinnedPluginIndexSHA256",
     "openclaw.plugin.json": "pinnedPluginManifestSHA256",
