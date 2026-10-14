@@ -483,8 +483,18 @@ func runRCCRuntimeContractFixture() throws {
     try check(nativeCompleted.children.allSatisfy { $0.routingDecision?.routeClass == nil && $0.routingDecision?.reason == "adapter_bound" },
               "REAL Node adapter-bound rows are recorded as bound, not graded")
     try check(try C.decodeSnapshot(C.encode(nativeGraded)) == nativeGraded, "routing decision roundtrips through Swift")
-    try check(gradedDecision?.reason == "resolver;route_reference;pool_rank_0;effort_low;agent_surface" && gradedDecision?.ladder == nil,
-              "REAL Node reference decision names its route, pool and surface")
+    // The planner's "Return 2" for this one indivisible node is replaced by
+    // the owner's request (lockIndivisibleInstruction), and the decision says so.
+    try check(gradedDecision?.reason == "resolver;route_reference;pool_rank_0;effort_low;agent_surface;instruction_host_locked" &&
+              gradedDecision?.ladder == nil,
+              "REAL Node reference decision names its route, pool, surface and the host instruction lock")
+    let gradedTickets = actualTickets.filter { $0.taskID == "task-node-graded" }
+    try check(gradedTickets.count == 1 && gradedTickets[0].instruction == "Exercise the fixture adapter through the real durable runtime." &&
+              gradedTickets[0].objective == gradedTickets[0].instruction && nativeGraded.children.first?.instruction == gradedTickets[0].instruction,
+              "REAL Node single-node ticket runs the owner's request, never the planner's paraphrase")
+    try check(actualTickets.filter { $0.taskID == "task-node-verified" }.map(\.instruction).sorted() ==
+              ["Return 2", "Return 4", "Return 6", "Return 8"],
+              "REAL Node four-node decomposition keeps the planner's instructions")
     let nativeLaddered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["laddered"]!))
     let nativeLadderDecision = nativeLaddered.children.first?.routingDecision
     try check(nativeLaddered.state == .returnedUnverified && nativeLadderDecision?.effort == .low &&

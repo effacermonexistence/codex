@@ -35,7 +35,9 @@ import Foundation
 /// - `claude-chat` rows exist only when the narrow chat-lane predicate holds.
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
-///   when it is account-wide, with `quota_backoff`; it is never probed.
+///   when it is account-wide, with `quota_backoff`; it is never probed. An
+///   active Codex model cooldown (`CodexQuotaBackoff`) excludes that model
+///   the same way.
 /// - Every row's model carries its provider-stated tier (`ModelTiers`) in the
 ///   catalog's `model_tiers` (build 378). A pool's REFERENCE is its
 ///   frontier-tier model at the highest offered effort up to max, never the
@@ -123,6 +125,12 @@ public enum RCCNativeCatalogBuilder {
         /// in `codexModels` too (see `codexInventory`): they still define the
         /// pool's reference model, and every profile on them is quota_zero.
         public var codexQuotaExhaustedModels: Set<String> = []
+        /// Codex models with an active cooldown (`CodexQuotaBackoff`), left
+        /// by a real rate-limit or usage-limit rejection of that model. Like
+        /// a cooled Claude family they are excluded with `quota_backoff`;
+        /// they still define the pool's reference, so a cooled frontier
+        /// model leaves its pool `reference_unavailable`.
+        public var codexQuotaBackoffModels: Set<String> = []
         /// The surfaces an explicit route test names, or nil outside one.
         public var explicitRouteSurfaces: [String]? = nil
         /// Each explicit route's OWN effort/model words
@@ -259,6 +267,9 @@ public enum RCCNativeCatalogBuilder {
         // quota; offering it again only repeats the rejection.
         if !reference, profile.provider == "claude", input.claudeAccountQuotaBackoff ||
             input.claudeQuotaBackoffFamilies.contains(BackendRecovery.claudeModelFamily(profile.model)) {
+            return .excluded("quota_backoff")
+        }
+        if !reference, profile.provider == "codex", input.codexQuotaBackoffModels.contains(profile.model) {
             return .excluded("quota_backoff")
         }
         return .admitted

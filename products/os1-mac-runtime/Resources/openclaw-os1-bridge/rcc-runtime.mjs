@@ -1955,6 +1955,59 @@ function settleDispatchEntry(child, state) {
   const last = child.attempt_history?.at(-1);
   if (last && UNSETTLED_DISPATCH_STATES.has(last.state)) last.state = state;
 }
+/** A child whose latest attempt the adapter SETTLED read-only with no side
+ * effects: it returned a record (the native process exited), the attempt ran
+ * read-only, and the record says side_effects none ('settled_side_effects',
+ * or the older 'dispatched_failure' fact a failed-after-dispatch record
+ * already left). Its effects_uncertain state (a failure after dispatch, a
+ * cancel) is about remote billing, never a running process or a workspace
+ * effect. An attempt with no returned record (an executor that threw, a
+ * restart while dispatched) never qualifies. */
+function settledReadOnly(child) {
+  const last = child?.attempt_history?.at(-1);
+  return child?.selected_config?.scope === 'read_only' && plain(last) &&
+    (last.settled_side_effects === 'none' || last.dispatched_failure === 'no_effects');
+}
+/** The quota-pool lease key of an exact configuration, or null. */
+function poolKeyOf(config) {
+  return !plain(config) || config.quota_pool === 'none' ? null : `${config.quota_pool}:${config.account_id}`;
+}
+/** Whether this child keeps its pool's lease: an attempt still running, or an
+ * effects-uncertain one the adapter never settled read-only (a write, or an
+ * outcome with no returned record). A settled read-only attempt holds no pool
+ * (shared pool peak 1 counts running attempts, not remote billing doubt). */
+function leaseProtectingChild(child) {
+  return plain(child?.selected_config) && (child.state === 'running' ||
+    (child.state === 'effects_uncertain' && !settledReadOnly(child)));
+}
+/** The pools a snapshot's children still protect (leaseProtectingChild). */
+function protectedPools(snapshot) {
+  return new Set((snapshot?.children ?? []).filter(leaseProtectingChild)
+    .map(child => poolKeyOf(child.selected_config)).filter(Boolean));
+}
+/** A pool held only by settled read-only effects-uncertain children: the
+ * reason a released lease names (quota_lease_released_settled_read_only). */
+function settledReadOnlyPools(snapshot) {
+  return new Set((snapshot?.children ?? []).filter(child => child.state === 'effects_uncertain' &&
+    plain(child.selected_config) && settledReadOnly(child)).map(child => poolKeyOf(child.selected_config)).filter(Boolean));
+}
+/** In a non-explicit task, a plan of exactly ONE agent node with no separate
+ * final integration node is the owner's indivisible task: the planner may
+ * grade it but never rewrite it, so the host runs the original request (owner
+ * text) as its instruction. Explicit route tests keep each route's payload;
+ * decompositions keep the planner's instructions; a deterministic node keeps
+ * its exact expression; a request over the node instruction bound keeps the
+ * planner's text. Pure. */
+export function lockIndivisibleInstruction(plan, task) {
+  if (task?.mode === 'explicit_routing_test' || !plain(plan) || !Array.isArray(plan.nodes) ||
+      plan.nodes.length !== 1) return {plan, changed: false};
+  const [node] = plan.nodes;
+  if (!plain(node) || node.kind !== 'agent' ||
+      !(plan.final_node_id === undefined || plan.final_node_id === null || plan.final_node_id === node.id) ||
+      node.instruction === task.request || !boundedText(task.request, 12_000)) return {plan, changed: false};
+  return {plan: {...plan, nodes: [{...node, instruction: task.request}]}, changed: true};
+}
+const INSTRUCTION_LOCK_REASON = 'instruction_host_locked';
 
 function alive(pid) {
   if (!int(pid, 1, Number.MAX_SAFE_INTEGER)) return false;
@@ -2332,7 +2385,13 @@ class RCCRuntime {
         for (const child of snapshot.children) if (verifierPendingChild(child)) child.state = 'held';
       });
     }
-    for (const row of rows) this._releaseSafeLeases(row.task_id);
+    // Owner start: a lease whose task is terminal, or whose holding attempt
+    // settled read-only, is stale (each release records why); a lease of an
+    // attempt that may still run (no returned record) is kept. A lease whose
+    // task row does not exist protects nothing.
+    for (const row of rows) this._releaseSafeLeases(row.task_id, {reconcile: true});
+    this.transaction(() => this.db.prepare(
+      'DELETE FROM quota_leases WHERE task_id NOT IN (SELECT task_id FROM tasks)').run());
   }
 
   /** Restart: record, once, every attempt an earlier owner dispatched but
@@ -2380,25 +2439,36 @@ class RCCRuntime {
     }
   }
 
-  _releaseSafeLeases(taskID) {
+  /** `reconcile`: an owner start, which records why every lease it releases
+   * was stale. A routine release records only a settled read-only one. */
+  _releaseSafeLeases(taskID, {reconcile = false} = {}) {
     const snapshot = this._load(taskID);
     if (!snapshot) return;
     const activeOrUncertain = snapshot.children.some(c => c.state === 'effects_uncertain' || c.state === 'running');
     if (TERMINAL.has(snapshot.state) && snapshot.state !== 'effects_uncertain' && !activeOrUncertain) {
       this.transaction(() => this.db.prepare('DELETE FROM write_leases WHERE task_id=?').run(taskID));
     }
-    // A quota reservation protects only an active or uncertain native attempt,
-    // not the parent verifier's think time. Preserve it across a crash when
-    // the native child might still be consuming that account pool.
-    const protectedPools = new Set(snapshot.children
-      .filter(c => ['running', 'effects_uncertain'].includes(c.state) && c.selected_config)
-      .map(c => c.selected_config.quota_pool === 'none' ? null :
-        `${c.selected_config.quota_pool}:${c.selected_config.account_id}`).filter(Boolean));
+    // A quota reservation protects only a running native attempt or an
+    // uncertain one the adapter never settled read-only (a write, or no
+    // returned record), not the parent verifier's think time. Preserve it
+    // across a crash when the native child might still be consuming that
+    // account pool. A settled read-only attempt's process has exited.
+    const kept = protectedPools(snapshot), settled = settledReadOnlyPools(snapshot);
     this.transaction(() => {
       const rows = this.db.prepare('SELECT pool_key FROM quota_leases WHERE task_id=?').all(taskID);
-      for (const row of rows) if (!protectedPools.has(row.pool_key))
+      for (const row of rows) if (!kept.has(row.pool_key)) {
         this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?').run(row.pool_key, taskID);
+        const why = settled.has(row.pool_key) ? 'settled_read_only' :
+          !reconcile ? null : TERMINAL.has(snapshot.state) ? 'task_terminal' : 'no_running_attempt';
+        if (why) this._leaseEvent(snapshot, 'quota_lease_released_' + why);
+      }
     });
+  }
+  /** One durable event naming why a stale quota lease was released. Called
+   * inside a transaction; the task snapshot itself is unchanged. */
+  _leaseEvent(snapshot, kind) {
+    this.db.prepare('INSERT INTO events(task_id,revision,kind,at_ms,payload) VALUES(?,?,?,?,?)')
+      .run(snapshot.task.task_id, snapshot.revision, kind, Date.now(), stable(publicSnapshot(snapshot)));
   }
 
   async _aggregateReceipt(taskID, children, output) {
@@ -2686,8 +2756,16 @@ class RCCRuntime {
       const resolved = resolveRoutePlan(proposed, task, catalog, boundAt,
         {verifierRegistry: this.verifierRegistry, ledgerStats: (...key) => this._ladderStats(...key),
          costEvidence: query => this._costEvidence(query)});
-      plan = validatePlan(resolved.plan, task, catalog);
+      // One indivisible task runs the owner's own words, never a planner
+      // paraphrase (lockIndivisibleInstruction); the decision says so.
+      const locked = lockIndivisibleInstruction(resolved.plan, task);
+      plan = validatePlan(locked.plan, task, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
+      const lockedID = plan.nodes[0].id;
+      const lockedReason = decisions[lockedID] && decisions[lockedID].reason + ';' + INSTRUCTION_LOCK_REASON;
+      // The public decision reason stays within its 1 KiB contract bound.
+      if (locked.changed && lockedReason && boundedText(lockedReason, 1_024))
+        decisions[lockedID] = {...decisions[lockedID], reason: lockedReason};
     } catch (error) {
       const reason = error instanceof RCCRuntimeError ? error.code : 'planner_failed';
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, reason);
@@ -2782,9 +2860,14 @@ class RCCRuntime {
     const foreign = (table, column, value) => {
       if (!value) return false;
       const row = this.db.prepare(`SELECT task_id FROM ${table} WHERE ${column}=?`).get(value);
+      if (!row || row.task_id === task.task_id) return false;
+      const owner = this._load(row.task_id);
+      // A stale quota lease (vanished or terminal owner, no attempt of its
+      // own protecting the pool) is released by _tryReserve: not a wait.
+      if (table === 'quota_leases' && (!owner || (TERMINAL.has(owner.state) && !protectedPools(owner).has(value))))
+        return false;
       // An effects-uncertain owner must surface as the existing hold, not wait.
-      return Boolean(row && row.task_id !== task.task_id &&
-        this._load(row.task_id)?.state !== 'effects_uncertain');
+      return owner?.state !== 'effects_uncertain';
     };
     return !foreign('quota_leases', 'pool_key', poolKey) && !foreign('write_leases', 'workspace', workspaceKey);
   }
@@ -2973,11 +3056,19 @@ class RCCRuntime {
         (poolKey && this.poolReservations.has(poolKey)) ||
         (workspaceKey && this.activeWriteWorkspaces.has(workspaceKey))) return null;
     const lease = this.transaction(() => {
-      const pool = poolKey ? this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey) : null;
+      let pool = poolKey ? this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey) : null;
       const writer = workspaceKey ? this.db.prepare('SELECT task_id FROM write_leases WHERE workspace=?').get(workspaceKey) : null;
       if (pool && pool.task_id !== task.task_id) {
         const owner = this._load(pool.task_id);
-        return owner?.state === 'effects_uncertain' ? 'uncertain_pool' : 'busy';
+        // Lease acquisition reconciles too: a foreign lease that no running
+        // attempt and no unsettled uncertain attempt of a terminal (or
+        // vanished) owner protects is stale, never a hold on this pool.
+        if (!owner || (TERMINAL.has(owner.state) && !protectedPools(owner).has(poolKey))) {
+          this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?').run(poolKey, pool.task_id);
+          if (owner) this._leaseEvent(owner, 'quota_lease_released_' +
+            (settledReadOnlyPools(owner).has(poolKey) ? 'settled_read_only' : 'task_terminal'));
+          pool = null;
+        } else return owner?.state === 'effects_uncertain' ? 'uncertain_pool' : 'busy';
       }
       if (writer && writer.task_id !== task.task_id) {
         const owner = this._load(writer.task_id);
@@ -3004,9 +3095,15 @@ class RCCRuntime {
     if (reservation.poolKey && !this.closed) {
       const snapshot = this._load(reservation.taskID);
       const child = snapshot?.children.find(c => c.id === reservation.nodeID);
-      if (child?.state !== 'effects_uncertain' && child?.state !== 'running') {
-        this.transaction(() => this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?')
-          .run(reservation.poolKey, reservation.taskID));
+      // A settled read-only attempt releases its pool even when its outcome
+      // is effects_uncertain: its process exited and it changed nothing.
+      if (!leaseProtectingChild(child)) {
+        this.transaction(() => {
+          const released = this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?')
+            .run(reservation.poolKey, reservation.taskID).changes;
+          if (released && child?.state === 'effects_uncertain')
+            this._leaseEvent(snapshot, 'quota_lease_released_settled_read_only');
+        });
       }
     }
   }
@@ -3054,12 +3151,14 @@ class RCCRuntime {
     try {
       // Validate against the refreshed catalog: an alternate row that became
       // available only after the failure is a valid repair candidate.
-      proposed = validatePlan(await this.plan({task: immutable(snapshot.task),
+      // The admitted single node already runs the owner's words: the repair
+      // proposal is locked the same way, so only its candidate can differ.
+      proposed = validatePlan(lockIndivisibleInstruction(await this.plan({task: immutable(snapshot.task),
         catalog: immutable(fresh), repair: {
           failed_node_id: childID, failed_candidate_id: oldNode.candidate_id,
           failed_attempt_id: child.attempt_id,
           failure_receipt: child.attempt_history.at(-1)?.native_receipt ?? null,
-          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task,
+          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task).plan, snapshot.task,
         repairCatalog(snapshot, snapshot.plan, fresh, [childID]));
       assert(proposed.nodes.length === snapshot.plan.nodes.length, 'repair_plan_shape_changed');
       const currentByID = new Map(snapshot.plan.nodes.map(n => [n.id, n]));
@@ -3973,6 +4072,8 @@ class RCCRuntime {
             child.finished_at_ms = Date.now();
             child.attempt_history.at(-1).state = child.state;
             child.attempt_history.at(-1).native_receipt = result.native_receipt;
+            // The adapter returned: the attempt settled (settledReadOnly).
+            child.attempt_history.at(-1).settled_side_effects = result.side_effects;
             child.usage = result.usage ?? null;
             child.attempt_history.at(-1).usage = result.usage ?? null;
             snapshot.state = safe ? 'cancelled' : 'effects_uncertain';
@@ -4099,6 +4200,10 @@ class RCCRuntime {
           // (dispatched_failure) because the run's tokens were spent.
           if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none')
             child.attempt_history.at(-1).dispatched_failure = 'no_effects';
+          // The adapter returned a record: the attempt settled. A read-only
+          // one with no side effects then holds no quota-pool lease
+          // (settledReadOnly); it is still never replayed.
+          child.attempt_history.at(-1).settled_side_effects = result.side_effects;
           child.attempt_history.at(-1).native_receipt = result.native_receipt;
           child.usage = result.usage ?? null;
           child.attempt_history.at(-1).usage = result.usage ?? null;

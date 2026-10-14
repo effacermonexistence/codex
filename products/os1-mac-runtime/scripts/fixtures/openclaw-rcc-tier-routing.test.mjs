@@ -495,6 +495,87 @@ test('a pre-execution quota rejection re-resolves a tier node at its own class i
   assert.equal(child.routing_decision.ladder.reference_model, 'claude-fable-5-1');
 });
 
+// The 2026-10-14 incident, replayed (build 378, task 9e64077d): the planner
+// rewrote "야 원플러스원 해봐." into a command, luna/low ran it and a tool call
+// broke (native_tool_failed, 107719 input tokens), REVAS escalated to
+// astra/max, and Codex refused every request with HTTP 429 before any output.
+// os1 rcc-execute now reports that turn as a verified pre-execution quota
+// rejection and cools astra (the next catalog: quota_backoff, Codex
+// reference_unavailable). Core re-resolves the escalation to the other
+// pool's reference, frees the Codex pool, and nothing is effects_uncertain.
+const INCIDENT_REQUEST = '야 원플러스원 해봐.';
+const INCIDENT_REWRITE = "Execute '원플러스원' (OnePlus One) command.";
+const codexLimitRejected = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
+  side_effects: 'none', output: '', execution_verified: false, task_quality: 'failed', usage: null,
+  error: 'provider_quota_rejected_before_execution'});
+const astraCooled = (value, claude) => ({...tierCatalog(value, {codex: CODEX.filter(([model]) => model !== 'gpt-6-astra'), claude}),
+  exclusions: [{provider: 'codex', reason: 'quota_backoff', count: 5}, {provider: 'codex', reason: 'reference_unavailable', count: 1}]});
+async function incident(t, dir, name, {claude = CLAUDE} = {}) {
+  const request = task(dir, INCIDENT_REQUEST);
+  const tickets = [];
+  let cooled = false;
+  const runtime = await createRCCRuntime({stateDir: join(dir, name),
+    catalog: async value => cooled ? astraCooled(value, claude) : tierCatalog(value),
+    plan: async ({task: value}) => plan(value, [graded('node-1', 'trivial', {instruction: INCIDENT_REWRITE})]),
+    execute: async ticket => {
+      tickets.push(ticket);
+      if (tickets.length === 1) return execution(ticket, {error: 'native_tool_failed',
+        usage: {input_tokens: 107719, output_tokens: 195}});
+      if (tickets.length === 2) { cooled = true; return codexLimitRejected(ticket); }
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  const history = runtime._load(request.task_id).children[0].attempt_history;
+  return {request, runtime, tickets, done, history,
+    tuples: tickets.map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`),
+    kinds: runtime.events({schema: 1, task_id: request.task_id}).map(event => event.kind),
+    leases: runtime.db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key)};
+}
+
+test('incident replay: a 429 no-output escalation re-resolves to the other reference; no effects_uncertain, pool freed', async t => {
+  const dir = await fixture(t);
+  const result = await incident(t, dir, 'incident');
+  assert.equal(result.done.state, 'completed', result.done.error);
+  assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max', 'claude-fable-5-1/max']);
+  assert.equal(result.done.result.output, 'answer from claude-fable-5-1/max');
+  // One indivisible task: every attempt runs the owner's words, never the rewrite.
+  assert.deepEqual(result.tickets.map(ticket => [ticket.instruction, ticket.objective]),
+    Array(3).fill([INCIDENT_REQUEST, INCIDENT_REQUEST]));
+  const admitted = result.runtime.events({schema: 1, task_id: result.request.task_id})
+    .find(event => event.kind === 'plan_admitted').snapshot.children[0].routing_decision;
+  assert.match(admitted.reason, /^resolver;route_tier;class_trivial;.*;instruction_host_locked$/);
+  const decision = result.done.children[0].routing_decision;
+  assert.match(decision.reason, /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;/);
+  assert.equal(route(decision), 'anthropic_shared/claude-fable-5-1/max');
+  assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
+    reference_model: 'claude-fable-5-1'}, 'the escalation stays reference-only where it moved');
+  assert.deepEqual(result.history.map(entry => entry.state), ['ladder_not_returned', 'verified_not_dispatched', 'completed']);
+  assert.equal(result.history[1].error, 'provider_quota_rejected_before_execution');
+  assert.ok(!result.kinds.some(kind => kind.includes('effects_uncertain')), result.kinds.join(','));
+  assert.deepEqual(result.leases, [], 'no pool lease outlives the settled attempts');
+  // The owner's next question on Codex runs now (build 378 held it with
+  // quota_pool_effects_uncertain); astra is cooled, so trivial work binds luna.
+  const next = task(dir, '너 라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐. 엄청 간단한 알제브라 계산 있잖아.');
+  await result.runtime.submit(next);
+  const second = await wait(result.runtime, next);
+  assert.equal(second.state, 'completed', second.error);
+  assert.equal(result.tickets.at(-1).instruction, next.request);
+  assert.equal(result.tickets.at(-1).selected_config.model, 'gpt-6-luna');
+});
+
+test('incident replay with no other reference: held with the typed reason, never effects_uncertain', async t => {
+  const dir = await fixture(t);
+  const result = await incident(t, dir, 'incident-no-claude', {claude: []});
+  assert.equal(result.done.state, 'held');
+  assert.equal(result.done.error, 'no_dispatchable_candidate:read_only:reference_unavailable');
+  assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max'], 'nothing lower stands in for the reference');
+  assert.deepEqual(result.history.map(entry => entry.state), ['ladder_not_returned', 'verified_not_dispatched']);
+  assert.ok(!result.kinds.some(kind => kind.includes('effects_uncertain')), result.kinds.join(','));
+  assert.deepEqual(result.leases, []);
+});
+
 test('deep work with no frontier model holds before any dispatch; model_tiers is strictly shaped', async t => {
   const dir = await fixture(t);
   const noFrontier = {codex: CODEX.filter(([model]) => model !== 'gpt-6-astra'),
@@ -1414,7 +1495,8 @@ test('runtime: once the ledger shows the cheaper route failing, the next task bi
   assert.match(decision.reason, new RegExp('^resolver;route_reference;class_trivial;cost_gate_reference:p_mean=0\\.75:' +
     `cost_ratio=0\\.799:p_more=${expected.p_more}:conf=0\\.9:explore=0\\.\\d+:trials=2:escalations=2:cheap_n=2:` +
     'ref_n=2:ref_family;cost_gate_cheap_gpt_6_luna_low;tier_frontier;pool_rank_0;effort_max;cost_gate_same_pool;' +
-    'agent_surface$'));
+    // The planner's paraphrase of this one-node task is replaced by the owner's words.
+    'agent_surface;instruction_host_locked$'));
   assert.equal(Object.hasOwn(decision, 'ladder'), false);
   const records = await gate.ledger();
   assert.deepEqual(records.map(record => [record.model, record.route_kind, record.escalated, record.cost_gate?.reason ?? null]), [
@@ -1613,5 +1695,5 @@ test('runtime: a ledger file that cannot be read safely keeps the tier route (co
   assert.equal(result.done.state, 'completed', result.done.error);
   assert.deepEqual(result.tuples, ['gpt-6-luna/low']);
   assert.match(result.done.children[0].routing_decision.reason,
-    /;escalation_reference_same_pool;cost_gate_unavailable;agent_surface$/);
+    /;escalation_reference_same_pool;cost_gate_unavailable;agent_surface;instruction_host_locked$/);
 });

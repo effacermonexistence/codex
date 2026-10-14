@@ -1258,6 +1258,10 @@ struct RunStepSummary: Codable {
     /// conversation's own thread (`RCCNativeAttemptOutcome.nativeSessionDetached`):
     /// the app keeps the conversation bound to its own thread. Absent elsewhere.
     var nativeSessionDetached: Bool? = nil
+    /// Why an interrupted RCC native execution stopped: the thrown error's
+    /// class and a sanitized short message (`RCCNativeAttemptOutcome.failureCause`:
+    /// no path, no credential). Absent on every other step and older records.
+    var failureCause: String? = nil
     /// Exact task/checker evidence, independent of native transport adoption.
     var taskQuality: TaskQualityEvidence.Evaluation? = nil
     /// Actual ordinary ChatGPT browser response/receipt, never a native JSONL
@@ -1291,6 +1295,7 @@ struct RunStepSummary: Codable {
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
         case nativeSessionDetached = "native_session_detached"
+        case failureCause = "failure_cause"
     }
 }
 
@@ -1362,6 +1367,12 @@ struct RejectedProviderExecution: Error, CustomStringConvertible {
     var quotaRejectedBeforeExecution: Bool = false
     /// Scope of a Claude quota rejection; nil when unclassified (treated as account-wide).
     var quotaScope: ClaudeQuotaScope? = nil
+    /// The provider's own retry hint for a limit rejection, in seconds
+    /// (`CodexTurnRejection.retryAfter`); nil when none was given.
+    var quotaRetryAfter: TimeInterval? = nil
+    /// The provider's own statement of the failure (unsanitized; the RCC
+    /// adapter persists only `RCCNativeAttemptOutcome.failureCause` of it).
+    var causeDetail: String? = nil
     var description: String { String(describing: cause) }
 }
 
@@ -2217,7 +2228,11 @@ func codexTurnBlocker(_ turn: [String: Any], approvalRejected: Bool) -> BackendB
     if let blocker = BackendBlocker.reported(in: error["message"] as? String ?? "") { return blocker }
     let kind = (error["codexErrorInfo"] as? String ?? "").lowercased().replacingOccurrences(of: "_", with: "")
     if kind == "contextwindowexceeded" { return .contextOverflow }
-    if kind == "usagelimitexceeded" {
+    // A rate-limit or usage-limit rejection (usageLimitExceeded,
+    // rateLimitExceeded, or a request refused with HTTP 429, e.g. Codex's
+    // responseTooManyFailedAttempts after its own retries) is a quota
+    // failure; after a tool call it keeps the effects-uncertain report.
+    if CodexTurnRejection.limitClass(error: error) != nil {
         return items.contains { ["commandExecution", "fileChange", "mcpToolCall"].contains($0["type"] as? String ?? "") }
             ? .effectsUncertain : .quotaExhausted
     }
@@ -6101,6 +6116,13 @@ final class CodexAppServerClient: @unchecked Sendable {
     private(set) var interruptedPublicProgress = ""
     /// Unrecovered tool breakdowns of the model's own in the last waited turn.
     private(set) var lastTurnToolBreakdowns = 0
+    /// The last waited turn ended without completing: the provider's own
+    /// statement of why (`CodexTurnRejection.failureSummary`), whether its
+    /// evidence places a rate/usage-limit rejection before any model or tool
+    /// work (`CodexTurnRejection.rejectedBeforeExecution`), and its retry hint.
+    private(set) var lastTurnFailureDetail: String?
+    private(set) var lastTurnQuotaRejectedBeforeExecution = false
+    private(set) var lastTurnRetryAfter: TimeInterval?
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -6602,7 +6624,11 @@ final class CodexAppServerClient: @unchecked Sendable {
         let stream = ExecutionStream(workspace: workspace)
         interruptedPublicProgress = ""
         lastTurnToolBreakdowns = 0
+        lastTurnFailureDetail = nil; lastTurnQuotaRejectedBeforeExecution = false; lastTurnRetryAfter = nil
         defer { interruptedPublicProgress = stream.text; lastTurnToolBreakdowns = stream.mainToolBreakdownsUnrecovered }
+        // Every message of this turn, server requests included, is evidence
+        // of whether any model or tool work ran before a failure.
+        var work = CodexTurnRejection.WorkEvidence()
         var revision = 0
         // Every app-server message (item, delta, usage, status) is activity:
         // a working turn runs to the ceiling, a silent one stops at `idle`.
@@ -6618,6 +6644,7 @@ final class CodexAppServerClient: @unchecked Sendable {
                 }
             }
             watchdog.observeActivity()
+            work.observe(message, threadID: threadID, turnID: turnID)
             if let method = message["method"] as? String, message["id"] != nil {
                 try rejectServerRequest(message, method: method)
                 continue
@@ -6638,6 +6665,11 @@ final class CodexAppServerClient: @unchecked Sendable {
                   let turn = params["turn"] as? [String: Any],
                   turn["id"] as? String == turnID else { continue }
             let items = turn["items"] as? [[String: Any]] ?? []
+            if turn["status"] as? String != "completed" {
+                lastTurnFailureDetail = CodexTurnRejection.failureSummary(turn: turn)
+                lastTurnQuotaRejectedBeforeExecution = CodexTurnRejection.rejectedBeforeExecution(turn: turn, evidence: work)
+                lastTurnRetryAfter = (turn["error"] as? [String: Any]).flatMap(CodexTurnRejection.retryAfter(error:))
+            }
             if let blocker = codexTurnBlocker(turn, approvalRejected: rejectedApprovalTurns.remove(turnID) != nil) {
                 throw OS1Error.backendBlocked(blocker)
             }
@@ -7267,6 +7299,36 @@ func claudeTranscriptContains(_ url: URL, assistantText: String) -> Bool {
     return false
 }
 
+/// The class of a thrown execution cause for a receipt: an OS1Error case
+/// (with its typed blocker or HTTP status), NSError domain and code, or the
+/// Swift type name. Never the message (`RCCNativeAttemptOutcome.failureCause`
+/// sanitizes that separately).
+func rccFailureCauseKind(_ error: Error) -> String {
+    if let rejected = error as? RejectedProviderExecution { return rccFailureCauseKind(rejected.cause) }
+    if let failure = error as? OS1Error {
+        switch failure {
+        case .message: return "OS1Error.message"
+        case .backendBlocked(let blocker): return "OS1Error.backendBlocked(\(blocker.rawValue))"
+        case .service(let status, _, _): return "OS1Error.service(\(status))"
+        case .toolPermissionDenied: return "OS1Error.toolPermissionDenied"
+        }
+    }
+    let type = String(reflecting: Swift.type(of: error))
+    if type.contains("NSError") { let ns = error as NSError; return "NSError(\(ns.domain):\(ns.code))" }
+    return type
+}
+
+/// The words of a thrown cause worth keeping, provider's own first (the
+/// receipt keeps only the sanitized, bounded start): a typed blocker's
+/// generic localized sentence adds nothing its class does not already say.
+func rccFailureCauseMessage(_ rejected: RejectedProviderExecution) -> String {
+    var parts = [rejected.causeDetail].compactMap { $0 }
+    if let failure = rejected.cause as? OS1Error, case .backendBlocked = failure {} else {
+        parts.append(String(describing: rejected.cause))
+    }
+    return parts.joined(separator: " · ")
+}
+
 private func interruptedExecution(ticket: Ticket, model: String?, effort: String, contract: ExecutorContract,
                                   sessionID: String, publicProgress: String, beforeHash: String,
                                   workspace: String, started: Date, cause: Error, surface: String? = nil,
@@ -7841,10 +7903,20 @@ private func execute(
             }
         } catch {
             // No alternate turn is dispatched after an ambiguous failure.
-            throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
+            var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress, beforeHash: workspaceBeforeHash,
                 workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
                 preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
+            // The app-server writer's own turn evidence (never the Desktop
+            // transport's polled snapshots): a rate/usage-limit rejection
+            // with no model or tool work, like Claude's pre-execution quota
+            // rejection (RCCNativeAttemptOutcome.failure adds scope and
+            // workspace evidence).
+            rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
+                appServer.lastTurnQuotaRejectedBeforeExecution
+            rejection.quotaRetryAfter = appServer.lastTurnRetryAfter
+            rejection.causeDetail = appServer.lastTurnFailureDetail
+            throw rejection
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
@@ -14507,6 +14579,58 @@ func selfTest() throws {
         throw OS1Error.message("A successful Codex turn must not be blocked")
     }
     protocolRecoveryChecks += 1
+    // 2026-10-14 incident: Codex exhausted its retries on HTTP 429 and ended
+    // the turn with no output. A rate/usage-limit rejection is a quota
+    // failure, never an unclassified "turn failed"; after a tool call it
+    // keeps the effects-uncertain report.
+    let limitedTurnError: [String: Any] = ["message": "exceeded retry limit, last status: 429 Too Many Requests",
+        "codexErrorInfo": ["responseTooManyFailedAttempts": ["httpStatusCode": 429]]]
+    for (error, items, expected) in [
+        (limitedTurnError, [["type": "userMessage"]], BackendBlocker.quotaExhausted as BackendBlocker?),
+        (limitedTurnError, [["type": "userMessage"], ["type": "mcpToolCall", "status": "failed"]], .effectsUncertain),
+        (["codexErrorInfo": "rateLimitExceeded", "message": "Rate limit reached"], [], .quotaExhausted),
+        (["codexErrorInfo": "usageLimitExceeded", "message": "You've hit your usage limit"], [], .quotaExhausted),
+        (["codexErrorInfo": "serverOverloaded", "message": "429"], [], nil),
+        (["codexErrorInfo": ["responseStreamDisconnected": ["httpStatusCode": 429]], "message": "x"], [], nil),
+    ] as [([String: Any], [[String: Any]], BackendBlocker?)] {
+        guard codexTurnBlocker(["status": "failed", "error": error, "items": items], approvalRejected: false) == expected else {
+            throw OS1Error.message("Codex limit rejection classification failed: \(error)")
+        }
+        protocolRecoveryChecks += 1
+    }
+    // The cause an interrupted RCC attempt persists: class plus the
+    // provider's own words, never a typed blocker's generic sentence.
+    let limitedRecord = NativeRecordEvidence(turnID: nil, recordPath: nil, persistence: "interrupted_unverified",
+        desktopVisibility: "fixture")
+    var limitedRejection = RejectedProviderExecution(execution: ProviderExecution(artifact: Artifact(provider: "codex",
+        action: "execute", permissionProfile: "read_only", model: "gpt-6-astra", effort: "max", executorContractVersion: "fixture",
+        executorContractSHA256: "fixture", exitCode: 69, output: "", stderr: "", durationMS: 0, workspaceBeforeHash: "a",
+        workspaceAfterHash: "a", nativeRecord: limitedRecord), sessionID: UUID().uuidString, nativeRecord: limitedRecord),
+        cause: OS1Error.backendBlocked(.quotaExhausted))
+    limitedRejection.causeDetail = "codex turn failed: response_too_many_failed_attempts_429: exceeded retry limit, last status: 429 Too Many Requests"
+    guard rccFailureCauseKind(limitedRejection) == "OS1Error.backendBlocked(quota_exhausted)",
+          rccFailureCauseMessage(limitedRejection) == limitedRejection.causeDetail,
+          rccFailureCauseKind(OS1Error.message("x")) == "OS1Error.message",
+          rccFailureCauseKind(OS1Error.service(status: 429, message: "x", retryAfterMS: nil)) == "OS1Error.service(429)",
+          rccFailureCauseKind(NSError(domain: "fixture.domain", code: 7)) == "NSError(fixture.domain:7)" else {
+        throw OS1Error.message("Interrupted execution cause class or message is wrong")
+    }
+    protocolRecoveryChecks += 1
+    var causeStep = RunStepSummary(sequence: 1, provider: "codex", action: "fixture", model: "gpt-6-astra", effort: "max",
+        revasDisposition: "rejected_preserved", sessionID: UUID().uuidString, permissionProfile: "read_only", exitCode: 69,
+        output: "", stderr: "", durationMS: 1, nativeRecord: nil)
+    causeStep.failureCause = RCCNativeAttemptOutcome.failureCause(kind: rccFailureCauseKind(limitedRejection),
+        message: rccFailureCauseMessage(limitedRejection))
+    let causeJSON = try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [causeStep]))
+    let olderStep = try JSONSerialization.jsonObject(with: causeJSON) as! [String: Any]
+    var olderSteps = olderStep["steps"] as! [[String: Any]]; olderSteps[0].removeValue(forKey: "failure_cause")
+    var olderSummary = olderStep; olderSummary["steps"] = olderSteps
+    guard String(decoding: causeJSON, as: UTF8.self).contains("\"failure_cause\":\"OS1Error.backendBlocked(quota_exhausted): codex turn failed"),
+          try JSONDecoder().decode(RunSummary.self, from: causeJSON).steps.first?.failureCause == causeStep.failureCause,
+          try JSONDecoder().decode(RunSummary.self, from: JSONSerialization.data(withJSONObject: olderSummary)).steps.first?.failureCause == nil else {
+        throw OS1Error.message("Native summary failure cause must persist and older summaries must still decode")
+    }
+    protocolRecoveryChecks += 1
     let authExplanation: [String: Any] = ["result": "HTTP 401 Unauthorized is an authentication error.",
         "session_id": claudeSessionID, "is_error": false, "permission_denials": []]
     _ = try parseClaudeCommandResult(0, JSONSerialization.data(withJSONObject: authExplanation), requestedSessionID: claudeSessionID)
@@ -14647,6 +14771,40 @@ func selfTest() throws {
         throw OS1Error.message("Recovery adapter failed real stdio dispatch/result binding")
     }
     protocolRecoveryChecks += 1
+    // 2026-10-14 incident over the real stdio client: Codex retried, every
+    // request got HTTP 429, and the turn ended with no output. The writer's
+    // own evidence proves the rejection came before any work; one streamed
+    // agent delta, or a tool item, takes that proof away.
+    for streamedWork in [false, true] {
+        let limitedTurn = UUID().uuidString.lowercased()
+        let limitedPeer = approvalFixture.appendingPathComponent("limited-\(streamedWork).sh")
+        let user = #"{"type":"userMessage","id":"u1","content":[]}"#
+        let limit = #"{"message":"exceeded retry limit, last status: 429 Too Many Requests","codexErrorInfo":{"responseTooManyFailedAttempts":{"httpStatusCode":429}}}"#
+        let lines = [
+            #"{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"\#(limitedTurn)"}}}"#,
+            #"{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","item":\#(user)}}"#,
+            #"{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","item":\#(user)}}"#,
+            #"{"jsonrpc":"2.0","method":"error","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","willRetry":true,"error":\#(limit)}}"#,
+        ] + (streamedWork ? [#"{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","itemId":"a1","delta":"Sure"}}"#] : []) + [
+            #"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"\#(recoveredSession)","turn":{"id":"\#(limitedTurn)","status":"failed","error":\#(limit),"items":[\#(user)]}}}"#]
+        try Data(("#!/bin/sh\nIFS= read -r request\n" + lines.map { "printf '%s\\n' '\($0)'\n" }.joined() +
+            "while IFS= read -r ignored; do :; done\n").utf8).write(to: limitedPeer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: limitedPeer.path)
+        let limitedServer = try CodexAppServerClient(executable: limitedPeer.path, workspace: approvalFixture.path)
+        defer { limitedServer.close() }
+        var limitedBlocker: BackendBlocker?
+        do {
+            _ = try limitedServer.runTurn(threadID: recoveredSession, prompt: "야 원플러스원 해봐.", workspace: approvalFixture.path,
+                model: nil, effort: "max", permissionProfile: "read_only", deadline: Date().addingTimeInterval(8))
+        } catch { limitedBlocker = backendBlocker(error) }
+        guard limitedBlocker == .quotaExhausted,
+              limitedServer.lastTurnQuotaRejectedBeforeExecution == !streamedWork,
+              limitedServer.lastTurnFailureDetail == "codex turn failed: response_too_many_failed_attempts_429: exceeded retry limit, last status: 429 Too Many Requests",
+              limitedServer.lastTurnRetryAfter == nil else {
+            throw OS1Error.message("Codex 429 turn evidence over stdio is wrong (streamed work: \(streamedWork))")
+        }
+        protocolRecoveryChecks += 1
+    }
     // A short child returns when it exits, not on the next 100 ms poll tick.
     let shortStarted = Date()
     for _ in 0..<10 { _ = try commandOutput("/usr/bin/true", [], timeout: 10) }
@@ -17875,6 +18033,8 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     // only; no provider call) excludes that family before any probe.
     input.claudeAccountQuotaBackoff = ClaudeQuotaBackoff.active() != nil
     input.claudeQuotaBackoffFamilies = Set(ClaudeQuotaBackoff.activeModels())
+    // Likewise a Codex model a real rate/usage-limit rejection just cooled.
+    input.codexQuotaBackoffModels = Set(CodexQuotaBackoff.activeModels())
     let probe = RCCNativeCatalogBuilder.providersToProbe(input)
     // The general catalogs strip a quota-exhausted Codex slug and a cooled
     // Claude family for every other caller. The builder must still see them:
@@ -18331,6 +18491,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             step.os1SourceConfined = sourceConfined
             step.os1ChangeRequired = sourceConfined && e.os1ChangeRequired
             step.os1FullAccessRequired = sourceConfined && e.os1FullAccessRequired
+            // The thrown cause, sanitized, so a later incident is diagnosable
+            // from the receipt alone (the provider's own words included).
+            step.failureCause = RCCNativeAttemptOutcome.failureCause(kind: rccFailureCauseKind(rejected.cause),
+                message: rccFailureCauseMessage(rejected))
             record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
             if knownFinishedCandidate, !ExecutionCancellation.isCancelled, sourceConfined,
                step.os1ChangeRequired || step.os1FullAccessRequired, let watch = protectedSourceAtDispatch,
@@ -18352,9 +18516,19 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             quotaExhausted: quotaExhausted, scope: rejected?.quotaScope) {
             try? RCCNativeAttemptOutcome.recordClaudeBackoff(cooldown)
         }
-        // A quota rejection the provider's own stream places before any work,
-        // on a read-only attempt, is a verified no-effect attempt Core may move
-        // to the other pool. Writes keep the effects-uncertain report. The
+        // A classified Codex rate/usage-limit rejection cools that model for a
+        // bounded time (its retry hint, at most ten minutes), so the next
+        // catalog excludes it with quota_backoff instead of offering it again.
+        if let model = RCCNativeAttemptOutcome.codexBackoffModel(provider: provider, quotaExhausted: quotaExhausted,
+            model: t.selectedConfig.model) {
+            try? RCCNativeAttemptOutcome.recordCodexBackoff(model: model, retryAfter: rejected?.quotaRetryAfter)
+        }
+        // A quota rejection the provider's own stream places before any work
+        // (Claude's stream attestation; Codex's turn items and notification
+        // stream: a rate/usage-limit failure with no agent message, reasoning
+        // or tool call), on a read-only attempt, is a verified no-effect
+        // attempt Core may move to the other pool. Writes keep the
+        // effects-uncertain report. The
         // workspace hash is evidence only for an isolated (chat-lane)
         // workspace: a writer running beside this read-only attempt in the
         // shared workspace changes that hash without this attempt doing

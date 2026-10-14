@@ -5,7 +5,10 @@ import Foundation
 ///
 /// One failure is narrower than "dispatched": the Claude CLI started, but its
 /// own stream proves the quota rejection came before any model or tool work
-/// (`ExecutionStream.claudeQuotaRejectedBeforeExecution`). For a read-only
+/// (`ExecutionStream.claudeQuotaRejectedBeforeExecution`), or a Codex turn
+/// failed for a rate or usage limit (HTTP 429 included) with no agent
+/// message, reasoning or tool work in its items or stream
+/// (`CodexTurnRejection.rejectedBeforeExecution`). For a read-only
 /// attempt whose workspace evidence holds (`workspaceEvidenceHolds`) nothing
 /// could have happened, so the attempt is reported `not_dispatched` with side
 /// effects `none` and the typed reason `provider_quota_rejected_before_execution`.
@@ -116,5 +119,46 @@ public enum RCCNativeAttemptOutcome {
         case .account:
             try ClaudeQuotaBackoff.record(at: directory.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now)
         }
+    }
+
+    /// The Codex model a classified rate-limit or usage-limit rejection
+    /// (`CodexTurnRejection.limitClass`, reported as `quotaExhausted`) cools
+    /// for the next catalog: always the dispatched model, never the account
+    /// (the native rate-limit snapshot already covers an exhausted account).
+    /// nil for any other provider or failure.
+    public static func codexBackoffModel(provider: String, quotaExhausted: Bool, model: String) -> String? {
+        provider == "codex" && quotaExhausted && CodexQuotaBackoff.validModel(model) ? model : nil
+    }
+
+    /// Writes that Codex cooldown (`CodexQuotaBackoff`, bounded by the
+    /// provider's retry hint and ten minutes).
+    public static func recordCodexBackoff(model: String, retryAfter: TimeInterval?,
+                                          directory: URL = CodexQuotaBackoff.defaultDirectory,
+                                          now: Date = Date()) throws {
+        try CodexQuotaBackoff.record(model: model, retryAfter: retryAfter, directory: directory, now: now)
+    }
+
+    /// The cause of an interrupted native execution, safe to persist in its
+    /// receipt's native summary: the error class (letters, digits and
+    /// `._()-:` only, at most 96) and a short message with every path
+    /// replaced by `<path>` and credentials masked (`NativeStepLabel.redact`,
+    /// at most 160 characters). Never the raw error text.
+    public static func failureCause(kind: String, message: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._()-:".unicodeScalars)
+        var safeKind = String(String.UnicodeScalarView(kind.unicodeScalars.filter { allowed.contains($0) }.prefix(96)))
+        if safeKind.isEmpty { safeKind = "unknown" }
+        guard let text = NativeStepLabel.redact(pathsRemoved(message)), !text.isEmpty else { return safeKind }
+        return safeKind + ": " + text
+    }
+
+    /// Absolute and home-relative paths (and file URLs) become `<path>`; a
+    /// web URL keeps its host (NativeStepLabel drops its credentials, query
+    /// and fragment).
+    static func pathsRemoved(_ text: String) -> String {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"file://[^\s'"<>()\[\]{},;]*|(?<![\w:/.~-])(?:~/|/)[^\s'"<>()\[\]{},;]*"#, options: [.caseInsensitive])
+        else { return "" }
+        return expression.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                   withTemplate: "<path>")
     }
 }

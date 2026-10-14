@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { canonicalHostContext, cheaperRouteAdmission, createRCCRuntime, dispatchable, effectiveExplicitRoutes,
-  hostContextFingerprint, LADDER_MIN_VERIFIED_PASSES, openRoutingLedger, resolveRoutePlan,
+  hostContextFingerprint, LADDER_MIN_VERIFIED_PASSES, lockIndivisibleInstruction, openRoutingLedger, resolveRoutePlan,
   routeFamily } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -1195,7 +1195,12 @@ test('source marker prose, read-only, split task and foreign original workspace 
   const foreignRoot = join(dir, 'unrelated-source'); await mkdir(foreignRoot, {mode: 0o700});
   for (const mode of ['marker', 'read-only', 'split', 'foreign', 'partial-instruction']) {
     const root = join(dir, mode); await mkdir(root, {mode: 0o700});
-    const request = task(root, `repair ${mode}`, 'auto', {write: mode !== 'read-only'});
+    // A one-node plan runs the owner's request (lockIndivisibleInstruction),
+    // so a planner fragment survives only beyond the node instruction bound:
+    // there it still never authorizes a stage.
+    const request = mode === 'partial-instruction' ?
+      task(root, `repair ${mode} ` + 'x'.repeat(12_001), 'auto', {write: true, objective: `repair ${mode}`}) :
+      task(root, `repair ${mode}`, 'auto', {write: mode !== 'read-only'});
     const write = mode !== 'read-only';
     const row = candidate('write', 'codex', 'openai_codex',
       {scope: write ? 'workspace_write' : 'read_only', allowedPaths: write ? ['**'] : []});
@@ -2151,8 +2156,9 @@ test('a slow planner never changes the pool or holds: rows are ranked at the cat
     const done = await wait(runtime, request);
     assert.equal(done.state, 'completed', `${name}: ${done.error}`);
     assert.deepEqual(dispatched, ['claude-opus-medium'], name);
+    // The single node's planner text is replaced by the owner's request.
     assert.equal(done.children[0].routing_decision.reason,
-      'resolver;route_reference;pool_rank_0;effort_medium;agent_surface', name);
+      'resolver;route_reference;pool_rank_0;effort_medium;agent_surface;instruction_host_locked', name);
     assert.ok(calls >= 2, 'the dispatch-time refresh still re-checks freshness');
   }
 });
@@ -2665,7 +2671,8 @@ test('a write node is never laddered or escalated, whatever the registry and led
   assert.equal(write.done.state, 'completed', write.done.error);
   assert.deepEqual(write.dispatched, ['max']);
   assert.deepEqual(write.verified, [], 'no node verifier runs for a write');
-  assert.equal(write.done.children[0].routing_decision.reason, 'resolver;route_reference;pool_rank_0;effort_max;agent_surface');
+  assert.equal(write.done.children[0].routing_decision.reason,
+    'resolver;route_reference;pool_rank_0;effort_max;agent_surface;instruction_host_locked');
   assert.equal(write.runtime.events({schema: 1, task_id: write.request.task_id})
     .some(event => event.kind === 'ladder_escalated_to_reference'), false);
 });
@@ -2877,8 +2884,13 @@ test('a failed ladder verifier never settles the task over a running sibling (ca
   assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'cancelled'], ['b', 'effects_uncertain']]);
   const db = coreDB(cancelled.stateDir);
   t.after(() => db.close());
-  assert.deepEqual(db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key),
-    ['anthropic_shared:account-1'], 'only the uncertain sibling keeps its pool; the ladder child released codex');
+  // The uncertain sibling's adapter RETURNED a read-only record with no side
+  // effects: its process exited, so it holds no pool either (the ladder child
+  // released codex). Its uncertainty is remote billing, not a running process.
+  assert.deepEqual(db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key), [],
+    'a settled read-only sibling keeps no pool lease');
+  assert.ok(cancelled.runtime.events({schema: 1, task_id: cancelled.request.task_id})
+    .some(event => event.kind === 'quota_lease_released_settled_read_only'), 'the release names why');
 
   // The reference cannot be restored while the sibling runs: only the ladder
   // child holds; the sibling finishes and the task holds with the typed reason.
@@ -3486,4 +3498,230 @@ test('restart records a settled verdict as it was, never as interrupted', async 
   assert.deepEqual(quotaRecords.sort(), [['anthropic_shared', 'verified_not_dispatched', 'not_dispatched'],
     ['openai_codex', 'completed', 'pass']]);
   assert.equal(openRoutingLedger(quotaDir).stats('standard:read_only:agent', 'claude-opus-5-5', 'max').verifier_failures, 0);
+});
+
+// ---- Quota-pool leases of settled read-only attempts (2026-10-14) ----------
+// A quota-pool lease protects a RUNNING attempt (shared pool peak 1), or an
+// effects-uncertain one whose process may still run or whose effects may
+// exist. A read-only attempt whose adapter RETURNED a record with no side
+// effects has exited and changed nothing: its uncertainty is remote billing,
+// so its pool is released. Build 378 kept that lease across reinstalls and
+// held the owner's next task with quota_pool_effects_uncertain.
+const leasePools = runtime => runtime.db.prepare('SELECT pool_key FROM quota_leases ORDER BY pool_key').all()
+  .map(item => item.pool_key);
+const failedAfterDispatch = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'dispatched',
+  side_effects: 'none', output: null, execution_verified: false, task_verified: false, task_quality: 'failed',
+  usage: null, error: 'native_outcome_uncertain_preserved'});
+
+test('a settled read-only attempt releases its pool even when effects-uncertain; the next task on that pool runs', async t => {
+  const dir = await fixture(t);
+  const reader = candidate('reader', 'codex', 'openai_codex');
+  const first = task(dir, 'Explain the failing check');
+  let calls = 0;
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'state'),
+    catalog: async value => catalog(value, [reader]),
+    plan: async ({task: value}) => plan(value, [node('only', 'reader')]),
+    execute: async ticket => { calls++; return calls === 1 ? failedAfterDispatch(ticket) : execution(ticket); },
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(first);
+  const done = await wait(runtime, first);
+  assert.equal(done.state, 'effects_uncertain', 'the failed attempt is still never replayed');
+  assert.equal(done.error, 'dispatched_failure_no_replay');
+  assert.deepEqual(leasePools(runtime), [], 'its read-only pool is free');
+  assert.ok(runtime.events({schema: 1, task_id: first.task_id})
+    .some(event => event.kind === 'quota_lease_released_settled_read_only'), 'the release names why');
+  const next = task(dir, 'Answer the next question');
+  await runtime.submit(next);
+  const second = await wait(runtime, next);
+  assert.equal(second.state, 'completed', `not ${second.error}`);
+  assert.equal(calls, 2);
+});
+
+test('a write with uncertain effects keeps its pool lease, across a restart too', async t => {
+  const dir = await fixture(t);
+  const writer = candidate('writer', 'codex', 'openai_codex', {scope: 'workspace_write', allowedPaths: ['**']});
+  const stateDir = join(dir, 'state');
+  const write = task(dir, 'Change a registered file', 'auto', {write: true});
+  let calls = 0;
+  const options = {catalog: async value => catalog(value, [writer]),
+    plan: async ({task: value}) => plan(value, [node('write', 'writer', {scope: 'workspace_write', ownedPaths: ['**']})]),
+    verifyTask: taskVerdict};
+  const runtime = await createRCCRuntime({stateDir, ...options,
+    execute: async ticket => { calls++; return execution(ticket, {status: 'effects_uncertain', dispatch_stage: 'dispatched',
+      side_effects: 'possible', output: null, execution_verified: false, task_verified: false, task_quality: 'failed',
+      error: 'native_outcome_uncertain_preserved'}); }});
+  await runtime.submit(write);
+  assert.equal((await wait(runtime, write)).state, 'effects_uncertain');
+  assert.deepEqual(leasePools(runtime), ['openai_codex:account-1'], 'a write keeps its pool');
+  const other = join(dir, 'other'); await mkdir(other, {mode: 0o700});
+  const blocked = task(other, 'Change a file in another checkout', 'auto', {write: true});
+  await runtime.submit(blocked);
+  assert.equal((await wait(runtime, blocked)).error, 'quota_pool_effects_uncertain');
+  await runtime.close();
+  const reopened = await createRCCRuntime({stateDir, ...options, execute: async () => { calls++; throw Error('must not run'); }});
+  t.after(async () => { await reopened.close(); });
+  assert.deepEqual(leasePools(reopened), ['openai_codex:account-1'], 'an owner start keeps a write lease');
+  const again = task(other, 'Change another file in another checkout', 'auto', {write: true});
+  await reopened.submit(again);
+  assert.equal((await wait(reopened, again)).error, 'quota_pool_effects_uncertain');
+  assert.equal(calls, 1, 'nothing ran on the uncertain pool');
+});
+
+test('an owner start releases stale leases (settled read-only, terminal, vanished task) and keeps an unsettled one', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'state');
+  const rows = [candidate('codex-reader', 'codex', 'openai_codex'),
+    candidate('claude-reader', 'claude', 'anthropic_shared'),
+    candidate('codex-two', 'codex', 'openai_codex', {account: 'account-2'})];
+  const settled = task(dir, 'The incident question: settled read-only');
+  const unsettled = task(dir, 'A read-only attempt whose executor never returned');
+  const finished = task(dir, 'A completed task');
+  const byTask = new Map([[settled.task_id, 'codex-reader'], [unsettled.task_id, 'claude-reader'],
+    [finished.task_id, 'codex-two']]);
+  const options = {catalog: async value => catalog(value, rows),
+    plan: async ({task: value}) => plan(value, [node('node-1', byTask.get(value.task_id) ?? 'codex-reader')]),
+    verifyTask: taskVerdict};
+  const first = await createRCCRuntime({stateDir, ...options, execute: async ticket => {
+    if (ticket.task_id === settled.task_id) return failedAfterDispatch(ticket);
+    if (ticket.task_id === unsettled.task_id) throw Error('transport dropped after dispatch');
+    return execution(ticket);
+  }});
+  for (const value of [settled, unsettled, finished]) { await first.submit(value); await wait(first, value); }
+  assert.deepEqual(leasePools(first), ['anthropic_shared:account-1'], 'only the unsettled attempt holds a pool');
+  await first.close();
+  // Recreate what build 378 left on disk: the settled read-only attempt's
+  // lease and snapshot without the settled_side_effects marker (its attempt
+  // carries only dispatched_failure 'no_effects', exactly as the incident's
+  // did), a stale lease of a completed task, and one of a task row that does
+  // not exist.
+  const db = coreDB(stateDir);
+  const row = db.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(settled.task_id);
+  const snapshot = JSON.parse(row.snapshot);
+  for (const child of snapshot.children) for (const entry of child.attempt_history) delete entry.settled_side_effects;
+  assert.equal(snapshot.children[0].attempt_history.at(-1).dispatched_failure, 'no_effects');
+  db.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(snapshot), settled.task_id);
+  const insert = db.prepare('INSERT INTO quota_leases(pool_key,task_id,acquired_ms) VALUES(?,?,?)');
+  insert.run('openai_codex:account-1', settled.task_id, Date.now());
+  insert.run('openai_codex:account-2', finished.task_id, Date.now());
+  insert.run('openai_chat:account-1', 'task-vanished', Date.now());
+  db.close();
+  let ran = 0;
+  const reopened = await createRCCRuntime({stateDir, ...options, execute: async ticket => { ran++; return execution(ticket); }});
+  t.after(async () => { await reopened.close(); });
+  assert.deepEqual(leasePools(reopened), ['anthropic_shared:account-1'],
+    'stale leases are released at owner start; the attempt that never returned keeps its pool');
+  const kinds = value => reopened.events({schema: 1, task_id: value.task_id}).map(event => event.kind);
+  assert.ok(kinds(settled).includes('quota_lease_released_settled_read_only'));
+  assert.ok(kinds(finished).includes('quota_lease_released_task_terminal'));
+  assert.ok(!kinds(unsettled).some(kind => kind.startsWith('quota_lease_released')));
+  assert.equal(reopened.status({schema: 1, task_id: settled.task_id}).state, 'effects_uncertain',
+    'the uncertain attempt itself is preserved, never replayed');
+  // The owner's next question on the freed pool runs (the incident's held task).
+  const next = task(dir, '너 라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐. 엄청 간단한 알제브라 계산 있잖아.');
+  await reopened.submit(next);
+  const done = await wait(reopened, next);
+  assert.equal(done.state, 'completed', `not ${done.error}`);
+  assert.equal(ran, 1);
+  // The unsettled pool still surfaces as the existing hold.
+  const claudeOnly = task(dir, 'A question for the uncertain pool');
+  byTask.set(claudeOnly.task_id, 'claude-reader');
+  await reopened.submit(claudeOnly);
+  assert.equal((await wait(reopened, claudeOnly)).error, 'quota_pool_effects_uncertain');
+});
+
+test('lease acquisition releases a stale foreign lease instead of holding or waiting on it', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'state');
+  const reader = candidate('reader', 'codex', 'openai_codex');
+  const options = {catalog: async value => catalog(value, [reader]),
+    plan: async ({task: value}) => plan(value, [node('only', 'reader')]), verifyTask: taskVerdict};
+  const runtime = await createRCCRuntime({stateDir, ...options, execute: async ticket => failedAfterDispatch(ticket)});
+  t.after(async () => { await runtime.close(); });
+  const first = task(dir, 'First question');
+  await runtime.submit(first);
+  assert.equal((await wait(runtime, first)).state, 'effects_uncertain');
+  // A lease written while this owner ran (an older runtime's rule, or a
+  // crash between settle and release) is reconciled where it is acquired.
+  runtime.db.prepare('INSERT INTO quota_leases(pool_key,task_id,acquired_ms) VALUES(?,?,?)')
+    .run('openai_codex:account-1', first.task_id, Date.now());
+  runtime.execute = async ticket => execution(ticket);
+  const next = task(dir, 'Second question');
+  await runtime.submit(next);
+  const done = await wait(runtime, next);
+  assert.equal(done.state, 'completed', `not ${done.error}`);
+  assert.ok(runtime.events({schema: 1, task_id: first.task_id})
+    .some(event => event.kind === 'quota_lease_released_settled_read_only'));
+  assert.deepEqual(leasePools(runtime), []);
+});
+
+// ---- One indivisible task runs the owner's own words (2026-10-14) ----------
+test('lockIndivisibleInstruction: one agent node runs the request; decompositions, routes and exact nodes keep theirs', () => {
+  const request = task('/tmp', '야 원플러스원 해봐.');
+  const rewrite = "Execute '원플러스원' (OnePlus One) command.";
+  const one = plan(request, [node('n', 'a', {instruction: rewrite})]);
+  const locked = lockIndivisibleInstruction(one, request);
+  assert.equal(locked.changed, true);
+  assert.equal(locked.plan.nodes[0].instruction, '야 원플러스원 해봐.');
+  assert.equal(one.nodes[0].instruction, rewrite, 'pure: the input plan is not mutated');
+  assert.deepEqual({...locked.plan.nodes[0], instruction: rewrite}, one.nodes[0], 'only the instruction changes');
+  assert.equal(lockIndivisibleInstruction(locked.plan, request).changed, false, 'already the request: unchanged');
+  assert.equal(lockIndivisibleInstruction({...one, final_node_id: 'n'}, request).changed, true,
+    'a single node named final integrates nothing');
+  for (const [label, value, owner] of [
+    ['two nodes', plan(request, [node('a', 'a', {instruction: 'part one'}), node('b', 'a', {instruction: 'part two'})]), request],
+    ['a final integration node', {...plan(request, [node('a', 'a', {instruction: 'part one'}),
+      node('b', 'a', {instruction: 'integrate', dependencies: ['a']})]), final_node_id: 'b'}, request],
+    ['an explicit route test', one, {...request, mode: 'explicit_routing_test'}],
+    ['a deterministic node', plan(request, [node('n', 'local', {kind: 'deterministic', instruction: '1+1'})]), request],
+    ['a request over the node instruction bound', one, {...request, request: 'x'.repeat(12_001)}],
+    ['no plan', null, request]]) {
+    const result = lockIndivisibleInstruction(value, owner);
+    assert.equal(result.changed, false, label);
+    assert.equal(result.plan, value, `${label}: the same plan object`);
+  }
+});
+
+test('a one-node plan dispatches the request; a decomposition keeps the planner text; a repair stays locked', async t => {
+  const dir = await fixture(t);
+  const rows = [candidate('a'), candidate('b')];
+  const rewrite = "Execute '원플러스원' (OnePlus One) command.";
+  // One node, adapter-bound: the planner's paraphrase never reaches the backend.
+  const single = task(dir, '야 원플러스원 해봐.');
+  const tickets = [];
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'single'), catalog: async value => catalog(value, rows),
+    plan: async ({task: value, repair}) => plan(value, [node('only', repair ? 'b' : 'a',
+      {instruction: repair ? 'Repair paraphrase' : rewrite})]),
+    execute: async ticket => {
+      tickets.push(ticket);
+      // The first row verifiably did not dispatch: a planner repair binds b.
+      if (ticket.candidate_id === 'a') return execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
+        side_effects: 'none', output: null, execution_verified: false, task_verified: false, task_quality: 'failed',
+        acknowledged_config: null});
+      return execution(ticket);
+    }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(single);
+  const done = await wait(runtime, single);
+  assert.equal(done.state, 'completed', done.error);
+  assert.deepEqual(tickets.map(ticket => [ticket.candidate_id, ticket.instruction, ticket.objective]),
+    [['a', single.request, single.request], ['b', single.request, single.request]],
+    'the original and the repaired dispatch both run the owner request');
+  assert.equal(done.children[0].instruction, single.request);
+  const admitted = runtime.events({schema: 1, task_id: single.task_id}).find(event => event.kind === 'plan_admitted');
+  assert.equal(admitted.snapshot.children[0].routing_decision.reason, 'adapter_bound;instruction_host_locked');
+  assert.ok(runtime.events({schema: 1, task_id: single.task_id}).some(event => event.kind === 'safe_subset_replanned'));
+  // Two independent parts: each node keeps the planner's own instruction.
+  const split = task(dir, 'Explain the parser and the lexer');
+  const splitTickets = [];
+  const splitRuntime = await createRCCRuntime({stateDir: join(dir, 'split'), catalog: async value => catalog(value, rows),
+    plan: async ({task: value}) => plan(value, [node('parser', 'a', {instruction: 'Explain the parser'}),
+      node('lexer', 'b', {instruction: 'Explain the lexer'})]),
+    execute: async ticket => { splitTickets.push(ticket); return execution(ticket); }, verifyTask: taskVerdict});
+  t.after(async () => { await splitRuntime.close(); });
+  await splitRuntime.submit(split);
+  assert.equal((await wait(splitRuntime, split)).state, 'completed');
+  assert.deepEqual(splitTickets.map(ticket => ticket.instruction).sort(), ['Explain the lexer', 'Explain the parser']);
+  assert.ok(!splitRuntime.events({schema: 1, task_id: split.task_id}).find(event => event.kind === 'plan_admitted')
+    .snapshot.children.some(child => child.routing_decision?.reason.includes('instruction_host_locked')));
 });
