@@ -48,7 +48,9 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // choice is the admission: no ledger parity is needed. One ledger-derived
 // check remains (tierCostGate): a guarded read-only tier route whose cost
 // evidence says, with COST_GATE_CONFIDENCE, that cheap-then-escalate costs
-// more tokens than the reference goes straight to that reference.
+// more tokens than the reference because of its escalations goes straight to
+// that reference (each task node still explores the tier with probability
+// 1 - P_more).
 //
 // A catalog WITHOUT `model_tiers` (older hosts and persisted catalogs) keeps
 // the 2026-10-13 reference routing: every node binds a pool's REFERENCE route
@@ -76,9 +78,16 @@ const MAX_REFERENCE_EFFORT = EFFORT_ORDER.indexOf('max');
 // reference: the tier is cheaper iff p < 1 - mu_C/mu_R (exact for this
 // structure). p, mu_C and mu_R are estimated from the routing ledger as a
 // TOKEN PROXY (input + output + reasoning tokens), not subscription quota.
-// The node goes straight to its reference only when the posterior
-// probability that the tier costs more reaches COST_GATE_CONFIDENCE. That is
-// the one owner-tunable number: a confidence level, not a cost threshold.
+// Quota per token is not observable and is assumed no higher on the cheaper
+// model, so the token proxy can only show the tier costing more THROUGH its
+// escalations: P_more = Pr[mu_C < mu_R and mu_C + p*mu_R > mu_R], and the
+// gate never acts without an observed escalation or when the cheaper attempt
+// alone costs at least a reference attempt in tokens. The node goes straight
+// to its reference only when P_more reaches COST_GATE_CONFIDENCE, and even
+// then a task still tries the tier with probability 1 - P_more (posterior
+// probability matching, seeded per task and node) so the evidence keeps
+// moving. COST_GATE_CONFIDENCE is the one owner-tunable number: a confidence
+// level, not a cost threshold.
 export const COST_GATE_CONFIDENCE = 0.9;
 // Monte Carlo draws of the posterior (standard error <= 0.008 at any P).
 export const COST_GATE_DRAWS = 4000;
@@ -591,8 +600,11 @@ function quotaScore(catalog, model) {
 // Derivation (doc: DYNAMIC_TIER_ROUTING_BUILD378.md, "Cost gate"). A guarded
 // read-only tier route pays one cheaper attempt (mean cost mu_C) and, with
 // probability p (a failure signal), one reference attempt (mu_R); routing
-// straight to the reference pays mu_R. A failing reference is held in both
-// arms, so the tier costs more iff mu_C + p*mu_R > mu_R, i.e. p > 1 - mu_C/mu_R.
+// straight to the reference pays mu_R. Whatever a reference run does
+// (delivers, is held, fails after dispatch) it does the same in both arms, so
+// mu_R is the mean over EVERY reference run that ended on its own, failed
+// runs included, and the tier costs more iff mu_C + p*mu_R > mu_R, i.e.
+// p > 1 - mu_C/mu_R.
 // Posterior: p ~ Beta(1 + escalations, 1 + trials - escalations) (uniform
 // prior); each mean cost ~ Student-t(n-1) at the sample mean with scale sd/sqrt(n)
 // (the posterior of a mean under the usual noninformative prior; it tends to
@@ -602,13 +614,24 @@ function quotaScore(catalog, model) {
 // the ledger recorded them (cache reads are already inside input_tokens and
 // are not added again). It is NOT subscription quota: quota per token can
 // differ by model and is not observable here, so no calibration is claimed.
+// The cheaper model is assumed to spend at most the frontier's quota per
+// token (w <= 1, the provider tier order), so in quota the rule is
+// w*mu_C + p*mu_R > mu_R and tokens OVERSTATE the cheaper attempt. The token
+// proxy may therefore only decide where the excess comes from escalations:
+// at least one observed escalation, a cheaper mean token cost below the
+// reference's, and P_more counting only posterior draws with mu_C < mu_R.
 
 // Ledger attempt states of a cheaper tier attempt: adopted (no escalation) or
 // failed with a failure signal (escalated or held). Anything else (interrupted,
 // cancelled, effects uncertain, never dispatched) is no evidence either way.
 const COST_GATE_CHEAP_STATES = new Set(['completed', 'ladder_verifier_failed', 'ladder_not_returned']);
-// A reference attempt that ran to the end, delivered or not: either way its
-// tokens were spent, the same in both arms.
+// A reference attempt that ended on its own: delivered ('completed') or
+// returned nothing deliverable ('held'). A reference that FAILED after
+// dispatch with no side effects reported is recorded 'effects_uncertain'
+// (never replayed) with dispatched_failure 'no_effects', and counts too
+// (costGateReferenceRun): its tokens were spent in either arm. A cancelled,
+// stopped, interrupted or never-dispatched run is no sample (cut short or
+// never run, like the same outcome of a cheaper attempt).
 const COST_GATE_REFERENCE_STATES = new Set(['completed', 'held']);
 const COST_GATE_MEMO_LIMIT = 256;
 const costGateMemo = new Map();
@@ -623,16 +646,36 @@ function tokenCost(usage) {
   const cost = usage.input_tokens + usage.output_tokens + (usage.reasoning_tokens ?? 0);
   return Number.isSafeInteger(cost) ? cost : null;
 }
+/** The route kind a ledger record counts as for the cost gate: its own
+ * route_kind, or, on a named-route test (route_kind 'explicit_route'), the
+ * host route kind the graded route ran as (host_route_kind; an older
+ * explicit record without it is no evidence). */
+function costGateRouteKind(record) {
+  return record.route_kind === 'explicit_route' ? record.host_route_kind ?? null : record.route_kind;
+}
 /** The compact evidence the cost gate reads from one ledger record: only a
- * host tier or reference attempt, else null. */
+ * host tier or reference attempt (a graded named route included), else null. */
 export function costGateRecord(record) {
-  if (!plain(record) || record.schema !== 1 || !['tier', 'reference'].includes(record.route_kind) ||
-      typeof record.family !== 'string' || typeof record.quota_pool !== 'string' ||
-      typeof record.model !== 'string' || typeof record.effort !== 'string' ||
-      typeof record.attempt_state !== 'string') return null;
+  if (!plain(record) || record.schema !== 1 || typeof record.family !== 'string' ||
+      typeof record.quota_pool !== 'string' || typeof record.model !== 'string' ||
+      typeof record.effort !== 'string' || typeof record.attempt_state !== 'string') return null;
+  const kind = costGateRouteKind(record);
+  if (!['tier', 'reference'].includes(kind)) return null;
   return {family: record.family, scope: record.scope ?? null, surface_kind: record.surface_kind ?? null,
-    quota_pool: record.quota_pool, model: record.model, effort: record.effort, route_kind: record.route_kind,
-    escalated: record.escalated === true, attempt_state: record.attempt_state, cost: tokenCost(record.usage)};
+    quota_pool: record.quota_pool, model: record.model, effort: record.effort, route_kind: kind,
+    escalated: record.escalated === true, attempt_state: record.attempt_state,
+    dispatched_failure: record.dispatched_failure === 'no_effects' ? 'no_effects' : null,
+    cost: tokenCost(record.usage)};
+}
+/** Whether an attempt with these ledger route facts (fixed at dispatch)
+ * becomes cost-gate evidence once it is recorded. */
+function costGateRoute(route) {
+  return plain(route) && ['tier', 'reference'].includes(costGateRouteKind(route));
+}
+/** Whether a compact reference record is a run that ended on its own. */
+function costGateReferenceRun(record) {
+  return COST_GATE_REFERENCE_STATES.has(record.attempt_state) ||
+    (record.attempt_state === 'effects_uncertain' && record.dispatched_failure === 'no_effects');
 }
 /** Count, mean and sample standard deviation (n - 1), Welford's method. */
 export function costSummary(costs) {
@@ -651,9 +694,11 @@ export function costSummary(costs) {
  * that was not itself an escalation; every settled one is an escalation trial
  * (failed with a signal = 1, adopted = 0), and the ones with usage are its
  * cost samples. Reference attempts: the reference's pool, model and effort on
- * a 'reference' route (bound directly or escalated to), ran to the end, with
- * usage; first in the node's family, else (fewer than COST_GATE_MIN_SAMPLES
- * there) in the same pool at any class with the same scope and surface kind. */
+ * a 'reference' route (bound directly or escalated to), that ended on its own
+ * (costGateReferenceRun: delivered, held, or failed after dispatch with no
+ * effects), with usage; first in the node's family, else (fewer than
+ * COST_GATE_MIN_SAMPLES there) in the same pool at any class with the same
+ * scope and surface kind. */
 export function tierCostEvidence(records, query) {
   assert(Array.isArray(records) && plain(query), 'cost_gate_query_invalid');
   let trials = 0, escalations = 0;
@@ -668,7 +713,7 @@ export function tierCostEvidence(records, query) {
       if (record.cost !== null) cheapCosts.push(record.cost);
     } else if (record.route_kind === 'reference' && record.quota_pool === query.reference_pool &&
         record.model === query.reference_model && record.effort === query.reference_effort &&
-        COST_GATE_REFERENCE_STATES.has(record.attempt_state) && record.cost !== null &&
+        costGateReferenceRun(record) && record.cost !== null &&
         record.scope === query.scope && record.surface_kind === query.reference_surface_kind) {
       poolCosts.push(record.cost);
       if (record.family === query.reference_family) familyCosts.push(record.cost);
@@ -745,24 +790,81 @@ function validCostEvidence(value) {
     validCostSummary(value.reference.cost);
 }
 const round3 = value => Math.round(value * 1000) / 1000;
+/** The cost ratio mu_C/mu_R for display (3 decimals), rounded towards the
+ * side the rule reads: below 1 exactly when the cheaper mean is below the
+ * reference mean (the 1e-9 only absorbs floating-point noise in the means). */
+function displayRatio(cheapMean, referenceMean) {
+  const scaled = 1000 * cheapMean / referenceMean;
+  return (cheapMean < referenceMean ? Math.min(999, Math.floor(scaled + 1e-9)) :
+    Math.max(1000, Math.ceil(scaled - 1e-9))) / 1000;
+}
+function validExploreKey(value) { return typeof value === 'string' && value.length > 0 && value.length <= 512; }
+/** One task node's exploration draw: a deterministic integer in [0, draws)
+ * from a SHA-256 of its key (the resolver's key is task id and node id), so
+ * one node decides the same way at bind, re-resolution and pool spread, and
+ * keys spread uniformly (to the generator's 2^-32 granularity). */
+export function costGateExploreDraw(exploreKey, draws = COST_GATE_DRAWS) {
+  assert(validExploreKey(exploreKey) && int(draws, 1, 1_000_000), 'cost_gate_explore_key_invalid');
+  const random = costGateRandom(sha(Buffer.from('os1-rcc-cost-gate-explore-v1\n' + exploreKey)));
+  return Math.min(draws - 1, Math.floor(random() * draws));
+}
+/** How many of `draws` posterior draws have the tier costing more because
+ * of its escalations: mu_C < mu_R and mu_C + p*mu_R > mu_R. Seeded from the
+ * exact evidence and the draw count ONLY (never a confidence or a task):
+ * the same evidence has one P_more. Memoized per seed. */
+function costGateMoreDraws(cheap, reference, draws) {
+  const seed = sha(Buffer.from('os1-rcc-cost-gate-v2\n' + stable({draws, cheap, reference})));
+  const memo = costGateMemo.get(seed);
+  if (memo !== undefined) return memo;
+  const random = costGateRandom(seed);
+  const a = 1 + cheap.escalations, b = 1 + cheap.trials - cheap.escalations;
+  let more = 0;
+  for (let draw = 0; draw < draws; draw++) {
+    const p = sampleBeta(random, a, b);
+    const muC = sampleMeanCost(random, cheap.cost), muR = sampleMeanCost(random, reference.cost);
+    if (muC < muR && muC + p * muR > muR) more++;
+  }
+  if (costGateMemo.size >= COST_GATE_MEMO_LIMIT) costGateMemo.delete(costGateMemo.keys().next().value);
+  costGateMemo.set(seed, more);
+  return more;
+}
+/** A gate result with nothing decided yet (every field null, route tier). */
+function costGateBase() {
+  return {route: 'tier', reason: null, p_mean: null, cost_ratio: null, p_more: null, confidence: null, draws: null,
+    explore: null, trials: null, escalations: null, cheap_n: null, reference_n: null, reference_level: null};
+}
 
 /** Whether a guarded read-only tier route should run its cheaper route or go
- * straight to its reference, from tierCostEvidence. Pure and deterministic:
- * the Monte Carlo generator is seeded from a hash of the exact evidence,
- * confidence and draw count, so the same evidence always gives the same
- * decision and P_more. Returns {route: 'tier'|'reference', reason, p_mean,
- * cost_ratio, p_more, trials, escalations, cheap_n, reference_n,
+ * straight to its reference, from tierCostEvidence. Pure and deterministic.
+ * P_more = Pr[mu_C < mu_R and mu_C + p*mu_R > mu_R] (costGateMoreDraws) is
+ * `p_more`, the exact fraction more/draws the decision compares (never
+ * rounded), so a higher confidence can only keep more nodes on the tier and
+ * a retuned confidence never changes a recorded P_more. With `exploreKey`
+ * (the resolver passes task id and node id) a confident gate still keeps the
+ * tier when that key's exploration draw (costGateExploreDraw, recorded as
+ * `explore` = draw/draws) is >= more: the tier then runs with probability
+ * 1 - P_more (posterior probability matching), so its evidence keeps growing
+ * and an early failure streak cannot lock the family to the reference.
+ * Returns {route: 'tier'|'reference', reason, p_mean, cost_ratio, p_more,
+ * confidence, draws, explore, trials, escalations, cheap_n, reference_n,
  * reference_level}:
  *  - cost_gate_unavailable (tier): no readable evidence;
  *  - cost_gate_insufficient (tier): fewer than COST_GATE_MIN_SAMPLES cost
  *    samples in either arm, or a zero mean cost;
- *  - cost_gate_reference: P_more = Pr[mu_C + p*mu_R > mu_R] >= confidence;
+ *  - cost_gate_no_escalation (tier): no cheaper attempt has escalated, so
+ *    nothing observed makes the tier cost more except the cheaper attempt's
+ *    own token count, which overstates its quota;
+ *  - cost_gate_unidentified (tier): the cheaper mean token cost is not below
+ *    the reference's: tokens cannot rank the arms without a quota weight;
+ *  - cost_gate_reference: P_more >= confidence (and, with a key, explore <
+ *    P_more);
+ *  - cost_gate_explore (tier): P_more >= confidence, explore >= P_more;
  *  - cost_gate_tier otherwise. */
-export function tierCostGate(evidence, {confidence = COST_GATE_CONFIDENCE, draws = COST_GATE_DRAWS} = {}) {
-  assert(typeof confidence === 'number' && confidence > 0 && confidence <= 1 && int(draws, 1, 1_000_000),
-    'cost_gate_options_invalid');
-  const base = {route: 'tier', p_mean: null, cost_ratio: null, p_more: null, trials: null, escalations: null,
-    cheap_n: null, reference_n: null, reference_level: null};
+export function tierCostGate(evidence, {confidence = COST_GATE_CONFIDENCE, draws = COST_GATE_DRAWS,
+                                       exploreKey = null} = {}) {
+  assert(typeof confidence === 'number' && confidence > 0 && confidence <= 1 && int(draws, 1, 1_000_000) &&
+    (exploreKey === null || validExploreKey(exploreKey)), 'cost_gate_options_invalid');
+  const base = costGateBase();
   if (!validCostEvidence(evidence)) return {...base, reason: 'cost_gate_unavailable'};
   const {cheap, reference} = evidence;
   const counts = {trials: cheap.trials, escalations: cheap.escalations, cheap_n: cheap.cost.n,
@@ -770,36 +872,37 @@ export function tierCostGate(evidence, {confidence = COST_GATE_CONFIDENCE, draws
   if (cheap.cost.n < COST_GATE_MIN_SAMPLES || reference.cost.n < COST_GATE_MIN_SAMPLES ||
       !(cheap.cost.mean > 0) || !(reference.cost.mean > 0))
     return {...base, ...counts, reason: 'cost_gate_insufficient'};
-  const seed = sha(Buffer.from('os1-rcc-cost-gate-v1\n' + stable({confidence, draws, cheap, reference})));
-  const memo = costGateMemo.get(seed);
-  if (memo) return {...memo};
-  const random = costGateRandom(seed);
   const a = 1 + cheap.escalations, b = 1 + cheap.trials - cheap.escalations;
-  let more = 0;
-  for (let draw = 0; draw < draws; draw++) {
-    const p = sampleBeta(random, a, b);
-    const muC = sampleMeanCost(random, cheap.cost), muR = sampleMeanCost(random, reference.cost);
-    if (muC + p * muR > muR) more++;
-  }
-  const pMore = more / draws;
-  const result = {...base, ...counts, route: pMore >= confidence ? 'reference' : 'tier',
-    reason: pMore >= confidence ? 'cost_gate_reference' : 'cost_gate_tier',
-    p_mean: round3(a / (a + b)), cost_ratio: round3(cheap.cost.mean / reference.cost.mean), p_more: round3(pMore)};
-  if (costGateMemo.size >= COST_GATE_MEMO_LIMIT) costGateMemo.delete(costGateMemo.keys().next().value);
-  costGateMemo.set(seed, result);
-  return {...result};
+  const described = {...base, ...counts, p_mean: round3(a / (a + b)),
+    cost_ratio: displayRatio(cheap.cost.mean, reference.cost.mean)};
+  if (cheap.escalations === 0) return {...described, reason: 'cost_gate_no_escalation'};
+  if (!(cheap.cost.mean < reference.cost.mean)) return {...described, reason: 'cost_gate_unidentified'};
+  const more = costGateMoreDraws(cheap, reference, draws);
+  const decided = {...described, p_more: more / draws, confidence, draws};
+  if (!(more / draws >= confidence)) return {...decided, reason: 'cost_gate_tier'};
+  if (exploreKey === null) return {...decided, route: 'reference', reason: 'cost_gate_reference'};
+  const draw = costGateExploreDraw(exploreKey, draws);
+  return draw < more ? {...decided, route: 'reference', reason: 'cost_gate_reference', explore: draw / draws} :
+    {...decided, reason: 'cost_gate_explore', explore: draw / draws};
 }
-/** The auditable routing-reason token of one gate result. */
+/** The auditable routing-reason token of one gate result. p_more and explore
+ * are the exact fractions the rule compared (reference iff p_more >= conf
+ * and, when explore is present, explore < p_more). */
 function costGateToken(gate) {
   if (gate.reason === 'cost_gate_unavailable' || gate.reason === 'cost_gate_no_reference') return gate.reason;
   const counts = `trials=${gate.trials}:escalations=${gate.escalations}:cheap_n=${gate.cheap_n}:` +
     `ref_n=${gate.reference_n}:ref_${gate.reference_level}`;
-  return gate.reason === 'cost_gate_insufficient' ? `${gate.reason}:${counts}` :
-    `${gate.reason}:p_mean=${gate.p_mean}:cost_ratio=${gate.cost_ratio}:p_more=${gate.p_more}:${counts}`;
+  if (gate.reason === 'cost_gate_insufficient') return `${gate.reason}:${counts}`;
+  const described = `${gate.reason}:p_mean=${gate.p_mean}:cost_ratio=${gate.cost_ratio}`;
+  if (gate.p_more === null) return `${described}:${counts}`;
+  return `${described}:p_more=${gate.p_more}:conf=${gate.confidence}` +
+    (gate.explore === null ? '' : `:explore=${gate.explore}`) + `:${counts}`;
 }
-/** The compact gate result a routing-ledger record keeps (optional field). */
+/** The compact gate result a routing-ledger record keeps (optional field;
+ * confidence, draws and explore are optional inside it as well). */
 function costGateLedger(gate) {
-  return gate ? {reason: gate.reason, p_mean: gate.p_mean, cost_ratio: gate.cost_ratio, p_more: gate.p_more} : null;
+  return gate ? {reason: gate.reason, p_mean: gate.p_mean, cost_ratio: gate.cost_ratio, p_more: gate.p_more,
+    confidence: gate.confidence ?? null, draws: gate.draws ?? null, explore: gate.explore ?? null} : null;
 }
 
 /** Pick the exact row for one node on a tier-routed catalog.
@@ -835,7 +938,8 @@ function costGateLedger(gate) {
  * pass their own) a guarded read-only tier route with NO owner effort or
  * family word runs the cost gate (tierCostGate) against the escalation target
  * it would use; when that target can dispatch now and the gate is confident
- * the tier costs more, the node binds that reference directly (route
+ * the tier costs more (and this task node's exploration draw does not keep
+ * the tier), the node binds that reference directly (route
  * 'reference', no guard). A write, an owner-constrained route and a route
  * already at its reference never consult the gate. Without `costEvidence`
  * (pure callers) nothing changes. `costGate` in the result is the gate's
@@ -930,8 +1034,7 @@ function tierRouteCandidate(node, routeClass, task, catalog, now,
     // it would actually use. Never under an owner effort or family word.
     if (typeof costEvidence === 'function' && !intent?.effort && !intent?.model_family) {
       if (!runnable) {
-        costGate = {route: 'tier', reason: 'cost_gate_no_reference', p_mean: null, cost_ratio: null, p_more: null,
-          trials: null, escalations: null, cheap_n: null, reference_n: null, reference_level: null};
+        costGate = {...costGateBase(), reason: 'cost_gate_no_reference'};
       } else {
         const ref = runnable.candidate;
         let evidence = null;
@@ -942,7 +1045,10 @@ function tierRouteCandidate(node, routeClass, task, catalog, now,
             reference_surface_kind: surfaceKind(ref.surface), reference_pool: ref.quota_pool,
             reference_model: ref.model, reference_effort: ref.effort});
         } catch { evidence = null; }
-        costGate = tierCostGate(evidence);
+        // The exploration key: this task's node, so it decides the same way
+        // at bind, re-resolution and pool spread.
+        costGate = tierCostGate(evidence,
+          {exploreKey: typeof task?.task_id === 'string' ? `${task.task_id}\n${node.id}` : null});
         if (costGate.route === 'reference') gated = runnable;
       }
     }
@@ -1227,7 +1333,8 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
  * routing-ledger reader, tierCostEvidence) lets a guarded read-only tier route
  * consult the cost gate (tierRouteCandidate); without it nothing changes, and
  * with it the result is as deterministic as the evidence it returns. A route
- * the gate decided carries `cost_gate` ({reason, p_mean, cost_ratio, p_more}). */
+ * the gate decided carries `cost_gate` ({reason, p_mean, cost_ratio, p_more,
+ * confidence, draws, explore}). */
 export function resolveRoutePlan(plan, task, catalog, now = Date.now(),
                                  {verifierRegistry = null, ledgerStats = null, costEvidence = null} = {}) {
   if ((task.mode === 'explicit_routing_test' && !explicitTierRouting(task, catalog)) ||
@@ -2235,8 +2342,10 @@ class RCCRuntime {
    * was; only an attempt without one is 'interrupted' when a verifier was
    * relevant. An attempt that did settle after the stop is already in the
    * ledger and is only cleared. A ledger failure is logged; the pending row is
-   * cleared, except for a parity failure, which stays pending so the next
-   * restart retries it (a lost failure could readmit a cheaper route). */
+   * cleared, except for a parity failure or cost-gate evidence, which stays
+   * pending (and backlogged) so this process and the next restart retry it
+   * (a lost failure could readmit a cheaper route; a lost cost sample would
+   * let the cost gate decide from partial evidence). */
   reconcileLedger() {
     const rows = this.transaction(() => this.db.prepare(
       'SELECT attempt_id,task_id,node_id,route FROM ledger_pending ORDER BY rowid').all());
@@ -2255,11 +2364,12 @@ class RCCRuntime {
           const outcome = route.verifier !== true ? 'not_registered' :
             settled && SETTLED_VERDICTS.has(entry.verifier) ? entry.verifier :
             settled && entry.state === 'verified_not_dispatched' ? 'not_dispatched' : 'interrupted';
-          const write = () => this._appendLedger({taskID: row.task_id, nodeID: row.node_id, attemptID: row.attempt_id,
+          const record = this._ledgerRecord({taskID: row.task_id, nodeID: row.node_id, attemptID: row.attempt_id,
             route}, {usage: entry?.usage ?? null, execution_verified: current && child.execution_verified === true,
             task_quality: current ? child.task_quality ?? null : null}, outcome, settled ? entry.state : 'interrupted',
-            settled ? entry.escalation_outcome ?? null : null);
-          if (LEDGER_FAILURE_OUTCOMES.has(outcome)) { keep = true; this.ledgerBacklog.set(row.attempt_id, write); }
+            settled ? entry.escalation_outcome ?? null : null, settled ? entry.dispatched_failure ?? null : null);
+          const write = () => this.ledger.append(record);
+          if (this._backlogged(record)) { keep = true; this.ledgerBacklog.set(row.attempt_id, write); }
           write();
           this.ledgerBacklog.delete(row.attempt_id);
           keep = false;
@@ -3468,11 +3578,15 @@ class RCCRuntime {
     const routeClass = ROUTE_CLASSES.includes(child.routing_decision?.route_class) ?
       child.routing_decision.route_class : null;
     const kind = explicitRoute ? 'explicit_route' : routeClass === null ? 'adapter_bound' : child.route_kind ?? 'unrecorded';
+    // A named route the host graded keeps the route kind it ran as (tier,
+    // reference, explicit), so the cost gate can learn from it; null
+    // otherwise (and absent in older records).
+    const hostKind = explicitRoute && routeClass !== null && typeof child.route_kind === 'string' ? child.route_kind : null;
     const ladder = routeClass !== null && ['ladder', 'tier'].includes(child.route_kind) && child.ladder ?
       {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort} : null;
     if (ladder && child.ladder.source === 'tier')
       Object.assign(ladder, {cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model});
-    return {route_class: routeClass, route_kind: kind, surface: candidate.surface,
+    return {route_class: routeClass, route_kind: kind, host_route_kind: hostKind, surface: candidate.surface,
       quota_pool: candidate.quota_pool, model: candidate.model, effort: candidate.effort, scope: candidate.scope,
       reference_effort: routeClass === null ? null : child.reference_effort ?? null, ladder,
       // Build 378: the bound model's tier (null without one or on an older
@@ -3502,14 +3616,20 @@ class RCCRuntime {
       else process.stderr.write(`os1-rcc: routing ledger write failed (${code}); the task continues\n`);
     } catch { /* Logging is best effort as well. */ }
   }
-  /** `escalationOutcome`: on a cheaper ladder/tier attempt that failed, what
-   * its one escalation did ('escalated', or the typed hold reason when the
-   * node was held instead); null on every other attempt. */
-  _appendLedger({taskID, nodeID, attemptID, route}, outcome, verifierOutcome, attemptState, escalationOutcome = null) {
-    this.ledger.append({schema: 1, task_id: taskID, node_id: nodeID, attempt_id: attemptID,
+  /** One routing-ledger record. `escalationOutcome`: on a cheaper ladder/tier
+   * attempt that failed, what its one escalation did ('escalated', or the
+   * typed hold reason when the node was held instead); null on every other
+   * attempt. `dispatchedFailure` 'no_effects': the executor reported that the
+   * attempt failed after dispatch with no side effects (the node is still
+   * never replayed); null on every other attempt. `host_route_kind` and
+   * `dispatched_failure` are optional: older records lack them. */
+  _ledgerRecord({taskID, nodeID, attemptID, route}, outcome, verifierOutcome, attemptState, escalationOutcome = null,
+                dispatchedFailure = null) {
+    return {schema: 1, task_id: taskID, node_id: nodeID, attempt_id: attemptID,
       family: routeFamily(route.route_class, route.scope, route.surface), route_class: route.route_class,
       scope: route.scope, surface_kind: surfaceKind(route.surface), surface: route.surface,
       quota_pool: route.quota_pool, model: route.model, effort: route.effort, route_kind: route.route_kind,
+      host_route_kind: typeof route.host_route_kind === 'string' ? route.host_route_kind : null,
       reference_effort: route.reference_effort, ladder: route.ladder, tier: route.tier ?? null,
       escalated: route.escalated === true, cost_gate: route.cost_gate ?? null, usage: outcome.usage ?? null,
       quota_remaining_fraction: route.quota_remaining_fraction,
@@ -3517,7 +3637,15 @@ class RCCRuntime {
       verifier_outcome: verifierOutcome, attempt_state: attemptState,
       escalation_outcome: typeof escalationOutcome === 'string' && /^[a-z0-9_:]{1,128}$/.test(escalationOutcome) ?
         escalationOutcome : null,
-      dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now()});
+      dispatched_failure: dispatchedFailure === 'no_effects' ? 'no_effects' : null,
+      dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now()};
+  }
+  /** Whether a ledger record that could not be written must wait in the
+   * backlog: a parity failure (it could readmit a cheaper route) or cost-gate
+   * evidence (a lost record would let the gate decide from partial evidence,
+   * in either direction). */
+  _backlogged(record) {
+    return LEDGER_FAILURE_OUTCOMES.has(record?.verifier_outcome) || costGateRecord(record) !== null;
   }
   /** Append one routing-ledger record for a settled attempt: ids, route,
    * usage, quota at dispatch, execution/quality flags and verifier outcome.
@@ -3530,7 +3658,7 @@ class RCCRuntime {
     if (!pending) return;
     this.ledgerInflight.delete(attemptID);
     this._flushLedgerBacklog();
-    let state = attemptState, write = null;
+    let state = attemptState, record = null, write = null;
     try {
       const entry = this.closed ? null : this._load(pending.taskID)?.children
         .find(c => c.id === pending.nodeID)?.attempt_history.find(item => item.attempt_id === attemptID) ?? null;
@@ -3539,15 +3667,18 @@ class RCCRuntime {
       // interrupted: never record it twice.
       if (this.closed && this.ledger.attemptIDs().has(attemptID)) return;
       const settled = state === null || UNSETTLED_ATTEMPT_STATES.has(state) ? 'interrupted' : state;
-      write = () => this._appendLedger(pending, {usage: result?.usage ?? null,
+      // Built once: a retry writes the same record (its settled time too).
+      record = this._ledgerRecord(pending, {usage: result?.usage ?? null,
         execution_verified: result?.execution_verified, task_quality: result?.task_quality ?? null},
-      verifierOutcome, settled, entry?.escalation_outcome ?? null);
+      verifierOutcome, settled, entry?.escalation_outcome ?? null, entry?.dispatched_failure ?? null);
+      write = () => this.ledger.append(record);
       write();
     } catch (error) {
       this._logLedger(error);
       // The pending row stays for the restart; a parity failure also closes
-      // every ladder in this process until it is written.
-      if (write && !this.closed && LEDGER_FAILURE_OUTCOMES.has(verifierOutcome)) this.ledgerBacklog.set(attemptID, write);
+      // every ladder in this process until it is written, and cost-gate
+      // evidence closes the gate (cost_gate_unavailable) until it is written.
+      if (write && !this.closed && this._backlogged(record)) this.ledgerBacklog.set(attemptID, write);
       return;
     }
     this._clearLedgerPending(attemptID);
@@ -3557,8 +3688,8 @@ class RCCRuntime {
     try { this.transaction(() => this.db.prepare('DELETE FROM ledger_pending WHERE attempt_id=?').run(attemptID)); }
     catch (error) { this._logLedger(error); }
   }
-  /** Retry parity failures whose ledger write failed, oldest first; stop at
-   * the first that still fails. */
+  /** Retry backlogged records (parity failures and cost-gate evidence whose
+   * ledger write failed), oldest first; stop at the first that still fails. */
   _flushLedgerBacklog() {
     for (const [attemptID, write] of this.ledgerBacklog) {
       try { write(); } catch (error) { this._logLedger(error); return; }
@@ -3566,8 +3697,9 @@ class RCCRuntime {
       this._clearLedgerPending(attemptID);
     }
   }
-  /** Ladder parity evidence: none while a parity failure waits to be written,
-   * so a lost failure can never readmit a cheaper route. */
+  /** Ladder parity evidence: none while a backlogged record (a parity
+   * failure, or cost-gate evidence) waits to be written, so a lost failure
+   * can never readmit a cheaper route. */
   _ladderStats(family, model, effort) {
     if (this.ledgerBacklog.size) this._flushLedgerBacklog();
     if (this.ledgerBacklog.size) return {verified_passes: 0, verifier_failures: 0};
@@ -3575,12 +3707,17 @@ class RCCRuntime {
   }
   /** Cost-gate evidence (tierCostEvidence) from the routing ledger. Throws
    * (the gate then reads cost_gate_unavailable and the node keeps its tier
-   * route) while a failure record waits to be written, so a lost failure
-   * can never make a cheaper route look cheaper, and when the ledger cannot
-   * be read safely. */
+   * route) when the gate would otherwise decide from partial evidence: while
+   * a backlogged record waits to be written (a lost cheaper failure would
+   * make the tier look cheaper, a lost cheaper success or reference cost the
+   * reference), while a tier or reference attempt of this process has
+   * returned but is not recorded yet (its escalation or verifier is still
+   * running), and when the ledger cannot be read safely. */
   _costEvidence(query) {
     if (this.ledgerBacklog.size) this._flushLedgerBacklog();
     assert(this.ledgerBacklog.size === 0, 'cost_gate_ledger_backlog');
+    for (const pending of this.ledgerInflight.values())
+      assert(!(pending.returned && costGateRoute(pending.route)), 'cost_gate_ledger_pending');
     return tierCostEvidence(this.ledger.costRecords(), query);
   }
   /** The registered verifier for a graded read-only node's family, if any. */
@@ -3818,6 +3955,11 @@ class RCCRuntime {
           return;
         }
         this.controllers.delete(attemptID);
+        // Returned but not recorded until this call settles it (an escalation,
+        // a verifier or a catalog refresh may still run): the cost gate reads
+        // no evidence meanwhile (_costEvidence).
+        const inflight = this.ledgerInflight.get(attemptID);
+        if (inflight) inflight.returned = true;
         if (this.closed) { verifierOutcome = interrupted; return; }
         const current = this._load(taskID);
         if (TERMINAL.has(current.state)) { verifierOutcome = interrupted; return; }
@@ -3951,6 +4093,12 @@ class RCCRuntime {
         this._update(taskID, 'child_effects_uncertain', snapshot => {
           const child = snapshot.children.find(c => c.id === node.id);
           child.state = 'effects_uncertain'; child.attempt_history.at(-1).state = 'effects_uncertain';
+          // The executor's own report that the attempt ran and failed with no
+          // side effects (not a cancel or stop: those returned above). The
+          // node is still never replayed; the routing ledger keeps the fact
+          // (dispatched_failure) because the run's tokens were spent.
+          if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none')
+            child.attempt_history.at(-1).dispatched_failure = 'no_effects';
           child.attempt_history.at(-1).native_receipt = result.native_receipt;
           child.usage = result.usage ?? null;
           child.attempt_history.at(-1).usage = result.usage ?? null;
