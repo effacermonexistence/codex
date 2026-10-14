@@ -33,6 +33,16 @@ import Foundation
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
 ///   when it is account-wide, with `quota_backoff`; it is never probed.
+/// - Each pool has one REFERENCE model: its most-preferred native model
+///   among the profiles this request may use at all (preference, visibility,
+///   capacity, sign-in, native availability and an explicit model family),
+///   decided BEFORE quota, cooldowns and an explicit effort word. When that
+///   model offers no row now (quota_zero, quota_backoff, or no profile at the
+///   effort the owner asked for), the whole pool is unusable for the request:
+///   its lower models' rows are withheld with `reference_unavailable` (and an
+///   unmet effort word is recorded as `explicit_constraint_unavailable`), so a
+///   lower model is never offered as the pool's stand-in reference. An
+///   explicit route test is exempt (its candidate set is unchanged).
 /// - Every excluded profile is counted per provider and reason, so an empty
 ///   catalog is an explained hold, not an opaque binding error.
 public enum RCCNativeCatalogBuilder {
@@ -201,8 +211,12 @@ public enum RCCNativeCatalogBuilder {
     enum Admission: Equatable { case skip, excluded(String), intentFiltered, admitted }
 
     /// Checks that need no native probe. A provider with no admitted profile
-    /// here is never probed.
-    static func staticAdmission(_ profile: Profile, _ input: Input, _ intent: RoutingIntent) -> Admission {
+    /// here is never probed. `reference` asks only whether the profile may be
+    /// its pool's reference model: the owner's effort word and a quota
+    /// cooldown do not change WHICH model is the top one, only whether it can
+    /// run now.
+    static func staticAdmission(_ profile: Profile, _ input: Input, _ intent: RoutingIntent,
+                                reference: Bool = false) -> Admission {
         guard ["codex", "claude"].contains(profile.provider) else { return .skip }
         guard providerSurfaces(profile.provider).contains(where: { admits(preference: input.providerPreference, surface: $0) }) else { return .skip }
         if profile.provider == "codex", !input.showCodex { return .excluded("codex_hidden") }
@@ -213,13 +227,14 @@ public enum RCCNativeCatalogBuilder {
         if input.explicitRouteSurfaces == nil, intent.effort == nil, explicitOnlyEfforts.contains(profile.effort) {
             return .excluded("effort_requires_explicit_request")
         }
-        if !intent.admits(model: profile.model, effort: profile.effort) { return .intentFiltered }
+        let constraint = reference ? RoutingIntent(modelFamily: intent.modelFamily) : intent
+        if !constraint.admits(model: profile.model, effort: profile.effort) { return .intentFiltered }
         if normalizedPreference(input.providerPreference) == "claude-chat", !(input.chatLaneEligible && !input.hasMaterialRefs) {
             return .excluded("chat_gate_refused")
         }
         // The provider already rejected this family (or the account) for
         // quota; offering it again only repeats the rejection.
-        if profile.provider == "claude", input.claudeAccountQuotaBackoff ||
+        if !reference, profile.provider == "claude", input.claudeAccountQuotaBackoff ||
             input.claudeQuotaBackoffFamilies.contains(BackendRecovery.claudeModelFamily(profile.model)) {
             return .excluded("quota_backoff")
         }
@@ -244,9 +259,35 @@ public enum RCCNativeCatalogBuilder {
         let scopes = readOnly ? ["read_only"] : ["read_only", "workspace_write"]
         let chatAllowed = input.chatLaneEligible && !input.hasMaterialRefs
         let nowMS = Int64(input.now.timeIntervalSince1970 * 1000)
-        struct Row { var fields: [String: Any]; var provider: String; var model: String; var surface: String; var effort: String; var scope: String; var id: String; var remaining: Double? }
+        struct Row { var fields: [String: Any]; var provider: String; var model: String; var surface: String; var effort: String; var scope: String; var id: String; var remaining: Double?; var action: String }
         var rows: [Row] = []
         var seen = Set<String>()
+        func nativelyAvailable(_ profile: Profile) -> Bool {
+            profile.provider == "codex"
+                ? input.codexModels.contains { $0.slug == profile.model && $0.supportedEfforts.contains(profile.effort) }
+                : input.claudeModels.contains { $0.model == profile.model && $0.supportedEfforts.contains(profile.effort) }
+        }
+        // Every name of one native Claude row shares that row's rank; Codex
+        // models rank by their native priority.
+        func nativeRank(_ provider: String, _ model: String) -> Int {
+            if provider == "codex" { return input.codexModels.first { $0.slug == model }?.priority ?? Int.max }
+            guard let index = input.claudeModels.firstIndex(where: { $0.model == model }) else { return Int.max }
+            return input.claudeModels[index].nativeRank ?? index
+        }
+        // Each pool's reference model rank (see the type comment), and the
+        // providers whose reference model the owner's effort word filtered.
+        var referenceModelRank: [String: Int] = [:]
+        var referenceIntentFiltered = Set<String>()
+        for profile in input.profiles where staticAdmission(profile, input, intent, reference: true) == .admitted &&
+            input.auth[profile.provider] == .subscription && nativelyAvailable(profile) {
+            referenceModelRank[profile.provider] = min(referenceModelRank[profile.provider] ?? Int.max,
+                                                       nativeRank(profile.provider, profile.model))
+        }
+        for profile in input.profiles where referenceModelRank[profile.provider] == nativeRank(profile.provider, profile.model) &&
+            staticAdmission(profile, input, intent, reference: true) == .admitted &&
+            staticAdmission(profile, input, intent) == .intentFiltered {
+            referenceIntentFiltered.insert(profile.provider)
+        }
         for profile in input.profiles.sorted(by: { $0.action < $1.action }) {
             switch staticAdmission(profile, input, intent) {
             case .skip: continue
@@ -259,10 +300,7 @@ public enum RCCNativeCatalogBuilder {
             case .nonSubscription: exclude(profile.provider, "non_subscription"); continue
             case .signedOut, nil: exclude(profile.provider, "signed_out"); continue
             }
-            let available = profile.provider == "codex"
-                ? input.codexModels.contains { $0.slug == profile.model && $0.supportedEfforts.contains(profile.effort) }
-                : input.claudeModels.contains { $0.model == profile.model && $0.supportedEfforts.contains(profile.effort) }
-            guard available else { exclude(profile.provider, "model_unavailable"); continue }
+            guard nativelyAvailable(profile) else { exclude(profile.provider, "model_unavailable"); continue }
             let account = input.accountIDs[profile.provider] ?? ""
             let quota = profile.provider == "codex" ? input.codexQuota : input.claudeQuota
             let remaining = quota?.effectiveRemaining(accountID: account, model: profile.model, now: input.now)
@@ -292,7 +330,27 @@ public enum RCCNativeCatalogBuilder {
                             ? Int64($0.observedAt.addingTimeInterval(120).timeIntervalSince1970 * 1000) : nil }.map { $0 as Any } ?? NSNull(),
                         "quality_state": "policy_admitted", "estimated_cost_units": NSNull()]
                     rows.append(Row(fields: fields, provider: profile.provider, model: profile.model, surface: surface,
-                                    effort: profile.effort, scope: scope, id: id, remaining: remaining.map { $0 / 100 }))
+                                    effort: profile.effort, scope: scope, id: id, remaining: remaining.map { $0 / 100 },
+                                    action: profile.action))
+                }
+            }
+        }
+
+        // A pool whose reference model offers no row now is unusable for this
+        // request: never let its next model stand in as the reference. Its
+        // remaining rows are withheld, so the host binds the other pool or
+        // holds; an unmet effort word is recorded per provider.
+        if input.explicitRouteSurfaces == nil {
+            for provider in ["codex", "claude"] {
+                guard let top = referenceModelRank[provider],
+                      !rows.contains(where: { $0.provider == provider && nativeRank($0.provider, $0.model) == top }) else { continue }
+                if referenceIntentFiltered.contains(provider) {
+                    excluded[provider, default: [:]]["explicit_constraint_unavailable", default: 0] += max(1, intentFiltered[provider] ?? 0)
+                }
+                let withheld = Set(rows.filter { $0.provider == provider }.map(\.action))
+                if !withheld.isEmpty {
+                    excluded[provider, default: [:]]["reference_unavailable", default: 0] += withheld.count
+                    rows.removeAll { $0.provider == provider }
                 }
             }
         }
@@ -302,11 +360,7 @@ public enum RCCNativeCatalogBuilder {
         // highest reference effort comes first: the host takes a pool's first
         // model in catalog order as its reference, so an alias with a narrow
         // profile can never hide the max effort configured under another name.
-        func modelRank(_ row: Row) -> Int {
-            if row.provider == "codex" { return input.codexModels.first { $0.slug == row.model }?.priority ?? Int.max }
-            guard let index = input.claudeModels.firstIndex(where: { $0.model == row.model }) else { return Int.max }
-            return input.claudeModels[index].nativeRank ?? index
-        }
+        func modelRank(_ row: Row) -> Int { nativeRank(row.provider, row.model) }
         func effortRank(_ effort: String) -> Int { effortOrder.firstIndex(of: effort) ?? Int.max }
         // The host's reference effort of one model: its highest offered effort
         // up to max; above max only when nothing else is offered (an explicit
@@ -364,7 +418,7 @@ public enum RCCNativeCatalogBuilder {
 
         if ["gpt-chat", "chatgpt"].contains(input.providerPreference) { exclude("codex", "gpt_dropped") }
         if rows.isEmpty, !intent.isEmpty {
-            for (provider, count) in intentFiltered where count > 0 {
+            for (provider, count) in intentFiltered where count > 0 && excluded[provider]?["explicit_constraint_unavailable"] == nil {
                 excluded[provider, default: [:]]["explicit_constraint_unavailable", default: 0] += count
             }
         }

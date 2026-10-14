@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readdir, rm, stat, writeFile, readFile, symlink, link } from 'node:fs/promises';
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile, readFile, symlink, link } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
@@ -2784,7 +2784,8 @@ test('routing ledger stats count one family at one model/effort and rotate withi
   ledger.append(record('standard:read_only:chat', 'medium', 'fail'));
   ledger.append(record('standard:read_only:chat', 'low', 'not_registered'));
   const files = (await readdir(join(dir, 'routing-ledger'))).sort();
-  assert.deepEqual(files, ['routing-ledger.1.jsonl', 'routing-ledger.jsonl'], 'rotated to one previous generation');
+  assert.deepEqual(files, ['routing-ledger-failures.json', 'routing-ledger.1.jsonl', 'routing-ledger.jsonl'],
+    'rotated to one previous generation, beside the never-rotated failure index');
   for (const name of files) {
     const info = await stat(join(dir, 'routing-ledger', name));
     assert.ok(info.size <= 8_192, `${name} ${info.size} bytes`); assert.equal(info.mode & 0o777, 0o600);
@@ -2799,4 +2800,398 @@ test('routing ledger stats count one family at one model/effort and rotate withi
   assert.throws(() => ledger.append(record('standard:read_only:chat', 'low', 'pass')), /routing_ledger_directory_not_private/);
   await chmod(join(dir, 'routing-ledger'), 0o700);
   assert.throws(() => ledger.append({schema: 1, padding: 'x'.repeat(9_000)}), /routing_ledger_record_oversize/);
+});
+
+// ---- Review round 3: reference identity, ladder settlement and ledger custody ----
+const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return {promise, resolve}; };
+const coreDB = stateDir => new DatabaseSync(join(stateDir, 'rcc-runtime.sqlite'));
+
+test('a cooled top Claude family under a Claude preference holds; a lower Claude model never runs', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Explain one function', 'auto', {provider: 'claude'});
+  const rows = [row('claude-opus-max', 'anthropic_shared', 'claude-opus-5-5', 'max'),
+    row('claude-sonnet-max', 'anthropic_shared', 'claude-sonnet-5-5', 'max')];
+  let cooled = false; const dispatched = [];
+  const runtime = await createRCCRuntime({stateDir: dir,
+    // What the native builder emits after the top family's rejection: the
+    // pool's reference is unusable, so its lower model is withheld too.
+    catalog: async value => cooled ? {...catalog(value, []), exclusions: [
+      {provider: 'claude', reason: 'quota_backoff', count: 1}, {provider: 'claude', reason: 'reference_unavailable', count: 1}]} :
+      catalog(value, rows),
+    plan: async () => plan(request, [graded('n', 'standard')]),
+    execute: async ticket => { dispatched.push(ticket.candidate_id); cooled = true; return quotaRejected(ticket); },
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const held = await wait(runtime, request);
+  assert.equal(held.state, 'held');
+  assert.equal(held.error, 'no_routable_candidate:quota_backoff,reference_unavailable');
+  assert.deepEqual(dispatched, ['claude-opus-max'], 'sonnet never stands in for the reference');
+});
+
+async function ladderPair(t, dir, name, {verify, execute, catalogRows, cancelGraceMs = 30_000, nodes = ['a', 'b']}) {
+  const request = task(dir, 'Explain two functions: ' + name);
+  const stateDir = join(dir, name.replace(/\W+/g, '-'));
+  const runtime = await createRCCRuntime({stateDir, cancelGraceMs,
+    verifierRegistry: new Map([['standard:read_only:agent', verify]]), ledgerStats: parity(20),
+    catalog: async value => catalog(value, catalogRows()),
+    plan: async () => plan(request, nodes.map(id => graded(id, 'standard'))),
+    execute, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  return {request, runtime, stateDir};
+}
+const pairRows = [row('codex-low', 'openai_codex', 'gpt-5.7-sol', 'low'),
+  row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
+  row('claude-max', 'anthropic_shared', 'claude-opus-5-5', 'max')];
+
+test('a failed ladder verifier never settles the task over a running sibling (cancel and unavailable reference)', async t => {
+  const dir = await fixture(t);
+  // Cancel while the sibling runs: the ladder child is cancelled, the sibling
+  // still reconciles, and no child stays running with its lease.
+  const aVerifier = gate(), bRelease = gate(), aStarted = gate(), bStarted = gate();
+  const cancelled = await ladderPair(t, dir, 'cancel', {catalogRows: () => pairRows,
+    verify: async input => { if (input.node_id === 'a') { aStarted.resolve(); await aVerifier.promise;
+      return {passed: false, reason: 'fake fail'}; } return {passed: true, reason: 'ok'}; },
+    execute: async ticket => { if (ticket.node_id === 'b') { bStarted.resolve(); await bRelease.promise; }
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }});
+  await aStarted.promise; await bStarted.promise;
+  assert.equal(cancelled.runtime.cancel({schema: 1, task_id: cancelled.request.task_id}).state, 'cancelling');
+  aVerifier.resolve(); await sleep(150);
+  let status = cancelled.runtime.status({schema: 1, task_id: cancelled.request.task_id});
+  assert.equal(status.state, 'cancelling', 'the ladder failure does not overwrite the cancel');
+  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'cancelled'], ['b', 'running']]);
+  assert.equal(status.children[0].output_summary, null, 'the failed cheaper output is discarded');
+  bRelease.resolve();
+  status = await wait(cancelled.runtime, cancelled.request);
+  assert.equal(status.state, 'effects_uncertain'); assert.equal(status.error, 'cancel_effects_uncertain');
+  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'cancelled'], ['b', 'effects_uncertain']]);
+  const db = coreDB(cancelled.stateDir);
+  t.after(() => db.close());
+  assert.deepEqual(db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key),
+    ['anthropic_shared:account-1'], 'only the uncertain sibling keeps its pool; the ladder child released codex');
+
+  // The reference cannot be restored while the sibling runs: only the ladder
+  // child holds; the sibling finishes and the task holds with the typed reason.
+  const bGate = gate(), bRunning = gate();
+  const unavailable = await ladderPair(t, dir, 'unavailable', {catalogRows: () => pairRows,
+    verify: async input => ({passed: input.node_id !== 'a', reason: 'fake'}),
+    execute: async ticket => { if (ticket.node_id === 'b') { bRunning.resolve(); await bGate.promise; }
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only', output: `${ticket.node_id} answer`}); }});
+  const original = unavailable.runtime._escalateLadder.bind(unavailable.runtime);
+  unavailable.runtime._escalateLadder = () => { throw Object.assign(new Error('x'), {code: 'ladder_reference_unavailable',
+    name: 'RCCRuntimeError'}); };
+  t.after(() => { unavailable.runtime._escalateLadder = original; });
+  await bRunning.promise; await sleep(150);
+  status = unavailable.runtime.status({schema: 1, task_id: unavailable.request.task_id});
+  assert.equal(status.state, 'running', 'the task does not settle while b runs');
+  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'held'], ['b', 'running']]);
+  bGate.resolve();
+  status = await wait(unavailable.runtime, unavailable.request);
+  assert.equal(status.state, 'returned_unverified');
+  assert.equal(status.error, 'ladder_reference_unavailable');
+  assert.equal(status.result.output, 'b: b answer', 'only the sibling output is returned; the failed cheap one never');
+  const leases = coreDB(unavailable.stateDir);
+  t.after(() => leases.close());
+  assert.deepEqual(leases.prepare('SELECT pool_key FROM quota_leases').all(), [], 'every lease is released');
+});
+
+test('a ladder escalates to its reference after a sibling refresh dropped that row, then re-resolves', async t => {
+  const dir = await fixture(t);
+  let codexExhausted = false; const dispatched = [];
+  const aVerifier = gate(), aStarted = gate();
+  const pair = await ladderPair(t, dir, 'vanish', {
+    // Once the cheap run spends the last Codex quota, the builder offers no
+    // Codex row; b's dispatch refresh stores that catalog before a's verdict.
+    catalogRows: () => codexExhausted ? pairRows.filter(c => c.quota_pool !== 'openai_codex') : pairRows,
+    verify: async input => { if (input.node_id === 'a' && input.selected_config.effort === 'low') {
+      await aVerifier.promise; return {passed: false, reason: 'fake fail'}; } return {passed: true, reason: 'ok'}; },
+    execute: async ticket => { dispatched.push([ticket.node_id, ticket.candidate_id]);
+      if (ticket.node_id === 'a') { codexExhausted = true; aStarted.resolve(); }
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }});
+  await aStarted.promise; await sleep(300);
+  aVerifier.resolve();
+  const done = await wait(pair.runtime, pair.request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.deepEqual(dispatched.filter(([id]) => id === 'a').map(([, candidate]) => candidate), ['codex-low', 'claude-max']);
+  assert.match(done.children[0].routing_decision.reason,
+    /^re_resolved_after:candidate_missing;other_pool;route_reference;/);
+});
+
+test('a cheaper ladder result that is not deliverable escalates and counts against parity', async t => {
+  const dir = await fixture(t);
+  for (const [name, override] of [['quality failed', {task_quality: 'failed'}],
+    ['execution unverified', {execution_verified: false, acknowledged_config: null}], ['empty', {output: ''}]]) {
+    const request = task(dir, 'Explain one function: undeliverable ' + name);
+    const stateDir = join(dir, 'undeliverable-' + name.replace(/\W+/g, '-'));
+    const dispatched = [], verified = [];
+    const runtime = await createRCCRuntime({stateDir,
+      verifierRegistry: new Map([['standard:read_only:agent', async input => { verified.push(input.selected_config.effort);
+        return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
+      catalog: async value => catalog(value, ladderRows),
+      plan: async () => plan(request, [graded('n', 'standard')]),
+      execute: async ticket => { dispatched.push(ticket.selected_config.effort);
+        return ticket.selected_config.effort === 'low' ? execution(ticket, {output: 'poor cheap answer',
+          task_verified: false, task_quality: 'execution_only', ...override}) :
+          execution(ticket, {output: 'reference answer', task_verified: false, task_quality: 'execution_only'}); },
+      verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'completed', `${name}: ${done.error}`);
+    assert.deepEqual(dispatched, ['low', 'max'], name); assert.deepEqual(verified, ['max'], name);
+    assert.equal(done.result.output, 'reference answer', name);
+    assert.equal(done.children[0].routing_decision.reason,
+      'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface', name);
+    const records = await ledgerRecords(stateDir);
+    assert.deepEqual(records.map(record => [record.effort, record.route_kind, record.verifier_outcome, record.attempt_state]),
+      [['low', 'ladder', 'not_returned', 'ladder_not_returned'], ['max', 'reference', 'pass', 'completed']], name);
+    assert.deepEqual(openRoutingLedger(stateDir).stats('standard:read_only:agent', 'gpt-5.7-sol', 'low'),
+      {verified_passes: 0, verifier_failures: 1}, `${name}: the undeliverable cheap route counts as a failure`);
+  }
+});
+
+test('a ladder escalation never replays an attempt that reported effects', async t => {
+  const dir = await fixture(t);
+  for (const [name, override] of [['confirmed', {side_effects: 'confirmed'}], ['possible', {side_effects: 'possible'}]]) {
+    const request = task(dir, 'Explain one function: effects ' + name);
+    const dispatched = [];
+    const runtime = await createRCCRuntime({stateDir: join(dir, name),
+      verifierRegistry: new Map([['standard:read_only:agent', async input =>
+        ({passed: input.selected_config.effort === 'max', reason: 'fake'})]]), ledgerStats: parity(20),
+      catalog: async value => catalog(value, ladderRows),
+      plan: async () => plan(request, [graded('n', 'standard')]),
+      execute: async ticket => { dispatched.push(ticket.selected_config.effort);
+        return execution(ticket, {task_verified: false, task_quality: 'execution_only', ...override}); },
+      verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const held = await wait(runtime, request);
+    assert.equal(held.state, 'held', name); assert.equal(held.error, 'ladder_escalation_effects_reported', name);
+    assert.deepEqual(dispatched, ['low'], name); assert.equal(held.result, null, `${name}: the cheap output is never adopted`);
+  }
+});
+
+test('the failed ladder attempt is not charged to the cost or duration budget', async t => {
+  const dir = await fixture(t);
+  // Cost: one unit per row and a one-unit budget. Reference-only completes;
+  // so must a ladder whose cheap attempt failed its verifier.
+  for (const ladder of [false, true]) {
+    const request = task(dir, 'Explain one function: cost ' + ladder);
+    request.budget.max_cost_units = 1;
+    const dispatched = [];
+    const runtime = await createRCCRuntime({stateDir: join(dir, 'cost-' + ladder),
+      verifierRegistry: new Map([['standard:read_only:agent', async input =>
+        ({passed: input.selected_config.effort === 'max', reason: 'fake'})]]), ledgerStats: parity(ladder ? 20 : 0),
+      catalog: async value => catalog(value, ladderRows),
+      plan: async () => plan(request, [graded('n', 'standard')]),
+      execute: async ticket => { dispatched.push(ticket.selected_config.effort);
+        return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'completed', `${ladder}: ${done.error}`);
+    assert.deepEqual(dispatched, ladder ? ['low', 'max'] : ['max']);
+  }
+  // Duration: the cheap attempt plus its slow verifier outlast the 1 s budget;
+  // the reference would have dispatched at once, so it still dispatches.
+  const request = task(dir, 'Explain one function: duration');
+  request.budget.max_duration_ms = 1_000;
+  const dispatched = [];
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'duration'),
+    verifierRegistry: new Map([['standard:read_only:agent', async input => {
+      if (input.selected_config.effort === 'low') { await sleep(1_100); return {passed: false, reason: 'slow fail'}; }
+      return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
+    catalog: async value => catalog(value, ladderRows),
+    plan: async () => plan(request, [graded('n', 'standard')]),
+    execute: async ticket => { dispatched.push(ticket.selected_config.effort);
+      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.deepEqual(dispatched, ['low', 'max']);
+});
+
+test('stop during a node verifier holds the returned child, named as verifier-pending, across restart', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Explain one function: stop during verifier');
+  const started = gate(), release = gate();
+  const options = {catalog: async value => catalog(value, ladderRows),
+    plan: async () => plan(request, [graded('n', 'standard')]),
+    execute: async ticket => execution(ticket, {task_verified: false, task_quality: 'execution_only',
+      usage: {input_tokens: 40, output_tokens: 10}}), verifyTask: taskVerdict};
+  const runtime = await createRCCRuntime({stateDir: dir, ...options,
+    verifierRegistry: new Map([['standard:read_only:agent', async () => { started.resolve(); await release.promise;
+      return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20)});
+  await runtime.submit(request);
+  await started.promise;
+  await runtime.close({timeoutMs: 100});
+  // The verifier is never answered before the restart (the process stopped).
+  const restarted = await createRCCRuntime({stateDir: dir, ...options});
+  t.after(async () => { await restarted.close(); release.resolve(); });
+  const status = restarted.status({schema: 1, task_id: request.task_id});
+  assert.equal(status.state, 'held'); assert.equal(status.error, 'owner_stopped_node_verifier_pending');
+  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['n', 'held']]);
+  assert.ok(status.children[0].output_summary, 'the native attempt did run and return');
+  // The restart recorded the interrupted attempt once, with its real usage;
+  // an interruption counts against the cheaper route's parity.
+  const records = await ledgerRecords(dir);
+  assert.deepEqual(records.map(record => [record.effort, record.verifier_outcome, record.attempt_state, record.usage]),
+    [['low', 'interrupted', 'interrupted', {input_tokens: 40, output_tokens: 10}]]);
+  assert.equal(openRoutingLedger(dir).stats('standard:read_only:agent', 'gpt-5.7-sol', 'low').verifier_failures, 1);
+});
+
+test('routing ledger: attempts settled after stop or by restart are recorded exactly once', async t => {
+  const dir = await fixture(t);
+  // An attempt still draining at stop records itself, with its real usage,
+  // when it settles; a restart then finds it and does not add another.
+  const drained = task(dir, 'Explain one function: drains after stop');
+  const dispatched = gate();
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'drain'),
+    catalog: async value => catalog(value, routingCatalog()),
+    plan: async () => plan(drained, [graded('n', 'standard')]),
+    execute: async (ticket, signal) => { dispatched.resolve();
+      await new Promise(resolve => signal.addEventListener('abort', () => setTimeout(resolve, 300), {once: true}));
+      return execution(ticket, {status: 'failed', side_effects: 'possible', execution_verified: false,
+        task_verified: false, task_quality: 'failed', usage: {input_tokens: 900, output_tokens: 300}}); },
+    verifyTask: taskVerdict});
+  await runtime.submit(drained);
+  await dispatched.promise;
+  await runtime.close({timeoutMs: 50});
+  await sleep(500);
+  let records = await ledgerRecords(join(dir, 'drain'));
+  assert.deepEqual(records.map(record => [record.attempt_state, record.usage]),
+    [['settled_after_stop', {input_tokens: 900, output_tokens: 300}]]);
+  const reopened = await createRCCRuntime({stateDir: join(dir, 'drain'), catalog: async value => catalog(value, routingCatalog())});
+  t.after(async () => { await reopened.close(); });
+  assert.equal((await ledgerRecords(join(dir, 'drain'))).length, 1, 'no second record at restart');
+  const pending = coreDB(join(dir, 'drain'));
+  t.after(() => pending.close());
+  assert.deepEqual(pending.prepare('SELECT attempt_id FROM ledger_pending').all(), []);
+
+  // An attempt that never settles (the process stopped with it) is recorded
+  // once by the next owner, as interrupted with its settled state.
+  const lost = task(dir, 'Explain one function: never settles');
+  const started = gate();
+  const first = await createRCCRuntime({stateDir: join(dir, 'lost'),
+    catalog: async value => catalog(value, routingCatalog()),
+    plan: async () => plan(lost, [graded('n', 'standard')]),
+    execute: async () => { started.resolve(); return new Promise(() => {}); }, verifyTask: taskVerdict});
+  await first.submit(lost);
+  await started.promise;
+  await first.close({timeoutMs: 50});
+  const second = await createRCCRuntime({stateDir: join(dir, 'lost'), catalog: async value => catalog(value, routingCatalog())});
+  t.after(async () => { await second.close(); });
+  records = await ledgerRecords(join(dir, 'lost'));
+  assert.deepEqual(records.map(record => [record.task_id, record.attempt_state, record.verifier_outcome, record.usage]),
+    [[lost.task_id, 'effects_uncertain', 'not_registered', null]]);
+  const third = await (async () => { await second.close(); return createRCCRuntime({stateDir: join(dir, 'lost')}); })();
+  t.after(async () => { await third.close(); });
+  assert.equal((await ledgerRecords(join(dir, 'lost'))).length, 1, 'recorded exactly once across restarts');
+});
+
+test('routing ledger: a handback and a thrown execution are recorded when they settle, with settled states', async t => {
+  const dir = await fixture(t);
+  let quota = 0.7;
+  const writer = () => candidate('claude-write', 'claude', 'anthropic_shared', {scope: 'workspace_write',
+    allowedPaths: ['**'], model: 'claude-opus-5-5', effort: 'max', quota});
+  const request = task(dir, 'Continue one blocked workspace operation', 'auto', {write: true});
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async value => catalog(value, [writer()]),
+    plan: async () => plan(request, [graded('one', 'deep', {scope: 'workspace_write', ownedPaths: ['**']})]),
+    execute: async ticket => { const result = await handbackExecution(dir, ticket); quota = 0.3; return result; },
+    executeContinuation: async ticket => { await sleep(200); return continuationExecution(dir, ticket); }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'returned_unverified', done.error);
+  const records = await ledgerRecords(dir);
+  assert.deepEqual(records.map(record => [record.attempt_state, record.quota_remaining_fraction]),
+    [['handback_returned', 0.7], ['continuation_returned', 0.3]],
+    'the initial attempt is recorded first, and the continuation with its own dispatch quota');
+  assert.ok(records[0].settled_at_ms <= records[1].dispatched_at_ms);
+  const history = runtime._load(request.task_id).children[0].attempt_history.map(entry => entry.state);
+  assert.deepEqual(history, ['handback_returned', 'continuation_returned']);
+
+  const thrown = task(dir, 'Explain one function: executor throws');
+  const throwing = await createRCCRuntime({stateDir: join(dir, 'throws'),
+    catalog: async value => catalog(value, routingCatalog()),
+    plan: async () => plan(thrown, [graded('n', 'standard')]),
+    execute: async () => { throw new Error('transport lost'); }, verifyTask: taskVerdict});
+  t.after(async () => { await throwing.close(); });
+  await throwing.submit(thrown);
+  assert.equal((await wait(throwing, thrown)).state, 'effects_uncertain');
+  assert.deepEqual((await ledgerRecords(join(dir, 'throws'))).map(record => record.attempt_state), ['effects_uncertain']);
+  assert.equal(throwing._load(thrown.task_id).children[0].attempt_history[0].state, 'effects_uncertain');
+});
+
+test('routing ledger: failures survive rotation; torn, foreign or unindexed ledgers read as no evidence', async t => {
+  const dir = await fixture(t);
+  const record = (outcome, family = 'standard:read_only:agent') => ({schema: 1, task_id: 'task-x', node_id: 'n',
+    attempt_id: randomUUID(), family, model: 'm', effort: 'low', verifier_outcome: outcome, execution_verified: true});
+  // Rotation: the failure's raw record is long gone, the index keeps it.
+  const rotated = openRoutingLedger(join(dir, 'rotated'), {maxBytes: 8_192});
+  await mkdir(join(dir, 'rotated'), {mode: 0o700});
+  rotated.append(record('fail'));
+  for (let i = 0; i < 75; i++) rotated.append(record('pass', 'other:read_only:agent'));
+  for (let i = 0; i < 60; i++) rotated.append(record('pass'));
+  const evicted = rotated.stats('standard:read_only:agent', 'm', 'low');
+  assert.ok(evicted.verified_passes >= LADDER_MIN_VERIFIED_PASSES, JSON.stringify(evicted));
+  assert.equal(evicted.verifier_failures, 1, 'the evicted failure still counts');
+  assert.equal(cheaperRouteAdmission({family: 'standard:read_only:agent', scope: 'read_only', model: 'm',
+    referenceEffort: 'max', cheaperEfforts: ['low'], verifierRegistry: registry('standard:read_only:agent'),
+    ledgerStats: rotated.stats}).route, 'reference');
+  for (const outcome of ['not_returned', 'interrupted']) {
+    const other = openRoutingLedger(join(dir, outcome));
+    await mkdir(join(dir, outcome), {mode: 0o700});
+    other.append(record(outcome));
+    assert.equal(other.stats('standard:read_only:agent', 'm', 'low').verifier_failures, 1, outcome);
+  }
+  // A torn earlier write never swallows the next record, and reads as no
+  // evidence (fail closed) instead of being skipped.
+  const torn = openRoutingLedger(join(dir, 'torn'));
+  await mkdir(join(dir, 'torn'), {mode: 0o700});
+  for (let i = 0; i < 25; i++) torn.append(record('pass'));
+  await appendFile(torn.path, '{"attempt_id":"abc","eff');
+  torn.append(record('fail'));
+  assert.deepEqual(torn.stats('standard:read_only:agent', 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+  const tornLines = (await readFile(torn.path, 'utf8')).split('\n');
+  assert.equal(JSON.parse(tornLines.at(-2)).verifier_outcome, 'fail', 'the failure is on its own line');
+  // A foreign line, or a missing or invalid failure index, is no evidence.
+  const clean = openRoutingLedger(join(dir, 'clean'));
+  await mkdir(join(dir, 'clean'), {mode: 0o700});
+  for (let i = 0; i < 25; i++) clean.append(record('pass'));
+  assert.equal(clean.stats('standard:read_only:agent', 'm', 'low').verified_passes, 25);
+  await unlink(clean.failureIndexPath);
+  assert.deepEqual(clean.stats('standard:read_only:agent', 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+  await writeFile(clean.failureIndexPath, '{"schema":1}', {mode: 0o600});
+  assert.deepEqual(clean.stats('standard:read_only:agent', 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+  await writeFile(clean.failureIndexPath, '{"failures":{},"overflow":true,"schema":1}', {mode: 0o600});
+  assert.deepEqual(clean.stats('standard:read_only:agent', 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+  await writeFile(clean.failureIndexPath, '{"failures":{},"overflow":false,"schema":1}', {mode: 0o600});
+  assert.equal(clean.stats('standard:read_only:agent', 'm', 'low').verified_passes, 25);
+  await appendFile(clean.path, JSON.stringify({schema: 2, family: 'x'}) + '\n');
+  assert.deepEqual(clean.stats('standard:read_only:agent', 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+  assert.equal((await stat(clean.failureIndexPath)).mode & 0o777, 0o600);
+});
+
+test('routing ledger: a FIFO at a ledger path never blocks the Core event loop', async t => {
+  const dir = await fixture(t);
+  for (const name of ['routing-ledger.jsonl', 'routing-ledger-failures.json']) {
+    const stateDir = join(dir, name);
+    await mkdir(join(stateDir, 'routing-ledger'), {recursive: true, mode: 0o700});
+    await chmod(stateDir, 0o700);
+    execFileSync('mkfifo', ['-m', '600', join(stateDir, 'routing-ledger', name)]);
+    const ledger = openRoutingLedger(stateDir);
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 5);
+    const startedAt = Date.now();
+    assert.throws(() => ledger.append({schema: 1, verifier_outcome: 'fail', family: 'f', model: 'm', effort: 'low'}));
+    assert.deepEqual(ledger.stats('f', 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
+    assert.ok(Date.now() - startedAt < 1_000, name);
+    await sleep(30);
+    clearInterval(timer);
+    assert.ok(ticks > 0, `${name}: the event loop kept running`);
+  }
 });

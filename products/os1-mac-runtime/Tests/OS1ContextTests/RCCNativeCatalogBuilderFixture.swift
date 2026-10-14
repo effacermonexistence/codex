@@ -169,6 +169,96 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(!exhaustedOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
               reasons(exhaustedOut).contains("codex:quota_zero:4"), "a zero-remaining pool is excluded and counted")
 
+    // ---- One reference model per pool ------------------------------------
+    // A pool's reference is its top native model among the profiles this
+    // request may use, decided before quota, cooldowns and an effort word.
+    // When that model cannot run now, the pool is unusable: its next model
+    // never stands in as the reference the JS resolver binds (a pool's first
+    // model in catalog order). Each case runs the real JS resolver on the
+    // builder's exact catalog bytes.
+    func referenceInput(_ request: String = "Explain the login function", preference: String = "auto") -> B.Input {
+        var value = input(request, preference: preference, chat: false, readOnly: true)
+        value.profiles = [.init(action: "r_opus_max", provider: "claude", model: "claude-opus-5-5", effort: "max"),
+            .init(action: "s_sonnet_max", provider: "claude", model: "claude-sonnet-5-5", effort: "max"),
+            .init(action: "s_sonnet_medium", provider: "claude", model: "claude-sonnet-5-5", effort: "medium"),
+            .init(action: "x_sol_medium", provider: "codex", model: "gpt-6-sol", effort: "medium"),
+            .init(action: "x_sol_max", provider: "codex", model: "gpt-6-sol", effort: "max")]
+        value.claudeModels = [.init(model: "claude-opus-5-5", supportedEfforts: ["max"], nativeRank: 0),
+            .init(model: "claude-sonnet-5-5", supportedEfforts: ["medium", "max"], nativeRank: 1)]
+        value.codexModels = [.init(slug: "gpt-6-sol", supportedEfforts: ["medium", "max"], priority: 0)]
+        value.claudeQuota = claudeWindows(opusUsed: nil)
+        value.codexQuota = quota("acct-codex", used: 40, resetIn: 48)
+        return value
+    }
+    func claudeWindows(opusUsed: Double?) -> BackendHealth.QuotaSnapshot {
+        .init(accountID: "acct-claude", observedAt: now.addingTimeInterval(-5), source: .claudeNative,
+              windows: [.init(bucket: "weekly", usedPercent: 15, resetsAt: now.addingTimeInterval(4 * 3600))] +
+                (opusUsed.map { [.init(bucket: "weekly_model", usedPercent: $0, resetsAt: now.addingTimeInterval(4 * 3600),
+                                       model: "claude-opus-5-5")] } ?? []))
+    }
+    func route(_ output: B.Output) throws -> String {
+        try javascriptRoute(B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))), now: now)
+    }
+    let referenceBase = try B.build(referenceInput())
+    try check(tuples(referenceBase).first == "claude/claude-opus-5-5/max/read_only" && referenceBase.exclusions.isEmpty &&
+              (try route(referenceBase)) == "anthropic_shared/claude-opus-5-5/max/route_reference",
+              "the top model at max is the reference: \(tuples(referenceBase)) \((try? route(referenceBase)) ?? "")")
+    var nearlyInput = referenceInput(); nearlyInput.claudeQuota = claudeWindows(opusUsed: 97)
+    let nearly = try B.build(nearlyInput)
+    try check(tuples(nearly).first == "codex/gpt-6-sol/medium/read_only" &&
+              (try route(nearly)) == "openai_codex/gpt-6-sol/max/route_reference",
+              "a nearly exhausted top model ranks its pool by that model: \(tuples(nearly))")
+    var zeroInput = referenceInput(); zeroInput.claudeQuota = claudeWindows(opusUsed: 100)
+    let opusZero = try B.build(zeroInput)
+    try check(!opusZero.candidates.contains { $0["quota_pool"] as? String == "anthropic_shared" } &&
+              reasons(opusZero) == ["claude:quota_zero:1", "claude:reference_unavailable:2"] &&
+              (try route(opusZero)) == "openai_codex/gpt-6-sol/max/route_reference",
+              "a quota_zero top model makes its pool unusable; sonnet never stands in: \(tuples(opusZero)) \(reasons(opusZero))")
+    var cooledInput = referenceInput(); cooledInput.claudeQuotaBackoffFamilies = ["opus"]
+    let cooled = try B.build(cooledInput)
+    try check(!cooled.candidates.contains { $0["quota_pool"] as? String == "anthropic_shared" } &&
+              reasons(cooled) == ["claude:quota_backoff:1", "claude:reference_unavailable:2"] &&
+              (try route(cooled)) == "openai_codex/gpt-6-sol/max/route_reference" &&
+              B.providersToProbe(cooledInput) == ["claude", "codex"],
+              "a cooled top family makes its pool unusable: \(tuples(cooled)) \(reasons(cooled))")
+    // The owner named Claude: after the top family is cooled the catalog is an
+    // explained hold, never a lower Claude model (the re-resolution case).
+    var namedCooled = referenceInput(preference: "claude"); namedCooled.claudeQuotaBackoffFamilies = ["opus"]
+    let namedCooledOut = try B.build(namedCooled)
+    let namedCooledData = try B.catalogData(namedCooledOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+    try check(namedCooledOut.candidates.isEmpty && reasons(namedCooledOut) == ["claude:quota_backoff:1", "claude:reference_unavailable:2"] &&
+              (try C.decodeCatalog(namedCooledData)).exclusions?.map(\.reason) == ["quota_backoff", "reference_unavailable"],
+              "a cooled top model under a Claude preference holds with its reasons: \(reasons(namedCooledOut))")
+    try check(B.build(referenceInput(preference: "claude")).candidates.first?["model"] as? String == "claude-opus-5-5",
+              "before the rejection the Claude preference binds the top model")
+    // An effort-only owner word constrains each pool's reference model; it
+    // never swaps the top model for a lower one that has that effort.
+    let medium = try B.build(referenceInput("use medium reasoning"))
+    try check(B.intent(referenceInput("use medium reasoning")) == RoutingIntent(effort: "medium") &&
+              tuples(medium) == ["codex/gpt-6-sol/medium/read_only"] &&
+              reasons(medium) == ["claude:explicit_constraint_unavailable:2", "claude:reference_unavailable:1"] &&
+              (try route(medium)) == "openai_codex/gpt-6-sol/medium/route_explicit",
+              "an effort word the top Claude model lacks makes Claude unusable, not Sonnet: \(tuples(medium)) \(reasons(medium))")
+    var mediumClaude = referenceInput("use medium reasoning", preference: "claude")
+    mediumClaude.claudeQuota = claudeWindows(opusUsed: nil)
+    let mediumClaudeOut = try B.build(mediumClaude)
+    try check(mediumClaudeOut.candidates.isEmpty &&
+              reasons(mediumClaudeOut) == ["claude:explicit_constraint_unavailable:2", "claude:reference_unavailable:1"],
+              "under a Claude preference the unmet effort word holds, explained: \(reasons(mediumClaudeOut))")
+    // An explicit model family moves the reference to that family's top model.
+    var sonnetMedium = referenceInput("소네트로 돌려"); sonnetMedium.profiles.removeAll { $0.provider == "codex" }
+    let sonnetOut = try B.build(sonnetMedium)
+    try check(B.intent(sonnetMedium) == RoutingIntent(modelFamily: "sonnet") &&
+              tuples(sonnetOut) == ["claude/claude-sonnet-5-5/medium/read_only", "claude/claude-sonnet-5-5/max/read_only"] &&
+              (try route(sonnetOut)) == "anthropic_shared/claude-sonnet-5-5/max/route_explicit",
+              "a named family is its own reference: \(tuples(sonnetOut))")
+    // An explicit route test keeps its former candidate set.
+    var explicitReference = zeroInput; explicitReference.explicitRouteSurfaces = ["claude"]
+    let explicitReferenceOut = try B.build(explicitReference)
+    try check(explicitReferenceOut.candidates.contains { $0["model"] as? String == "claude-sonnet-5-5" } &&
+              !reasons(explicitReferenceOut).contains { $0.contains("reference_unavailable") },
+              "an explicit route test is exempt from the reference rule: \(reasons(explicitReferenceOut))")
+
     // ---- GPT is never emitted --------------------------------------------
     for preference in ["auto", "codex", "claude", "claude-chat", "gpt-chat", "chatgpt"] {
         for readOnly in [true, false] {
@@ -317,9 +407,23 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let opusMax = try B.build(input("opus max로 해줘"))
     try check(!opusMax.candidates.isEmpty && opusMax.candidates.allSatisfy { $0["model"] as? String == "claude-opus-5-5" &&
               $0["effort"] as? String == "max" }, "explicit model+effort keeps exactly that tuple: \(tuples(opusMax))")
+    // Here the top Claude model (sonnet) and the top Codex model (gpt-6-sol)
+    // have no max profile: max on a lower model is never offered instead.
     let korean = try B.build(input("최대 리즈닝으로 해줘"))
-    try check(!korean.candidates.isEmpty && korean.candidates.allSatisfy { $0["effort"] as? String == "max" },
-              "Korean max reasoning keeps only max rows")
+    try check(korean.candidates.isEmpty && reasons(korean) == ["claude:explicit_constraint_unavailable:5",
+              "claude:reference_unavailable:2", "codex:explicit_constraint_unavailable:4", "codex:reference_unavailable:1"],
+              "Korean max reasoning the top models lack holds, explained: \(reasons(korean))")
+    var koreanTop = input("최대 리즈닝으로 해줘")
+    koreanTop.claudeModels = [.init(model: "fable", supportedEfforts: ["low", "xhigh", "max"]),
+                              .init(model: "claude-opus-5-5", supportedEfforts: ["xhigh", "max"]),
+                              .init(model: "sonnet", supportedEfforts: ["medium"])]
+    koreanTop.codexModels = [.init(slug: "gpt-5.6-luna", supportedEfforts: ["low", "medium", "high", "xhigh", "max"], priority: 0),
+                             .init(slug: "gpt-6-sol", supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], priority: 1)]
+    let koreanTopOut = try B.build(koreanTop)
+    try check(!koreanTopOut.candidates.isEmpty && koreanTopOut.candidates.allSatisfy { $0["effort"] as? String == "max" } &&
+              Set(koreanTopOut.candidates.map { $0["model"] as! String }) == ["fable", "claude-opus-5-5", "gpt-5.6-luna"] &&
+              tuples(koreanTopOut).first { $0.hasPrefix("claude") } == "claude-chat/fable/max/read_only",
+              "Korean max reasoning keeps only max rows, the top model first: \(tuples(koreanTopOut))")
     let ultra = try B.build(input("울트라로 돌려"))
     try check(!ultra.candidates.isEmpty && ultra.candidates.allSatisfy { $0["effort"] as? String == "ultra" && $0["model"] as? String == "gpt-6-sol" },
               "Korean Ultra directive keeps only ultra rows")
@@ -546,9 +650,30 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
     return candidates
 }
 
-/// The JS runtime's own fingerprint for canonical host bytes (a real Node
-/// import of the sealed module; no runtime, adapter or provider is started).
-private func javascriptHostFingerprint(_ bytes: Data) throws -> String {
+/// What the real JS resolver binds for one read-only graded node on exactly
+/// these catalog bytes: "pool/model/effort/route_kind", or "error:<code>".
+private func javascriptRoute(_ catalog: Data, now: Date) throws -> String {
+    let script = """
+    import {pathToFileURL} from 'node:url';
+    import {readFileSync} from 'node:fs';
+    const {resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
+    const catalog=JSON.parse(readFileSync(0,'utf8'));
+    const task={mode:'auto',task_id:catalog.task_id,request_sha256:catalog.request_sha256,budget:{max_cost_units:null},
+      host_context:{require_read_only:true}};
+    const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id:'n',
+      instruction:'Explain the login function',dependencies:[],kind:'agent',route_class:'standard',scope:'read_only',
+      owned_paths:[],context_refs:[]}]};
+    try {
+      const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2])).decisions.n;
+      process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`);
+    } catch (error) { process.stdout.write('error:'+(error.code??'unknown')); }
+    """
+    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000))], input: catalog)
+}
+
+/// Runs one inline ES module against the sealed runtime module path (a real
+/// Node import; no runtime, adapter or provider is started).
+private func javascriptModule(_ script: String, arguments: [String] = [], input bytes: Data) throws -> String {
     let runtimeModule = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Resources/openclaw-os1-bridge/rcc-runtime.mjs")
@@ -557,17 +682,22 @@ private func javascriptHostFingerprint(_ bytes: Data) throws -> String {
     if let override = ProcessInfo.processInfo.environment["OS1_RCC_CONTRACT_NODE"] { process.executableURL = URL(fileURLWithPath: override) }
     else if FileManager.default.isExecutableFile(atPath: pinnedNode.path) { process.executableURL = pinnedNode }
     else { process.executableURL = URL(fileURLWithPath: "/usr/bin/env") }
-    let script = """
+    process.arguments = (process.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
+        ["--input-type=module", "-e", script, runtimeModule.path] + arguments
+    process.standardInput = input; process.standardOutput = output; process.standardError = errors
+    try process.run(); try input.fileHandleForWriting.write(contentsOf: bytes); try input.fileHandleForWriting.close()
+    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    _ = errors.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+    return process.terminationStatus == 0 ? text : ""
+}
+
+/// The JS runtime's own fingerprint for canonical host bytes (a real Node
+/// import of the sealed module; no runtime, adapter or provider is started).
+private func javascriptHostFingerprint(_ bytes: Data) throws -> String {
+    try javascriptModule("""
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {hostContextFingerprint}=await import(pathToFileURL(process.argv[1]).href);
     process.stdout.write(hostContextFingerprint(JSON.parse(readFileSync(0,'utf8'))));
-    """
-    process.arguments = (process.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
-        ["--input-type=module", "-e", script, runtimeModule.path]
-    process.standardInput = input; process.standardOutput = output; process.standardError = errors
-    try process.run(); try input.fileHandleForWriting.write(contentsOf: bytes); try input.fileHandleForWriting.close()
-    let digest = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-    _ = errors.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-    return process.terminationStatus == 0 ? digest : ""
+    """, input: bytes)
 }

@@ -247,7 +247,7 @@ public enum RCCRuntimeContract {
     public struct Exclusion: Codable, Equatable, Sendable {
         public static let reasons: Set<String> = ["signed_out", "non_subscription", "model_unavailable", "quota_zero",
             "capacity_zero", "codex_hidden", "effort_requires_explicit_request", "explicit_constraint_unavailable",
-            "chat_gate_refused", "gpt_dropped", "quota_backoff"]
+            "chat_gate_refused", "gpt_dropped", "quota_backoff", "reference_unavailable"]
         public static let providers: Set<String> = ["codex", "claude"]
         public var provider: String
         public var reason: String
