@@ -396,6 +396,16 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(perRouteCatalog.explicitRouteIntents == [nil, .init(effort: "max", modelFamily: nil)] &&
               perRouteCatalog.routingIntent == nil && (try C.decodeCatalog(C.encode(perRouteCatalog))) == perRouteCatalog,
               "explicit_route_intents carries each route's own words, null for a route with none")
+    // What the doc says about route words, checked on the real splitter and
+    // parser: a fan-out part must be bare arithmetic, so a sentence whose part
+    // carries its own effort or model words is not split into named routes,
+    // and a bare family before the payload is no model word.
+    try check(RouteFanout.plan("1+1 Codex한테. 3+3 Claude Code한테.")?.targets.map(\.payload) == ["1+1", "3+3"] &&
+              RouteFanout.plan("최대 리즈닝으로 1+1 Codex한테. 3+3 Claude Code한테.") == nil &&
+              RouteFanout.plan("astra로 돌려 1+1 Codex한테. 3+3 Claude Code한테.") == nil &&
+              RoutingIntent.parse("astra로 돌려 1+1") == .init(effort: nil, modelFamily: "astra") &&
+              RoutingIntent.parse("astra로 1+1").isEmpty,
+              "route words: worded parts are not split; \"astra로 돌려\" names astra, a bare \"astra로\" names nothing")
     var wordless = perRoute; wordless.explicitRouteIntents = [RoutingIntent(), RoutingIntent()]
     try check(!String(decoding: try B.catalogData(B.build(wordless), taskID: "task-fixture",
                                                   requestSHA256: C.digest(Data("r".utf8))), as: UTF8.self)

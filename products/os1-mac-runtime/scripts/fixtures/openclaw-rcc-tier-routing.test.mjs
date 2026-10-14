@@ -797,7 +797,8 @@ test("an explicit route's own effort or model words bind that route only; ultra 
   assert.deepEqual(bind([null, null]), ['gpt-6-luna/low', 'claude-sonnet-5-5/low']);
   // "최대 리즈닝으로 1+1": that route runs max on its graded tier; the other is untouched.
   assert.deepEqual(bind([{effort: 'max', model_family: null}, null]), ['gpt-6-luna/max', 'claude-sonnet-5-5/low']);
-  // "astra로 1+1": that family, effort by grade.
+  // A route word naming astra ("astra로 돌려 1+1"; a bare "astra로 1+1" parses to
+  // nothing): that family, effort by grade.
   assert.deepEqual(bind([{effort: null, model_family: 'astra'}, null]), ['gpt-6-astra/low', 'claude-sonnet-5-5/low']);
   // Ultra only on the route whose own words asked for it.
   assert.deepEqual(bind([{effort: 'ultra', model_family: 'astra'}, null], ['deep', 'trivial']),

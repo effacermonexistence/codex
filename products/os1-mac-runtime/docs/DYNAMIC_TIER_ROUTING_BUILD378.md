@@ -186,10 +186,19 @@ never `gpt-6-astra`, Fable, Opus, max or ultra for a one-step answer. A failed
 cheaper answer on a named route re-runs once on the reference of THAT surface
 (Codex `gpt-6-astra` max, Claude Code or the Claude chat lane `claude-fable-5-1`
 max), never on another surface; with no reference on that surface the part is
-held. A route's own effort or model words ("최대 리즈닝으로 1+1 Codex한테",
-"astra로 1+1") constrain that route only (sent per route as
-`explicit_route_intents`); ultra runs only on a route whose own words ask for
-it. On an older catalog without tiers the planner still picks exact rows.
+held. On an older catalog without tiers the planner still picks exact rows.
+
+The catalog can also carry a route's own effort or model words, so that they
+would constrain that route only (sent per route as `explicit_route_intents`;
+ultra only on a route whose own words ask for it). No production fan-out
+carries such words today: `RouteFanout.plan` splits a sentence into named
+routes only when every part is a bare arithmetic expression, so
+"최대 리즈닝으로 1+1 Codex한테. 3+3 Claude Code한테." or
+"astra로 돌려 1+1 Codex한테. 3+3 Claude Code한테." is not split into named
+routes at all (checked with the real splitter), and the field is never
+emitted. A bare family before a payload is no model word either: the parser
+reads "astra로 돌려 1+1" as the astra family but "astra로 1+1" as nothing (it
+needs a directive verb, a version or a product word).
 
 ## Compatibility
 
