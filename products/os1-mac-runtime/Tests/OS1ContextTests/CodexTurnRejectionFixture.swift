@@ -108,6 +108,80 @@ func runCodexTurnRejectionFixtures() throws {
         try check(work.observed, "work: \(label)")
         try check(!R.rejectedBeforeExecution(turn: turn(), evidence: work), "\(label) is never a no-work rejection")
     }
+    // ---- Turn errors streamed before the final one (review, 2026-10-14) ----
+    // A response stream that DISCONNECTED mid-turn means a request was
+    // accepted (it may have been processed and billed) even when every later
+    // retry got HTTP 429: never a pre-execution rejection.
+    let disconnect: [String: Any] = ["message": "stream disconnected before completion",
+        "codexErrorInfo": ["responseStreamDisconnected": ["httpStatusCode": NSNull()]]]
+    let disconnected = evidence([note("item/started", ["item": user]), note("error", ["error": disconnect, "willRetry": true]),
+        note("error", ["error": incident, "willRetry": true]), note("error", ["error": incident, "willRetry": false]),
+        note("turn/completed", ["turn": turn()])])
+    try check(disconnected.observed && !R.rejectedBeforeExecution(turn: turn(), evidence: disconnected),
+              "a mid-turn disconnect before the 429 retries is work")
+    for (label, params) in [
+        ("an overloaded server", ["error": ["message": "429", "codexErrorInfo": "serverOverloaded"], "willRetry": true]),
+        ("a 500 that was retried", ["error": ["message": "x", "codexErrorInfo": ["responseStreamConnectionFailed":
+            ["httpStatusCode": 500]]], "willRetry": true]),
+        ("an error without limit words", ["error": ["message": "stream error"], "willRetry": true]),
+        ("an error notification without its error", ["willRetry": true]),
+    ] as [(String, [String: Any])] {
+        try check(evidence([note("error", params)]).observed, "work: a turn error that is no limit rejection: \(label)")
+    }
+    // Retry notices that are themselves limit rejections stay quiet.
+    let refusals = evidence([note("error", ["error": ["message": "x", "codexErrorInfo": ["responseStreamConnectionFailed":
+            ["httpStatusCode": 429]]], "willRetry": true]),
+        note("error", ["error": ["message": "Reconnecting... 2/5 (429 Too Many Requests)"], "willRetry": true]),
+        note("error", ["error": incident, "willRetry": false])])
+    try check(!refusals.observed && R.rejectedBeforeExecution(turn: turn(), evidence: refusals),
+              "limit refusals while Codex retries are no work")
+
+    // ---- A resumed thread's stale usage replay (review, 2026-10-14) -------
+    // On a thread with usage, a usage-limit refusal still emits one usage
+    // update that replays the previous turn's numbers (2026-09-07 rollout,
+    // turn ...1fceea: total 904229078, last 119644; 2026-08-20 rollout, six
+    // turns: total 2128549997, last 169744). No total growth is no work.
+    let usageLimit: [String: Any] = ["message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"]
+    func replayed(_ total: Int, _ last: Int) -> [String: Any] {
+        note("thread/tokenUsage/updated", ["tokenUsage": ["total": ["totalTokens": total], "last": ["totalTokens": last]]])
+    }
+    func measured(_ baseline: Int?, _ messages: [[String: Any]]) -> R.WorkEvidence {
+        var work = R.WorkEvidence(baselineTotalTokens: baseline)
+        for message in messages { work.observe(message, threadID: "thread-1", turnID: "turn-1") }
+        return work
+    }
+    for (total, last) in [(904_229_078, 119_644), (2_128_549_997, 169_744)] {
+        let replay = measured(total, [note("item/started", ["item": user]), note("item/completed", ["item": user]),
+            replayed(total, last), note("error", ["error": usageLimit, "willRetry": false])])
+        try check(!replay.observed && R.rejectedBeforeExecution(turn: turn(error: usageLimit), evidence: replay),
+                  "a stale usage replay on a resumed thread is no work: \(total)")
+        try check(measured(nil, [replayed(total, last)]).observed, "no baseline: nonzero usage stays work (\(total))")
+        try check(measured(total - 1, [replayed(total, last)]).observed, "usage that grew past the baseline is work (\(total))")
+    }
+    try check(measured(904_229_078, [note("thread/tokenUsage/updated", ["tokenUsage": ["last": ["totalTokens": 119_644]]])]).observed,
+              "an unreadable total stays work even with a baseline")
+    // The baseline of a resumed thread: its rollout's last token_count.
+    let rollouts = FileManager.default.temporaryDirectory.appendingPathComponent("os1-codex-rollout-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: rollouts, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rollouts) }
+    func rollout(_ name: String, _ lines: [String]) throws -> String {
+        let url = rollouts.appendingPathComponent(name)
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url)
+        return url.path
+    }
+    let count = #"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":904229078},"last_token_usage":{"total_tokens":119644}}}}"#
+    let resumed = try rollout("resumed.jsonl", [#"{"type":"session_meta","payload":{"id":"t"}}"#,
+        #"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#, count,
+        #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"token_count"}]}}"#,
+        #"{"type":"event_msg","payload":{"type":"task_complete"}}"#])
+    try check(R.rolloutTotalTokens(path: resumed) == 904_229_078, "the last token_count is the baseline")
+    let early = try rollout("early.jsonl", [count, String(repeating: "x", count: 4_096)])
+    try check(R.rolloutTotalTokens(path: early, tailBytes: 1_024) == nil && R.rolloutTotalTokens(path: early) == 904_229_078,
+              "only the bounded tail is read; outside it the baseline is unknown")
+    try check(R.rolloutTotalTokens(path: rollouts.appendingPathComponent("missing.jsonl").path) == nil &&
+              R.rolloutTotalTokens(path: try rollout("fresh.jsonl", [#"{"type":"session_meta","payload":{}}"#])) == nil,
+              "no rollout or no usage yet: unknown")
+
     let none = R.WorkEvidence()
     for (label, value) in [
         ("an agent message item", turn(items: [user, ["type": "agentMessage", "id": "a", "text": ""]])),

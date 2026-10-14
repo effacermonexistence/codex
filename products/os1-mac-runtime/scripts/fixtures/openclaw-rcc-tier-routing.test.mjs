@@ -547,7 +547,13 @@ test('incident replay: a 429 no-output escalation re-resolves to the other refer
     .find(event => event.kind === 'plan_admitted').snapshot.children[0].routing_decision;
   assert.match(admitted.reason, /^resolver;route_tier;class_trivial;.*;instruction_host_locked$/);
   const decision = result.done.children[0].routing_decision;
-  assert.match(decision.reason, /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;/);
+  // The escalation and the re-resolution rebuilt the decision; it still says
+  // the owner's words replaced the planner's rewrite.
+  assert.match(decision.reason,
+    /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;.*;instruction_host_locked$/);
+  const escalated = result.runtime.events({schema: 1, task_id: result.request.task_id})
+    .filter(event => event.kind === 'ladder_escalated_to_reference').at(-1)?.snapshot.children[0].routing_decision;
+  assert.match(escalated?.reason ?? '', /^tier_escalated_after_failure_signal;.*;instruction_host_locked$/);
   assert.equal(route(decision), 'anthropic_shared/claude-fable-5-1/max');
   assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
     reference_model: 'claude-fable-5-1'}, 'the escalation stays reference-only where it moved');
@@ -1677,7 +1683,7 @@ test('runtime: a re-resolution consults the same gate for the route it moves to'
     '^re_resolved_after:provider_quota_rejected_before_execution;same_pool_only;route_reference;class_trivial;' +
     `cost_gate_reference:p_mean=0\\.75:cost_ratio=0\\.699:p_more=${expected.p_more}:conf=0\\.9:explore=0\\.\\d+:` +
     'trials=2:escalations=2:cheap_n=2:ref_n=2:ref_family;cost_gate_cheap_gpt_6_1_sol_low;tier_frontier;pool_rank_0;' +
-    'effort_max;cost_gate_same_pool;agent_surface$'));
+    'effort_max;cost_gate_same_pool;agent_surface;instruction_host_locked$'));
   const records = await gate.ledger();
   assert.deepEqual(records.slice(-2).map(record => [record.model, record.attempt_state, record.cost_gate?.reason ?? null]),
     [['gpt-6-luna', 'verified_not_dispatched', 'cost_gate_insufficient'], ['gpt-6-astra', 'completed', 'cost_gate_reference']]);

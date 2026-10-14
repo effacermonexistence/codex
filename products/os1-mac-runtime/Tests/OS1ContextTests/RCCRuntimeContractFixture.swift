@@ -236,6 +236,28 @@ func runRCCRuntimeContractFixture() throws {
     var largerNativeRecord = record; largerNativeRecord.nativeSummary = String(repeating: "native fixture summary;", count: 1_000)
     try check(try C.decodeRecord(C.encode(largerNativeRecord), ticket: ticket).nativeSummary == largerNativeRecord.nativeSummary,
               "native summary larger than 16KB survives unchanged")
+    // The turn attestation (2026-10-14): optional, a boolean both ways, and
+    // absent on an older adapter's record, which still decodes.
+    for value in [true, false] {
+        var attested = record; attested.nativeTurnTerminated = value
+        let bytes = try C.encode(attested)
+        try check(String(decoding: bytes, as: UTF8.self).contains("\"native_turn_terminated\":\(value)") &&
+                  (try C.decodeRecord(bytes, ticket: ticket).nativeTurnTerminated) == value,
+                  "the native turn attestation round-trips: \(value)")
+    }
+    let olderBytes = try C.encode(record)
+    try check(!String(decoding: olderBytes, as: UTF8.self).contains("native_turn_terminated") &&
+              (try C.decodeRecord(olderBytes, ticket: ticket).nativeTurnTerminated) == nil,
+              "an older adapter's record (no attestation) still decodes")
+    var mistypedAttestation = try JSONSerialization.jsonObject(with: olderBytes) as! [String: Any]
+    mistypedAttestation["native_turn_terminated"] = "yes"
+    try reject("the turn attestation is never coerced from a non-boolean") {
+        _ = try C.decodeRecord(JSONSerialization.data(withJSONObject: mistypedAttestation), ticket: ticket)
+    }
+    try check(RCCNativeAttemptOutcome.turnTerminated(dispatched: false, transportAttested: false) &&
+              RCCNativeAttemptOutcome.turnTerminated(dispatched: true, transportAttested: true) &&
+              !RCCNativeAttemptOutcome.turnTerminated(dispatched: true, transportAttested: false),
+              "a dispatched turn is attested ended only by its transport")
     var badRecord = record; badRecord.observedConfig = nil
     try check(try C.decodeRecord(C.encode(badRecord), ticket: ticket).observedConfig == nil,
               "unexposed provider settings remain unknown while execution receipt is verified")

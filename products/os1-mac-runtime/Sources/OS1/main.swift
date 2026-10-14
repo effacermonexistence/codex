@@ -1373,7 +1373,31 @@ struct RejectedProviderExecution: Error, CustomStringConvertible {
     /// The provider's own statement of the failure (unsanitized; the RCC
     /// adapter persists only `RCCNativeAttemptOutcome.failureCause` of it).
     var causeDetail: String? = nil
+    /// The transport proved the native turn ENDED (OS-1 closed the provider
+    /// process it owned, or Codex Desktop reported a terminal turn status);
+    /// false when unproven, e.g. a Desktop turn whose observation failed or
+    /// whose interrupt was best effort (`RCCNativeAttemptOutcome.turnTerminated`).
+    var nativeTurnTerminated: Bool = false
     var description: String { String(describing: cause) }
+}
+
+/// A Codex rate/usage-limit rejection the app-server writer's own turn
+/// evidence places before any model or tool work, carried only by a
+/// read-only attempt: the legacy runner replays a rejected-before-execution
+/// stage automatically (`BackendRecovery.permitsAutomaticReplay`), and a write
+/// is never re-dispatched on a provider's word, so a Codex write keeps its
+/// dispatched stage.
+func codexQuotaRejectedBeforeExecution(blocker: BackendBlocker?, writerEvidence: Bool, permissionProfile: String) -> Bool {
+    blocker == .quotaExhausted && writerEvidence && permissionProfile == "read_only"
+}
+
+/// The dispatch stage the legacy runner records for a quota failure: before
+/// execution only when the provider's own evidence proves it
+/// (`RejectedProviderExecution.quotaRejectedBeforeExecution`) and the observed
+/// workspace is unchanged; otherwise the stage as observed.
+func quotaRejectionDispatchStage(_ stage: BackendDispatchStage, rejection: RejectedProviderExecution?,
+                                 workspaceUnchanged: @autoclosure () -> Bool) -> BackendDispatchStage {
+    rejection?.quotaRejectedBeforeExecution == true && workspaceUnchanged() ? .rejectedBeforeExecution : stage
 }
 
 /// Converts a local backend transport or quota failure into a bounded,
@@ -2644,6 +2668,15 @@ func commandOutput(
     // 100 ms tick; a run spawns dozens of short git/gh/python children.
     let exited = DispatchSemaphore(value: 0)
     process.terminationHandler = { _ in exited.signal() }
+    // Whatever ends this call (an answer, a timeout, a cancel, a capture or
+    // drain failure), the child is not left running: a provider caller then
+    // attests the dispatched turn ended (RCCNativeAttemptOutcome.turnTerminated).
+    defer {
+        if process.isRunning {
+            process.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+    }
     if let input {
         let pipe = Pipe()
         process.standardInput = pipe
@@ -6123,6 +6156,11 @@ final class CodexAppServerClient: @unchecked Sendable {
     private(set) var lastTurnFailureDetail: String?
     private(set) var lastTurnQuotaRejectedBeforeExecution = false
     private(set) var lastTurnRetryAfter: TimeInterval?
+    /// Each thread's total token count before its next turn: a resumed
+    /// thread's last persisted usage, then every usage update this connection
+    /// saw. The baseline tells a usage-limit refusal's stale usage replay
+    /// from model work (`CodexTurnRejection.WorkEvidence`).
+    private var threadTokenTotals: [String: Int] = [:]
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -6419,9 +6457,17 @@ final class CodexAppServerClient: @unchecked Sendable {
         // title from the first turn in the chain.
         pendingThreadName = forkedFromDesktopOwnedThread || existingName?.isEmpty != false ? (threadID, title) : nil
         try makeVisible(threadID: threadID, deadline: deadline)
+        // A resumed thread already has usage: its last persisted total is the
+        // baseline its next turn's usage is measured against.
+        if existingSessionID != nil, let path = thread["path"] as? String, codexRolloutPathTrusted(path, threadID: threadID) {
+            recordTokenBaseline(threadID: threadID, totalTokens: CodexTurnRejection.rolloutTotalTokens(path: path))
+        }
         ownsThreadWriter = true
         return threadID
     }
+
+    /// The thread's total token count before its next turn (nil: unknown).
+    func recordTokenBaseline(threadID: String, totalTokens: Int?) { threadTokenTotals[threadID] = totalTokens }
 
     /// Names a thread that will not run through `runTurn` on this connection.
     func applyPendingThreadName(deadline: Date) {
@@ -6627,8 +6673,9 @@ final class CodexAppServerClient: @unchecked Sendable {
         lastTurnFailureDetail = nil; lastTurnQuotaRejectedBeforeExecution = false; lastTurnRetryAfter = nil
         defer { interruptedPublicProgress = stream.text; lastTurnToolBreakdowns = stream.mainToolBreakdownsUnrecovered }
         // Every message of this turn, server requests included, is evidence
-        // of whether any model or tool work ran before a failure.
-        var work = CodexTurnRejection.WorkEvidence()
+        // of whether any model or tool work ran before a failure; usage is
+        // measured against the thread's total before the turn.
+        var work = CodexTurnRejection.WorkEvidence(baselineTotalTokens: threadTokenTotals[threadID])
         var revision = 0
         // Every app-server message (item, delta, usage, status) is activity:
         // a working turn runs to the ceiling, a silent one stops at `idle`.
@@ -6645,6 +6692,11 @@ final class CodexAppServerClient: @unchecked Sendable {
             }
             watchdog.observeActivity()
             work.observe(message, threadID: threadID, turnID: turnID)
+            if message["method"] as? String == "thread/tokenUsage/updated", let params = message["params"] as? [String: Any],
+               params["threadId"] as? String == threadID,
+               let total = ((params["tokenUsage"] as? [String: Any])?["total"] as? [String: Any])?["totalTokens"] as? Int {
+                threadTokenTotals[threadID] = total
+            }
             if let method = message["method"] as? String, message["id"] != nil {
                 try rejectServerRequest(message, method: method)
                 continue
@@ -6855,6 +6907,19 @@ final class CodexAppServerClient: @unchecked Sendable {
     }
 }
 
+/// What the Desktop transport observed of its own turn: a terminal status
+/// (`completed`, `failed`, `interrupted`) read from Codex Desktop's snapshot
+/// of that turn. Only that proves the turn ended; an interrupt OS-1 sent
+/// (best effort) or an observation that failed proves nothing, so the
+/// turn may still be running inside Codex Desktop.
+final class CodexDesktopTurnObservation {
+    static let terminalStatuses: Set<String> = ["completed", "failed", "interrupted"]
+    private(set) var terminalStatus: String?
+    func observe(_ turn: [String: Any]) {
+        if let status = turn["status"] as? String, Self.terminalStatuses.contains(status) { terminalStatus = status }
+    }
+}
+
 /// Desktop executes and supplies live owner snapshots. No second writer
 /// and no CLI fallback after a possibly delivered start request.
 func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
@@ -6862,6 +6927,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                          idleTimeout: TimeInterval? = nil,
                          observeTurnID: String? = nil, clientUserMessageID: String = UUID().uuidString,
                          interruptOnTimeout: Bool = true, onAcknowledged: ((String) throws -> Void)? = nil,
+                         observation: CodexDesktopTurnObservation? = nil,
                          onDispatch: () -> Void) throws -> CodexTurnOutput {
     // Automatic routing: never activate Desktop. A running owner is reached
     // through its IPC socket, so no reopen event is sent and the owner's
@@ -6951,6 +7017,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
             }
         }
         if let current = try desktop.observeTurn(threadID: threadID, turnID: turnID, deadline: deadline) {
+            observation?.observe(current)
             let items = current["items"] as? [[String: Any]] ?? []
             let lastItemBytes = items.last.flatMap { try? JSONSerialization.data(withJSONObject: $0) }?.count ?? 0
             let marker = "\(items.count)|\(current["status"] as? String ?? "")|\(lastItemBytes)"
@@ -7219,6 +7286,18 @@ func publishAdoptedNativeRecord(
         persistence: record.persistence,
         desktopVisibility: visibility
     )
+}
+
+/// A thread's rollout path from the app-server, read only for its token
+/// baseline: a regular file named for that thread inside the Codex home this
+/// run uses.
+func codexRolloutPathTrusted(_ path: String, threadID: String) -> Bool {
+    let home = URL(fileURLWithPath: backendAccountEnvironment("codex")["CODEX_HOME"] ??
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path).resolvingSymlinksInPath().path
+    var directory: ObjCBool = false
+    return path.hasPrefix("/") && URL(fileURLWithPath: path).lastPathComponent.contains(threadID) &&
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(home + "/") &&
+        FileManager.default.fileExists(atPath: path, isDirectory: &directory) && !directory.boolValue
 }
 
 /// Native persistence does not imply a Desktop renderer owned execution.
@@ -7877,6 +7956,7 @@ private func execute(
         // deadlocks dispatch. Only an actual writer conflict uses Desktop IPC.
         let turn: CodexTurnOutput
         let executedDesktopVisibility: String
+        let desktopObservation = CodexDesktopTurnObservation()
         do {
             if appServer.ownsThreadWriter {
                 executedDesktopVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: true)
@@ -7895,7 +7975,7 @@ private func execute(
                 turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
                     prompt: prompt, workspace: codexWorkspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
-                    idleTimeout: idleTimeout.map(TimeInterval.init),
+                    idleTimeout: idleTimeout.map(TimeInterval.init), observation: desktopObservation,
                     onDispatch: {
                         if manuallyFresh, let memoryTurn { try? MemoryContextMeter.consumeFresh(conversationID: memoryTurn.conversationID) }
                         onDispatch?(actualSessionID)
@@ -7911,11 +7991,16 @@ private func execute(
             // transport's polled snapshots): a rate/usage-limit rejection
             // with no model or tool work, like Claude's pre-execution quota
             // rejection (RCCNativeAttemptOutcome.failure adds scope and
-            // workspace evidence).
-            rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
-                appServer.lastTurnQuotaRejectedBeforeExecution
+            // workspace evidence). Read-only only: a write keeps its
+            // dispatched stage (never replayed on a provider's word).
+            rejection.quotaRejectedBeforeExecution = codexQuotaRejectedBeforeExecution(blocker: backendBlocker(error),
+                writerEvidence: appServer.lastTurnQuotaRejectedBeforeExecution, permissionProfile: ticket.permissionProfile)
             rejection.quotaRetryAfter = appServer.lastTurnRetryAfter
             rejection.causeDetail = appServer.lastTurnFailureDetail
+            // The turn ended only when OS-1 owned its writer (this function's
+            // deferred close stops that app-server before the throw arrives)
+            // or Codex Desktop itself reported a terminal status for it.
+            rejection.nativeTurnTerminated = appServer.ownsThreadWriter || desktopObservation.terminalStatus != nil
             throw rejection
         }
         // Account for this exact native turn before any quality guard rejects
@@ -8201,12 +8286,15 @@ private func execute(
         ) } catch {
             stream.finishClaude()
             if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
-            throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
+            var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID,
                 publicProgress: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
                 beforeHash: workspaceBeforeHash,
                 workspace: executionWorkspace, started: started, cause: error, surface: executedSurface?.rawValue,
                 preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
+            // commandOutput never returns or throws with the CLI it owns still running.
+            rejection.nativeTurnTerminated = true
+            throw rejection
         }
         stream.finishClaude()
         if let text = stream.takeClaudePublicFinal(sessionID: activeSessionID, after: &relayedResultCount) {
@@ -8255,6 +8343,8 @@ private func execute(
                 preDispatchGovernanceReceipt: preDispatchGovernanceReceipt)
             rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
                 stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
+            // The CLI already exited: this is its own result being parsed.
+            rejection.nativeTurnTerminated = true
             if backendBlocker(error) == .quotaExhausted, var scoped = object {
                 // Scope the same envelope the parser classified: the read-only
                 // lane's denials are the bound doing its job, not a policy verdict.
@@ -8392,7 +8482,10 @@ private func execute(
                     reason: "drift_policy_failure_not_persisted_base_contract_retained", source: nil)
             }
         }
-        throw RejectedProviderExecution(execution: candidate, cause: error)
+        // A candidate exists only after the native turn returned and ended.
+        var rejection = RejectedProviderExecution(execution: candidate, cause: error)
+        rejection.nativeTurnTerminated = true
+        throw rejection
     }
     AttemptLatencyTrace.mark("candidate_validated")
     return candidate
@@ -12296,10 +12389,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     case nil: break
                     }
                     let modelScoped = claudeScope.map { $0 != .account } ?? false
-                    if (error as? RejectedProviderExecution)?.quotaRejectedBeforeExecution == true,
-                       observedStateHash(observedWorkspace) == beforeHash {
-                        dispatchStage = .rejectedBeforeExecution
-                    }
+                    dispatchStage = quotaRejectionDispatchStage(dispatchStage, rejection: error as? RejectedProviderExecution,
+                        workspaceUnchanged: observedStateHash(observedWorkspace) == beforeHash)
                     lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
                             stage: dispatchStage, workspaceChanged: observedStateHash(observedWorkspace) != beforeHash),
@@ -14608,6 +14699,38 @@ func selfTest() throws {
         workspaceAfterHash: "a", nativeRecord: limitedRecord), sessionID: UUID().uuidString, nativeRecord: limitedRecord),
         cause: OS1Error.backendBlocked(.quotaExhausted))
     limitedRejection.causeDetail = "codex turn failed: response_too_many_failed_attempts_429: exceeded retry limit, last status: 429 Too Many Requests"
+    // The same writer evidence on a Codex WRITE carries no pre-execution
+    // rejection: the legacy runner keeps its dispatched stage and never
+    // replays it automatically (a read-only attempt moves on).
+    for (permission, stage) in [("read_only", BackendDispatchStage.rejectedBeforeExecution), ("workspace_write", .dispatched)] {
+        var rejection = limitedRejection
+        rejection.quotaRejectedBeforeExecution = codexQuotaRejectedBeforeExecution(blocker: .quotaExhausted,
+            writerEvidence: true, permissionProfile: permission)
+        let recorded = quotaRejectionDispatchStage(.dispatched, rejection: rejection, workspaceUnchanged: true)
+        guard recorded == stage,
+              BackendRecovery.permitsAutomaticReplay(permission: permission, stage: recorded) == (permission == "read_only") else {
+            throw OS1Error.message("A Codex \(permission) 429 rejection recorded the wrong legacy stage: \(recorded)")
+        }
+        protocolRecoveryChecks += 1
+    }
+    guard !codexQuotaRejectedBeforeExecution(blocker: .quotaExhausted, writerEvidence: false, permissionProfile: "read_only"),
+          !codexQuotaRejectedBeforeExecution(blocker: .effectsUncertain, writerEvidence: true, permissionProfile: "read_only"),
+          quotaRejectionDispatchStage(.dispatched, rejection: limitedRejection, workspaceUnchanged: false) == .dispatched else {
+        throw OS1Error.message("A Codex limit rejection without the writer's evidence must keep its stage")
+    }
+    protocolRecoveryChecks += 1
+    // Codex Desktop: only a terminal status it reports for the turn proves
+    // the turn ended (RCCNativeAttemptOutcome.turnTerminated).
+    let desktopObservation = CodexDesktopTurnObservation()
+    desktopObservation.observe(["status": "inProgress"])
+    let unobserved = desktopObservation.terminalStatus
+    desktopObservation.observe(["status": "interrupted"])
+    guard unobserved == nil, desktopObservation.terminalStatus == "interrupted",
+          !RCCNativeAttemptOutcome.turnTerminated(dispatched: true, transportAttested: unobserved != nil),
+          RCCNativeAttemptOutcome.turnTerminated(dispatched: true, transportAttested: desktopObservation.terminalStatus != nil) else {
+        throw OS1Error.message("A Codex Desktop turn is attested ended only by a terminal status")
+    }
+    protocolRecoveryChecks += 1
     guard rccFailureCauseKind(limitedRejection) == "OS1Error.backendBlocked(quota_exhausted)",
           rccFailureCauseMessage(limitedRejection) == limitedRejection.causeDetail,
           rccFailureCauseKind(OS1Error.message("x")) == "OS1Error.message",
@@ -14774,34 +14897,52 @@ func selfTest() throws {
     // 2026-10-14 incident over the real stdio client: Codex retried, every
     // request got HTTP 429, and the turn ended with no output. The writer's
     // own evidence proves the rejection came before any work; one streamed
-    // agent delta, or a tool item, takes that proof away.
-    for streamedWork in [false, true] {
+    // agent delta, a tool item, or an earlier mid-turn disconnect (a request
+    // was accepted) takes that proof away. On a resumed thread a usage-limit
+    // refusal replays the previous turn's usage (2026-09-07 rollout: total
+    // 904229078, last 119644): measured against the thread's baseline that
+    // is no work; without a baseline, or when the total grew, it is.
+    let limit429 = #"{"message":"exceeded retry limit, last status: 429 Too Many Requests","codexErrorInfo":{"responseTooManyFailedAttempts":{"httpStatusCode":429}}}"#
+    let usageLimited = #"{"message":"You have hit your usage limit.","codexErrorInfo":"usageLimitExceeded"}"#
+    let detail429 = "codex turn failed: response_too_many_failed_attempts_429: exceeded retry limit, last status: 429 Too Many Requests"
+    let usageDetail = "codex turn failed: usage_limit_exceeded: You have hit your usage limit."
+    func limitedLine(_ turn: String, _ method: String, _ fields: String) -> String {
+        #"{"jsonrpc":"2.0","method":"\#(method)","params":{"threadId":"\#(recoveredSession)","turnId":"\#(turn)",\#(fields)}}"#
+    }
+    let staleUsage = #""tokenUsage":{"total":{"totalTokens":904229078},"last":{"totalTokens":119644}}"#
+    let grownUsage = #""tokenUsage":{"total":{"totalTokens":904234078},"last":{"totalTokens":5000}}"#
+    let disconnect = #""willRetry":true,"error":{"message":"stream disconnected before completion","codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}}}"#
+    for (label, extra, error, detail, baseline, rejected) in [
+        ("no work", [("error", #""willRetry":true,"error":"# + limit429)], limit429, detail429, nil as Int?, true),
+        ("streamed work", [("error", #""willRetry":true,"error":"# + limit429), ("item/agentMessage/delta", #""itemId":"a1","delta":"Sure""#)],
+            limit429, detail429, nil, false),
+        ("a mid-turn disconnect first", [("error", disconnect), ("error", #""willRetry":true,"error":"# + limit429)],
+            limit429, detail429, nil, false),
+        ("a stale usage replay on a resumed thread", [("thread/tokenUsage/updated", staleUsage)], usageLimited, usageDetail, 904_229_078, true),
+        ("usage that grew", [("thread/tokenUsage/updated", grownUsage)], usageLimited, usageDetail, 904_229_078, false),
+        ("usage without a baseline", [("thread/tokenUsage/updated", staleUsage)], usageLimited, usageDetail, nil, false),
+    ] as [(String, [(String, String)], String, String, Int?, Bool)] {
         let limitedTurn = UUID().uuidString.lowercased()
-        let limitedPeer = approvalFixture.appendingPathComponent("limited-\(streamedWork).sh")
+        let limitedPeer = approvalFixture.appendingPathComponent("limited-\(UUID().uuidString).sh")
         let user = #"{"type":"userMessage","id":"u1","content":[]}"#
-        let limit = #"{"message":"exceeded retry limit, last status: 429 Too Many Requests","codexErrorInfo":{"responseTooManyFailedAttempts":{"httpStatusCode":429}}}"#
-        let lines = [
-            #"{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"\#(limitedTurn)"}}}"#,
-            #"{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","item":\#(user)}}"#,
-            #"{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","item":\#(user)}}"#,
-            #"{"jsonrpc":"2.0","method":"error","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","willRetry":true,"error":\#(limit)}}"#,
-        ] + (streamedWork ? [#"{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"\#(recoveredSession)","turnId":"\#(limitedTurn)","itemId":"a1","delta":"Sure"}}"#] : []) + [
-            #"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"\#(recoveredSession)","turn":{"id":"\#(limitedTurn)","status":"failed","error":\#(limit),"items":[\#(user)]}}}"#]
+        let lines = [#"{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"\#(limitedTurn)"}}}"#,
+            limitedLine(limitedTurn, "item/started", #""item":"# + user), limitedLine(limitedTurn, "item/completed", #""item":"# + user)] +
+            extra.map { limitedLine(limitedTurn, $0.0, $0.1) } + [
+            #"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"\#(recoveredSession)","turn":{"id":"\#(limitedTurn)","status":"failed","error":\#(error),"items":[\#(user)]}}}"#]
         try Data(("#!/bin/sh\nIFS= read -r request\n" + lines.map { "printf '%s\\n' '\($0)'\n" }.joined() +
             "while IFS= read -r ignored; do :; done\n").utf8).write(to: limitedPeer)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: limitedPeer.path)
         let limitedServer = try CodexAppServerClient(executable: limitedPeer.path, workspace: approvalFixture.path)
         defer { limitedServer.close() }
+        limitedServer.recordTokenBaseline(threadID: recoveredSession, totalTokens: baseline)
         var limitedBlocker: BackendBlocker?
         do {
             _ = try limitedServer.runTurn(threadID: recoveredSession, prompt: "야 원플러스원 해봐.", workspace: approvalFixture.path,
                 model: nil, effort: "max", permissionProfile: "read_only", deadline: Date().addingTimeInterval(8))
         } catch { limitedBlocker = backendBlocker(error) }
-        guard limitedBlocker == .quotaExhausted,
-              limitedServer.lastTurnQuotaRejectedBeforeExecution == !streamedWork,
-              limitedServer.lastTurnFailureDetail == "codex turn failed: response_too_many_failed_attempts_429: exceeded retry limit, last status: 429 Too Many Requests",
-              limitedServer.lastTurnRetryAfter == nil else {
-            throw OS1Error.message("Codex 429 turn evidence over stdio is wrong (streamed work: \(streamedWork))")
+        guard limitedBlocker == .quotaExhausted, limitedServer.lastTurnQuotaRejectedBeforeExecution == rejected,
+              limitedServer.lastTurnFailureDetail == detail, limitedServer.lastTurnRetryAfter == nil else {
+            throw OS1Error.message("Codex limit turn evidence over stdio is wrong (\(label))")
         }
         protocolRecoveryChecks += 1
     }
@@ -18397,11 +18538,15 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         }
         }
         let a = execution.artifact
+        // execute returned: the native turn ended (a finished answer).
+        record.nativeTurnTerminated = true
         if isFullAccess, let continuation = t.continuation,
            gitHead(continuation.protectedRoot) != continuation.sourceHead ||
             OS1SourceWatch.fingerprint(root: continuation.protectedRoot) != continuation.protectedSourceSHA256 {
-            throw RejectedProviderExecution(execution: execution,
+            var rejection = RejectedProviderExecution(execution: execution,
                 cause: OS1Error.message("RCC full-access continuation changed protected source; result preserved, not adopted"))
+            rejection.nativeTurnTerminated = true
+            throw rejection
         }
         let verified = a.exitCode == 0 && execution.nativeRecord.persistence == "verified"
         let exact = publicDeterministicExpression(t.instruction).map { a.output.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) == $0 } ?? false
@@ -18549,6 +18694,12 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         record.dispatchStage = report.dispatchStage
         record.sideEffects = report.sideEffects
         record.error = report.error
+        // Core releases a settled read-only attempt's pool only when the turn
+        // itself ended; a returned record from the Codex Desktop transport
+        // without a terminal status keeps that lease (shared pool peak 1).
+        // (A failure after execute returned keeps that attestation.)
+        record.nativeTurnTerminated = record.nativeTurnTerminated == true || RCCNativeAttemptOutcome.turnTerminated(
+            dispatched: dispatched, transportAttested: rejected?.nativeTurnTerminated == true)
     }
     let data = try RCCRuntimeContract.encode(record)
     try data.write(to: receipt, options: [.atomic]); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receipt.path)

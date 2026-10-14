@@ -55,6 +55,19 @@ public enum RCCNativeAttemptOutcome {
                      error: dispatched ? outcomeUncertain : configurationUnavailable)
     }
 
+    /// Whether the adapter may attest that the native turn ENDED
+    /// (`ExecutionRecord.nativeTurnTerminated`), which lets OpenClaw Core
+    /// release a settled read-only attempt's quota-pool lease: nothing was
+    /// dispatched, or the transport itself proved it (OS-1 closed the
+    /// provider process it owned, the Codex app-server writer or the Claude
+    /// CLI; or Codex Desktop reported a terminal status for the turn). A
+    /// returned record alone proves nothing about a turn still running
+    /// elsewhere: a Codex Desktop turn whose observation failed, or whose
+    /// interrupt was only best effort, keeps its pool (shared pool peak 1).
+    public static func turnTerminated(dispatched: Bool, transportAttested: Bool) -> Bool {
+        !dispatched || transportAttested
+    }
+
     /// The typed error a FINISHED attempt carries beside its answer when a
     /// tool call of the model's own broke down and was never recovered
     /// (`ExecutionStream.mainToolBreakdownsUnrecovered`: declined, or a

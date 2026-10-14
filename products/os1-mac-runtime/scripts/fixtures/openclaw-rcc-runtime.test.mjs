@@ -1825,10 +1825,12 @@ test('pre-dispatch failure re-resolves to another pool, at most twice, never for
   assert.equal(resolved.length, 2);
   assert.deepEqual(resolved.map(x => x.snapshot.children[0].candidate_id), ['b1', 'b2']);
   assert.equal(resolved[0].snapshot.children[0].routing_decision.reason,
-    're_resolved_after:candidate_unavailable;other_pool;route_reference;pool_rank_1;effort_medium;chat_lane_same_route');
+    // The single node runs the owner's request; every rebuilt decision says so.
+    're_resolved_after:candidate_unavailable;other_pool;route_reference;pool_rank_1;effort_medium;chat_lane_same_route;' +
+    'instruction_host_locked');
   assert.equal(resolved[1].snapshot.children[0].routing_decision.reason,
     're_resolved_after:candidate_unavailable;same_pool_only;route_reference;pool_rank_1;' +
-    'skipped_pool_rank_0_reference_undispatchable;effort_medium;agent_surface');
+    'skipped_pool_rank_0_reference_undispatchable;effort_medium;agent_surface;instruction_host_locked');
 
   // One re-resolution that succeeds: exhausted Codex quota moves to Claude.
   const moved = task(dir, 'Explain another function');
@@ -1934,7 +1936,8 @@ test('pre-execution quota rejection: read-only moves to the other pool, a dispat
   assert.equal(planned, 1, 'the planner never re-chooses a host-resolved row');
   assert.equal(done.children[0].routing_decision.quota_pool, 'openai_codex');
   assert.equal(done.children[0].routing_decision.reason,
-    're_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;pool_rank_0;effort_medium;agent_surface');
+    're_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;pool_rank_0;effort_medium;' +
+    'agent_surface;instruction_host_locked');
   const events = reader.events({schema: 1, task_id: read.task_id});
   assert.equal(events.filter(x => x.kind === 'candidate_re_resolved').length, 1);
   assert.equal(events.some(x => x.kind === 'child_effects_uncertain' || x.kind === 'dispatch_effects_uncertain'), false);
@@ -1962,7 +1965,8 @@ test('pre-execution quota rejection: read-only moves to the other pool, a dispat
   assert.equal(familyDone.state, 'completed');
   assert.deepEqual(scopedDispatched, ['claude-opus-medium', 'codex-sol-medium']);
   assert.equal(familyDone.children[0].routing_decision.reason,
-    're_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;pool_rank_1;effort_medium;agent_surface');
+    're_resolved_after:provider_quota_rejected_before_execution;other_pool;route_reference;pool_rank_1;effort_medium;' +
+    'agent_surface;instruction_host_locked');
 
   // A dispatched write that hit the quota keeps today's report: effects are
   // uncertain, nothing is re-dispatched and no other pool is tried.
@@ -2635,7 +2639,8 @@ test('a verified ladder output is adopted; a failed one re-dispatches once at th
   assert.equal(fail.done.result.output, 'answer at max', 'the failed cheaper output is never adopted');
   const decision = fail.done.children[0].routing_decision;
   assert.equal(decision.effort, 'max'); assert.equal(decision.resolved_candidate_id, 'codex-max');
-  assert.equal(decision.reason, 'ladder_escalated_after_verifier_failure;route_reference;effort_max;agent_surface');
+  assert.equal(decision.reason,
+    'ladder_escalated_after_verifier_failure;route_reference;effort_max;agent_surface;instruction_host_locked');
   assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max'});
   const events = fail.runtime.events({schema: 1, task_id: fail.request.task_id});
   assert.equal(events.filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
@@ -2884,13 +2889,14 @@ test('a failed ladder verifier never settles the task over a running sibling (ca
   assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'cancelled'], ['b', 'effects_uncertain']]);
   const db = coreDB(cancelled.stateDir);
   t.after(() => db.close());
-  // The uncertain sibling's adapter RETURNED a read-only record with no side
-  // effects: its process exited, so it holds no pool either (the ladder child
-  // released codex). Its uncertainty is remote billing, not a running process.
-  assert.deepEqual(db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key), [],
-    'a settled read-only sibling keeps no pool lease');
-  assert.ok(cancelled.runtime.events({schema: 1, task_id: cancelled.request.task_id})
-    .some(event => event.kind === 'quota_lease_released_settled_read_only'), 'the release names why');
+  // The uncertain sibling was cancelled while running and its record does not
+  // attest that the native turn ended (native_turn_terminated): a returned
+  // record alone is no proof (a Codex Desktop turn may still run), so it keeps
+  // its pool; the ladder child released codex.
+  assert.deepEqual(db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key),
+    ['anthropic_shared:account-1'], 'only the uncertain sibling keeps its pool; the ladder child released codex');
+  assert.ok(!cancelled.runtime.events({schema: 1, task_id: cancelled.request.task_id})
+    .some(event => event.kind.startsWith('quota_lease_released')), 'nothing was released as settled');
 
   // The reference cannot be restored while the sibling runs: only the ladder
   // child holds; the sibling finishes and the task holds with the typed reason.
@@ -2963,7 +2969,7 @@ test('a cheaper ladder result that is not deliverable escalates and counts again
     assert.deepEqual(dispatched, ['low', 'max'], name); assert.deepEqual(verified, ['max'], name);
     assert.equal(done.result.output, 'reference answer', name);
     assert.equal(done.children[0].routing_decision.reason,
-      'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface', name);
+      'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface;instruction_host_locked', name);
     const records = await ledgerRecords(stateDir);
     assert.deepEqual(records.map(record => [record.effort, record.route_kind, record.verifier_outcome, record.attempt_state]),
       [['low', 'ladder', 'not_returned', 'ladder_not_returned'], ['max', 'reference', 'pass', 'completed']], name);
@@ -3283,7 +3289,7 @@ test('a cheap ladder attempt that failed after dispatch without effects escalate
       assert.deepEqual(dispatched.map(([, effort]) => effort), ['low', 'max'], name);
       assert.equal(done.result.output, 'answer at max', name);
       assert.equal(done.children[0].routing_decision.reason,
-        'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface', name);
+        'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface;instruction_host_locked', name);
       assert.deepEqual((await ledgerRecords(stateDir)).map(record =>
         [record.effort, record.route_kind, record.verifier_outcome, record.attempt_state]),
       [['low', 'ladder', 'not_returned', 'ladder_not_returned'], ['max', 'reference', 'pass', 'completed']], name);
@@ -3509,9 +3515,13 @@ test('restart records a settled verdict as it was, never as interrupted', async 
 // held the owner's next task with quota_pool_effects_uncertain.
 const leasePools = runtime => runtime.db.prepare('SELECT pool_key FROM quota_leases ORDER BY pool_key').all()
   .map(item => item.pool_key);
-const failedAfterDispatch = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'dispatched',
-  side_effects: 'none', output: null, execution_verified: false, task_verified: false, task_quality: 'failed',
-  usage: null, error: 'native_outcome_uncertain_preserved'});
+// The adapter attests whether the native turn itself ENDED (OS-1 closed the
+// provider process it owned, or Codex Desktop reported a terminal status):
+// only then is a returned read-only record settled. A Codex Desktop turn whose
+// observation failed, or whose interrupt was best effort, may still run.
+const failedAfterDispatch = (ticket, terminated = true) => execution(ticket, {status: 'failed',
+  dispatch_stage: 'dispatched', side_effects: 'none', output: null, execution_verified: false, task_verified: false,
+  task_quality: 'failed', usage: null, error: 'native_outcome_uncertain_preserved', native_turn_terminated: terminated});
 
 test('a settled read-only attempt releases its pool even when effects-uncertain; the next task on that pool runs', async t => {
   const dir = await fixture(t);
@@ -3568,53 +3578,71 @@ test('a write with uncertain effects keeps its pool lease, across a restart too'
   assert.equal(calls, 1, 'nothing ran on the uncertain pool');
 });
 
-test('an owner start releases stale leases (settled read-only, terminal, vanished task) and keeps an unsettled one', async t => {
+test('an owner start releases stale leases (settled read-only, terminal, vanished task) and keeps unsettled ones', async t => {
   const dir = await fixture(t);
   const stateDir = join(dir, 'state');
   const rows = [candidate('codex-reader', 'codex', 'openai_codex'),
     candidate('claude-reader', 'claude', 'anthropic_shared'),
-    candidate('codex-two', 'codex', 'openai_codex', {account: 'account-2'})];
+    candidate('codex-two', 'codex', 'openai_codex', {account: 'account-2'}),
+    candidate('codex-three', 'codex', 'openai_codex', {account: 'account-3'}),
+    candidate('codex-four', 'codex', 'openai_codex', {account: 'account-4'})];
   const settled = task(dir, 'The incident question: settled read-only');
   const unsettled = task(dir, 'A read-only attempt whose executor never returned');
   const finished = task(dir, 'A completed task');
+  const recent = task(dir, 'A pre-attestation record still within its duration budget');
+  const desktop = task(dir, 'A Codex Desktop turn whose end was never observed');
   const byTask = new Map([[settled.task_id, 'codex-reader'], [unsettled.task_id, 'claude-reader'],
-    [finished.task_id, 'codex-two']]);
+    [finished.task_id, 'codex-two'], [recent.task_id, 'codex-three'], [desktop.task_id, 'codex-four']]);
   const options = {catalog: async value => catalog(value, rows),
     plan: async ({task: value}) => plan(value, [node('node-1', byTask.get(value.task_id) ?? 'codex-reader')]),
     verifyTask: taskVerdict};
   const first = await createRCCRuntime({stateDir, ...options, execute: async ticket => {
-    if (ticket.task_id === settled.task_id) return failedAfterDispatch(ticket);
+    if ([settled.task_id, recent.task_id].includes(ticket.task_id)) return failedAfterDispatch(ticket);
+    if (ticket.task_id === desktop.task_id) return failedAfterDispatch(ticket, false);
     if (ticket.task_id === unsettled.task_id) throw Error('transport dropped after dispatch');
     return execution(ticket);
   }});
-  for (const value of [settled, unsettled, finished]) { await first.submit(value); await wait(first, value); }
-  assert.deepEqual(leasePools(first), ['anthropic_shared:account-1'], 'only the unsettled attempt holds a pool');
+  for (const value of [settled, unsettled, finished, recent, desktop]) { await first.submit(value); await wait(first, value); }
+  assert.deepEqual(leasePools(first), ['anthropic_shared:account-1', 'openai_codex:account-4'],
+    'the attempt that never returned and the turn never attested ended hold their pools');
   await first.close();
-  // Recreate what build 378 left on disk: the settled read-only attempt's
-  // lease and snapshot without the settled_side_effects marker (its attempt
+  // Recreate what build 378 left on disk: a read-only attempt's lease and a
+  // snapshot from an adapter older than the turn attestation (its attempt
   // carries only dispatched_failure 'no_effects', exactly as the incident's
-  // did), a stale lease of a completed task, and one of a task row that does
-  // not exist.
+  // did; the incident returned 15 hours before the next owner start), one
+  // such record still within its task's duration budget, a stale lease of a
+  // completed task, and one of a task row that does not exist.
   const db = coreDB(stateDir);
-  const row = db.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(settled.task_id);
-  const snapshot = JSON.parse(row.snapshot);
-  for (const child of snapshot.children) for (const entry of child.attempt_history) delete entry.settled_side_effects;
-  assert.equal(snapshot.children[0].attempt_history.at(-1).dispatched_failure, 'no_effects');
-  db.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(snapshot), settled.task_id);
+  const legacy = (value, finishedAt) => {
+    const snapshot = JSON.parse(db.prepare('SELECT snapshot FROM tasks WHERE task_id=?').get(value.task_id).snapshot);
+    for (const child of snapshot.children) {
+      for (const entry of child.attempt_history) { delete entry.settled_side_effects; delete entry.native_turn_terminated; }
+      child.finished_at_ms = finishedAt;
+    }
+    assert.equal(snapshot.children[0].attempt_history.at(-1).dispatched_failure, 'no_effects');
+    db.prepare('UPDATE tasks SET snapshot=? WHERE task_id=?').run(JSON.stringify(snapshot), value.task_id);
+  };
+  legacy(settled, Date.now() - settled.budget.max_duration_ms - 1_000);
+  legacy(recent, Date.now());
   const insert = db.prepare('INSERT INTO quota_leases(pool_key,task_id,acquired_ms) VALUES(?,?,?)');
   insert.run('openai_codex:account-1', settled.task_id, Date.now());
   insert.run('openai_codex:account-2', finished.task_id, Date.now());
+  insert.run('openai_codex:account-3', recent.task_id, Date.now());
   insert.run('openai_chat:account-1', 'task-vanished', Date.now());
   db.close();
   let ran = 0;
   const reopened = await createRCCRuntime({stateDir, ...options, execute: async ticket => { ran++; return execution(ticket); }});
   t.after(async () => { await reopened.close(); });
-  assert.deepEqual(leasePools(reopened), ['anthropic_shared:account-1'],
-    'stale leases are released at owner start; the attempt that never returned keeps its pool');
+  assert.deepEqual(leasePools(reopened), ['anthropic_shared:account-1', 'openai_codex:account-3', 'openai_codex:account-4'],
+    'stale leases are released at owner start; the attempt that never returned, a recent pre-attestation ' +
+    'record and a turn never attested ended keep their pools');
   const kinds = value => reopened.events({schema: 1, task_id: value.task_id}).map(event => event.kind);
   assert.ok(kinds(settled).includes('quota_lease_released_settled_read_only'));
   assert.ok(kinds(finished).includes('quota_lease_released_task_terminal'));
-  assert.ok(!kinds(unsettled).some(kind => kind.startsWith('quota_lease_released')));
+  for (const value of [unsettled, desktop])
+    assert.ok(!kinds(value).some(kind => kind.startsWith('quota_lease_released')), value.request);
+  // (The recent record's attested release before the rewrite is its only one.)
+  assert.equal(kinds(recent).filter(kind => kind.startsWith('quota_lease_released')).length, 1);
   assert.equal(reopened.status({schema: 1, task_id: settled.task_id}).state, 'effects_uncertain',
     'the uncertain attempt itself is preserved, never replayed');
   // The owner's next question on the freed pool runs (the incident's held task).
@@ -3623,11 +3651,65 @@ test('an owner start releases stale leases (settled read-only, terminal, vanishe
   const done = await wait(reopened, next);
   assert.equal(done.state, 'completed', `not ${done.error}`);
   assert.equal(ran, 1);
-  // The unsettled pool still surfaces as the existing hold.
-  const claudeOnly = task(dir, 'A question for the uncertain pool');
-  byTask.set(claudeOnly.task_id, 'claude-reader');
-  await reopened.submit(claudeOnly);
-  assert.equal((await wait(reopened, claudeOnly)).error, 'quota_pool_effects_uncertain');
+  // The unsettled pools still surface as the existing hold.
+  for (const [label, row] of [['the uncertain Claude pool', 'claude-reader'], ['the unattested Desktop pool', 'codex-four']]) {
+    const blocked = task(dir, 'A question for ' + label);
+    byTask.set(blocked.task_id, row);
+    await reopened.submit(blocked);
+    assert.equal((await wait(reopened, blocked)).error, 'quota_pool_effects_uncertain', label);
+  }
+  assert.equal(ran, 1, 'nothing ran on an uncertain pool');
+});
+
+test('a read-only record whose native turn was not attested ended keeps its pool (Codex Desktop), on failure and cancel', async t => {
+  const dir = await fixture(t);
+  const reader = candidate('reader', 'codex', 'openai_codex');
+  const options = {catalog: async value => catalog(value, [reader]),
+    plan: async ({task: value}) => plan(value, [node('only', 'reader')]), verifyTask: taskVerdict};
+  // A failure after dispatch: the Desktop turn's observation failed (false),
+  // an older adapter said nothing (absent), the app-server writer closed (true).
+  for (const [name, terminated, pools] of [['desktop-failed', false, ['openai_codex:account-1']],
+    ['older-adapter', undefined, ['openai_codex:account-1']], ['writer-failed', true, []]]) {
+    const runtime = await createRCCRuntime({stateDir: join(dir, name), ...options, execute: async ticket => {
+      const record = failedAfterDispatch(ticket, terminated);
+      if (terminated === undefined) delete record.native_turn_terminated;
+      return record;
+    }});
+    t.after(async () => { await runtime.close(); });
+    const request = task(dir, 'Explain one function: ' + name);
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'effects_uncertain', name); assert.equal(done.error, 'dispatched_failure_no_replay', name);
+    assert.deepEqual(leasePools(runtime), pools, name);
+  }
+  // A cancel while the turn runs: the Desktop interrupt was best effort
+  // (false) or the owned process was stopped (true).
+  for (const [name, terminated, pools] of [['desktop-cancel', false, ['openai_codex:account-1']], ['writer-cancel', true, []]]) {
+    const started = gate(), release = gate();
+    const runtime = await createRCCRuntime({stateDir: join(dir, name), ...options, execute: async ticket => {
+      started.resolve(); await release.promise; return failedAfterDispatch(ticket, terminated);
+    }});
+    t.after(async () => { await runtime.close(); });
+    const request = task(dir, 'Explain another function: ' + name);
+    await runtime.submit(request);
+    await started.promise;
+    assert.equal(runtime.cancel({schema: 1, task_id: request.task_id}).state, 'cancelling', name);
+    release.resolve();
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'effects_uncertain', name); assert.equal(done.error, 'cancel_effects_uncertain', name);
+    assert.deepEqual(leasePools(runtime), pools, name);
+    assert.equal(runtime.events({schema: 1, task_id: request.task_id})
+      .some(event => event.kind === 'quota_lease_released_settled_read_only'), pools.length === 0, name);
+  }
+  // The strict result contract: the attestation is a boolean when present.
+  const strict = await createRCCRuntime({stateDir: join(dir, 'strict'), ...options,
+    execute: async ticket => ({...failedAfterDispatch(ticket), native_turn_terminated: 'yes'})});
+  t.after(async () => { await strict.close(); });
+  const invalid = task(dir, 'A malformed attestation');
+  await strict.submit(invalid);
+  const rejected = await wait(strict, invalid);
+  assert.equal(rejected.error, 'execution_receipt_invalid');
+  assert.deepEqual(leasePools(strict), ['openai_codex:account-1'], 'an invalid record settles nothing');
 });
 
 test('lease acquisition releases a stale foreign lease instead of holding or waiting on it', async t => {
@@ -3711,6 +3793,8 @@ test('a one-node plan dispatches the request; a decomposition keeps the planner 
   const admitted = runtime.events({schema: 1, task_id: single.task_id}).find(event => event.kind === 'plan_admitted');
   assert.equal(admitted.snapshot.children[0].routing_decision.reason, 'adapter_bound;instruction_host_locked');
   assert.ok(runtime.events({schema: 1, task_id: single.task_id}).some(event => event.kind === 'safe_subset_replanned'));
+  assert.equal(done.children[0].routing_decision.reason, 'adapter_bound;instruction_host_locked',
+    'the repaired decision still names the lock');
   // Two independent parts: each node keeps the planner's own instruction.
   const split = task(dir, 'Explain the parser and the lexer');
   const splitTickets = [];

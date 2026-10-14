@@ -1955,41 +1955,64 @@ function settleDispatchEntry(child, state) {
   const last = child.attempt_history?.at(-1);
   if (last && UNSETTLED_DISPATCH_STATES.has(last.state)) last.state = state;
 }
-/** A child whose latest attempt the adapter SETTLED read-only with no side
- * effects: it returned a record (the native process exited), the attempt ran
- * read-only, and the record says side_effects none ('settled_side_effects',
- * or the older 'dispatched_failure' fact a failed-after-dispatch record
- * already left). Its effects_uncertain state (a failure after dispatch, a
- * cancel) is about remote billing, never a running process or a workspace
- * effect. An attempt with no returned record (an executor that threw, a
- * restart while dispatched) never qualifies. */
-function settledReadOnly(child) {
+/** A child whose latest attempt SETTLED read-only with no side effects AND
+ * whose native turn the adapter attested ENDED (native_turn_terminated: OS-1
+ * closed the provider process it owned, or Codex Desktop reported a terminal
+ * status for the turn; Core then recorded 'settled_side_effects'). Its
+ * effects_uncertain state (a failure after dispatch, a cancel) is about
+ * remote billing, never a running turn or a workspace effect. A returned
+ * record alone never qualifies: a Codex Desktop turn may still run after its
+ * adapter returned (an observation that failed, a best-effort interrupt). An
+ * attempt with no returned record (an executor that threw, a restart while
+ * dispatched) never qualifies either. `legacyBefore` (an owner start only): a
+ * record from an adapter older than that attestation (neither true nor false
+ * recorded; build 378's 'dispatched_failure' no_effects fact) qualifies once
+ * it returned before that time, longer ago than its task's whole duration
+ * budget (legacySettleCutoff). */
+function settledReadOnly(child, legacyBefore = null) {
   const last = child?.attempt_history?.at(-1);
-  return child?.selected_config?.scope === 'read_only' && plain(last) &&
-    (last.settled_side_effects === 'none' || last.dispatched_failure === 'no_effects');
+  if (child?.selected_config?.scope !== 'read_only' || !plain(last)) return false;
+  if (last.native_turn_terminated === true && last.settled_side_effects === 'none') return true;
+  return legacyBefore !== null && last.dispatched_failure === 'no_effects' &&
+    !Object.hasOwn(last, 'native_turn_terminated') && int(child.finished_at_ms, 0, legacyBefore);
+}
+/** An owner start's cutoff for a pre-attestation record (settledReadOnly):
+ * its task's whole duration budget ago. */
+function legacySettleCutoff(snapshot) {
+  return Date.now() - snapshot.task.budget.max_duration_ms;
+}
+/** What a returned record attests about its native turn, on its attempt
+ * entry: settled_side_effects only when the adapter attested the turn ended
+ * (settledReadOnly); a record without the attestation records nothing. */
+function recordTurnSettlement(entry, result) {
+  if (typeof result.native_turn_terminated !== 'boolean') return;
+  entry.native_turn_terminated = result.native_turn_terminated;
+  if (result.native_turn_terminated) entry.settled_side_effects = result.side_effects;
 }
 /** The quota-pool lease key of an exact configuration, or null. */
 function poolKeyOf(config) {
   return !plain(config) || config.quota_pool === 'none' ? null : `${config.quota_pool}:${config.account_id}`;
 }
 /** Whether this child keeps its pool's lease: an attempt still running, or an
- * effects-uncertain one the adapter never settled read-only (a write, or an
- * outcome with no returned record). A settled read-only attempt holds no pool
- * (shared pool peak 1 counts running attempts, not remote billing doubt). */
-function leaseProtectingChild(child) {
+ * effects-uncertain one not settledReadOnly (a write, an outcome with no
+ * returned record, or a turn not attested ended). A settled read-only attempt
+ * holds no pool (shared pool peak 1 counts running turns, not remote billing
+ * doubt). */
+function leaseProtectingChild(child, legacyBefore = null) {
   return plain(child?.selected_config) && (child.state === 'running' ||
-    (child.state === 'effects_uncertain' && !settledReadOnly(child)));
+    (child.state === 'effects_uncertain' && !settledReadOnly(child, legacyBefore)));
 }
 /** The pools a snapshot's children still protect (leaseProtectingChild). */
-function protectedPools(snapshot) {
-  return new Set((snapshot?.children ?? []).filter(leaseProtectingChild)
+function protectedPools(snapshot, legacyBefore = null) {
+  return new Set((snapshot?.children ?? []).filter(child => leaseProtectingChild(child, legacyBefore))
     .map(child => poolKeyOf(child.selected_config)).filter(Boolean));
 }
 /** A pool held only by settled read-only effects-uncertain children: the
  * reason a released lease names (quota_lease_released_settled_read_only). */
-function settledReadOnlyPools(snapshot) {
+function settledReadOnlyPools(snapshot, legacyBefore = null) {
   return new Set((snapshot?.children ?? []).filter(child => child.state === 'effects_uncertain' &&
-    plain(child.selected_config) && settledReadOnly(child)).map(child => poolKeyOf(child.selected_config)).filter(Boolean));
+    plain(child.selected_config) && settledReadOnly(child, legacyBefore))
+    .map(child => poolKeyOf(child.selected_config)).filter(Boolean));
 }
 /** In a non-explicit task, a plan of exactly ONE agent node with no separate
  * final integration node is the owner's indivisible task: the planner may
@@ -2008,6 +2031,16 @@ export function lockIndivisibleInstruction(plan, task) {
   return {plan: {...plan, nodes: [{...node, instruction: task.request}]}, changed: true};
 }
 const INSTRUCTION_LOCK_REASON = 'instruction_host_locked';
+/** A routing decision of a child whose instruction the host locked
+ * (lockIndivisibleInstruction changed the planner's text at admission) names
+ * that lock, also when an escalation, re-resolution, spread or repair
+ * rebuilds it; the public reason stays within its 1 KiB contract bound. */
+function withInstructionLock(child, decision) {
+  if (child?.instruction_host_locked !== true || !plain(decision) || typeof decision.reason !== 'string' ||
+      decision.reason.split(';').includes(INSTRUCTION_LOCK_REASON)) return decision;
+  const reason = decision.reason + ';' + INSTRUCTION_LOCK_REASON;
+  return boundedText(reason, 1_024) ? {...decision, reason} : decision;
+}
 
 function alive(pid) {
   if (!int(pid, 1, Number.MAX_SAFE_INTEGER)) return false;
@@ -2449,11 +2482,13 @@ class RCCRuntime {
       this.transaction(() => this.db.prepare('DELETE FROM write_leases WHERE task_id=?').run(taskID));
     }
     // A quota reservation protects only a running native attempt or an
-    // uncertain one the adapter never settled read-only (a write, or no
-    // returned record), not the parent verifier's think time. Preserve it
-    // across a crash when the native child might still be consuming that
-    // account pool. A settled read-only attempt's process has exited.
-    const kept = protectedPools(snapshot), settled = settledReadOnlyPools(snapshot);
+    // uncertain one not settled read-only (a write, no returned record, or a
+    // turn the adapter did not attest ended), not the parent verifier's think
+    // time. Preserve it across a crash when the native turn might still be
+    // consuming that account pool. A settled read-only attempt's turn ended.
+    // An owner start also accepts a pre-attestation record (legacySettleCutoff).
+    const legacy = reconcile ? legacySettleCutoff(snapshot) : null;
+    const kept = protectedPools(snapshot, legacy), settled = settledReadOnlyPools(snapshot, legacy);
     this.transaction(() => {
       const rows = this.db.prepare('SELECT pool_key FROM quota_leases WHERE task_id=?').all(taskID);
       for (const row of rows) if (!kept.has(row.pool_key)) {
@@ -2746,7 +2781,7 @@ class RCCRuntime {
       else this._hold(taskID, 'planner_unavailable');
       return;
     }
-    let plan, decisions, routes;
+    let plan, decisions, routes, lockedID = null;
     try {
       // The injected planner adapter selects only task-relevant policy and
       // context for the local model. It receives the immutable host state,
@@ -2761,11 +2796,9 @@ class RCCRuntime {
       const locked = lockIndivisibleInstruction(resolved.plan, task);
       plan = validatePlan(locked.plan, task, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
-      const lockedID = plan.nodes[0].id;
-      const lockedReason = decisions[lockedID] && decisions[lockedID].reason + ';' + INSTRUCTION_LOCK_REASON;
-      // The public decision reason stays within its 1 KiB contract bound.
-      if (locked.changed && lockedReason && boundedText(lockedReason, 1_024))
-        decisions[lockedID] = {...decisions[lockedID], reason: lockedReason};
+      lockedID = locked.changed ? plan.nodes[0].id : null;
+      if (lockedID !== null && decisions[lockedID])
+        decisions[lockedID] = withInstructionLock({instruction_host_locked: true}, decisions[lockedID]);
     } catch (error) {
       const reason = error instanceof RCCRuntimeError ? error.code : 'planner_failed';
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, reason);
@@ -2801,6 +2834,9 @@ class RCCRuntime {
         ladder: routes[node.id]?.ladder ? {...routes[node.id].ladder, escalated: false} : null,
         // The cost gate's decision at bind time (null when it did not apply).
         cost_gate: routes[node.id]?.cost_gate ?? null,
+        // The host replaced the planner's text with the owner's request: every
+        // later decision of this child keeps naming that (withInstructionLock).
+        ...(node.id === lockedID ? {instruction_host_locked: true} : {}),
         instruction: node.instruction,
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
@@ -2932,8 +2968,8 @@ class RCCRuntime {
         target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
         target.cost_gate = costGateLedger(choice.costGate);
       }
-      target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
-        `re_resolved_after:${reason};${choice.why}`, target.ladder, choice.tier);
+      target.routing_decision = withInstructionLock(target, routingDecision(target.routing_decision.route_class,
+        choice.candidate, `re_resolved_after:${reason};${choice.why}`, target.ladder, choice.tier));
     });
   }
   /** Deterministic resolution binds independent nodes of one route_class to
@@ -3011,8 +3047,8 @@ class RCCRuntime {
         target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort;
         target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
         target.cost_gate = costGateLedger(choice.costGate);
-        target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
-          `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier);
+        target.routing_decision = withInstructionLock(target, routingDecision(target.routing_decision.route_class,
+          choice.candidate, `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier));
       });
     } catch { return false; }
     return true;
@@ -3187,8 +3223,8 @@ class RCCRuntime {
       const target = state.children.find(c => c.id === childID);
       target.candidate_id = node.candidate_id; target.repair_needed = false;
       target.attempt_id = null; target.selected_config = null;
-      if (target.routing_decision) target.routing_decision = routingDecision(null,
-        fresh.candidates.find(c => c.id === node.candidate_id), 'adapter_bound');
+      if (target.routing_decision) target.routing_decision = withInstructionLock(target, routingDecision(null,
+        fresh.candidates.find(c => c.id === node.candidate_id), 'adapter_bound'));
     });
   }
 
@@ -3401,7 +3437,7 @@ class RCCRuntime {
       'configuration_sha256', 'selected_config', 'status', 'dispatch_stage', 'side_effects',
       'execution_verified', 'task_verified', 'task_quality', 'parity_state'];
     const optional = ['acknowledged_config', 'observed_config', 'output', 'native_receipt',
-      'usage', 'error', 'native_summary', 'handback', 'repair_source'];
+      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated'];
     assert(plain(result) && required.every(key => Object.hasOwn(result, key)) &&
       Object.keys(result).every(key => required.includes(key) || optional.includes(key)) &&
       result.schema === 1 &&
@@ -3421,7 +3457,8 @@ class RCCRuntime {
       (result.native_receipt == null || boundedText(result.native_receipt, 4_096)) &&
       validUsage(result.usage) &&
       (result.error == null || boundedText(result.error, 1_024)) &&
-      (result.native_summary == null || boundedText(result.native_summary, MAX_NATIVE_SUMMARY_BYTES)),
+      (result.native_summary == null || boundedText(result.native_summary, MAX_NATIVE_SUMMARY_BYTES)) &&
+      (result.native_turn_terminated == null || typeof result.native_turn_terminated === 'boolean'),
     'execution_receipt_invalid');
     if (result.status === 'succeeded' && result.task_verified)
       assert(boundedText(result.output, MAX_OUTPUT_BYTES), 'verified_empty_output');
@@ -3984,10 +4021,10 @@ class RCCRuntime {
           (reference.quota_pool === cheap.quota_pool ? ';same_pool' : ';other_pool') :
         (outcome === 'fail' ? 'ladder_escalated_after_verifier_failure' : 'ladder_escalated_after_undeliverable_result') +
           ';route_reference';
-      target.routing_decision = routingDecision(target.routing_decision.route_class, reference,
+      target.routing_decision = withInstructionLock(target, routingDecision(target.routing_decision.route_class, reference,
         why + ';effort_' + reference.effort + ';' +
         (reference.surface.endsWith('-chat') ? 'chat_lane_same_route' : 'agent_surface'), target.ladder,
-        tier ? tierOf(state.catalog, reference.model) ?? 'frontier' : undefined);
+        tier ? tierOf(state.catalog, reference.model) ?? 'frontier' : undefined));
     });
   }
 
@@ -4072,8 +4109,9 @@ class RCCRuntime {
             child.finished_at_ms = Date.now();
             child.attempt_history.at(-1).state = child.state;
             child.attempt_history.at(-1).native_receipt = result.native_receipt;
-            // The adapter returned: the attempt settled (settledReadOnly).
-            child.attempt_history.at(-1).settled_side_effects = result.side_effects;
+            // Settled only when the adapter attests the turn ended
+            // (settledReadOnly): a cancelled Codex Desktop turn may still run.
+            recordTurnSettlement(child.attempt_history.at(-1), result);
             child.usage = result.usage ?? null;
             child.attempt_history.at(-1).usage = result.usage ?? null;
             snapshot.state = safe ? 'cancelled' : 'effects_uncertain';
@@ -4200,10 +4238,10 @@ class RCCRuntime {
           // (dispatched_failure) because the run's tokens were spent.
           if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none')
             child.attempt_history.at(-1).dispatched_failure = 'no_effects';
-          // The adapter returned a record: the attempt settled. A read-only
-          // one with no side effects then holds no quota-pool lease
-          // (settledReadOnly); it is still never replayed.
-          child.attempt_history.at(-1).settled_side_effects = result.side_effects;
+          // A record whose adapter attests the native turn ended settled the
+          // attempt: a read-only one with no side effects then holds no
+          // quota-pool lease (settledReadOnly); it is still never replayed.
+          recordTurnSettlement(child.attempt_history.at(-1), result);
           child.attempt_history.at(-1).native_receipt = result.native_receipt;
           child.usage = result.usage ?? null;
           child.attempt_history.at(-1).usage = result.usage ?? null;

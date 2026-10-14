@@ -19,17 +19,20 @@ import Foundation
 /// failed with a limit class; every turn item is the owner's input (no agent
 /// message, reasoning, plan, tool call, file change or compaction); the turn
 /// carries its full item list; and the stream showed no work of its own
-/// (`WorkEvidence`). `os1 rcc-execute` adds the read-only scope and the
-/// workspace evidence (`RCCNativeAttemptOutcome.failure`).
+/// (`WorkEvidence`): every turn error it streamed was itself a limit
+/// rejection (an earlier mid-turn disconnect means a request was accepted),
+/// and no token count grew past the thread's usage before the turn.
+/// `os1 rcc-execute` adds the read-only scope and the workspace evidence
+/// (`RCCNativeAttemptOutcome.failure`).
 public enum CodexTurnRejection {
     /// Turn items that are the request itself, not work done for it.
     public static let inputItemTypes: Set<String> = ["userMessage", "hookPrompt"]
-    /// Turn-scoped notifications that are not work: lifecycle, the retry
-    /// notices Codex sends while it retries a refused request, hooks the
-    /// owner configured, and diagnostics. Every other turn-scoped message
-    /// (deltas, items other than the input, plans, diffs, token usage with
-    /// tokens, compaction, any server request) is work.
-    static let quietMethods: Set<String> = ["turn/started", "turn/completed", "error", "warning",
+    /// Turn-scoped notifications that are not work: lifecycle, hooks the
+    /// owner configured, and diagnostics. A turn `error` is quiet only when
+    /// it is itself a limit rejection (`WorkEvidence`). Every other
+    /// turn-scoped message (deltas, items other than the input, plans, diffs,
+    /// token usage that grew, compaction, any server request) is work.
+    static let quietMethods: Set<String> = ["turn/started", "turn/completed", "warning",
         "hook/started", "hook/completed", "model/verification", "deprecationNotice", "configWarning"]
     /// Request-level failures whose HTTP status 429 is a limit rejection.
     static let requestFailures: [String: String] = [
@@ -80,7 +83,11 @@ public enum CodexTurnRejection {
     /// thread- or account-level notifications, are not about this turn.
     public struct WorkEvidence: Equatable, Sendable {
         public private(set) var observed = false
-        public init() {}
+        /// The thread's total token count before this turn started (a
+        /// resumed thread's last persisted usage, `rolloutTotalTokens`, or
+        /// the last update seen on the same connection); nil when unknown.
+        public let baselineTotalTokens: Int?
+        public init(baselineTotalTokens: Int? = nil) { self.baselineTotalTokens = baselineTotalTokens }
         public mutating func observe(_ message: [String: Any], threadID: String, turnID: String) {
             guard let params = message["params"] as? [String: Any], params["turnId"] as? String == turnID else { return }
             if let thread = params["threadId"] as? String, thread != threadID { return }
@@ -93,10 +100,25 @@ public enum CodexTurnRejection {
             case "item/started", "item/completed":
                 let type = (params["item"] as? [String: Any])?["type"] as? String ?? ""
                 if !CodexTurnRejection.inputItemTypes.contains(type) { observed = true }
+            case "error":
+                // A retry notice for a request refused with a limit (HTTP
+                // 429, a usage limit) before any stream opened is not work.
+                // Any other turn error is: a response stream that
+                // disconnected mid-turn means a request was accepted and may
+                // already have been processed and billed.
+                if CodexTurnRejection.limitClass(error: params["error"] as? [String: Any] ?? [:]) == nil { observed = true }
             case "thread/tokenUsage/updated":
-                // Tokens counted for this turn are a model call that ran;
-                // an unreadable count is treated as one.
-                let last = (params["tokenUsage"] as? [String: Any])?["last"] as? [String: Any]
+                // A usage-limit refusal on a resumed thread replays the
+                // thread's previous usage with no model call (2026-08-20 and
+                // 2026-09-07 rollouts: one token_count whose total and last
+                // equal the previous turn's): a total that did not grow past
+                // the baseline is no work.
+                let usage = params["tokenUsage"] as? [String: Any]
+                if let baselineTotalTokens, let total = (usage?["total"] as? [String: Any])?["totalTokens"] as? Int,
+                   total == baselineTotalTokens { return }
+                // Otherwise tokens counted for this turn are a model call
+                // that ran; an unreadable count is treated as one.
+                let last = usage?["last"] as? [String: Any]
                 if (last?["totalTokens"] as? Int).map({ $0 > 0 }) ?? true { observed = true }
             default: observed = true
             }
@@ -112,6 +134,31 @@ public enum CodexTurnRejection {
               (turn["itemsView"] as? String).map({ $0 == "full" }) ?? true,
               let items = turn["items"] as? [[String: Any]] else { return false }
         return items.allSatisfy { inputItemTypes.contains($0["type"] as? String ?? "") }
+    }
+
+    /// A resumed thread's total token count before its next turn: the last
+    /// `token_count` event of its rollout (`info.total_token_usage
+    /// .total_tokens`, the counter the app-server reports as
+    /// `tokenUsage.total.totalTokens`). Reads at most the file's final
+    /// `tailBytes`; nil when the file is unreadable or no such event is
+    /// there (the evidence then counts any nonzero usage as work).
+    public static func rolloutTotalTokens(path: String, tailBytes: Int = 4_000_000) -> Int? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return nil }
+        let start = end > UInt64(tailBytes) ? end - UInt64(tailBytes) : 0
+        guard (try? handle.seek(toOffset: start)) != nil, let data = try? handle.read(upToCount: tailBytes) else { return nil }
+        let marker = Data("token_count".utf8)
+        for line in data.split(separator: UInt8(ascii: "\n")).reversed() where line.range(of: marker) != nil {
+            guard let event = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+                  event["type"] as? String == "event_msg",
+                  let payload = event["payload"] as? [String: Any], payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let total = (info["total_token_usage"] as? [String: Any])?["total_tokens"] as? Int,
+                  total >= 0 else { continue }
+            return total
+        }
+        return nil
     }
 
     /// A retry hint the provider gave in its own error ("try again in 30

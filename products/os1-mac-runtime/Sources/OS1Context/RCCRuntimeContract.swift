@@ -547,13 +547,21 @@ public enum RCCRuntimeContract {
         public var nativeSummary: String?
         public var handback: Handback?
         public var repairSource: RepairSource?
+        /// The adapter's attestation that the native turn itself ENDED: OS-1
+        /// closed the provider process it owned (the Codex app-server writer,
+        /// the Claude CLI), a Codex Desktop turn reported a terminal status,
+        /// or nothing was dispatched (`RCCNativeAttemptOutcome.turnTerminated`).
+        /// false: the record returned but the turn may still run elsewhere
+        /// (Codex Desktop). Core releases a settled read-only attempt's pool
+        /// lease only on true. Absent on records from older adapters.
+        public var nativeTurnTerminated: Bool?
         public init(schema: Int = 1, taskID: String, nodeID: String, attemptID: String, candidateID: String,
                     configurationSHA256: String, selectedConfig: ExactConfig, acknowledgedConfig: ExactConfig?,
                     observedConfig: ExactConfig?, status: ExecutionStatus, output: String?, executionVerified: Bool,
                     taskVerified: Bool, taskQuality: TaskQuality, parityState: Parity, nativeReceipt: String?,
                     sideEffects: SideEffects, usage: Usage?, error: String? = nil,
                     dispatchStage: DispatchStage = .unknown, nativeSummary: String? = nil, handback: Handback? = nil,
-                    repairSource: RepairSource? = nil) {
+                    repairSource: RepairSource? = nil, nativeTurnTerminated: Bool? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.configurationSHA256 = configurationSHA256; self.selectedConfig = selectedConfig
             self.acknowledgedConfig = acknowledgedConfig; self.observedConfig = observedConfig; self.status = status
@@ -564,10 +572,11 @@ public enum RCCRuntimeContract {
             self.nativeSummary = nativeSummary
             self.handback = handback
             self.repairSource = repairSource
+            self.nativeTurnTerminated = nativeTurnTerminated
         }
         enum CodingKeys: String, CodingKey {
             case schema, status, output, usage, error, handback
-            case repairSource = "repair_source"
+            case repairSource = "repair_source", nativeTurnTerminated = "native_turn_terminated"
             case taskID = "task_id", nodeID = "node_id", attemptID = "attempt_id", candidateID = "candidate_id"
             case configurationSHA256 = "configuration_sha256", selectedConfig = "selected_config"
             case acknowledgedConfig = "acknowledged_config", observedConfig = "observed_config"
@@ -1164,7 +1173,7 @@ public enum RCCRuntimeContract {
     private static let continuationShape = Shape.object(["kind", "parent_attempt_id", "parent_native_receipt", "parent_native_receipt_sha256", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256"])
     private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape])
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
-    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
+    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
     private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
     private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])
