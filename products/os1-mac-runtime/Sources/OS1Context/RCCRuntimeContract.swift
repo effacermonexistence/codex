@@ -282,14 +282,19 @@ public enum RCCRuntimeContract {
         public var exclusions: [Exclusion]?
         /// Optional (2026-10-13): present only with an explicit owner constraint.
         public var routingIntent: RoutingIntentConstraint?
+        /// Optional (build 378): the provider-stated tier (`ModelTiers`) of each
+        /// tiered model in `candidates`, keyed by exact model name. Absent in
+        /// older catalogs, where the core keeps its former reference routing.
+        public var modelTiers: [String: String]?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
-                    exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil) {
+                    exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil,
+                    modelTiers: [String: String]? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
-            self.exclusions = exclusions; self.routingIntent = routingIntent
+            self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
         }
         enum CodingKeys: String, CodingKey {
             case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256"
-            case routingIntent = "routing_intent"
+            case routingIntent = "routing_intent", modelTiers = "model_tiers"
         }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
@@ -566,17 +571,26 @@ public enum RCCRuntimeContract {
     /// A nil route class means a row bound by the trusted adapter, not graded.
     public struct RoutingDecision: Codable, Equatable, Sendable {
         public static let routeClasses: Set<String> = ["trivial", "standard", "deep"]
-        /// A cheaper effort of the same model admitted by the REVAS ladder
-        /// gate (registered verifier plus ledger parity). Optional, present
-        /// only on a ladder route; the decision effort is the cheap effort, or
-        /// the reference effort after a verifier failure re-dispatched it.
+        /// A route below the pool reference with its one REVAS escalation.
+        /// Optional, present only on such a route. Without models (the REVAS
+        /// effort ladder of 2026-10-13) it is a cheaper effort of the SAME
+        /// model. With models (build 378 tier routing) the cheap tuple is a
+        /// lower-tier model/effort and the reference is a frontier model at
+        /// its reference effort, possibly in the other pool. The decision runs
+        /// the cheap tuple, or the reference after a failure signal.
         public struct Ladder: Codable, Equatable, Sendable {
             public var cheapEffort: Effort
             public var referenceEffort: Effort
-            public init(cheapEffort: Effort, referenceEffort: Effort) {
+            public var cheapModel: String?
+            public var referenceModel: String?
+            public init(cheapEffort: Effort, referenceEffort: Effort, cheapModel: String? = nil, referenceModel: String? = nil) {
                 self.cheapEffort = cheapEffort; self.referenceEffort = referenceEffort
+                self.cheapModel = cheapModel; self.referenceModel = referenceModel
             }
-            enum CodingKeys: String, CodingKey { case cheapEffort = "cheap_effort", referenceEffort = "reference_effort" }
+            enum CodingKeys: String, CodingKey {
+                case cheapEffort = "cheap_effort", referenceEffort = "reference_effort"
+                case cheapModel = "cheap_model", referenceModel = "reference_model"
+            }
         }
         public var routeClass: String?
         public var resolvedCandidateID: String
@@ -587,14 +601,19 @@ public enum RCCRuntimeContract {
         public var reason: String
         public var quotaRemainingFraction: Double?
         public var ladder: Ladder?
+        /// Optional (build 378): the bound model's provider-stated tier
+        /// (`ModelTier`) on a tier-routed catalog; nil for a model with no
+        /// tier and absent in older decisions.
+        public var tier: String?
         public init(routeClass: String?, resolvedCandidateID: String, surface: Surface, model: String, effort: Effort,
-                    quotaPool: QuotaPool, reason: String, quotaRemainingFraction: Double?, ladder: Ladder? = nil) {
+                    quotaPool: QuotaPool, reason: String, quotaRemainingFraction: Double?, ladder: Ladder? = nil,
+                    tier: String? = nil) {
             self.routeClass = routeClass; self.resolvedCandidateID = resolvedCandidateID; self.surface = surface
             self.model = model; self.effort = effort; self.quotaPool = quotaPool; self.reason = reason
-            self.quotaRemainingFraction = quotaRemainingFraction; self.ladder = ladder
+            self.quotaRemainingFraction = quotaRemainingFraction; self.ladder = ladder; self.tier = tier
         }
         enum CodingKeys: String, CodingKey {
-            case surface, model, effort, reason, ladder
+            case surface, model, effort, reason, ladder, tier
             case routeClass = "route_class", resolvedCandidateID = "resolved_candidate_id"
             case quotaPool = "quota_pool", quotaRemainingFraction = "quota_remaining_fraction"
         }
@@ -809,6 +828,12 @@ public enum RCCRuntimeContract {
                   intent.modelFamily.map({ $0.range(of: "^[a-z][a-z0-9]{1,31}$", options: .regularExpression) != nil }) ?? true
             else { throw Rejection.invalidObservation }
         }
+        if let tiers = value.modelTiers {
+            // Only provider-stated tiers of models this catalog actually offers.
+            let models = Set(value.candidates.map(\.model))
+            guard tiers.count <= 256, tiers.allSatisfy({ text($0.key, max: 256) && models.contains($0.key) &&
+                ModelTier(rawValue: $0.value) != nil }) else { throw Rejection.invalidObservation }
+        }
         // An empty catalog must say why; otherwise it is a malformed binding.
         guard !value.candidates.isEmpty || value.exclusions != nil else { throw Rejection.invalidIdentity }
         for candidate in value.candidates { try validate(candidate) }
@@ -1007,6 +1032,7 @@ public enum RCCRuntimeContract {
                 // The receipt names the exact row this child is bound to.
                 guard id(decision.resolvedCandidateID), decision.resolvedCandidateID == child.candidateID,
                       decision.routeClass.map({ RoutingDecision.routeClasses.contains($0) }) ?? true,
+                      decision.tier.map({ ModelTier(rawValue: $0) != nil }) ?? true,
                       text(decision.model, max: 256), text(decision.reason, max: 1_024),
                       decision.quotaRemainingFraction.map({ $0.isFinite && $0 >= 0 && $0 <= 1 }) ?? true,
                       child.selectedConfig.map({ $0.surface == decision.surface && $0.model == decision.model &&
@@ -1014,13 +1040,27 @@ public enum RCCRuntimeContract {
                 else { throw Rejection.invalidSnapshot }
                 if let ladder = decision.ladder {
                     // Only a graded node is laddered, below its reference, and
-                    // it runs either the cheap effort or, once, the reference.
+                    // it runs either the cheap route or, once, the reference.
                     let order = RCCNativeCatalogBuilder.effortOrder
                     guard decision.routeClass != nil,
                           let cheap = order.firstIndex(of: ladder.cheapEffort.rawValue),
-                          let reference = order.firstIndex(of: ladder.referenceEffort.rawValue), cheap < reference,
-                          decision.effort == ladder.cheapEffort || decision.effort == ladder.referenceEffort
-                    else { throw Rejection.invalidSnapshot }
+                          let reference = order.firstIndex(of: ladder.referenceEffort.rawValue) else { throw Rejection.invalidSnapshot }
+                    switch (ladder.cheapModel, ladder.referenceModel) {
+                    case (nil, nil):
+                        // The effort ladder: one model, a strictly cheaper effort.
+                        guard cheap < reference,
+                              decision.effort == ladder.cheapEffort || decision.effort == ladder.referenceEffort
+                        else { throw Rejection.invalidSnapshot }
+                    case let (cheapModel?, referenceModel?):
+                        // A tier route: two distinct model/effort tuples, and
+                        // the decision runs exactly one of them.
+                        guard text(cheapModel, max: 256), text(referenceModel, max: 256),
+                              cheapModel != referenceModel || cheap < reference,
+                              (decision.model == cheapModel && decision.effort == ladder.cheapEffort) ||
+                                (decision.model == referenceModel && decision.effort == ladder.referenceEffort)
+                        else { throw Rejection.invalidSnapshot }
+                    default: throw Rejection.invalidSnapshot
+                    }
                 }
             }
             guard child.instruction.map({ text($0) }) ?? true, child.dependencies.map({ unique($0, max: maximumNodes) }) ?? true,
@@ -1092,7 +1132,7 @@ public enum RCCRuntimeContract {
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])
@@ -1103,8 +1143,8 @@ public enum RCCRuntimeContract {
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
     private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
-    private static let ladderShape = Shape.object(["cheap_effort", "reference_effort"])
-    private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder"], ["ladder": ladderShape])
+    private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
+    private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])
     private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision"], ["selected_config": configShape, "routing_decision": routingDecisionShape])
     private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])

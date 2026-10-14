@@ -307,8 +307,13 @@ test('graded planner input carries no candidate ID and fits Codex+Claude write s
   assert.deepEqual(payload.availability, {scopes: ['read_only', 'workspace_write'], chat_lane: true,
     providers: ['claude', 'codex'], deterministic: false});
   assert.equal(input.responseFormat.properties.nodes.items.oneOf.length, 2);
-  assert.ok(input.instructions.includes('trivial = lookup'));
-  assert.ok(input.instructions.includes('deep = hard multi-step'));
+  // Build 378: route_class picks the reasoning tier, with these meanings.
+  assert.ok(input.instructions.includes('trivial = a short factual answer, lookup, formatting or one step'));
+  assert.ok(input.instructions.includes('standard = normal coding, analysis or multi-step but routine work'));
+  assert.ok(input.instructions.includes('deep = hard design, debugging a non-obvious failure, a proof, ' +
+    'long-horizon work, or anything the owner flags as important or hard'));
+  assert.ok(input.instructions.includes('route_class picks the reasoning tier'));
+  assert.equal(input.instructions.includes('a lower grade never lowers that quality'), false);
 });
 
 test('availability summary hides dropped GPT and rows that cannot run now', () => {

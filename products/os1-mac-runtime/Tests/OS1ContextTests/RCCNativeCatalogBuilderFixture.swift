@@ -67,8 +67,9 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let base = try B.build(input())
     try check(tuples(base) == [
         // Anthropic first: 0.8 remaining with 4h to reset outscores Codex's 0.6 over 48h.
-        // max is offered by default (2026-10-13): it is the reference effort.
-        "claude-chat/sonnet/medium/read_only", "claude/sonnet/medium/read_only", "claude/sonnet/medium/workspace_write",
+        // max is offered by default: it is the reference effort. Within a pool
+        // the strongest provider-stated tier leads (build 378): frontier fable,
+        // then workhorse opus, then efficient sonnet, whatever the native order.
         "claude-chat/fable/low/read_only", "claude-chat/fable/xhigh/read_only", "claude-chat/fable/max/read_only",
         "claude/fable/low/read_only", "claude/fable/low/workspace_write",
         "claude/fable/xhigh/read_only", "claude/fable/xhigh/workspace_write",
@@ -76,7 +77,9 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         "claude-chat/claude-opus-5-5/xhigh/read_only", "claude-chat/claude-opus-5-5/max/read_only",
         "claude/claude-opus-5-5/xhigh/read_only", "claude/claude-opus-5-5/xhigh/workspace_write",
         "claude/claude-opus-5-5/max/read_only", "claude/claude-opus-5-5/max/workspace_write",
-        // Codex by native priority (gpt-6-sol before gpt-5.6-luna), not by action name.
+        "claude-chat/sonnet/medium/read_only", "claude/sonnet/medium/read_only", "claude/sonnet/medium/workspace_write",
+        // Codex models here have no tier (older generations): native priority
+        // (gpt-6-sol before gpt-5.6-luna), not action name, orders them.
         "codex/gpt-6-sol/low/read_only", "codex/gpt-6-sol/low/workspace_write",
         "codex/gpt-6-sol/medium/read_only", "codex/gpt-6-sol/medium/workspace_write",
         "codex/gpt-5.6-luna/low/read_only", "codex/gpt-5.6-luna/low/workspace_write",
@@ -85,8 +88,9 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(base.pools.map(\.pool) == ["anthropic_shared", "openai_codex"] &&
               base.pools[0].score.map { abs($0 - 0.2) < 1e-9 } == true &&
               base.pools[1].score.map { abs($0 - 0.0125) < 1e-9 } == true, "pool score = share x remaining / hours")
-    try check(reasons(base) == ["claude:model_unavailable:1", "codex:effort_requires_explicit_request:1"],
-              "per-provider exclusions; only ultra waits for an explicit request: \(reasons(base))")
+    try check(reasons(base) == ["claude:model_unavailable:1", "codex:effort_requires_explicit_request:1",
+                                "codex:reference_unavailable:1"],
+              "per-provider exclusions; only ultra waits for an explicit request; a pool with no frontier model says so: \(reasons(base))")
     let legacy = legacyRows(input(), chatRefused: false)
     let legacyComparable = try Set(legacy.filter { $0["surface"] as? String != "gpt-chat" &&
         !["ultra", "ultracode"].contains($0["effort"] as? String ?? "") }.map(rowBytes))
@@ -98,10 +102,41 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(try tuples(B.build(input())) == tuples(base), "same inputs, same order")
     let data = try B.catalogData(base, taskID: "task-fixture", requestSHA256: C.digest(Data(writeRequest.utf8)))
     let decoded = try C.decodeCatalog(data)
-    try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 2,
+    try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 3,
               "builder bytes decode through the strict contract with exclusions")
+    // Build 378: the provider-stated tier of every tiered model offered; a
+    // model with no tier (gpt-6-sol, gpt-5.6-luna here) is left out.
+    try check(decoded.modelTiers == ["fable": "frontier", "claude-opus-5-5": "workhorse", "sonnet": "efficient"] &&
+              base.modelTiers == decoded.modelTiers, "model_tiers names the tier of each tiered model offered")
     try check(decoded.routingIntent == nil && !String(decoding: data, as: UTF8.self).contains("routing_intent"),
               "a catalog without an explicit owner constraint carries no routing_intent")
+
+    // ---- Provider-stated model tiers (build 378) ----------------------------
+    let observedTiers: [(String, ModelTier)] = [("gpt-6-astra", .frontier), ("gpt-6.1-sol", .workhorse),
+        ("gpt-6-luna", .fast), ("claude-fable-5-1", .frontier), ("fable", .frontier), ("opus", .workhorse),
+        ("claude-opus-5-5", .workhorse), ("sonnet", .efficient), ("claude-sonnet-5-5", .efficient), ("haiku", .fast)]
+    try check(observedTiers.allSatisfy { ModelTiers.tier(of: $0.0) == $0.1 } && ModelTiers.table.count == observedTiers.count,
+              "every observed alias and resolved ID has its provider-stated tier, and nothing else is listed")
+    try check(["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+               "gpt-daybreak-blue-latest", "gpt-6-astra-mini", "claude-opus-5", "fable-6", "", "[1m]"]
+                .allSatisfy { ModelTiers.tier(of: $0) == nil } &&
+              ModelTiers.tier(of: "claude-fable-5-1[1m]") == .frontier && ModelTiers.rank("fable") == 0 &&
+              ModelTiers.rank("gpt-6.1-sol") == 1 && ModelTiers.rank("sonnet") == 2 && ModelTiers.rank("gpt-6-luna") == 3 &&
+              ModelTiers.rank("gpt-6-sol") == 4,
+              "older, specialized and unknown models have no tier; a native context suffix keeps its model's tier")
+    var withoutTiers = decoded; withoutTiers.modelTiers = nil
+    try check(!String(decoding: try C.encode(withoutTiers), as: UTF8.self).contains("model_tiers") &&
+              (try C.decodeCatalog(C.encode(withoutTiers))) == withoutTiers && (try C.decodeCatalog(C.encode(decoded))) == decoded,
+              "model_tiers is optional: an older catalog decodes unchanged and a tiered one roundtrips")
+    for bad in [["fable": "flagship"], ["gpt-9": "fast"], ["": "fast"], ["fable": "Frontier"]] {
+        var invalid = decoded; invalid.modelTiers = bad
+        do { _ = try C.decodeCatalog(C.encode(invalid)); try check(false, "invalid model_tiers accepted: \(bad)") }
+        catch { checks += 1 }
+    }
+    var numericTier = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    numericTier["model_tiers"] = ["fable": 1]
+    do { _ = try C.decodeCatalog(JSONSerialization.data(withJSONObject: numericTier)); try check(false, "numeric tier accepted") }
+    catch { checks += 1 }
 
     // ---- Quota freshness never produces a contract-invalid catalog --------
     // Build 376 regression: the host captured `now` before probing, so a quota
@@ -140,9 +175,9 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     aliases.claudeModels = [.init(model: "sonnet", supportedEfforts: ["medium"], nativeRank: 0),
         .init(model: "fable", supportedEfforts: ["low", "xhigh"], nativeRank: 1),
         .init(model: "claude-sonnet-5-5", supportedEfforts: ["low", "xhigh"], nativeRank: 0)]
-    try check(tuples(try B.build(aliases)) == ["claude/claude-sonnet-5-5/low/read_only", "claude/claude-sonnet-5-5/xhigh/read_only",
-        "claude/sonnet/medium/read_only", "claude/fable/low/read_only", "claude/fable/xhigh/read_only"],
-              "names of one native row share its rank: \(tuples(try B.build(aliases)))")
+    try check(tuples(try B.build(aliases)) == ["claude/fable/low/read_only", "claude/fable/xhigh/read_only",
+        "claude/claude-sonnet-5-5/low/read_only", "claude/claude-sonnet-5-5/xhigh/read_only", "claude/sonnet/medium/read_only"],
+              "frontier first; names of one native row share its rank: \(tuples(try B.build(aliases)))")
     aliases.claudeModels = aliases.claudeModels.map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts) }
     try check(tuples(try B.build(aliases)).last == "claude/claude-sonnet-5-5/xhigh/read_only",
               "without an observed native row the list position is the rank")
@@ -173,14 +208,14 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let resetOut = try B.build(unknownReset)
     try check(resetOut.pools.first { $0.pool == "openai_codex" }?.resetUnknown == true &&
               resetOut.pools.first { $0.pool == "openai_codex" }?.hoursToReset == 168, "unknown reset uses 168h and is recorded")
-    // A model-scoped window: the pool is scored by the model the resolver
-    // binds first (sonnet, first in Claude's inventory), not by the model with
-    // the most quota left (fable).
+    // A model-scoped window: the pool is scored by its first model in
+    // catalog order, its frontier reference (fable), not by the model with
+    // the most quota left (sonnet, first in Claude's own inventory).
     var scopedWindow = input()
     scopedWindow.codexQuota = quota("acct-codex", used: 40, resetIn: 100)
     scopedWindow.claudeQuota = .init(accountID: "acct-claude", observedAt: now.addingTimeInterval(-5), source: .claudeNative,
         windows: [.init(bucket: "weekly", usedPercent: 15, resetsAt: now.addingTimeInterval(100 * 3600)),
-                  .init(bucket: "weekly_model", usedPercent: 97, resetsAt: now.addingTimeInterval(100 * 3600), model: "sonnet")])
+                  .init(bucket: "weekly_model", usedPercent: 97, resetsAt: now.addingTimeInterval(100 * 3600), model: "fable")])
     let scopedOut = try B.build(scopedWindow)
     try check(scopedOut.pools.map(\.pool) == ["openai_codex", "anthropic_shared"] &&
               scopedOut.pools[1].remainingFraction.map { abs($0 - 0.03) < 1e-9 } == true,
@@ -193,120 +228,151 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(!exhaustedOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
               reasons(exhaustedOut).contains("codex:quota_zero:4"), "a zero-remaining pool is excluded and counted")
 
-    // ---- One reference model per pool ------------------------------------
-    // A pool's reference is its top native model among the profiles this
-    // request may use, decided before quota, cooldowns and an effort word.
-    // When that model cannot run now, the pool is unusable: its next model
-    // never stands in as the reference the JS resolver binds (a pool's first
-    // model in catalog order). Each case runs the real JS resolver on the
-    // builder's exact catalog bytes.
+    // ---- Tier reference per pool (build 378) ------------------------------
+    // A pool's REFERENCE is its frontier-tier model at the highest effort up
+    // to max, never the first model of the native list (Codex lists the
+    // gpt-6.1-sol workhorse first, Claude its opus default). Lower tiers stay
+    // for trivial and standard work; a pool whose frontier model cannot run
+    // now keeps them, records reference_unavailable and serves no deep work.
+    // Each case runs the real JS resolver on the builder's exact catalog
+    // bytes: "pool/model/effort/route_kind[>escalation reference model]".
     func referenceInput(_ request: String = "Explain the login function", preference: String = "auto") -> B.Input {
         var value = input(request, preference: preference, chat: false, readOnly: true)
-        value.profiles = [.init(action: "r_opus_max", provider: "claude", model: "claude-opus-5-5", effort: "max"),
-            .init(action: "s_sonnet_max", provider: "claude", model: "claude-sonnet-5-5", effort: "max"),
-            .init(action: "s_sonnet_medium", provider: "claude", model: "claude-sonnet-5-5", effort: "medium"),
-            .init(action: "x_sol_medium", provider: "codex", model: "gpt-6-sol", effort: "medium"),
-            .init(action: "x_sol_max", provider: "codex", model: "gpt-6-sol", effort: "max")]
-        value.claudeModels = [.init(model: "claude-opus-5-5", supportedEfforts: ["max"], nativeRank: 0),
-            .init(model: "claude-sonnet-5-5", supportedEfforts: ["medium", "max"], nativeRank: 1)]
-        value.codexModels = [.init(slug: "gpt-6-sol", supportedEfforts: ["medium", "max"], priority: 0)]
-        value.claudeQuota = claudeWindows(opusUsed: nil)
+        value.profiles = [
+            .init(action: "r_fable_low", provider: "claude", model: "claude-fable-5-1", effort: "low"),
+            .init(action: "r_fable_xhigh", provider: "claude", model: "claude-fable-5-1", effort: "xhigh"),
+            .init(action: "r_fable_max", provider: "claude", model: "claude-fable-5-1", effort: "max"),
+            .init(action: "s_opus_low", provider: "claude", model: "claude-opus-5-5", effort: "low"),
+            .init(action: "s_opus_max", provider: "claude", model: "claude-opus-5-5", effort: "max"),
+            .init(action: "t_sonnet_low", provider: "claude", model: "claude-sonnet-5-5", effort: "low"),
+            .init(action: "t_sonnet_alias_medium", provider: "claude", model: "sonnet", effort: "medium"),
+            .init(action: "x_astra_medium", provider: "codex", model: "gpt-6-astra", effort: "medium"),
+            .init(action: "x_astra_max", provider: "codex", model: "gpt-6-astra", effort: "max"),
+            .init(action: "y_sol_medium", provider: "codex", model: "gpt-6.1-sol", effort: "medium"),
+            .init(action: "y_sol_max", provider: "codex", model: "gpt-6.1-sol", effort: "max"),
+            .init(action: "z_luna_low", provider: "codex", model: "gpt-6-luna", effort: "low"),
+            .init(action: "z_previous_sol_max", provider: "codex", model: "gpt-6-sol", effort: "max")]
+        // Native order lists the defaults first: opus, then sonnet, then fable.
+        value.claudeModels = [.init(model: "claude-opus-5-5", supportedEfforts: ["low", "xhigh", "max"], nativeRank: 0),
+            .init(model: "claude-sonnet-5-5", supportedEfforts: ["low", "xhigh", "max"], nativeRank: 1),
+            .init(model: "sonnet", supportedEfforts: ["medium"], nativeRank: 1),
+            .init(model: "claude-fable-5-1", supportedEfforts: ["low", "xhigh", "max"], nativeRank: 2)]
+        value.codexModels = [.init(slug: "gpt-6.1-sol", supportedEfforts: ["low", "medium", "max"], priority: 0),
+            .init(slug: "gpt-6-astra", supportedEfforts: ["medium", "max"], priority: 1),
+            .init(slug: "gpt-6-luna", supportedEfforts: ["low", "max"], priority: 2),
+            .init(slug: "gpt-6-sol", supportedEfforts: ["max"], priority: 3)]
+        value.claudeQuota = claudeWindows(fableUsed: nil)
         value.codexQuota = quota("acct-codex", used: 40, resetIn: 48)
         return value
     }
-    func claudeWindows(opusUsed: Double?) -> BackendHealth.QuotaSnapshot {
+    func claudeWindows(fableUsed: Double?) -> BackendHealth.QuotaSnapshot {
         .init(accountID: "acct-claude", observedAt: now.addingTimeInterval(-5), source: .claudeNative,
               windows: [.init(bucket: "weekly", usedPercent: 15, resetsAt: now.addingTimeInterval(4 * 3600))] +
-                (opusUsed.map { [.init(bucket: "weekly_model", usedPercent: $0, resetsAt: now.addingTimeInterval(4 * 3600),
-                                       model: "claude-opus-5-5")] } ?? []))
+                (fableUsed.map { [.init(bucket: "weekly_model", usedPercent: $0, resetsAt: now.addingTimeInterval(4 * 3600),
+                                       model: "claude-fable-5-1")] } ?? []))
     }
-    func route(_ output: B.Output) throws -> String {
-        try javascriptRoute(B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))), now: now)
+    func route(_ output: B.Output, _ routeClass: String = "standard") throws -> String {
+        try javascriptRoute(B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))),
+                            routeClass: routeClass, now: now)
     }
+    func routes(_ output: B.Output) throws -> [String] { try ["trivial", "standard", "deep"].map { try route(output, $0) } }
     let referenceBase = try B.build(referenceInput())
-    try check(tuples(referenceBase).first == "claude/claude-opus-5-5/max/read_only" && referenceBase.exclusions.isEmpty &&
-              (try route(referenceBase)) == "anthropic_shared/claude-opus-5-5/max/route_reference",
-              "the top model at max is the reference: \(tuples(referenceBase)) \((try? route(referenceBase)) ?? "")")
-    var nearlyInput = referenceInput(); nearlyInput.claudeQuota = claudeWindows(opusUsed: 97)
+    try check(tuples(referenceBase).first == "claude/claude-fable-5-1/low/read_only" && referenceBase.exclusions.isEmpty &&
+              tuples(referenceBase).first(where: { $0.hasPrefix("codex") }) == "codex/gpt-6-astra/medium/read_only" &&
+              referenceBase.modelTiers == ["claude-fable-5-1": "frontier", "claude-opus-5-5": "workhorse",
+                  "claude-sonnet-5-5": "efficient", "sonnet": "efficient", "gpt-6-astra": "frontier",
+                  "gpt-6.1-sol": "workhorse", "gpt-6-luna": "fast"],
+              "the frontier model leads each pool and the previous-generation sol has no tier: \(tuples(referenceBase))")
+    try check(try routes(referenceBase) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>claude-fable-5-1",
+        "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
+              "trivial and standard take the cheapest tier, deep the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
+    var nearlyInput = referenceInput(); nearlyInput.claudeQuota = claudeWindows(fableUsed: 97)
     let nearly = try B.build(nearlyInput)
-    try check(tuples(nearly).first == "codex/gpt-6-sol/medium/read_only" &&
-              (try route(nearly)) == "openai_codex/gpt-6-sol/max/route_reference",
-              "a nearly exhausted top model ranks its pool by that model: \(tuples(nearly))")
-    var zeroInput = referenceInput(); zeroInput.claudeQuota = claudeWindows(opusUsed: 100)
-    let opusZero = try B.build(zeroInput)
-    try check(!opusZero.candidates.contains { $0["quota_pool"] as? String == "anthropic_shared" } &&
-              reasons(opusZero) == ["claude:quota_zero:1", "claude:reference_unavailable:2"] &&
-              (try route(opusZero)) == "openai_codex/gpt-6-sol/max/route_reference",
-              "a quota_zero top model makes its pool unusable; sonnet never stands in: \(tuples(opusZero)) \(reasons(opusZero))")
-    var cooledInput = referenceInput(); cooledInput.claudeQuotaBackoffFamilies = ["opus"]
+    try check(tuples(nearly).first == "codex/gpt-6-astra/medium/read_only" &&
+              (try routes(nearly)) == ["openai_codex/gpt-6-luna/low/route_tier>gpt-6-astra",
+                "openai_codex/gpt-6.1-sol/medium/route_tier>gpt-6-astra", "openai_codex/gpt-6-astra/max/route_reference"],
+              "a nearly exhausted frontier model ranks its pool by that model: \(tuples(nearly))")
+    var zeroInput = referenceInput(); zeroInput.claudeQuota = claudeWindows(fableUsed: 100)
+    let fableZero = try B.build(zeroInput)
+    try check(!fableZero.candidates.contains { $0["model"] as? String == "claude-fable-5-1" } &&
+              fableZero.candidates.contains { $0["model"] as? String == "claude-opus-5-5" } &&
+              reasons(fableZero) == ["claude:quota_zero:3", "claude:reference_unavailable:3"] &&
+              (try route(fableZero, "deep")) == "openai_codex/gpt-6-astra/max/route_reference" &&
+              (try route(fableZero, "trivial")) == "anthropic_shared/claude-sonnet-5-5/low/route_tier>gpt-6-astra",
+              "a quota_zero frontier model keeps the lower tiers but no deep work; escalation goes to the other pool: \(reasons(fableZero)) \((try? routes(fableZero)) ?? [])")
+    var cooledInput = referenceInput(); cooledInput.claudeQuotaBackoffFamilies = ["fable"]
     let cooled = try B.build(cooledInput)
-    try check(!cooled.candidates.contains { $0["quota_pool"] as? String == "anthropic_shared" } &&
-              reasons(cooled) == ["claude:quota_backoff:1", "claude:reference_unavailable:2"] &&
-              (try route(cooled)) == "openai_codex/gpt-6-sol/max/route_reference" &&
+    try check(reasons(cooled) == ["claude:quota_backoff:3", "claude:reference_unavailable:3"] &&
+              (try route(cooled, "deep")) == "openai_codex/gpt-6-astra/max/route_reference" &&
               B.providersToProbe(cooledInput) == ["claude", "codex"],
-              "a cooled top family makes its pool unusable: \(tuples(cooled)) \(reasons(cooled))")
-    // Host-shaped input (the live path, review round 4): the general Codex
-    // catalog drops a slug whose own bucket is exhausted (or a spend control
-    // stopped it while the snapshot still shows room). Kept and marked
-    // exhausted, it still defines the reference, so the pool is withheld; the
-    // next Codex model never becomes the reference at max.
+              "a cooled frontier family serves no deep work: \(tuples(cooled)) \(reasons(cooled))")
+    // Host-shaped input: the general Codex catalog drops a slug whose own
+    // bucket is exhausted. Kept and marked exhausted, it still explains the
+    // pool's reference_unavailable; the workhorse never stands in for deep work.
     var hostCodex = referenceInput()
-    hostCodex.profiles += [.init(action: "y_luna_max", provider: "codex", model: "gpt-5.6-luna", effort: "max")]
-    let luna = B.CodexModel(slug: "gpt-5.6-luna", supportedEfforts: ["medium", "max"], priority: 1)
-    let sol = B.CodexModel(slug: "gpt-6-sol", supportedEfforts: ["medium", "max"], priority: 0)
-    let shaped = B.codexInventory(available: [luna], quotaExcluded: [sol])
-    try check(shaped.models == [luna, sol] && shaped.quotaExhausted == ["gpt-6-sol"] &&
-              B.codexInventory(available: [sol, luna], quotaExcluded: [sol]).quotaExhausted.isEmpty,
+    let astra = B.CodexModel(slug: "gpt-6-astra", supportedEfforts: ["medium", "max"], priority: 1)
+    let available = hostCodex.codexModels.filter { $0.slug != "gpt-6-astra" }
+    let shaped = B.codexInventory(available: available, quotaExcluded: [astra])
+    try check(shaped.models == available + [astra] && shaped.quotaExhausted == ["gpt-6-astra"] &&
+              B.codexInventory(available: available + [astra], quotaExcluded: [astra]).quotaExhausted.isEmpty,
               "host Codex inventory keeps a quota-excluded slug, marked exhausted")
     hostCodex.codexModels = shaped.models; hostCodex.codexQuotaExhaustedModels = shaped.quotaExhausted
-    hostCodex.claudeQuota = claudeWindows(opusUsed: 100)
+    hostCodex.claudeQuota = claudeWindows(fableUsed: 100)
     let hostCodexOut = try B.build(hostCodex)
-    try check(hostCodexOut.candidates.isEmpty &&
-              reasons(hostCodexOut) == ["claude:quota_zero:1", "claude:reference_unavailable:2",
-                                        "codex:quota_zero:2", "codex:reference_unavailable:1"],
-              "an exhausted top Codex slug from host-shaped input withholds its pool: \(tuples(hostCodexOut)) \(reasons(hostCodexOut))")
-    var hostCodexOnly = hostCodex; hostCodexOnly.claudeQuota = claudeWindows(opusUsed: nil)
+    try check(reasons(hostCodexOut) == ["claude:quota_zero:3", "claude:reference_unavailable:3",
+                                        "codex:quota_zero:2", "codex:reference_unavailable:2"] &&
+              (try route(hostCodexOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(hostCodexOut, "trivial")) == "anthropic_shared/claude-sonnet-5-5/low/route_tier",
+              "no frontier anywhere: deep work holds, lighter work runs with nothing to escalate to: \(reasons(hostCodexOut)) \((try? routes(hostCodexOut)) ?? [])")
+    var hostCodexOnly = hostCodex; hostCodexOnly.claudeQuota = claudeWindows(fableUsed: nil)
     let hostCodexOnlyOut = try B.build(hostCodexOnly)
-    try check(!hostCodexOnlyOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
-              (try route(hostCodexOnlyOut)) == "anthropic_shared/claude-opus-5-5/max/route_reference",
-              "the other pool's top model runs, never luna as the Codex reference: \(tuples(hostCodexOnlyOut))")
-    // Host-shaped Claude input: the host now passes the configured inventory
-    // (cooled family included), so a cooled top family withholds its pool.
-    var hostClaude = referenceInput(preference: "claude"); hostClaude.claudeQuotaBackoffFamilies = ["opus"]
+    try check(!hostCodexOnlyOut.candidates.contains { $0["model"] as? String == "gpt-6-astra" } &&
+              (try route(hostCodexOnlyOut, "deep")) == "anthropic_shared/claude-fable-5-1/max/route_reference",
+              "the other pool's frontier runs deep work, never gpt-6.1-sol: \(tuples(hostCodexOnlyOut))")
+    // Host-shaped Claude input: the host passes the configured inventory
+    // (cooled family included). Under a Claude preference a cooled frontier
+    // family leaves an explained Claude-only catalog with no deep work.
+    var hostClaude = referenceInput(preference: "claude"); hostClaude.claudeQuotaBackoffFamilies = ["fable"]
     let hostClaudeOut = try B.build(hostClaude)
-    try check(hostClaudeOut.candidates.isEmpty && reasons(hostClaudeOut).contains("claude:reference_unavailable:2"),
-              "host-shaped cooled top Claude family holds: \(reasons(hostClaudeOut))")
-    // The owner named Claude: after the top family is cooled the catalog is an
-    // explained hold, never a lower Claude model (the re-resolution case).
-    var namedCooled = referenceInput(preference: "claude"); namedCooled.claudeQuotaBackoffFamilies = ["opus"]
-    let namedCooledOut = try B.build(namedCooled)
-    let namedCooledData = try B.catalogData(namedCooledOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
-    try check(namedCooledOut.candidates.isEmpty && reasons(namedCooledOut) == ["claude:quota_backoff:1", "claude:reference_unavailable:2"] &&
-              (try C.decodeCatalog(namedCooledData)).exclusions?.map(\.reason) == ["quota_backoff", "reference_unavailable"],
-              "a cooled top model under a Claude preference holds with its reasons: \(reasons(namedCooledOut))")
-    try check(B.build(referenceInput(preference: "claude")).candidates.first?["model"] as? String == "claude-opus-5-5",
-              "before the rejection the Claude preference binds the top model")
-    // An effort-only owner word constrains each pool's reference model; it
-    // never swaps the top model for a lower one that has that effort.
+    let hostClaudeData = try B.catalogData(hostClaudeOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+    try check(reasons(hostClaudeOut) == ["claude:quota_backoff:3", "claude:reference_unavailable:3"] &&
+              (try C.decodeCatalog(hostClaudeData)).exclusions?.map(\.reason) == ["quota_backoff", "reference_unavailable"] &&
+              (try route(hostClaudeOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(hostClaudeOut, "standard")) == "anthropic_shared/sonnet/medium/route_tier",
+              "a cooled frontier family under a Claude preference holds deep work, explained: \(reasons(hostClaudeOut))")
+    try check(B.build(referenceInput(preference: "claude")).candidates.first?["model"] as? String == "claude-fable-5-1",
+              "before the rejection the Claude preference's first row is its frontier reference")
+    // An effort-only owner word replaces the effort; the class still picks
+    // the tier, and deep stays frontier (at the owner's effort).
     let medium = try B.build(referenceInput("use medium reasoning"))
     try check(B.intent(referenceInput("use medium reasoning")) == RoutingIntent(effort: "medium") &&
-              tuples(medium) == ["codex/gpt-6-sol/medium/read_only"] &&
-              reasons(medium) == ["claude:explicit_constraint_unavailable:2", "claude:reference_unavailable:1"] &&
-              (try route(medium)) == "openai_codex/gpt-6-sol/medium/route_explicit",
-              "an effort word the top Claude model lacks makes Claude unusable, not Sonnet: \(tuples(medium)) \(reasons(medium))")
-    var mediumClaude = referenceInput("use medium reasoning", preference: "claude")
-    mediumClaude.claudeQuota = claudeWindows(opusUsed: nil)
-    let mediumClaudeOut = try B.build(mediumClaude)
-    try check(mediumClaudeOut.candidates.isEmpty &&
-              reasons(mediumClaudeOut) == ["claude:explicit_constraint_unavailable:2", "claude:reference_unavailable:1"],
-              "under a Claude preference the unmet effort word holds, explained: \(reasons(mediumClaudeOut))")
-    // An explicit model family moves the reference to that family's top model.
-    var sonnetMedium = referenceInput("소네트로 돌려"); sonnetMedium.profiles.removeAll { $0.provider == "codex" }
-    let sonnetOut = try B.build(sonnetMedium)
-    try check(B.intent(sonnetMedium) == RoutingIntent(modelFamily: "sonnet") &&
-              tuples(sonnetOut) == ["claude/claude-sonnet-5-5/medium/read_only", "claude/claude-sonnet-5-5/max/read_only"] &&
-              (try route(sonnetOut)) == "anthropic_shared/claude-sonnet-5-5/max/route_explicit",
-              "a named family is its own reference: \(tuples(sonnetOut))")
+              tuples(medium) == ["claude/sonnet/medium/read_only", "codex/gpt-6-astra/medium/read_only",
+                                 "codex/gpt-6.1-sol/medium/read_only"] &&
+              reasons(medium) == ["claude:reference_unavailable:3"] &&
+              (try route(medium, "standard")) == "anthropic_shared/sonnet/medium/route_explicit" &&
+              (try route(medium, "deep")) == "openai_codex/gpt-6-astra/medium/route_explicit",
+              "an effort word keeps the class tier at that effort; deep runs a frontier model at it: \(tuples(medium)) \(reasons(medium))")
+    // "최대 리즈닝" (max): every class runs max, on its own tier; deep stays
+    // frontier. The previous-generation gpt-6-sol max row never runs.
+    let koreanMax = try B.build(referenceInput("최대 리즈닝으로 해줘"))
+    try check(B.intent(referenceInput("최대 리즈닝으로 해줘")) == RoutingIntent(effort: "max") &&
+              koreanMax.candidates.allSatisfy { $0["effort"] as? String == "max" } &&
+              (try routes(koreanMax)) == ["anthropic_shared/claude-opus-5-5/max/route_explicit",
+                "anthropic_shared/claude-opus-5-5/max/route_explicit", "anthropic_shared/claude-fable-5-1/max/route_explicit"],
+              "max reasoning keeps each class's tier at max and deep on the frontier: \((try? routes(koreanMax)) ?? [])")
+    let mediumClaudeOut = try B.build(referenceInput("use medium reasoning", preference: "claude"))
+    try check(tuples(mediumClaudeOut) == ["claude/sonnet/medium/read_only"] &&
+              reasons(mediumClaudeOut) == ["claude:reference_unavailable:3"] &&
+              (try route(mediumClaudeOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
+              "under a Claude preference the frontier model lacking the effort holds deep work: \(reasons(mediumClaudeOut))")
+    // An explicit model family is its own route: no reference rule applies.
+    var sonnetFamily = referenceInput("소네트로 돌려"); sonnetFamily.profiles.removeAll { $0.provider == "codex" }
+    let sonnetOut = try B.build(sonnetFamily)
+    try check(B.intent(sonnetFamily) == RoutingIntent(modelFamily: "sonnet") && sonnetOut.exclusions.isEmpty &&
+              tuples(sonnetOut) == ["claude/sonnet/medium/read_only", "claude/claude-sonnet-5-5/low/read_only"] &&
+              (try routes(sonnetOut)) == ["anthropic_shared/claude-sonnet-5-5/low/route_explicit",
+                "anthropic_shared/sonnet/medium/route_explicit", "anthropic_shared/sonnet/medium/route_explicit"],
+              "a named family runs that family at the class's effort: \(tuples(sonnetOut)) \((try? routes(sonnetOut)) ?? [])")
     // An explicit route test keeps its former candidate set.
     var explicitReference = zeroInput; explicitReference.explicitRouteSurfaces = ["claude"]
     let explicitReferenceOut = try B.build(explicitReference)
@@ -471,12 +537,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let opusMax = try B.build(input("opus max로 해줘"))
     try check(!opusMax.candidates.isEmpty && opusMax.candidates.allSatisfy { $0["model"] as? String == "claude-opus-5-5" &&
               $0["effort"] as? String == "max" }, "explicit model+effort keeps exactly that tuple: \(tuples(opusMax))")
-    // Here the top Claude model (sonnet) and the top Codex model (gpt-6-sol)
-    // have no max profile: max on a lower model is never offered instead.
+    // Max reasoning keeps every max row (build 378): the class then picks
+    // the tier at max. Codex offers no frontier model here, so it says so.
     let korean = try B.build(input("최대 리즈닝으로 해줘"))
-    try check(korean.candidates.isEmpty && reasons(korean) == ["claude:explicit_constraint_unavailable:5",
-              "claude:reference_unavailable:2", "codex:explicit_constraint_unavailable:4", "codex:reference_unavailable:1"],
-              "Korean max reasoning the top models lack holds, explained: \(reasons(korean))")
+    try check(korean.candidates.allSatisfy { $0["effort"] as? String == "max" } &&
+              Set(korean.candidates.map { $0["model"] as! String }) == ["fable", "claude-opus-5-5", "gpt-5.6-luna"] &&
+              reasons(korean) == ["codex:reference_unavailable:1"],
+              "Korean max reasoning keeps the max rows, explained: \(tuples(korean)) \(reasons(korean))")
     var koreanTop = input("최대 리즈닝으로 해줘")
     koreanTop.claudeModels = [.init(model: "fable", supportedEfforts: ["low", "xhigh", "max"]),
                               .init(model: "claude-opus-5-5", supportedEfforts: ["xhigh", "max"]),
@@ -523,7 +590,9 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let haikuData = try B.catalogData(haiku, taskID: "task-fixture", requestSHA256: C.digest(Data("haiku로 돌려".utf8)))
     let haikuCatalog = try C.decodeCatalog(haikuData)
     try check(haikuCatalog.candidates.isEmpty && haikuCatalog.exclusions == haiku.exclusions &&
-              String(decoding: haikuData, as: UTF8.self).contains("\"exclusions\""), "empty-with-exclusions catalog decodes")
+              String(decoding: haikuData, as: UTF8.self).contains("\"exclusions\"") &&
+              !String(decoding: haikuData, as: UTF8.self).contains("model_tiers"),
+              "empty-with-exclusions catalog decodes, with no model_tiers")
     try check(B.providersToProbe(input("haiku로 돌려")) == ["claude"], "a family constraint probes only its provider")
     // An explicit route test keeps its former candidate set: the fan-out
     // sentence is not one intent for every route and no effort is withheld.
@@ -715,8 +784,9 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
 }
 
 /// What the real JS resolver binds for one read-only graded node on exactly
-/// these catalog bytes: "pool/model/effort/route_kind", or "error:<code>".
-private func javascriptRoute(_ catalog: Data, now: Date) throws -> String {
+/// these catalog bytes: "pool/model/effort/route_kind", then ">model" of its
+/// REVAS escalation reference when it has one, or "error:<code>".
+private func javascriptRoute(_ catalog: Data, routeClass: String = "standard", now: Date) throws -> String {
     let script = """
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
@@ -725,14 +795,15 @@ private func javascriptRoute(_ catalog: Data, now: Date) throws -> String {
     const task={mode:'auto',task_id:catalog.task_id,request_sha256:catalog.request_sha256,budget:{max_cost_units:null},
       host_context:{require_read_only:true}};
     const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id:'n',
-      instruction:'Explain the login function',dependencies:[],kind:'agent',route_class:'standard',scope:'read_only',
+      instruction:'Explain the login function',dependencies:[],kind:'agent',route_class:process.argv[3],scope:'read_only',
       owned_paths:[],context_refs:[]}]};
     try {
       const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2])).decisions.n;
-      process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`);
+      process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`+
+        (d.ladder?.reference_model?'>'+d.ladder.reference_model:''));
     } catch (error) { process.stdout.write('error:'+(error.code??'unknown')); }
     """
-    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000))], input: catalog)
+    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), routeClass], input: catalog)
 }
 
 /// Runs one inline ES module against the sealed runtime module path (a real

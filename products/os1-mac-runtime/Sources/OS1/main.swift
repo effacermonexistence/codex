@@ -17854,9 +17854,9 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     let probe = RCCNativeCatalogBuilder.providersToProbe(input)
     // The general catalogs strip a quota-exhausted Codex slug and a cooled
     // Claude family for every other caller. The builder must still see them:
-    // a pool's reference model is decided before quota, so its exhaustion is
-    // a quota_zero / quota_backoff hold of the whole pool (reference_unavailable),
-    // never the next model standing in as the reference.
+    // an exhausted or cooled row is a recorded quota_zero / quota_backoff,
+    // and an exhausted frontier model is the pool's reference_unavailable
+    // (no deep work or escalation there), never a lower model standing in.
     if probe.contains("codex") {
         let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
         let shaped = RCCNativeCatalogBuilder.codexInventory(

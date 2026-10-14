@@ -22,10 +22,9 @@ import Foundation
 ///   then carries that constraint as `routing_intent`, so the host names the
 ///   route explicit (and may bind an explicitly asked ultra effort).
 /// - Without an explicit effort word, ultra/ultracode are not offered. max is
-///   offered (2026-10-13): the host's default route is each pool's REFERENCE,
-///   its most-preferred model at the highest offered effort up to max, so
-///   the result matches the newest top model at max reasoning. Lower efforts
-///   stay in the catalog for explicit owner requests and the REVAS ladder.
+///   offered: it is the reference effort. Lower efforts and lower-tier models
+///   stay in the catalog: the host routes each graded node to the cheapest
+///   tier/effort expected to give the reference result (build 378).
 /// - An explicit route test (`explicitRouteSurfaces` set) keeps its former
 ///   candidate set: the whole fan-out sentence is not read as one intent, and
 ///   no effort is withheld; only GPT, capacity and the chat gate apply.
@@ -33,16 +32,16 @@ import Foundation
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
 ///   when it is account-wide, with `quota_backoff`; it is never probed.
-/// - Each pool has one REFERENCE model: its most-preferred native model
-///   among the profiles this request may use at all (preference, visibility,
-///   capacity, sign-in, native availability and an explicit model family),
-///   decided BEFORE quota, cooldowns and an explicit effort word. When that
-///   model offers no row now (quota_zero, quota_backoff, or no profile at the
-///   effort the owner asked for), the whole pool is unusable for the request:
-///   its lower models' rows are withheld with `reference_unavailable` (and an
-///   unmet effort word is recorded as `explicit_constraint_unavailable`), so a
-///   lower model is never offered as the pool's stand-in reference. An
-///   explicit route test is exempt (its candidate set is unchanged).
+/// - Every row's model carries its provider-stated tier (`ModelTiers`) in the
+///   catalog's `model_tiers` (build 378). A pool's REFERENCE is its
+///   frontier-tier model at the highest offered effort up to max, never the
+///   first model in the native list (gpt-6.1-sol and opus are workhorses).
+///   Lower tiers are no longer withheld: they carry trivial and standard work.
+///   A pool whose frontier model offers no row now (absent, quota_zero,
+///   quota_backoff, or no profile at the owner's effort word) keeps its lower
+///   rows and records `reference_unavailable`: the host then never binds that
+///   pool for deep work or a REVAS escalation, and nothing lower stands in.
+///   An explicit model family or route test names its own route instead.
 /// - Every excluded profile is counted per provider and reason, so an empty
 ///   catalog is an explained hold, not an opaque binding error.
 public enum RCCNativeCatalogBuilder {
@@ -148,6 +147,8 @@ public enum RCCNativeCatalogBuilder {
         public var exclusions: [RCCRuntimeContract.Exclusion]
         public var pools: [PoolRanking]
         public var intent: RoutingIntent
+        /// Tier of every tiered model in `candidates` (`ModelTiers`).
+        public var modelTiers: [String: String] = [:]
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -248,8 +249,9 @@ public enum RCCNativeCatalogBuilder {
 
     /// The builder's Codex inventory from the host's general catalog, which
     /// removes a quota-exhausted slug for every other caller. Removing it here
-    /// would make the next model the pool's reference (no reference_unavailable
-    /// guard could fire), so it is kept and marked exhausted instead.
+    /// would hide that the pool's frontier reference exists but cannot run
+    /// (its reference_unavailable explanation), so it is kept and marked
+    /// exhausted instead; every profile on it is quota_zero.
     public static func codexInventory(available: [CodexModel], quotaExcluded: [CodexModel])
         -> (models: [CodexModel], quotaExhausted: Set<String>) {
         let present = Set(available.map(\.slug))
@@ -290,19 +292,14 @@ public enum RCCNativeCatalogBuilder {
             guard let index = input.claudeModels.firstIndex(where: { $0.model == model }) else { return Int.max }
             return input.claudeModels[index].nativeRank ?? index
         }
-        // Each pool's reference model rank (see the type comment), and the
-        // providers whose reference model the owner's effort word filtered.
-        var referenceModelRank: [String: Int] = [:]
-        var referenceIntentFiltered = Set<String>()
-        for profile in input.profiles where staticAdmission(profile, input, intent, reference: true) == .admitted &&
-            input.auth[profile.provider] == .subscription && nativelyAvailable(profile) {
-            referenceModelRank[profile.provider] = min(referenceModelRank[profile.provider] ?? Int.max,
-                                                       nativeRank(profile.provider, profile.model))
-        }
-        for profile in input.profiles where referenceModelRank[profile.provider] == nativeRank(profile.provider, profile.model) &&
+        // Each pool's reference profiles (see the type comment): its
+        // frontier-tier profiles this request may use at all, decided before
+        // quota, cooldowns and an effort word.
+        var referenceProfiles: [String: Int] = [:]
+        for profile in input.profiles where ModelTiers.tier(of: profile.model) == .frontier &&
             staticAdmission(profile, input, intent, reference: true) == .admitted &&
-            staticAdmission(profile, input, intent) == .intentFiltered {
-            referenceIntentFiltered.insert(profile.provider)
+            input.auth[profile.provider] == .subscription && nativelyAvailable(profile) {
+            referenceProfiles[profile.provider, default: 0] += 1
         }
         for profile in input.profiles.sorted(by: { $0.action < $1.action }) {
             switch staticAdmission(profile, input, intent) {
@@ -359,31 +356,27 @@ public enum RCCNativeCatalogBuilder {
             }
         }
 
-        // A pool whose reference model offers no row now is unusable for this
-        // request: never let its next model stand in as the reference. Its
-        // remaining rows are withheld, so the host binds the other pool or
-        // holds; an unmet effort word is recorded per provider.
-        if input.explicitRouteSurfaces == nil {
-            for provider in ["codex", "claude"] {
-                guard let top = referenceModelRank[provider],
-                      !rows.contains(where: { $0.provider == provider && nativeRank($0.provider, $0.model) == top }) else { continue }
-                if referenceIntentFiltered.contains(provider) {
-                    excluded[provider, default: [:]]["explicit_constraint_unavailable", default: 0] += max(1, intentFiltered[provider] ?? 0)
-                }
-                let withheld = Set(rows.filter { $0.provider == provider }.map(\.action))
-                if !withheld.isEmpty {
-                    excluded[provider, default: [:]]["reference_unavailable", default: 0] += withheld.count
-                    rows.removeAll { $0.provider == provider }
-                }
+        // A pool whose frontier (reference) model offers no row now keeps its
+        // lower-tier rows for trivial and standard work, and says so: the host
+        // never binds it for deep work or a REVAS escalation, and no lower
+        // model stands in as its reference. An explicit model family names
+        // its own route; an explicit route test keeps its candidate set.
+        if input.explicitRouteSurfaces == nil, intent.modelFamily == nil {
+            for provider in ["codex", "claude"] where rows.contains(where: { $0.provider == provider }) &&
+                !rows.contains(where: { $0.provider == provider && ModelTiers.tier(of: $0.model) == .frontier }) {
+                excluded[provider, default: [:]]["reference_unavailable", default: 0] += max(1, referenceProfiles[provider] ?? 0)
             }
         }
 
-        // Every name of one native Claude row shares that row's rank, so its
-        // rows sit together in the catalog. Within one rank the name with the
-        // highest reference effort comes first: the host takes a pool's first
-        // model in catalog order as its reference, so an alias with a narrow
-        // profile can never hide the max effort configured under another name.
+        // Within a pool the strongest tier comes first (frontier, workhorse,
+        // efficient, fast, then models with no tier), so the pool's first
+        // model in catalog order is its reference. Every name of one native
+        // Claude row shares that row's rank and tier, so its rows sit
+        // together. Within one rank the name with the highest reference
+        // effort comes first: an alias with a narrow profile can never hide
+        // the max effort configured under another name.
         func modelRank(_ row: Row) -> Int { nativeRank(row.provider, row.model) }
+        func tierRank(_ row: Row) -> Int { ModelTiers.rank(row.model) }
         func effortRank(_ effort: String) -> Int { effortOrder.firstIndex(of: effort) ?? Int.max }
         // The host's reference effort of one model: its highest offered effort
         // up to max; above max only when nothing else is offered (an explicit
@@ -396,17 +389,17 @@ public enum RCCNativeCatalogBuilder {
             return offered.filter { $0 <= maximumReference }.max() ?? offered.max() ?? -1
         }
         func modelKeyLess(_ a: Row, _ b: Row) -> Bool {
+            if tierRank(a) != tierRank(b) { return tierRank(a) < tierRank(b) }
             if modelRank(a) != modelRank(b) { return modelRank(a) < modelRank(b) }
             if referenceRank(a) != referenceRank(b) { return referenceRank(a) > referenceRank(b) }
             return a.model < b.model
         }
         // Pool order: share x remaining / hours-to-reset, unknown quota last.
-        // A pool is scored by its reference model, the one the host resolver
-        // binds in it (its first model in catalog order), not by the model
-        // with the most quota left. With model-scoped windows those differ,
-        // and scoring the wrong one would spend a nearly exhausted model while
-        // the other pool has room. A reference with unknown quota cannot
-        // dispatch, and nothing lower is bound instead, so its pool ranks last.
+        // A pool is scored by its first model in catalog order: its frontier
+        // reference when it has one (else its strongest remaining tier), not
+        // by the model with the most quota left. With model-scoped windows
+        // those differ, and scoring the wrong one would spend a nearly
+        // exhausted model while the other pool has room.
         var rankings: [PoolRanking] = []
         for provider in ["codex", "claude"] {
             let poolRows = rows.filter { $0.provider == provider }
@@ -453,12 +446,18 @@ public enum RCCNativeCatalogBuilder {
         }
         guard rows.count <= maximumCandidates else { throw Failure.exceedsBound(rows.count) }
         guard !rows.isEmpty || !exclusions.isEmpty else { throw Failure.unexplainedEmptyCatalog }
-        return Output(candidates: rows.map(\.fields), exclusions: exclusions, pools: rankings, intent: intent)
+        var tiers: [String: String] = [:]
+        for row in rows { if let tier = ModelTiers.tier(of: row.model) { tiers[row.model] = tier.rawValue } }
+        return Output(candidates: rows.map(\.fields), exclusions: exclusions, pools: rankings, intent: intent,
+                      modelTiers: tiers)
     }
 
     /// The exact catalog bytes `os1 rcc-catalog` prints. `exclusions` appears
     /// only when non-empty and `routing_intent` only with an explicit owner
-    /// constraint, so a catalog without either keeps its former shape.
+    /// constraint. `model_tiers` (build 378) appears whenever there is a
+    /// candidate, possibly empty: an empty map tells the core that no offered
+    /// model has a tier, so nothing is routed by tier (a catalog without the
+    /// key is an older catalog and keeps the former reference routing).
     public static func catalogData(_ output: Output, taskID: String, requestSHA256: String) throws -> Data {
         var object: [String: Any] = ["schema": 1, "task_id": taskID, "request_sha256": requestSHA256,
                                      "candidates": output.candidates]
@@ -469,6 +468,7 @@ public enum RCCNativeCatalogBuilder {
             object["routing_intent"] = ["effort": output.intent.effort.map { $0 as Any } ?? NSNull(),
                                         "model_family": output.intent.modelFamily.map { $0 as Any } ?? NSNull()]
         }
+        if !output.candidates.isEmpty { object["model_tiers"] = output.modelTiers }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 }

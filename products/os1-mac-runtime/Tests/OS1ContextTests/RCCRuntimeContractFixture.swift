@@ -320,6 +320,34 @@ func runRCCRuntimeContractFixture() throws {
     try reject("only a graded node is laddered") { try C.validate(badRouted) }
     badRouted = escalated; badRouted.children[0].routingDecision?.effort = .ultra
     try reject("a laddered child runs only the cheap or the reference effort") { try C.validate(badRouted) }
+    // Build 378 tier routing: an optional tier, and a two-model ladder whose
+    // cheap tuple is a lower tier and whose reference is a frontier model.
+    try check(!String(decoding: try C.encode(routed), as: UTF8.self).contains("\"tier\""),
+              "a decision without a tier keeps its former wire shape")
+    var tierRouted = routed
+    tierRouted.children[0].routingDecision?.tier = "fast"
+    tierRouted.children[0].routingDecision?.ladder = .init(cheapEffort: config.effort, referenceEffort: .max,
+        cheapModel: config.model, referenceModel: "frontier-fixture")
+    try check(try C.decodeSnapshot(C.encode(tierRouted)) == tierRouted, "a tier decision with a two-model ladder roundtrips")
+    var tierEscalated = tierRouted; tierEscalated.children[0].selectedConfig = nil
+    tierEscalated.children[0].routingDecision?.model = "frontier-fixture"
+    tierEscalated.children[0].routingDecision?.effort = .max; tierEscalated.children[0].routingDecision?.tier = "frontier"
+    try C.validate(tierEscalated); checks += 1
+    // An explicit max on a lower tier escalates on the model alone.
+    var sameEffort = tierRouted; sameEffort.children[0].selectedConfig = nil
+    sameEffort.children[0].routingDecision?.effort = .max
+    sameEffort.children[0].routingDecision?.ladder = .init(cheapEffort: .max, referenceEffort: .max,
+        cheapModel: config.model, referenceModel: "frontier-fixture")
+    try C.validate(sameEffort); checks += 1
+    var badTier = tierRouted; badTier.children[0].routingDecision?.tier = "flagship"
+    try reject("a tier is one of frontier/workhorse/efficient/fast") { try C.validate(badTier) }
+    badTier = tierRouted; badTier.children[0].routingDecision?.ladder?.referenceModel = nil
+    try reject("a tier ladder names both models") { try C.validate(badTier) }
+    badTier = tierEscalated; badTier.children[0].routingDecision?.model = "another-model"
+    try reject("a tier ladder runs only its cheap or its reference tuple") { try C.validate(badTier) }
+    badTier = tierRouted; badTier.children[0].routingDecision?.ladder = .init(cheapEffort: config.effort,
+        referenceEffort: config.effort, cheapModel: config.model, referenceModel: config.model)
+    try reject("a tier ladder's two tuples differ") { try C.validate(badTier) }
     var ladderObject = try JSONSerialization.jsonObject(with: C.encode(laddered)) as! [String: Any]
     var ladderChildren = ladderObject["children"] as! [[String: Any]]
     var ladderDecision = ladderChildren[0]["routing_decision"] as! [String: Any]
@@ -364,11 +392,11 @@ func runRCCRuntimeContractFixture() throws {
     const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-wire-'));
     const sha=s=>createHash('sha256').update(s).digest('hex');
     const emittedTickets=[];
-    async function produce(verified,count,graded=false,ladder=false){
+    async function produce(verified,count,graded=false,ladder=false,tiered=false){
       const host={workspace:root,context:null,provider_preference:'auto',codex_session_id:'native-codex-fixture',
         claude_session_id:null,require_read_only:true,owner_policy:null,explicit_routes:null};
       const request='Exercise the fixture adapter through the real durable runtime.';
-      const task={schema:1,task_id:ladder?'task-node-ladder':graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
+      const task={schema:1,task_id:tiered?'task-node-tiered':ladder?'task-node-ladder':graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
         request_sha256:sha(request),objective:request,policy_sha256:sha('fixture policy'),
         source_fingerprint:hostContextFingerprint(host),mode:'auto',material_refs:[],
         budget:{max_attempts:2,max_parallel:4,max_cost_units:null,max_duration_ms:60000},host_context:host,
@@ -383,19 +411,26 @@ func runRCCRuntimeContractFixture() throws {
       // A ladder fixture adds the reference row (same model at max); a fake
       // verifier registry and fake ledger parity admit the cheaper low row.
       const candidates=ladder?[candidate,{...candidate,id:'fake-codex-max',effort:'max',configuration_sha256:sha('fixture config max')}]:[candidate];
+      // A tier fixture (build 378): the frontier reference and a fast model in
+      // one pool; the first fast answer is empty, so REVAS escalates once.
+      if(tiered)candidates.splice(0,candidates.length,
+        {...candidate,id:'fake-astra-max',model:'gpt-6-astra',effort:'max',configuration_sha256:sha('fixture astra max')},
+        {...candidate,id:'fake-luna-low',model:'gpt-6-luna',effort:'low',configuration_sha256:sha('fixture luna low')});
       // A graded node carries route_class; the real core binds the row.
       const nodes=Array.from({length:count},(_,i)=>({id:'n'+(i+1),instruction:'Return '+(2*(i+1)),
-        dependencies:[],kind:'agent',...(graded?{route_class:'standard'}:{candidate_id:candidate.id}),
+        dependencies:[],kind:'agent',...(tiered?{route_class:'trivial'}:graded?{route_class:'standard'}:{candidate_id:candidate.id}),
         scope:'read_only',owned_paths:[],context_refs:[]}));
       const runtime=await createRCCRuntime({stateDir:join(root,ladder?'ladder':graded?'graded':verified?'verified':'unverified'),
         ...(ladder?{verifierRegistry:new Map([['standard:read_only:agent',async()=>({passed:true,reason:'fixture'})]]),
           ledgerStats:()=>({verified_passes:20,verifier_failures:0})}:{}),
-        catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates}),
+        catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates,
+          ...(tiered?{model_tiers:{'gpt-6-astra':'frontier','gpt-6-luna':'fast'}}:{})}),
         plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes}),
         execute:async ticket=>{emittedTickets.push(ticket);return ({schema:1,task_id:ticket.task_id,node_id:ticket.node_id,attempt_id:ticket.attempt_id,
           candidate_id:ticket.candidate_id,configuration_sha256:ticket.configuration_sha256,
           selected_config:ticket.selected_config,acknowledged_config:ticket.selected_config,observed_config:null,
-          status:'succeeded',dispatch_stage:'dispatched',side_effects:'none',output:String(2*Number(ticket.node_id.slice(1))),
+          status:'succeeded',dispatch_stage:'dispatched',side_effects:'none',
+          output:tiered&&ticket.selected_config.model==='gpt-6-luna'?' ':String(2*Number(ticket.node_id.slice(1))),
           execution_verified:true,task_verified:verified,task_quality:verified?'task_verified':'execution_only',
           parity_state:'unverified',native_receipt:join(root,'synthetic-native-'+ticket.attempt_id),
           usage:{input_tokens:4,output_tokens:2},native_summary:verified?JSON.stringify({node:ticket.node_id}):'x'.repeat(20000)});},
@@ -412,7 +447,8 @@ func runRCCRuntimeContractFixture() throws {
       }finally{await runtime.close();}
     }
     try{process.stdout.write(JSON.stringify({completed:await produce(true,4),unverified:await produce(false,1),
-      graded:await produce(false,1,true),laddered:await produce(false,1,true,true),tickets:emittedTickets}));}
+      graded:await produce(false,1,true),laddered:await produce(false,1,true,true),
+      tiered:await produce(false,1,true,false,true),tickets:emittedTickets}));}
     finally{await rm(root,{recursive:true,force:true});}
     """
     let wireProcess = Process(), wireOutput = Pipe(), wireErrors = Pipe()
@@ -435,7 +471,7 @@ func runRCCRuntimeContractFixture() throws {
     let actualTickets = try (nativeSnapshots["tickets"] as! [[String: Any]]).map {
         try C.decodeTicket(JSONSerialization.data(withJSONObject: $0))
     }
-    try check(actualTickets.count == 7, "REAL Node execution tickets all pass the strict Swift schema")
+    try check(actualTickets.count == 9, "REAL Node execution tickets all pass the strict Swift schema")
     // Host routing receipts (2026-10-13): the real core's graded and
     // adapter-bound decisions decode under the strict child shape.
     let nativeGraded = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["graded"]!))
@@ -456,6 +492,22 @@ func runRCCRuntimeContractFixture() throws {
               nativeLadderDecision?.reason.hasPrefix("resolver;route_ladder;") == true &&
               nativeLaddered.children.first?.selectedConfig?.effort == .low,
               "REAL Node ladder decision (fake registry and parity) decodes under the strict child shape")
+    // Build 378: the real core's tier route, its failure signal and its one
+    // REVAS escalation decode under the strict Swift shapes.
+    let nativeTiered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["tiered"]!))
+    let tierDecision = nativeTiered.children.first?.routingDecision
+    try check(nativeTiered.state == .returnedUnverified && tierDecision?.routeClass == "trivial" &&
+              tierDecision?.model == "gpt-6-astra" && tierDecision?.effort == .max && tierDecision?.tier == "frontier" &&
+              tierDecision?.ladder == C.RoutingDecision.Ladder(cheapEffort: .low, referenceEffort: .max,
+                  cheapModel: "gpt-6-luna", referenceModel: "gpt-6-astra") &&
+              tierDecision?.reason.hasPrefix("tier_escalated_after_failure_signal;route_reference;tier_frontier;") == true &&
+              nativeTiered.result?.output == "2",
+              "REAL Node tier route escalated once to its reference decodes under the strict child shape")
+    let tierTickets = actualTickets.filter { $0.taskID == "task-node-tiered" }
+    try check(tierTickets.map { "\($0.selectedConfig.model)/\($0.selectedConfig.effort.rawValue)" } ==
+              ["gpt-6-luna/low", "gpt-6-astra/max"] && tierTickets[1].nativeResumeSessionID == nil,
+              "REAL Node tier tickets: the fast attempt, then the reference in a fresh native session")
+    try check(try C.decodeSnapshot(C.encode(nativeTiered)) == nativeTiered, "a tier routing decision roundtrips through Swift")
     let soloTickets = actualTickets.filter { $0.taskID == "task-node-unverified" }
     try check(soloTickets.count == 1 && soloTickets[0].nativeResumeSessionID == "native-codex-fixture",
               "REAL core-issued single full-agent ticket retains its exact host session")

@@ -31,17 +31,39 @@ const PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION = 'provider_quota_rejected_before
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
-// Deterministic host routing (2026-10-13). The catalog's own row order already
-// encodes pool preference (capacity share, fresh quota, reset time) and native
-// model preference. Owner objective: the result must have the SAME quality as
-// the newest top model at its highest (max) reasoning while spending less
-// quota, a Pareto improvement only. So every node binds a pool's REFERENCE
-// route (its most-preferred model at the highest offered effort up to max);
-// the planner's route_class only labels the task family and never lowers the
-// model or the effort. A cheaper effort is admitted only by the REVAS ladder
-// gate (cheaperRouteAdmission) with a registered verifier and parity evidence.
+// Deterministic host routing. The catalog's own row order already encodes
+// pool preference (capacity share, fresh quota, reset time) and, within a
+// pool, model strength. Owner objective: the SAME result as the newest top
+// model at its highest (max) reasoning, while spending less quota.
+//
+// Dynamic tier routing (build 378), on a catalog that carries `model_tiers`
+// (each model's provider-stated tier): REVAS at the front. The planner grades
+// each node (route_class) and the host binds the cheapest tier/effort expected
+// to give the same result (TIER_ROUTES), first dispatchable entry wins in the
+// first pool that can serve the class. A read-only node bound below its
+// pool's reference (the frontier model at its highest effort up to max) is
+// re-dispatched ONCE at the reference on any failure signal; a write is never
+// escalated. The tier choice is the admission: no ledger parity is needed.
+//
+// A catalog WITHOUT `model_tiers` (older hosts and persisted catalogs) keeps
+// the 2026-10-13 reference routing: every node binds a pool's REFERENCE route
+// (its first model at the highest offered effort up to max), and a cheaper
+// effort of that model needs the REVAS ladder gate (cheaperRouteAdmission).
 const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
 export const ROUTE_CLASSES = Object.freeze(['trivial', 'standard', 'deep']);
+// Provider-stated model tiers, strongest first (Swift ModelTiers is the owner).
+export const MODEL_TIERS = Object.freeze(['frontier', 'workhorse', 'efficient', 'fast']);
+// A tier-list effort that means the model's reference effort: its highest
+// offered effort up to max (max on every production frontier profile).
+const REFERENCE_EFFORT = 'reference';
+// Ordered (tier, effort) preferences per graded class: the first entry with a
+// dispatchable row in a pool wins. Deep work only ever runs the reference.
+export const TIER_ROUTES = Object.freeze({
+  trivial: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
+  standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high'],
+    ['workhorse', 'xhigh'], ['frontier', REFERENCE_EFFORT]]),
+  deep: Object.freeze([['frontier', REFERENCE_EFFORT]]),
+});
 const MAX_REFERENCE_EFFORT = EFFORT_ORDER.indexOf('max');
 // Above max: chosen only when the owner explicitly asked (catalog routing_intent).
 const EXPLICIT_ONLY_EFFORTS = new Set(['ultra', 'ultracode']);
@@ -406,18 +428,173 @@ function referenceRows(reference) {
     reference.rows.filter(row => row.candidate.effort === reference.effort).map(row => row.candidate);
 }
 
+// ---- Dynamic tier routing (build 378) ----
+/** The catalog's provider-stated model tiers, or null for an older catalog
+ * (which keeps the former reference routing). */
+function modelTiers(catalog) { return plain(catalog?.model_tiers) ? catalog.model_tiers : null; }
+function tierOf(catalog, model) {
+  const tier = modelTiers(catalog)?.[model];
+  return MODEL_TIERS.includes(tier) ? tier : null;
+}
+function tierRank(catalog, model) {
+  const tier = tierOf(catalog, model);
+  return tier === null ? MODEL_TIERS.length : MODEL_TIERS.indexOf(tier);
+}
+/** The class a graded node is routed at: a missing or invalid grade is
+ * standard, and a writer never runs below standard. */
+function effectiveRouteClass(routeClass, scope) {
+  const graded = ROUTE_CLASSES.includes(routeClass) ? routeClass : 'standard';
+  return scope === 'workspace_write' && graded === 'trivial' ? 'standard' : graded;
+}
+/** A row tier routing may bind for a graded node: a tiered model, or any
+ * model of a family the owner explicitly named. A model with no tier is never
+ * chosen by tier alone. */
+function tierRoutable(candidate, catalog) {
+  return Boolean(routingIntent(catalog)?.model_family) || tierOf(catalog, candidate.model) !== null;
+}
+/** The rows that can carry this node, per quota pool, in catalog order. */
+function poolRows(node, catalog, options = {}) {
+  const pools = new Map();
+  catalog.candidates.forEach((candidate, index) => {
+    if (!eligibleRow(candidate, node, options)) return;
+    if (!pools.has(candidate.quota_pool)) pools.set(candidate.quota_pool, {pool: candidate.quota_pool, rows: []});
+    pools.get(candidate.quota_pool).rows.push({candidate, index});
+  });
+  return [...pools.values()];
+}
+/** The rows of one pool that match one (tier, effort) entry. A REFERENCE
+ * effort is the highest effort up to max that the entry's tier (or, for an
+ * explicitly named family, the family) offers in this pool. */
+function entryRows(rows, entry, catalog, intent) {
+  const matching = rows.filter(({candidate}) => tierRoutable(candidate, catalog) &&
+    (entry.tier === null || tierOf(catalog, candidate.model) === entry.tier));
+  const effort = entry.effort === REFERENCE_EFFORT ? referenceEffort(matching.map(row => row.candidate), intent) :
+    entry.effort;
+  return effort === null ? [] : matching.filter(({candidate}) => candidate.effort === effort);
+}
+/** A pool's REFERENCE rows: its frontier-tier model at the highest effort up
+ * to max it offers. Empty when the pool offers no frontier model: nothing
+ * lower stands in for it. */
+function tierReferenceRows(rows, catalog, intent = null) {
+  return entryRows(rows, {tier: 'frontier', effort: REFERENCE_EFFORT}, catalog, intent);
+}
+/** The ordered entries of one class. An explicit owner effort replaces each
+ * entry's effort (the class still picks the tier, deep stays frontier); an
+ * explicit model family keeps only the efforts (the family is the model). */
+function tierEntries(routeClass, intent) {
+  const list = TIER_ROUTES[routeClass];
+  if (intent?.model_family) {
+    const efforts = intent.effort ? [intent.effort] : [...new Set(list.map(([, effort]) => effort))];
+    return efforts.map((effort, index) => ({index, tier: null, effort}));
+  }
+  if (intent?.effort)
+    return [...new Set(list.map(([tier]) => tier))].map((tier, index) => ({index, tier, effort: intent.effort}));
+  return list.map(([tier, effort], index) => ({index, tier, effort}));
+}
+
+/** Pick the exact row for one node on a tier-routed catalog.
+ * Pools go in catalog order (an avoided pool last, a preferred pool first);
+ * in each pool the class's entries are tried in order and the first entry
+ * with a dispatchable row wins (a read-only node takes the gated chat row of
+ * the same model and effort first). A pool that cannot offer any entry of the
+ * class is skipped. `referenceOnly` routes as deep: the frontier reference
+ * only (a REVAS escalation and its re-resolution). A read-only agent node
+ * bound below its pool's reference carries `ladder`, its one escalation
+ * target: this pool's reference, else the other pool's. An explicit owner
+ * constraint (catalog routing_intent) names the route explicit: it is never
+ * escalated. */
+function tierRouteCandidate(node, routeClass, task, catalog, now,
+                            {avoidPool = null, avoidIDs = [], widenWrites = false, referenceOnly = false,
+                             preferPool = null, classNote = null} = {}) {
+  const intent = routingIntent(catalog);
+  const routeClassUsed = referenceOnly ? 'deep' : effectiveRouteClass(routeClass, node.scope);
+  const ordinal = new Map();
+  for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
+  const usable = row => !avoidIDs.includes(row.candidate.id) && dispatchable(row.candidate, task, now);
+  const chatFirst = row => node.scope === 'read_only' && row.candidate.surface.endsWith('-chat') ? 0 : 1;
+  const order = (a, b) => (tierRank(catalog, a.candidate.model) - tierRank(catalog, b.candidate.model)) ||
+    (chatFirst(a) - chatFirst(b)) || (a.index - b.index);
+  const best = rows => rows.filter(usable).sort(order)[0] ?? null;
+  const avoided = entry => avoidPool !== null && entry.pool === avoidPool ? 1 : 0;
+  const preferred = entry => preferPool !== null && entry.pool === preferPool ? 0 : 1;
+  const pools = poolRows(node, catalog, {widenWrites})
+    .sort((a, b) => (avoided(a) - avoided(b)) || (preferred(a) - preferred(b)) ||
+      (ordinal.get(a.pool) - ordinal.get(b.pool)));
+  const entries = tierEntries(routeClassUsed, intent);
+  const deepGuard = routeClassUsed === 'deep' && !intent?.model_family;
+  const skipped = [];
+  let offered = false;
+  for (const pool of pools) {
+    const rank = 'pool_rank_' + ordinal.get(pool.pool);
+    let hit = null, entry = null, poolOffered = false;
+    for (const candidateEntry of entries) {
+      const rows = entryRows(pool.rows, candidateEntry, catalog, intent);
+      if (rows.length) poolOffered = true;
+      hit = best(rows);
+      if (hit) { entry = candidateEntry; break; }
+    }
+    offered ||= poolOffered;
+    if (!hit) {
+      skipped.push(`skipped_${rank}_` + (deepGuard ? poolOffered ? 'reference_undispatchable' : 'reference_unavailable' :
+        `${routeClassUsed}_${poolOffered ? 'undispatchable' : 'unavailable'}`));
+      continue;
+    }
+    const chosen = hit.candidate;
+    const tier = tierOf(catalog, chosen.model);
+    const reference = tierReferenceRows(pool.rows, catalog, intent);
+    const atReference = reference.some(row => row.candidate.id === chosen.id);
+    const kind = intent ? 'explicit' : atReference ? 'reference' : 'tier';
+    let ladder = null;
+    if (kind === 'tier' && node.scope === 'read_only' && node.kind === 'agent') {
+      // The one REVAS escalation target, fixed now and admitted with the
+      // plan: this pool's reference when it can run, else another pool's.
+      const targets = [pool, ...pools.filter(other => other !== pool)
+        .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))]
+        .map(other => tierReferenceRows(other.rows, catalog));
+      const target = targets.map(rows => best(rows)).find(Boolean) ?? targets.map(rows => [...rows].sort(order)[0]).find(Boolean);
+      if (target) ladder = {source: 'tier', cheap_model: chosen.model, cheap_effort: chosen.effort,
+        reference_model: target.candidate.model, reference_effort: target.candidate.effort,
+        reference_candidate_id: target.candidate.id};
+    }
+    const why = ['route_' + kind];
+    if (intent?.effort) why.push('intent_effort_' + intent.effort);
+    if (intent?.model_family) why.push('intent_family_' + intent.model_family);
+    why.push('class_' + routeClassUsed);
+    if (classNote) why.push(classNote);
+    why.push('tier_list_' + entry.index, 'tier_' + (tier ?? 'none'), rank, ...skipped, 'effort_' + chosen.effort);
+    if (ladder) why.push('escalation_reference_' + (catalog.candidates.find(c => c.id === ladder.reference_candidate_id)
+      ?.quota_pool === pool.pool ? 'same_pool' : 'other_pool'));
+    why.push({chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(chosen.surface)] ?? 'agent_surface');
+    if (avoidPool !== null) why.unshift(pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+    const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
+    if (widened) why.push('owned_paths_workspace');
+    return {candidate: chosen, why: why.join(';'), widened, kind, tier,
+      referenceEffort: reference[0]?.candidate.effort ?? null, ladder};
+  }
+  throw new RCCRuntimeError(`no_dispatchable_candidate:${node.scope}:` +
+    (deepGuard && !offered ? 'reference_unavailable' : routeClassUsed));
+}
+
 /** What can run now, without any candidate ID: the non-explicit planner sees
  * only this summary, never the catalog. Agent work counts only where a pool's
  * reference route can dispatch, because nothing lower is ever bound. */
 export function routingAvailability(task, catalog, now = Date.now()) {
   const scopes = [], providers = new Set();
   let chatLane = false;
+  const tiered = modelTiers(catalog) !== null;
   for (const scope of ['read_only', 'workspace_write']) {
-    for (const reference of poolReferences({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
-      const runnable = referenceRows(reference).filter(c => dispatchable(c, task, now));
+    const probe = {scope, kind: 'agent', owned_paths: []};
+    // Tier routing: any row a graded node may bind; reference routing: only
+    // a pool's reference rows, because nothing lower is ever bound there.
+    const pools = tiered ? poolRows(probe, catalog, {anyPaths: true}).map(entry => ({pool: entry.pool,
+      rows: entry.rows.map(row => row.candidate).filter(c => tierRoutable(c, catalog))})) :
+      poolReferences(probe, catalog, {anyPaths: true}).map(reference => ({pool: reference.pool,
+        rows: referenceRows(reference)}));
+    for (const entry of pools) {
+      const runnable = entry.rows.filter(c => dispatchable(c, task, now));
       if (!runnable.length) continue;
       if (!scopes.includes(scope)) scopes.push(scope);
-      providers.add(providerOfPool(reference.pool));
+      providers.add(providerOfPool(entry.pool));
       if (scope === 'read_only' && runnable.some(c => c.surface.endsWith('-chat'))) chatLane = true;
     }
   }
@@ -436,7 +613,17 @@ function noDispatchableReason(task, catalog, now) {
   const byPool = new Map();
   const note = (pool, reason) => byPool.set(pool, (byPool.get(pool) ?? new Set()).add(reason));
   for (const c of local) note(c.quota_pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
+  const tiered = modelTiers(catalog) !== null;
   for (const scope of scopes) {
+    if (tiered) {
+      for (const entry of poolRows({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
+        const rows = entry.rows.map(row => row.candidate).filter(c => tierRoutable(c, catalog));
+        if (rows.some(c => dispatchable(c, task, now))) return null;
+        if (!rows.length) note(entry.pool, 'no_tiered_model');
+        for (const c of rows) note(entry.pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
+      }
+      continue;
+    }
     for (const reference of poolReferences({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
       const rows = referenceRows(reference);
       if (rows.some(c => dispatchable(c, task, now))) return null;
@@ -477,16 +664,34 @@ export function cheaperRouteAdmission({family, scope, model = null, referenceEff
   return {route: 'reference', reason: 'ladder_insufficient_parity_evidence'};
 }
 
-function routingDecision(routeClass, candidate, reason, ladder = null) {
+function routingDecision(routeClass, candidate, reason, ladder = null, tier = undefined) {
   const decision = {route_class: routeClass, resolved_candidate_id: candidate.id, surface: candidate.surface,
     model: candidate.model, effort: candidate.effort, quota_pool: candidate.quota_pool, reason,
     quota_remaining_fraction: candidate.quota_remaining_fraction};
-  // Present only for a ladder route, so every other decision keeps its shape.
-  if (ladder) decision.ladder = {cheap_effort: ladder.cheap_effort, reference_effort: ladder.reference_effort};
+  // Present only for a route with an escalation, so every other decision
+  // keeps its shape. A tier route names both models; the effort ladder does not.
+  if (ladder) {
+    decision.ladder = {cheap_effort: ladder.cheap_effort, reference_effort: ladder.reference_effort};
+    if (ladder.source === 'tier') Object.assign(decision.ladder,
+      {cheap_model: ladder.cheap_model, reference_model: ladder.reference_model});
+  }
+  // Present only on a tier-routed catalog (null for a model with no tier).
+  if (tier !== undefined) decision.tier = tier;
   return decision;
 }
 
-/** Pick the exact row for one node.
+/** Pick the exact row for one node: tier routing on a catalog that carries
+ * model_tiers, the reference route on an older catalog. `widenWrites` lets a
+ * graded writer that named concrete paths bind a whole-workspace row; the
+ * caller then records owned_paths ["**"], because a native writer is not
+ * confined to the paths a planner listed. */
+function selectRouteCandidate(node, routeClass, task, catalog, now, options = {}) {
+  // A deterministic node binds the local exact row on either catalog.
+  return modelTiers(catalog) !== null && node.kind !== 'deterministic' ?
+    tierRouteCandidate(node, routeClass, task, catalog, now, options) :
+    referenceRouteCandidate(node, routeClass, task, catalog, now, options);
+}
+/** Reference routing (an older catalog without model_tiers).
  * Pools go in catalog order (capacity share x remaining / hours to reset,
  * computed by the native builder); an avoided pool goes last. Each pool
  * offers only its reference route: its most-preferred model at the
@@ -498,12 +703,10 @@ function routingDecision(routeClass, candidate, reason, ladder = null) {
  * the rows and names the route explicit. With `ladder` ({verifierRegistry,
  * ledgerStats}) a graded read-only node may take a cheaper effort of the same
  * model and surface, only through cheaperRouteAdmission. route_class never
- * moves the model or the effort. `widenWrites` lets a graded writer that
- * named concrete paths bind a whole-workspace row; the caller then records
- * owned_paths ["**"], because a native writer is not confined to the paths a
- * planner listed. */
-function selectRouteCandidate(node, routeClass, task, catalog, now,
-                              {avoidPool = null, avoidIDs = [], widenWrites = false, ladder = null} = {}) {
+ * moves the model or the effort. */
+function referenceRouteCandidate(node, routeClass, task, catalog, now,
+                                 {avoidPool = null, avoidIDs = [], widenWrites = false, ladder = null,
+                                  classNote = null} = {}) {
   const ordinal = new Map();
   for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
   const intent = routingIntent(catalog);
@@ -541,6 +744,7 @@ function selectRouteCandidate(node, routeClass, task, catalog, now,
     const why = ['route_' + kind];
     if (intent?.effort) why.push('intent_effort_' + intent.effort);
     if (intent?.model_family) why.push('intent_family_' + intent.model_family);
+    if (classNote) why.push(classNote);
     why.push(rank, ...skipped, 'effort_' + chosen.effort);
     if (ladderRoute) why.push('ladder_reference_effort_' + ladderRoute.reference_effort);
     if (note) why.push(note);
@@ -586,25 +790,42 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
  * Explicit route tests are never resolved here. Pure: same input, same output.
  * `now` is the catalog's bind time, not the time the planner returned: a slow
  * local planner must not change which pool is chosen. Freshness is enforced
- * again at dispatch, after the pre-dispatch catalog refresh. `routes` is the
- * host's internal record per graded node: route kind (reference, explicit or
- * ladder), the reference effort and, for a ladder, the reference row it
- * escalates to. A ladder needs a non-empty verifierRegistry (Map of family
- * to verifier) and ledgerStats(family, model, effort); production has none. */
+ * again at dispatch, after the pre-dispatch catalog refresh. A planner node
+ * with no (or an invalid) route_class and no bound row is graded standard.
+ * `routes` is the host's internal record per graded node: route kind
+ * (reference, explicit, tier or ladder), the reference effort and, for a
+ * tier or ladder route, the reference row it escalates to. On a tier-routed
+ * catalog the class picks the tier (TIER_ROUTES). On an older catalog every
+ * class binds the reference, and an effort ladder needs a non-empty
+ * verifierRegistry (Map of family to verifier) and ledgerStats(family,
+ * model, effort); production registers none. */
 export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null, ledgerStats = null} = {}) {
   if (task.mode === 'explicit_routing_test' || !plain(plan) || !Array.isArray(plan.nodes))
     return {plan, decisions: {}, routes: {}};
-  const ladder = verifierRegistry instanceof Map && verifierRegistry.size > 0 ? {verifierRegistry, ledgerStats} : null;
+  const tiered = modelTiers(catalog) !== null;
+  // The effort ladder belongs to reference routing. A tier-routed catalog is
+  // admitted by the tier itself and escalates on failure signals instead.
+  const ladder = !tiered && verifierRegistry instanceof Map && verifierRegistry.size > 0 ?
+    {verifierRegistry, ledgerStats} : null;
   const decisions = {}, routes = {};
   const gradedIDs = new Set();
+  const ungradedKeys = PLANNED_NODE_KEYS.filter(key => key !== 'route_class');
   const nodes = plan.nodes.map(node => {
-    if (plain(node) && Object.hasOwn(node, 'route_class')) {
-      assert(keys(node, PLANNED_NODE_KEYS) && ID.test(node.id) && ROUTE_CLASSES.includes(node.route_class) &&
+    const hasClass = plain(node) && Object.hasOwn(node, 'route_class');
+    const ungraded = plain(node) && !hasClass && !Object.hasOwn(node, 'candidate_id');
+    if (hasClass || ungraded) {
+      assert((hasClass ? keys(node, PLANNED_NODE_KEYS) : keys(node, ungradedKeys)) && ID.test(node.id) &&
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
-      const {route_class: routeClass, ...rest} = node;
-      const choice = selectRouteCandidate(node, routeClass, task, catalog, now, {widenWrites: true, ladder});
-      decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder);
+      const {route_class: planned, ...rest} = node;
+      const valid = ROUTE_CLASSES.includes(planned);
+      // A missing or invalid grade is standard; on a tier-routed catalog a
+      // writer graded trivial runs at least standard.
+      const routeClass = tiered ? effectiveRouteClass(planned, node.scope) : valid ? planned : 'standard';
+      const classNote = !valid ? 'route_class_defaulted' : routeClass !== planned ? 'write_promoted_from_trivial' : null;
+      const choice = selectRouteCandidate(node, routeClass, task, catalog, now, {widenWrites: true, ladder, classNote});
+      decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
+        choice.tier);
       routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
       gradedIDs.add(node.id);
       return {...rest, dependencies: [...rest.dependencies],
@@ -847,15 +1068,26 @@ function validRoutingIntent(intent) {
     (intent.model_family === null || (typeof intent.model_family === 'string' && INTENT_FAMILY.test(intent.model_family))) &&
     (intent.effort !== null || intent.model_family !== null);
 }
+/** Optional (build 378): the provider-stated tier of each tiered model this
+ * catalog offers. Possibly empty (no offered model has a tier). */
+function validModelTiers(tiers, candidates) {
+  if (!plain(tiers)) return false;
+  const models = new Set(candidates.map(c => c?.model));
+  const entries = Object.entries(tiers);
+  return entries.length <= 256 && entries.every(([model, tier]) => boundedText(model, 256) && models.has(model) &&
+    MODEL_TIERS.includes(tier));
+}
 function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
+  const optional = ['exclusions', 'routing_intent', 'model_tiers'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
-    Object.keys(catalog).every(key => required.includes(key) || key === 'exclusions' || key === 'routing_intent') &&
+    Object.keys(catalog).every(key => required.includes(key) || optional.includes(key)) &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
     catalog.request_sha256 === task.request_sha256 && Array.isArray(catalog.candidates) &&
     catalog.candidates.length <= 256 &&
     (catalog.exclusions === undefined || validExclusions(catalog.exclusions)) &&
     (catalog.routing_intent === undefined || validRoutingIntent(catalog.routing_intent)) &&
+    (catalog.model_tiers === undefined || validModelTiers(catalog.model_tiers, catalog.candidates)) &&
     (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
   // An empty catalog is an explicit, explained hold rather than an opaque
@@ -1089,6 +1321,17 @@ function publicSnapshot(snapshot) {
 function ladderExemptMs(snapshot) {
   return (snapshot.ladder_exempt_ms ?? 0) +
     snapshot.children.reduce((sum, child) => sum + (child.ladder_exempt_ms ?? 0), 0);
+}
+/** A node bound below its reference that still has its one escalation: a
+ * tier route (build 378) or an effort-ladder route not yet escalated. */
+function pendingEscalation(child) {
+  return ['ladder', 'tier'].includes(child?.route_kind) && child.ladder != null && child.ladder.escalated !== true;
+}
+/** A tier route's failure signals beyond the effort ladder's: an output that
+ * is only whitespace, or a failure the native adapter recorded beside a
+ * finished attempt (a failed task quality is already undeliverable). */
+function tierFailureSignal(result) {
+  return typeof result.output !== 'string' || result.output.trim() === '' || result.error != null;
 }
 /** A returned node whose registered family verifier had not answered. */
 function verifierPendingChild(child) {
@@ -1951,8 +2194,10 @@ class RCCRuntime {
     const decided = child.routing_decision.resolved_candidate_id === node.candidate_id ?
       child.routing_decision.quota_pool : null;
     const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
+    // An escalated tier route stays at the reference wherever it moves.
+    const escalated = child.ladder?.source === 'tier' && child.ladder.escalated === true;
     const choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, fresh,
-      Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs});
+      Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs, referenceOnly: escalated});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, fresh, [nodeID]));
@@ -1966,10 +2211,20 @@ class RCCRuntime {
       target.attempt_id = null; target.selected_config = null;
       target.re_resolutions = (target.re_resolutions ?? 0) + 1;
       target.avoided_candidate_ids = avoidIDs;
-      // A re-resolved node always runs a reference route, never a ladder.
-      target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort; target.ladder = null;
+      target.reference_effort = choice.referenceEffort;
+      if (escalated) {
+        // The escalation was spent: the new row is the reference itself.
+        target.route_kind = 'reference';
+        target.ladder = {...target.ladder, reference_candidate_id: choice.candidate.id,
+          reference_model: choice.candidate.model, reference_effort: choice.candidate.effort};
+      } else {
+        // A re-resolved effort-ladder node runs its reference; a tier node
+        // keeps its class and the escalation target of its new pool.
+        target.route_kind = choice.kind;
+        target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
+      }
       target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
-        `re_resolved_after:${reason};${choice.why}`);
+        `re_resolved_after:${reason};${choice.why}`, target.ladder, choice.tier);
     });
   }
   /** Deterministic resolution binds independent nodes of one route_class to
@@ -2041,10 +2296,12 @@ class RCCRuntime {
         // A snapshot from before the counter has moved once if it has moved.
         target.spreads = (target.spreads ?? (target.spread === true ? 1 : 0)) + 1;
         target.candidate_id = choice.candidate.id; target.spread = true;
-        // The other pool's reference route: a spread never keeps a ladder.
-        target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort; target.ladder = null;
+        // The other pool's route: a spread never keeps an effort ladder; a
+        // tier node takes the escalation target of its new pool.
+        target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort;
+        target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
         target.routing_decision = routingDecision(target.routing_decision.route_class, choice.candidate,
-          `spread_for_parallelism;${choice.why}`);
+          `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier);
       });
     } catch { return false; }
     return true;
@@ -2389,7 +2646,11 @@ class RCCRuntime {
     // and an escalated reference then resumes that thread untouched.
     const child = snapshot.children?.find(c => c.id === node.id);
     const cheapLadder = child?.route_kind === 'ladder' && child.ladder != null && child.ladder.escalated !== true;
-    const resumeSession = cheapLadder ? null : isSingleFullAgent && candidate.surface === 'codex' ?
+    // A REVAS tier escalation re-runs in a fresh native session too: its
+    // cheaper attempt resumed (and may have written into) the owner's thread,
+    // and the reference answer must not build on that failed turn.
+    const escalatedTier = child?.ladder?.source === 'tier' && child.ladder.escalated === true;
+    const resumeSession = cheapLadder || escalatedTier ? null : isSingleFullAgent && candidate.surface === 'codex' ?
       snapshot.task.host_context.codex_session_id :
       isSingleFullAgent && candidate.surface === 'claude' ?
         snapshot.task.host_context.claude_session_id : null;
@@ -2684,11 +2945,17 @@ class RCCRuntime {
     const routeClass = !explicitRoute && ROUTE_CLASSES.includes(child.routing_decision?.route_class) ?
       child.routing_decision.route_class : null;
     const kind = explicitRoute ? 'explicit_route' : routeClass === null ? 'adapter_bound' : child.route_kind ?? 'unrecorded';
+    const ladder = ['ladder', 'tier'].includes(kind) && child.ladder ?
+      {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort} : null;
+    if (ladder && child.ladder.source === 'tier')
+      Object.assign(ladder, {cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model});
     return {route_class: routeClass, route_kind: kind, surface: candidate.surface,
       quota_pool: candidate.quota_pool, model: candidate.model, effort: candidate.effort, scope: candidate.scope,
-      reference_effort: routeClass === null ? null : child.reference_effort ?? null,
-      ladder: kind === 'ladder' && child.ladder ?
-        {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort} : null,
+      reference_effort: routeClass === null ? null : child.reference_effort ?? null, ladder,
+      // Build 378: the bound model's tier (null without one or on an older
+      // catalog) and whether this attempt is a REVAS escalation.
+      tier: routeClass === null ? null : child.routing_decision?.tier ?? null,
+      escalated: routeClass !== null && child.ladder?.escalated === true,
       quota_remaining_fraction: candidate.quota_remaining_fraction, dispatched_at_ms: child.dispatched_at_ms ?? null,
       verifier: Boolean(this._nodeVerifier(snapshot, child.id, candidate))};
   }
@@ -2714,7 +2981,8 @@ class RCCRuntime {
       family: routeFamily(route.route_class, route.scope, route.surface), route_class: route.route_class,
       scope: route.scope, surface_kind: surfaceKind(route.surface), surface: route.surface,
       quota_pool: route.quota_pool, model: route.model, effort: route.effort, route_kind: route.route_kind,
-      reference_effort: route.reference_effort, ladder: route.ladder, usage: outcome.usage ?? null,
+      reference_effort: route.reference_effort, ladder: route.ladder, tier: route.tier ?? null,
+      escalated: route.escalated === true, usage: outcome.usage ?? null,
       quota_remaining_fraction: route.quota_remaining_fraction,
       execution_verified: outcome.execution_verified === true, task_quality: outcome.task_quality ?? null,
       verifier_outcome: verifierOutcome, attempt_state: attemptState,
@@ -2801,7 +3069,7 @@ class RCCRuntime {
     const child = state?.children.find(c => c.id === node.id);
     if (!state || TERMINAL.has(state.state) || child?.state !== 'waiting' || child.attempt_id !== result.attempt_id)
       return outcome;
-    if (!passed && child.route_kind === 'ladder') {
+    if (!passed && pendingEscalation(child)) {
       this._ladderFailed(taskID, node, candidate, result, outcome);
       return outcome;
     }
@@ -2848,24 +3116,38 @@ class RCCRuntime {
         attempt.verifier = outcome; }
     });
   }
-  /** Once, read-only only: the cheaper ladder attempt failed, so the node
-   * returns to the queue bound to its reference row (same model, same pool,
-   * reference effort; admitted with the plan, so a sibling's refresh cannot
-   * lose it). The returned output is never adopted, nothing with uncertain
-   * effects is replayed, and the failed attempt's time and estimated cost are
-   * not charged to the owner's budgets (like its attempt). Dispatch then
-   * refreshes the catalog and, if the reference row cannot run, re-resolves
-   * as usual. */
+  /** Once, read-only only: the cheaper attempt failed, so the node returns to
+   * the queue bound to its reference row, admitted with the plan so a
+   * sibling's refresh cannot lose it. An effort ladder escalates to the same
+   * model in the same pool at the reference effort. A tier route (build 378)
+   * escalates to its pool's frontier reference, or to another pool's when
+   * that one cannot dispatch now. The returned output is never adopted,
+   * nothing with uncertain effects is replayed, and the failed attempt's time
+   * and estimated cost are not charged to the owner's budgets (like its
+   * attempt). Dispatch then refreshes the catalog and, if the reference row
+   * cannot run, re-resolves (a tier node to a reference only). */
   _escalateLadder(taskID, nodeID, attemptID, outcome = 'fail') {
     const snapshot = this._load(taskID);
     const child = snapshot.children.find(c => c.id === nodeID);
     const node = snapshot.plan.nodes.find(n => n.id === nodeID);
     const find = id => snapshot.catalog.candidates.find(c => c.id === id) ?? snapshot.bound_rows?.[id];
     const cheap = node && find(node.candidate_id);
-    const reference = find(child.ladder?.reference_candidate_id);
+    const tier = child.ladder?.source === 'tier';
+    let reference = find(child.ladder?.reference_candidate_id);
+    if (tier && node && cheap) {
+      const now = Date.now();
+      const offered = reference && snapshot.catalog.candidates.find(c => c.id === reference.id);
+      if (!(offered && dispatchable(offered, snapshot.task, now))) {
+        try {
+          reference = selectRouteCandidate(node, child.routing_decision?.route_class, snapshot.task, snapshot.catalog,
+            now, {referenceOnly: true, preferPool: cheap.quota_pool, avoidIDs: [cheap.id]}).candidate;
+        } catch { /* Keep the admitted reference row: dispatch re-resolves it. */ }
+      }
+    }
     assert(node && cheap && reference && node.scope === 'read_only' && reference.scope === 'read_only' &&
-      reference.id !== cheap.id && reference.model === cheap.model && reference.quota_pool === cheap.quota_pool &&
-      reference.effort === child.ladder.reference_effort, 'ladder_reference_unavailable');
+      reference.id !== cheap.id && (tier ? reference.surface !== 'local' :
+        reference.model === cheap.model && reference.quota_pool === cheap.quota_pool &&
+        reference.effort === child.ladder.reference_effort), 'ladder_reference_unavailable');
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: reference.id} : n)};
     const rows = snapshot.catalog.candidates.some(c => c.id === reference.id) ? snapshot.catalog :
@@ -2888,11 +3170,18 @@ class RCCRuntime {
         dispatched_at_ms: null, finished_at_ms: null, output: null, execution_verified: false,
         task_quality: 'unverified', parity_state: 'unverified', native_receipt: null, native_summary: null,
         usage: null, repair_needed: false, route_kind: 'reference', node_verifier: outcome});
-      target.ladder = {...target.ladder, escalated: true};
-      target.routing_decision = routingDecision(target.routing_decision.route_class, reference,
+      target.ladder = tier ? {...target.ladder, escalated: true, reference_candidate_id: reference.id,
+        reference_model: reference.model, reference_effort: reference.effort} : {...target.ladder, escalated: true};
+      const why = tier ?
+        (outcome === 'fail' ? 'tier_escalated_after_verifier_failure' : 'tier_escalated_after_failure_signal') +
+          ';route_reference;tier_' + (tierOf(state.catalog, reference.model) ?? 'frontier') +
+          (reference.quota_pool === cheap.quota_pool ? ';same_pool' : ';other_pool') :
         (outcome === 'fail' ? 'ladder_escalated_after_verifier_failure' : 'ladder_escalated_after_undeliverable_result') +
-        ';route_reference;effort_' + reference.effort + ';' +
-        (reference.surface.endsWith('-chat') ? 'chat_lane_same_route' : 'agent_surface'), target.ladder);
+          ';route_reference';
+      target.routing_decision = routingDecision(target.routing_decision.route_class, reference,
+        why + ';effort_' + reference.effort + ';' +
+        (reference.surface.endsWith('-chat') ? 'chat_lane_same_route' : 'agent_surface'), target.ladder,
+        tier ? tierOf(state.catalog, reference.model) ?? 'frontier' : undefined);
     });
   }
 
@@ -2996,14 +3285,16 @@ class RCCRuntime {
           // the child waits (not completed) so the task cannot settle on an
           // output a ladder may still have to replace.
           const verifier = this._nodeVerifier(current, node.id, candidate);
+          const recorded = current.children.find(c => c.id === node.id);
+          // A tier route below its reference also fails on a whitespace-only
+          // output or a failure recorded beside the finished attempt.
           const deliverable = result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
-            boundedText(result.output, MAX_OUTPUT_BYTES);
-          const recorded = current.children.find(c => c.id === node.id);
-          // A cheaper ladder attempt that returned nothing deliverable is a
-          // ladder failure: its output is discarded, never held for return.
-          const discard = !deliverable && recorded?.route_kind === 'ladder' && recorded.ladder != null &&
-            !recorded.ladder.escalated;
+            boundedText(result.output, MAX_OUTPUT_BYTES) &&
+            !(pendingEscalation(recorded) && recorded.ladder.source === 'tier' && tierFailureSignal(result));
+          // A cheaper ladder or tier attempt that returned nothing deliverable
+          // is a failure signal: its output is discarded, never held for return.
+          const discard = !deliverable && pendingEscalation(recorded);
           this._update(taskID, 'child_returned', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             child.output = discard ? null : result.output;
@@ -3074,8 +3365,7 @@ class RCCRuntime {
         // stay effects_uncertain below.
         const failedChild = current.children.find(c => c.id === node.id);
         if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none' &&
-            failedChild?.route_kind === 'ladder' && failedChild.ladder != null && !failedChild.ladder.escalated &&
-            candidate.scope === 'read_only') {
+            pendingEscalation(failedChild) && candidate.scope === 'read_only') {
           this._update(taskID, 'child_returned', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             Object.assign(child, {output: null, execution_verified: false, task_quality: 'unverified',

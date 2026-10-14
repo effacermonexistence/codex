@@ -126,7 +126,7 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
     let profiles: [B.Profile] = [
         .init(action: "claude_fable_low", provider: "claude", model: "fable", effort: "low"),
         .init(action: "claude_opus_xhigh", provider: "claude", model: "claude-opus-5-5", effort: "xhigh"),
-        .init(action: "codex_sol_low", provider: "codex", model: "gpt-6-sol", effort: "low"),
+        .init(action: "codex_astra_low", provider: "codex", model: "gpt-6-astra", effort: "low"),
     ]
     let request = "Explain the login function"
     func input(preference: String = "auto") -> B.Input {
@@ -134,7 +134,7 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
             providerPreference: preference, requireReadOnly: true, hasMaterialRefs: false, capacityPlan: nil,
             executorContractSHA256: String(repeating: "c", count: 64), now: now, showCodex: true,
             chatLaneEligible: false, profiles: profiles)
-        value.codexModels = [.init(slug: "gpt-6-sol", supportedEfforts: ["low"], priority: 0)]
+        value.codexModels = [.init(slug: "gpt-6-astra", supportedEfforts: ["low"], priority: 0)]
         value.claudeModels = [.init(model: "fable", supportedEfforts: ["low"]),
                               .init(model: "claude-opus-5-5", supportedEfforts: ["xhigh"])]
         value.auth = ["codex": .subscription, "claude": .subscription]
@@ -149,20 +149,21 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
     func reasons(_ output: B.Output) -> [String] { output.exclusions.map { "\($0.provider):\($0.reason):\($0.count)" } }
 
     let warm = try B.build(input())
-    try check(Set(models(warm)) == ["fable", "claude-opus-5-5", "gpt-6-sol"] && warm.exclusions.isEmpty,
+    try check(Set(models(warm)) == ["fable", "claude-opus-5-5", "gpt-6-astra"] && warm.exclusions.isEmpty,
               "no receipt, no cooldown: \(models(warm)) \(reasons(warm))")
     try O.recordClaudeBackoff(.model("fable"), directory: directory, now: now)
     let family = try B.build(input())
-    // fable is the pool's top (reference) model here: with it cooled the
-    // Claude pool is unusable for the request, and claude-opus-5-5 is never
-    // offered as a stand-in reference below it.
-    try check(Set(models(family)) == ["gpt-6-sol"] &&
+    // fable is the pool's frontier (reference) model: with it cooled the
+    // Claude pool keeps its lower tier for trivial and standard work, but
+    // says reference_unavailable, so no deep work or escalation runs there
+    // and claude-opus-5-5 never stands in as its reference (build 378).
+    try check(Set(models(family)) == ["claude-opus-5-5", "gpt-6-astra"] &&
               reasons(family) == ["claude:quota_backoff:1", "claude:reference_unavailable:1"],
-              "a model-scoped rejection of the top family makes its pool unusable: \(models(family)) \(reasons(family))")
+              "a model-scoped rejection of the frontier family leaves no Claude reference: \(models(family)) \(reasons(family))")
     try check(B.providersToProbe(input()) == ["claude", "codex"], "other Claude families are still probed")
     try O.recordClaudeBackoff(.account, directory: directory, now: now)
     let account = try B.build(input())
-    try check(Set(models(account)) == ["gpt-6-sol"] && reasons(account) == ["claude:quota_backoff:2"],
+    try check(Set(models(account)) == ["gpt-6-astra"] && reasons(account) == ["claude:quota_backoff:2"],
               "an account-wide rejection removes every Claude row: \(models(account)) \(reasons(account))")
     try check(B.providersToProbe(input()) == ["codex"], "a cooled account is not probed")
     let named = try B.build(input(preference: "claude"))

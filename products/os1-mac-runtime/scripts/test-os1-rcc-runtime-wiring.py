@@ -169,4 +169,22 @@ check("input.now = Date()" in catalog_fn and
       catalog_fn.index("observeNativeSurfaceAuth(") < catalog_fn.index("input.now = Date()"),
       "catalog freshness instant is taken after the Codex/Claude/auth probes, before the builder")
 
+# Build 378: dynamic tier routing. Provider-stated tiers travel in the
+# catalog; the one core picks model and effort per graded node.
+TIERS = (ROOT / "Sources/OS1Context/ModelTiers.swift").read_text()
+BUILDER = (ROOT / "Sources/OS1Context/RCCNativeCatalogBuilder.swift").read_text()
+table = section(TIERS, "public static let table: [String: ModelTier] = [", "]")
+check('"gpt-6-astra": .frontier' in table and '"gpt-6.1-sol": .workhorse' in table and
+      '"gpt-6-luna": .fast' in table and '"claude-fable-5-1": .frontier' in table and
+      '"opus": .workhorse' in table and '"sonnet": .efficient' in table and
+      not re.search(r'"gpt-(?:6-sol|5[^"]*|daybreak[^"]*)"\s*:', table),
+      "tier table copies provider descriptions; previous-generation and specialized models have no tier")
+check('object["model_tiers"] = output.modelTiers' in BUILDER and "ModelTiers.tier(of: $0.model) == .frontier" in BUILDER,
+      "catalog builder emits model_tiers and the frontier reference explanation")
+check("export const TIER_ROUTES" in RUNTIME and "'model_tiers'" in RUNTIME and "function tierRouteCandidate(" in RUNTIME and
+      "referenceOnly: escalated" in RUNTIME and "pendingEscalation(" in RUNTIME,
+      "core routes graded nodes by tier and escalates a failed read-only answer to the reference")
+check("route_class picks the reasoning tier" in PLUGIN and "never name a model, provider, account, effort or candidate" in PLUGIN,
+      "planner prompt states tier semantics and still never sees candidates")
+
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")
