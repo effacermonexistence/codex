@@ -82,10 +82,21 @@ public final class ExecutionStream {
     public private(set) var eventCount = 0
     /// Tool calls of the model's own (main scope) that the native transport
     /// reported failed or declined, counted once per call. A transport
-    /// observation, not a task verdict: `os1 rcc-execute` records it beside a
-    /// finished read-only attempt (`RCCNativeAttemptOutcome.toolFailureError`)
-    /// so a REVAS-routed cheaper answer is escalated once.
+    /// observation, not a task verdict: most are ordinary exploration (a
+    /// command that exits non-zero, `rg` with no match, a missing file).
     public private(set) var mainToolsFailed = 0
+    /// Main-scope calls that BROKE DOWN and were never recovered: the native
+    /// transport declined the call (it never ran), or a non-command tool (an
+    /// MCP, dynamic, web-search or collaboration call) returned an error, with
+    /// no later main-scope call returning successfully. A command that ran and
+    /// exited non-zero, a file change the read-only bound refused, and every
+    /// Claude `is_error` tool result (Claude does not tell a missing file or a
+    /// non-zero exit apart from a broken call) are never counted. A permission
+    /// denial already fails the attempt as a policy denial. `os1 rcc-execute`
+    /// records this beside a finished read-only attempt
+    /// (`RCCNativeAttemptOutcome.toolFailureError`), so only a cheaper answer
+    /// that could not do what it tried is escalated, never one that explored.
+    public private(set) var mainToolBreakdownsUnrecovered = 0
     public private(set) var tool: String?
     /// Completed Claude turns in this run (a steered run has several).
     public private(set) var resultCount = 0
@@ -188,10 +199,17 @@ public final class ExecutionStream {
         }
     }
     private func observe(_ kind: NativeExecutionProgress.Kind, tool name: String? = nil, scope: String = "main",
-                         steps change: ((inout [Step], Int, Date) -> Void)? = nil) {
-        // Every failed return reaches here exactly once (its call sites
-        // dedupe), even when the progress record itself is capped.
-        if kind == .toolFailed, scope == "main" { mainToolsFailed += 1 }
+                         breakdown: Bool = false, steps change: ((inout [Step], Int, Date) -> Void)? = nil) {
+        // Every return reaches here exactly once (its call sites dedupe),
+        // even when the progress record itself is capped.
+        if scope == "main", kind == .toolFailed {
+            mainToolsFailed += 1
+            if breakdown { mainToolBreakdownsUnrecovered += 1 }
+        } else if scope == "main", kind == .toolReturned {
+            // A later successful call of the model's own recovers every
+            // earlier breakdown.
+            mainToolBreakdownsUnrecovered = 0
+        }
         let sequence = (progress?.sequence ?? 0) + 1
         guard sequence <= 1_000_000 else { return }
         let date = observedTime()
@@ -259,6 +277,14 @@ public final class ExecutionStream {
     /// Codex reports a command the owner declined as "declined": it did not
     /// run, so its step is not shown as an ordinary return.
     private static func codexFailed(_ status: String?) -> Bool { status == "failed" || status == "declined" }
+    /// A failed Codex item that broke down (see
+    /// `mainToolBreakdownsUnrecovered`): declined (never ran), or a failed
+    /// non-command tool call. A failed command ran and returned its exit code,
+    /// and a failed file change is the read-only bound refusing a write.
+    static func codexBreakdown(type: String, status: String?) -> Bool {
+        guard codexFailed(status), type != "fileChange" else { return false }
+        return status == "declined" || type != "commandExecution"
+    }
     private func setBackendStatus(_ status: String?) {
         guard status != backendStatus else { return }
         backendStatus = status
@@ -324,18 +350,18 @@ public final class ExecutionStream {
     /// Completion receipt for an item whose start was not observed. Preserve
     /// the native return state without fabricating a request notification/count.
     private func returnObservedItem(id: String, name: String, provider: String, failed: Bool,
-                                    extract: NativeStepLabel.Extract?) {
+                                    breakdown: Bool = false, extract: NativeStepLabel.Extract?) {
         guard Self.safeID(id), Self.safeTool(name) else { return }
         let key = provider + ":main:" + id
         guard let index = nativeSteps.lastIndex(where: { $0.id == Self.stepID(key) }),
               nativeSteps[index].state == .observed else { return }
-        observe(failed ? .toolFailed : .toolReturned, tool: name) { steps, _, date in
+        observe(failed ? .toolFailed : .toolReturned, tool: name, breakdown: breakdown) { steps, _, date in
             Self.label(&steps, key: key, extract: extract)
             steps[index].state = failed ? .failed : .returned; steps[index].endedAt = date
         }
     }
     private func toolReturn(id: String, scope: String, provider: String, failed: Bool = false,
-                            extract: NativeStepLabel.Extract? = nil) {
+                            breakdown: Bool = false, extract: NativeStepLabel.Extract? = nil) {
         guard Self.safeID(id) else { return }
         let key = provider + ":" + scope + ":" + id
         guard var state = toolStates[key], !state.returned else { return }
@@ -344,7 +370,7 @@ public final class ExecutionStream {
             mainToolOrder.removeAll { $0 == key }
             tool = mainToolOrder.last.flatMap { toolStates[$0]?.name }
         }
-        observe(failed ? .toolFailed : .toolReturned, tool: state.name, scope: scope) { steps, _, date in
+        observe(failed ? .toolFailed : .toolReturned, tool: state.name, scope: scope, breakdown: breakdown) { steps, _, date in
             Self.label(&steps, key: key, extract: extract)
             // State only moves forward; a return is not a success verdict.
             guard let index = steps.lastIndex(where: { $0.id == Self.stepID(key) }), steps[index].state == .requested else { return }
@@ -632,10 +658,12 @@ public final class ExecutionStream {
                 // whose step lacks one; this handler runs per stream message.
                 let key = "codex:main:" + id
                 let open = toolStates[key].map { !$0.returned } ?? false
+                let broke = Self.codexBreakdown(type: name, status: i["status"] as? String)
                 toolReturn(id: id, scope: "main", provider: "codex", failed: Self.codexFailed(i["status"] as? String),
+                           breakdown: broke,
                            extract: open && needsLabel(key) ? NativeStepLabel.codex(item: i, workspace: workspace) : nil)
                 if !open { returnObservedItem(id:id, name:name, provider:"codex", failed:Self.codexFailed(i["status"] as? String),
-                    extract:NativeStepLabel.codex(item:i, workspace:workspace)) }
+                    breakdown: broke, extract:NativeStepLabel.codex(item:i, workspace:workspace)) }
             }
             if let item = p["item"] as? [String: Any], let type = item["type"] as? String,
                ["plan", "imageView"].contains(type), let id = item["id"] as? String {
@@ -700,7 +728,8 @@ public final class ExecutionStream {
             if returned, state == nil, toolStates.count < 50_000 {
                 if let prior = nativeSteps.last(where: { $0.id == Self.stepID(key) }) {
                     if prior.state == .observed {
-                        returnObservedItem(id:id, name:type, provider:"codex", failed:Self.codexFailed(itemStatus), extract:extract())
+                        returnObservedItem(id:id, name:type, provider:"codex", failed:Self.codexFailed(itemStatus),
+                            breakdown: Self.codexBreakdown(type: type, status: itemStatus), extract:extract())
                     } else { labelStep(key:key, extract:extract()) }
                     continue
                 }
@@ -708,13 +737,15 @@ public final class ExecutionStream {
                 toolsRequested += 1; toolsReturned += 1
                 let failed = Self.codexFailed(itemStatus)
                 let label = extract()
-                observe(failed ? .toolFailed : .toolReturned, tool: type) { steps, sequence, date in
+                observe(failed ? .toolFailed : .toolReturned, tool: type,
+                        breakdown: Self.codexBreakdown(type: type, status: itemStatus)) { steps, sequence, date in
                     steps.append(Self.newStep(key: key, tool: type, scope: "main", extract: label, sequence: sequence,
                                               date: date, ended: failed ? .failed : .returned))
                 }
             } else if returned {
                 if let state, !state.returned {
                     toolReturn(id: id, scope: "main", provider: "codex", failed: Self.codexFailed(itemStatus),
+                               breakdown: Self.codexBreakdown(type: type, status: itemStatus),
                                extract: needsLabel(key) ? extract() : nil)
                 }
             } else if ["inProgress", "in_progress"].contains(itemStatus ?? "") {

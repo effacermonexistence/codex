@@ -1254,6 +1254,10 @@ struct RunStepSummary: Codable {
     var preDispatchGovernanceReceipt: String? = nil
     /// On a review's answer: the draft it checked ("codex · gpt-6-astra · high").
     var reviewedDraft: String? = nil
+    /// True when this RCC attempt ran in a fresh native session beside the
+    /// conversation's own thread (`RCCNativeAttemptOutcome.nativeSessionDetached`):
+    /// the app keeps the conversation bound to its own thread. Absent elsewhere.
+    var nativeSessionDetached: Bool? = nil
     /// Exact task/checker evidence, independent of native transport adoption.
     var taskQuality: TaskQualityEvidence.Evaluation? = nil
     /// Actual ordinary ChatGPT browser response/receipt, never a native JSONL
@@ -1286,6 +1290,7 @@ struct RunStepSummary: Codable {
         case reviewedDraft = "reviewed_draft"
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
+        case nativeSessionDetached = "native_session_detached"
     }
 }
 
@@ -1327,10 +1332,10 @@ struct ProviderExecution {
     /// A confined backend handed a change to OS-1 itself back (the marker).
     var os1ChangeRequired: Bool = false
     var os1FullAccessRequired: Bool = false
-    /// Tool calls of the model's own that the native transport reported
-    /// failed or declined (`ExecutionStream.mainToolsFailed`); 0 when not
+    /// Tool calls of the model's own that broke down and were never
+    /// recovered (`ExecutionStream.mainToolBreakdownsUnrecovered`); 0 when not
     /// observed. A transport observation, never a task verdict.
-    var nativeToolFailures: Int = 0
+    var nativeToolBreakdowns: Int = 0
 
     /// The same execution with OS-1's own completion note appended to the
     /// answer, before the artifact is hashed and delivered.
@@ -1345,7 +1350,7 @@ struct ProviderExecution {
         return ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: nativeRecord, surface: surface,
                                  driftApplication: driftApplication, preDispatchGovernanceReceipt: preDispatchGovernanceReceipt,
                                  os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired,
-                                 nativeToolFailures: nativeToolFailures)
+                                 nativeToolBreakdowns: nativeToolBreakdowns)
     }
 }
 
@@ -6094,8 +6099,8 @@ func normalizedSessionID(_ value: String?) throws -> String? {
 
 final class CodexAppServerClient: @unchecked Sendable {
     private(set) var interruptedPublicProgress = ""
-    /// Failed tool calls of the model's own in the last waited turn.
-    private(set) var lastTurnToolFailures = 0
+    /// Unrecovered tool breakdowns of the model's own in the last waited turn.
+    private(set) var lastTurnToolBreakdowns = 0
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -6497,7 +6502,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         }
         let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline, idleTimeout: idleTimeout,
                                      workspace: workspace)
-        return CodexTurnOutput(turnID: turnID, output: output, toolFailures: lastTurnToolFailures)
+        return CodexTurnOutput(turnID: turnID, output: output, toolBreakdowns: lastTurnToolBreakdowns)
     }
 
     /// Reads the thread and its turn list without resuming a writer. Call on a
@@ -6596,8 +6601,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         // The workspace only shortens file paths in the redacted step labels.
         let stream = ExecutionStream(workspace: workspace)
         interruptedPublicProgress = ""
-        lastTurnToolFailures = 0
-        defer { interruptedPublicProgress = stream.text; lastTurnToolFailures = stream.mainToolsFailed }
+        lastTurnToolBreakdowns = 0
+        defer { interruptedPublicProgress = stream.text; lastTurnToolBreakdowns = stream.mainToolBreakdownsUnrecovered }
         var revision = 0
         // Every app-server message (item, delta, usage, status) is activity:
         // a working turn runs to the ceiling, a silent one stops at `idle`.
@@ -6940,7 +6945,7 @@ func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, w
                 RuntimeActivity.emit(.verifying, provider: "codex", publicText: final, progress: progressStream.progress, publicTextOrigin: .nativeAssistant)
                 AttemptLatencyTrace.mark("native_output_published")
                 return CodexTurnOutput(turnID: turnID, output: Data(final.utf8), items: items,
-                                       toolFailures: progressStream.mainToolsFailed)
+                                       toolBreakdowns: progressStream.mainToolBreakdownsUnrecovered)
             }
             if status == "failed" || status == "interrupted" { throw OS1Error.message("Desktop turn ended without completion") }
         }
@@ -6957,8 +6962,9 @@ struct CodexTurnOutput {
     let turnID: String
     let output: Data
     var items: [[String: Any]] = []
-    /// Failed tool calls of the model's own in this turn (`ExecutionStream.mainToolsFailed`).
-    var toolFailures = 0
+    /// Unrecovered tool breakdowns of the model's own in this turn
+    /// (`ExecutionStream.mainToolBreakdownsUnrecovered`).
+    var toolBreakdowns = 0
 }
 
 /// A completed relay turn is not evidence that its downstream send succeeded.
@@ -7655,8 +7661,8 @@ private func execute(
     // A confined Claude run handing the request back as an OS-1 change.
     var os1ChangeRequired = false
     var os1FullAccessRequired = false
-    // Failed tool calls of the model's own, as the native stream observed them.
-    var nativeToolFailures = 0
+    // Unrecovered tool breakdowns of the model's own, as the native stream observed them.
+    var nativeToolBreakdowns = 0
     let hasPreloadedR2Evidence = preloadedR2Evidence != nil
     let evidenceDirective = sourceExecutionDirective(preloadedR2Evidence, required: sourceUseRequired)
     let readinessDirective = asksRecoveryReadiness(lockedObjective) ? """
@@ -7919,7 +7925,7 @@ private func execute(
         }
         }
         result = (0, turn.output, writerStderr)
-        nativeToolFailures = turn.toolFailures
+        nativeToolBreakdowns = turn.toolBreakdowns
         // Release this process's writer lock before the Desktop is asked to
         // open the thread; otherwise its own app-server hits the conflict.
         appServer.close()
@@ -8151,7 +8157,7 @@ private func execute(
             }
         }
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
-        nativeToolFailures = stream.mainToolsFailed
+        nativeToolBreakdowns = stream.mainToolBreakdownsUnrecovered
         let parsed: ClaudePrintResult
         do {
         if !fullAccessPaths.isEmpty, raw.0 != 0, (try? JSONSerialization.jsonObject(with: resultData)) == nil {
@@ -8299,7 +8305,7 @@ private func execute(
         driftApplication: driftApplication,
         preDispatchGovernanceReceipt: preDispatchGovernanceReceipt,
         os1ChangeRequired: os1ChangeRequired, os1FullAccessRequired: os1FullAccessRequired,
-        nativeToolFailures: nativeToolFailures
+        nativeToolBreakdowns: nativeToolBreakdowns
     )
     AttemptLatencyTrace.mark("candidate_built")
     do { try validateCandidate?() }
@@ -17860,6 +17866,8 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     // effort/model intent for every route.
     if request.mode == .explicitRoutingTest {
         input.explicitRouteSurfaces = (host.explicitRoutes ?? []).map(\.surface.rawValue)
+        // Each route's own effort/model words, for that route only.
+        input.explicitRouteIntents = (host.explicitRoutes ?? []).map { RoutingIntent.parse($0.instruction) }
     }
     let book = BackendAccounts.load()
     for provider in ["codex", "claude"] { input.accountIDs[provider] = BackendAccounts.active(provider: provider, in: book).id }
@@ -18254,11 +18262,12 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             metric: measuredUsage == nil ? nil : "native_usage_observation")
         // Actual model/effort are not universally exposed; requested artifact fields are NOT independent observations.
         record.observedConfig = nil
-        // A finished read-only answer whose own tool calls failed carries a
-        // typed error beside it; Core escalates a REVAS-routed cheaper answer
-        // once on it and delivers every other route's answer unchanged.
+        // A finished read-only answer during which a tool call of its own broke
+        // down and was never recovered carries a typed error beside it; Core
+        // escalates a REVAS-routed cheaper answer once on it and delivers every
+        // other route's answer unchanged. Ordinary failed commands never count.
         if record.error == nil, let toolError = RCCNativeAttemptOutcome.toolFailureError(verified: verified,
-            scope: t.selectedConfig.scope, mainToolsFailed: execution.nativeToolFailures) {
+            scope: t.selectedConfig.scope, unrecoveredBreakdowns: execution.nativeToolBreakdowns) {
             record.error = toolError
         }
         var step = RunStepSummary(sequence: 1, provider: provider, action: signed.action, model: t.selectedConfig.model,
@@ -18269,6 +18278,11 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         step.os1SourceConfined = sourceConfined
         step.os1ChangeRequired = step.os1SourceConfined && execution.os1ChangeRequired
         step.os1FullAccessRequired = step.os1SourceConfined && execution.os1FullAccessRequired
+        // A fresh session beside the conversation's own thread (a cheaper
+        // REVAS attempt, one part of a plan) never becomes the conversation's.
+        if RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: t.nativeResumeSessionID,
+            conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
+            chatLane: surface.forcesChatLane) { step.nativeSessionDetached = true }
         record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
         if verified, !ExecutionCancellation.isCancelled, step.os1SourceConfined,
            step.os1ChangeRequired || step.os1FullAccessRequired,

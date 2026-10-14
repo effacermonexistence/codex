@@ -4,8 +4,8 @@ import { open, mkdir, lstat, writeFile, readFile, chmod, unlink } from 'node:fs/
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
-import { createRCCRuntime, dispatchable, effectiveExplicitRoutes, RCCRuntimeError, ROUTE_CLASSES,
-  routingAvailability } from './rcc-runtime.mjs';
+import { createRCCRuntime, dispatchable, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
+  RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -28,10 +28,13 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
     seen.add(candidate.id);
     candidateIDs[candidate.scope].push(candidate.id);
   }
-  // Outside an explicit route test the planner never chooses a row. It grades
-  // each node (route_class) in a scope that can run now; the host binds the
-  // exact tier route for that grade afterwards.
+  // The planner chooses an exact row only in an explicit route test on an
+  // older catalog (no model_tiers). Otherwise it grades each node
+  // (route_class) and the host binds the exact tier route for that grade
+  // afterwards; in an explicit route test the host binds it on the route's
+  // own named surface, so the planner only grades each named route.
   const explicit = task.mode === 'explicit_routing_test';
+  const gradedExplicit = explicitTierRouting(task, catalog);
   const availability = explicit ? null : routingAvailability(task, catalog, now);
   const offered = explicit ? {read_only: candidateIDs.read_only.length > 0,
     workspace_write: candidateIDs.workspace_write.length > 0} :
@@ -44,7 +47,12 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
   const kind = explicit || !(availability.deterministic) ?
       {type: 'string', const: 'agent'} :
       {type: 'string', enum: ['agent', 'deterministic']};
-  const choice = explicit ? 'candidate_id' : 'route_class';
+  const choice = explicit && !gradedExplicit ? 'candidate_id' : 'route_class';
+  // A graded explicit node names its route by id (its position in the
+  // owner's original list); the host then binds that route's surface.
+  const routeIDs = gradedExplicit ? (task.host_context?.explicit_routes ?? [])
+    .map((route, index) => effectiveExplicitRoutes(task).includes(route) ? explicitRouteNodeID(index) : null)
+    .filter(Boolean) : [];
   // A native writer row owns the whole workspace ("**"): it is not confined to
   // the paths a planner lists. When every writer that can run now is such a
   // row, a graded writer must say so instead of naming concrete paths.
@@ -55,9 +63,10 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
     required: ['id', 'instruction', 'dependencies', 'kind', choice,
       'scope', 'owned_paths', 'context_refs'],
     properties: {
-      id: {type: 'string'}, instruction: {type: 'string'},
-      dependencies: {type: 'array', maxItems: 8, items: {type: 'string'}},
-      kind, [choice]: explicit ? {type: 'string', enum: candidateIDs[scope]} :
+      id: gradedExplicit ? {type: 'string', enum: routeIDs} : {type: 'string'}, instruction: {type: 'string'},
+      dependencies: gradedExplicit ? {type: 'array', maxItems: 0, items: {type: 'string'}} :
+        {type: 'array', maxItems: 8, items: {type: 'string'}},
+      kind, [choice]: choice === 'candidate_id' ? {type: 'string', enum: candidateIDs[scope]} :
         {type: 'string', enum: [...ROUTE_CLASSES]},
       scope: {type: 'string', const: scope},
       owned_paths: scope === 'read_only' ?
@@ -285,15 +294,25 @@ export function expandCandidateCatalog(compact) {
 }
 
 const EXPLICIT_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Choose exact candidate IDs only; each ID already fixes model, effort, tools, quota and scope. Candidate catalog is lossless grouped data: each group.common uses common_keys, each group.variants row uses variant_keys (including the original index); do not omit, alias or invent an ID. Prefer the smallest total resources sufficient for this task, not a fixed strongest model. Unknown cost/quality stays unknown; policy_admitted means permission admission, NOT measured quality parity. Independent work may be parallel; dependent work must name dependencies. Explicit routes require exactly one independent node per supplied surface/instruction, without alias, substitution or payload rewrite. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",candidate_id,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
+const EXPLICIT_GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. The owner named which surface runs each part (explicit_routes, each with an id). Return exactly one independent node per supplied route: id = that route\'s id, instruction = that route\'s instruction byte for byte, dependencies [], kind "agent"; never drop, merge, add, alias or rewrite a route. Grade each node with route_class: trivial = a short factual answer, lookup, arithmetic, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest model and reasoning effort on its named surface expected to give the same result as that surface\'s strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. read_only nodes never write and have no owned_paths; a workspace_write node lists the paths it owns. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}.';
 const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = a short factual answer, lookup, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user: a short request can be deep and a long one trivial; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest route (exact model, reasoning effort, surface and quota pool) expected to give the same result as the strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; a workspace_write node owns the whole workspace, owned_paths ["**"], unless the response schema allows narrower paths, and the host runs writers one at a time. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
 
 export function buildBoundedPlannerInput({task, catalog, feedback, policyText, now = Date.now()}) {
   const explicit = task.mode === 'explicit_routing_test';
+  const gradedExplicit = explicitTierRouting(task, catalog);
   const instructions = ROUTER_MODE_LOCK + '\n\n' + policyText + '\n\n' + ROUTER_MODE_LOCK + '\n\n' +
-    (explicit ? EXPLICIT_PLAN_INSTRUCTIONS : GRADED_PLAN_INSTRUCTIONS);
-  // Outside an explicit route test the planner gets no candidate catalog and
-  // no candidate ID (feedback included): only what can run now.
-  const message = 'OS1_RCC_PLAN\n' + JSON.stringify(explicit ? {task_id: task.task_id,
+    (gradedExplicit ? EXPLICIT_GRADED_PLAN_INSTRUCTIONS : explicit ? EXPLICIT_PLAN_INSTRUCTIONS : GRADED_PLAN_INSTRUCTIONS);
+  // Only an explicit route test on an older catalog shows the planner the
+  // candidate catalog. Otherwise it gets no candidate ID (feedback included):
+  // a graded explicit test gets the named routes with their ids, anything
+  // else what can run now.
+  const original = task.host_context?.explicit_routes ?? [];
+  const message = 'OS1_RCC_PLAN\n' + JSON.stringify(gradedExplicit ? {task_id: task.task_id,
+    request_sha256: task.request_sha256, original_objective: task.objective,
+    request: task.request, material_refs: task.material_refs,
+    explicit_routes: original.map((route, index) => effectiveExplicitRoutes(task).includes(route) ?
+      {id: explicitRouteNodeID(index), surface: route.surface, instruction: route.instruction} : null).filter(Boolean),
+    context: task.host_context.context} : explicit ? {task_id: task.task_id,
     request_sha256: task.request_sha256, original_objective: task.objective,
     request: task.request, material_refs: task.material_refs,
     explicit_routes: effectiveExplicitRoutes(task) ?? [],
@@ -312,10 +331,11 @@ export function buildBoundedPlannerInput({task, catalog, feedback, policyText, n
   return {instructions, message, responseFormat};
 }
 
-/** The local planner grades nodes; it never chooses a row outside an
- * explicit route test, even if the model ignored the response schema. */
-export function assertPlannerRouteChoice(task, plan) {
-  if (task.mode !== 'explicit_routing_test' && Array.isArray(plan?.nodes) &&
+/** The local planner grades nodes; it chooses a row only in an explicit
+ * route test on an older catalog (no model_tiers), even if the model ignored
+ * the response schema. */
+export function assertPlannerRouteChoice(task, plan, catalog = null) {
+  if ((task.mode !== 'explicit_routing_test' || explicitTierRouting(task, catalog)) && Array.isArray(plan?.nodes) &&
       plan.nodes.some(node => node !== null && typeof node === 'object' && Object.hasOwn(node, 'candidate_id')))
     throw new RCCRuntimeError('planner_candidate_choice_forbidden');
   return plan;
@@ -474,7 +494,7 @@ export function registerRCCRuntime(api) {
           // The core's independent typed verifier checks objective binding, DAG,
           // permissions, scopes, catalogue and quota before any child dispatch.
           // Outside explicit route tests the core binds each graded node.
-          return assertPlannerRouteChoice(task, parsed);
+          return assertPlannerRouteChoice(task, parsed, catalog);
         },
         execute: (ticket, signal) => nativeOperation('rcc-adapter', ticket, signal),
         // Same pinned native adapter and task owner. A typed, receipt-bound

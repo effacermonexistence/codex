@@ -17,7 +17,8 @@ public enum RCCNativeAttemptOutcome {
     public static let outcomeUncertain = "native_outcome_uncertain_preserved"
     public static let configurationUnavailable = "native_configuration_or_authorization_unavailable"
     /// Recorded beside a finished read-only attempt whose native stream
-    /// reported at least one failed tool call of the model's own.
+    /// reported a tool call of the model's own that broke down and was never
+    /// recovered (`ExecutionStream.mainToolBreakdownsUnrecovered`).
     public static let nativeToolFailed = "native_tool_failed"
 
     public struct Report: Equatable, Sendable {
@@ -51,16 +52,36 @@ public enum RCCNativeAttemptOutcome {
                      error: dispatched ? outcomeUncertain : configurationUnavailable)
     }
 
-    /// The typed error a FINISHED attempt carries beside its answer when the
-    /// model's own tool calls failed (`ExecutionStream.mainToolsFailed`):
-    /// `native_tool_failed` for a verified read-only attempt, else nil. The
-    /// answer is still delivered as is on any route; OpenClaw Core reads the
-    /// error as a REVAS failure signal only for a read-only node bound below
-    /// its reference tier, which then re-runs once at the reference. A write
-    /// keeps its own report (writes are never escalated); an attempt that did
-    /// not finish already reports its failure.
-    public static func toolFailureError(verified: Bool, scope: RCCRuntimeContract.Scope, mainToolsFailed: Int) -> String? {
-        verified && scope == .readOnly && mainToolsFailed > 0 ? nativeToolFailed : nil
+    /// The typed error a FINISHED attempt carries beside its answer when a
+    /// tool call of the model's own broke down and was never recovered
+    /// (`ExecutionStream.mainToolBreakdownsUnrecovered`: declined, or a
+    /// non-command tool error, with no later successful call):
+    /// `native_tool_failed` for a verified read-only attempt, else nil. An
+    /// ordinary failed command (`rg` with no match, a test that fails, a
+    /// missing file) is exploration, never this error: escalating it would
+    /// pay for the cheaper attempt AND the reference. The answer is still
+    /// delivered as is on any route; OpenClaw Core reads the error as a REVAS
+    /// failure signal only for a read-only node bound below its reference
+    /// tier, which then re-runs once at the reference. A write keeps its own
+    /// report (writes are never escalated); an attempt that did not finish
+    /// already reports its failure.
+    public static func toolFailureError(verified: Bool, scope: RCCRuntimeContract.Scope,
+                                        unrecoveredBreakdowns: Int) -> String? {
+        verified && scope == .readOnly && unrecoveredBreakdowns > 0 ? nativeToolFailed : nil
+    }
+
+    /// Whether a finished attempt ran in a fresh native session BESIDE the
+    /// conversation's own thread of its provider: Core did not resume that
+    /// thread (`native_resume_session_id` null) although the host supplied one.
+    /// That is a REVAS-routed cheaper attempt whose answer may still be
+    /// discarded (so it never writes into the owner's thread), or one part of
+    /// a multi-part plan. Its session must not replace the conversation's
+    /// thread: the next turn resumes the thread that holds the whole
+    /// conversation, not a one-turn side session. A chat lane is already
+    /// never the conversation's agent session.
+    public static func nativeSessionDetached(resumedSessionID: String?, conversationSessionID: String?,
+                                             chatLane: Bool) -> Bool {
+        resumedSessionID == nil && conversationSessionID != nil && !chatLane
     }
 
     /// Whether the workspace part of the no-effect proof is about THIS

@@ -850,6 +850,21 @@ private func providerIntentSelfTest() throws {
           isChatLaneRoutePart(chatPart), !isChatLaneRoutePart(fullPart), !isChatLaneRoutePart(review) else {
         throw RunnerError.message("OS-1 route fan-out UI self-test failed.")
     }
+    // A cheaper REVAS answer delivered from its own fresh session (build 378
+    // review): the conversation stays bound to its own thread X; with no
+    // thread bound yet, the step's session becomes the conversation's.
+    var detachedAnswer = fullPart
+    detachedAnswer.nativeSessionDetached = true
+    let ownerThread = UUID().uuidString
+    guard !nativeSessionRebinds(detachedAnswer, bound: ownerThread), nativeSessionRebinds(detachedAnswer, bound: nil),
+          nativeSessionRebinds(fullPart, bound: ownerThread), !nativeSessionRebinds(chatPart, bound: ownerThread),
+          nativeSessionRebinds(chatPart, bound: nil),
+          let detachedJSON = try? JSONDecoder().decode(AppRunStep.self, from: Data(#"{"sequence":1,"provider":"codex","action":"execute","model":"gpt-6.1-sol","effort":"medium","revas_disposition":"execution_only","session_id":"\#(UUID().uuidString)","permission_profile":"read_only","exit_code":0,"output":"answer","stderr":"","duration_ms":1,"native_record":null,"native_session_detached":true}"#.utf8)),
+          detachedJSON.nativeSessionDetached == true, !nativeSessionRebinds(detachedJSON, bound: ownerThread),
+          let olderJSON = try? JSONDecoder().decode(AppRunStep.self, from: Data(#"{"sequence":1,"provider":"codex","action":"execute","model":"gpt-6.1-sol","effort":"medium","revas_disposition":"execution_only","session_id":"\#(UUID().uuidString)","permission_profile":"read_only","exit_code":0,"output":"answer","stderr":"","duration_ms":1,"native_record":null}"#.utf8)),
+          olderJSON.nativeSessionDetached == nil, nativeSessionRebinds(olderJSON, bound: ownerThread) else {
+        throw RunnerError.message("OS-1 detached REVAS session continuity self-test failed.")
+    }
     // A side question answered on a chat lane is not a read-only work task:
     // the next edit continues the conversation's work (2026-10-02).
     var sideChat = ConversationSession(workspace: "/tmp")
@@ -6337,6 +6352,10 @@ private struct AppRunStep: Decodable, Sendable {
     var reviewedDraft: String? = nil
     var taskQuality: TaskQualityEvidence.Evaluation? = nil
     var consumerChatGPTRecord: AppConsumerChatGPTRecord? = nil
+    /// The RCC attempt ran in a fresh native session beside the conversation's
+    /// own thread (a cheaper REVAS attempt, one part of a plan). Absent on
+    /// older records.
+    var nativeSessionDetached: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr, surface
@@ -6351,6 +6370,7 @@ private struct AppRunStep: Decodable, Sendable {
         case reviewedDraft = "reviewed_draft"
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
+        case nativeSessionDetached = "native_session_detached"
     }
 
     /// Explicit lane evidence only. Display fallback must not become stored
@@ -6584,6 +6604,16 @@ private func lastTurnWasReadOnlyQuestion(_ session: ConversationSession) -> Bool
 /// session, which the next full-lane turn resumes.
 private func isChatLaneRoutePart(_ step: AppRunStep) -> Bool {
     step.executedSurface?.forcesChatLane == true
+}
+
+/// Whether a delivered step's native session may (re)bind the conversation's
+/// session of its provider. A chat-lane part, and an RCC attempt that ran in a
+/// fresh session beside the conversation's own thread (a cheaper REVAS
+/// attempt, one part of a plan: `native_session_detached`), never replace a
+/// bound thread, which the next turn resumes; with nothing bound yet the
+/// step's session becomes the conversation's.
+private func nativeSessionRebinds(_ step: AppRunStep, bound: String?) -> Bool {
+    bound == nil || !(isChatLaneRoutePart(step) || step.nativeSessionDetached == true)
 }
 
 /// A fresh bounded chat thread is not the conversation's resumable agent
@@ -11146,9 +11176,11 @@ private final class SessionStore: ObservableObject {
                     // several siblings as "the" conversation arbitrarily.
                     if submission.recoveryParentID == nil {
                         for provider in [ProviderChoice.codex, .claude] {
+                            let bound = provider == .codex ? sessions[target].codexSessionID : sessions[target].claudeSessionID
                             let ids = Set(summary.steps.filter {
                                 $0.provider == provider.rawValue && stepRecordIsVerified($0) &&
-                                !isChatLaneRoutePart($0) && UUID(uuidString: $0.sessionID) != nil
+                                !isChatLaneRoutePart($0) && nativeSessionRebinds($0, bound: bound) &&
+                                UUID(uuidString: $0.sessionID) != nil
                             }.map(\.sessionID))
                             if ids.count == 1, let nativeID = ids.first {
                                 recordNativeSession(provider, id: nativeID, conversationID: submission.sessionID)
@@ -11251,7 +11283,9 @@ private final class SessionStore: ObservableObject {
                         for step in visibleAdoptedSteps(summary.steps) where stepRecordIsVerified(step) {
                             if submission.recoveryParentID == nil,
                                !isChatLaneRoutePart(step),
-                               let provider = ProviderChoice(rawValue: step.provider) {
+                               let provider = ProviderChoice(rawValue: step.provider),
+                               nativeSessionRebinds(step, bound: provider == .codex ? sessions[target].codexSessionID :
+                                                        sessions[target].claudeSessionID) {
                                 recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                             }
                             sessions[target].messages.append(ChatMessage(role: .assistant,
@@ -11335,7 +11369,7 @@ private final class SessionStore: ObservableObject {
                     if submission.recoveryParentID == nil,
                        let provider = ProviderChoice(rawValue: step.provider) {
                         let bound = provider == .codex ? sessions[target].codexSessionID : sessions[target].claudeSessionID
-                        if !(isChatLaneRoutePart(step) && bound != nil) {
+                        if nativeSessionRebinds(step, bound: bound) {
                             recordNativeSession(provider, id: step.sessionID, conversationID: submission.sessionID)
                         }
                     }

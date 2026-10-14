@@ -27,7 +27,11 @@ import Foundation
 ///   tier/effort expected to give the reference result (build 378).
 /// - An explicit route test (`explicitRouteSurfaces` set) keeps its former
 ///   candidate set: the whole fan-out sentence is not read as one intent, and
-///   no effort is withheld; only GPT, capacity and the chat gate apply.
+///   no effort is withheld; only GPT, capacity and the chat gate apply. Each
+///   route's OWN effort/model words travel separately
+///   (`explicit_route_intents`): the host binds each named route's model and
+///   effort by its grade on that route's surface, and an above-max effort
+///   only when that route's own words asked for it.
 /// - `claude-chat` rows exist only when the narrow chat-lane predicate holds.
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
@@ -121,6 +125,11 @@ public enum RCCNativeCatalogBuilder {
         public var codexQuotaExhaustedModels: Set<String> = []
         /// The surfaces an explicit route test names, or nil outside one.
         public var explicitRouteSurfaces: [String]? = nil
+        /// Each explicit route's OWN effort/model words
+        /// (`RoutingIntent.parse` of that route's payload), aligned with the
+        /// host's original explicit route list; nil outside an explicit route
+        /// test. One route's words never constrain another route.
+        public var explicitRouteIntents: [RoutingIntent]? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -149,6 +158,14 @@ public enum RCCNativeCatalogBuilder {
         public var intent: RoutingIntent
         /// Tier of every tiered model in `candidates` (`ModelTiers`).
         public var modelTiers: [String: String] = [:]
+        /// Per offered model with known quota: the same pool score the pool
+        /// order uses (capacity share x that model's own remaining quota /
+        /// hours to its own reset, at most 1), in integer parts per billion so
+        /// both sides compare exact values, so the host can rank pools by the
+        /// model a node actually binds (build 378), not by another model's quota.
+        public var quotaScores: [String: Int] = [:]
+        /// An explicit route test's per-route intents (see Input).
+        public var explicitRouteIntents: [RoutingIntent]? = nil
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -399,19 +416,30 @@ public enum RCCNativeCatalogBuilder {
         // reference when it has one (else its strongest remaining tier), not
         // by the model with the most quota left. With model-scoped windows
         // those differ, and scoring the wrong one would spend a nearly
-        // exhausted model while the other pool has room.
+        // exhausted model while the other pool has room. That order serves
+        // deep work and escalations; every offered model's own score is also
+        // emitted (`quota_scores`), so trivial and standard work, which bind a
+        // lower tier, rank pools by the model they actually spend.
+        func scoreParts(_ row: Row) -> (share: Double, hours: Double, resetUnknown: Bool, score: Double?) {
+            let share = Double(capacity(row.provider, input.capacityPlan)) / 100
+            let quota = row.provider == "codex" ? input.codexQuota : input.claudeQuota
+            let reset = quota?.limitingReset(accountID: input.accountIDs[row.provider] ?? "", model: row.model, now: input.now)
+            let hours = reset.map { max(0, $0.timeIntervalSince(input.now) / 3600) } ?? 168
+            return (share, hours, reset == nil, row.remaining.map { share * $0 / max(hours, 1) })
+        }
         var rankings: [PoolRanking] = []
+        var quotaScores: [String: Int] = [:]
+        for row in rows where quotaScores[row.model] == nil {
+            if let score = scoreParts(row).score, score.isFinite, score >= 0 {
+                quotaScores[row.model] = Int((min(score, 1) * 1_000_000_000).rounded())
+            }
+        }
         for provider in ["codex", "claude"] {
             let poolRows = rows.filter { $0.provider == provider }
-            guard !poolRows.isEmpty else { continue }
-            let share = Double(capacity(provider, input.capacityPlan)) / 100
-            let best = poolRows.min(by: modelKeyLess)
-            let quota = provider == "codex" ? input.codexQuota : input.claudeQuota
-            let reset = best.flatMap { quota?.limitingReset(accountID: input.accountIDs[provider] ?? "", model: $0.model, now: input.now) }
-            let hours = reset.map { max(0, $0.timeIntervalSince(input.now) / 3600) } ?? 168
-            let score = best?.remaining.map { share * $0 / max(hours, 1) }
-            rankings.append(PoolRanking(pool: pool(provider), share: share, remainingFraction: best?.remaining,
-                                        hoursToReset: hours, resetUnknown: reset == nil, score: score))
+            guard let best = poolRows.min(by: modelKeyLess) else { continue }
+            let parts = scoreParts(best)
+            rankings.append(PoolRanking(pool: pool(provider), share: parts.share, remainingFraction: best.remaining,
+                                        hoursToReset: parts.hours, resetUnknown: parts.resetUnknown, score: parts.score))
         }
         rankings.sort { a, b in
             switch (a.score, b.score) {
@@ -449,7 +477,8 @@ public enum RCCNativeCatalogBuilder {
         var tiers: [String: String] = [:]
         for row in rows { if let tier = ModelTiers.tier(of: row.model) { tiers[row.model] = tier.rawValue } }
         return Output(candidates: rows.map(\.fields), exclusions: exclusions, pools: rankings, intent: intent,
-                      modelTiers: tiers)
+                      modelTiers: tiers, quotaScores: quotaScores,
+                      explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents)
     }
 
     /// The exact catalog bytes `os1 rcc-catalog` prints. `exclusions` appears
@@ -469,6 +498,16 @@ public enum RCCNativeCatalogBuilder {
                                         "model_family": output.intent.modelFamily.map { $0 as Any } ?? NSNull()]
         }
         if !output.candidates.isEmpty { object["model_tiers"] = output.modelTiers }
+        // Build 378, both optional: per-model pool scores (known quota only),
+        // and an explicit route test's own per-route words (only when some
+        // route carries one; aligned with the original route list).
+        if !output.candidates.isEmpty, !output.quotaScores.isEmpty { object["quota_scores"] = output.quotaScores }
+        if !output.candidates.isEmpty, let intents = output.explicitRouteIntents, intents.contains(where: { !$0.isEmpty }) {
+            object["explicit_route_intents"] = intents.map { intent -> Any in
+                intent.isEmpty ? NSNull() : ["effort": intent.effort.map { $0 as Any } ?? NSNull(),
+                                             "model_family": intent.modelFamily.map { $0 as Any } ?? NSNull()]
+            }
+        }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 }

@@ -286,15 +286,27 @@ public enum RCCRuntimeContract {
         /// tiered model in `candidates`, keyed by exact model name. Absent in
         /// older catalogs, where the core keeps its former reference routing.
         public var modelTiers: [String: String]?
+        /// Optional (build 378): an explicit route test's own effort/model
+        /// words per route, aligned with the host's original explicit route
+        /// list (null where a route has none). Absent elsewhere.
+        public var explicitRouteIntents: [RoutingIntentConstraint?]?
+        /// Optional (build 378): per offered model with known quota, the
+        /// builder's pool score for that model (capacity share x its own
+        /// remaining quota / hours to its own reset), in integer parts per
+        /// billion (0 ... 1_000_000_000).
+        public var quotaScores: [String: Int]?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
                     exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil,
-                    modelTiers: [String: String]? = nil) {
+                    modelTiers: [String: String]? = nil, explicitRouteIntents: [RoutingIntentConstraint?]? = nil,
+                    quotaScores: [String: Int]? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
             self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
+            self.explicitRouteIntents = explicitRouteIntents; self.quotaScores = quotaScores
         }
         enum CodingKeys: String, CodingKey {
             case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256"
             case routingIntent = "routing_intent", modelTiers = "model_tiers"
+            case explicitRouteIntents = "explicit_route_intents", quotaScores = "quota_scores"
         }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
@@ -822,11 +834,22 @@ public enum RCCRuntimeContract {
                   exclusions.allSatisfy({ Exclusion.providers.contains($0.provider) && Exclusion.reasons.contains($0.reason) &&
                       (1...10_000).contains($0.count) }) else { throw Rejection.invalidObservation }
         }
-        if let intent = value.routingIntent {
-            guard intent.effort != nil || intent.modelFamily != nil,
-                  intent.effort.map({ RoutingIntentConstraint.efforts.contains($0) }) ?? true,
-                  intent.modelFamily.map({ $0.range(of: "^[a-z][a-z0-9]{1,31}$", options: .regularExpression) != nil }) ?? true
+        func validIntent(_ intent: RoutingIntentConstraint) -> Bool {
+            (intent.effort != nil || intent.modelFamily != nil) &&
+                (intent.effort.map({ RoutingIntentConstraint.efforts.contains($0) }) ?? true) &&
+                (intent.modelFamily.map({ $0.range(of: "^[a-z][a-z0-9]{1,31}$", options: .regularExpression) != nil }) ?? true)
+        }
+        if let intent = value.routingIntent, !validIntent(intent) { throw Rejection.invalidObservation }
+        if let intents = value.explicitRouteIntents {
+            // One entry per route of the explicit route test (at most 8).
+            guard (1...8).contains(intents.count), intents.allSatisfy({ $0.map(validIntent) ?? true }),
+                  request.map({ $0.mode == .explicitRoutingTest && $0.hostContext?.explicitRoutes?.count == intents.count }) ?? true
             else { throw Rejection.invalidObservation }
+        }
+        if let scores = value.quotaScores {
+            let models = Set(value.candidates.map(\.model))
+            guard scores.count <= 256, scores.allSatisfy({ text($0.key, max: 256) && models.contains($0.key) &&
+                (0...1_000_000_000).contains($0.value) }) else { throw Rejection.invalidObservation }
         }
         if let tiers = value.modelTiers {
             // Only provider-stated tiers of models this catalog actually offers.
@@ -1132,7 +1155,7 @@ public enum RCCRuntimeContract {
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])

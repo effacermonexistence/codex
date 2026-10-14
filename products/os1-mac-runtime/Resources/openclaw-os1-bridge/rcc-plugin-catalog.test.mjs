@@ -360,3 +360,38 @@ test('graded writers own the whole workspace when every runnable writer row is "
   rows.candidates[1] = {...rows.candidates[1], allowed_paths: ['**']};
   assert.equal(buildRoutePlanSchema(explicit, rows).properties.nodes.items.oneOf[1].properties.owned_paths.maxItems, 64);
 });
+
+// Build 378 review: on a tier-routed catalog an explicit route test is graded,
+// not chosen: the planner never sees a candidate ID or the catalog, names each
+// route by its id and grades it; the host binds model and effort per route.
+test('an explicit route test on a tier-routed catalog asks the planner to grade each named route, never to pick a row', () => {
+  const routes = [{surface: 'chatgpt', instruction: '0+0'}, {surface: 'codex', instruction: '1+1'},
+    {surface: 'claude', instruction: '3+3'}];
+  const explicit = explicitTask(routes);
+  const tiered = {...catalog(2, true), model_tiers: {'gpt-family-0': 'frontier', 'gpt-family-1': 'fast'}};
+  const schema = buildRoutePlanSchema(explicit, tiered, NOW);
+  const item = schema.properties.nodes.items;
+  assert.deepEqual(item.properties.route_class.enum, ['trivial', 'standard', 'deep']);
+  assert.equal(Object.hasOwn(item.properties, 'candidate_id'), false);
+  // The ids name the routes that still run, by their position in the owner's list.
+  assert.deepEqual(item.properties.id.enum, ['requested-2', 'requested-3']);
+  assert.equal(item.properties.dependencies.maxItems, 0);
+  assert.equal(schema.properties.nodes.minItems, 2); assert.equal(schema.properties.nodes.maxItems, 2);
+  const input = buildBoundedPlannerInput({task: explicit, catalog: tiered,
+    feedback: {failed_candidate_id: 'cfg-000'}, policyText: 'p', now: NOW});
+  const payload = JSON.parse(input.message.slice('OS1_RCC_PLAN\n'.length));
+  assert.deepEqual(payload.explicit_routes, [{id: 'requested-2', surface: 'codex', instruction: '1+1'},
+    {id: 'requested-3', surface: 'claude', instruction: '3+3'}]);
+  assert.equal(Object.hasOwn(payload, 'candidate_catalog'), false);
+  assert.equal(input.message.includes('cfg-'), false, 'no candidate ID reaches the planner, feedback included');
+  assert.match(input.instructions, /Grade each node with route_class: trivial = /);
+  assert.match(input.instructions, /never name a model, provider, account, effort or candidate/);
+  // A planner that picks a row anyway is refused before the core sees it.
+  assert.throws(() => assertPlannerRouteChoice(explicit, {nodes: [{id: 'requested-2', candidate_id: 'cfg-000'}]}, tiered),
+    /planner_candidate_choice_forbidden/);
+  assert.doesNotThrow(() => assertPlannerRouteChoice(explicit, {nodes: [{id: 'requested-2', route_class: 'trivial'}]}, tiered));
+  // An older catalog (no model_tiers) keeps the exact-ID explicit planner.
+  const older = catalog(2);
+  assert.ok(buildRoutePlanSchema(explicit, older).properties.nodes.items.properties.candidate_id);
+  assert.doesNotThrow(() => assertPlannerRouteChoice(explicit, {nodes: [{id: 'a', candidate_id: 'cfg-000'}]}, older));
+});

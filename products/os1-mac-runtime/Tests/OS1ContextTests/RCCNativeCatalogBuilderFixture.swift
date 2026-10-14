@@ -288,10 +288,18 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               "trivial and standard take the cheapest tier, deep the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
     var nearlyInput = referenceInput(); nearlyInput.claudeQuota = claudeWindows(fableUsed: 97)
     let nearly = try B.build(nearlyInput)
+    // The catalog's pool order (deep work, escalations) follows the frontier
+    // model's own quota; trivial and standard work bind a lower tier and rank
+    // pools by THAT model's quota (quota_scores, build 378 review): Claude's
+    // sonnet has 85% left with 4h to reset, Codex's luna/sol 60% over 48h.
     try check(tuples(nearly).first == "codex/gpt-6-astra/medium/read_only" &&
-              (try routes(nearly)) == ["openai_codex/gpt-6-luna/low/route_tier>gpt-6-astra",
-                "openai_codex/gpt-6.1-sol/medium/route_tier>gpt-6-astra", "openai_codex/gpt-6-astra/max/route_reference"],
-              "a nearly exhausted frontier model ranks its pool by that model: \(tuples(nearly))")
+              (try routes(nearly)) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>claude-fable-5-1",
+                "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "openai_codex/gpt-6-astra/max/route_reference"],
+              "a nearly exhausted frontier model ranks its pool by that model for deep work only: \(tuples(nearly)) \((try? routes(nearly)) ?? [])")
+    let nearlyScores = try C.decodeCatalog(B.catalogData(nearly, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))).quotaScores
+    try check(nearlyScores?["claude-fable-5-1"] == 7_500_000 && nearlyScores?["claude-sonnet-5-5"] == 212_500_000 &&
+              nearlyScores?["gpt-6-luna"] == 12_500_000 && nearlyScores?["gpt-6-astra"] == 12_500_000,
+              "quota_scores: share x the model's own remaining / hours to its own reset, parts per billion: \(nearlyScores ?? [:])")
     var zeroInput = referenceInput(); zeroInput.claudeQuota = claudeWindows(fableUsed: 100)
     let fableZero = try B.build(zeroInput)
     try check(!fableZero.candidates.contains { $0["model"] as? String == "claude-fable-5-1" } &&
@@ -349,7 +357,10 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               tuples(medium) == ["claude/sonnet/medium/read_only", "codex/gpt-6-astra/medium/read_only",
                                  "codex/gpt-6.1-sol/medium/read_only"] &&
               reasons(medium) == ["claude:reference_unavailable:3"] &&
-              (try route(medium, "standard")) == "anthropic_shared/sonnet/medium/route_explicit" &&
+              // The owner fixed only the effort: sonnet is the host's choice,
+              // guarded by the frontier at that effort (Claude's fable has no
+              // medium profile, so Codex's astra medium).
+              (try route(medium, "standard")) == "anthropic_shared/sonnet/medium/route_tier>gpt-6-astra" &&
               (try route(medium, "deep")) == "openai_codex/gpt-6-astra/medium/route_explicit",
               "an effort word keeps the class tier at that effort; deep runs a frontier model at it: \(tuples(medium)) \(reasons(medium))")
     // "최대 리즈닝" (max): every class runs max, on its own tier; deep stays
@@ -357,8 +368,8 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let koreanMax = try B.build(referenceInput("최대 리즈닝으로 해줘"))
     try check(B.intent(referenceInput("최대 리즈닝으로 해줘")) == RoutingIntent(effort: "max") &&
               koreanMax.candidates.allSatisfy { $0["effort"] as? String == "max" } &&
-              (try routes(koreanMax)) == ["anthropic_shared/claude-opus-5-5/max/route_explicit",
-                "anthropic_shared/claude-opus-5-5/max/route_explicit", "anthropic_shared/claude-fable-5-1/max/route_explicit"],
+              (try routes(koreanMax)) == ["anthropic_shared/claude-opus-5-5/max/route_tier>claude-fable-5-1",
+                "anthropic_shared/claude-opus-5-5/max/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_explicit"],
               "max reasoning keeps each class's tier at max and deep on the frontier: \((try? routes(koreanMax)) ?? [])")
     let mediumClaudeOut = try B.build(referenceInput("use medium reasoning", preference: "claude"))
     try check(tuples(mediumClaudeOut) == ["claude/sonnet/medium/read_only"] &&
@@ -370,9 +381,48 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let sonnetOut = try B.build(sonnetFamily)
     try check(B.intent(sonnetFamily) == RoutingIntent(modelFamily: "sonnet") && sonnetOut.exclusions.isEmpty &&
               tuples(sonnetOut) == ["claude/sonnet/medium/read_only", "claude/claude-sonnet-5-5/low/read_only"] &&
-              (try routes(sonnetOut)) == ["anthropic_shared/claude-sonnet-5-5/low/route_explicit",
+              // The effort is the host's choice below the family's reference
+              // (sonnet at its highest offered effort): guarded, not explicit.
+              (try routes(sonnetOut)) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>sonnet",
                 "anthropic_shared/sonnet/medium/route_explicit", "anthropic_shared/sonnet/medium/route_explicit"],
               "a named family runs that family at the class's effort: \(tuples(sonnetOut)) \((try? routes(sonnetOut)) ?? [])")
+    // An explicit route test: each route's OWN words travel per route,
+    // aligned with the original list (build 378 review); none means absent.
+    var perRoute = referenceInput("1+1 Codex한테. 최대 리즈닝으로 3+3 Claude Code한테")
+    perRoute.explicitRouteSurfaces = ["codex", "claude"]
+    perRoute.explicitRouteIntents = [RoutingIntent.parse("1+1"), RoutingIntent.parse("최대 리즈닝으로 해줘")]
+    let perRouteData = try B.catalogData(B.build(perRoute), taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+    let perRouteCatalog = try C.decodeCatalog(perRouteData)
+    try check(perRouteCatalog.explicitRouteIntents == [nil, .init(effort: "max", modelFamily: nil)] &&
+              perRouteCatalog.routingIntent == nil && (try C.decodeCatalog(C.encode(perRouteCatalog))) == perRouteCatalog,
+              "explicit_route_intents carries each route's own words, null for a route with none")
+    var wordless = perRoute; wordless.explicitRouteIntents = [RoutingIntent(), RoutingIntent()]
+    try check(!String(decoding: try B.catalogData(B.build(wordless), taskID: "task-fixture",
+                                                  requestSHA256: C.digest(Data("r".utf8))), as: UTF8.self)
+                .contains("explicit_route_intents") &&
+              !String(decoding: try B.catalogData(B.build(referenceInput()), taskID: "task-fixture",
+                                                  requestSHA256: C.digest(Data("r".utf8))), as: UTF8.self)
+                .contains("explicit_route_intents"),
+              "no route words, or no explicit route test: no explicit_route_intents")
+    // Both build-378 review fields are optional and strictly checked.
+    func mutated(_ change: (inout [String: Any]) -> Void) throws -> Data {
+        var object = try JSONSerialization.jsonObject(with: perRouteData) as! [String: Any]
+        change(&object); return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+    for (name, data) in [
+        ("nine route intents", try mutated { $0["explicit_route_intents"] = Array(repeating: NSNull(), count: 9) }),
+        ("an empty route intent", try mutated { $0["explicit_route_intents"] = [["effort": NSNull(), "model_family": NSNull()], NSNull()] }),
+        ("a negative score", try mutated { $0["quota_scores"] = ["gpt-6-astra": -1] }),
+        ("a score above one", try mutated { $0["quota_scores"] = ["gpt-6-astra": 1_000_000_001] }),
+        ("a score for a model not offered", try mutated { $0["quota_scores"] = ["gpt-9": 5] }),
+        ("an unknown field", try mutated { $0["route_scores"] = [:] as [String: Any] })] {
+        do { _ = try C.decodeCatalog(data); try check(false, "accepted \(name)") } catch { checks += 1 }
+    }
+    var older = try JSONSerialization.jsonObject(with: perRouteData) as! [String: Any]
+    older.removeValue(forKey: "explicit_route_intents"); older.removeValue(forKey: "quota_scores")
+    let olderCatalog = try C.decodeCatalog(JSONSerialization.data(withJSONObject: older, options: [.sortedKeys]))
+    try check(olderCatalog.explicitRouteIntents == nil && olderCatalog.quotaScores == nil,
+              "an older catalog without the new fields still decodes")
     // An explicit route test keeps its former candidate set.
     var explicitReference = zeroInput; explicitReference.explicitRouteSurfaces = ["claude"]
     let explicitReferenceOut = try B.build(explicitReference)

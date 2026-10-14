@@ -2720,11 +2720,13 @@ test('routing ledger: one private record per settled attempt, ids and routing fa
   const records = await ledgerRecords(dir);
   assert.equal(records.length, 2, 'one record per attempt: the quota rejection and the success');
   assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'dispatched_at_ms', 'effort',
-    'escalated', 'execution_verified', 'family', 'ladder', 'model', 'node_id', 'quota_pool', 'quota_remaining_fraction',
+    'escalated', 'escalation_outcome', 'execution_verified', 'family', 'ladder', 'model', 'node_id', 'quota_pool',
+    'quota_remaining_fraction',
     'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'surface', 'surface_kind',
     'task_id', 'task_quality', 'tier', 'usage', 'verifier_outcome']);
   // An older catalog (no model_tiers) records no tier and no escalation.
   assert.equal(records[1].tier, null); assert.equal(records[1].escalated, false);
+  assert.equal(records[1].escalation_outcome, null);
   assert.deepEqual(records.map(record => [record.quota_pool, record.attempt_state, record.execution_verified]),
     [['anthropic_shared', 'verified_not_dispatched', false], ['openai_codex', 'completed', true]]);
   const [, success] = records;

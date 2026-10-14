@@ -110,31 +110,35 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
         catch C.Rejection.invalidExecutionRecord { checks += 1 }
     }
 
-    // ---- A finished read-only answer whose own tool calls failed -----------
+    // ---- A finished read-only answer whose own tool call broke down ---------
     // The adapter records `native_tool_failed` beside the finished answer (a
-    // REVAS failure signal for a cheaper tier route); nothing else changes.
+    // REVAS failure signal for a cheaper tier route) only for a call that
+    // broke down and was never recovered; nothing else changes.
     try check(O.nativeToolFailed == "native_tool_failed", "one typed tool-failure reason")
-    try check(O.toolFailureError(verified: true, scope: .readOnly, mainToolsFailed: 1) == "native_tool_failed",
-              "a verified read-only attempt with a failed tool call records the typed error")
-    try check(O.toolFailureError(verified: true, scope: .readOnly, mainToolsFailed: 0) == nil,
-              "no failed tool call: no error")
-    try check(O.toolFailureError(verified: true, scope: .workspaceWrite, mainToolsFailed: 3) == nil,
+    try check(O.toolFailureError(verified: true, scope: .readOnly, unrecoveredBreakdowns: 1) == "native_tool_failed",
+              "a verified read-only attempt with an unrecovered breakdown records the typed error")
+    try check(O.toolFailureError(verified: true, scope: .readOnly, unrecoveredBreakdowns: 0) == nil,
+              "no unrecovered breakdown: no error")
+    try check(O.toolFailureError(verified: true, scope: .workspaceWrite, unrecoveredBreakdowns: 3) == nil,
               "a write keeps its own report (writes are never escalated)")
-    try check(O.toolFailureError(verified: false, scope: .readOnly, mainToolsFailed: 2) == nil,
+    try check(O.toolFailureError(verified: false, scope: .readOnly, unrecoveredBreakdowns: 2) == nil,
               "an unfinished attempt already reports its failure")
     // The record the adapter then writes is a valid finished record: the
     // answer stays deliverable, with the error beside it.
     var toolFailed = C.ExecutionRecord(taskID: "task-fixture", nodeID: "n", attemptID: "attempt-1", candidateID: "cfg-fixture",
         configurationSHA256: hash, selectedConfig: config(.readOnly), acknowledgedConfig: config(.readOnly), observedConfig: nil,
-        status: .succeeded, output: "I could not open the file, but the answer is 2.", executionVerified: true, taskVerified: false,
+        status: .succeeded, output: "The search tool failed, so I could not check; the answer is probably 2.",
+        executionVerified: true, taskVerified: false,
         taskQuality: .executionOnly, parityState: .unverified, nativeReceipt: "/private/fixture/receipt.json", sideEffects: .none,
         usage: nil, error: nil, dispatchStage: .dispatched)
-    toolFailed.error = O.toolFailureError(verified: toolFailed.executionVerified, scope: .readOnly, mainToolsFailed: 1)
+    toolFailed.error = O.toolFailureError(verified: toolFailed.executionVerified, scope: .readOnly, unrecoveredBreakdowns: 1)
     try C.validate(toolFailed); checks += 1
     try check(try C.decodeRecord(C.encode(toolFailed)).error == "native_tool_failed",
               "the tool-failed finished record round-trips with its typed error")
-    // The transport observation it is computed from: one failed main-scope
-    // call per tool, never a subagent's, Codex and Claude alike.
+    // The transport observation it is computed from: main-scope calls only,
+    // each once. Ordinary exploration (a missing file, a command that exits
+    // non-zero, `rg` with no match, a refused write) is never a breakdown, and
+    // a later successful call recovers an earlier breakdown.
     let claudeSession = UUID().uuidString.lowercased()
     let claudeStream = ExecutionStream(claudeSessionID: claudeSession, workspace: "/fixture/ws")
     func claude(_ row: [String: Any]) throws {
@@ -147,24 +151,65 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
     try claude(["type": "user", "message": ["content": [["type": "tool_result", "tool_use_id": "read-1", "is_error": true,
         "content": "PRIVATE: file does not exist"]]]])
     try claude(["type": "user", "message": ["content": [["type": "tool_result", "tool_use_id": "read-1", "is_error": true]]]])
+    try check(claudeStream.mainToolsFailed == 1 && claudeStream.mainToolBreakdownsUnrecovered == 0,
+              "a Claude tool error counts once as a failed call, never as a breakdown")
     try claude(["type": "assistant", "message": ["id": "m2", "content": [["type": "tool_use", "id": "read-2", "name": "Read",
         "input": ["file_path": "/fixture/ws/present.txt"]]]]])
     try claude(["type": "user", "message": ["content": [["type": "tool_result", "tool_use_id": "read-2", "is_error": false,
         "content": "PRIVATE"]]]])
-    try check(claudeStream.mainToolsFailed == 1, "a Claude tool error counts once; a duplicate result and a success do not")
-    try check(O.toolFailureError(verified: true, scope: .readOnly, mainToolsFailed: claudeStream.mainToolsFailed) == "native_tool_failed",
-              "a tool-failed Claude read-only turn yields the typed error")
-    let codexStream = ExecutionStream(workspace: "/fixture/ws")
-    func codex(_ method: String, _ item: [String: Any]) {
-        codexStream.ingestCodex(["method": method, "params": ["threadId": "t", "turnId": "u", "item": item]], threadID: "t", turnID: "u")
+    try check(claudeStream.mainToolsFailed == 1, "a duplicate result and a success do not count as failures")
+    // Regression (review 2026-10-14): a failed Read, then a successful Read and
+    // a correct answer, is a recovered miss: the cheaper answer is delivered.
+    try check(O.toolFailureError(verified: true, scope: .readOnly,
+                                 unrecoveredBreakdowns: claudeStream.mainToolBreakdownsUnrecovered) == nil,
+              "a recovered Claude miss records no tool-failure error")
+    func codexStream(_ items: [(String, String, String?)]) -> ExecutionStream {
+        let stream = ExecutionStream(workspace: "/fixture/ws")
+        for (id, type, status) in items {
+            stream.ingestCodex(["method": "item/started", "params": ["threadId": "t", "turnId": "u",
+                "item": ["id": id, "type": type, "command": "probe"]]], threadID: "t", turnID: "u")
+            var item: [String: Any] = ["id": id, "type": type]
+            if let status { item["status"] = status }
+            stream.ingestCodex(["method": "item/completed", "params": ["threadId": "t", "turnId": "u", "item": item]],
+                               threadID: "t", turnID: "u")
+        }
+        return stream
     }
-    codex("item/started", ["id": "cat", "type": "commandExecution", "command": "cat missing.txt"])
-    codex("item/completed", ["id": "cat", "type": "commandExecution", "status": "failed"])
-    codex("item/completed", ["id": "cat", "type": "commandExecution", "status": "failed"])
-    codex("item/started", ["id": "ls", "type": "commandExecution", "command": "ls"])
-    codex("item/completed", ["id": "ls", "type": "commandExecution", "status": "completed"])
-    try check(codexStream.mainToolsFailed == 1, "a failed Codex command counts once; a completed one does not")
-    try check(ExecutionStream(workspace: nil).mainToolsFailed == 0, "a new stream starts at zero")
+    let explored = codexStream([("cat", "commandExecution", "failed"), ("ls", "commandExecution", "completed")])
+    try check(explored.mainToolsFailed == 1 && explored.mainToolBreakdownsUnrecovered == 0,
+              "a failed Codex command counts once as a failed call; a completed one does not")
+    // Regression: `rg TODO file` exits 1 (no match) as the ONLY call, and the
+    // answer "no TODO" is correct: never escalated.
+    let noMatch = codexStream([("rg", "commandExecution", "failed")])
+    try check(noMatch.mainToolsFailed == 1 && noMatch.mainToolBreakdownsUnrecovered == 0 &&
+              O.toolFailureError(verified: true, scope: .readOnly, unrecoveredBreakdowns: noMatch.mainToolBreakdownsUnrecovered) == nil,
+              "a command that ran and exited non-zero is exploration, never a breakdown")
+    let refusedWrite = codexStream([("patch", "fileChange", "failed")])
+    try check(refusedWrite.mainToolBreakdownsUnrecovered == 0, "a write the read-only bound refused is not a breakdown")
+    let brokeTool = codexStream([("search", "mcpToolCall", "failed")])
+    try check(brokeTool.mainToolBreakdownsUnrecovered == 1 &&
+              O.toolFailureError(verified: true, scope: .readOnly, unrecoveredBreakdowns: brokeTool.mainToolBreakdownsUnrecovered) == "native_tool_failed",
+              "a failed tool call with nothing after it is an unrecovered breakdown")
+    let declined = codexStream([("ask", "dynamicToolCall", "declined")])
+    try check(declined.mainToolBreakdownsUnrecovered == 1, "a call the transport declined never ran: a breakdown")
+    let recovered = codexStream([("search", "mcpToolCall", "failed"), ("ls", "commandExecution", "completed")])
+    try check(recovered.mainToolsFailed == 1 && recovered.mainToolBreakdownsUnrecovered == 0,
+              "a later successful call recovers an earlier breakdown")
+    let again = codexStream([("ls", "commandExecution", "completed"), ("search", "mcpToolCall", "failed")])
+    try check(again.mainToolBreakdownsUnrecovered == 1, "a breakdown after the last success stays unrecovered")
+    try check(ExecutionStream(workspace: nil).mainToolsFailed == 0 &&
+              ExecutionStream(workspace: nil).mainToolBreakdownsUnrecovered == 0, "a new stream starts at zero")
+
+    // ---- A fresh session beside the conversation's own thread --------------
+    let ownerThread = UUID().uuidString
+    try check(O.nativeSessionDetached(resumedSessionID: nil, conversationSessionID: ownerThread, chatLane: false),
+              "a cheaper REVAS attempt that ran fresh beside the owner's thread is detached")
+    try check(!O.nativeSessionDetached(resumedSessionID: ownerThread, conversationSessionID: ownerThread, chatLane: false),
+              "an attempt that resumed the owner's thread is the conversation's")
+    try check(!O.nativeSessionDetached(resumedSessionID: nil, conversationSessionID: nil, chatLane: false),
+              "with no thread bound yet the fresh session becomes the conversation's")
+    try check(!O.nativeSessionDetached(resumedSessionID: nil, conversationSessionID: ownerThread, chatLane: true),
+              "a chat lane is never the conversation's agent session (its own rule)")
 
     // ---- Cooldown left for the next catalog ---------------------------------
     try check(O.claudeBackoffScope(provider: "claude", quotaExhausted: true, scope: nil) == .account,
