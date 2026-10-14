@@ -16,6 +16,9 @@ public enum RCCNativeAttemptOutcome {
     public static let providerQuotaRejectedBeforeExecution = RCCRuntimeContract.providerQuotaRejectedBeforeExecution
     public static let outcomeUncertain = "native_outcome_uncertain_preserved"
     public static let configurationUnavailable = "native_configuration_or_authorization_unavailable"
+    /// Recorded beside a finished read-only attempt whose native stream
+    /// reported at least one failed tool call of the model's own.
+    public static let nativeToolFailed = "native_tool_failed"
 
     public struct Report: Equatable, Sendable {
         public var status: RCCRuntimeContract.ExecutionStatus
@@ -46,6 +49,18 @@ public enum RCCNativeAttemptOutcome {
                      dispatchStage: dispatched ? .dispatched : .notDispatched,
                      sideEffects: uncertainWrite ? .possible : .none,
                      error: dispatched ? outcomeUncertain : configurationUnavailable)
+    }
+
+    /// The typed error a FINISHED attempt carries beside its answer when the
+    /// model's own tool calls failed (`ExecutionStream.mainToolsFailed`):
+    /// `native_tool_failed` for a verified read-only attempt, else nil. The
+    /// answer is still delivered as is on any route; OpenClaw Core reads the
+    /// error as a REVAS failure signal only for a read-only node bound below
+    /// its reference tier, which then re-runs once at the reference. A write
+    /// keeps its own report (writes are never escalated); an attempt that did
+    /// not finish already reports its failure.
+    public static func toolFailureError(verified: Bool, scope: RCCRuntimeContract.Scope, mainToolsFailed: Int) -> String? {
+        verified && scope == .readOnly && mainToolsFailed > 0 ? nativeToolFailed : nil
     }
 
     /// Whether the workspace part of the no-effect proof is about THIS

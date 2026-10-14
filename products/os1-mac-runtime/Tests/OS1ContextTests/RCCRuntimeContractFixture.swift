@@ -505,8 +505,9 @@ func runRCCRuntimeContractFixture() throws {
               "REAL Node tier route escalated once to its reference decodes under the strict child shape")
     let tierTickets = actualTickets.filter { $0.taskID == "task-node-tiered" }
     try check(tierTickets.map { "\($0.selectedConfig.model)/\($0.selectedConfig.effort.rawValue)" } ==
-              ["gpt-6-luna/low", "gpt-6-astra/max"] && tierTickets[1].nativeResumeSessionID == nil,
-              "REAL Node tier tickets: the fast attempt, then the reference in a fresh native session")
+              ["gpt-6-luna/low", "gpt-6-astra/max"] && tierTickets[0].nativeResumeSessionID == nil &&
+              tierTickets[1].nativeResumeSessionID == "native-codex-fixture",
+              "REAL Node tier tickets: the discardable fast attempt in a fresh native session, then the reference resuming the untouched owner thread")
     try check(try C.decodeSnapshot(C.encode(nativeTiered)) == nativeTiered, "a tier routing decision roundtrips through Swift")
     let soloTickets = actualTickets.filter { $0.taskID == "task-node-unverified" }
     try check(soloTickets.count == 1 && soloTickets[0].nativeResumeSessionID == "native-codex-fixture",

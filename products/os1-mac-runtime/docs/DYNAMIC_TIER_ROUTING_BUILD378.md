@@ -66,6 +66,18 @@ A writing part graded trivial runs at least standard. A part with a missing or
 invalid grade runs standard. Read-only parts on the Anthropic pool still take
 the tool-free chat lane when its gate allows, at the same model and effort.
 
+When no pool can offer any trivial entry (for example only the frontier model
+can run because the cheaper models are cooling down), a trivial part runs the
+standard list instead of being held, so it may run on the frontier model. The
+routing reason says `class_fallback_trivial_to_standard`. This only goes
+upwards: standard and deep parts never fall back to a lower tier.
+
+What the planner is told can run counts only models some grade can actually
+use in that scope. A writing part never runs the fast tier, so a pool whose
+only runnable models are fast offers no writing work; when nothing at all can
+run, the task is held before planning with the per-pool cause
+(`no_bindable_tier` for rows no grade can use).
+
 ## REVAS at the front: one escalation on failure
 
 A read-only part bound below the reference carries one escalation target: its
@@ -76,15 +88,38 @@ settles with any failure signal, the part runs ONCE more at the reference:
 - execution was not verified,
 - the answer is empty or whitespace only,
 - the native adapter recorded a failure (a failed task quality, or a recorded
-  error beside a finished attempt),
+  error beside a finished attempt). This includes `native_tool_failed`: a
+  finished read-only attempt during which one of the model's own tool calls
+  (a Codex command or tool item, a Claude tool result) was reported failed or
+  declined by the native stream (a command that exits with an error counts,
+  so an answer that recovered from it is still escalated: one extra
+  reference run, never a lower-quality answer). An answer on the reference or
+  on an explicit route is delivered unchanged with that note,
 - a registered verifier failed it.
 
-The failed answer is never shown as the result. The reference attempt runs in a
-fresh native session and is never escalated again; the failed cheaper
-attempt's time, cost and attempt count are not charged to the task budget. A writing part is never escalated: it keeps
+The failed answer is never shown as the result. The reference attempt is never
+escalated again. Because the cheaper answer may be discarded, the cheaper
+attempt runs in a fresh native session, never inside the owner's Codex or
+Claude thread; the escalated reference then continues the owner's thread of
+its provider untouched, so it never builds on the failed turn and the thread
+never ends with a discarded answer. OS-1 records the delivered attempt's
+session as the conversation's and still hands the recent conversation to every
+attempt. (A cheaper answer that passes is therefore delivered from its own
+fresh session; keeping it inside the owner's thread without risking a
+discarded turn there would need native session forking, which this change does
+not add.) The failed cheaper attempt's time, cost and attempt count are not
+charged to the task budget; cheaper attempts that ran at the same time are
+exempted once (the union of their wall time, not the sum). A writing part is never escalated: it keeps
 the existing no-replay / repair behaviour. A pre-dispatch failure (nothing ran,
 for example a provider quota rejection before any work) is not an escalation:
 the part moves to the other pool at its own grade, as before.
+
+When no pool offers a runnable frontier reference (for example the frontier
+model's quota is exhausted and the other provider is not admitted), light
+read-only work still runs on the lower tiers, with the same guard: a failure
+signal then holds the part (`ladder_reference_unavailable`) instead of
+delivering the cheaper answer. If a frontier model can run again by the time
+the cheaper attempt fails, the part escalates to it.
 
 The tier choice itself is the admission; the former requirement of 20 verified
 ledger passes no longer applies to tier routing. The routing ledger still

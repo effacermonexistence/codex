@@ -330,7 +330,10 @@ test('every failure signal escalates a read-only tier answer exactly once to the
     ['execution not verified', {execution_verified: false, task_quality: 'unverified'}],
     ['empty output', {output: ''}],
     ['whitespace output', {output: ' \n\t '}],
-    ['recorded tool failure (failed task quality)', {task_quality: 'failed'}],
+    ['failed task quality', {task_quality: 'failed'}],
+    // What os1 rcc-execute records beside a finished read-only answer whose
+    // own tool calls failed (RCCNativeAttemptOutcome.toolFailureError).
+    ['native tool failure recorded by the adapter', {error: 'native_tool_failed'}],
     ['recorded failure beside a finished attempt', {error: 'source_scope_breach_preserved_no_stage'}]];
   for (const [name, failure] of signals) {
     const result = await run(t, dir, name, {extras: {attempts: 1},
@@ -388,13 +391,35 @@ test('a write is never escalated: its failure keeps the existing no-replay seman
     .some(event => event.kind === 'ladder_escalated_to_reference'), false);
 });
 
-test('the escalation runs in a fresh native session; the cheap single-node attempt keeps the owner thread', async t => {
+test('a discardable cheap attempt never runs in the owner thread; the escalated reference resumes that thread untouched', async t => {
   const dir = await fixture(t);
+  // The cheaper answer may be discarded: it runs in a fresh native session,
+  // so the owner's thread never ends with a failed turn, and the reference
+  // that is delivered continues the owner's thread (not a failed turn).
   const result = await run(t, dir, 'session', {extras: {codexSession: 'owner-codex-thread'},
     execute: (ticket, count) => count === 1 ? execution(ticket, {output: ''}) : execution(ticket)});
   assert.equal(result.done.state, 'completed', result.done.error);
   assert.deepEqual(result.tickets.map(ticket => [ticket.selected_config.model, ticket.native_resume_session_id]),
-    [['gpt-6-luna', 'owner-codex-thread'], ['gpt-6-astra', null]]);
+    [['gpt-6-luna', null], ['gpt-6-astra', 'owner-codex-thread']]);
+  // An escalation to the other pool resumes the owner's thread of THAT provider.
+  const other = await run(t, dir, 'session other pool', {extras: {codexSession: 'owner-codex-thread',
+    claudeSession: 'owner-claude-thread'},
+    refresh: (value, count) => tierCatalog(value, {change: model => count >= 2 && model === 'gpt-6-astra' ? {quota: 0} : {}}),
+    execute: (ticket, count) => count === 1 ? execution(ticket, {output: ''}) : execution(ticket)});
+  assert.equal(other.done.state, 'completed', other.done.error);
+  assert.deepEqual(other.tickets.map(ticket => [ticket.selected_config.model, ticket.native_resume_session_id]),
+    [['gpt-6-luna', null], ['claude-fable-5-1', 'owner-claude-thread']]);
+  // A passing cheap answer is delivered from its fresh session; the
+  // reference, an explicit route and a write (never escalated) keep resuming.
+  const passed = await run(t, dir, 'session pass', {extras: {codexSession: 'owner-codex-thread'},
+    execute: ticket => execution(ticket)});
+  assert.deepEqual(passed.tickets.map(ticket => ticket.native_resume_session_id), [null]);
+  const deep = await run(t, dir, 'session deep', {routeClass: 'deep', extras: {codexSession: 'owner-codex-thread'},
+    execute: ticket => execution(ticket)});
+  assert.deepEqual(deep.tickets.map(ticket => ticket.native_resume_session_id), ['owner-codex-thread']);
+  const write = await run(t, dir, 'session write', {extras: {write: true, codexSession: 'owner-codex-thread'},
+    catalog: {write: true}, execute: ticket => execution(ticket, {side_effects: 'confirmed'})});
+  assert.deepEqual(write.tickets.map(ticket => ticket.native_resume_session_id), ['owner-codex-thread']);
 });
 
 test("when this pool's reference cannot dispatch, the escalation runs the other pool's reference", async t => {
@@ -464,4 +489,166 @@ test('deep work with no frontier model holds before any dispatch; model_tiers is
   const untiered = await run(t, dir, 'untiered', {catalog: {claude: [],
     codex: CODEX.filter(([model]) => model === 'gpt-6-sol')}, execute: () => { throw Error('must not dispatch'); }});
   assert.equal(untiered.done.error, 'no_dispatchable_candidate:openai_codex=no_tiered_model');
+});
+
+// ---- Review round: guards, budgets, availability and upward fallback ---------
+
+test('no frontier reference in any pool: a cheap read-only answer is still guarded and a failure signal holds it', async t => {
+  const dir = await fixture(t);
+  // gpt-6-astra exhausted (the builder dropped its rows) and no Claude pool.
+  const codexOnly = {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')};
+  const request = task('/tmp', 'Answer one question');
+  const resolved = resolve(request, tierCatalog(request, codexOnly), 'trivial');
+  assert.equal(route(resolved.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.match(resolved.decisions.n.reason, /;escalation_reference_unavailable;agent_surface$/);
+  assert.equal(Object.hasOwn(resolved.decisions.n, 'ladder'), false, 'no target, so the public decision has no ladder');
+  assert.deepEqual(resolved.routes.n.ladder, {source: 'tier', cheap_model: 'gpt-6-luna', cheap_effort: 'low',
+    reference_model: null, reference_effort: null, reference_candidate_id: null});
+  const failures = [['whitespace answer', {output: '  \n '}],
+    ['failed after dispatch, no effects', {status: 'failed', dispatch_stage: 'dispatched', side_effects: 'none',
+      execution_verified: false, task_quality: 'failed', output: null, error: 'native_outcome_uncertain_preserved'}],
+    ['native tool failure', {error: 'native_tool_failed'}]];
+  for (const [name, failure] of failures) {
+    const held = await run(t, dir, 'no frontier ' + name, {catalog: codexOnly, execute: ticket => execution(ticket, failure)});
+    assert.deepEqual(held.tuples, ['gpt-6-luna/low'], name);
+    assert.equal(held.done.state, 'held', `${name}: never adopted, never effects_uncertain`);
+    assert.equal(held.done.error, 'ladder_reference_unavailable', name);
+    assert.equal(held.done.result, null, name);
+    assert.equal(held.done.children[0].output_summary, null, `${name}: the cheaper output is never shown`);
+  }
+  // A passing cheap answer is adopted as before.
+  const ok = await run(t, dir, 'no frontier pass', {catalog: codexOnly, execute: ticket => execution(ticket)});
+  assert.equal(ok.done.state, 'completed', ok.done.error);
+  assert.equal(ok.done.result.output, 'answer from gpt-6-luna/low');
+  // When a frontier row is back by the time the cheap attempt fails, the
+  // guard escalates to it (re-resolved at that time).
+  const back = await run(t, dir, 'no frontier then back', {
+    refresh: (value, count) => tierCatalog(value, count >= 2 ? {claude: []} : codexOnly),
+    execute: (ticket, count) => count === 1 ? execution(ticket, {output: ' '}) : execution(ticket)});
+  assert.equal(back.done.state, 'completed', back.done.error);
+  assert.deepEqual(back.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
+});
+
+test('parallel escalations exempt the UNION of their cheap attempts: a dependent node still meets the duration budget', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Two short answers, then a summary');
+  request.budget.max_duration_ms = 1_000;
+  const tickets = [];
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const cheap = new Set(['gpt-6-luna', 'claude-sonnet-5-5']);
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'union'),
+    catalog: async value => tierCatalog(value),
+    plan: async () => plan(request, [graded('a', 'trivial'), graded('b', 'trivial'),
+      {...graded('d', 'trivial'), dependencies: ['a', 'b']}]),
+    execute: async ticket => {
+      tickets.push(ticket);
+      if (ticket.node_id === 'd') return execution(ticket);
+      // Both cheap attempts run at the same time in different pools (b is
+      // spread to Claude) and fail; both escalations then run in parallel.
+      if (cheap.has(ticket.selected_config.model)) { await sleep(800); return execution(ticket, {output: ' '}); }
+      await sleep(1_300); return execution(ticket);
+    },
+    verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  const byNode = node => tickets.filter(ticket => ticket.node_id === node)
+    .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`);
+  assert.deepEqual(byNode('a'), ['gpt-6-luna/low', 'gpt-6-astra/max']);
+  assert.deepEqual(byNode('b'), ['claude-sonnet-5-5/low', 'claude-fable-5-1/max']);
+  // ~800 ms of overlapping cheap time is exempt once (not ~1600 ms), so by
+  // the time both escalations finish the real budget is spent.
+  assert.deepEqual(byNode('d'), [], 'the dependent node must not dispatch on double-counted exempt time');
+  assert.equal(done.state, 'held');
+  assert.equal(done.error, 'task_duration_budget_exhausted');
+});
+
+test('a reference or explicit answer with a recorded tool failure is delivered unchanged (only a cheaper tier escalates)', async t => {
+  const dir = await fixture(t);
+  const deep = await run(t, dir, 'deep tool failed', {routeClass: 'deep',
+    execute: ticket => execution(ticket, {error: 'native_tool_failed'})});
+  assert.equal(deep.done.state, 'completed', deep.done.error);
+  assert.deepEqual(deep.tuples, ['gpt-6-astra/max']);
+  assert.equal(deep.done.result.output, 'answer from gpt-6-astra/max');
+});
+
+test('availability counts only rows some reachable class can bind: a fast-tier writer is never offered', () => {
+  const request = task('/tmp', 'Change one file', {write: true});
+  // Only gpt-6-luna remains (astra and 6.1-sol quota_zero, dropped by the builder).
+  const lunaOnly = tierCatalog(request, {write: true, claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
+  assert.deepEqual(routingAvailability(request, lunaOnly).scopes, ['read_only'],
+    'a writer is at least standard and no standard/deep entry is fast');
+  assert.throws(() => resolve(request, lunaOnly, 'trivial', {scope: 'workspace_write'}),
+    /no_dispatchable_candidate:workspace_write:standard/);
+  // Read-only work still runs there (trivial binds the fast tier).
+  assert.equal(route(resolve(request, lunaOnly, 'trivial').decisions.n), 'openai_codex/gpt-6-luna/low');
+  // The full production catalog still offers both scopes.
+  assert.deepEqual(routingAvailability(request, tierCatalog(request, {write: true})).scopes, ['read_only', 'workspace_write']);
+  // Under an explicit effort word the same mapping applies (writer at max
+  // binds standard's tiers at max, never the fast tier).
+  const intentLuna = tierCatalog(request, {write: true, claude: [], codex: [['gpt-6-luna', ['max']]],
+    intent: {effort: 'max', model_family: null}});
+  assert.deepEqual(routingAvailability(request, intentLuna).scopes, ['read_only']);
+});
+
+test('a task whose only runnable rows no class can bind is held before planning, with the per-pool cause', async t => {
+  const dir = await fixture(t);
+  const request = task(dir, 'Change one file', {write: true});
+  let planned = 0;
+  // Writer rows of the fast tier only: nothing read-only, nothing a writer binds.
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'fast-writer'),
+    catalog: async value => {
+      const catalog = tierCatalog(value, {write: true, claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
+      return {...catalog, candidates: catalog.candidates.filter(c => c.scope === 'workspace_write')};
+    },
+    plan: async () => { planned++; return plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]); },
+    execute: async () => { throw Error('must not dispatch'); }, verifyTask: taskVerdict});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'held');
+  assert.equal(done.error, 'no_dispatchable_candidate:openai_codex=no_bindable_tier');
+  assert.equal(planned, 0, 'no wasted planner call');
+});
+
+test('trivial work falls back upwards when no pool offers a trivial entry: the stronger tier runs, never a hold', () => {
+  const request = task('/tmp', 'what is 1+1');
+  // Sonnet and Opus on quota_backoff: only the Claude frontier rows remain.
+  const fableOnly = tierCatalog(request, {first: 'claude', chat: true, codex: [],
+    claude: CLAUDE.filter(([model]) => ['claude-fable-5-1', 'fable'].includes(model))});
+  assert.deepEqual(routingAvailability(request, fableOnly).scopes, ['read_only']);
+  const trivial = resolve(request, fableOnly, 'trivial');
+  assert.equal(route(trivial.decisions.n), 'anthropic_shared/claude-fable-5-1/max');
+  assert.equal(trivial.decisions.n.surface, 'claude-chat');
+  assert.equal(trivial.decisions.n.route_class, 'trivial', 'the grade is kept; the fallback is in the reason');
+  assert.equal(trivial.decisions.n.reason, 'resolver;route_reference;class_trivial;class_fallback_trivial_to_standard;' +
+    'tier_list_4;tier_frontier;pool_rank_0;effort_max;chat_lane_same_route');
+  assert.equal(Object.hasOwn(trivial.decisions.n, 'ladder'), false, 'the reference itself never escalates');
+  assert.deepEqual(trivial.routes.n, {kind: 'reference', reference_effort: 'max', ladder: null});
+  // Codex with only its frontier model: the same.
+  const astraOnly = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
+  assert.equal(route(resolve(request, astraOnly, 'trivial').decisions.n), 'openai_codex/gpt-6-astra/max');
+  // A fallback that lands below the reference keeps its escalation guard.
+  const solMedium = tierCatalog(request, {claude: [], codex: [['gpt-6-astra', ['max']], ['gpt-6.1-sol', ['medium']]]});
+  const lower = resolve(request, solMedium, 'trivial').decisions.n;
+  assert.equal(route(lower), 'openai_codex/gpt-6.1-sol/medium');
+  assert.match(lower.reason, /^resolver;route_tier;class_trivial;class_fallback_trivial_to_standard;tier_list_0;tier_workhorse;/);
+  assert.deepEqual(lower.ladder, {cheap_effort: 'medium', reference_effort: 'max', cheap_model: 'gpt-6.1-sol',
+    reference_model: 'gpt-6-astra'});
+  // A trivial entry in ANY pool wins over the fallback in the first pool.
+  const mixed = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
+  assert.equal(route(resolve(request, mixed, 'trivial').decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
+  // Deep is never relaxed and nothing falls back downwards.
+  const noFrontier = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
+  assert.throws(() => resolve(request, noFrontier, 'deep'), /no_dispatchable_candidate:read_only:reference_unavailable/);
+  assert.throws(() => resolve(request, noFrontier, 'standard'), /no_dispatchable_candidate:read_only:standard/);
+});
+
+test('a trivial question on a frontier-only pool completes on the frontier model', async t => {
+  const dir = await fixture(t);
+  const fableOnly = {first: 'claude', codex: [], claude: CLAUDE.filter(([model]) => ['claude-fable-5-1', 'fable'].includes(model))};
+  const result = await run(t, dir, 'frontier only trivial', {catalog: fableOnly, execute: ticket => execution(ticket)});
+  assert.equal(result.done.state, 'completed', result.done.error);
+  assert.deepEqual(result.tuples, ['claude-fable-5-1/max']);
+  assert.match(result.done.children[0].routing_decision.reason, /;class_fallback_trivial_to_standard;/);
 });

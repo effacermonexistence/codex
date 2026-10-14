@@ -80,6 +80,12 @@ public final class ExecutionStream {
     }
     public private(set) var result: Data?
     public private(set) var eventCount = 0
+    /// Tool calls of the model's own (main scope) that the native transport
+    /// reported failed or declined, counted once per call. A transport
+    /// observation, not a task verdict: `os1 rcc-execute` records it beside a
+    /// finished read-only attempt (`RCCNativeAttemptOutcome.toolFailureError`)
+    /// so a REVAS-routed cheaper answer is escalated once.
+    public private(set) var mainToolsFailed = 0
     public private(set) var tool: String?
     /// Completed Claude turns in this run (a steered run has several).
     public private(set) var resultCount = 0
@@ -183,6 +189,9 @@ public final class ExecutionStream {
     }
     private func observe(_ kind: NativeExecutionProgress.Kind, tool name: String? = nil, scope: String = "main",
                          steps change: ((inout [Step], Int, Date) -> Void)? = nil) {
+        // Every failed return reaches here exactly once (its call sites
+        // dedupe), even when the progress record itself is capped.
+        if kind == .toolFailed, scope == "main" { mainToolsFailed += 1 }
         let sequence = (progress?.sequence ?? 0) + 1
         guard sequence <= 1_000_000 else { return }
         let date = observedTime()
