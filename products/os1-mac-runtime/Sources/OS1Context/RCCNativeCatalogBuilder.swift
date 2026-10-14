@@ -322,7 +322,12 @@ public enum RCCNativeCatalogBuilder {
             if profile.provider == "codex", input.codexQuotaExhaustedModels.contains(profile.model) {
                 exclude(profile.provider, "quota_zero"); continue
             }
-            let remaining = quota?.effectiveRemaining(accountID: account, model: profile.model, now: input.now)
+            // Only a fresh observation for this account is quota evidence. A
+            // stale, foreign or not-yet-current snapshot is unknown quota: all
+            // three quota fields stay null (never an observed time without a
+            // validity window, which the catalog contract rejects as a whole).
+            let fresh = quota.flatMap { $0.isFresh(accountID: account, now: input.now) ? $0 : nil }
+            let remaining = fresh?.effectiveRemaining(accountID: account, model: profile.model, now: input.now)
             if remaining == 0 { exclude(profile.provider, "quota_zero"); continue }
             for scope in scopes {
                 let surfaces = scope == "read_only" ? providerSurfaces(profile.provider) : [profile.provider]
@@ -344,9 +349,8 @@ public enum RCCNativeCatalogBuilder {
                         "availability": "available", "availability_observed_at_ms": nowMS,
                         "availability_valid_until_ms": Int64(input.now.addingTimeInterval(120).timeIntervalSince1970 * 1000),
                         "quota_remaining_fraction": remaining.map { $0 / 100 as Any } ?? NSNull(),
-                        "quota_observed_at_ms": quota.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
-                        "quota_valid_until_ms": quota.flatMap { $0.isFresh(accountID: account, now: input.now)
-                            ? Int64($0.observedAt.addingTimeInterval(120).timeIntervalSince1970 * 1000) : nil }.map { $0 as Any } ?? NSNull(),
+                        "quota_observed_at_ms": remaining == nil ? NSNull() : fresh.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
+                        "quota_valid_until_ms": remaining == nil ? NSNull() : fresh.map { Int64($0.observedAt.addingTimeInterval(120).timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
                         "quality_state": "policy_admitted", "estimated_cost_units": NSNull()]
                     rows.append(Row(fields: fields, provider: profile.provider, model: profile.model, surface: surface,
                                     effort: profile.effort, scope: scope, id: id, remaining: remaining.map { $0 / 100 },

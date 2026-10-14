@@ -17885,6 +17885,11 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
         input.auth[provider] = observed.signedIn == false ? .signedOut
             : observed.mode == .subscription && observed.billing == .includedSubscription ? .subscription : .nonSubscription
     }
+    // Freshness is judged at build time, after every probe above: a quota
+    // observed during this call is not "from the future" (that made every
+    // freshly probed Codex row an observed-but-invalid quota and the whole
+    // catalog a contract failure in build 376).
+    input.now = Date()
     let output: RCCNativeCatalogBuilder.Output
     do { output = try RCCNativeCatalogBuilder.build(input) }
     catch RCCNativeCatalogBuilder.Failure.exceedsBound {

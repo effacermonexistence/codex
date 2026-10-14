@@ -103,6 +103,30 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(decoded.routingIntent == nil && !String(decoding: data, as: UTF8.self).contains("routing_intent"),
               "a catalog without an explicit owner constraint carries no routing_intent")
 
+    // ---- Quota freshness never produces a contract-invalid catalog --------
+    // Build 376 regression: the host captured `now` before probing, so a quota
+    // observed during the call looked like it came from the future; every Codex
+    // row then carried an observed time without a validity window and the whole
+    // catalog failed decode (invalidObservation). Unknown quota is all-null.
+    for (label, observedAt) in [("observed after now", now.addingTimeInterval(3)),
+                                ("older than the freshness window", now.addingTimeInterval(-3_600))] {
+        var unfresh = input()
+        unfresh.codexQuota = .init(accountID: "acct-codex", observedAt: observedAt, source: .codexNative,
+            windows: [.init(bucket: "primary", usedPercent: 10, resetsAt: now.addingTimeInterval(48 * 3600))])
+        let out = try B.build(unfresh)
+        let bytes = try B.catalogData(out, taskID: "task-fixture", requestSHA256: C.digest(Data(writeRequest.utf8)))
+        let codexRows = try C.decodeCatalog(bytes).candidates.filter { $0.exactConfig.quotaPool == .openAICodex }
+        try check(!codexRows.isEmpty && codexRows.allSatisfy {
+            $0.quotaRemainingFraction == nil && $0.quotaObservedAtMS == nil && $0.quotaValidUntilMS == nil
+        }, "quota \(label): Codex rows decode with all-null (unknown) quota")
+    }
+    var foreign = input()
+    foreign.codexQuota = quota("another-account", used: 10, resetIn: 48)
+    try check(try C.decodeCatalog(B.catalogData(B.build(foreign), taskID: "task-fixture",
+        requestSHA256: C.digest(Data(writeRequest.utf8)))).candidates
+        .filter { $0.exactConfig.quotaPool == .openAICodex }.allSatisfy { $0.quotaObservedAtMS == nil },
+        "another account's quota is not evidence for this account")
+
     // Claude lists one native row under several names (alias and resolved
     // ID), each with its own configured efforts. Every name shares the row's
     // rank, so its rows sit together ahead of a less-preferred model and the

@@ -161,4 +161,12 @@ check("RCCRuntimeContract.decodeRecord(bytes)" in PROJECTION and
 check("model: nil, effort: nil, nativeSessionID: native?.sessionID" in PROJECTION and
       "record.dispatchStage == .dispatched" in PROJECTION and "record.executionVerified" in PROJECTION,
       "receipt provenance cannot promote selected model/effort into observed settings or task/reference quality")
+# Build 376 regression: catalog freshness is judged after every native probe.
+catalog_fn = section(MAIN, "private func rccNativeCatalog(", "\n}\n")
+check("input.now = Date()" in catalog_fn and
+      catalog_fn.index("ModelAvailability.codexCatalog(") < catalog_fn.index("input.now = Date()") <
+      catalog_fn.index("RCCNativeCatalogBuilder.build(input)") and
+      catalog_fn.index("observeNativeSurfaceAuth(") < catalog_fn.index("input.now = Date()"),
+      "catalog freshness instant is taken after the Codex/Claude/auth probes, before the builder")
+
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")
