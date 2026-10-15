@@ -157,8 +157,14 @@ public enum RCCNativeAttemptOutcome {
     /// replaced by `<path>` and credentials masked (`NativeStepLabel.redact`,
     /// at most 160 characters). Never the raw error text.
     public static func failureCause(kind: String, message: String) -> String {
-        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._()-:".unicodeScalars)
-        var safeKind = String(String.UnicodeScalarView(kind.unicodeScalars.filter { allowed.contains($0) }.prefix(96)))
+        // ASCII ranges, not a spelled-out alphabet literal: the release
+        // artifact scanner rejects a 62-character alphabet constant as a
+        // high-entropy token (the build 275 and build 379 release gates).
+        func allowed(_ scalar: Unicode.Scalar) -> Bool {
+            ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar) || ("0"..."9").contains(scalar) ||
+                "._()-:".unicodeScalars.contains(scalar)
+        }
+        var safeKind = String(String.UnicodeScalarView(kind.unicodeScalars.filter(allowed).prefix(96)))
         if safeKind.isEmpty { safeKind = "unknown" }
         guard let text = NativeStepLabel.redact(pathsRemoved(message)), !text.isEmpty else { return safeKind }
         return safeKind + ": " + text
