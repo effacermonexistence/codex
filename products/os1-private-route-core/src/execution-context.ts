@@ -1,6 +1,6 @@
 // Shared public wire contract; private ranking and policy remain server-only.
 import type { CompletionObservation, ExecutionContext } from "../../os1-route-core/src/execution-context";
-export { validExecutionContext, validCompletionFeedback, completionFeedbackMatchesTask, type ExecutionContext,
+export { validExecutionContext, validCompletionFeedback, completionFeedbackMatchesTask, backendEffort, type ExecutionContext,
   type CompletionFeedback, type CompletionObservation } from "../../os1-route-core/src/execution-context";
 
 /** Preserve the caller's scope; opaque evaluator results do not reveal usage. */

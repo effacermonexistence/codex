@@ -221,6 +221,21 @@ enum ModelAvailability {
             "supportsEffort": true, "supportedEffortLevels": ["medium"]]
         let defaults: [String: Any] = ["value": "default", "resolvedModel": "claude-opus-5[1m]",
             "supportsEffort": true, "supportedEffortLevels": ["high", "max"]]
+        // The 2026-10-15 CLI 2.1.290 inventory row, keys as observed (both
+        // effort keys absent), and the equivalent null/false/empty spellings.
+        let haiku: [String: Any] = ["value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001",
+            "description": "Haiku 4.5 · Fastest for quick answers"]
+        let haikuNull = haiku.merging(["supportsEffort": NSNull(), "supportedEffortLevels": NSNull()]) { _, n in n }
+        let haikuFalse = haiku.merging(["supportsEffort": false, "supportedEffortLevels": [String]()]) { _, n in n }
+        let haikuParsed = (try? JSONSerialization.jsonObject(with: Data(
+            #"{"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","supportsEffort":false,"supportedEffortLevels":[]}"#.utf8)))
+            as? [String: Any] ?? [:]
+        let effortlessRows = claudeRows([fable, haiku])
+        let opusOnly = NativeClaudeModel(model: "claude-opus-5-5", invocation: "opus", efforts: ["low", "max"])
+        let haikuNative = NativeClaudeModel(model: "claude-haiku-4-5-20251001", invocation: "haiku", efforts: ["none"])
+        let mixed = [ClaudeModelCapability(model: "claude-opus-5-5", supportedEfforts: ["low", "max"]),
+                     ClaudeModelCapability(model: "claude-haiku-4-5-20251001", supportedEfforts: ["none"]),
+                     ClaudeModelCapability(model: "odd", supportedEfforts: ["none", "low"])]
         let checks = [
             codexRows([daybreak, sol]).count == 2,
             !codexRows([sol]).contains { $0.slug.contains("daybreak") },
@@ -252,6 +267,37 @@ enum ModelAvailability {
             // Every name of one native row shares that row's rank.
             nativeRowRanks(claudeRows([fable, sonnet])) ==
                 ["claude-fable-5-1": 0, "fable": 0, "sonnet": 1, "claude-sonnet-5": 1],
+            // Effort "none" (2026-10-15): a row with no effort control is one
+            // fixed level under every name; anything half-stated is skipped.
+            effortlessRows.map(\.model) == ["claude-fable-5-1", "fable", "haiku", "claude-haiku-4-5-20251001"],
+            effortlessRows.filter { $0.invocation == "haiku" }.allSatisfy { $0.efforts == ["none"] },
+            effortlessRows.filter { $0.invocation != "haiku" }.allSatisfy { !$0.efforts.contains("none") },
+            claudeRows([haikuNull]).map(\.efforts) == [["none"], ["none"]],
+            claudeRows([haikuFalse]).map(\.efforts) == [["none"], ["none"]],
+            claudeRows([haikuParsed]).map(\.efforts) == [["none"], ["none"]],
+            claudeRows([haiku.merging(["supportsEffort": false, "supportedEffortLevels": ["low"]]) { _, n in n }]).isEmpty,
+            claudeRows([haiku.merging(["supportsEffort": "false"]) { _, n in n }]).isEmpty,
+            claudeRows([haiku.merging(["supportsEffort": NSNumber(value: 0)]) { _, n in n }]).isEmpty,
+            claudeRows([haiku.merging(["supportsEffort": true]) { _, n in n }]).isEmpty,
+            claudeRows([haiku.merging(["resolvedModel": NSNull()]) { _, n in n }]).isEmpty,
+            claudeRows([["value": "haiku"]]).isEmpty,
+            nativeRowRanks(effortlessRows)["claude-haiku-4-5-20251001"] == 1 && nativeRowRanks(effortlessRows)["haiku"] == 1,
+            // "none" runs only a model whose whole row is ["none"].
+            nativeClaudeRowAdmits(haikuNative, model: "claude-haiku-4-5-20251001", effort: "none"),
+            !nativeClaudeRowAdmits(haikuNative, model: "claude-haiku-4-5-20251001", effort: "low"),
+            !nativeClaudeRowAdmits(NativeClaudeModel(model: "odd", invocation: "odd", efforts: ["none", "low"]), model: "odd", effort: "none"),
+            !nativeClaudeRowAdmits(opusOnly, model: "claude-opus-5-5", effort: "none"),
+            nativeClaudeRowAdmits(opusOnly, model: "claude-opus-5-5", effort: "max"),
+            !nativeClaudeRowAdmits(opusOnly, model: "opus", effort: "max"),
+            // The legacy router never sees "none"; an authorization carries an
+            // effortless row only for its own selected tuple.
+            legacyRoutableClaude(mixed) == [mixed[0], ClaudeModelCapability(model: "odd", supportedEfforts: ["low"])],
+            authorizationClaudeModels(mixed, provider: "codex", model: "gpt-6-luna", effort: "low") == legacyRoutableClaude(mixed),
+            authorizationClaudeModels(mixed, provider: "claude", model: "claude-opus-5-5", effort: "max") == legacyRoutableClaude(mixed),
+            authorizationClaudeModels(mixed, provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none") ==
+                [mixed[0], mixed[1], ClaudeModelCapability(model: "odd", supportedEfforts: ["low"])],
+            authorizationClaudeModels(mixed, provider: "codex", model: "claude-haiku-4-5-20251001", effort: "none") == legacyRoutableClaude(mixed),
+            authorizationClaudeModels([mixed[0]], provider: "codex", model: "x", effort: "low") == [mixed[0]],
         ] + inventoryCacheChecks(claudeRows([sonnet])) + [
             deferAlternateInventory(preference: "codex", codexReady: true, workflow: false),
             !deferAlternateInventory(preference: "auto", codexReady: true, workflow: false),
@@ -352,11 +398,19 @@ enum ModelAvailability {
             // availableModels excludes its resolved family. It is not evidence
             // that OS1 may explicitly select that family or full model ID.
             guard let value = row["value"] as? String, value != "default", value.count <= 128,
-                  value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$"#, options: .regularExpression) != nil,
-                  row["supportsEffort"] as? Bool == true,
-                  let rawEfforts = row["supportedEffortLevels"] as? [String] else { continue }
-            let efforts = rawEfforts.filter { ["low", "medium", "high", "xhigh", "max"].contains($0) }
-            guard !efforts.isEmpty, Set(efforts).count == efforts.count else { continue }
+                  value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$"#, options: .regularExpression) != nil else { continue }
+            let efforts: [String]
+            if row["supportsEffort"] as? Bool == true {
+                guard let rawEfforts = row["supportedEffortLevels"] as? [String] else { continue }
+                efforts = rawEfforts.filter { ["low", "medium", "high", "xhigh", "max"].contains($0) }
+                guard !efforts.isEmpty, Set(efforts).count == efforts.count else { continue }
+            } else if hasNoEffortControl(row) {
+                // A model with no reasoning-effort control has one fixed level,
+                // effort "none" (owner decision 2026-10-15): the CLI 2.1.290 inventory row
+                // `haiku` -> claude-haiku-4-5-20251001 carries neither key, and
+                // `claude -p --model haiku` with no `--effort` answered on it.
+                efforts = ["none"]
+            } else { continue }
             let resolved = row["resolvedModel"] as? String ?? value
             // Only map a family when the native response actually names it.
             // In particular "default" never means every available family.
@@ -375,6 +429,56 @@ enum ModelAvailability {
             }
         }
         return result
+    }
+
+    /// A native row that states no effort control at all: `supportsEffort`
+    /// absent, null or the JSON boolean false, `supportedEffortLevels` absent,
+    /// null or empty, and a String `resolvedModel` naming the model. Any other
+    /// shape (false beside listed levels, a non-boolean flag, no resolved ID)
+    /// is malformed and skipped: fail closed, never guessed into "none".
+    static func hasNoEffortControl(_ row: [String: Any]) -> Bool {
+        let flag = row["supportsEffort"]
+        let noFlag = flag == nil || flag is NSNull ||
+            (flag as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && !$0.boolValue } == true
+        let levels = row["supportedEffortLevels"]
+        let noLevels = levels == nil || levels is NSNull || (levels as? [Any])?.isEmpty == true
+        return noFlag && noLevels && row["resolvedModel"] is String
+    }
+
+    /// The one admission rule for running a native row at an effort: the row
+    /// must list it, and "none" only ever runs a model whose whole row is
+    /// ["none"] (no effort control). A model with real efforts never runs
+    /// without `--effort`: that would silently take the CLI's default level.
+    static func nativeClaudeRowAdmits(_ row: NativeClaudeModel, model: String?, effort: String) -> Bool {
+        row.model == model && row.efforts.contains(effort) && (effort != "none" || row.efforts == ["none"])
+    }
+
+    /// What the legacy router (`runTaskWithOwnerPolicy`, the private legacy
+    /// engine behind it) may see: Claude's efforts without "none". Effortless
+    /// models are routed only through the RCC catalog (owner decision 2026-10-15); the
+    /// legacy engine is not taught them, so a row that offers only "none" is
+    /// dropped before it could reach that engine.
+    static func legacyRoutableClaude(_ catalog: [ClaudeModelCapability]) -> [ClaudeModelCapability] {
+        catalog.compactMap { row in
+            let efforts = row.supportedEfforts.filter { $0 != "none" }
+            return efforts.isEmpty ? nil : ClaudeModelCapability(model: row.model, supportedEfforts: efforts)
+        }
+    }
+
+    /// The Claude catalog one RCC authorization sends. An effortless row is
+    /// included only when the selected tuple IS that model at "none": a
+    /// gateway older than effortless Claude models rejects "none" in
+    /// `available_claude_models`, so sending it on every authorization (Codex
+    /// included) would break every route under client/server version skew.
+    static func authorizationClaudeModels(_ catalog: [ClaudeModelCapability], provider: String,
+                                          model: String, effort: String) -> [ClaudeModelCapability] {
+        let selectsEffortless = provider == "claude" && effort == "none"
+        return catalog.compactMap { row in
+            guard row.supportedEfforts.contains("none") else { return row }
+            if selectsEffortless && row.model == model { return row }
+            let efforts = row.supportedEfforts.filter { $0 != "none" }
+            return efforts.isEmpty ? nil : ClaudeModelCapability(model: row.model, supportedEfforts: efforts)
+        }
     }
 
     enum ClaudeAuthProbe: Equatable {

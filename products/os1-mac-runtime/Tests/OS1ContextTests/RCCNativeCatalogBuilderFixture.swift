@@ -114,7 +114,8 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     // ---- Provider-stated model tiers (build 378) ----------------------------
     let observedTiers: [(String, ModelTier)] = [("gpt-6-astra", .frontier), ("gpt-6.1-sol", .workhorse),
         ("gpt-6-luna", .fast), ("claude-fable-5-1", .frontier), ("fable", .frontier), ("opus", .workhorse),
-        ("claude-opus-5-5", .workhorse), ("sonnet", .efficient), ("claude-sonnet-5-5", .efficient), ("haiku", .fast)]
+        ("claude-opus-5-5", .workhorse), ("sonnet", .efficient), ("claude-sonnet-5-5", .efficient), ("haiku", .fast),
+        ("claude-haiku-4-5-20251001", .fast)]
     try check(observedTiers.allSatisfy { ModelTiers.tier(of: $0.0) == $0.1 } && ModelTiers.table.count == observedTiers.count,
               "every observed alias and resolved ID has its provider-stated tier, and nothing else is listed")
     try check(["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark",
@@ -283,9 +284,76 @@ func runRCCNativeCatalogBuilderFixtures() throws {
                   "claude-sonnet-5-5": "efficient", "sonnet": "efficient", "gpt-6-astra": "frontier",
                   "gpt-6.1-sol": "workhorse", "gpt-6-luna": "fast"],
               "the frontier model leads each pool and the previous-generation sol has no tier: \(tuples(referenceBase))")
+    // This synthetic pool has no workhorse medium profile (opus only at low
+    // and max), so standard falls to its second entry, efficient/medium. The
+    // production pool below has one since 2026-10-15 (build 383) and binds opus there.
     try check(try routes(referenceBase) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>claude-fable-5-1",
         "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
               "trivial and standard take the cheapest tier, deep the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
+
+    // ---- Production-shaped Claude pool (2026-10-15) -----------------------
+    // The 85-profile production set's Claude rows: build 383 added medium and high
+    // for claude-opus-5-5, claude-sonnet-5-5 and claude-fable-5-1, and
+    // claude-haiku-4-5-20251001 at effort "none" (cl_haiku45_none). Native rows
+    // as the CLI 2.1.290 initialize inventory lists them (opus, fable 5.1,
+    // sonnet, haiku); haiku's row has no effort control, so its one level is
+    // "none" (ModelAvailability.claudeRows). Each name keeps only its own
+    // configured efforts, as the host's configured catalog does.
+    func productionClaude(_ request: String = "Explain the login function", readOnly: Bool = true) -> B.Input {
+        var value = input(request, preference: "claude", chat: false, readOnly: readOnly)
+        let all = ["low", "medium", "high", "xhigh", "max"]
+        value.profiles = [("fable51", "claude-fable-5-1"), ("opus55", "claude-opus-5-5"), ("sonnet55", "claude-sonnet-5-5")]
+            .flatMap { name, model in all.map { B.Profile(action: "cl_\(name)_\($0)", provider: "claude", model: model, effort: $0) } } + [
+            .init(action: "cl_fable_low", provider: "claude", model: "fable", effort: "low"),
+            .init(action: "cl_fable_xhigh", provider: "claude", model: "fable", effort: "xhigh"),
+            .init(action: "cl_fable_max", provider: "claude", model: "fable", effort: "max"),
+            .init(action: "cl_opus_xhigh", provider: "claude", model: "opus", effort: "xhigh"),
+            .init(action: "cl_opus_max", provider: "claude", model: "opus", effort: "max"),
+            .init(action: "cl_sonnet_medium", provider: "claude", model: "sonnet", effort: "medium"),
+            .init(action: "cl_haiku45_none", provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none"),
+            .init(action: "os1_exact", provider: "local", model: "local-deterministic", effort: "none")]
+        value.claudeModels = [.init(model: "claude-opus-5-5", supportedEfforts: all, nativeRank: 0),
+            .init(model: "opus", supportedEfforts: ["xhigh", "max"], nativeRank: 0),
+            .init(model: "claude-fable-5-1", supportedEfforts: all, nativeRank: 1),
+            .init(model: "fable", supportedEfforts: ["low", "xhigh", "max"], nativeRank: 1),
+            .init(model: "sonnet", supportedEfforts: ["medium"], nativeRank: 2),
+            .init(model: "claude-sonnet-5-5", supportedEfforts: all, nativeRank: 2),
+            .init(model: "claude-haiku-4-5-20251001", supportedEfforts: ["none"], nativeRank: 3)]
+        value.claudeQuota = claudeWindows(fableUsed: nil)
+        return value
+    }
+    func writeRoutes(_ output: B.Output) throws -> [String] {
+        let data = try B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+        return try ["trivial", "standard", "deep"].map { try javascriptRoute(data, routeClass: $0, now: now, scope: "workspace_write") }
+    }
+    let production = try B.build(productionClaude())
+    let haikuRows = production.candidates.filter { $0["model"] as? String == "claude-haiku-4-5-20251001" }
+    try check(haikuRows.count == 1 && haikuRows[0]["effort"] as? String == "none" && haikuRows[0]["scope"] as? String == "read_only" &&
+              production.exclusions.isEmpty && production.modelTiers["claude-haiku-4-5-20251001"] == "fast" &&
+              production.modelTiers["claude-opus-5-5"] == "workhorse" && production.modelTiers["claude-fable-5-1"] == "frontier",
+              "the effortless haiku row is one read-only candidate at effort none, tiered fast: \(tuples(production))")
+    try check(try C.decodeCatalog(B.catalogData(production, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))
+                .candidates.contains { $0.model == "claude-haiku-4-5-20251001" && $0.exactConfig.effort == .none },
+              "a Claude row at effort none passes the strict Swift catalog contract")
+    try check(try routes(production) == ["anthropic_shared/claude-haiku-4-5-20251001/none/route_tier>claude-fable-5-1",
+        "anthropic_shared/claude-opus-5-5/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
+              "trivial read-only runs haiku at none, standard opus at medium, both escalating once to fable 5.1 at max; deep is the reference: \((try? routes(production)) ?? [])")
+    let productionWrite = try B.build(productionClaude(writeRequest, readOnly: false))
+    let writes = try writeRoutes(productionWrite)
+    try check(writes.allSatisfy { !$0.contains("haiku") && !$0.hasPrefix("error") } &&
+              writes == ["anthropic_shared/claude-opus-5-5/medium/route_tier", "anthropic_shared/claude-opus-5-5/medium/route_tier",
+                         "anthropic_shared/claude-fable-5-1/max/route_reference"],
+              "auto routing never binds haiku for a writer: a trivial write is promoted to standard (opus medium, never escalated): \(writes)")
+    let productionMedium = try B.build(productionClaude("use medium reasoning"))
+    try check(B.intent(productionClaude("use medium reasoning")) == RoutingIntent(effort: "medium") &&
+              !productionMedium.candidates.contains { $0["model"] as? String == "claude-haiku-4-5-20251001" } &&
+              (try routes(productionMedium)).allSatisfy { !$0.contains("haiku") && !$0.hasPrefix("error") },
+              "an owner effort word excludes haiku, which cannot honour it: \(tuples(productionMedium)) \((try? routes(productionMedium)) ?? [])")
+    let productionHaiku = try B.build(productionClaude("haiku로 돌려"))
+    try check(B.intent(productionClaude("haiku로 돌려")) == RoutingIntent(modelFamily: "haiku") &&
+              tuples(productionHaiku) == ["claude/claude-haiku-4-5-20251001/none/read_only"] &&
+              (try routes(productionHaiku)).allSatisfy { $0.hasPrefix("anthropic_shared/claude-haiku-4-5-20251001/none/") },
+              "the family word 'haiku' admits the effortless row and runs it: \(tuples(productionHaiku)) \((try? routes(productionHaiku)) ?? [])")
     var nearlyInput = referenceInput(); nearlyInput.claudeQuota = claudeWindows(fableUsed: 97)
     let nearly = try B.build(nearlyInput)
     // The catalog's pool order (deep work, escalations) follows the frontier
@@ -877,27 +945,31 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
     return candidates
 }
 
-/// What the real JS resolver binds for one read-only graded node on exactly
-/// these catalog bytes: "pool/model/effort/route_kind", then ">model" of its
-/// REVAS escalation reference when it has one, or "error:<code>".
-private func javascriptRoute(_ catalog: Data, routeClass: String = "standard", now: Date) throws -> String {
+/// What the real JS resolver binds for one graded node (read-only unless
+/// `scope` says workspace_write) on exactly these catalog bytes:
+/// "pool/model/effort/route_kind", then ">model" of its REVAS escalation
+/// reference when it has one, or "error:<code>".
+private func javascriptRoute(_ catalog: Data, routeClass: String = "standard", now: Date,
+                             scope: String = "read_only") throws -> String {
     let script = """
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
     const catalog=JSON.parse(readFileSync(0,'utf8'));
+    const write=process.argv[4]==='workspace_write';
     const task={mode:'auto',task_id:catalog.task_id,request_sha256:catalog.request_sha256,budget:{max_cost_units:null},
-      host_context:{require_read_only:true}};
+      host_context:{require_read_only:!write}};
     const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id:'n',
-      instruction:'Explain the login function',dependencies:[],kind:'agent',route_class:process.argv[3],scope:'read_only',
-      owned_paths:[],context_refs:[]}]};
+      instruction:write?'Fix the login bug in Sources/App.swift':'Explain the login function',dependencies:[],kind:'agent',
+      route_class:process.argv[3],scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
     try {
       const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2])).decisions.n;
       process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`+
         (d.ladder?.reference_model?'>'+d.ladder.reference_model:''));
     } catch (error) { process.stdout.write('error:'+(error.code??'unknown')); }
     """
-    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), routeClass], input: catalog)
+    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), routeClass, scope],
+                                input: catalog)
 }
 
 /// Runs one inline ES module against the sealed runtime module path (a real

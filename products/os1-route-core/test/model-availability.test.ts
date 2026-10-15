@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validExecutionContext, validClaudeCatalog, availableModelTuple } from "../src/execution-context";
+import { validExecutionContext, validClaudeCatalog, availableModelTuple, backendEffort } from "../src/execution-context";
 import { completionCapabilities } from "../src/capabilities";
 import { appendCompletionObservation } from "../../os1-private-route-core/src/execution-context";
 
@@ -31,6 +31,31 @@ describe("account-scoped model eligibility", () => {
     const empty = { ...context, available_claude_models: [] };
     expect(availableModelTuple(empty, [], "claude", "sonnet", "medium")).toBe(false);
     expect(availableModelTuple(empty, [], "local", "local-deterministic", "none")).toBe(true);
+  });
+  it("admits a Claude model with no effort control only as exactly [\"none\"], beside normal rows", () => {
+    // 2026-10-15: CLI 2.1.290 lists haiku with no supportsEffort/supportedEffortLevels.
+    const mixed = [{ model: "claude-haiku-4-5-20251001", supported_efforts: ["none"] },
+      { model: "claude-sonnet-5-5", supported_efforts: ["low", "medium", "high", "xhigh", "max"] },
+      { model: "claude-opus-5-5", supported_efforts: ["xhigh", "max"] }];
+    expect(validClaudeCatalog(mixed)).toBe(true);
+    const supplied = { ...context, available_claude_models: mixed };
+    expect(validExecutionContext(supplied)).toBe(true);
+    for (const invalid of [[{ model: "haiku", supported_efforts: ["none", "low"] }],
+      [{ model: "haiku", supported_efforts: ["low", "none"] }], [{ model: "haiku", supported_efforts: ["none", "none"] }],
+      [{ model: "haiku", supported_efforts: ["minimal"] }], [{ model: "haiku", supported_efforts: "none" }]]) {
+      expect(validClaudeCatalog(invalid)).toBe(false);
+    }
+    expect(availableModelTuple(supplied, [], "claude", "claude-haiku-4-5-20251001", "none")).toBe(true);
+    expect(availableModelTuple(supplied, [], "claude", "claude-haiku-4-5-20251001", "low")).toBe(false);
+    expect(availableModelTuple(supplied, [], "claude", "claude-sonnet-5-5", "none")).toBe(false);
+    expect(availableModelTuple(supplied, [{ slug: "gpt-6-luna", supported_efforts: ["low"] }], "codex", "gpt-6-luna", "none")).toBe(false);
+    expect(backendEffort("claude", "none")).toBe(true);
+    for (const [provider, effort] of [["codex", "none"], ["local", "none"], ["claude", "minimal"], ["claude", undefined]]) {
+      expect(backendEffort(provider, effort)).toBe(false);
+    }
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
+      expect(backendEffort("codex", effort) && backendEffort("claude", effort)).toBe(true);
+    }
   });
   it("preserves the same inventory through result/retry context updates", () => {
     const after = appendCompletionObservation(context, { provider: "claude", model: "sonnet", effort: "medium",

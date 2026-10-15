@@ -93,6 +93,23 @@ func isSupportedProfileEffort(_ value: String) -> Bool {
     value == "none" || isSupportedEffort(value)
 }
 
+/// Effort "none" means "this model has no reasoning-effort control" (owner
+/// decision 2026-10-15), so it is a property of the provider and model, not a level
+/// anyone may pick: local is always none (local-deterministic), Codex never
+/// (every Codex model lists its efforts), and Claude any supported effort,
+/// none included, because Claude's own inventory says which of its models has
+/// no effort control (claude-haiku-4-5-20251001). Whether THIS native row has
+/// none is checked at dispatch (ModelAvailability.nativeClaudeRowAdmits).
+func executionProfileEffortAdmitted(provider: String, model: String, effort: String) -> Bool {
+    guard isSupportedProfileEffort(effort) else { return false }
+    switch provider {
+    case "local": return model == "local-deterministic" && effort == "none"
+    case "codex": return effort != "none"
+    case "claude": return true
+    default: return false
+    }
+}
+
 func isSafeActionIdentifier(_ value: String) -> Bool {
     guard !value.isEmpty, value.count <= 64 else { return false }
     return value.unicodeScalars.allSatisfy { scalar in
@@ -440,6 +457,18 @@ struct RuntimeConfig: Codable {
     /// quiet limit, so nothing it allowed before is stopped earlier.
     var providerIdleTimeoutSeconds: Int { executionIdleTimeoutSeconds ?? executionTimeoutSeconds }
 
+    /// The signed execution profiles a config may carry. Pure, so the self-test
+    /// checks it in memory: the installed config is never read by a fixture.
+    static func validExecutionProfiles(_ profiles: [String: RoutedExecutionProfile]) -> Bool {
+        // The route core's policy bundle allows 128 profiles.
+        !profiles.isEmpty && profiles.count <= 128 && profiles.allSatisfy { action, profile in
+            isSafeActionIdentifier(action) &&
+            ["local", "codex", "claude"].contains(profile.provider) &&
+            isSafeModelIdentifier(profile.model) &&
+            executionProfileEffortAdmitted(provider: profile.provider, model: profile.model, effort: profile.effort)
+        }
+    }
+
     private static func executableURL() -> URL {
         var size: UInt32 = 0
         _ = _NSGetExecutablePath(nil, &size)
@@ -501,17 +530,7 @@ struct RuntimeConfig: Codable {
                       ].allSatisfy(isSupportedEffort)
                   }) ?? true,
                   value.executionProfiles != nil,
-                  value.executionProfiles.map({ profiles in
-                      // The route core's policy bundle allows 128 profiles.
-                      !profiles.isEmpty && profiles.count <= 128 && profiles.allSatisfy { action, profile in
-                          isSafeActionIdentifier(action) &&
-                          ["local", "codex", "claude"].contains(profile.provider) &&
-                          isSafeModelIdentifier(profile.model) &&
-                          isSupportedProfileEffort(profile.effort) &&
-                          (profile.provider != "local" || (profile.model == "local-deterministic" && profile.effort == "none")) &&
-                          (profile.provider == "local" || profile.effort != "none")
-                      }
-                  }) ?? true,
+                  value.executionProfiles.map(validExecutionProfiles) ?? true,
                   try validateExecutorContract(value.executorContract) else {
                 if path == environment["OS1_CONFIG"] {
                     throw OS1Error.message("OS-1 configuration is invalid")
@@ -1497,6 +1516,62 @@ func claudeLeanEnvironment(environment: [String: String] = ProcessInfo.processIn
     LeanBackendInstructions.claudeEnabled(environment) ? [LeanBackendInstructions.claudeDisableVariable: "1"] : [:]
 }
 
+/// The prompt-cache lifetime of one Claude session (owner decision 2026-10-15). Every
+/// OS-1 Claude call wrote its whole prefix with the 1-hour TTL (2x base input
+/// at API prices), and same-surface calls are usually more than an hour apart,
+/// so the write was never read back: replaying 57 historical chat-lane calls
+/// at API multipliers gave -32.6% input-side cost with the 5-minute TTL (an
+/// API-price estimate, not measured subscription quota). The Claude CLI honours
+/// CLAUDE_CODE_PROMPT_CACHE_TTL=5m (usage moved from ephemeral_1h to
+/// ephemeral_5m, and an immediate second call still read the cached prefix).
+/// Only a ONE-SHOT session takes it: the tool-free chat lane, a source-only
+/// answer, or an RCC delegated child whose new session can never become the
+/// conversation's thread (rccDelegatedSessionOneShot). A session that may be
+/// resumed later keeps the CLI default. commandOutput strips inherited
+/// CLAUDE_CODE_* variables, so this travels as an override.
+func claudePromptCacheEnvironment(startsNewSession: Bool, chatLane: Bool, sourceOnly: Bool,
+                                  delegatedOneShot: Bool) -> [String: String] {
+    startsNewSession && (chatLane || sourceOnly || delegatedOneShot) ? ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"] : [:]
+}
+
+/// Settings for a read-only child OS-1 delegates through the RCC adapter
+/// (build 383). The owner's ~/.claude hooks address the owner's own
+/// interactive sessions: a plugin SessionStart hook injected "First thing
+/// this session: confirm the OhMyBug MCP tools ... tell the user once, now",
+/// and the first live claude-haiku-4-5 child (2026-10-15, task ed67fc5c, "대한민국의
+/// 수도는?") ran a Bash check for it and prepended that note to "서울". A delegated
+/// child has no interactive user and a read-only one changes nothing a Stop
+/// guard could keep, so its hooks are off; the same CLI call with
+/// `--settings {"disableAllHooks":true}` fired no hook and answered "서울".
+/// Writers keep the owner's hooks (the remote completion guard among them).
+let claudeDelegatedReadOnlySettings = #"{"disableAllHooks":true}"#
+
+/// `settings` (a JSON object) with `disableAllHooks` set; every other key kept.
+func claudeSettingsDisablingHooks(_ settings: String) throws -> String {
+    guard var object = try JSONSerialization.jsonObject(with: Data(settings.utf8)) as? [String: Any] else {
+        throw OS1Error.message("Claude read-only settings are not a JSON object")
+    }
+    object["disableAllHooks"] = true
+    return String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+}
+
+/// Whether an RCC delegated child's new session is one-shot for the prompt
+/// cache. Core leaves `native_resume_session_id` null for a side session
+/// beside the conversation's thread (a cheaper REVAS attempt, one part of a
+/// plan) AND for the first agent turn of a conversation that has no thread
+/// yet. OS-1 binds that first session as the conversation's
+/// (nativeSessionRebinds with nothing bound) and Core resumes it on the next
+/// turn, so a 5-minute write there would expire before a follow-up 5-60
+/// minutes later that the 1-hour default would have read (review
+/// 2026-10-15). Only a detached side session is one-shot
+/// (RCCNativeAttemptOutcome.nativeSessionDetached); a continuation resumes
+/// its own session. The chat lane is one-shot through `chatLane` instead.
+func rccDelegatedSessionOneShot(resumedSessionID: String?, conversationSessionID: String?,
+                                continuing: Bool, chatLane: Bool) -> Bool {
+    !continuing && RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: resumedSessionID,
+        conversationSessionID: conversationSessionID, chatLane: chatLane)
+}
+
 func executorInstructions(contract: ExecutorContract, ticket: Ticket) -> String {
     let directives = contract.directives.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
     return """
@@ -2108,7 +2183,8 @@ func claudeArguments(
     confinedPaths: [String] = [],
     confinedEscalates: Bool = true,
     fullAccessProtectedPaths: [String] = [],
-    managedDelegation: Bool = ParallelAgentRuntime.managedDelegation
+    managedDelegation: Bool = ParallelAgentRuntime.managedDelegation,
+    interactiveHooksDisabled: Bool = false
 ) throws -> [String] {
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     // A HOME write task that holds no OS-1 source lease (build 320): its
@@ -2139,6 +2215,13 @@ func claudeArguments(
             permissions[index + 1] += ",mcp__os1_memory__memory_query"
         } else { permissions += ["--allowedTools", "mcp__os1_memory__memory_query"] }
     }
+    if interactiveHooksDisabled && permissionProfile == "read_only" {
+        // One --settings value: the read-only lane already carries its shell
+        // sandbox there, and a second --settings must not stand beside it.
+        if let index = permissions.firstIndex(of: "--settings"), permissions.indices.contains(index + 1) {
+            permissions[index + 1] = try claudeSettingsDisablingHooks(permissions[index + 1])
+        } else { permissions += ["--settings", claudeDelegatedReadOnlySettings] }
+    }
     // Managed delegation only (ParallelAgentRuntime): the coordinator's children
     // and primary lose the CLI's own sub-agent tools; existing denies are kept.
     arguments += ParallelAgentRuntime.claudeDenyArguments(permissions, managed: managedDelegation)
@@ -2146,8 +2229,11 @@ func claudeArguments(
         arguments += ["--settings", OS1SourceConfinement.claudeFullAccessSettings(protectedPaths: fullAccessProtectedPaths)]
     } else if confined { arguments += ["--settings", OS1SourceConfinement.claudeSettings(protectedPaths: confinedPaths)] }
     if let model { arguments += ["--model", model] }
+    // Effort "none" is a model with no effort control (claude-haiku-4-5,
+    // 2026-10-15): there is no level to pass, and `claude -p --model haiku`
+    // with no `--effort` answered on that model. Every other effort is sent.
+    if effort != "none" { arguments += ["--effort", effort] }
     arguments += [
-        "--effort", effort,
         "--append-system-prompt", instructions,
         // Ticket constraints can change between turns. Never reuse a stale
         // system-prompt snapshot when a native Claude session is resumed.
@@ -2617,8 +2703,8 @@ func configuredModel(provider: String, action: String, config: RuntimeConfig) th
 
 func configuredEffort(provider: String, action: String, config: RuntimeConfig) throws -> String {
     if let profile = config.executionProfiles?[action] {
-        guard profile.provider == provider, isSupportedProfileEffort(profile.effort),
-              (provider == "local") == (profile.effort == "none") else {
+        guard profile.provider == provider,
+              executionProfileEffortAdmitted(provider: provider, model: profile.model, effort: profile.effort) else {
             throw OS1Error.message("Server ticket contract rejected")
         }
         return profile.effort
@@ -7790,7 +7876,9 @@ private func execute(
     quotaContext: ProviderQuotaContext? = nil,
     surfaceChoiceReceipt: String? = nil,
     surfaceOverride: ProviderSurface? = nil,
-    workspaceOverride: String? = nil
+    workspaceOverride: String? = nil,
+    delegatedOneShotSession: Bool = false,
+    delegatedChild: Bool = false
 ) throws -> ProviderExecution {
     AttemptLatencyTrace.mark("execute_entered")
     if ConcurrentRouteFanoutRuntime.child {
@@ -8219,8 +8307,10 @@ private func execute(
         // The inventory this run probed a moment ago is reused (≈1 s per
         // Claude attempt); a model it does not list is re-probed live before
         // the route is refused.
+        // Effort "none" is admitted only for a row whose efforts are exactly
+        // ["none"] (a model with no effort control); see nativeClaudeRowAdmits.
         func routed(_ rows: [NativeClaudeModel]) -> NativeClaudeModel? {
-            rows.first { $0.model == model && $0.efforts.contains(effort) }
+            rows.first { ModelAvailability.nativeClaudeRowAdmits($0, model: model, effort: effort) }
         }
         guard let nativeModel = try routed(ModelAvailability.claudeModels(workspace: executionWorkspace, maxAge: 60))
             ?? routed(ModelAvailability.claudeModels(workspace: executionWorkspace)) else {
@@ -8265,7 +8355,8 @@ private func execute(
             streamInput: steerDriver != nil,
             confinedPaths: confinedPaths,
             confinedEscalates: handBackEscalates,
-            fullAccessProtectedPaths: fullAccessPaths
+            fullAccessProtectedPaths: fullAccessPaths,
+            interactiveHooksDisabled: delegatedChild
         )
         guard let systemIndex = arguments.firstIndex(of: "--append-system-prompt"),
               arguments.indices.contains(systemIndex + 1) else {
@@ -8301,7 +8392,9 @@ private func execute(
             currentDirectory: executionWorkspace,
             isProvider: true,
             environmentOverrides: backendAccountEnvironment("claude").merging(claudeLeanEnvironment()) { _, lean in lean }
-                .merging(contextBudget.map { ["CLAUDE_CODE_AUTO_COMPACT_WINDOW": String(min(1_000_000, max(100_000, $0.softLimitTokens)))] } ?? [:]) { _, budget in budget },
+                .merging(contextBudget.map { ["CLAUDE_CODE_AUTO_COMPACT_WINDOW": String(min(1_000_000, max(100_000, $0.softLimitTokens)))] } ?? [:]) { _, budget in budget }
+                .merging(claudePromptCacheEnvironment(startsNewSession: startsNewSession, chatLane: chatLane,
+                    sourceOnly: sourceOnly, delegatedOneShot: delegatedOneShotSession)) { _, ttl in ttl },
             onLaunch: {
                 if manuallyFresh, let memoryTurn { try? MemoryContextMeter.consumeFresh(conversationID: memoryTurn.conversationID) }
                 onDispatch?(activeSessionID)
@@ -11917,7 +12010,9 @@ func runTaskWithOwnerPolicy(
                                          "\(workflowStage.rawValue): no stage model can run with the current account and settings, so none was called."))
         }
     }
-    var claudeCatalog = observedClaudeCatalog
+    // The legacy router never sees an effortless Claude row (effort "none",
+    // 2026-10-15): only the RCC catalog routes claude-haiku-4-5 at none.
+    var claudeCatalog = ModelAvailability.legacyRoutableClaude(observedClaudeCatalog)
     var hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
 
@@ -12151,7 +12246,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 // The selected plan failed before any native execution. Gather
                 // actual alternate evidence rather than declaring no route.
                 claudeInventoryDeferred = false
-                claudeCatalog = await claudeProbe.value.routable
+                claudeCatalog = ModelAvailability.legacyRoutableClaude(await claudeProbe.value.routable)
                 hasClaudeExecutable = !claudeCatalog.isEmpty
                 if hasClaudeExecutable {
                     inputContext.availableClaudeModels = claudeCatalog
@@ -12228,7 +12323,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 guard providerPreference == "auto", claudeCapacity > 0 else { return false }
                 if claudeInventoryDeferred {
                     claudeInventoryDeferred = false
-                    claudeCatalog = await claudeProbe.value.routable
+                    claudeCatalog = ModelAvailability.legacyRoutableClaude(await claudeProbe.value.routable)
                     hasClaudeExecutable = !claudeCatalog.isEmpty
                     inputContext.availableClaudeModels = claudeCatalog
                 }
@@ -12415,7 +12510,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     // Actual selected-backend failure: restore fresh fallback
                     // evidence before quota/recovery decisions below.
                     claudeInventoryDeferred = false
-                    claudeCatalog = await claudeProbe.value.routable
+                    claudeCatalog = ModelAvailability.legacyRoutableClaude(await claudeProbe.value.routable)
                     hasClaudeExecutable = !claudeCatalog.isEmpty
                     AttemptLatencyTrace.mark("fallback_inventory_ready")
                 }
@@ -15668,6 +15763,26 @@ func selfTest() throws {
           true else {
         throw OS1Error.message("Claude system-channel separation validation failed")
     }
+    // Effort "none" (2026-10-15): a model with no effort control gets no
+    // `--effort` at all, and the variadic `--tools` list is still closed by
+    // a named option before the positional prompt.
+    for (profile, source) in [("read_only", false), ("read_only", true), ("workspace_write", false)] {
+        let effortless = try claudeArguments(model: "haiku", effort: "none", instructions: claudeInstructions,
+            sessionID: claudeSessionID, startNewSession: true, title: "effortless", permissionProfile: profile,
+            prompt: claudeProbePrompt, sourceContextOnly: source)
+        let effortful = try claudeArguments(model: "haiku", effort: "low", instructions: claudeInstructions,
+            sessionID: claudeSessionID, startNewSession: true, title: "effortless", permissionProfile: profile,
+            prompt: claudeProbePrompt, sourceContextOnly: source)
+        guard !effortless.contains("--effort"), !effortless.contains("none"),
+              let system = effortless.firstIndex(of: "--append-system-prompt"), effortless[system + 1] == claudeInstructions,
+              effortless.contains("--system-prompt-snapshot"), effortless.last == claudeProbePrompt,
+              effortless.firstIndex(of: "--model").map({ effortless[$0 + 1] == "haiku" }) == true,
+              effortless.firstIndex(of: "--tools").map({ effortless.indices.contains($0 + 2) && effortless[$0 + 2].hasPrefix("--") &&
+                  $0 < system }) ?? true,
+              effortful.filter({ $0 != "--effort" && $0 != "low" }) == effortless else {
+            throw OS1Error.message("Claude effortless argument validation failed (\(profile), source-only \(source))")
+        }
+    }
     let config = RuntimeConfig(
         apiURL: "https://example.com",
         ticketVerifyingKeyRaw: String(repeating: "A", count: 43),
@@ -17358,6 +17473,7 @@ func selfTest() throws {
     }
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
+    try effortlessRoutingSelfTest()
     try ResponseAvailability.selfTest()
     try DynamicRouteAdmission.selfTest()
     try nativeTransportAdmissionSelfTest()
@@ -18566,6 +18682,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         throw OS1Error.message("RCC selected account/config no longer authorized")
     }
     var dispatched = false
+    var authorizationRefused = false
     // The execution workspace and its hash before dispatch, so a failure can
     // prove the workspace unchanged (pre-execution quota rejection).
     var executionWorkspace: String?
@@ -18590,7 +18707,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         guard supported else { throw OS1Error.message("RCC configuration unavailable before dispatch") }
         var input = ExecutionInputContext(inputUTF8Bytes: max(1, t.instruction.utf8.count + policyText.utf8.count + (h.context?.utf8.count ?? 0)), sourceUTF8Bytes: 0, historyUTF8Bytes: h.context?.utf8.count ?? 0)
         input.executionPermissionProfile = t.selectedConfig.permissionProfile.rawValue
-        input.availableClaudeModels = claude
+        // Effortless rows ride only their own authorization (version skew:
+        // an older gateway rejects effort "none" in available_claude_models).
+        input.availableClaudeModels = ModelAvailability.authorizationClaudeModels(claude, provider: provider,
+            model: t.selectedConfig.model, effort: t.selectedConfig.effort.rawValue)
         // The existing authorization boundary requires a task-bound feedback
         // envelope even for a first attempt. Empty observations are explicit:
         // they do not fabricate prior quality evidence or invoke a second owner.
@@ -18611,10 +18731,20 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let request = StartExecutionRequest(task: objective, providerPreference: provider,
             capacityPlan: .init(codex: capacity.codex, claude: capacity.claude), executorContractVersion: config.executorContract.version,
             executorContractSHA256: config.executorContract.sha256, availableCodexModels: codex.models, executionContext: input)
-        let signed = try await APIClient(config: config, token: try githubToken(), deviceID: try deviceID()).post("/v1/execution-authorizations",
-            body: RCCAuthorizationWire(request: request, selected: .init(provider: provider,
-                model: t.selectedConfig.model, effort: t.selectedConfig.effort.rawValue,
-                permission_profile: t.selectedConfig.permissionProfile.rawValue)), as: Ticket.self)
+        let signed: Ticket
+        do {
+            signed = try await APIClient(config: config, token: try githubToken(), deviceID: try deviceID()).post("/v1/execution-authorizations",
+                body: RCCAuthorizationWire(request: request, selected: .init(provider: provider,
+                    model: t.selectedConfig.model, effort: t.selectedConfig.effort.rawValue,
+                    permission_profile: t.selectedConfig.permissionProfile.rawValue)), as: Ticket.self)
+        } catch {
+            // The gateway's opaque refusal (HTTP 400) of this exact tuple, before
+            // any ticket, lease or process: Core moves the node uncharged. A
+            // build-383 client met it for every profile the server's 78-profile
+            // policy lacked (review 2026-10-15). Transport and 5xx stay charged.
+            if case OS1Error.service(status: 400, _, _) = error { authorizationRefused = true }
+            throw error
+        }
         try verifyTicket(signed, config: config, requiresStartupContract: true)
         guard signed.provider == provider, signed.permissionProfile == t.selectedConfig.permissionProfile.rawValue,
               signed.startupContract?.model == t.selectedConfig.model,
@@ -18691,7 +18821,13 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 desktopReveal: .never, workspaceBeforeHash: before, objectivePrompt: t.instruction,
                 exactAnswerOnly: answerOnly,
                 onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true }, quotaContext: input.providerQuota,
-                surfaceOverride: surface, workspaceOverride: workspace)
+                surfaceOverride: surface, workspaceOverride: workspace,
+                // Only a side session that never becomes the conversation's
+                // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
+                delegatedOneShotSession: rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
+                    conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
+                    continuing: t.continuation != nil, chatLane: surface.forcesChatLane),
+                delegatedChild: true)
         }
         }
         }
@@ -18849,7 +18985,8 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // invented lost/uncertain execution, or being erased by strict decode.
         let report = RCCNativeAttemptOutcome.failure(knownFinishedCandidate: knownFinishedCandidate,
             dispatched: dispatched, scope: t.selectedConfig.scope,
-            quotaRejectedBeforeExecution: beforeExecution, workspaceUnchanged: unchanged)
+            quotaRejectedBeforeExecution: beforeExecution, workspaceUnchanged: unchanged,
+            authorizationRefused: authorizationRefused)
         record.status = report.status
         record.dispatchStage = report.dispatchStage
         record.sideEffects = report.sideEffects
@@ -19065,6 +19202,154 @@ func routeAllRoutingSelfTest() throws {
     print("Route-all routing: \(checks) checks PASS; local probe, providers and models not called")
 }
 
+/// Core's zero-model exact route answers a request that only asks one sum,
+/// difference or product (pureArithmetic / exactArithmeticQuestion in
+/// rcc-runtime.mjs) with the decimal integer it computed (BigInt.toString);
+/// its only other zero-model answer, the local check-in, is a sentence. So an
+/// integer output of the bound `local-core` child is exact arithmetic, and the
+/// owner is told no model and no subscription allowance was used (2026-10-15:
+/// a plain Auto "1+1이 뭐야?" had run Codex gpt-6-luna/low for 29K input tokens).
+func rccDeterministicArithmeticNotice(output: String) -> String? {
+    guard output.range(of: #"^-?[0-9]{1,40}$"#, options: .regularExpression) != nil else { return nil }
+    return os1Tr("정확한 산술식이라 OS-1이 로컬에서 계산·검증했습니다 · 모델 호출·구독 사용량 없음",
+                 "An exact arithmetic expression: OS-1 computed and verified it locally · no model call, no subscription usage")
+}
+
+/// Names the local planner model only once Core is SEEN engaging it. The host
+/// cannot know before Core whether a request takes Core's zero-model exact
+/// route (that predicate lives in rcc-runtime.mjs), and naming qwen3.5:4b /
+/// dynamic up front mislabelled a task Core then answered with no model call.
+/// The evidence is a planned child: Core binds children only after the
+/// planner's plan is admitted, and its exact route has the one `local-core`
+/// child. The `planning` state is no evidence: Core sets it BEFORE its catalog
+/// probe and its nothing-dispatchable hold, so a task held there (catalog
+/// failed or unavailable, no runnable row) never called the planner
+/// (review 2026-10-15).
+final class RCCPlannerActivityGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var named = false
+    static func engagesPlanner(_ snapshot: RCCRuntimeContract.Snapshot) -> Bool {
+        snapshot.children.contains { $0.id != "local-core" }
+    }
+    /// True exactly once: on the first observed snapshot that engages the planner.
+    func firstEngagement(_ snapshot: RCCRuntimeContract.Snapshot) -> Bool {
+        guard Self.engagesPlanner(snapshot) else { return false }
+        lock.lock(); defer { lock.unlock() }
+        if named { return false }
+        named = true
+        return true
+    }
+}
+
+/// Effort "none", the one-shot Claude cache and Core's exact arithmetic
+/// (2026-10-15). In memory only: no config file, provider, model or Core.
+func effortlessRoutingSelfTest() throws {
+    var checks = 0
+    func check(_ pass: Bool, _ label: String) throws {
+        guard pass else { throw OS1Error.message("Effortless routing regression: " + label) }
+        checks += 1
+    }
+    func profile(_ provider: String, _ model: String, _ effort: String) -> RoutedExecutionProfile {
+        RoutedExecutionProfile(provider: provider, model: model, effort: effort)
+    }
+    let production: [String: RoutedExecutionProfile] = [
+        "os1_exact": profile("local", "local-deterministic", "none"),
+        "cx_luna_low": profile("codex", "gpt-6-luna", "low"),
+        "cl_opus55_medium": profile("claude", "claude-opus-5-5", "medium"),
+        "cl_fable51_max": profile("claude", "claude-fable-5-1", "max"),
+        "cl_haiku45_none": profile("claude", "claude-haiku-4-5-20251001", "none"),
+    ]
+    // Effort "none": local always none, Codex never none, Claude any supported effort.
+    try check(RuntimeConfig.validExecutionProfiles(production), "the build-383-shaped profile set loads")
+    for (label, bad) in [("codex none", profile("codex", "gpt-6-luna", "none")),
+                         ("local at an effort", profile("local", "local-deterministic", "low")),
+                         ("local on a model", profile("local", "qwen3.5:4b", "none")),
+                         ("an unknown effort", profile("claude", "claude-opus-5-5", "minimal")),
+                         ("an unknown provider", profile("gpt", "gpt-6-luna", "low"))] {
+        try check(!RuntimeConfig.validExecutionProfiles(production.merging(["x_bad": bad]) { _, n in n }), label + " is refused")
+    }
+    try check(!RuntimeConfig.validExecutionProfiles([:]), "an empty profile set is refused")
+    let contract = ExecutorContract(version: "fixture", sha256: String(repeating: "0", count: 64), directives: ["fixture"])
+    let config = RuntimeConfig(apiURL: "https://example.com", ticketVerifyingKeyRaw: String(repeating: "A", count: 43),
+        maximumSteps: 4, executionTimeoutSeconds: 60, modelProfiles: nil, effortProfiles: nil,
+        executionProfiles: production.merging(["cx_none": profile("codex", "gpt-6-luna", "none")]) { _, n in n },
+        executorContract: contract)
+    try check(try configuredEffort(provider: "claude", action: "cl_haiku45_none", config: config) == "none" &&
+              (try configuredModel(provider: "claude", action: "cl_haiku45_none", config: config)) == "claude-haiku-4-5-20251001" &&
+              (try configuredEffort(provider: "claude", action: "cl_opus55_medium", config: config)) == "medium" &&
+              (try configuredEffort(provider: "local", action: "os1_exact", config: config)) == "none",
+              "a signed ticket resolves Claude none, Claude medium and local none")
+    try check((try? configuredEffort(provider: "codex", action: "cx_none", config: config)) == nil &&
+              (try? configuredEffort(provider: "claude", action: "cx_luna_low", config: config)) == nil,
+              "a Codex none profile or a provider mismatch is rejected at the ticket")
+    try check(!isSupportedEffort("none") && isSupportedProfileEffort("none"), "Codex effort lists still exclude none")
+    // A read-only RCC delegated child runs without the owner's interactive hooks; writers keep them.
+    let hooklessRead = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
+        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", interactiveHooksDisabled: true)
+    let hookedWrite = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
+        startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "p", interactiveHooksDisabled: true)
+    let ownRead = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
+        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p")
+    func settings(_ arguments: [String]) -> [[String: Any]] {
+        arguments.indices.filter { arguments[$0] == "--settings" && arguments.indices.contains($0 + 1) }.compactMap {
+            try? JSONSerialization.jsonObject(with: Data(arguments[$0 + 1].utf8)) as? [String: Any]
+        }
+    }
+    let sandbox = try JSONSerialization.jsonObject(with: Data(ClaudeReadOnlyShell.sandboxSettings.utf8)) as? [String: Any]
+    let merged = settings(hooklessRead)
+    try check(merged.count == 1 && merged[0]["disableAllHooks"] as? Bool == true &&
+              (merged[0]["sandbox"] as? NSDictionary) == (sandbox?["sandbox"] as? NSDictionary) &&
+              settings(ownRead).count == 1 && settings(ownRead)[0]["disableAllHooks"] == nil &&
+              ownRead.contains(ClaudeReadOnlyShell.sandboxSettings) &&
+              !settings(hookedWrite).contains { $0["disableAllHooks"] != nil } && hooklessRead.last == "p",
+              "a read-only delegated child disables interactive hooks inside its one sandbox --settings; a writer and an own session keep them")
+    let sourceOnlyRead = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
+        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", sourceContextOnly: true, interactiveHooksDisabled: true)
+    try check(settings(sourceOnlyRead).count == 1 && settings(sourceOnlyRead)[0] as? [String: Bool] == ["disableAllHooks": true],
+              "a tool-free delegated read gets a hooks-off --settings of its own")
+    // The 5-minute cache only for a session that starts new and is one-shot.
+    let ttl = ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"]
+    try check(claudePromptCacheEnvironment(startsNewSession: true, chatLane: true, sourceOnly: false, delegatedOneShot: false) == ttl &&
+              claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: true, delegatedOneShot: false) == ttl &&
+              claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: false, delegatedOneShot: true) == ttl,
+              "chat lane, source-only answer and a new one-shot RCC delegated child take the 5-minute cache")
+    try check(claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: false, delegatedOneShot: false).isEmpty &&
+              claudePromptCacheEnvironment(startsNewSession: false, chatLane: false, sourceOnly: false, delegatedOneShot: true).isEmpty &&
+              claudePromptCacheEnvironment(startsNewSession: false, chatLane: true, sourceOnly: true, delegatedOneShot: true).isEmpty,
+              "a session that may become the conversation's thread, and any resumed session, keep the CLI default")
+    // Which delegated child is one-shot: only a side session beside the
+    // conversation's existing thread. A first turn's session becomes the thread.
+    let thread = UUID().uuidString
+    try check(rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: false, chatLane: false),
+              "a side session beside the conversation's thread is one-shot")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: nil, continuing: false, chatLane: false),
+              "a conversation's first agent session (nothing bound, nothing resumed) keeps the CLI default")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: thread, conversationSessionID: thread, continuing: false, chatLane: false) &&
+              !rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: true, chatLane: false),
+              "a resumed thread and a continuation are not one-shot")
+    // Core's exact arithmetic is told apart from its check-in by its output.
+    for output in ["2", "-12", "0", "123456789012345678901234567890"] {
+        try check(rccDeterministicArithmeticNotice(output: output)?.isEmpty == false, "integer \(output) is exact arithmetic")
+    }
+    for output in ["응, 지금 OS-1 로컬 요청·응답 경로는 살아 있어.", "Yes. This local OS-1 request-and-response path is working.",
+                   "", "2.5", "1+1", "2\n", String(repeating: "9", count: 41)] {
+        try check(rccDeterministicArithmeticNotice(output: output) == nil, "non-integer output \(output.debugDescription) gets no notice")
+    }
+    // The planner model is named only once Core has bound a planned child.
+    func snapshot(_ state: RCCRuntimeContract.State, _ children: [String]) -> RCCRuntimeContract.Snapshot {
+        .init(taskID: "t", requestSHA256: String(repeating: "a", count: 64), state: state, revision: 1,
+              children: children.map { .init(id: $0, state: .completed, attemptID: nil, candidateID: $0) }, result: nil, error: nil)
+    }
+    let gate = RCCPlannerActivityGate()
+    try check(!gate.firstEngagement(snapshot(.queued, [])) && !gate.firstEngagement(snapshot(.completed, ["local-core"])),
+              "a queued task and Core's exact route name no planner model")
+    try check(!gate.firstEngagement(snapshot(.planning, [])) && !gate.firstEngagement(snapshot(.held, [])),
+              "planning before the catalog, and a hold there, name no planner model")
+    try check(gate.firstEngagement(snapshot(.running, ["n1"])) && !gate.firstEngagement(snapshot(.running, ["n1", "n2"])),
+              "the first planned child names it, once")
+    print("Effortless Claude, one-shot cache and exact arithmetic notice: \(checks) checks PASS; config file, providers and Core not touched")
+}
+
 func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
     codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?,
     capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = []) async throws -> RunSummary {
@@ -19164,9 +19449,16 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let data = try RCCRuntimeContract.encode(request)
     _ = try RCCRuntimeContract.decodeRequest(data)
     let configuration = try await OwnerPolicyContext.$snapshot.withValue(owner) { try await LocalRouterBridge.rccRuntimeConfiguration() }
-    RuntimeActivity.emit(.routing, provider: "local", model: "qwen3.5:4b", effort: "dynamic", publicText: "OpenClaw RCC Runtime owns this task · automatic exact configuration")
+    // No model is named yet: Core may answer with no model at all (RCCPlannerActivityGate).
+    RuntimeActivity.emit(.routing, provider: "local", publicText: "OpenClaw RCC Runtime owns this task · automatic exact configuration")
+    let plannerActivity = RCCPlannerActivityGate()
     let terminal = try await RCCRuntimeGatewayClient.run(request: data, configuration: configuration) { snapshot in
         guard let state = try? RCCRuntimeContract.decodeSnapshot(snapshot) else { return }
+        if plannerActivity.firstEngagement(state) {
+            RuntimeActivity.emit(.routing, provider: "local", model: RCCNativeCatalogBuilder.localWorkerModel, effort: "dynamic",
+                publicText: os1Tr("OpenClaw RCC 플래너(로컬 모델)가 정확한 실행 구성을 고릅니다",
+                                  "The OpenClaw RCC planner (local model) is choosing the exact configuration"))
+        }
         if let graph = try? RCCRuntimeProjection.project(state, conversationID: conversationID,
             submissionID: submissionID, objective: prompt, observedAt: Date(), firstObservedAt: observed,
             maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,
@@ -19197,6 +19489,10 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         steps = [RunStepSummary(sequence: 1, provider: "local", action: "rcc_deterministic", model: "deterministic",
             effort: "none", revasDisposition: result.result?.taskVerified == true ? "control_verified" : "execution_only",
             sessionID: id, permissionProfile: "local_control", exitCode: 0, output: output, stderr: "", durationMS: Int64(Date().timeIntervalSince(observed) * 1000), nativeRecord: nil)]
+        if let notice = rccDeterministicArithmeticNotice(output: output) {
+            RuntimeActivity.emit(.routing, provider: "local", model: "deterministic", effort: "none", publicText: notice)
+            routingNotices.append(notice)
+        }
     }
     let graph = try? RCCRuntimeProjection.project(result, conversationID: conversationID, submissionID: submissionID,
         objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,

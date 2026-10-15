@@ -19,6 +19,9 @@ public enum RCCNativeAttemptOutcome {
     public static let providerQuotaRejectedBeforeExecution = RCCRuntimeContract.providerQuotaRejectedBeforeExecution
     public static let outcomeUncertain = "native_outcome_uncertain_preserved"
     public static let configurationUnavailable = "native_configuration_or_authorization_unavailable"
+    /// The routing server refused this exact tuple before any dispatch
+    /// (`RCCRuntimeContract.nativeAuthorizationRefused`).
+    public static let authorizationRefused = RCCRuntimeContract.nativeAuthorizationRefused
     /// Recorded beside a finished read-only attempt whose native stream
     /// reported a tool call of the model's own that broke down and was never
     /// recovered (`ExecutionStream.mainToolBreakdownsUnrecovered`).
@@ -42,11 +45,20 @@ public enum RCCNativeAttemptOutcome {
     ///   proves no model or tool work ran before the rejection.
     /// - workspaceUnchanged: the workspace part of the no-effect proof holds
     ///   for this attempt (`workspaceEvidenceHolds`; false when not observed).
+    /// - authorizationRefused: the routing server answered the exact tuple's
+    ///   authorization request with its refusal. The adapter asks before any
+    ///   ticket, lease or backend process exists, so nothing ran in either
+    ///   scope; Core moves the node without charging the owner's budget.
     public static func failure(knownFinishedCandidate: Bool, dispatched: Bool, scope: RCCRuntimeContract.Scope,
-                               quotaRejectedBeforeExecution: Bool, workspaceUnchanged: Bool) -> Report {
+                               quotaRejectedBeforeExecution: Bool, workspaceUnchanged: Bool,
+                               authorizationRefused: Bool = false) -> Report {
         if quotaRejectedBeforeExecution, !knownFinishedCandidate, scope == .readOnly, workspaceUnchanged {
             return .init(status: .failed, dispatchStage: .notDispatched, sideEffects: .none,
                          error: providerQuotaRejectedBeforeExecution)
+        }
+        if authorizationRefused, !dispatched, !knownFinishedCandidate {
+            return .init(status: .failed, dispatchStage: .notDispatched, sideEffects: .none,
+                         error: Self.authorizationRefused)
         }
         let uncertainWrite = dispatched && scope == .workspaceWrite
         return .init(status: knownFinishedCandidate ? .succeeded : uncertainWrite ? .effectsUncertain : .failed,

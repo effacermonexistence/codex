@@ -20,9 +20,13 @@ import Foundation
 ///   (workhorse; Claude's default)
 /// - `sonnet` / `claude-sonnet-5-5`: "Sonnet 5.5 · Efficient for routine tasks"
 ///   (efficient)
-/// - `haiku`: "Haiku 4.5 · Fastest for quick answers" (fast). Its resolved ID
-///   was not observed, and production has no signed Haiku profile, so it is
-///   never routable today.
+/// - `haiku` / `claude-haiku-4-5-20251001`: "Haiku 4.5 · Fastest for quick
+///   answers" (fast). On 2026-10-15 the Claude CLI 2.1.290 `initialize`
+///   inventory (no model turn) listed value `haiku` with resolvedModel
+///   `claude-haiku-4-5-20251001` and NO effort control: `supportsEffort` and
+///   `supportedEffortLevels` absent. Its one fixed level is therefore effort
+///   "none" (`claude -p --model haiku` with no `--effort` answered on that
+///   model), and it is routable through the signed profile `cl_haiku45_none`.
 ///
 /// A model with no tier is never chosen by tier routing. It stays usable only
 /// when the owner explicitly names its model family (`RoutingIntent`).
@@ -39,7 +43,7 @@ public enum ModelTiers {
         "claude-fable-5-1": .frontier, "fable": .frontier,
         "claude-opus-5-5": .workhorse, "opus": .workhorse,
         "claude-sonnet-5-5": .efficient, "sonnet": .efficient,
-        "haiku": .fast,
+        "haiku": .fast, "claude-haiku-4-5-20251001": .fast,
     ]
 
     /// The tier of an exact model name. A native context-window suffix

@@ -110,6 +110,41 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
         catch C.Rejection.invalidExecutionRecord { checks += 1 }
     }
 
+    // ---- The routing server refused the exact tuple (review 2026-10-15) ----
+    // A client whose signed profiles are newer than the server's policy is
+    // refused before any ticket or process exists: a not-dispatched, no-effect
+    // report in either scope, never a relabelled dispatch or finished answer.
+    let refused = O.Report(status: .failed, dispatchStage: .notDispatched, sideEffects: .none,
+                           error: "native_authorization_refused")
+    try check(O.authorizationRefused == C.nativeAuthorizationRefused &&
+              C.nativeAuthorizationRefused == "native_authorization_refused", "one shared refusal string")
+    for scope in [C.Scope.readOnly, .workspaceWrite] {
+        try check(O.failure(knownFinishedCandidate: false, dispatched: false, scope: scope,
+                            quotaRejectedBeforeExecution: false, workspaceUnchanged: false, authorizationRefused: true) == refused,
+                  "a refused \(scope) authorization is a not-dispatched, no-effect attempt")
+        try check(O.failure(knownFinishedCandidate: false, dispatched: true, scope: scope,
+                            quotaRejectedBeforeExecution: false, workspaceUnchanged: false, authorizationRefused: true) ==
+                  former(known: false, dispatched: true, scope: scope),
+                  "a dispatched \(scope) attempt is never relabelled as refused")
+        try check(O.failure(knownFinishedCandidate: false, dispatched: false, scope: scope,
+                            quotaRejectedBeforeExecution: false, workspaceUnchanged: false) ==
+                  former(known: false, dispatched: false, scope: scope),
+                  "any other pre-dispatch \(scope) failure keeps the charged configuration report")
+        let accepted = record(refused, scope: scope)
+        try C.validate(accepted); checks += 1
+        try check(try C.decodeRecord(C.encode(accepted)) == accepted, "the \(scope) refusal round-trips through the strict decoder")
+        var claimed = accepted; claimed.dispatchStage = .dispatched
+        var effected = accepted; effected.status = .effectsUncertain; effected.sideEffects = .possible
+        effected.dispatchStage = .dispatched
+        for value in [claimed, effected, record(refused, scope: scope, receipt: nil)] {
+            do { try C.validate(value); try check(false, "a laundering use of the refusal reason was accepted") }
+            catch C.Rejection.invalidExecutionRecord { checks += 1 }
+        }
+    }
+    try check(O.failure(knownFinishedCandidate: true, dispatched: false, scope: .readOnly,
+                        quotaRejectedBeforeExecution: false, workspaceUnchanged: false, authorizationRefused: true).status == .succeeded,
+              "a known finished candidate is never relabelled as refused")
+
     // ---- A finished read-only answer whose own tool call broke down ---------
     // The adapter records `native_tool_failed` beside the finished answer (a
     // REVAS failure signal for a cheaper tier route) only for a call that

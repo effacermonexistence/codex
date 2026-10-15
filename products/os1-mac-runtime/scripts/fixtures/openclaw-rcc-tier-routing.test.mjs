@@ -47,19 +47,24 @@ function row(id, pool, model, effort, options = {}) {
     quota_observed_at_ms: now - 100, quota_valid_until_ms: now + 30_000,
     quality_state: 'policy_admitted', estimated_cost_units: 1};
 }
-// The provider-stated tiers (Swift ModelTiers, observed 2026-10-14).
+// The provider-stated tiers (Swift ModelTiers, observed 2026-10-14; Haiku's
+// resolved ID claude-haiku-4-5-20251001 observed 2026-10-15).
 const TIERS = {'gpt-6-astra': 'frontier', 'gpt-6.1-sol': 'workhorse', 'gpt-6-luna': 'fast',
   'claude-fable-5-1': 'frontier', fable: 'frontier', 'claude-opus-5-5': 'workhorse', opus: 'workhorse',
-  'claude-sonnet-5-5': 'efficient', sonnet: 'efficient'};
+  'claude-sonnet-5-5': 'efficient', sonnet: 'efficient', haiku: 'fast', 'claude-haiku-4-5-20251001': 'fast'};
 // The signed production profiles, in the order the native builder emits them:
 // pool first, then the strongest tier first. gpt-6-sol (previous generation)
-// and daybreak (specialized) have no tier.
+// and daybreak (specialized) have no tier. Claude (2026-10-15, 85 profiles):
+// fable, opus and sonnet by their resolved IDs at low, medium, high, xhigh and
+// max; the aliases fable (low, xhigh, max), opus (xhigh, max) and sonnet
+// (medium); Haiku 4.5 at "none" only (the CLI row has no effort control).
 const CODEX = [['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
   ['gpt-6.1-sol', ['low', 'medium', 'high', 'xhigh', 'max']], ['gpt-6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
   ['gpt-6-sol', ['low', 'medium', 'high', 'xhigh', 'max']], ['gpt-daybreak-blue-latest', ['low', 'max']]];
-const CLAUDE = [['claude-fable-5-1', ['low', 'xhigh', 'max']], ['fable', ['low', 'xhigh', 'max']],
-  ['claude-opus-5-5', ['low', 'xhigh', 'max']], ['opus', ['xhigh', 'max']],
-  ['claude-sonnet-5-5', ['low', 'xhigh', 'max']], ['sonnet', ['medium']]];
+const CLAUDE = [['claude-fable-5-1', ['low', 'medium', 'high', 'xhigh', 'max']], ['fable', ['low', 'xhigh', 'max']],
+  ['claude-opus-5-5', ['low', 'medium', 'high', 'xhigh', 'max']], ['opus', ['xhigh', 'max']],
+  ['claude-sonnet-5-5', ['low', 'medium', 'high', 'xhigh', 'max']], ['sonnet', ['medium']],
+  ['claude-haiku-4-5-20251001', ['none']]];
 const key = (model, effort, scope, surface) =>
   `${surface}-${model}-${effort}${scope === 'workspace_write' ? '-w' : ''}`.replace(/[^A-Za-z0-9_-]/g, '_');
 function poolRows(pool, models, {write = false, chat = false, change = () => ({})} = {}) {
@@ -121,8 +126,8 @@ test('tier lists are the owner contract: ordered (tier, effort) per class, deep 
 test('trivial, standard and deep bind the cheapest tier for the grade in the first pool that can serve it', () => {
   const request = task('/tmp', 'Answer one question');
   const codexFirst = tierCatalog(request), claudeFirst = tierCatalog(request, {first: 'claude'});
-  // Trivial: fast/low (Codex luna); Claude has no routable fast model (no
-  // Haiku profile), so its efficient sonnet runs at low.
+  // Trivial: fast/low (Codex luna). Claude's fast model, Haiku 4.5, has no
+  // effort control (its one profile is "none"): it satisfies fast/low.
   const trivial = resolve(request, codexFirst, 'trivial').decisions.n;
   assert.equal(route(trivial), 'openai_codex/gpt-6-luna/low');
   assert.equal(trivial.tier, 'fast');
@@ -131,20 +136,26 @@ test('trivial, standard and deep bind the cheapest tier for the grade in the fir
   assert.deepEqual(trivial.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
     reference_model: 'gpt-6-astra'});
   const claudeTrivial = resolve(request, claudeFirst, 'trivial').decisions.n;
-  assert.equal(route(claudeTrivial), 'anthropic_shared/claude-sonnet-5-5/low');
-  assert.equal(claudeTrivial.tier, 'efficient');
-  assert.match(claudeTrivial.reason, /;tier_list_1;tier_efficient;/);
-  assert.deepEqual(claudeTrivial.ladder, {cheap_effort: 'low', reference_effort: 'max',
-    cheap_model: 'claude-sonnet-5-5', reference_model: 'claude-fable-5-1'});
-  // Standard: workhorse/medium (Codex 6.1-sol); Claude opus has no medium
-  // profile, so efficient sonnet/medium runs.
+  assert.equal(route(claudeTrivial), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.equal(claudeTrivial.tier, 'fast');
+  assert.equal(claudeTrivial.reason, 'resolver;route_tier;class_trivial;tier_list_0;tier_fast;pool_rank_0;' +
+    'effort_none;escalation_reference_same_pool;agent_surface');
+  assert.deepEqual(claudeTrivial.ladder, {cheap_effort: 'none', reference_effort: 'max',
+    cheap_model: 'claude-haiku-4-5-20251001', reference_model: 'claude-fable-5-1'});
+  // Standard: workhorse/medium (Codex 6.1-sol, Claude opus by its resolved
+  // ID: the opus alias has no medium profile).
   const standard = resolve(request, codexFirst, 'standard').decisions.n;
   assert.equal(route(standard), 'openai_codex/gpt-6.1-sol/medium');
   assert.equal(standard.tier, 'workhorse');
   assert.match(standard.reason, /^resolver;route_tier;class_standard;tier_list_0;tier_workhorse;/);
   const claudeStandard = resolve(request, claudeFirst, 'standard').decisions.n;
-  assert.equal(route(claudeStandard), 'anthropic_shared/sonnet/medium');
-  assert.match(claudeStandard.reason, /;tier_list_1;tier_efficient;/);
+  assert.equal(route(claudeStandard), 'anthropic_shared/claude-opus-5-5/medium');
+  assert.match(claudeStandard.reason, /^resolver;route_tier;class_standard;tier_list_0;tier_workhorse;/);
+  assert.deepEqual(claudeStandard.ladder, {cheap_effort: 'medium', reference_effort: 'max',
+    cheap_model: 'claude-opus-5-5', reference_model: 'claude-fable-5-1'});
+  // Haiku (fast) is no standard entry: it never runs standard or deep work.
+  for (const routeClass of ['standard', 'deep'])
+    assert.notEqual(resolve(request, claudeFirst, routeClass).decisions.n.model, 'claude-haiku-4-5-20251001');
   // Deep: the frontier reference at max, never the workhorse.
   const deep = resolve(request, codexFirst, 'deep');
   assert.equal(route(deep.decisions.n), 'openai_codex/gpt-6-astra/max');
@@ -239,7 +250,8 @@ test('an explicit effort keeps the class tier at the owner effort; an explicit f
   assert.equal(opusTrivial.routes.n.kind, 'tier');
   assert.equal(opusTrivial.routes.n.ladder.reference_effort, 'max');
   assert.ok(['opus', 'claude-opus-5-5'].includes(opusTrivial.routes.n.ladder.reference_model));
-  assert.equal(decide(opus, 'standard').decisions.n.effort, 'xhigh');
+  // Standard's first effort the family offers: medium (the resolved ID's).
+  assert.equal(route(decide(opus, 'standard').decisions.n), 'anthropic_shared/claude-opus-5-5/medium');
   assert.equal(decide(opus, 'standard').routes.n.kind, 'tier');
   const opusDeep = decide(opus, 'deep');
   assert.equal(opusDeep.decisions.n.effort, 'max');
@@ -262,8 +274,15 @@ test('a pool that cannot serve the class is skipped; inside a pool the first dis
   // Codex offers only its frontier model: no trivial entry there, so Claude serves it.
   const astraOnly = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
   const skipped = resolve(request, astraOnly, 'trivial').decisions.n;
-  assert.equal(route(skipped), 'anthropic_shared/claude-sonnet-5-5/low');
-  assert.match(skipped.reason, /;pool_rank_1;skipped_pool_rank_0_trivial_unavailable;effort_low;/);
+  assert.equal(route(skipped), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.match(skipped.reason, /;tier_list_0;tier_fast;pool_rank_1;skipped_pool_rank_0_trivial_unavailable;effort_none;/);
+  // Inside Claude an exhausted Haiku falls to the next entry of the same
+  // pool (efficient/low): sonnet by its resolved ID.
+  const haikuOut = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra'),
+    change: model => model === 'claude-haiku-4-5-20251001' ? {quota: 0} : {}});
+  const sonnet = resolve(request, haikuOut, 'trivial').decisions.n;
+  assert.equal(route(sonnet), 'anthropic_shared/claude-sonnet-5-5/low');
+  assert.match(sonnet.reason, /;tier_list_1;tier_efficient;pool_rank_1;/);
   // Inside Codex an exhausted luna falls to the next entry of the same pool
   // (workhorse/low), not to the other pool.
   const lunaOut = tierCatalog(request, {change: model => model === 'gpt-6-luna' ? {quota: 0} : {}});
@@ -307,9 +326,82 @@ test('read-only work takes the chat row of the same model and effort, and escala
   const catalog = tierCatalog(request, {first: 'claude', chat: true});
   const resolved = resolve(request, catalog, 'trivial');
   assert.equal(resolved.decisions.n.surface, 'claude-chat');
-  assert.equal(route(resolved.decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
+  assert.equal(route(resolved.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.equal(resolved.plan.nodes[0].candidate_id, key('claude-haiku-4-5-20251001', 'none', 'read_only', 'claude-chat'));
   assert.match(resolved.decisions.n.reason, /;chat_lane_same_route$/);
   assert.equal(resolved.routes.n.ladder.reference_candidate_id, key('claude-fable-5-1', 'max', 'read_only', 'claude-chat'));
+});
+
+// 2026-10-15: Haiku 4.5's CLI row has no effort control, so its one signed
+// profile is "none". Auto routing binds it for the fast tier's concrete effort
+// only: never under an owner effort word, never as a reference, never for a
+// writer. An explicit haiku family word is the owner's route at every grade,
+// writes included.
+test('a model with no effort control binds its tier\'s concrete effort: trivial read-only only, guarded, never an owner effort, never a reference', () => {
+  const request = task('/tmp', 'Answer one question', {write: true});
+  const claudeOnly = (claude, options = {}) => tierCatalog(request, {first: 'claude', codex: [], claude, ...options});
+  // Trivial read-only: Haiku at "none", guarded by fable/max in its pool.
+  const trivial = resolve(request, claudeOnly(CLAUDE), 'trivial');
+  assert.equal(route(trivial.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.deepEqual(trivial.routes.n.ladder, {source: 'tier', cheap_model: 'claude-haiku-4-5-20251001',
+    cheap_effort: 'none', reference_model: 'claude-fable-5-1', reference_effort: 'max',
+    reference_candidate_id: key('claude-fable-5-1', 'max', 'read_only', 'claude')});
+  // A trivial writer runs standard (opus/medium), never Haiku, even with Haiku
+  // writer rows in the catalog; standard and deep never bind Haiku either.
+  const writes = claudeOnly(CLAUDE, {write: true});
+  const writer = resolveRoutePlan(plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]), request,
+    writes, Date.now()).decisions.w;
+  assert.equal(route(writer), 'anthropic_shared/claude-opus-5-5/medium');
+  assert.match(writer.reason, /;write_promoted_from_trivial;tier_list_0;tier_workhorse;/);
+  // Availability: a pool with only Haiku can serve read-only work, never a writer.
+  const haikuOnly = claudeOnly([['claude-haiku-4-5-20251001', ['none']]], {write: true});
+  assert.deepEqual(routingAvailability(request, haikuOnly).scopes, ['read_only']);
+  assert.throws(() => resolveRoutePlan(plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]), request,
+    haikuOnly, Date.now()), /no_dispatchable_candidate:workspace_write:standard/);
+  // Never a reference: deep holds, standard has no Haiku entry, and a trivial
+  // Haiku answer with no frontier anywhere carries no escalation target.
+  assert.throws(() => resolve(request, haikuOnly, 'deep'), /no_dispatchable_candidate:read_only:reference_unavailable/);
+  assert.throws(() => resolve(request, haikuOnly, 'standard'), /no_dispatchable_candidate:read_only:standard/);
+  const alone = resolve(request, haikuOnly, 'trivial');
+  assert.equal(route(alone.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.equal(Object.hasOwn(alone.decisions.n, 'ladder'), false);
+  assert.equal(alone.routes.n.ladder.reference_candidate_id, null, 'a failure signal holds instead of adopting it');
+  // An owner effort word is a constraint Haiku cannot honour: fast/low has no
+  // row, efficient/low (sonnet) runs, guarded by fable at the owner's effort.
+  const low = claudeOnly(CLAUDE, {intent: {effort: 'low', model_family: null}});
+  const owned = resolve(request, low, 'trivial');
+  assert.equal(route(owned.decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
+  assert.match(owned.decisions.n.reason, /^resolver;route_tier;intent_effort_low;class_trivial;tier_list_1;tier_efficient;/);
+  assert.equal(owned.routes.n.ladder.reference_candidate_id, key('claude-fable-5-1', 'low', 'read_only', 'claude'));
+  // A family word naming Haiku binds it at every grade: the owner's route.
+  const family = claudeOnly([['claude-haiku-4-5-20251001', ['none']]], {intent: {effort: null, model_family: 'haiku'}});
+  for (const routeClass of ['trivial', 'standard', 'deep']) {
+    const named = resolve(request, family, routeClass);
+    assert.equal(route(named.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none', routeClass);
+    assert.match(named.decisions.n.reason, new RegExp(`^resolver;route_explicit;intent_family_haiku;class_${routeClass};`));
+    assert.deepEqual(named.routes.n, {kind: 'explicit', reference_effort: 'none', ladder: null});
+  }
+  // The family word binds a writer too (review 2026-10-15): the owner named
+  // the model, so a write runs on it with no host-chosen escalation.
+  const familyWrites = claudeOnly(CLAUDE, {write: true, intent: {effort: null, model_family: 'haiku'}});
+  for (const routeClass of ['trivial', 'standard', 'deep']) {
+    const named = resolveRoutePlan(plan(request, [graded('w', routeClass, {scope: 'workspace_write'})]), request,
+      familyWrites, Date.now());
+    assert.equal(route(named.decisions.w), 'anthropic_shared/claude-haiku-4-5-20251001/none', routeClass);
+    assert.equal(named.plan.nodes[0].candidate_id, key('claude-haiku-4-5-20251001', 'none', 'workspace_write', 'claude'));
+    assert.deepEqual(named.routes.w, {kind: 'explicit', reference_effort: 'none', ladder: null});
+  }
+  // Only a model whose rows are ALL "none" has no effort control: a "none"
+  // row beside a real effort satisfies nothing but "none".
+  const mixed = claudeOnly([['claude-fable-5-1', ['max']], ['claude-sonnet-5-5', ['low']],
+    ['claude-haiku-4-5-20251001', ['none', 'medium']]]);
+  assert.equal(route(resolve(request, mixed, 'trivial').decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
+  // The cost gate still compares the effortless route with its reference.
+  const queries = [];
+  resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request, claudeOnly(CLAUDE), Date.now(),
+    {costEvidence: query => { queries.push(query); return null; }});
+  assert.deepEqual(queries.map(query => [query.cheap_model, query.cheap_effort, query.reference_model,
+    query.reference_effort]), [['claude-haiku-4-5-20251001', 'none', 'claude-fable-5-1', 'max']]);
 });
 
 // ---- Durable runtime: REVAS escalation --------------------------------------
@@ -489,10 +581,53 @@ test('a pre-execution quota rejection re-resolves a tier node at its own class i
       output: "You've hit your weekly limit", execution_verified: false, task_quality: 'failed',
       error: 'provider_quota_rejected_before_execution'}) : execution(ticket)});
   assert.equal(result.done.state, 'completed', result.done.error);
-  assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'claude-sonnet-5-5/low']);
+  assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'claude-haiku-4-5-20251001/none']);
   const child = result.done.children[0];
   assert.match(child.routing_decision.reason, /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;route_tier;/);
   assert.equal(child.routing_decision.ladder.reference_model, 'claude-fable-5-1');
+});
+
+// Review 2026-10-15 (version skew): a build-383 host against the routing
+// server's 78-profile policy. The gateway refuses each tuple build 383 added,
+// before any ticket or process; os1 rcc-execute reports it as
+// native_authorization_refused. Charged, two refusals had exhausted the
+// budget, so Claude-only standard work (writes included) failed outright.
+// Uncharged, the node moves on to a profile the server authorizes.
+const ADDED_IN_383 = new Set(['claude-opus-5-5/medium', 'claude-opus-5-5/high', 'claude-sonnet-5-5/medium',
+  'claude-sonnet-5-5/high', 'claude-fable-5-1/medium', 'claude-fable-5-1/high', 'claude-haiku-4-5-20251001/none']);
+const refused = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched', side_effects: 'none',
+  output: null, execution_verified: false, task_quality: 'failed', usage: null, error: 'native_authorization_refused'});
+const olderServer = ticket => ADDED_IN_383.has(`${ticket.selected_config.model}/${ticket.selected_config.effort}`) ?
+  refused(ticket) : execution(ticket);
+test('a routing server that refuses the newest signed tuples costs no budget: Claude-only work moves to a tuple it authorizes', async t => {
+  const dir = await fixture(t);
+  for (const [name, routeClass, write] of [['skew standard', 'standard', false], ['skew standard write', 'standard', true],
+    ['skew trivial write', 'trivial', true], ['skew trivial', 'trivial', false]]) {
+    const result = await run(t, dir, name, {routeClass, execute: olderServer,
+      catalog: {codex: [], write}, extras: write ? {write: true} : {}});
+    assert.equal(result.done.state, 'completed', `${name}: ${result.done.error}`);
+    assert.deepEqual(result.tuples, routeClass === 'trivial' && !write ?
+      ['claude-haiku-4-5-20251001/none', 'claude-sonnet-5-5/low'] :
+      ['claude-opus-5-5/medium', 'claude-sonnet-5-5/medium', 'sonnet/medium'], name);
+    const child = result.done.children[0];
+    assert.match(child.routing_decision.reason, /^re_resolved_after:native_authorization_refused;/, name);
+    const history = result.runtime._load(result.request.task_id).children[0].attempt_history;
+    assert.deepEqual(history.map(entry => [entry.state, entry.error ?? null]),
+      [...Array(result.tuples.length - 1).fill(['verified_not_dispatched', 'native_authorization_refused']),
+        ['completed', null]], name);
+  }
+  // Still bounded: a server that refuses everything holds the node after
+  // MAX_RE_RESOLUTIONS moves, never an unbounded walk of the catalog.
+  const all = await run(t, dir, 'skew refuses all', {routeClass: 'standard', execute: refused, catalog: {codex: []}});
+  assert.equal(all.done.state, 'failed');
+  assert.equal(all.done.error, 'verified_not_dispatched_re_resolution_exhausted');
+  assert.equal(all.tickets.length, 3);
+  // A refusal is valid only on a not-dispatched, no-effect report.
+  const laundered = await run(t, dir, 'skew dispatched refusal', {routeClass: 'standard', catalog: {codex: []},
+    execute: ticket => execution(ticket, {status: 'failed', dispatch_stage: 'dispatched', side_effects: 'none',
+      output: null, execution_verified: false, task_quality: 'failed', error: 'native_authorization_refused'})});
+  assert.equal(laundered.tickets.length, 1);
+  assert.notEqual(laundered.done.state, 'completed');
 });
 
 // The 2026-10-14 incident, replayed (build 378, task 9e64077d): the planner
@@ -647,7 +782,7 @@ test('parallel escalations exempt the UNION of their cheap attempts: a dependent
   request.budget.max_duration_ms = 1_000;
   const tickets = [];
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const cheap = new Set(['gpt-6-luna', 'claude-sonnet-5-5']);
+  const cheap = new Set(['gpt-6-luna', 'claude-haiku-4-5-20251001']);
   const runtime = await createRCCRuntime({stateDir: join(dir, 'union'),
     catalog: async value => tierCatalog(value),
     plan: async () => plan(request, [graded('a', 'trivial'), graded('b', 'trivial'),
@@ -667,7 +802,7 @@ test('parallel escalations exempt the UNION of their cheap attempts: a dependent
   const byNode = node => tickets.filter(ticket => ticket.node_id === node)
     .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`);
   assert.deepEqual(byNode('a'), ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  assert.deepEqual(byNode('b'), ['claude-sonnet-5-5/low', 'claude-fable-5-1/max']);
+  assert.deepEqual(byNode('b'), ['claude-haiku-4-5-20251001/none', 'claude-fable-5-1/max']);
   // ~800 ms of overlapping cheap time is exempt once (not ~1600 ms), so by
   // the time both escalations finish the real budget is spent.
   assert.deepEqual(byNode('d'), [], 'the dependent node must not dispatch on double-counted exempt time');
@@ -725,7 +860,7 @@ test('a task whose only runnable rows no class can bind is held before planning,
 
 test('trivial work falls back upwards when no pool offers a trivial entry: the stronger tier runs, never a hold', () => {
   const request = task('/tmp', 'what is 1+1');
-  // Sonnet and Opus on quota_backoff: only the Claude frontier rows remain.
+  // Haiku, Sonnet and Opus on quota_backoff: only the Claude frontier rows remain.
   const fableOnly = tierCatalog(request, {first: 'claude', chat: true, codex: [],
     claude: CLAUDE.filter(([model]) => ['claude-fable-5-1', 'fable'].includes(model))});
   assert.deepEqual(routingAvailability(request, fableOnly).scopes, ['read_only']);
@@ -749,7 +884,7 @@ test('trivial work falls back upwards when no pool offers a trivial entry: the s
     reference_model: 'gpt-6-astra'});
   // A trivial entry in ANY pool wins over the fallback in the first pool.
   const mixed = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
-  assert.equal(route(resolve(request, mixed, 'trivial').decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
+  assert.equal(route(resolve(request, mixed, 'trivial').decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
   // Deep is never relaxed and nothing falls back downwards.
   const noFrontier = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
   assert.throws(() => resolve(request, noFrontier, 'deep'), /no_dispatchable_candidate:read_only:reference_unavailable/);
@@ -796,7 +931,7 @@ test('an explicit fan-out binds model and effort by grade on each named surface:
   const resolved = resolveRoutePlan(plan(request, FANOUT.map((_, index) => routeNode(index, 'trivial'))), request,
     catalog, Date.now());
   assert.deepEqual(Object.values(resolved.decisions).map(d => `${d.surface}:${d.model}/${d.effort}`),
-    ['codex:gpt-6-luna/low', 'claude:claude-sonnet-5-5/low', 'claude-chat:claude-sonnet-5-5/low']);
+    ['codex:gpt-6-luna/low', 'claude:claude-haiku-4-5-20251001/none', 'claude-chat:claude-haiku-4-5-20251001/none']);
   assert.match(resolved.decisions['requested-1'].reason,
     /^resolver;route_tier;explicit_route_surface_codex;class_trivial;tier_list_0;tier_fast;/);
   // The escalation guard stays on the named surface (claude-chat's own
@@ -810,7 +945,7 @@ test('an explicit fan-out binds model and effort by grade on each named surface:
   const deep = resolveRoutePlan(plan(request, [routeNode(0, 'deep'), routeNode(1, 'standard'), routeNode(2, 'trivial')]),
     request, catalog, Date.now()).decisions;
   assert.deepEqual([deep['requested-1'], deep['requested-2']].map(d => `${d.surface}:${d.model}/${d.effort}`),
-    ['codex:gpt-6-astra/max', 'claude:sonnet/medium']);
+    ['codex:gpt-6-astra/max', 'claude:claude-opus-5-5/medium']);
   // A planner that names no route, a changed payload or a dropped GPT route
   // never gets a surface from the host.
   for (const [name, node] of [['unknown ordinal', {...routeNode(0, 'trivial'), id: 'requested-7'}],
@@ -831,7 +966,7 @@ test('an explicit fan-out binds model and effort by grade on each named surface:
   assert.equal(done.state, 'completed', done.error);
   assert.deepEqual(tickets.map(ticket => `${ticket.selected_config.surface}:${ticket.selected_config.model}/` +
     ticket.selected_config.effort).sort(),
-  ['claude-chat:claude-sonnet-5-5/low', 'claude:claude-sonnet-5-5/low', 'codex:gpt-6-luna/low']);
+  ['claude-chat:claude-haiku-4-5-20251001/none', 'claude:claude-haiku-4-5-20251001/none', 'codex:gpt-6-luna/low']);
   assert.ok(tickets.every(ticket => !['gpt-6-astra', 'claude-fable-5-1', 'fable', 'opus', 'claude-opus-5-5']
     .includes(ticket.selected_config.model) && !['max', 'ultra'].includes(ticket.selected_config.effort)));
   assert.deepEqual(done.children.map(child => child.requested_surface), FANOUT.map(route => route.surface));
@@ -852,7 +987,7 @@ test('a failed cheap answer on an explicit route escalates once to the reference
     plan: async () => plan(request, [routeNode(0, 'trivial', [FANOUT[0], FANOUT[2]]),
       routeNode(1, 'trivial', [FANOUT[0], FANOUT[2]])]),
     execute: async ticket => { tickets.push(ticket);
-      const cheap = ['gpt-6-luna', 'claude-sonnet-5-5'].includes(ticket.selected_config.model);
+      const cheap = ['gpt-6-luna', 'claude-haiku-4-5-20251001'].includes(ticket.selected_config.model);
       return execution(ticket, cheap ? {output: ' '} : {}); },
     verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
@@ -862,7 +997,7 @@ test('a failed cheap answer on an explicit route escalates once to the reference
   const bySurface = surface => tickets.filter(ticket => ticket.selected_config.surface === surface)
     .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`);
   assert.deepEqual(bySurface('codex'), ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  assert.deepEqual(bySurface('claude-chat'), ['claude-sonnet-5-5/low', 'claude-fable-5-1/max']);
+  assert.deepEqual(bySurface('claude-chat'), ['claude-haiku-4-5-20251001/none', 'claude-fable-5-1/max']);
   assert.deepEqual(bySurface('claude'), [], 'never another surface than the one the owner named');
   assert.deepEqual(done.children.map(child => child.selected_config.surface), ['codex', 'claude-chat']);
   // With no reference on the named surface the guard holds, never another surface.
@@ -885,15 +1020,20 @@ test("an explicit route's own effort or model words bind that route only; ultra 
   const bind = (intents, classes = ['trivial', 'trivial']) => Object.values(resolveRoutePlan(plan(request,
     classes.map((routeClass, index) => routeNode(index, routeClass, routes))), request,
   {...base, explicit_route_intents: intents}, Date.now()).decisions).map(d => `${d.model}/${d.effort}`);
-  assert.deepEqual(bind([null, null]), ['gpt-6-luna/low', 'claude-sonnet-5-5/low']);
+  assert.deepEqual(bind([null, null]), ['gpt-6-luna/low', 'claude-haiku-4-5-20251001/none']);
   // "최대 리즈닝으로 1+1": that route runs max on its graded tier; the other is untouched.
-  assert.deepEqual(bind([{effort: 'max', model_family: null}, null]), ['gpt-6-luna/max', 'claude-sonnet-5-5/low']);
+  assert.deepEqual(bind([{effort: 'max', model_family: null}, null]), ['gpt-6-luna/max', 'claude-haiku-4-5-20251001/none']);
+  // That route's own effort word is a constraint Haiku cannot honour (no
+  // effort control): its trivial entry falls to sonnet at that effort.
+  assert.deepEqual(bind([null, {effort: 'low', model_family: null}]), ['gpt-6-luna/low', 'claude-sonnet-5-5/low']);
+  // A route word naming Haiku binds it (the named family's one route).
+  assert.deepEqual(bind([null, {effort: null, model_family: 'haiku'}]), ['gpt-6-luna/low', 'claude-haiku-4-5-20251001/none']);
   // A route word naming astra ("astra로 돌려 1+1"; a bare "astra로 1+1" parses to
   // nothing): that family, effort by grade.
-  assert.deepEqual(bind([{effort: null, model_family: 'astra'}, null]), ['gpt-6-astra/low', 'claude-sonnet-5-5/low']);
+  assert.deepEqual(bind([{effort: null, model_family: 'astra'}, null]), ['gpt-6-astra/low', 'claude-haiku-4-5-20251001/none']);
   // Ultra only on the route whose own words asked for it.
   assert.deepEqual(bind([{effort: 'ultra', model_family: 'astra'}, null], ['deep', 'trivial']),
-    ['gpt-6-astra/ultra', 'claude-sonnet-5-5/low']);
+    ['gpt-6-astra/ultra', 'claude-haiku-4-5-20251001/none']);
   assert.deepEqual(bind([null, null], ['deep', 'deep']), ['gpt-6-astra/max', 'claude-fable-5-1/max']);
   // Without any route word an explicit test never binds ultra, at any grade.
   assert.ok(['trivial', 'standard', 'deep'].every(routeClass =>
@@ -973,20 +1113,24 @@ test('pools are ranked by the quota of the model a node actually binds, not by t
   // and fast models are nearly exhausted; Claude's lower tiers have room.
   const scores = {'gpt-6-astra': 300_000_000, 'gpt-6.1-sol': 2_000_000, 'gpt-6-luna': 2_000_000,
     'claude-fable-5-1': 100_000_000, fable: 100_000_000, 'claude-opus-5-5': 900_000_000, opus: 900_000_000,
-    'claude-sonnet-5-5': 900_000_000, sonnet: 900_000_000};
+    'claude-sonnet-5-5': 900_000_000, sonnet: 900_000_000, 'claude-haiku-4-5-20251001': 900_000_000};
   const catalog = {...tierCatalog(request), quota_scores: scores};
   const standard = resolve(request, catalog, 'standard').decisions.n;
-  assert.equal(route(standard), 'anthropic_shared/sonnet/medium');
+  assert.equal(route(standard), 'anthropic_shared/claude-opus-5-5/medium');
   assert.match(standard.reason, /;pool_rank_1;outscored_pool_rank_0;effort_medium;pool_scored_by_bound_model;/);
-  assert.equal(route(resolve(request, catalog, 'trivial').decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
+  assert.equal(route(resolve(request, catalog, 'trivial').decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
   // Deep work binds the frontier: Codex's astra has more room than fable.
   assert.equal(route(resolve(request, catalog, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
   // Unknown scores keep the catalog order; an older catalog has none.
   assert.equal(route(resolve(request, tierCatalog(request), 'standard').decisions.n), 'openai_codex/gpt-6.1-sol/medium');
   assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {'gpt-6.1-sol': 5}}, 'standard')
     .decisions.n), 'openai_codex/gpt-6.1-sol/medium', 'a model with a score outranks one with none');
+  assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {'claude-opus-5-5': 5}}, 'standard')
+    .decisions.n), 'anthropic_shared/claude-opus-5-5/medium');
+  // Only the bound model's score counts: a score for another Claude model
+  // (sonnet, which standard does not bind there) leaves the catalog order.
   assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {sonnet: 5}}, 'standard')
-    .decisions.n), 'anthropic_shared/sonnet/medium');
+    .decisions.n), 'openai_codex/gpt-6.1-sol/medium');
 });
 
 test('quota_scores and explicit_route_intents are strictly shaped catalog fields', async t => {

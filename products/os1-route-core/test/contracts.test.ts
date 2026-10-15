@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTIONS,
   parsePrivateDecision,
   parseResultRequest,
   parseStartRequest,
@@ -82,6 +83,28 @@ describe("strict trust-boundary contracts", () => {
       action: "use_opus",
       permission_profile: "read_only",
     })).toThrow();
+  });
+
+  it("signs the 2026-10-15 Claude medium/high ladder and the effortless haiku action", () => {
+    // Gateway ACTIONS are compiled from Config/production.json: 78 + 7 = 85.
+    expect(ACTIONS).toHaveLength(85);
+    expect(new Set(ACTIONS).size).toBe(ACTIONS.length);
+    for (const action of ["cl_opus55_medium", "cl_opus55_high", "cl_sonnet55_medium", "cl_sonnet55_high",
+      "cl_fable51_medium", "cl_fable51_high", "cl_haiku45_none"]) {
+      expect(ACTIONS).toContain(action);
+      expect(parsePrivateDecision({ status: "step", provider: "claude", action, permission_profile: "read_only" }))
+        .toEqual({ status: "step", provider: "claude", action, permission_profile: "read_only" });
+      expect(() => parsePrivateDecision({ status: "step", provider: "codex", action, permission_profile: "read_only" })).toThrow();
+    }
+    const startup = { schema: 1, completion_feedback_schema: 1, model_availability_schema: 1,
+      executor_contract_sha256: "0".repeat(64), model: "claude-haiku-4-5-20251001", effort: "none", state_storage: "pool_v1" };
+    expect(parsePrivateDecision({ status: "step", provider: "claude", action: "cl_haiku45_none",
+      permission_profile: "read_only", startup_contract: startup }).startup_contract).toEqual(startup);
+    // The startup contract stays bound to the action's exact tuple.
+    for (const change of [{ effort: "low" }, { model: "claude-sonnet-5-5" }]) {
+      expect(() => parsePrivateDecision({ status: "step", provider: "claude", action: "cl_haiku45_none",
+        permission_profile: "read_only", startup_contract: { ...startup, ...change } })).toThrow();
+    }
   });
 
   it("requires a signed ticket, artifact hash, R2 reference and device signature", () => {

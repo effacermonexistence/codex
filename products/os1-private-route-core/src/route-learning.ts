@@ -19,6 +19,10 @@
 
 export const LEARNING_HALF_LIFE_MS = 7 * 24 * 3_600_000;
 export const LEARNING_CLASSES = new Set(["executed_change", "executed_review", "source_review", "native_record"]);
+// "none" (a Claude model with no effort control, admitted 2026-10-15) is left
+// out on purpose: a claude/none step fails observe() inside recordLearning's
+// catch, so the route still completes, and no "none" row ever reaches the
+// RCC_V26 ranker, whose acceptance of that effort is not verified.
 const LEARNING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_ROWS = 256;

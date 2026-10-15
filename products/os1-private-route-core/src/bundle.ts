@@ -54,8 +54,13 @@ export function parseExecutionProfiles(value: unknown): ExecutionProfiles {
       throw new Error("invalid policy bundle");
     }
     const profile = parseExecutionProfile(candidate);
-    if ((candidate.provider === "local") !== (profile.effort === "none") ||
-      (candidate.provider === "local" && profile.model !== "local-deterministic")) {
+    // "none" means the model has no reasoning-effort control (owner decision
+    // 2026-10-15): local is always none, Codex never is, and Claude may be
+    // (haiku/claude-haiku-4-5-20251001 has no effort levels in CLI 2.1.290's
+    // inventory). Claude keeps every effort this parser admitted before, so
+    // an older bundle or a persisted route snapshot still parses unchanged.
+    if ((candidate.provider === "local" && (profile.effort !== "none" || profile.model !== "local-deterministic")) ||
+      (candidate.provider === "codex" && profile.effort === "none")) {
       throw new Error("invalid policy bundle");
     }
     output[action] = profile;

@@ -85,6 +85,17 @@ export function validGovernedDelegation(value: unknown): value is GovernedDelega
     typeof value.parent_objective_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.parent_objective_sha256);
 }
 
+/** Effort "none" means "this model has no reasoning-effort control", not "skip
+ * reasoning" (owner decision 2026-10-15). Claude CLI 2.1.290's initialize
+ * inventory lists haiku (claude-haiku-4-5-20251001) with supportsEffort and
+ * supportedEffortLevels absent, and a live `claude -p --model haiku` without
+ * --effort answered on that model. Codex models always expose effort levels,
+ * so codex/none stays rejected; local/none remains the bundle's concern. */
+export function backendEffort(provider: unknown, effort: unknown): boolean {
+  return typeof effort === "string" && (["low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) ||
+    (effort === "none" && provider === "claude"));
+}
+
 export type ClaudeModelCapability = { model: string; supported_efforts: string[] };
 export function validClaudeCatalog(value: unknown): value is ClaudeModelCapability[] {
   return Array.isArray(value) && value.length <= 32 &&
@@ -92,7 +103,10 @@ export function validClaudeCatalog(value: unknown): value is ClaudeModelCapabili
       typeof row.model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.model) &&
       Array.isArray(row.supported_efforts) && row.supported_efforts.length > 0 && row.supported_efforts.length <= 5 &&
       new Set(row.supported_efforts).size === row.supported_efforts.length &&
-      row.supported_efforts.every(e => ["low", "medium", "high", "xhigh", "max"].includes(e))) &&
+      // A model either has effort levels or has none at all; ["none","low"] is
+      // not a real inventory row, so "none" is admitted only on its own.
+      (row.supported_efforts.every(e => ["low", "medium", "high", "xhigh", "max"].includes(e)) ||
+        (row.supported_efforts.length === 1 && row.supported_efforts[0] === "none"))) &&
     new Set(value.map(row => row.model)).size === value.length;
 }
 
@@ -122,7 +136,9 @@ export function validCompletionFeedback(value: unknown): value is CompletionFeed
       exactRecord(observation, ["provider", "model", "effort", "outcome", "input_tokens", "output_tokens", "duration_ms"]) &&
       typeof observation.provider === "string" && ["codex", "claude"].includes(observation.provider) &&
       typeof observation.model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(observation.model) &&
-      typeof observation.effort === "string" && ["low", "medium", "high", "xhigh", "max", "ultra"].includes(observation.effort) &&
+      // The private core appends a claude/none attempt to this list and
+      // revalidates it on the next step, so the rule must match selection.
+      backendEffort(observation.provider, observation.effort) &&
       typeof observation.outcome === "string" && ["adopted", "quality_failure", "timeout", "capability_failure"].includes(observation.outcome) &&
       measuredInteger(observation.input_tokens) && measuredInteger(observation.output_tokens) &&
       measuredInteger(observation.duration_ms));

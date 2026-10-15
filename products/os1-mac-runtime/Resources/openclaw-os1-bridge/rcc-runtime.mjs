@@ -34,6 +34,15 @@ const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unav
 // rejection before any work, on a read-only attempt with an unchanged
 // workspace. Core then re-resolves the node to another pool.
 const PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION = 'provider_quota_rejected_before_execution';
+// The routing server refused to authorize the exact tuple before any ticket,
+// lease or backend process existed, in either scope. A host whose signed
+// profiles are newer than the server's policy meets it for every newly added
+// tuple: build 383 against the 78-profile bundle failed Claude-only standard
+// work after two refused rows (review 2026-10-15). Not charged, like a quota
+// rejection; the node moves to another row.
+const NATIVE_AUTHORIZATION_REFUSED = 'native_authorization_refused';
+const UNCHARGED_PRE_EXECUTION_ERRORS = new Set([PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION,
+  NATIVE_AUTHORIZATION_REFUSED]);
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
@@ -70,7 +79,9 @@ export const MODEL_TIERS = Object.freeze(['frontier', 'workhorse', 'efficient', 
 // offered effort up to max (max on every production frontier profile).
 const REFERENCE_EFFORT = 'reference';
 // Ordered (tier, effort) preferences per graded class: the first entry with a
-// dispatchable row in a pool wins. Deep work only ever runs the reference.
+// dispatchable row in a pool wins. Deep work only ever runs the reference. A
+// model with no effort control (its only row is "none": Claude Haiku 4.5,
+// 2026-10-15) satisfies its tier's concrete effort (entryRows).
 export const TIER_ROUTES = Object.freeze({
   trivial: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
   standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high'],
@@ -569,16 +580,41 @@ function poolRows(node, catalog, options = {}) {
   });
   return [...pools.values()];
 }
+/** The models among these rows that offer ONLY effort "none": the model has
+ * no reasoning-effort control (2026-10-15: the Claude CLI 2.1.290 inventory
+ * row 'haiku' -> claude-haiku-4-5-20251001 has no supportsEffort and no
+ * supportedEffortLevels, and `claude -p --model haiku` with no --effort
+ * answered on that model), so its one row is the whole model. A model with a
+ * "none" row beside real efforts is not effortless. */
+function effortlessModels(matching) {
+  const efforts = new Map();
+  for (const {candidate} of matching)
+    efforts.set(candidate.model, (efforts.get(candidate.model) ?? new Set()).add(candidate.effort));
+  return new Set([...efforts].filter(([, set]) => set.size === 1 && set.has('none')).map(([model]) => model));
+}
 /** The rows of one pool that match one (tier, effort) entry. A REFERENCE
  * effort is the highest effort up to max that the entry's tier (or, for an
  * explicitly named family, the family) offers in this pool. An explicit
- * effort word is a hard constraint on every entry (tierEntries). */
+ * effort word is a hard constraint on every entry (tierEntries). A model with
+ * no effort control (effortlessModels) satisfies any concrete effort of an
+ * entry its tier (or the named family) matches: the tier list's effort is the
+ * cheapest reasoning expected to suffice and such a model has nothing to set.
+ * Never under an owner effort word (that model cannot honour it), never for a
+ * REFERENCE entry (referenceEffort already reads a none-only model as
+ * "none"), and only where a class lists that tier: with today's TIER_ROUTES
+ * auto routing binds a fast-tier model to trivial read-only nodes only
+ * (scopeClasses keeps writers at standard and above). An explicit family word
+ * naming it binds it at every grade, writes included: the owner's route. */
 function entryRows(rows, entry, catalog, intent) {
   const matching = rows.filter(({candidate}) => tierRoutable(candidate, catalog, intent) &&
     (entry.tier === null || tierOf(catalog, candidate.model) === entry.tier));
-  const effort = entry.effort === REFERENCE_EFFORT ? referenceEffort(matching.map(row => row.candidate), intent) :
-    entry.effort;
-  return effort === null ? [] : matching.filter(({candidate}) => candidate.effort === effort);
+  if (entry.effort === REFERENCE_EFFORT) {
+    const effort = referenceEffort(matching.map(row => row.candidate), intent);
+    return effort === null ? [] : matching.filter(({candidate}) => candidate.effort === effort);
+  }
+  const effortless = intent?.effort ? new Set() : effortlessModels(matching);
+  return matching.filter(({candidate}) => candidate.effort === entry.effort ||
+    (candidate.effort === 'none' && effortless.has(candidate.model)));
 }
 /** A pool's REFERENCE rows: its frontier-tier model at the highest effort up
  * to max it offers. Empty when the pool offers no frontier model: nothing
@@ -1805,6 +1841,73 @@ function pureArithmetic(request) {
   return result.toString();
 }
 
+// Wrapped exact arithmetic (2026-10-15). A plain Auto "1+1이 뭐야?" ran Codex
+// gpt-6-luna/low (29K input tokens) and still ended returned_unverified
+// (no_registered_exact_task_verifier): the bare-expression gate above missed
+// the question wording around the same exact sum. Only these closed whole-
+// request shapes take Core's zero-model exact route; any other word, a number
+// word, an operator word, division, a decimal, a second operator or a second
+// expression abstains (null) and stays with the models.
+const WRAPPED_EXPRESSION = /^(\d{1,15}) ?([+*]) ?(\d{1,15})/;
+// EXPR, an optional subject/topic particle, an optional closed predicate.
+const KOREAN_ARITHMETIC_SUFFIX = new RegExp('^ ?(?:(은|는|이|가) ?)?(뭐야|뭐냐|뭐니|뭐지|뭐죠|뭐예요|뭐에요|뭔가요|' +
+  '얼마야|얼마냐|얼마지|얼마죠|얼마예요|얼마에요|얼마인가요|몇이야|몇이냐|몇이지|몇이에요)?$', 'u');
+// The typographic apostrophe is the same word (macOS/iOS smart punctuation).
+const ENGLISH_ARITHMETIC_PREFIX = /^(?:what is|what's|what’s|how much is) /u;
+/** The exact answer of a whole request that only asks one sum or product, or
+ * null. Shapes (after NFKC, '×' as '*', collapsed whitespace, lowercase, at
+ * most 160 characters, one trailing run of ?!.。？！ removed):
+ *  (a) a bare expression exactly as pureArithmetic reads it ('-' included)
+ *      when nothing was removed; with a removed question/end mark only + or *;
+ *  (b) EXPR + an optional particle (은|는|이|가) + an optional closed Korean
+ *      predicate; a particle alone needs the '?' ("2+2는?");
+ *  (c) a closed English prefix (what is | what's | how much is) + EXPR;
+ *  (d) EXPR followed by '=' ("1+1=", "1+1=?").
+ * Every wrapped shape takes + or * only and unsigned operands: a hyphen next
+ * to words reads as a section, score or range ("5-3은?", "3-4?"). A
+ * compatibility character other than a fullwidth form that folds into a
+ * digit or operator abstains: NFKC turns the exponent in "2²+1" into "22+1".
+ * A '!' right after a digit abstains: "2+3!" is factorial notation. */
+export function exactArithmeticQuestion(request) {
+  if (typeof request !== 'string') return null;
+  for (const ch of request) {
+    const folded = ch.normalize('NFKC');
+    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*=-]/.test(folded)) return null;
+  }
+  let text = request.normalize('NFKC').replace(/×/gu, '*').replace(/\s+/gu, ' ').trim().toLowerCase();
+  if (text.length > 160 || /\d!/.test(text)) return null;
+  const end = /[?!.。？！]+$/u.exec(text);
+  const question = end !== null && /[?？]/u.test(end[0]);
+  if (end) text = text.slice(0, end.index).trim();
+  if (!end) {
+    const bare = pureArithmetic(text);
+    if (bare !== null) return bare;
+  }
+  const prefix = ENGLISH_ARITHMETIC_PREFIX.exec(text);
+  const body = prefix ? text.slice(prefix[0].length) : text;
+  const expression = WRAPPED_EXPRESSION.exec(body);
+  if (!expression) return null;
+  const rest = body.slice(expression[0].length);
+  const answer = pureArithmetic(`${expression[1]}${expression[2]}${expression[3]}`);
+  // (c): nothing may follow the expression.
+  if (prefix) return rest === '' ? answer : null;
+  // (a) with a removed mark, and (d).
+  if (rest === '' || /^ ?=$/u.test(rest)) return answer;
+  // (b): a particle or a predicate (the empty suffix was (a) above).
+  const korean = KOREAN_ARITHMETIC_SUFFIX.exec(rest);
+  if (!korean) return null;
+  return korean[2] !== undefined || question ? answer : null;
+}
+
+/** Whether a task carries no earlier conversation that could give a wrapped
+ * "N+M" another meaning (a product label, a score, a promotion): no context
+ * text on the task or the host, and no native session the host would resume. */
+function withoutConversation(task) {
+  const h = task.host_context;
+  return (task.context ?? '').trim() === '' && (h.context ?? '').trim() === '' &&
+    h.codex_session_id === null && h.claude_session_id === null;
+}
+
 function exactLocalCheckIn(request) {
   const value = request.normalize('NFKC').trim().replace(/\s+/gu, ' ')
     .replace(/\s*([.!?])\s*/gu, '$1').toLowerCase();
@@ -1917,15 +2020,16 @@ function repairCatalog(snapshot, plan, fresh, changedIDs) {
 }
 
 /** Attempts charged to the retry budget. A verified pre-execution provider
- * quota rejection did no work and is not charged for a host-resolved node,
- * whose moves are bounded by MAX_RE_RESOLUTIONS instead; any other node gets
- * at most one such free attempt, as the legacy runner's quota limit did.
+ * quota rejection, and the routing server's refusal of the exact tuple, did
+ * no work and are not charged for a host-resolved node, whose moves are
+ * bounded by MAX_RE_RESOLUTIONS instead; any other node gets at most one
+ * such free attempt, as the legacy runner's quota limit did.
  * The one cheaper ladder attempt whose verifier failed is the Core's own
  * bet, not the owner's: its single reference re-dispatch is never charged. */
 function chargedAttempts(child, resolver) {
   const history = child.attempt_history ?? [];
   const free = history.filter(entry => entry.state === 'verified_not_dispatched' &&
-    entry.error === PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION).length;
+    UNCHARGED_PRE_EXECUTION_ERRORS.has(entry.error)).length;
   const ladder = history.some(entry => LADDER_FAILED_STATES.has(entry.state)) ? 1 : 0;
   return child.attempts - Math.min(free, resolver ? MAX_RE_RESOLUTIONS : 1) - ladder;
 }
@@ -2797,7 +2901,14 @@ class RCCRuntime {
       if (checkin !== null && task.objective.trim() === task.request.trim()) {
         this._completeLocalExact(taskID, 'local_checkin', checkin); return;
       }
-      const answer = pureArithmetic(task.request);
+      // A wrapped question ("1+1이 뭐야?") is the same exact sum: the child
+      // keeps the whole request as its instruction (_completeLocalExact). Only
+      // with no prior conversation: after "1+1 상품은 3,500원" the follow-up
+      // "1+1은 얼마야?" asks a price, and a sum would be adopted as verified
+      // with no model seeing the context (review 2026-10-15). The bare
+      // expression keeps its earlier reading.
+      const answer = pureArithmetic(task.request) ??
+        (withoutConversation(task) ? exactArithmeticQuestion(task.request) : null);
       if (answer !== null) {
         this._completeLocalExact(taskID, 'deterministic_arithmetic', answer);
         return;
@@ -3572,6 +3683,12 @@ class RCCRuntime {
       assert(result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
         result.side_effects === 'none' && !result.execution_verified && result.native_receipt != null &&
         ticket.selected_config.scope === 'read_only', 'execution_receipt_invalid');
+    // A refusal precedes any ticket or process, so it is valid in either
+    // scope, but only on a not-dispatched, no-effect report with a receipt.
+    if (result.error === NATIVE_AUTHORIZATION_REFUSED)
+      assert(result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+        result.side_effects === 'none' && !result.execution_verified && result.native_receipt != null,
+      'execution_receipt_invalid');
     if (result.execution_verified) assert(result.status === 'succeeded' &&
       result.dispatch_stage === 'dispatched' && result.acknowledged_config != null &&
       result.native_receipt != null, 'executed_config_unacknowledged');

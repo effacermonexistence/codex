@@ -13,6 +13,14 @@ public enum RCCRuntimeContract {
     /// stream proved a quota rejection before any work, on a read-only attempt
     /// with an unchanged workspace. Valid only on that no-effect report.
     public static let providerQuotaRejectedBeforeExecution = "provider_quota_rejected_before_execution"
+    /// The routing server refused to authorize this exact (provider, model,
+    /// effort) before any ticket, lease or backend process existed (its opaque
+    /// HTTP 400 from /v1/execution-authorizations). Nothing ran, in either
+    /// scope. A client whose signed profiles are newer than the server's
+    /// policy meets it for every newly added tuple (review 2026-10-15: build
+    /// 383 against the 78-profile bundle). Valid only on a not-dispatched,
+    /// no-effect report with a receipt.
+    public static let nativeAuthorizationRefused = "native_authorization_refused"
     public enum Rejection: String, Error, Sendable {
         case invalidSchema, invalidIdentity, invalidHash, invalidInput, unsupportedField
         case invalidConfiguration, invalidObservation, invalidPlan, configurationMismatch
@@ -1036,6 +1044,10 @@ public enum RCCRuntimeContract {
             guard value.status == .failed, value.dispatchStage == .notDispatched, value.sideEffects == .none,
                   !value.executionVerified, value.nativeReceipt != nil,
                   value.selectedConfig.scope == .readOnly else { throw Rejection.invalidExecutionRecord }
+        }
+        if value.error == nativeAuthorizationRefused {
+            guard value.status == .failed, value.dispatchStage == .notDispatched, value.sideEffects == .none,
+                  !value.executionVerified, value.nativeReceipt != nil else { throw Rejection.invalidExecutionRecord }
         }
         if let handback = value.handback {
             guard value.executionVerified, value.status == .succeeded, !value.taskVerified, value.parityState == .unverified,

@@ -14,6 +14,7 @@ const profiles = {
   cx_high: { provider: "codex", model: "gpt-fixture", effort: "high" },
   cl_low: { provider: "claude", model: "claude-fixture", effort: "low" },
   cl_max: { provider: "claude", model: "claude-fixture", effort: "max" },
+  cl_none: { provider: "claude", model: "claude-effortless", effort: "none" },
 } as const;
 const bundle = { schema: 4, policy_version: "exact-authorization-fixture-v1", maximum_steps: 4,
   executor_contracts: [contract], execution_profiles: profiles,
@@ -92,6 +93,31 @@ describe("exact tuple admission without routing or fallback", () => {
     if (defect === "extra-field") body.task.fallback = "codex";
     if (defect === "wrong-contract") body.task.executor_contract_sha256 = hex("f");
     expect((await call(f.env, body)).status).toBe(400); expect(f.counts()).toEqual({ calls: 0, budgets: 0, begins: 0 });
+  });
+  it("admits claude/none as an exact tuple; codex/none is rejected even if a table listed it", () => {
+    // 2026-10-15: "none" is a Claude model with no effort control (haiku), never a Codex level.
+    const none = { provider: "claude", model: "claude-effortless", effort: "none", permission_profile: "read_only" };
+    expect(admitExplicitProfile(none, profiles, [contract], contract.version, contract.sha256, "read_only"))
+      .toEqual({ selected: none, action: "cl_none" });
+    const withCodexNone = { ...profiles, cx_none: { provider: "codex", model: "gpt-fixture", effort: "none" } } as const;
+    expect(() => admitExplicitProfile(selected("codex", "none"), withCodexNone, [contract], contract.version, contract.sha256, "read_only")).toThrow();
+    expect(() => admitExplicitProfile({ ...none, model: "claude-fixture" }, profiles, [contract], contract.version, contract.sha256, "read_only")).toThrow();
+  });
+  it("authorizes the effortless Claude tuple end to end against its none-only inventory row", async () => {
+    const f = fixture(), body: any = input("claude");
+    body.selected = { provider: "claude", model: "claude-effortless", effort: "none", permission_profile: "read_only" };
+    body.task.execution_context.available_claude_models = [{ model: "claude-effortless", supported_efforts: ["none"] },
+      { model: "claude-fixture", supported_efforts: ["low"] }];
+    const response = await call(f.env, body);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "step", provider: "claude", action: "cl_none",
+      startup_contract: { model: "claude-effortless", effort: "none" } });
+    expect(f.counts()).toEqual({ calls: 0, budgets: 1, begins: 1 });
+    // A model whose row has effort levels cannot be authorized at "none".
+    const g = fixture(), levelled: any = input("claude");
+    levelled.selected = { ...body.selected };
+    levelled.task.execution_context.available_claude_models = [{ model: "claude-effortless", supported_efforts: ["low"] }];
+    expect((await call(g.env, levelled)).status).toBe(400); expect(g.counts().begins).toBe(0);
   });
   it.each([{ budget: false }, { ready: false }])("preserves existing budget/readiness denial", async conditions => {
     const f = fixture(conditions); expect((await call(f.env, input())).status).toBe(400);

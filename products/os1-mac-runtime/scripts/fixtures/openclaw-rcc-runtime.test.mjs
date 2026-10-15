@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { canonicalHostContext, cheaperRouteAdmission, createRCCRuntime, dispatchable, effectiveExplicitRoutes,
-  hostContextFingerprint, LADDER_MIN_VERIFIED_PASSES, lockIndivisibleInstruction, openRoutingLedger, resolveRoutePlan,
+  exactArithmeticQuestion, hostContextFingerprint, LADDER_MIN_VERIFIED_PASSES, lockIndivisibleInstruction, openRoutingLedger, resolveRoutePlan,
   routeFamily } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -22,7 +22,7 @@ async function fixture(t) {
 }
 function task(dir, request, mode = 'auto', extras = {}) {
   const policyText = 'RCC fixture policy: candidates do not grant authority.';
-  const host = {workspace: dir, context: null, provider_preference: 'auto',
+  const host = {workspace: dir, context: extras.context ?? null, provider_preference: 'auto',
     codex_session_id: extras.codexSession ?? null, claude_session_id: extras.claudeSession ?? null,
     require_read_only: extras.write !== true, owner_policy: null};
   host.provider_preference = extras.provider ?? 'auto';
@@ -388,6 +388,111 @@ test('plain arithmetic is exact and zero-model; explicit routing test never shor
   await runtime.submit(topLevelExplicit);
   assert.equal((await wait(runtime, topLevelExplicit)).state, 'held');
   assert.equal(calls, 2, 'an explicit top-level provider never takes the local fast path');
+});
+
+// 2026-10-15: a plain Auto "1+1이 뭐야?" ran Codex gpt-6-luna/low (29K input
+// tokens) and ended returned_unverified. A wrapped exact question is the same
+// exact sum: Core answers it with no model call; anything else stays routed.
+const WRAPPED_ARITHMETIC = [['1+1이 뭐야?', '2'], ['2+2는?', '4'], ['3*7은 얼마야?', '21'], ['what is 6*7?', '42'],
+  ['1+1=?', '2'], ['１＋１은?', '2'], ['1+1=', '2'], ['How much is 12 + 30', '42'], ['2×3은 뭐예요?', '6'],
+  ['What’s 2+2?', '4'], ['1+1 몇이야', '2'], ['1+1?', '2']];
+const ROUTED_ARITHMETIC = ['1+1이 뭐야? 그리고 설명해줘', '원플러스원', '5-3은?', '1+1 2+2', '1+1이 뭐야 코덱스로',
+  '1+1은', '5-3?', '2+3!', '2²+1', '6/3은?', '1.5+1은?', '1+1+1은?', '1+1=2?', 'what is one plus one?',
+  'what is 1+1이 뭐야', '-3+5는?', `${'1'.repeat(16)}+1은?`];
+
+test('wrapped exact arithmetic questions are recognised only in their closed whole-request shapes', () => {
+  for (const [request, answer] of WRAPPED_ARITHMETIC) assert.equal(exactArithmeticQuestion(request), answer, request);
+  for (const request of ROUTED_ARITHMETIC) assert.equal(exactArithmeticQuestion(request), null, request);
+  // The bare expressions keep their exact reading, '-' included.
+  assert.equal(exactArithmeticQuestion('5-3'), '2');
+  assert.equal(exactArithmeticQuestion(' 7 * 6 '), '42');
+  assert.equal(exactArithmeticQuestion('999999999999999*999999999999999'), '999999999999998000000000000001');
+  for (const value of [null, undefined, 7, '', '?', `1+1이 뭐야?${' 그리고'.repeat(40)}`])
+    assert.equal(exactArithmeticQuestion(value), null, String(value));
+});
+
+test('a wrapped exact arithmetic question is answered by Core with no model; residue, providers and attachments route normally', async t => {
+  const dir = await fixture(t);
+  let calls = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async () => { calls++; throw Error('no catalog fixture'); },
+    plan: async () => { throw Error('must not plan'); }, execute: async () => { throw Error('must not execute'); }});
+  t.after(async () => { await runtime.close(); });
+  for (const [request, answer] of WRAPPED_ARITHMETIC) {
+    const input = task(dir, request);
+    await runtime.submit(input);
+    const done = await wait(runtime, input);
+    assert.equal(done.state, 'completed', request);
+    assert.equal(done.result.output, answer, request);
+    assert.equal(done.result.task_verified, true);
+    assert.equal(done.result.task_quality, 'task_verified');
+    assert.equal(done.result.parity_state, 'unverified');
+    assert.equal(done.children.length, 1);
+    const [child] = done.children;
+    assert.equal(child.id, 'local-core'); assert.equal(child.candidate_id, 'local-core');
+    // The host binds the deterministic step to the prompt: the child keeps
+    // the whole request, never the extracted expression.
+    assert.equal(child.instruction, request);
+    assert.deepEqual([child.selected_config.surface, child.selected_config.model, child.selected_config.effort],
+      ['local', 'none', 'none']);
+    assert.ok(runtime.events({schema: 1, task_id: input.task_id}).some(x => x.kind === 'deterministic_arithmetic'));
+  }
+  assert.equal(calls, 0, 'no catalog probe, planner or model call');
+  for (const request of ROUTED_ARITHMETIC) {
+    const input = task(dir, request);
+    await runtime.submit(input);
+    assert.equal((await wait(runtime, input)).state, 'held', request);
+  }
+  assert.equal(calls, ROUTED_ARITHMETIC.length, 'every other request goes to the catalog and the models');
+  const owned = [task(dir, '1+1이 뭐야?', 'auto', {provider: 'codex'}),
+    task(dir, '2+2는?', 'auto', {materialRefs: ['attached-source.png']})];
+  const topLevel = task(dir, 'what is 6*7?');
+  topLevel.provider_preference = 'codex';
+  for (const input of [...owned, topLevel]) {
+    await runtime.submit(input);
+    assert.equal((await wait(runtime, input)).state, 'held');
+  }
+  assert.equal(calls, ROUTED_ARITHMETIC.length + 3, 'an owner provider choice or an attachment never takes the shortcut');
+  const explicit = task(dir, '1+1이 뭐야?', 'explicit_routing_test');
+  await runtime.submit(explicit);
+  const held = await wait(runtime, explicit);
+  assert.equal(held.state, 'held');
+  assert.equal(held.error, 'explicit_route_contract_missing');
+  assert.equal(calls, ROUTED_ARITHMETIC.length + 3);
+});
+
+// Review 2026-10-15: after "1+1 상품은 3,500원" the follow-up "1+1은 얼마야?"
+// asks a price. A wrapped question with any earlier conversation (context
+// text or a native session to resume) goes to the models with that context;
+// the bare expression keeps its earlier zero-model reading.
+test('a wrapped arithmetic question with earlier conversation reaches the models; a bare expression stays exact', async t => {
+  const dir = await fixture(t);
+  let calls = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async () => { calls++; throw Error('no catalog fixture'); },
+    plan: async () => { throw Error('must not plan'); }, execute: async () => { throw Error('must not execute'); }});
+  t.after(async () => { await runtime.close(); });
+  const context = 'Owner: 편의점 행사표 정리해줘. 1+1 상품은 3,500원, 2+1 상품은 4,800원.';
+  const followUps = [task(dir, '1+1은 얼마야?', 'auto', {context}), task(dir, '2+3은 얼마야?', 'auto', {context}),
+    task(dir, '1+1이 뭐야?', 'auto', {claudeSession: randomUUID()}),
+    task(dir, 'what is 6*7?', 'auto', {codexSession: randomUUID()})];
+  for (const input of followUps) {
+    await runtime.submit(input);
+    const done = await wait(runtime, input);
+    assert.equal(done.state, 'held', input.request);
+    assert.equal(done.error, 'catalog_failed', input.request);
+  }
+  assert.equal(calls, followUps.length, 'every follow-up probes the catalog for a model');
+  const bare = task(dir, '1+1', 'auto', {context});
+  await runtime.submit(bare);
+  const exact = await wait(runtime, bare);
+  assert.equal(exact.state, 'completed');
+  assert.equal(exact.result.output, '2');
+  // A blank context is no conversation.
+  const blank = task(dir, '1+1이 뭐야?', 'auto', {context: ' \n '});
+  await runtime.submit(blank);
+  assert.equal((await wait(runtime, blank)).result.output, '2');
+  assert.equal(calls, followUps.length);
 });
 
 test('exact local liveness check-in records one child; delegated/provider/attachment variants route normally', async t => {

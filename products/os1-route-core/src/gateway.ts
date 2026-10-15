@@ -30,7 +30,7 @@ import {
 import { assertTicketDeliveryHygiene, publicJson } from "./egress";
 import { reject } from "./errors";
 import { bindingJson, readBoundedJson } from "./io";
-import { availableModelTuple, completionFeedbackMatchesTask } from "./execution-context";
+import { availableModelTuple, backendEffort, completionFeedbackMatchesTask } from "./execution-context";
 import { parseAttemptStart, verifyAttemptStart, type AttemptCommand } from "./attempt-contract";
 import type { BeginCommand, FinalizeCommand } from "./execution-state";
 import type { ClaimCommand } from "./ledger-model";
@@ -211,7 +211,7 @@ export async function authorizeExecution(request: Request, env: Env): Promise<Re
   if (Object.keys(selected).sort().join("|") !== "effort|model|permission_profile|provider" ||
       typeof selected.provider !== "string" || !["codex", "claude"].includes(selected.provider) ||
       typeof selected.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(selected.model) ||
-      typeof selected.effort !== "string" || !["low", "medium", "high", "xhigh", "max", "ultra"].includes(selected.effort) ||
+      typeof selected.effort !== "string" || !backendEffort(selected.provider, selected.effort) ||
       !["read_only", "workspace_write"].includes(String(selected.permission_profile))) reject();
   const r = parseStartRequest(value.request, { allowEmptyCodexCatalog: selected.provider === "claude" });
   if (r.required_startup_contract !== 1 || !r.execution_context) reject();

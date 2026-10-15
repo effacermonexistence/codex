@@ -1,4 +1,5 @@
 import type { ExecutionProfiles, PolicyBundle } from "./bundle";
+import { backendEffort } from "./execution-context";
 
 export type ExplicitProfile = {
   provider: "codex" | "claude";
@@ -17,7 +18,7 @@ export function admitExplicitProfile(value: unknown, profiles: ExecutionProfiles
   if (Object.keys(v).sort().join("|") !== "effort|model|permission_profile|provider" ||
       typeof v.provider !== "string" || !["codex", "claude"].includes(v.provider) ||
       typeof v.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(v.model) ||
-      typeof v.effort !== "string" || !["low", "medium", "high", "xhigh", "max", "ultra"].includes(v.effort) ||
+      typeof v.effort !== "string" || !backendEffort(v.provider, v.effort) ||
       typeof v.permission_profile !== "string" || !["read_only", "workspace_write"].includes(v.permission_profile) ||
       v.permission_profile !== permission ||
       !/^[A-Za-z0-9._-]{8,96}$/.test(contractVersion) || !/^[a-f0-9]{64}$/.test(contractSHA) ||

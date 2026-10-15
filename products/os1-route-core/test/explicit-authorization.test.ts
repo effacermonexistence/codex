@@ -97,6 +97,36 @@ describe("one exact config authorization, not a routing or result-evaluation loo
     await expect(authorizeExecution(request(payload), f.env)).rejects.toThrow();
     expect(f.counts().privateCalls).toBe(0); expect(f.counts().begins).toBe(0);
   });
+  it("signs claude/none only for a model whose inventory row has no effort control", async () => {
+    // 2026-10-15: haiku (claude-haiku-4-5-20251001) has no effort levels; OS-1 runs it without --effort.
+    const haiku = { provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none", permission_profile: "read_only" };
+    const payload: any = body(haiku);
+    payload.request.execution_context.available_claude_models = [{ model: haiku.model, supported_efforts: ["none"] },
+      { model: claudeSelected.model, supported_efforts: ["low", "medium", "high", "xhigh", "max"] }];
+    const f = await fixture();
+    f.override({ status: "step", provider: "claude", action: "cl_haiku45_none", permission_profile: "read_only",
+      startup_contract: { schema: 1, completion_feedback_schema: 1, model_availability_schema: 1,
+        executor_contract_sha256: config.executor_contract.sha256, model: haiku.model, effort: "none", state_storage: "pool_v1" } });
+    const ticket = parseTicket(await (await authorizeExecution(request(payload), f.env)).json());
+    expect(ticket.action).toBe("cl_haiku45_none");
+    expect(ticket.startup_contract).toMatchObject({ model: haiku.model, effort: "none" });
+    expect(await verifyTicket(ticket, f.publicPEM)).toBe(true);
+    expect(f.privatePayload().selected).toEqual(haiku);
+    expect(f.counts()).toEqual({ auth: 1, privateCalls: 1, begins: 1, legacy: 0 });
+    // The same model under a non-"none" effort, and "none" on a model that has levels, are not in the inventory.
+    for (const choice of [{ ...haiku, effort: "low" }, { ...haiku, model: claudeSelected.model }]) {
+      const g = await fixture(), denied: any = body(choice);
+      denied.request.execution_context.available_claude_models = payload.request.execution_context.available_claude_models;
+      await expect(authorizeExecution(request(denied), g.env)).rejects.toThrow();
+      expect(g.counts().privateCalls).toBe(0); expect(g.counts().begins).toBe(0);
+    }
+  });
+  it("still rejects codex/none before private authorization", async () => {
+    const f = await fixture(), payload: any = body({ ...selected, effort: "none" });
+    payload.request.available_codex_models = [{ slug: selected.model, default_effort: "low", supported_efforts: ["low"], priority: 0 }];
+    await expect(authorizeExecution(request(payload), f.env)).rejects.toThrow();
+    expect(f.counts().privateCalls).toBe(0); expect(f.counts().begins).toBe(0);
+  });
   it("requires existing authentication; no login/account/billing fallback", async () => {
     const f = await fixture(); await expect(authorizeExecution(request(body(), false), f.env)).rejects.toThrow();
     expect(f.counts()).toEqual({ auth: 0, privateCalls: 0, begins: 0, legacy: 0 });

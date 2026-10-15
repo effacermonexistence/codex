@@ -20,7 +20,7 @@ Each tier below is what the provider's own model metadata says, observed on
 | `claude-fable-5-1`, `fable` | "Fable 5.1 · Most capable for your hardest and longest-running tasks" | frontier |
 | `opus`, `claude-opus-5-5` | "Opus 5.5 · Best for everyday, complex tasks" (Claude's default) | workhorse |
 | `sonnet`, `claude-sonnet-5-5` | "Sonnet 5.5 · Efficient for routine tasks" | efficient |
-| `haiku` | "Haiku 4.5 · Fastest for quick answers" | fast (no signed profile, never routable) |
+| `haiku`, `claude-haiku-4-5-20251001` | "Haiku 4.5 · Fastest for quick answers" | fast (no effort control: runs at effort "none", profile `cl_haiku45_none`, build 383) |
 
 `gpt-6-sol` ("Previous generation workhorse"), every `gpt-5.x` / `gpt-5.6-*`
 model and `gpt-daybreak-blue-latest` (a specialized cyber model) have no tier.
@@ -63,8 +63,12 @@ even when that pool's frontier model ranks it first for deep work:
 
 With the current signed profiles this means, for example:
 
-- trivial read-only question: Codex `gpt-6-luna` low, or Claude `claude-sonnet-5-5` low
-- standard: Codex `gpt-6.1-sol` medium, or Claude `sonnet` medium (opus has no medium profile)
+- trivial read-only question: Codex `gpt-6-luna` low, or Claude
+  `claude-haiku-4-5-20251001` at effort "none" (build 383; see "Effort none"
+  below), escalating once to `claude-fable-5-1` max on a failure signal
+- standard: Codex `gpt-6.1-sol` medium, or Claude `claude-opus-5-5` medium
+  (build 383 added the opus, sonnet and fable 5.1 medium/high profiles; before
+  that opus had no medium profile and Claude standard work bound `sonnet` medium)
 - deep: Codex `gpt-6-astra` max, or Claude `claude-fable-5-1` max (never sol or opus)
 
 A writing part graded trivial runs at least standard. A part with a missing or
@@ -351,6 +355,90 @@ moves pools for parallelism.
   (`dispatched_failure`); a failure with reported or unknown effects is no
   sample on either side.
 
+## Effort "none", the one-shot Claude cache and wrapped exact arithmetic (build 383)
+
+**Effort "none" means the model has no reasoning-effort control.** On
+2026-10-15 the Claude CLI 2.1.290 `initialize` inventory (no model turn) listed
+`opus`, `claude-fable-5-1[1m]` and `sonnet` with efforts low..max, and a row
+`haiku` (resolved `claude-haiku-4-5-20251001`, "Haiku 4.5 · Fastest for quick
+answers") with `supportsEffort` and `supportedEffortLevels` absent. A live
+`claude -p --model haiku` with no `--effort` answered on that model. So:
+
+- local is always "none" (`local-deterministic`), Codex never (every Codex model
+  lists its efforts), and Claude takes "none" only for a native row with no
+  effort control. `ModelAvailability.claudeRows` maps exactly that shape
+  (flag absent/null/false, levels absent/null/empty, a resolved model) to
+  `["none"]` and skips anything half-stated; the executor admits "none" only
+  for a row whose efforts are exactly `["none"]` and then passes no `--effort`.
+- The signed profile is `cl_haiku45_none` (production now has 85 profiles:
+  build 383 also added `cl_opus55_medium/high`, `cl_sonnet55_medium/high` and
+  `cl_fable51_medium/high`).
+- In tier routing an effortless model satisfies its tier's entry at any
+  concrete effort, never under an owner effort word (it cannot honour one):
+  "use medium reasoning" excludes haiku, while the family word "haiku로 돌려"
+  runs it. Auto routing never binds it for a writer (the fast tier is
+  trivial-only and a trivial write is promoted to standard); an explicit haiku
+  family word binds it at every grade, writes included, as the owner's route.
+- The legacy router never sees an effortless row, and an RCC authorization
+  sends one in `available_claude_models` only when the selected tuple is that
+  model at "none", so an older gateway's "none" validator never refuses
+  another tuple's request. An older gateway or policy bundle still refuses
+  every tuple build 383 added, the six medium/high actions as well as
+  `cl_haiku45_none` (see Compatibility).
+
+**One-shot Claude sessions use the 5-minute prompt cache.** Every Claude call
+wrote its whole prefix with the 1-hour TTL (2x base input at API prices), and
+same-surface calls are usually more than an hour apart, so it was never read.
+Replaying 57 historical chat-lane calls at API multipliers: -32.6% input-side
+cost with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` (an API-price estimate, not
+measured subscription quota). The CLI honours it (usage moved to
+`ephemeral_5m`, and an immediate second call read the cached prefix). OS-1
+sets it only for a session that starts new and is one-shot: the tool-free chat
+lane, a source-only answer, and an RCC delegated child that starts a side
+session beside the conversation's existing Claude thread (a cheaper REVAS
+attempt, one part of a plan). A session that may become the conversation's
+thread keeps the CLI default: a conversation's first agent session (nothing
+bound yet, nothing resumed) is bound as its thread and resumed on the next
+turn, where only the 1-hour cache can still be read. It is an environment
+override (OS-1 strips inherited `CLAUDE_CODE_*`), and the pre-dispatch
+governance receipt still hashes instructions and input only.
+
+**Wrapped exact arithmetic takes Core's zero-model route.** A plain Auto
+"1+1이 뭐야?" had run Codex `gpt-6-luna` low (29K input tokens) and still ended
+`returned_unverified`. Core's existing exact route (Auto, no owner provider
+choice, no attachments, no explicit routes) now also admits a closed set of
+question wrappings around one sum or product ("1+1이 뭐야?", "what is 2*3?",
+"1+1=?"), and only when the task carries no earlier conversation (no context
+text, no native session to resume): after "1+1 상품은 3,500원", "1+1은
+얼마야?" asks a price, so it goes to the models with that context. The bare
+expression keeps its earlier reading. Anything else stays with the models. The
+host shows "정확한 산술식이라 OS-1이 로컬에서 계산·검증했습니다 · 모델 호출·구독
+사용량 없음" when the bound `local-core` child's output is an integer (Core's
+check-in, the only other zero-model answer, is a sentence), and names the local
+planner model only once Core has bound a planned child, never for a task Core
+answers with no model or holds before planning (Core's `planning` state
+precedes its catalog probe).
+
+## Delegated read-only Claude children run without interactive hooks (build 384)
+
+The first live haiku child on build 383 (2026-10-15, task ed67fc5c, Claude
+preference, "대한민국의 수도는 어디야? 도시 이름만 답해.") bound
+`claude-haiku-4-5-20251001`/none as designed, but answered with a Bash check
+and the note "OhMyBug MCP tools are not present in this session ..." before
+"서울". The owner's `~/.claude` plugin SessionStart hook had injected "First
+thing this session: confirm the OhMyBug MCP tools ... tell the user once,
+now" into the delegated child. Sonnet had ignored it; haiku obeyed it. That
+answer is not at parity with the reference.
+
+Those hooks address the owner's interactive sessions. A child the RCC adapter
+delegates has no interactive user, and a read-only one changes nothing a Stop
+guard could keep, so its one `--settings` value (the read-only shell sandbox,
+or a settings object of its own on the tool-free lane) also carries
+`"disableAllHooks": true`. The same CLI call with that setting fired no hook
+and answered the city alone. Writers, and OS-1's own conversational sessions,
+keep the owner's hooks (the remote completion guard among them); the shell
+sandbox, tools, permissions and MCP scope of the read-only lane are unchanged.
+
 ## Explicit owner words
 
 An explicit effort or model-family word in the owner's own request is a hard
@@ -382,12 +470,12 @@ The local planner no longer picks a row (it never sees the catalog or a
 candidate ID there); it grades each named route, and the host binds that
 route's model and effort from the same lists, on that route's own surface
 only. "1+1" on Codex therefore runs `gpt-6-luna` low, "3+3" on Claude Code
-`claude-sonnet-5-5` low, "4+4" on the Claude chat lane `claude-sonnet-5-5` low:
-never `gpt-6-astra`, Fable, Opus, max or ultra for a one-step answer. A failed
-cheaper answer on a named route re-runs once on the reference of THAT surface
-(Codex `gpt-6-astra` max, Claude Code or the Claude chat lane `claude-fable-5-1`
-max), never on another surface; with no reference on that surface the part is
-held. On an older catalog without tiers the planner still picks exact rows.
+and "4+4" on the Claude chat lane `claude-haiku-4-5-20251001` at effort "none"
+(build 383; `claude-sonnet-5-5` low before): never `gpt-6-astra`, Fable, Opus,
+max or ultra for a one-step answer. A failed cheaper answer on a named route
+re-runs once on the reference of THAT surface (Codex `gpt-6-astra` max, Claude
+Code or the Claude chat lane `claude-fable-5-1` max), never on another surface;
+with no reference on that surface the part is held. On an older catalog without tiers the planner still picks exact rows.
 
 The catalog can also carry a route's own effort or model words, so that they
 would constrain that route only (sent per route as `explicit_route_intents`;
@@ -426,6 +514,25 @@ needs a directive verb, a version or a product word).
   shape is unchanged: the gate's numbers travel in its `reason`.
 - No quota, quality or parity numbers are invented: an unknown quota still
   means a row cannot run, and the tier table only repeats provider wording.
+- Build 383 signs 85 execution profiles (seven added: `cl_opus55_medium/high`,
+  `cl_sonnet55_medium/high`, `cl_fable51_medium/high`, `cl_haiku45_none`). The
+  routing server authorizes only actions its gateway compiled and its pinned
+  policy bundle carries; the deployed servers (commit `fd1924a1`, bundle
+  `os1-policy-20261008-v66`) carry 78. Release order: the private core that
+  parses claude/"none", then the gateway, then the policy rollover and re-pin
+  with the 85 profiles, then the client. Never roll the private core back
+  below that parser while a bundle with `cl_haiku45_none` is pinned: an older
+  parser rejects the whole bundle. Before publishing or installing 383, run
+  `node products/os1-route-core/scripts/deployed-profile-authorization-smoke.mjs
+  <private-receipt.json>` (route-only, no model call); it must pass for
+  `cl_opus55_medium` and `cl_haiku45_none`.
+- A client that still meets an older server is slower, not broken: the
+  gateway's opaque refusal (HTTP 400) of an authorization request becomes the
+  typed `native_authorization_refused` (not dispatched, no effects, either
+  scope), which Core does not charge to the attempt budget. The node moves to
+  another row within `MAX_RE_RESOLUTIONS`; Claude-only standard work then runs
+  on `sonnet` medium after two refused rows. Transport failures and 5xx stay
+  charged.
 
 ## What this does not prove
 

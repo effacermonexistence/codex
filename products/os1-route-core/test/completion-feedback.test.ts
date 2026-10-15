@@ -36,11 +36,22 @@ describe("content-free completion feedback", () => {
         input_tokens: null, output_tokens: null, duration_ms: null }] })).toBe(true);
     }
   });
+  it("records a Claude model that has no effort control as claude/none, and only Claude", () => {
+    // 2026-10-15: haiku (claude-haiku-4-5-20251001) has no effort levels; the
+    // private core appends that step here and revalidates it on retry.
+    const effortless = { ...observation, model: "claude-haiku-4-5-20251001", effort: "none", outcome: "quality_failure" };
+    const supplied = { ...context, completion_feedback: { ...feedback, observations: [observation, effortless] } };
+    expect(validCompletionFeedback(supplied.completion_feedback)).toBe(true);
+    expect(validExecutionContext(supplied)).toBe(true);
+    expect(parseStartRequest({ ...request, execution_context: supplied }).execution_context).toEqual(supplied);
+    expect(validCompletionFeedback({ ...feedback, observations: [{ ...effortless, provider: "codex" }] })).toBe(false);
+  });
   for (const bad of [null, {}, { ...feedback, schema: 2 }, { ...feedback, schema: true },
     { ...feedback, objective_sha256: "A".repeat(64) }, { ...feedback, objective_sha256: "a".repeat(63) },
     { ...feedback, prompt: "content is prohibited" }, { ...feedback, observations: Array(17).fill(observation) },
     ...[{ provider: ["claude"] }, { effort: ["medium"] }, { outcome: ["adopted"] }, { provider: "local" },
-      { model: "../escape" }, { model: "x".repeat(129) }, { effort: "none" }, { outcome: "probably_good" },
+      { model: "../escape" }, { model: "x".repeat(129) }, { provider: "codex", effort: "none" },
+      { provider: "local", effort: "none" }, { effort: "minimal" }, { outcome: "probably_good" },
       { input_tokens: -1 }, { output_tokens: 1.1 }, { input_tokens: true }, { duration_ms: Number.MAX_SAFE_INTEGER + 1 },
       { output_tokens: "30" }, { answer: "content is prohibited" }].map(change =>
       ({ ...feedback, observations: [{ ...observation, ...change }] }))]) {

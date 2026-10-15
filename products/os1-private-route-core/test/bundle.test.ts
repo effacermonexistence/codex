@@ -105,11 +105,34 @@ describe("private policy bundle", () => {
     const production = JSON.parse(readFileSync(new URL("../../os1-mac-runtime/Config/production.json", import.meta.url), "utf8"));
     const parsed = parsePolicyBundle(JSON.stringify({ ...bundle, execution_profiles: production.execution_profiles }));
     expect(Object.keys(parsed.execution_profiles).length).toBe(Object.keys(production.execution_profiles).length);
+    // 2026-10-15: 78 profiles + the Claude medium/high ladder and effortless haiku = 85.
+    expect(Object.keys(parsed.execution_profiles)).toHaveLength(85);
+    expect(parsed.execution_profiles.cl_haiku45_none).toEqual({ provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none" });
+    expect(parsed.execution_profiles.cl_sonnet55_medium).toEqual({ provider: "claude", model: "claude-sonnet-5-5", effort: "medium" });
+    expect(parsed.execution_profiles.cl_opus55_high).toEqual({ provider: "claude", model: "claude-opus-5-5", effort: "high" });
+    expect(parsed.execution_profiles.cl_fable51_medium).toEqual({ provider: "claude", model: "claude-fable-5-1", effort: "medium" });
+    expect(new Set(Object.values(parsed.execution_profiles).map(p => `${p.provider}/${p.model}/${p.effort}`)).size).toBe(85);
     expect(parsed.execution_profiles.cx_6sol_medium).toEqual({ provider: "codex", model: "gpt-6-sol", effort: "medium" });
     expect(parsed.execution_profiles.cx_6luna_low).toEqual({ provider: "codex", model: "gpt-6-luna", effort: "low" });
     const oversized = Object.fromEntries(Array.from({ length: 129 }, (_, index) =>
       [`cx_${index}`, { provider: "codex", model: "gpt-test", effort: "low" }]));
     expect(() => parsePolicyBundle(JSON.stringify({ ...bundle, execution_profiles: oversized }))).toThrow();
+  });
+  it("binds effort none to local and to effortless Claude models, never to Codex", () => {
+    // 2026-10-15: "none" means the model has no reasoning-effort control.
+    const withProfile = (profile: Record<string, string>) => JSON.stringify({ ...bundle,
+      execution_profiles: { ...bundle.execution_profiles, candidate: profile } });
+    expect(parsePolicyBundle(withProfile({ provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none" }))
+      .execution_profiles.candidate).toEqual({ provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none" });
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+      expect(parsePolicyBundle(withProfile({ provider: "claude", model: "claude-sonnet-5-5", effort })).execution_profiles.candidate.effort).toBe(effort);
+    }
+    for (const invalid of [{ provider: "codex", model: "gpt-6-luna", effort: "none" },
+      { provider: "local", model: "local-deterministic", effort: "low" },
+      { provider: "local", model: "gpt-6-luna", effort: "none" },
+      { provider: "claude", model: "claude-haiku-4-5-20251001", effort: "unbounded" }]) {
+      expect(() => parsePolicyBundle(withProfile(invalid))).toThrow();
+    }
   });
   it("rejects unknown fields and invalid contract hashes", () => {
     expect(() => parsePolicyBundle(JSON.stringify({ ...bundle, rationale: "leak" }))).toThrow();
