@@ -27,6 +27,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--rcc-native-catalog-builder-only") { try runRCCNativeCatalogBuilderFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-delegated-envelope-only") { try runRCCDelegatedEnvelopeFixtures(); return }
         if CommandLine.arguments.contains("--codex-turn-rejection-only") { try runCodexTurnRejectionFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-projection-only") { try runRCCRuntimeProjectionFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-display-only") { try runRCCNativeDisplayReceiptsFixtures(); return }
@@ -50,6 +51,7 @@ final class SourceContextTests {
         try runRCCRuntimeContractFixture()
         try runRCCNativeCatalogBuilderFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
+        try runRCCDelegatedEnvelopeFixtures()
         try runCodexTurnRejectionFixtures()
         try runRCCRuntimeProjectionFixtures()
         try runRCCNativeDisplayReceiptsFixtures()

@@ -107,6 +107,26 @@ check(native.index("input.completionFeedback = PublicCompletionFeedback(") <
       native.index("let request = StartExecutionRequest(task: objective") <
       native.index('post("/v1/execution-authorizations"'),
       "task-bound feedback is present before exact-profile admission; no fake prior quality observations")
+# Build 381: one delegated envelope for every provider. Work first, owner
+# request as background, ids last as audit references; answer-only line only
+# for an explicit route in the exact verifier's arithmetic family.
+ENVELOPE = (ROOT / "Sources/OS1Context/RCCDelegatedEnvelope.swift").read_text()
+check("let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective," in native and
+      "RCCDelegatedEnvelope.answerOnly(instruction: t.instruction, surface: t.selectedConfig.surface," in native and
+      "explicitRoutes: h.explicitRoutes)" in native and
+      "scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion," in native and
+      "taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)" in native,
+      "every provider's child message comes from the one envelope with scope, source rules and ids")
+check("ORIGINAL OWNER OBJECTIVE" not in native and "DELEGATED WORK ONLY" not in native and
+      native.index("let delegated = RCCDelegatedEnvelope.prompt(") < native.index("providerPrompt(current: delegated,"),
+      "the owner-first envelope is gone and the new one is what the provider receives")
+check('"Do not spawn a competing orchestration or silently change model/account."' in ENVELOPE and
+      '"Reply with only the final result — no other text."' in ENVELOPE and
+      '"Internal reference ids for audit (not a task to look up; no tool is needed to use them):"' in ENVELOPE,
+      "envelope keeps the guarantees and labels the ids as references")
+check("const parts = /^\\s*(-?\\d{1,9})\\s*\\+\\s*(-?\\d{1,9})\\s*$/u.exec(instruction);" in PLUGIN and
+      "arithmeticSum(node.instruction)" in PLUGIN and "/^\\s*(-?\\d{1,9})\\s*\\+\\s*(-?\\d{1,9})\\s*$/u" in ENVELOPE,
+      "answer-only predicate mirrors the unchanged exact verifier regex (OS1ContextTests cross-checks it in Node)")
 
 catalog_host = section(MAIN, "private func rccNativeCatalog(", "private func rccContinuationParent(")
 check("claudeCatalogs(workspace: host.workspace, config: config))?.configured" in catalog_host and

@@ -18513,10 +18513,15 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
         \nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. Do not call os1 run/self-repair/self-update, install, restart, merge or push. When source changes are ready, preserve existing changes, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes. The original OpenClaw task performs separate mechanical staging and installation receipt checks; source/build alone is not installed or finished. If a checker/policy/installer needs changing, report it for separate stable review rather than weakening it to pass.
         """
-        let delegated = (isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") :
-            "ORIGINAL OWNER OBJECTIVE:\n" + objective + "\n\nDELEGATED WORK ONLY:\n" + t.instruction) +
-            "\n\nRCC task " + t.taskID + "; child " + t.nodeID + "; attempt " + t.attemptID +
-            "; scope " + t.selectedConfig.scope.rawValue + ". Do not spawn a competing orchestration or silently change model/account." + sourceCompletion
+        // One envelope for every provider: the delegated work first as a plain
+        // imperative, the owner's request as background only, ids last as
+        // audit references (RCCDelegatedEnvelope).
+        let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective,
+            continuation: isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") : nil,
+            answerOnly: RCCDelegatedEnvelope.answerOnly(instruction: t.instruction, surface: t.selectedConfig.surface,
+                                                       explicitRoutes: h.explicitRoutes),
+            scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion,
+            taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)
         let protected = protectedRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
         sourceConfined = sourceRoot != nil && t.selectedConfig.scope == .workspaceWrite
         if let protectedRoot {
