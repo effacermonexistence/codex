@@ -1,24 +1,43 @@
 import Foundation
 
 /// The one provider message `os1 rcc-execute` sends a delegated RCC child,
-/// identical for every provider and surface (Codex, Claude Code, Claude chat).
+/// built the same way for every provider and surface (Codex, Claude Code,
+/// Claude chat).
 ///
-/// Order is deliberate. The child's own work leads as a plain imperative; the
-/// owner's whole request follows, labeled as background only; the internal
-/// task/child/attempt ids come last, labeled as audit references. Build 380's
-/// envelope led with the owner's full request and ended with a bare
-/// "RCC task ...; child ...; attempt ..." line: a cheap Codex tier read those
-/// ids as something to look up, found no tool for it and never answered
+/// Order is deliberate:
+/// 1. the child's own work as a plain imperative, plus the answer-only line
+///    for an exact-answer route;
+/// 2. the rules that bind that work, right after it: the scope statement, the
+///    bans on a competing orchestration and on a silent model/account change,
+///    and the bound OS-1 source completion rules;
+/// 3. the owner's whole request between explicit BACKGROUND / END BACKGROUND
+///    markers. Its other parts are not this child's work, but its constraints
+///    (language, format, length, prohibitions, scope) still bind this child's
+///    part: a planner node does not always copy them;
+/// 4. the internal task/child/attempt ids, last, labeled as audit references.
+///
+/// Build 380's envelope led with the owner's full request and ended with a
+/// bare "RCC task ...; child ...; attempt ..." line: a cheap Codex tier read
+/// those ids as something to look up, found no tool for it and never answered
 /// "1+1", which cost a frontier max-effort escalation.
+///
+/// "Answer directly" leads only a read-only child that answers from the
+/// request itself (an exact-answer route or a tool-free chat lane). Every
+/// other child, a writer, a source-bound task or a read-only task that has to
+/// read files or run tools, is told "Do this task:", so a weak tier is not
+/// pulled toward replying without doing the work.
 ///
 /// The ids stay in the message for audit; no receipt or verifier reads them
 /// back from it (receipts carry the ids as typed fields). The scope statement
 /// and the bans on a competing orchestration and on a silent model/account
 /// change are unchanged guarantees.
 public enum RCCDelegatedEnvelope {
-    public static let leadLabel = "Do this and answer directly:"
+    public static let answerLeadLabel = "Do this and answer directly:"
+    public static let taskLeadLabel = "Do this task:"
     public static let answerOnlyLine = "Reply with only the final result — no other text."
-    public static let backgroundLabel = "Background context only — the owner's full request, given so you understand the work above. Do not act on any other part of it:"
+    public static let backgroundStart = "--- BACKGROUND: the owner's full request ---"
+    public static let backgroundRule = "Do not perform its other parts; its constraints (language, format, length, prohibitions, scope) still apply to your part."
+    public static let backgroundEnd = "--- END BACKGROUND ---"
     public static let guaranteeLine = "Do not spawn a competing orchestration or silently change model/account."
     public static let referenceLabel = "Internal reference ids for audit (not a task to look up; no tool is needed to use them):"
 
@@ -39,16 +58,27 @@ public enum RCCDelegatedEnvelope {
         return regex.firstMatch(in: instruction, range: range) != nil
     }
 
-    /// The answer-only line is added for an explicit route test's child (a
-    /// host-parsed route bound by surface and byte-identical instruction, the
-    /// binding the verifier checks) whose instruction is in the verifier's
-    /// arithmetic family. Its exact-output check then is not broken by
-    /// chatter a provider's own hooks add; the verifier's rule is unchanged.
+    /// True exactly for a child in the exact verifier's family: a read-only
+    /// child (`verifyExactExplicitArithmetic` rejects any other scope) of an
+    /// explicit route test, bound to its route by surface and byte-identical
+    /// instruction (the binding the verifier checks), whose instruction is in
+    /// the verifier's arithmetic family. Such a child gets the answer-only
+    /// line and the exact-answer presentation contract, so chatter a
+    /// provider's own hooks or default layout add does not break the exact
+    /// output check. The verifier's acceptance rule is unchanged.
     public static func answerOnly(instruction: String, surface: RCCRuntimeContract.Surface,
+                                  scope: RCCRuntimeContract.Scope,
                                   explicitRoutes: [RCCRuntimeContract.ExplicitRoute]?) -> Bool {
-        guard let explicitRoutes,
+        guard scope == .readOnly, let explicitRoutes,
               explicitRoutes.contains(where: { $0.surface == surface && $0.instruction == instruction }) else { return false }
         return exactArithmeticInstruction(instruction)
+    }
+
+    /// "Answer directly" fits only a read-only child that answers from the
+    /// request itself: an exact-answer route or a tool-free chat lane.
+    public static func directAnswer(answerOnly: Bool, surface: RCCRuntimeContract.Surface,
+                                    scope: RCCRuntimeContract.Scope) -> Bool {
+        scope == .readOnly && (answerOnly || ProviderSurface(rawValue: surface.rawValue)?.forcesChatLane == true)
     }
 
     /// - instruction: this child's delegated work, verbatim.
@@ -56,18 +86,21 @@ public enum RCCDelegatedEnvelope {
     /// - continuation: a full-access continuation's own imperative prompt; it
     ///   leads instead of the delegated work and background (as before), and
     ///   the answer-only line never applies to it.
+    /// - answerOnly: `answerOnly(instruction:surface:scope:explicitRoutes:)`;
+    ///   ignored unless the scope is read-only.
+    /// - surface: the selected surface; a chat lane gets the direct lead.
     /// - sourceCompletion: the bound OS-1 source completion rules, verbatim.
     public static func prompt(instruction: String, ownerRequest: String, continuation: String? = nil,
-                              answerOnly: Bool, scope: RCCRuntimeContract.Scope, sourceCompletion: String = "",
-                              taskID: String, nodeID: String, attemptID: String) -> String {
-        let lead: String
-        if let continuation {
-            lead = continuation
-        } else {
-            lead = leadLabel + "\n" + instruction + (answerOnly ? "\n\n" + answerOnlyLine : "") +
-                "\n\n" + backgroundLabel + "\n" + ownerRequest
-        }
-        return lead + "\n\nScope: " + scope.rawValue + ". " + guaranteeLine + sourceCompletion +
-            "\n\n" + referenceLabel + " RCC task " + taskID + "; child " + nodeID + "; attempt " + attemptID + "."
+                              answerOnly: Bool, surface: RCCRuntimeContract.Surface, scope: RCCRuntimeContract.Scope,
+                              sourceCompletion: String = "", taskID: String, nodeID: String, attemptID: String) -> String {
+        let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + sourceCompletion
+        let references = referenceLabel + " RCC task " + taskID + "; child " + nodeID + "; attempt " + attemptID + "."
+        if let continuation { return continuation + "\n\n" + rules + "\n\n" + references }
+        let exact = answerOnly && scope == .readOnly
+        let lead = directAnswer(answerOnly: exact, surface: surface, scope: scope) ? answerLeadLabel : taskLeadLabel
+        return lead + "\n" + instruction + (exact ? "\n\n" + answerOnlyLine : "") +
+            "\n\n" + rules +
+            "\n\n" + backgroundStart + "\n" + backgroundRule + "\n" + ownerRequest + "\n" + backgroundEnd +
+            "\n\n" + references
     }
 }

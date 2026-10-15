@@ -83,7 +83,16 @@ public enum HumanOutputContract {
     /// shorter than direct Codex until it was told "never less coverage",
     /// while Claude given that sentence ran 40-150 % longer than direct Claude
     /// and lost on focus (2026-09-30 blind evaluation).
-    public static func instructions(for request: String, provider: String? = nil) -> String {
+    ///
+    /// `exactAnswer` is set only for a delegated RCC child that OS-1 checks by
+    /// exact comparison (RCCDelegatedEnvelope.answerOnly). Its developer or
+    /// system channel then carries the exact-answer contract instead of the
+    /// natural-language layout: build 380's Codex child was told "Reply with
+    /// only the final result" in the user turn while its developer channel
+    /// still asked for a natural-language lead and headings, and the frontier
+    /// tier answered "1 + 1 = **2**".
+    public static func instructions(for request: String, provider: String? = nil, exactAnswer: Bool = false) -> String {
+        if exactAnswer { return exactAnswerInstructions }
         if provider == "claude" { return claudeInstructions(for: request) }
         return """
         User-facing OS-1 answer contract:
@@ -97,6 +106,17 @@ public enum HumanOutputContract {
         - Cite useful source names briefly. OS-1 attaches verified hashes and execution metadata separately; do not repeat hashes, model names, effort or permission settings unless the user asks. No generic VERIFIED/correctness claim in the answer.
         """
     }
+
+    /// The presentation contract for an exactly checked reply, identical for
+    /// every provider. It replaces the natural-language lead, paragraphs and
+    /// headings, the depth guidance and the owner's default answer layout;
+    /// the adoption gate for such a reply is the exact comparison itself.
+    public static let exactAnswerInstructions = """
+    User-facing OS-1 answer contract (exactly checked reply):
+    - OS-1 compares your whole reply with the final result exactly. Reply with only the final result and no other text: no sentence, label, restated expression, explanation, Markdown emphasis, heading, list, code block, greeting or persona header (persona is off for exactly checked output).
+    - This outranks every default answer layout and length or depth guidance, including a natural-language lead, paragraphs, headings and Conclusion / Core reason / Breaking variable.
+    - The adoption gate for this reply is that exact comparison, so the result itself is the only evidence to include.
+    """
 
     /// Claude kept answering explicit short requests at 1.7-2.4x the length
     /// of direct Codex, adding a rationale, a "what changes the outcome"

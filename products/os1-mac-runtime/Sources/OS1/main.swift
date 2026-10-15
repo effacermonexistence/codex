@@ -7712,6 +7712,24 @@ private func preDispatchGovernanceSelfTest() throws {
     print("OS-1 pre-dispatch governance: exact channel/input digests and private read-back PASS; provider calls 0")
 }
 
+/// The presentation part of a native turn's developer (Codex) or system
+/// (Claude) instructions. `exactAnswer` (a delegated RCC child that OS-1
+/// checks by exact comparison, RCCDelegatedEnvelope.answerOnly) swaps the
+/// natural-language layout for HumanOutputContract's exact-answer contract,
+/// in the same channel that would otherwise set the verbose format.
+func nativePresentationDirective(objective: String, provider: String, exactAnswer: Bool,
+                                 hasPreloadedSource: Bool) -> String {
+    let readinessDirective = asksRecoveryReadiness(objective) ? """
+
+    The current request asks whether the attached system/material can be recovered after machine loss or future revisions. It does not authorize backup, restore, setup, or production changes. Give an evidence-grounded readiness assessment and a concrete plan here in OS-1; do not frame this question as a permissions failure or ask the user to move to Claude/Codex or another session. Distinguish historical source snapshots from verified current runtime state. Do not assert that uncommitted files are absent from all backups, or that automatic backups do not exist, unless actually verified.
+    \(hasPreloadedSource ? "This turn is snapshot-only: assess the supplied evidence now, without starting or announcing a local inventory, shell command, fresh R2 lookup, or restore drill. No such live checks have occurred in this turn. Never print simulated tool invocation/result markup. Reading supplied snapshot text is not a fresh check of today's machine, remote bucket or scheduler. Describe missing checks as a proposed plan, not as tool unavailability. Lead with the bounded answer, cite the relevant source briefly, and give a short prioritized plan; a full disaster-recovery manual was not requested." : "")
+    \(hasPreloadedSource ? "Readiness acceptance must separate source-code bytes from service configuration, runtime data and per-device authentication/secret prerequisites. Explicitly state which coverage is unknown. A successful upload or commit schedule does not prove recoverability: include an isolated restore test with concrete pass conditions and recovery-point/data-loss limits. Do not claim a drill ran, promise unconditional 100% recovery, ask for pasted secrets, copy authentication caches or redirect the user to a backend. These are assessment/plan requirements, not authorization to execute them." : "")
+    """ : ""
+    return "\n" + UnifiedExecution.instructions + "\n" +
+        HumanOutputContract.instructions(for: objective, provider: provider, exactAnswer: exactAnswer) + readinessDirective +
+        publicWebLookupInstructions(prompt: objective, hasPreloadedSource: hasPreloadedSource)
+}
+
 private func execute(
     ticket: Ticket,
     prompt: String,
@@ -7726,6 +7744,7 @@ private func execute(
     desktopReveal: DesktopRevealMode,
     workspaceBeforeHash: String,
     objectivePrompt: String? = nil,
+    exactAnswerOnly: Bool = false,
     preloadedR2Evidence: R2EvidenceBundle? = nil,
     sourceUseRequired: Bool = true,
     onUsage: ((CompletionMeasuredUsage?) -> Void)? = nil,
@@ -7806,14 +7825,8 @@ private func execute(
     var nativeToolBreakdowns = 0
     let hasPreloadedR2Evidence = preloadedR2Evidence != nil
     let evidenceDirective = sourceExecutionDirective(preloadedR2Evidence, required: sourceUseRequired)
-    let readinessDirective = asksRecoveryReadiness(lockedObjective) ? """
-
-    The current request asks whether the attached system/material can be recovered after machine loss or future revisions. It does not authorize backup, restore, setup, or production changes. Give an evidence-grounded readiness assessment and a concrete plan here in OS-1; do not frame this question as a permissions failure or ask the user to move to Claude/Codex or another session. Distinguish historical source snapshots from verified current runtime state. Do not assert that uncommitted files are absent from all backups, or that automatic backups do not exist, unless actually verified.
-    \(hasPreloadedR2Evidence ? "This turn is snapshot-only: assess the supplied evidence now, without starting or announcing a local inventory, shell command, fresh R2 lookup, or restore drill. No such live checks have occurred in this turn. Never print simulated tool invocation/result markup. Reading supplied snapshot text is not a fresh check of today's machine, remote bucket or scheduler. Describe missing checks as a proposed plan, not as tool unavailability. Lead with the bounded answer, cite the relevant source briefly, and give a short prioritized plan; a full disaster-recovery manual was not requested." : "")
-    \(hasPreloadedR2Evidence ? "Readiness acceptance must separate source-code bytes from service configuration, runtime data and per-device authentication/secret prerequisites. Explicitly state which coverage is unknown. A successful upload or commit schedule does not prove recoverability: include an isolated restore test with concrete pass conditions and recovery-point/data-loss limits. Do not claim a drill ran, promise unconditional 100% recovery, ask for pasted secrets, copy authentication caches or redirect the user to a backend. These are assessment/plan requirements, not authorization to execute them." : "")
-    """ : ""
-    let presentationDirective = "\n" + UnifiedExecution.instructions + "\n" + HumanOutputContract.instructions(for: lockedObjective, provider: ticket.provider) + readinessDirective +
-        publicWebLookupInstructions(prompt: lockedObjective, hasPreloadedSource: hasPreloadedR2Evidence)
+    let presentationDirective = nativePresentationDirective(objective: lockedObjective, provider: ticket.provider,
+        exactAnswer: exactAnswerOnly, hasPreloadedSource: hasPreloadedR2Evidence)
     let driftApplication: DriftApplication?
     do {
         driftApplication = try DriftPolicyStore().application(
@@ -17655,6 +17668,7 @@ struct OS1Main {
                 try await os1AttemptSourceSelfTest()
                 try rccNativeContinuationSelfTest()
                 try rccNativeDirectorySelfTest()
+                try rccNativeExactAnswerInstructionsSelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
                 try await concurrentRouteFanoutSelfTest()
@@ -18398,6 +18412,49 @@ private func rccNativeDirectorySelfTest() throws {
     print("RCC native directory: 7 custody/preservation checks PASS; model calls 0")
 }
 
+/// The developer (Codex) and system (Claude) instructions of a delegated RCC
+/// child, built the way execute builds them from the real executor contract,
+/// with and without the exact-answer contract. Build 380: an exact-answer
+/// Codex child was told "Reply with only the final result" in the user turn
+/// while its developer channel asked for a natural-language lead and
+/// headings. Pure string assembly; no provider, account or model is started.
+private func rccNativeExactAnswerInstructionsSelfTest() throws {
+    let contract = try RuntimeConfig.load().executorContract
+    var checks = 0
+    func check(_ pass: Bool, _ label: String) throws {
+        guard pass else { throw OS1Error.message("RCC exact-answer instructions fixture failed: " + label) }
+        checks += 1
+    }
+    let layout = ["Lead with the result in natural language", "Use clear paragraphs", "meaningful headings",
+                  "never less coverage", "Answer at the depth the request needs", "Use named components and numbered steps"]
+    for provider in ["codex", "claude"] {
+        let ticket = Ticket(executionID: "fixture", sequence: 1, provider: provider, action: "execute",
+            permissionProfile: "read_only", expiresAt: "", nonce: "", signature: "")
+        let base = provider == "codex" ? executorInstructions(contract: contract, ticket: ticket)
+            : claudeExecutorInstructions(contract: contract, ticket: ticket)
+        let exact = base + nativePresentationDirective(objective: "1+1", provider: provider, exactAnswer: true, hasPreloadedSource: false)
+        let ordinary = base + nativePresentationDirective(objective: "1+1", provider: provider, exactAnswer: false, hasPreloadedSource: false)
+        try check(!layout.contains(where: exact.contains),
+                  provider + ": an exact-answer child's channel carries no natural-language lead, headings or depth layout")
+        try check(exact.contains(HumanOutputContract.exactAnswerInstructions) &&
+                  exact.contains("Reply with only the final result and no other text") &&
+                  exact.contains("Conclusion / Core reason / Breaking variable") && exact.contains("persona header"),
+                  provider + ": the exact-answer contract outranks the owner's default layout and the persona header")
+        try check(exact.contains("include concrete evidence required by the adoption gate") &&
+                  exact.contains("The adoption gate for this reply is that exact comparison, so the result itself is the only evidence to include."),
+                  provider + ": the pinned evidence directive stays and the contract says what evidence it needs here")
+        try check(exact.hasPrefix(base) && exact.contains(UnifiedExecution.instructions),
+                  provider + ": executor contract and unified execution unchanged")
+        try check(ordinary.contains(provider == "codex" ? "Lead with the result in natural language" : "Answer at the depth the request needs") &&
+                  !ordinary.contains(HumanOutputContract.exactAnswerInstructions),
+                  provider + ": every other child keeps its ordinary layout")
+        try check(ordinary.replacingOccurrences(of: HumanOutputContract.instructions(for: "1+1", provider: provider),
+                                                with: HumanOutputContract.exactAnswerInstructions) == exact,
+                  provider + ": only the answer contract differs")
+    }
+    print("RCC native exact-answer instructions: \(checks) checks PASS; model calls 0")
+}
+
 private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     let t = try RCCRuntimeContract.decodeTicket(bytes)
     guard let h = t.hostContext, let original = t.originalRequest, let objective = t.originalObjective,
@@ -18513,13 +18570,18 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
         \nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. Do not call os1 run/self-repair/self-update, install, restart, merge or push. When source changes are ready, preserve existing changes, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes. The original OpenClaw task performs separate mechanical staging and installation receipt checks; source/build alone is not installed or finished. If a checker/policy/installer needs changing, report it for separate stable review rather than weakening it to pass.
         """
+        // A read-only explicit route in the exact verifier's family: the user
+        // turn says "only the final result" and the developer/system channel
+        // carries the same exact-answer contract (execute exactAnswerOnly).
+        let answerOnly = !isFullAccess && RCCDelegatedEnvelope.answerOnly(instruction: t.instruction,
+            surface: t.selectedConfig.surface, scope: t.selectedConfig.scope, explicitRoutes: h.explicitRoutes)
         // One envelope for every provider: the delegated work first as a plain
-        // imperative, the owner's request as background only, ids last as
-        // audit references (RCCDelegatedEnvelope).
+        // imperative with its binding rules, the owner's request as delimited
+        // background whose constraints still bind, ids last as audit
+        // references (RCCDelegatedEnvelope).
         let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective,
             continuation: isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") : nil,
-            answerOnly: RCCDelegatedEnvelope.answerOnly(instruction: t.instruction, surface: t.selectedConfig.surface,
-                                                       explicitRoutes: h.explicitRoutes),
+            answerOnly: answerOnly, surface: t.selectedConfig.surface,
             scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion,
             taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)
         let protected = protectedRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
@@ -18539,6 +18601,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 trustedCodexModels: codex.models, providerSessionID: t.nativeResumeSessionID, model: t.selectedConfig.model,
                 effort: t.selectedConfig.effort.rawValue, executorContract: config.executorContract,
                 desktopReveal: .never, workspaceBeforeHash: before, objectivePrompt: t.instruction,
+                exactAnswerOnly: answerOnly,
                 onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true }, quotaContext: input.providerQuota,
                 surfaceOverride: surface, workspaceOverride: workspace)
         }

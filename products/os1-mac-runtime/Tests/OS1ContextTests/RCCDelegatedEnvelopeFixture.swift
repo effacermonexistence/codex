@@ -22,12 +22,18 @@ func runRCCDelegatedEnvelopeFixtures() throws {
                                      .init(surface: .claude, instruction: "2+3"),
                                      .init(surface: .claudeChat, instruction: "4+5")]
     let taskID = "3a857a4a-0ece-4048-ab90-5d11dff1ac27", attemptID = "02b1a9e4-0000-4000-8000-000000000001"
+    let references = "Internal reference ids for audit (not a task to look up; no tool is needed to use them):"
     func envelope(_ instruction: String, surface: C.Surface, routes explicit: [C.ExplicitRoute]? = routes,
                   scope: C.Scope = .readOnly, sourceCompletion: String = "", continuation: String? = nil,
-                  node: String = "requested-1") -> String {
-        E.prompt(instruction: instruction, ownerRequest: owner, continuation: continuation,
-                 answerOnly: E.answerOnly(instruction: instruction, surface: surface, explicitRoutes: explicit),
-                 scope: scope, sourceCompletion: sourceCompletion, taskID: taskID, nodeID: node, attemptID: attemptID)
+                  node: String = "requested-1", ownerRequest: String = owner) -> String {
+        E.prompt(instruction: instruction, ownerRequest: ownerRequest, continuation: continuation,
+                 answerOnly: E.answerOnly(instruction: instruction, surface: surface, scope: scope, explicitRoutes: explicit),
+                 surface: surface, scope: scope, sourceCompletion: sourceCompletion,
+                 taskID: taskID, nodeID: node, attemptID: attemptID)
+    }
+    func background(_ request: String) -> String {
+        "--- BACKGROUND: the owner's full request ---\nDo not perform its other parts; its constraints (language, format, length, prohibitions, scope) still apply to your part.\n" +
+            request + "\n--- END BACKGROUND ---"
     }
 
     // ---- Snapshot: the exact Codex child message of the live test ----------
@@ -37,14 +43,17 @@ func runRCCDelegatedEnvelopeFixtures() throws {
 
     Reply with only the final result — no other text.
 
-    Background context only — the owner's full request, given so you understand the work above. Do not act on any other part of it:
-    1+1 Codex한테. 2+3 Claude Code한테. 4+5 Claude한테.
-
     Scope: read_only. Do not spawn a competing orchestration or silently change model/account.
+
+    --- BACKGROUND: the owner's full request ---
+    Do not perform its other parts; its constraints (language, format, length, prohibitions, scope) still apply to your part.
+    1+1 Codex한테. 2+3 Claude Code한테. 4+5 Claude한테.
+    --- END BACKGROUND ---
 
     Internal reference ids for audit (not a task to look up; no tool is needed to use them): RCC task 3a857a4a-0ece-4048-ab90-5d11dff1ac27; child requested-1; attempt 02b1a9e4-0000-4000-8000-000000000001.
     """
-    try check(envelope("1+1", surface: .codex) == snapshot, "snapshot: imperative first, owner request as background, ids last")
+    try check(envelope("1+1", surface: .codex) == snapshot,
+              "snapshot: imperative first, binding rules, delimited owner background, ids last")
 
     // ---- Every provider gets the same envelope -----------------------------
     for (index, route) in routes.enumerated() {
@@ -54,27 +63,30 @@ func runRCCDelegatedEnvelopeFixtures() throws {
         try check(text.hasPrefix("Do this and answer directly:\n" + route.instruction + "\n\n"),
                   "\(label): the delegated work leads as a plain imperative")
         try check(count("Reply with only the final result — no other text.", in: text) == 1 &&
-                  text.contains(route.instruction + "\n\nReply with only the final result — no other text.\n\n"),
-                  "\(label): answer-only line once, directly after the arithmetic instruction")
-        guard let background = text.range(of: "Background context only — the owner's full request"),
-              let request = text.range(of: owner), let guarantees = text.range(of: E.guaranteeLine),
-              let reference = text.range(of: "Internal reference ids for audit (not a task to look up; no tool is needed to use them):") else {
+                  text.contains(route.instruction + "\n\nReply with only the final result — no other text.\n\nScope: read_only. "),
+                  "\(label): answer-only line once, directly after the arithmetic instruction and before the rules")
+        guard let answerOnly = text.range(of: E.answerOnlyLine), let guarantees = text.range(of: E.guaranteeLine),
+              let start = text.range(of: "--- BACKGROUND: the owner's full request ---"),
+              let request = text.range(of: owner), let end = text.range(of: "--- END BACKGROUND ---"),
+              let reference = text.range(of: references) else {
             throw NSError(domain: "RCCDelegatedEnvelopeFixture", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "\(label): section missing"])
         }
-        try check(text.range(of: route.instruction)!.lowerBound < background.lowerBound &&
-                  background.upperBound <= request.lowerBound && request.upperBound <= guarantees.lowerBound &&
-                  guarantees.upperBound <= reference.lowerBound,
-                  "\(label): order is work, background owner request, guarantees, references")
+        try check(text.range(of: route.instruction)!.lowerBound < answerOnly.lowerBound &&
+                  answerOnly.upperBound <= guarantees.lowerBound && guarantees.upperBound <= start.lowerBound &&
+                  start.upperBound <= request.lowerBound && request.upperBound <= end.lowerBound &&
+                  end.upperBound <= reference.lowerBound,
+                  "\(label): order is work, answer-only, rules, delimited background owner request, references")
         try check(text.components(separatedBy: "\n").last ==
-                  "Internal reference ids for audit (not a task to look up; no tool is needed to use them): RCC task \(taskID); child \(node); attempt \(attemptID).",
+                  references + " RCC task \(taskID); child \(node); attempt \(attemptID).",
                   "\(label): the ids are the last line, labeled as references")
         try check(count(taskID, in: text) == 1 && count(attemptID, in: text) == 1 && count("child " + node, in: text) == 1,
                   "\(label): every id still present, exactly once")
         try check(text.contains("Scope: read_only. Do not spawn a competing orchestration or silently change model/account."),
                   "\(label): scope statement and no-orchestration/no-silent-change guarantee kept")
-        try check(!text.contains("ORIGINAL OWNER OBJECTIVE") && !text.contains("DELEGATED WORK ONLY"),
-                  "\(label): the build 380 owner-first labels are gone")
+        try check(!text.contains("ORIGINAL OWNER OBJECTIVE") && !text.contains("DELEGATED WORK ONLY") &&
+                  !text.contains("Background context only") && !text.contains("Do not act on any other part"),
+                  "\(label): the build 380 owner-first labels and the non-actionable background label are gone")
         // Same bytes for every provider but the instruction and node id.
         try check(text.replacingOccurrences(of: route.instruction + "\n", with: "1+1\n")
                       .replacingOccurrences(of: "child " + node, with: "child requested-1") == snapshot,
@@ -93,29 +105,94 @@ func runRCCDelegatedEnvelopeFixtures() throws {
         ("1+1이 뭐야?", .codex, [C.ExplicitRoute(surface: .codex, instruction: "1+1이 뭐야?")], "arithmetic inside a sentence"),
     ] as [(String, C.Surface, [C.ExplicitRoute]?, String)] {
         let text = envelope(instruction, surface: surface, routes: explicit)
-        try check(!E.answerOnly(instruction: instruction, surface: surface, explicitRoutes: explicit) &&
+        try check(!E.answerOnly(instruction: instruction, surface: surface, scope: .readOnly, explicitRoutes: explicit) &&
                   !text.contains("Reply with only the final result"), "no answer-only line: " + reason)
-        try check(text == E.prompt(instruction: instruction, ownerRequest: owner, answerOnly: false, scope: .readOnly,
-                                   taskID: taskID, nodeID: "requested-1", attemptID: attemptID) &&
-                  text.hasPrefix("Do this and answer directly:\n" + instruction + "\n\nBackground context only"),
-                  "otherwise unchanged envelope: " + reason)
+        try check(text == E.prompt(instruction: instruction, ownerRequest: owner, answerOnly: false, surface: surface,
+                                   scope: .readOnly, taskID: taskID, nodeID: "requested-1", attemptID: attemptID) &&
+                  text.hasPrefix("Do this task:\n" + instruction + "\n\nScope: read_only. " + E.guaranteeLine + "\n\n" +
+                                 background(owner) + "\n\n" + references),
+                  "neutral task lead, otherwise unchanged envelope: " + reason)
     }
 
-    // ---- A bound source writer: completion rules kept, ids still last ------
-    let completion = "\nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope."
+    // ---- An explicit arithmetic route on its own surface, but a writer -----
+    // verifyExactExplicitArithmetic rejects any scope but read_only, so the
+    // writer is outside the verifier's family: no answer-only line, no direct
+    // lead, and its completion rules are never contradicted.
+    let completion = "\nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. When source changes are ready, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes."
+    let arithmeticWriter = envelope("1+1", surface: .codex, scope: .workspaceWrite, sourceCompletion: completion)
+    try check(!E.answerOnly(instruction: "1+1", surface: .codex, scope: .workspaceWrite, explicitRoutes: routes) &&
+              !arithmeticWriter.contains("Reply with only the final result") &&
+              arithmeticWriter.hasPrefix("Do this task:\n1+1\n\nScope: workspace_write. " + E.guaranteeLine + completion + "\n\n"),
+              "explicit arithmetic writer: no answer-only line, neutral lead, completion rules right after the work")
+    try check(!E.prompt(instruction: "1+1", ownerRequest: owner, answerOnly: true, surface: .codex, scope: .workspaceWrite,
+                        taskID: taskID, nodeID: "requested-1", attemptID: attemptID).contains("Reply with only the final result"),
+              "the envelope itself ignores answerOnly for a writer scope")
+
+    // ---- Lead by scope and answer family -----------------------------------
+    let lookup = envelope("README.md 요약해줘", surface: .codex, routes: nil)
+    try check(lookup.hasPrefix("Do this task:\nREADME.md 요약해줘\n\n") && !lookup.contains("answer directly"),
+              "a read-only task that has to read files gets the neutral task lead")
+    for chat in [C.Surface.claudeChat, .gptChat] {
+        let text = envelope("양자컴퓨터가 뭐야?", surface: chat, routes: nil)
+        try check(E.directAnswer(answerOnly: false, surface: chat, scope: .readOnly) &&
+                  text.hasPrefix("Do this and answer directly:\n양자컴퓨터가 뭐야?\n\nScope: read_only. ") &&
+                  !text.contains("Reply with only the final result"),
+                  chat.rawValue + ": a tool-free chat lane answers directly, without the answer-only line")
+    }
+    try check(!E.directAnswer(answerOnly: false, surface: .codex, scope: .readOnly) &&
+              !E.directAnswer(answerOnly: false, surface: .claude, scope: .readOnly) &&
+              !E.directAnswer(answerOnly: true, surface: .codex, scope: .workspaceWrite) &&
+              !E.directAnswer(answerOnly: false, surface: .claudeChat, scope: .workspaceWrite),
+              "the direct lead never reaches a tool lane's ordinary child or a writer")
+
+    // ---- A bound source writer: rules after the work, background delimited -
+    let paragraphs = "README.md에 설치 방법 추가해.\n\n설치는 Homebrew 기준으로.\n\n다른 파일은 건드리지 마."
     let writer = envelope("README.md에 설치 방법 추가해", surface: .codex, routes: nil, scope: .workspaceWrite,
-                          sourceCompletion: completion)
-    try check(writer.contains("Scope: workspace_write. Do not spawn a competing orchestration or silently change model/account." + completion + "\n\n"),
-              "source completion rules follow the guarantees verbatim")
-    try check(writer.hasSuffix("\n\nInternal reference ids for audit (not a task to look up; no tool is needed to use them): RCC task \(taskID); child requested-1; attempt \(attemptID)."),
-              "ids stay last after the source completion rules")
+                          sourceCompletion: completion, ownerRequest: paragraphs)
+    try check(writer == "Do this task:\nREADME.md에 설치 방법 추가해\n\nScope: workspace_write. " + E.guaranteeLine + completion +
+              "\n\n" + background(paragraphs) + "\n\n" + references +
+              " RCC task \(taskID); child requested-1; attempt \(attemptID).",
+              "writer: neutral lead, scope/guarantee/completion rules directly after the work, then the background")
+    guard let completionAt = writer.range(of: "BOUND OS-1 SOURCE COMPLETION"),
+          let backgroundAt = writer.range(of: "--- BACKGROUND: the owner's full request ---"),
+          let endAt = writer.range(of: "--- END BACKGROUND ---") else {
+        throw NSError(domain: "RCCDelegatedEnvelopeFixture", code: 3, userInfo: [NSLocalizedDescriptionKey: "writer section missing"])
+    }
+    try check(completionAt.upperBound <= backgroundAt.lowerBound &&
+              writer[backgroundAt.upperBound..<endAt.lowerBound] == "\n" + E.backgroundRule + "\n" + paragraphs + "\n",
+              "a multi-paragraph owner request stays inside its markers; no binding rule follows it")
+    try check(writer.hasSuffix("--- END BACKGROUND ---\n\n" + references + " RCC task \(taskID); child requested-1; attempt \(attemptID)."),
+              "ids stay last, after the closed background")
+
+    // ---- Owner-wide constraints stay binding on a planner's node -----------
+    let summaries = "README.md와 CHANGELOG.md 각각 요약해. 둘 다 영어로 세 줄 이내로, 파일은 건드리지 마."
+    let node = envelope("Summarize README.md", surface: .claude, routes: nil, ownerRequest: summaries)
+    try check(E.backgroundRule.contains("Do not perform its other parts") &&
+              E.backgroundRule.contains("its constraints (language, format, length, prohibitions, scope) still apply to your part") &&
+              !E.backgroundRule.contains("Do not act on any other part") && !E.backgroundRule.contains("context only"),
+              "the background forbids the other parts but keeps the owner's constraints binding")
+    try check(node.contains(background(summaries)) && node.hasPrefix("Do this task:\nSummarize README.md\n\n"),
+              "a planner node sees the owner's language/length/no-touch constraints as binding background")
 
     // ---- A full-access continuation keeps its own imperative lead ----------
     let resume = "Continue ONLY the non-OS-1 steps blocked by the broad task sandbox, in this SAME native session."
     let continued = envelope("1+1", surface: .codex, continuation: resume)
     try check(continued == resume + "\n\nScope: read_only. " + E.guaranteeLine + "\n\n" + E.referenceLabel +
               " RCC task \(taskID); child requested-1; attempt \(attemptID).",
-              "continuation: its own prompt leads, no answer-only line or second background, ids last")
+              "continuation: its own prompt leads, no answer-only line or background, ids last")
+
+    // ---- The exact-answer presentation contract (developer/system channel) -
+    let exactContract = HumanOutputContract.exactAnswerInstructions
+    for provider in ["codex", "claude"] {
+        try check(HumanOutputContract.instructions(for: "1+1", provider: provider, exactAnswer: true) == exactContract &&
+                  HumanOutputContract.instructions(for: "1+1", provider: provider) != exactContract,
+                  provider + ": the exact-answer contract replaces the ordinary contract only when asked")
+    }
+    try check(["Lead with the result in natural language", "meaningful headings", "Use clear paragraphs", "never less coverage"]
+                .allSatisfy { !exactContract.contains($0) } &&
+              exactContract.contains("Reply with only the final result and no other text") &&
+              exactContract.contains("Conclusion / Core reason / Breaking variable"),
+              "the exact-answer contract carries no natural-language/headings layout and outranks the default layout")
 
     // ---- The predicate is the exact verifier's family ----------------------
     let corpus: [(String, Bool)] = [

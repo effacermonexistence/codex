@@ -107,23 +107,48 @@ check(native.index("input.completionFeedback = PublicCompletionFeedback(") <
       native.index("let request = StartExecutionRequest(task: objective") <
       native.index('post("/v1/execution-authorizations"'),
       "task-bound feedback is present before exact-profile admission; no fake prior quality observations")
-# Build 381: one delegated envelope for every provider. Work first, owner
-# request as background, ids last as audit references; answer-only line only
-# for an explicit route in the exact verifier's arithmetic family.
+# Build 381: one delegated envelope for every provider. Work first with its
+# binding rules, the owner request as delimited background whose constraints
+# still bind, ids last as audit references; the direct lead and answer-only
+# line only for a read-only child in the exact verifier's arithmetic family
+# (or a chat lane for the lead), carried into the developer/system channel.
 ENVELOPE = (ROOT / "Sources/OS1Context/RCCDelegatedEnvelope.swift").read_text()
-check("let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective," in native and
-      "RCCDelegatedEnvelope.answerOnly(instruction: t.instruction, surface: t.selectedConfig.surface," in native and
-      "explicitRoutes: h.explicitRoutes)" in native and
+CONTRACT = (ROOT / "Sources/OS1Context/OutputContract.swift").read_text()
+check("let answerOnly = !isFullAccess && RCCDelegatedEnvelope.answerOnly(instruction: t.instruction," in native and
+      "surface: t.selectedConfig.surface, scope: t.selectedConfig.scope, explicitRoutes: h.explicitRoutes)" in native and
+      "let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective," in native and
+      "answerOnly: answerOnly, surface: t.selectedConfig.surface," in native and
       "scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion," in native and
       "taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)" in native,
-      "every provider's child message comes from the one envelope with scope, source rules and ids")
+      "every provider's child message comes from the one envelope with scope, surface, source rules and ids")
 check("ORIGINAL OWNER OBJECTIVE" not in native and "DELEGATED WORK ONLY" not in native and
-      native.index("let delegated = RCCDelegatedEnvelope.prompt(") < native.index("providerPrompt(current: delegated,"),
+      native.index("let answerOnly = ") < native.index("let delegated = RCCDelegatedEnvelope.prompt(") <
+      native.index("providerPrompt(current: delegated,"),
       "the owner-first envelope is gone and the new one is what the provider receives")
+check("objectivePrompt: t.instruction,\n                exactAnswerOnly: answerOnly," in native,
+      "the answer-only decision reaches execute's developer/system channel, not only the user turn")
+execute_body = section(MAIN, "private func execute(\n", "private func ")
+check("    exactAnswerOnly: Bool = false,\n" in execute_body and
+      "let presentationDirective = nativePresentationDirective(objective: lockedObjective, provider: ticket.provider,\n"
+      "        exactAnswer: exactAnswerOnly, hasPreloadedSource: hasPreloadedR2Evidence)" in execute_body and
+      "let instructions = executorInstructions(contract: executorContract, ticket: ticket) + definitionsDirective + evidenceDirective + presentationDirective" in execute_body and
+      "claudeExecutorInstructions(contract: executorContract, ticket: ticket) + definitionsDirective + evidenceDirective + presentationDirective" in execute_body,
+      "Codex developer and Claude system instructions both carry the exact-answer presentation directive")
+check("HumanOutputContract.instructions(for: objective, provider: provider, exactAnswer: exactAnswer)" in MAIN and
+      "if exactAnswer { return exactAnswerInstructions }" in CONTRACT and
+      "try rccNativeExactAnswerInstructionsSelfTest()" in MAIN,
+      "exact-answer branch replaces the natural-language layout and has an os1 self-test fixture")
 check('"Do not spawn a competing orchestration or silently change model/account."' in ENVELOPE and
       '"Reply with only the final result — no other text."' in ENVELOPE and
-      '"Internal reference ids for audit (not a task to look up; no tool is needed to use them):"' in ENVELOPE,
-      "envelope keeps the guarantees and labels the ids as references")
+      '"Internal reference ids for audit (not a task to look up; no tool is needed to use them):"' in ENVELOPE and
+      '"--- BACKGROUND: the owner\'s full request ---"' in ENVELOPE and '"--- END BACKGROUND ---"' in ENVELOPE and
+      "its constraints (language, format, length, prohibitions, scope) still apply to your part." in ENVELOPE and
+      "Do not act on any other part" not in ENVELOPE,
+      "envelope keeps the guarantees, delimits the background, keeps owner constraints binding, labels ids as references")
+check('let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + sourceCompletion' in ENVELOPE and
+      'guard scope == .readOnly, let explicitRoutes,' in ENVELOPE and
+      'scope == .readOnly && (answerOnly || ProviderSurface(rawValue: surface.rawValue)?.forcesChatLane == true)' in ENVELOPE,
+      "answer-only needs read_only like the verifier; the direct lead only for read-only answer children")
 check("const parts = /^\\s*(-?\\d{1,9})\\s*\\+\\s*(-?\\d{1,9})\\s*$/u.exec(instruction);" in PLUGIN and
       "arithmeticSum(node.instruction)" in PLUGIN and "/^\\s*(-?\\d{1,9})\\s*\\+\\s*(-?\\d{1,9})\\s*$/u" in ENVELOPE,
       "answer-only predicate mirrors the unchanged exact verifier regex (OS1ContextTests cross-checks it in Node)")
