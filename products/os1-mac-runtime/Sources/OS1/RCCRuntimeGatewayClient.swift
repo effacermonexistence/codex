@@ -638,6 +638,12 @@ enum RCCRuntimeGatewayClient {
         env["PATH"] = URL(fileURLWithPath: configuration.identity.nodePath).deletingLastPathComponent().path + ":/usr/bin:/bin"
         env["NODE_DISABLE_COMPILE_CACHE"] = "1"
         env["OS1_RCC_STATE_ROOT"] = paths.root.path
+        // Identity names (never credentials): the bridge forwards USER/LOGNAME
+        // to native children, and the Claude CLI needs USER for its Keychain
+        // sign-in lookup.
+        for (key, value) in LoginIdentityEnvironment.missing(in: env, userName: LoginIdentityEnvironment.effectiveUserName()) {
+            env[key] = value
+        }
         return env
     }
     private static func health(_ owner: Owner, configuration: Configuration, paths: Paths, timeout: TimeInterval,

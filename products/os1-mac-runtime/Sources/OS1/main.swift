@@ -17396,6 +17396,10 @@ func usage() {
 @main
 struct OS1Main {
     static func main() async {
+        // A gateway-spawned os1 has no USER/LOGNAME; the Claude CLI then
+        // cannot find its Keychain sign-in and every catalog listed Claude as
+        // signed_out. Fill them from the account database before any probe.
+        LoginIdentityEnvironment.applyToCurrentProcess()
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first else { usage(); return }

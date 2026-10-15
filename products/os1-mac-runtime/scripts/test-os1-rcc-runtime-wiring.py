@@ -187,4 +187,12 @@ check("export const TIER_ROUTES" in RUNTIME and "'model_tiers'" in RUNTIME and "
 check("route_class picks the reasoning tier" in PLUGIN and "never name a model, provider, account, effort or candidate" in PLUGIN,
       "planner prompt states tier semantics and still never sees candidates")
 
+# Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
+# sign-in looked signed out on every live catalog.
+check("LoginIdentityEnvironment.applyToCurrentProcess()" in MAIN.split("static func main() async {", 1)[1][:600],
+      "os1 fills USER/LOGNAME before any command or provider probe")
+check("LoginIdentityEnvironment.missing(in: env" in CLIENT and "env[\"OS1_RCC_STATE_ROOT\"]" in CLIENT,
+      "gateway process environment carries USER/LOGNAME for its native children")
+check("'USER', 'LOGNAME'" in PLUGIN, "bridge forwards USER/LOGNAME to native children")
+
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")
