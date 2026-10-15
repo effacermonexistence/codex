@@ -847,6 +847,9 @@ private func providerIntentSelfTest() throws {
           requestedProvider(for: "GPT랑 코덱스랑 클로드랑 클로드 코드한테 1+2 이런거 해봐.", configured: .claude) == .auto,
           requestedProvider(for: "코덱스한테 말시켜봐", configured: .auto) == .codex,
           requestedProvider(for: "이 버그를 고치고 테스트해", configured: .claude) == .claude,
+          // Build 381: a route-all order names no surface; it still runs on Auto.
+          requestedProvider(for: "너 라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐. 원플러스원 투플러스투", configured: .claude) == .auto,
+          requestedProvider(for: "다 라우팅이 안 돼", configured: .claude) == .claude,
           isChatLaneRoutePart(chatPart), !isChatLaneRoutePart(fullPart), !isChatLaneRoutePart(review) else {
         throw RunnerError.message("OS-1 route fan-out UI self-test failed.")
     }
@@ -6563,10 +6566,12 @@ private func responseAvailabilityReceiptSelfTest() throws {
 /// A request that names a route for each of its parts ("1+1 GPT한테. 2+2
 /// Codex한테. …") runs on auto, so the runtime can send every part where it
 /// was named; that holds on a conversation pinned to one tile as well, since
-/// the request is the more specific instruction. Anything else keeps the tile,
-/// or the one provider the request directs work to.
+/// the request is the more specific instruction. So does an order to route to
+/// every available route ("라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐",
+/// `RouteAllIntent`): the CLI turns it into one explicit route per surface.
+/// Anything else keeps the tile, or the one provider the request directs work to.
 private func requestedProvider(for request: String, configured: ProviderChoice) -> ProviderChoice {
-    if RouteFanout.plan(request) != nil { return .auto }
+    if RouteFanout.plan(request) != nil || RouteAllIntent.recognizes(request) { return .auto }
     return configured == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : configured
 }
 
@@ -6576,7 +6581,8 @@ private func requestedProvider(for request: String, configured: ProviderChoice) 
 private func routeFanoutRetrySubmission(_ original: PendingSubmission) -> PendingSubmission {
     guard original.deliveryID == nil, original.savedResultNeedsReview != true,
           original.readOnlyReconciliation != true, original.recoveryParentID == nil,
-          RouteFanout.plan(original.executionRequest) != nil else { return original }
+          RouteFanout.plan(original.executionRequest) != nil || RouteAllIntent.recognizes(original.executionRequest)
+    else { return original }
     var retry = original
     retry.provider = .auto
     retry.surfaceRaw = nil

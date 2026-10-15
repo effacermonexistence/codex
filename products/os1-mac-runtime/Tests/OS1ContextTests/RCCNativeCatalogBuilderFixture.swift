@@ -798,6 +798,40 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               !directed("코덱 설정 확인해", ProviderNameAliases.codexDirected),
               "the directed detector: 클로즈 ('close') and bare 코덱 ('codec') only before a dative particle")
 
+    // ---- Local execution row (route-all, 2026-10-14) --------------------
+    // Only an explicit route test that names the local surface gets the one
+    // local model row, and only with the host's own readiness observation.
+    var localRoutes = input("1+1"); localRoutes.explicitRouteSurfaces = ["local", "codex", "claude", "claude-chat"]
+    try check(B.build(localRoutes).candidates.allSatisfy { $0["surface"] as? String != "local" },
+              "an unprobed local model has no row (never fabricated available)")
+    localRoutes.localModel = .init(ready: true, at: now)
+    let localOut = try B.build(localRoutes)
+    let localRows = localOut.candidates.filter { $0["surface"] as? String == "local" }
+    try check(localRows.count == 1 && localRows[0]["model"] as? String == B.localWorkerModel &&
+              localRows[0]["transport"] as? String == "local" && localRows[0]["quota_pool"] as? String == "none" &&
+              localRows[0]["effort"] as? String == "none" && (localRows[0]["tools"] as? [String]) == [] &&
+              localRows[0]["scope"] as? String == "read_only" && localRows[0]["availability"] as? String == "available" &&
+              localRows[0]["availability_observed_at_ms"] as? Int64 == Int64(now.timeIntervalSince1970 * 1000) &&
+              localOut.candidates.last.map({ $0["surface"] as? String }) == "local",
+              "one read-only, tools-free, quota-free local row, last, available from the probe")
+    let localCatalog = try C.decodeCatalog(B.catalogData(localOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))
+    try check(localCatalog.candidates.filter { $0.surface == .local }.count == 1 &&
+              localCatalog.modelTiers?[B.localWorkerModel] == nil,
+              "the local row passes the strict Swift catalog contract and carries no tier")
+    var later = localRoutes; later.localModel = .init(ready: false, at: now.addingTimeInterval(30)); later.now = now.addingTimeInterval(30)
+    let unready = try B.build(later).candidates.filter { $0["surface"] as? String == "local" }
+    try check(unready.count == 1 && unready[0]["id"] as? String == localRows[0]["id"] as? String &&
+              unready[0]["configuration_sha256"] as? String == localRows[0]["configuration_sha256"] as? String &&
+              unready[0]["availability"] as? String == "unavailable",
+              "the row's identity is stable across refreshes; a failed probe is an observed unavailable row")
+    var autoLocal = input("1+1"); autoLocal.localModel = .init(ready: true, at: now)
+    try check(B.build(autoLocal).candidates.allSatisfy { $0["surface"] as? String != "local" },
+              "Auto never gets a local model row: ordinary work is not routed to the local model")
+    var onlyLocal = localRoutes; onlyLocal.profiles = []; onlyLocal.explicitRouteSurfaces = ["local"]
+    let onlyLocalOut = try B.build(onlyLocal)
+    try check(onlyLocalOut.candidates.count == 1 &&
+              (try C.decodeCatalog(B.catalogData(onlyLocalOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))).modelTiers == [:],
+              "a local-only explicit test is a valid catalog with an empty tier map")
     print("RCC native catalog builder: \(checks) checks OK; model calls 0")
 }
 

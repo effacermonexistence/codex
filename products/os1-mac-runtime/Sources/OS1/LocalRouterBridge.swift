@@ -76,8 +76,8 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "75a4e8a6435b40159bae2d09c839eec8cca9a79b25e736a2045a3510acdd8d5a"
-    static let rccRuntimePluginSHA256 = "45bd2802c2be6b0657308cbed41fe1815019d8dded01250470447d36c1a55c92"
+    static let rccRuntimeModuleSHA256 = "201f02870dfb2b51f60932c82ff5f3a14dfee618ce45b20f4653f90097b16ea3"
+    static let rccRuntimePluginSHA256 = "65c52bbc266e502f9de5aa93b0c1635a2488b57b7b2752ce562b1b96b9f8ea52"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"
@@ -324,6 +324,36 @@ enum LocalRouterBridge {
                      pluginDirectory: plugin.path, pluginIndexSHA256: pinnedPluginIndexSHA256,
                      pluginManifestSHA256: pinnedPluginManifestSHA256,
                      pluginPackageSHA256: pinnedPluginPackageSHA256)
+    }
+
+    /// Live readiness of the local model OpenClaw already runs (the
+    /// planner's model), for the local EXECUTION surface of an explicit route
+    /// test (route-all, 2026-10-14): the enabled pinned local router names
+    /// it, and the loopback Ollama inventory has it at the pinned digest. A
+    /// real probe bounded to `timeout`; any failure is "not ready", never
+    /// assumed ready. Same facts as `preflight`, without starting anything.
+    static func localModelReady(timeout: TimeInterval = 2) -> Bool {
+        guard let manifest = try? boundedFile(root.appendingPathComponent("manifest.json"), limit: 16_384),
+              let m = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
+              m["enabled"] as? Bool == true, m["model"] as? String == model,
+              m["model_digest"] as? String == modelDigest else { return false }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout + 1
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        final class Box: @unchecked Sendable { var ready = false }
+        let box = Box(), done = DispatchSemaphore(value: 0)
+        session.dataTask(with: URL(string: "http://127.0.0.1:11434/api/tags")!) { data, response, _ in
+            defer { done.signal() }
+            guard (response as? HTTPURLResponse)?.statusCode == 200, let data, data.count <= 128_000,
+                  let tags = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let installed = tags["models"] as? [[String: Any]] else { return }
+            box.ready = installed.contains { $0["name"] as? String == model && $0["digest"] as? String == modelDigest }
+        }.resume()
+        guard done.wait(timeout: .now() + timeout + 2) == .success else { return false }
+        return box.ready
     }
 
     private static func verifyGatewayOllamaVersion() async throws {

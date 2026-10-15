@@ -33,6 +33,12 @@ import Foundation
 ///   effort by its grade on that route's surface, and an above-max effort
 ///   only when that route's own words asked for it.
 /// - `claude-chat` rows exist only when the narrow chat-lane predicate holds.
+/// - A `local` row (2026-10-14) exists only in an explicit route test that
+///   names the local surface: the one tools-free, read-only, quota-free row of
+///   the model OpenClaw already runs (`localWorkerModel`), available only when
+///   the host's live readiness probe found it (`localModel`), unavailable when
+///   it did not. Auto never gets one: ordinary work is not routed to the
+///   local model in this build.
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
 ///   when it is account-wide, with `quota_backoff`; it is never probed. An
@@ -57,6 +63,18 @@ public enum RCCNativeCatalogBuilder {
     /// the default reference effort and is never withheld.
     public static let explicitOnlyEfforts: Set<String> = ["ultra", "ultracode"]
     static let maximumReferenceEffort = "max"
+    /// The local model OpenClaw runs (`LocalRouterBridge.model`, the planner's
+    /// model) and the one local execution row's fixed identity.
+    public static let localWorkerModel = "qwen3.5:4b"
+    public static let localWorkerAccount = "os1-local"
+
+    /// The host's live readiness probe of the local model (the pinned model
+    /// at its pinned digest in the loopback inventory), observed at `at`.
+    public struct LocalModelObservation: Equatable, Sendable {
+        public var ready: Bool
+        public var at: Date
+        public init(ready: Bool, at: Date) { self.ready = ready; self.at = at }
+    }
 
     public struct Profile: Equatable, Sendable {
         public var action: String
@@ -138,6 +156,9 @@ public enum RCCNativeCatalogBuilder {
         /// host's original explicit route list; nil outside an explicit route
         /// test. One route's words never constrain another route.
         public var explicitRouteIntents: [RoutingIntent]? = nil
+        /// The local model's readiness, probed only when an explicit route
+        /// names the local surface; nil otherwise (no local row).
+        public var localModel: LocalModelObservation? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -483,13 +504,36 @@ public enum RCCNativeCatalogBuilder {
                 exclusions.append(.init(provider: provider, reason: reason, count: min(count, 10_000)))
             }
         }
-        guard rows.count <= maximumCandidates else { throw Failure.exceedsBound(rows.count) }
-        guard !rows.isEmpty || !exclusions.isEmpty else { throw Failure.unexplainedEmptyCatalog }
+        let local = localRow(input)
+        guard rows.count + local.count <= maximumCandidates else { throw Failure.exceedsBound(rows.count + local.count) }
+        guard !rows.isEmpty || !local.isEmpty || !exclusions.isEmpty else { throw Failure.unexplainedEmptyCatalog }
         var tiers: [String: String] = [:]
         for row in rows { if let tier = ModelTiers.tier(of: row.model) { tiers[row.model] = tier.rawValue } }
-        return Output(candidates: rows.map(\.fields), exclusions: exclusions, pools: rankings, intent: intent,
+        return Output(candidates: rows.map(\.fields) + local, exclusions: exclusions, pools: rankings, intent: intent,
                       modelTiers: tiers, quotaScores: quotaScores,
                       explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents)
+    }
+
+    /// The local execution row of an explicit route test that names the local
+    /// surface (empty otherwise, and when the host did not probe the model):
+    /// read-only, no tools, no quota pool, transport `local`, effort none.
+    /// Its identity is fixed by its configuration, so a catalog refresh before
+    /// dispatch finds the same row; its availability is the probe's own
+    /// result for two minutes from the probe, never assumed.
+    static func localRow(_ input: Input) -> [[String: Any]] {
+        guard input.explicitRouteSurfaces?.contains("local") == true, let observed = input.localModel else { return [] }
+        let tuple = ["local", "local", localWorkerAccount, localWorkerModel, "none", "read_only",
+                     input.executorContractSHA256].joined(separator: "\n")
+        let digest = RCCRuntimeContract.digest(Data(tuple.utf8))
+        let at = Int64(observed.at.timeIntervalSince1970 * 1000)
+        return [["id": "cfg-" + String(digest.prefix(32)), "surface": "local", "transport": "local",
+                 "account_id": localWorkerAccount, "model": localWorkerModel, "effort": "none", "tools": [String](),
+                 "scope": "read_only", "permission_profile": "read_only", "quota_pool": "none",
+                 "allowed_paths": [String](), "configuration_sha256": digest,
+                 "availability": observed.ready ? "available" : "unavailable",
+                 "availability_observed_at_ms": at, "availability_valid_until_ms": at + 120_000,
+                 "quota_remaining_fraction": NSNull(), "quota_observed_at_ms": NSNull(), "quota_valid_until_ms": NSNull(),
+                 "quality_state": "policy_admitted", "estimated_cost_units": NSNull()]]
     }
 
     /// The exact catalog bytes `os1 rcc-catalog` prints. `exclusions` appears

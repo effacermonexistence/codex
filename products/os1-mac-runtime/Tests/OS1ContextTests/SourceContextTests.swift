@@ -36,6 +36,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--local-surface-routing-only") { try runLocalSurfaceRoutingFixtures(); return }
         if CommandLine.arguments.contains("--route-fanout-browser-record-only") { try runRouteFanoutBrowserRecordFixtures(); return }
         if CommandLine.arguments.contains("--route-fanout-only") { try runRouteFanoutFixtures(); return }
+        if CommandLine.arguments.contains("--route-all-only") { try runRouteAllIntentFixtures(); return }
         if CommandLine.arguments.contains("--codex-dictation-auth-only") { try runCodexDictationAuthorizationFixtures(); return }
         if CommandLine.arguments.contains("--codex-native-dictation-only") { try runCodexNativeDictationFixtures(); return }
         if CommandLine.arguments.contains("--inspection-network-denial-only") { try runClaudeInspectionNetworkDenialFixtures(); return }
@@ -215,6 +216,7 @@ final class SourceContextTests {
         try runProjectMaterialFixtures()
         try runRegisteredSourceFixtures()
         try runRouteFanoutFixtures()
+        try runRouteAllIntentFixtures()
         try StatusCheckIn.selfTest()
         print("Status check-in: self-test passed")
         try runConversationalQuestionFixtures()

@@ -240,4 +240,32 @@ check("LoginIdentityEnvironment.missing(in: env" in CLIENT and "env[\"OS1_RCC_ST
       "gateway process environment carries USER/LOGNAME for its native children")
 check("'USER', 'LOGNAME'" in PLUGIN, "bridge forwards USER/LOGNAME to native children")
 
+# Route-all (2026-10-14, build 381 task ac5a5fd6): an order to route to every
+# available route is one explicit route per surface, the local model included,
+# held before Core when nothing may run; never the routing order as one task.
+run_body = section(MAIN, "func runOpenClawRCCTask(", "let configuration = try await OwnerPolicyContext")
+check("routeAllRouting(prompt: prompt, capacityPlan: capacityPlan," in run_body and
+      "explicit = routeAll.routes" in run_body and
+      "requireReadOnly: requireReadOnly || routeAll != nil" in run_body and
+      "mode: fanout != nil || routeAll != nil ? .explicitRoutingTest : .auto" in run_body,
+      "a route-all order becomes a read-only explicit route test on Auto")
+check(run_body.index("guard !routeAll.routes.isEmpty else {") < run_body.index("let host = RCCRuntimeContract.HostContext(") and
+      'RunSummary(status: "workflow_blocked", steps: [], monitorTaskID: taskID, workflowBlocker: routeAll.notice)' in run_body,
+      "a recognised route-all order with nothing to run is held before Core, never sent as one worker task")
+check("LocalRouterBridge.localModelReady()" in catalog_fn and "input.localModel = .init(ready: ready, at: Date())" in catalog_fn and
+      catalog_fn.index("LocalRouterBridge.localModelReady()") < catalog_fn.index("input.now = Date()") and
+      "$0.surface == .local" in catalog_fn,
+      "the local row's availability is a live probe taken only for an explicit local route, before the freshness instant")
+check("static func localRow(" in BUILDER and 'input.explicitRouteSurfaces?.contains("local") == true' in BUILDER,
+      "the builder emits a local row only for an explicit local route")
+check("execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :" in PLUGIN and
+      "localModelExecutor({stateDir," in PLUGIN and
+      "complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request))" in PLUGIN and
+      "purpose: LOCAL_WORKER_PURPOSE" in PLUGIN,
+      "a local route runs on the planner's model in the service scope; every other route keeps the native adapter")
+check("if (explicitRoute?.surface === 'local')" in RUNTIME and "'local_agent_node_not_explicit'" in RUNTIME and
+      "export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';" in RUNTIME,
+      "Core binds the local model only for an explicit local route")
+check("RouteAllIntent.recognizes(request)" in APP, "the app runs a route-all order on Auto")
+
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

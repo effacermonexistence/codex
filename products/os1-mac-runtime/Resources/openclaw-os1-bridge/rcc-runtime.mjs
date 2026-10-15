@@ -19,6 +19,12 @@ const POOLS = new Set(['none', 'unknown', 'openai_codex', 'openai_chat', 'anthro
 const SURFACES = new Set(['chatgpt', 'codex', 'claude', 'local', 'gpt-chat', 'claude-chat']);
 // GPT surfaces stay decodable for old receipts, but are no longer routed.
 const DROPPED_ROUTE_SURFACES = new Set(['chatgpt', 'gpt-chat']);
+// The local model OpenClaw already runs (the planner's model). A catalog row
+// of it is an explicit route's local EXECUTION surface (route-all,
+// 2026-10-14): read-only, tools-free, quota-free, transport local. It is
+// bound only for an explicit route that names the local surface; Auto never
+// routes ordinary work to it, and it is never the deterministic exact row.
+export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';
 const EXCLUSION_PROVIDERS = new Set(['codex', 'claude']);
 const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unavailable', 'quota_zero',
   'capacity_zero', 'codex_hidden', 'effort_requires_explicit_request', 'explicit_constraint_unavailable',
@@ -391,6 +397,19 @@ export function dispatchable(candidate, task, now = Date.now()) {
 }
 // A dropped GPT surface stays decodable but is never chosen by the host.
 function hostRoutable(candidate) { return !DROPPED_ROUTE_SURFACES.has(candidate.surface); }
+/** The one local model execution row shape: the pinned local model on the
+ * local surface, read-only, no tools, no quota pool. */
+export function localWorkerRow(c) {
+  return c?.surface === 'local' && c.transport === 'local' && c.quota_pool === 'none' &&
+    c.model === LOCAL_WORKER_MODEL && Array.isArray(c.tools) && c.tools.length === 0 &&
+    c.scope === 'read_only' && c.permission_profile === 'read_only';
+}
+/** A local row the host may compute itself (a deterministic node): never the
+ * local model execution row. */
+function localExactRow(c) {
+  return c.surface === 'local' && c.transport === 'local' && c.quota_pool === 'none' &&
+    c.tools.length === 0 && !localWorkerRow(c);
+}
 function coversOwnedPaths(candidate, ownedPaths) {
   return candidate.allowed_paths.includes('**') ?
     stable(ownedPaths) === stable(['**']) :
@@ -408,8 +427,8 @@ function scopesAllowed(task) {
  * for the availability summary, which has no planned paths yet. */
 function eligibleRow(c, node, {widenWrites = false, anyPaths = false} = {}) {
   if (c.scope !== node.scope || !hostRoutable(c)) return false;
-  if (node.kind === 'deterministic' ? !(c.surface === 'local' && c.transport === 'local' &&
-      c.quota_pool === 'none' && c.tools.length === 0) : c.surface === 'local') return false;
+  // An explicit local route binds its row in localRouteCandidate, never here.
+  if (node.kind === 'deterministic' ? !localExactRow(c) : c.surface === 'local') return false;
   return node.scope !== 'workspace_write' || anyPaths || coversOwnedPaths(c, node.owned_paths) ||
     (widenWrites && c.allowed_paths.includes('**'));
 }
@@ -905,6 +924,23 @@ function costGateLedger(gate) {
     confidence: gate.confidence ?? null, draws: gate.draws ?? null, explore: gate.explore ?? null} : null;
 }
 
+/** An explicit route that names the local surface (route-all, 2026-10-14)
+ * binds the one dispatchable local model row: the model OpenClaw already runs,
+ * read-only and tools-free, with no quota pool. No tier list, cost gate or
+ * REVAS escalation applies: the owner named this surface and nothing else
+ * stands in for it (a re-resolution that must avoid the row holds). */
+function localRouteCandidate(node, routeClass, task, catalog, now, {avoidIDs = []} = {}) {
+  assert(node.kind === 'agent' && node.scope === 'read_only' && (node.owned_paths ?? []).length === 0,
+    'explicit_local_route_scope_invalid');
+  const rows = catalog.candidates.filter(c => hostRoutable(c) && localWorkerRow(c) && !avoidIDs.includes(c.id));
+  const chosen = rows.find(c => dispatchable(c, task, now));
+  if (!chosen)
+    throw new RCCRuntimeError('no_dispatchable_candidate:read_only:local_' + (rows.length ? 'undispatchable' : 'unavailable'));
+  return {candidate: chosen, why: ['route_explicit', 'explicit_route_surface_local', 'class_' + routeClass,
+    'local_model'].join(';'), widened: false, kind: 'explicit', tier: null, referenceEffort: chosen.effort,
+    ladder: null, costGate: null};
+}
+
 /** Pick the exact row for one node on a tier-routed catalog.
  * In each pool the class's entries are tried in order and the first entry
  * with a dispatchable row is that pool's offer (a read-only node takes the
@@ -948,6 +984,8 @@ function tierRouteCandidate(node, routeClass, task, catalog, now,
                             {avoidPool = null, avoidIDs = [], widenWrites = false, referenceOnly = false,
                              preferPool = null, classNote = null, costEvidence = null} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
+  if (explicitRoute?.surface === 'local')
+    return localRouteCandidate(node, effectiveRouteClass(routeClass, node.scope), task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
   const routeClassUsed = referenceOnly ? 'deep' : effectiveRouteClass(routeClass, node.scope);
   const ordinal = new Map();
@@ -1119,8 +1157,7 @@ export function routingAvailability(task, catalog, now = Date.now()) {
   }
   return {scopes, chat_lane: chatLane, providers: [...providers].sort(),
     deterministic: catalog.candidates.some(c => hostRoutable(c) && dispatchable(c, task, now) &&
-      c.surface === 'local' && c.scope === 'read_only' &&
-      c.transport === 'local' && c.quota_pool === 'none' && c.tools.length === 0)};
+      c.scope === 'read_only' && localExactRow(c))};
 }
 
 /** Null when something in an allowed scope can run; otherwise the visible
@@ -1128,7 +1165,9 @@ export function routingAvailability(task, catalog, now = Date.now()) {
  * scope (tier routing: bindableRows; reference routing: reference rows). */
 function noDispatchableReason(task, catalog, now) {
   const scopes = scopesAllowed(task);
-  const local = catalog.candidates.filter(c => hostRoutable(c) && scopes.includes(c.scope) && c.surface === 'local');
+  // Only a host-computed exact row means "something can run": the local model
+  // row is an explicit route's surface, never a reason to plan Auto work.
+  const local = catalog.candidates.filter(c => hostRoutable(c) && scopes.includes(c.scope) && localExactRow(c));
   if (local.some(c => dispatchable(c, task, now))) return null;
   const byPool = new Map();
   const note = (pool, reason) => byPool.set(pool, (byPool.get(pool) ?? new Set()).add(reason));
@@ -1776,9 +1815,13 @@ function validatePlan(plan, task, catalog) {
       node.context_refs.length <= 128 &&
       node.context_refs.every(x => task.material_refs.includes(x)), 'plan_node_invalid');
     const c = candidates.get(node.candidate_id);
+    // The local model executes only an explicit route that names the local
+    // surface; Auto never routes ordinary work to it (route-all, 2026-10-14).
+    if (node.kind === 'agent' && c.surface === 'local')
+      assert(task.mode === 'explicit_routing_test' && localWorkerRow(c) && node.scope === 'read_only' &&
+        node.dependencies.length === 0, 'local_agent_node_not_explicit');
     if (node.kind === 'deterministic')
-      assert(task.mode !== 'explicit_routing_test' && c.surface === 'local' && c.transport === 'local' &&
-        c.quota_pool === 'none' && c.tools.length === 0 && node.scope === 'read_only' &&
+      assert(task.mode !== 'explicit_routing_test' && localExactRow(c) && node.scope === 'read_only' &&
         pureArithmetic(node.instruction) !== null, 'deterministic_node_not_exact');
     assert(node.scope !== 'workspace_write' || (node.owned_paths.length > 0 && coversOwnedPaths(c, node.owned_paths)),
     'plan_write_scope_invalid');
@@ -2756,6 +2799,7 @@ class RCCRuntime {
       const now = boundAt;
       const unavailable = effectiveExplicitRoutes(task).find(route =>
         !catalog.candidates.some(candidate => candidate.surface === route.surface &&
+          (route.surface !== 'local' || localWorkerRow(candidate)) &&
           candidate.availability === 'available' && candidate.availability_valid_until_ms > now &&
           candidate.quality_state !== 'mismatch' &&
           (candidate.quota_pool === 'none' || (candidate.quota_pool !== 'unknown' &&
@@ -2765,8 +2809,12 @@ class RCCRuntime {
         // capacity, sign-in or quota exclusion is visible in the hold.
         const provider = unavailable.surface === 'codex' ? 'codex' :
           ['claude', 'claude-chat'].includes(unavailable.surface) ? 'claude' : null;
-        const why = [...new Set((catalog.exclusions ?? []).filter(item => item.provider === provider)
-          .map(item => item.reason))].sort();
+        // The local surface has no exclusion record: its row is present and
+        // observed unavailable (the readiness probe failed), or absent.
+        const why = unavailable.surface === 'local' ?
+          [catalog.candidates.some(localWorkerRow) ? 'local_model_not_ready' : 'local_model_absent'] :
+          [...new Set((catalog.exclusions ?? []).filter(item => item.provider === provider)
+            .map(item => item.reason))].sort();
         this._holdExplicitRoutes(taskID, `explicit_route_surface_unavailable:${unavailable.surface}` +
           (why.length ? ':' + why.join('+') : ''));
         return;

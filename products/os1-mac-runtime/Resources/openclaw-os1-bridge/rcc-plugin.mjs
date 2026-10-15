@@ -5,7 +5,7 @@ import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 import { createRCCRuntime, dispatchable, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
-  RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
+  localWorkerRow, RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -347,7 +347,10 @@ export function plannerCompletionRequest({instructions, message, responseFormat,
     maxTokens: 4_096, temperature: 0, signal, purpose: 'os1.rcc.internal-route-plan'};
 }
 
-export function assertLocalPlannerCompletion(result) {
+/** The local completion's own receipt: the pinned Ollama model answered
+ * through the direct provider path and stopped normally. Shared by the
+ * planner and the local execution surface, each with its own typed code. */
+export function assertLocalModelCompletion(result, code) {
   if (result?.provider !== 'ollama' ||
       !['qwen3.5:4b', LOCAL_MODEL].includes(result?.model) ||
       result?.execution?.mode !== 'direct-provider' ||
@@ -356,8 +359,114 @@ export function assertLocalPlannerCompletion(result) {
       (result.responseModel != null && !['qwen3.5:4b', LOCAL_MODEL].includes(result.responseModel)) ||
       (result.stopReason != null && result.stopReason !== 'stop') ||
       typeof result?.text !== 'string')
-    throw new RCCRuntimeError('planner_local_model_receipt_invalid');
+    throw new RCCRuntimeError(code);
   return result.text;
+}
+export function assertLocalPlannerCompletion(result) {
+  return assertLocalModelCompletion(result, 'planner_local_model_receipt_invalid');
+}
+
+// ---- Local execution surface (route-all, 2026-10-14) ----
+// An explicit route that names the local surface runs its one instruction on
+// the SAME local model the planner uses, through the same OpenClaw completion
+// path: tools-free (before_tool_call blocks every tool in this Gateway),
+// read-only, no quota pool. Only the instruction is sent, never the owner's
+// whole request. Its execution record is a private receipt in the same
+// native-receipts custody the exact verifier reads.
+export const LOCAL_WORKER_PURPOSE = 'os1.rcc.local-worker';
+const LOCAL_WORKER_SYSTEM = 'OS-1 local answer lane. Answer only the task in the user message, from the message alone. ' +
+  'Reply with only the final result and no other text: no reasoning, no explanation, no markdown.';
+const LOCAL_WORKER_MAX_TOKENS = 512;
+export function localWorkerCompletionRequest({instruction, signal}) {
+  return {model: LOCAL_MODEL, messages: [{role: 'user', content: instruction}], systemPrompt: LOCAL_WORKER_SYSTEM,
+    maxTokens: LOCAL_WORKER_MAX_TOKENS, temperature: 0, reasoning: 'off', signal, purpose: LOCAL_WORKER_PURPOSE};
+}
+/** The answer as delivered: a leaked reasoning block removed and the edges
+ * trimmed. Nothing else is rewritten, so "1+1 = 2" stays "1+1 = 2" and the
+ * exact verifier, not this function, decides whether it is the result. */
+export function normalizeLocalOutput(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/<think>[\s\S]*?<\/think>/giu, '').replace(/^\s*<think>[\s\S]*$/iu, '').trim();
+}
+const LOCAL_MAX_OUTPUT_BYTES = 64_000;
+function localUsage(observed, durationMS) {
+  const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const usage = {input_tokens: count(observed?.inputTokens), output_tokens: count(observed?.outputTokens),
+    cache_read_tokens: count(observed?.cacheReadTokens), cache_write_tokens: count(observed?.cacheWriteTokens),
+    provider_calls: 1, duration_ms: count(durationMS)};
+  if (['input_tokens', 'output_tokens'].some(key => usage[key] !== null)) usage.metric = 'local_model_usage_observation';
+  return usage;
+}
+/** One RunSummary step for the local surface, the shape the native adapter
+ * returns (opaque to Core), so the host shows which surface answered. */
+function localRunSummary(ticket, model, output, durationMS) {
+  return JSON.stringify({status: 'returned_unverified', steps: [{sequence: 1, provider: 'local',
+    action: 'rcc_local_model', model, effort: 'none', revas_disposition: 'execution_only',
+    session_id: ticket.attempt_id, permission_profile: 'read_only', exit_code: 0, output, stderr: '',
+    duration_ms: durationMS, native_record: null, surface: 'local'}]});
+}
+/** The local surface's executor: `complete(request)` is OpenClaw's
+ * api.runtime.llm.complete, already bound to the service's lifetime scope.
+ * Returns an execution record for Core's _validateExecution and writes the
+ * identical private receipt the exact verifier reads. */
+export function localModelExecutor({complete, stateDir, lifetimeSignal = () => null}) {
+  return async function executeLocal(ticket, signal) {
+    const config = ticket?.selected_config;
+    if (typeof complete !== 'function' || !isAbsolute(stateDir ?? '') || !localWorkerRow(config) ||
+        ticket.continuation != null || typeof ticket.instruction !== 'string' || ticket.instruction.length === 0 ||
+        ticket.owned_paths?.length)
+      throw new RCCRuntimeError('local_worker_ticket_invalid');
+    const directory = join(stateDir, 'native-receipts');
+    await mkdir(directory, {recursive: true, mode: 0o700}); await chmod(directory, 0o700);
+    const receipt = join(directory, `${randomUUID()}.json`);
+    const record = {schema: 1, task_id: ticket.task_id, node_id: ticket.node_id, attempt_id: ticket.attempt_id,
+      candidate_id: ticket.candidate_id, configuration_sha256: ticket.configuration_sha256,
+      selected_config: config, acknowledged_config: null, observed_config: null,
+      status: 'failed', dispatch_stage: 'dispatched', side_effects: 'none', output: null,
+      execution_verified: false, task_verified: false, task_quality: 'failed', parity_state: 'unverified',
+      native_receipt: receipt, usage: null, error: null, native_summary: null};
+    const write = async () => {
+      await writeFile(receipt, JSON.stringify(record), {flag: 'wx', mode: 0o600});
+      return record;
+    };
+    const signals = [signal, lifetimeSignal()].filter(value => value instanceof AbortSignal);
+    const started = Date.now();
+    let response;
+    try {
+      response = await complete(localWorkerCompletionRequest({instruction: ticket.instruction,
+        signal: signals.length ? AbortSignal.any(signals) : undefined}));
+    } catch {
+      // Started, no finished answer: tools-free and read-only, so nothing
+      // happened, but the outcome is preserved as uncertain, never replayed
+      // (the native adapter's own report for this case).
+      record.error = 'native_outcome_uncertain_preserved';
+      return write();
+    }
+    const durationMS = Date.now() - started;
+    record.usage = localUsage(response?.usage, durationMS);
+    record.native_turn_terminated = true;
+    let text = null;
+    try { text = assertLocalModelCompletion(response, 'local_worker_receipt_invalid'); }
+    catch {
+      // Something other than the pinned local model answered, or it did not
+      // stop normally: a finished candidate that is never adopted.
+      Object.assign(record, {status: 'succeeded', error: 'local_model_receipt_invalid'});
+      return write();
+    }
+    const output = normalizeLocalOutput(text);
+    if (!output || Buffer.byteLength(output) > LOCAL_MAX_OUTPUT_BYTES) {
+      Object.assign(record, {status: 'succeeded', error: output ? 'local_model_output_oversize' : 'local_model_output_empty'});
+      return write();
+    }
+    // The same exact check the native adapter records: an a+b instruction
+    // answered with exactly its sum is task-verified at the source.
+    const expected = arithmeticSum(ticket.instruction);
+    const exact = expected !== null && output === expected;
+    Object.assign(record, {status: 'succeeded', acknowledged_config: config, output, execution_verified: true,
+      task_verified: exact, task_quality: exact ? 'task_verified' : 'execution_only',
+      native_summary: localRunSummary(ticket, response.model.replace(/^ollama\//, ''), output, durationMS)});
+    return write();
+  };
 }
 async function readExactNativeReceipt(path, stateDir) {
   if (!isAbsolute(stateDir ?? '') || typeof path !== 'string') return null;
@@ -444,6 +553,12 @@ export function registerRCCRuntime(api) {
     async start(ctx) {
       plannerScope = makePlannerScope(); plannerLifetime = new AbortController();
       const stateDir = process.env.OS1_RCC_STATE_ROOT ?? ctx.stateDir;
+      // The local execution surface runs in the planner's service scope, on
+      // the planner's model, and stops with the service.
+      const executeLocal = localModelExecutor({stateDir,
+        complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request)),
+        lifetimeSignal: () => plannerLifetime?.signal ?? null});
+      const local = ticket => ticket?.selected_config?.surface === 'local';
       starting = createRCCRuntime({ stateDir,
         maximumWorkers: 4,
         catalog: task => nativeOperation('rcc-catalog', task),
@@ -496,10 +611,13 @@ export function registerRCCRuntime(api) {
           // Outside explicit route tests the core binds each graded node.
           return assertPlannerRouteChoice(task, parsed, catalog);
         },
-        execute: (ticket, signal) => nativeOperation('rcc-adapter', ticket, signal),
+        execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :
+          nativeOperation('rcc-adapter', ticket, signal),
         // Same pinned native adapter and task owner. A typed, receipt-bound
-        // continuation never asks the local planner to choose another route.
-        executeContinuation: (ticket, signal) => nativeOperation('rcc-adapter', ticket, signal),
+        // continuation never asks the local planner to choose another route;
+        // the local surface has no continuation and refuses one.
+        executeContinuation: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :
+          nativeOperation('rcc-adapter', ticket, signal),
         stageSelfUpdate: (request, signal) => nativeOperation('rcc-stage', request, signal),
         reconcileInstallation: request => nativeOperation('rcc-install-status', request),
         cancelInstallation: request => nativeOperation('rcc-install-cancel', request),
