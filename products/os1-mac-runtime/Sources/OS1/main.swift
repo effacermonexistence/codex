@@ -18419,7 +18419,12 @@ private func rccNativeDirectorySelfTest() throws {
 /// while its developer channel asked for a natural-language lead and
 /// headings. Pure string assembly; no provider, account or model is started.
 private func rccNativeExactAnswerInstructionsSelfTest() throws {
-    let contract = try RuntimeConfig.load().executorContract
+    // The installed config when present; the release gate runs the staged
+    // CLI with no config beside it (build 381 failed there), so fall back to
+    // a fixture carrying the pinned evidence directive verbatim.
+    let contract = (try? RuntimeConfig.load())?.executorContract ?? ExecutorContract(
+        version: "fixture", sha256: String(repeating: "a", count: 64),
+        directives: ["Keep the final response concise and include concrete evidence required by the adoption gate."])
     var checks = 0
     func check(_ pass: Bool, _ label: String) throws {
         guard pass else { throw OS1Error.message("RCC exact-answer instructions fixture failed: " + label) }
