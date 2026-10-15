@@ -45,13 +45,14 @@ public enum RCCDelegatedEnvelope {
     /// `\s` omits U+000B and U+FEFF, which JS includes.
     private static let space = #"[\t\n\u000B\f\r \u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]*"#
     private static let exactArithmetic: NSRegularExpression? = try? NSRegularExpression(pattern:
-        #"\A"# + space + #"-?[0-9]{1,9}"# + space + #"\+"# + space + #"-?[0-9]{1,9}"# + space + #"\z"#)
+        #"\A"# + space + #"-?[0-9]{1,9}"# + space + #"[+*\-]"# + space + #"-?[0-9]{1,9}"# + space + #"\z"#)
 
-    /// True exactly when the OpenClaw exact verifier (`arithmeticSum` in
-    /// rcc-plugin.mjs, `/^\s*(-?\d{1,9})\s*\+\s*(-?\d{1,9})\s*$/u`) can
-    /// check this instruction: two integers of at most nine ASCII digits
-    /// joined by "+", with only JavaScript whitespace around them. A mirror
-    /// of that predicate; it decides nothing about acceptance.
+    /// True exactly when the OpenClaw exact verifier (`arithmeticResult` in
+    /// rcc-plugin.mjs, `/^\s*(-?\d{1,9})\s*([+*\-])\s*(-?\d{1,9})\s*$/u`)
+    /// can check this instruction: two integers of at most nine ASCII digits
+    /// joined by "+", "-" or "*" (every operator route-all sends), with only
+    /// JavaScript whitespace around them. A mirror of that predicate; it
+    /// decides nothing about acceptance.
     public static func exactArithmeticInstruction(_ instruction: String) -> Bool {
         guard let regex = exactArithmetic else { return false }
         let range = NSRange(instruction.startIndex..<instruction.endIndex, in: instruction)

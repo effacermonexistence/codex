@@ -1829,12 +1829,15 @@ func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evide
         }.joined(separator: "\n")
     }
     // A remark that the worker itself cannot route or dispatch to another
-    // OS-1 backend is not a missing capability when the delegated work is not
-    // a routing action: build 381's cheap tier answered "1+1 = 2, 2+2 = 4",
-    // noted it had no OS-1 routing tool, and that remark alone escalated the
-    // node to gpt-6-astra/max. Only such remark sentences are left out of the
-    // scan; a request to route keeps them, and any other inability counts.
-    if !requestsRoutingAction(request) {
+    // OS-1 backend is not a missing capability when the delegated work is an
+    // exact-answer instruction (what route-all sends every surface): build
+    // 381's cheap tier answered "1+1 = 2, 2+2 = 4", noted it had no OS-1
+    // routing tool, and that remark alone escalated the node to
+    // gpt-6-astra/max. Only such remark sentences are left out of the scan.
+    // Any other work keeps every sentence: there "I cannot route/dispatch …"
+    // may be why the task itself failed ("다른 모델로 넘길 수 없어서 이 작업은
+    // 진행할 수 없습니다", "I can't route traffic … so I cannot execute the cutover").
+    if RCCDelegatedEnvelope.exactArithmeticInstruction(prompt), !requestsRoutingAction(request) {
         output = output.replacingOccurrences(of: #"(?<=[.!?。])\s+"#, with: "\n", options: .regularExpression)
             .components(separatedBy: .newlines).filter { !routingCapabilityRemark($0) }.joined(separator: "\n")
     }
@@ -1860,14 +1863,20 @@ func requestsRoutingAction(_ request: String) -> Bool {
                   options: [.regularExpression, .caseInsensitive]) != nil
 }
 
-/// One sentence that only says the worker cannot route or dispatch to other
-/// OS-1 backends or models, naming no other capability (files, shell,
-/// network, writes, deploys).
+/// One sentence that only says the worker cannot route or dispatch to OS-1
+/// or another backend or model: it names where it cannot route, no other
+/// capability (files, shell, network, writes, deploys), and never that the
+/// task itself cannot go on ("이 작업은 진행할 수 없", "so I cannot continue").
 func routingCapabilityRemark(_ sentence: String) -> Bool {
     let value = sentence.lowercased()
     let routing = #"라우팅|디스패치|팬아웃|다른\s*(?:백엔드|모델|에이전트|경로|서피스)|(?<![a-z])(?:route|routing|routed|dispatch|dispatching|fan\s*-?\s*out)(?![a-z])|other\s+(?:backends?|models?|agents?|routes?|surfaces?)"#
+    let elsewhere = #"os-?1|백엔드|서피스|다른\s*(?:모델|에이전트|경로)|코덱스|클로드|(?<![a-z])(?:backends?|surfaces?|other\s+(?:models?|agents?|routes?)|codex|claude)(?![a-z])"#
     let other = #"파일|폴더|셸|쉘|터미널|명령|네트워크|인터넷|웹|브라우저|쓰기|수정|배포|설치|커밋|푸시|저장소|(?<![a-z])(?:file|folder|shell|bash|terminal|command|network|internet|web|browser|write|edit|deploy|install|commit|push|repo|repository|git)(?![a-z])"#
-    return value.range(of: routing, options: .regularExpression) != nil && value.range(of: other, options: .regularExpression) == nil
+    let taskLevel = #"(?:진행|실행|수행|완료|계속|처리|마무리)(?:할|하지)\s*(?:수\s*)?(?:없|못)|이\s*작업|(?<![a-z])(?:cannot|can't|unable\s+to|could\s+not|couldn't)\s+(?:execute|continue|complete|proceed|perform|finish|carry\s+out|do\s+(?:this|the|it))|this\s+task|the\s+task"#
+    return value.range(of: routing, options: .regularExpression) != nil &&
+        value.range(of: elsewhere, options: .regularExpression) != nil &&
+        value.range(of: other, options: .regularExpression) == nil &&
+        value.range(of: taskLevel, options: .regularExpression) == nil
 }
 
 private func outputContractIssues(_ data: Data, prompt: String, snapshotOnly: Bool = false) -> [String] {
@@ -15585,6 +15594,22 @@ func selfTest() throws {
             Data("라우팅은 할 수 없습니다. 그리고 권한이 없어 실행할 수 없습니다.".utf8),
             prompt: "배포 진행해"
         )),
+        // Only an exact-answer instruction drops a routing remark: elsewhere a
+        // refusal that gives routing as its reason still fails the task.
+        ("a task refused for want of another model still fails", providerOutputDeclaresCapabilityFailure(
+            Data("다른 모델로 넘길 수 없어서 이 작업은 진행할 수 없습니다.".utf8), prompt: "보안 감사 해줘")),
+        ("a cutover refused for want of the balancer still fails", providerOutputDeclaresCapabilityFailure(
+            Data("I can't route traffic to the new pool because I cannot access the load balancer API, so I cannot execute the cutover.".utf8),
+            prompt: "로드밸런서 cutover 진행해")),
+        ("a proxy routing refusal still fails", providerOutputDeclaresCapabilityFailure(
+            Data("리버스 프록시 라우팅 설정에 접근할 수 없어 진행할 수 없습니다.".utf8), prompt: "nginx 설정 고쳐")),
+        ("a queue dispatch refusal still fails", providerOutputDeclaresCapabilityFailure(
+            Data("I cannot dispatch this job to the queue: the queue service is unavailable, so I cannot continue.".utf8),
+            prompt: "Run the nightly job now")),
+        ("an exact-answer child refusing the task over routing still fails", providerOutputDeclaresCapabilityFailure(
+            Data("다른 모델로 넘길 수 없어서 이 작업은 진행할 수 없습니다.".utf8), prompt: "1+1")),
+        ("a minus route's routing remark is not a capability failure", !providerOutputDeclaresCapabilityFailure(
+            Data("4\n\n참고로 저는 OS-1 라우팅 도구가 없어 다른 백엔드로 보낼 수는 없습니다.".utf8), prompt: "5-1")),
         // Build 262/263: the chat lane takes only a self-contained text operation.
         ("chat lane answers a translation", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
             objective: "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?")),
@@ -18845,24 +18870,72 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
 /// A route-all order (`RouteAllIntent`) made into explicit routes on the
 /// surfaces that can run now, with the owner-facing account of what runs
 /// where and what was left out; nil when the request is no such order. Empty
-/// `routes`: nothing may run (nothing available, or the request carries more
-/// than the arithmetic to send) and the request is held with `notice`; a
-/// recognised route-all order is never sent to one worker as a task.
+/// `routes`: nothing may run (nothing available, or the order is held because
+/// it carries more than the arithmetic to send, or routes "this" with nothing
+/// written) and the request is held with `notice`; a recognised route-all
+/// order is never sent to one worker as a task.
 ///
 /// Facts, never guesses: the owner's capacity mix and Codex visibility, the
 /// app's cached backend health (a backend it found signed out, missing,
-/// turned off or out of quota is left out; unknown health is included and
-/// Core holds that route with its own reason), the local model's live
-/// readiness probe, and the Claude chat gate on that route's own expression.
+/// turned off or out of quota is left out), the local model's live readiness
+/// probe, and the Claude chat gate on that route's own expression. What the
+/// host does not know (health it has not cached or that is stale, API
+/// billing, quota freshness, a backoff, the catalog's own local probe) Core
+/// decides when it binds the catalog: route-all routes are best effort
+/// (`explicit_routes_best_effort`), so Core runs every route with a runnable
+/// row and skips the others with their reason (`skipped_routes`), never
+/// holding the whole set for one surface.
 struct RouteAllRouting {
     let routes: [RCCRuntimeContract.ExplicitRoute]
     let notice: String
 }
 
+/// The owner-facing name of an execution surface in a routing notice.
+func routeAllSurfaceLabel(_ surface: RCCRuntimeContract.Surface) -> String {
+    switch surface {
+    case .local: return os1Tr("로컬 \(RCCNativeCatalogBuilder.localWorkerModel)", "Local \(RCCNativeCatalogBuilder.localWorkerModel)")
+    case .codex: return "Codex"
+    case .claude: return "Claude Code"
+    case .claudeChat: return os1Tr("Claude 채팅", "Claude chat")
+    default: return surface.rawValue
+    }
+}
+
+/// The owner-facing account of the routes Core skipped in a best-effort
+/// route test (`skipped_routes`), or nil when it ran every route.
+func routeAllSkippedNotice(_ skipped: [RCCRuntimeContract.SkippedRoute]?) -> String? {
+    guard let skipped, !skipped.isEmpty else { return nil }
+    let list = skipped.map { routeAllSurfaceLabel($0.surface) + " ← " + $0.instruction + " (" + $0.reason + ")" }
+        .joined(separator: ", ")
+    return os1Tr("지금 실행할 수 없는 경로는 건너뛰고 나머지 경로만 실행했습니다: \(list).",
+                 "Routes that could not run now were skipped; the other routes ran: \(list).")
+}
+
 func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPlan?, showCodex: Bool,
                      health: BackendHealth?, localReady: () -> Bool, chatGate: (String) -> Bool) -> RouteAllRouting? {
-    guard RouteAllIntent.recognizes(prompt) else { return nil }
+    guard let order = RouteAllIntent.order(prompt) else { return nil }
     typealias Surface = RCCRuntimeContract.Surface
+    var notes: [String] = []
+    if !order.gptNames.isEmpty {
+        let names = order.gptNames.joined(separator: ", ")
+        notes.append(os1Tr("GPT는 더 이상 라우팅하지 않아 제외했습니다(\(names)).", "GPT is no longer routed, so it was left out (\(names))."))
+    }
+    if !order.excluded.isEmpty {
+        let names = order.excluded.joined(separator: ", ")
+        notes.append(os1Tr("요청대로 제외: \(names).", "Left out as asked: \(names)."))
+    }
+    func joined(_ head: String) -> String { ([head] + notes).joined(separator: " ") }
+    switch order.hold {
+    case .notArithmetic?:
+        return RouteAllRouting(routes: [], notice: joined(os1Tr(
+            "가능한 모든 경로로 보내는 요청은 간단한 산수(예: 원플러스원, 투플러스투)만 지원합니다. 다른 내용이 함께 있어 한 모델에 통째로 보내지 않고 보존했습니다.",
+            "Routing to every available route supports simple arithmetic only (for example one plus one, two plus two). This request carries more than that, so it was preserved instead of being sent whole to one model.")))
+    case .referencedContent?:
+        return RouteAllRouting(routes: [], notice: joined(os1Tr(
+            "‘이거/그거’가 가리키는 내용은 모든 경로로 보낼 수 없습니다. 보낼 산수(예: 원플러스원)를 직접 써 주세요. 기본 산수로 바꾸거나 한 모델에 통째로 보내지 않고 보존했습니다.",
+            "What \u{201C}this\u{201D} refers to cannot be sent to every route. Write the arithmetic to send (for example one plus one). It was preserved, not replaced by default arithmetic or sent whole to one model.")))
+    case nil: break
+    }
     func unusable(_ backend: BackendHealth.Backend?) -> String? {
         switch backend?.state {
         case .loggedOut?: return "logged_out"
@@ -18873,7 +18946,7 @@ func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPl
         }
     }
     var available: [Surface] = [], excluded: [(surface: Surface, reason: String)] = []
-    for surface in RouteAllIntent.surfaceOrder {
+    for surface in order.surfaces {
         let reason: String?
         switch surface {
         case .local: reason = localReady() ? nil : "local_model_not_ready"
@@ -18882,24 +18955,11 @@ func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPl
         }
         if let reason { excluded.append((surface, reason)) } else { available.append(surface) }
     }
-    guard let plan = RouteAllIntent.plan(prompt, available: available) else {
-        return RouteAllRouting(routes: [], notice: os1Tr(
-            "가능한 모든 경로로 보내는 요청은 간단한 산수(예: 원플러스원, 투플러스투)만 지원합니다. 다른 내용이 함께 있어 한 모델에 통째로 보내지 않고 보존했습니다.",
-            "Routing to every available route supports simple arithmetic only (for example one plus one, two plus two). This request carries more than that, so it was preserved instead of being sent whole to one model."))
-    }
+    guard let plan = RouteAllIntent.plan(order, available: available) else { return nil }
     var routes = plan.routes
     // Claude chat is last in route order: dropping it moves no other route's expression.
     if let chat = routes.firstIndex(where: { $0.surface == .claudeChat }), !chatGate(routes[chat].instruction) {
         routes.remove(at: chat); excluded.append((.claudeChat, "chat_gate_refused"))
-    }
-    func label(_ surface: Surface) -> String {
-        switch surface {
-        case .local: return os1Tr("로컬 \(RCCNativeCatalogBuilder.localWorkerModel)", "Local \(RCCNativeCatalogBuilder.localWorkerModel)")
-        case .codex: return "Codex"
-        case .claude: return "Claude Code"
-        case .claudeChat: return os1Tr("Claude 채팅", "Claude chat")
-        default: return surface.rawValue
-        }
     }
     func why(_ reason: String) -> String {
         switch reason {
@@ -18914,19 +18974,29 @@ func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPl
         default: return reason
         }
     }
-    let left = excluded.map { label($0.surface) + " (" + why($0.reason) + ")" }.joined(separator: ", ")
-    guard !routes.isEmpty else {
-        return RouteAllRouting(routes: [], notice: os1Tr(
-            "가능한 모든 경로로 보내라는 요청이지만 지금 실행할 수 있는 경로가 없어 보존했습니다: \(left).",
-            "This asks for every available route, but none can run now, so it is preserved: \(left)."))
+    let left = excluded.map { routeAllSurfaceLabel($0.surface) + " (" + why($0.reason) + ")" }.joined(separator: ", ")
+    // The owner's expressions no route carries (more of them than routes,
+    // or the one a refused chat route had): named, never dropped silently.
+    let unsent = plan.expressions.filter { expression in !routes.contains { $0.instruction == expression } }
+    if !unsent.isEmpty {
+        let list = unsent.joined(separator: ", ")
+        notes.append(os1Tr("경로보다 식이 많아 보내지 않은 식: \(list).", "Not sent (more expressions than routes): \(list)."))
     }
-    let sent = routes.map { label($0.surface) + " ← " + $0.instruction }.joined(separator: " · ")
-    var notice = os1Tr("가능한 모든 경로로 라우팅합니다(\(routes.count)개): \(sent).", "Routing to every available route (\(routes.count)): \(sent).")
+    guard !routes.isEmpty else {
+        return RouteAllRouting(routes: [], notice: joined(left.isEmpty
+            ? os1Tr("실행할 경로가 남지 않아 보존했습니다.", "No route is left to run, so the request is preserved.")
+            : os1Tr("가능한 모든 경로로 보내라는 요청이지만 지금 실행할 수 있는 경로가 없어 보존했습니다: \(left).",
+                    "This asks for every available route, but none can run now, so it is preserved: \(left).")))
+    }
+    let sent = routes.map { routeAllSurfaceLabel($0.surface) + " ← " + $0.instruction }.joined(separator: " · ")
+    var notice = order.named
+        ? os1Tr("지정한 경로로 라우팅합니다(\(routes.count)개): \(sent).", "Routing to the named routes (\(routes.count)): \(sent).")
+        : os1Tr("가능한 모든 경로로 라우팅합니다(\(routes.count)개): \(sent).", "Routing to every available route (\(routes.count)): \(sent).")
     if plan.defaulted {
         notice += os1Tr(" 식이 없어 기본 산수를 보냅니다.", " No expression was written, so default arithmetic is sent.")
     }
     if !excluded.isEmpty { notice += os1Tr(" 제외: \(left).", " Left out: \(left).") }
-    return RouteAllRouting(routes: routes, notice: notice)
+    return RouteAllRouting(routes: routes, notice: joined(notice))
 }
 
 /// `routeAllRouting` with fixture facts only: no probe, provider, model or HOME.
@@ -18960,8 +19030,38 @@ func routeAllRoutingSelfTest() throws {
     try check(tuples(run(chat: false)) == ["local:1+1", "codex:2+2", "claude:1+1"], "the chat gate refusal drops only Claude chat")
     let none = run(plan: .init(codex: 0, claude: 0), local: false)
     try check(none?.routes.isEmpty == true && none?.notice.isEmpty == false, "nothing can run: no route, a visible hold")
+    let onlyGPT = run("GPT랑 챗지피티 다 라우팅 해봐")
+    try check(onlyGPT?.routes.isEmpty == true && onlyGPT?.notice.contains("GPT") == true,
+              "an order naming only GPT runs nothing and says why")
     let unsupported = run("다 라우팅 해봐. 그리고 커밋해")
     try check(unsupported?.routes.isEmpty == true, "a route-all order with a work order is held, never sent whole to one model")
+    // Ordinary work is never captured: it runs on its own provider.
+    for work in ["그거 전체 경로 보내줘", "nginx 설정 바꿔서 요청을 모든 백엔드로 보내", "벤치마크 전체 모델 돌려봐",
+                 "Update the nginx config to route the requests to all backends", "이 PR 요청들 전부 라우팅해"] {
+        try check(run(work) == nil, "not a route-all order: " + work)
+    }
+    // "this" with nothing written: held, never the default arithmetic.
+    let referenced = run("이거 모든 모델로 보내봐")
+    try check(referenced?.routes.isEmpty == true && referenced?.notice.contains("1+1") == false,
+              "an order routing what was referenced is held, not sent as 1+1..4+4")
+    // GPT excluded, the local model named, expressions left over.
+    let noGPT = run("GPT 빼고 다 라우팅 해봐")
+    try check(tuples(noGPT)?.count == 4 && noGPT?.notice.contains("GPT") == true, "GPT excluded: every route runs, GPT named in the notice")
+    try check(tuples(run("로컬이랑 클로드 코드랑 코덱스 이렇게 세 개로 라우팅 해봐. 원플러스원 투플러스투")) == ["local:1+1", "codex:2+2", "claude:1+1"],
+              "the owner's three named routes, local included")
+    let five = run("최대한 다 라우팅 해봐. 원플러스원 투플러스투 쓰리플러스쓰리 포플러스포 파이브플러스파이브")
+    try check(tuples(five)?.count == 4 && five?.notice.contains("5+5") == true, "an expression no route receives is named, not dropped")
+    let chatLost = run("다 라우팅 해봐. 1+1, 2+2, 3+3, 4+4", chat: false)
+    try check(chatLost?.notice.contains("4+4") == true, "the expression of a refused chat route is named")
+    // A local model the host cannot probe is not probed for an order that excludes it.
+    var probed = false
+    _ = routeAllRouting(prompt: "로컬 빼고 다 라우팅 해봐", capacityPlan: nil, showCodex: true, health: nil,
+                        localReady: { probed = true; return true }, chatGate: { _ in true })
+    try check(!probed, "the local model is not probed when the order leaves it out")
+    // Core's skips are shown with their reason.
+    let skipped = routeAllSkippedNotice([.init(surface: .claudeChat, instruction: "2+2", reason: "non_subscription")])
+    try check(skipped?.contains("Claude") == true && skipped?.contains("non_subscription") == true && routeAllSkippedNotice([]) == nil,
+              "a route Core skipped is named with its reason")
     print("Route-all routing: \(checks) checks PASS; local probe, providers and models not called")
 }
 
@@ -18983,7 +19083,10 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     // named routes still run. A part addressed as "Codex chat" names Codex and
     // runs there, visibly. Only when EVERY part named GPT is the original list
     // sent, so Core holds it with the dropped routes shown.
-    let fanout = RouteFanout.plan(prompt)
+    // RouteFanout knows no local name: a request that names the local model
+    // as a route ("3+3 로컬한테", "로컬이랑 코덱스 다 라우팅 해봐") is planned by
+    // RouteAllIntent, never split by RouteFanout without its local route.
+    let fanout = RouteAllIntent.namesLocalRoute(prompt) ? nil : RouteFanout.plan(prompt)
     var explicit = fanout?.targets.map { target in
         RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: target.surface.rawValue)!, instruction: target.payload)
     }
@@ -18998,12 +19101,24 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         }
     }
     let materialRefs = PromptAttachments.imagePaths(in: prompt)
+    // Parts that each name their route, the local model among them ("1+1
+    // Codex한테. 3+3 로컬한테."): one explicit route per part, read-only.
+    let parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil
+    if let parts {
+        if !parts.gptParts.isEmpty {
+            let list = parts.gptParts.joined(separator: ", ")
+            routingNotices.append(os1Tr("GPT 경로는 더 이상 라우팅하지 않아 제외했습니다(\(list)). 나머지 \(parts.routes.count)개 경로는 그대로 실행합니다.",
+                "GPT is no longer routed, so these parts were dropped (\(list)). The other \(parts.routes.count) route(s) still run."))
+        }
+        explicit = parts.routes
+        surface = .auto
+    }
     // "라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐 … 원플러스원 투플러스투" names no
     // surface (build 381, task ac5a5fd6): it ran on Auto as ONE task and the
     // routing order escalated to gpt-6-astra/max. A route-all order is an
     // explicit route test on every surface that can run now, one exact
     // expression each, on Auto and read-only; never a single worker task.
-    let routeAll = fanout != nil ? nil : routeAllRouting(prompt: prompt, capacityPlan: capacityPlan,
+    let routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(prompt: prompt, capacityPlan: capacityPlan,
         showCodex: OS1Settings.load().showCodex, health: BackendHealth.load(maxAge: 900),
         localReady: { LocalRouterBridge.localModelReady() },
         chatGate: { claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
@@ -19023,7 +19138,7 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     }
     // An explicit Claude chat choice the chat gate refuses is held by Core
     // with chat_gate_refused; say why here, before any provider call.
-    if fanout == nil, routeAll == nil, surface == .claudeChat,
+    if fanout == nil, parts == nil, routeAll == nil, surface == .claudeChat,
        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
                        objective: prompt, ownerSelected: true) {
         routingNotices.append(claudeChatLaneRefusal(objective: prompt, hasSource: !materialRefs.isEmpty)
@@ -19037,11 +19152,12 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let submissionID = UUID(uuidString: id) ?? UUID()
     let host = RCCRuntimeContract.HostContext(workspace: LocalProjectWorkspace.executionPath(workspace), context: context,
         providerPreference: surface.rawValue, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
-        requireReadOnly: requireReadOnly || routeAll != nil, ownerPolicy: owner, explicitRoutes: explicit,
-        conversationID: conversationID.uuidString, submissionID: submissionID.uuidString, capacityPlan: capacityPlan)
+        requireReadOnly: requireReadOnly || routeAll != nil || parts != nil, ownerPolicy: owner, explicitRoutes: explicit,
+        conversationID: conversationID.uuidString, submissionID: submissionID.uuidString, capacityPlan: capacityPlan,
+        explicitRoutesBestEffort: routeAll != nil ? true : nil)
     let request = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
-        mode: fanout != nil || routeAll != nil ? .explicitRoutingTest : .auto, materialRefs: materialRefs,
+        mode: fanout != nil || parts != nil || routeAll != nil ? .explicitRoutingTest : .auto, materialRefs: materialRefs,
         budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000),
         policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
@@ -19062,6 +19178,12 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         } else { RuntimeActivity.emit(.preparing, publicText: "OpenClaw task " + state.state.rawValue + " · " + String(state.children.count) + " child run(s)") }
     }
     let result = try RCCRuntimeContract.decodeSnapshot(terminal)
+    // A best-effort route test (route-all) ran the routes it could; say which
+    // it skipped and why.
+    if let skipped = routeAllSkippedNotice(result.skippedRoutes) {
+        RuntimeActivity.emit(.routing, publicText: skipped)
+        routingNotices.append(skipped)
+    }
     var steps: [RunStepSummary] = []
     for serialized in result.result?.nativeSummaries ?? [] {
         if let summary = try? JSONDecoder().decode(RunSummary.self, from: Data(serialized.utf8)) { steps += summary.steps }

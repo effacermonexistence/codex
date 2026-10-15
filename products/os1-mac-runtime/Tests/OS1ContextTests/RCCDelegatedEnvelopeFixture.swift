@@ -101,7 +101,7 @@ func runRCCDelegatedEnvelopeFixtures() throws {
         ("1+1", .claude, routes, "an arithmetic route bound to another surface"),
         (" 1+1", .codex, routes, "an instruction that is not the route's exact bytes"),
         ("1+1+1", .codex, [C.ExplicitRoute(surface: .codex, instruction: "1+1+1")], "three operands"),
-        ("3*4", .codex, [C.ExplicitRoute(surface: .codex, instruction: "3*4")], "multiplication"),
+        ("3/4", .codex, [C.ExplicitRoute(surface: .codex, instruction: "3/4")], "division (not in the verifier's family)"),
         ("1+1이 뭐야?", .codex, [C.ExplicitRoute(surface: .codex, instruction: "1+1이 뭐야?")], "arithmetic inside a sentence"),
     ] as [(String, C.Surface, [C.ExplicitRoute]?, String)] {
         let text = envelope(instruction, surface: surface, routes: explicit)
@@ -199,8 +199,9 @@ func runRCCDelegatedEnvelopeFixtures() throws {
         ("1+1", true), ("2+3", true), ("4+5", true), (" 2 + 3 ", true), ("-4+5", true), ("4+-5", true),
         ("123456789+987654321", true), ("007+1", true), ("4+5\n", true), ("4\u{000B}+5", true),
         ("\t4\u{3000}+\u{FEFF}5\u{2028}", true), ("\u{00A0}4 +\u{202F}5\r\n", true),
-        ("", false), ("1", false), ("+1", false), ("1+", false), ("1+1+1", false), ("1-1", false),
-        ("3*4", false), ("1.5+1", false), ("1234567890+1", false), ("1+1=", false), ("1+1?", false),
+        ("1-1", true), ("3*4", true), ("5-1", true), ("6 * 2", true), ("9--10", true), ("-3*-4", true),
+        ("", false), ("1", false), ("+1", false), ("1+", false), ("1+1+1", false), ("1/2", false), ("3x4", false),
+        ("3×4", false), ("1--", false), ("1.5+1", false), ("1234567890+1", false), ("1+1=", false), ("1+1?", false),
         ("what is 1+1", false), ("1 + 1 please", false), ("--1+1", false), ("1 plus 1", false),
         ("\u{0661}+\u{0661}", false), ("\u{FF11}+\u{FF11}", false), ("1+1\u{0085}", false),
         ("1\u{200B}+1", false), ("1+1\n\n2+2", false),
@@ -216,7 +217,7 @@ func runRCCDelegatedEnvelopeFixtures() throws {
     print("RCC delegated envelope fixtures: \(checks) checks OK; model calls 0")
 }
 
-/// Evaluates rcc-plugin.mjs's own `arithmeticSum` regular expression (the one
+/// Evaluates rcc-plugin.mjs's own `arithmeticResult` regular expression (the one
 /// `verifyExactExplicitArithmetic` calls) in Node on each instruction.
 private func verifierArithmeticVerdicts(_ instructions: [String]) throws -> [Bool] {
     let plugin = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -225,9 +226,9 @@ private func verifierArithmeticVerdicts(_ instructions: [String]) throws -> [Boo
     let script = #"""
     import {readFileSync} from 'node:fs';
     const source = readFileSync(process.argv[1], 'utf8');
-    const literal = [...source.matchAll(/const arithmeticSum = instruction => \{\n  const parts = \/(.+)\/u\.exec\(instruction\);/g)];
+    const literal = [...source.matchAll(/export const arithmeticResult = instruction => \{\n  const parts = \/(.+)\/u\.exec\(instruction\);/g)];
     const verifier = source.split('export async function verifyExactExplicitArithmetic(')[1]?.split('\nexport ')[0] ?? '';
-    if (literal.length !== 1 || !verifier.includes('arithmeticSum(node.instruction)')) process.exit(3);
+    if (literal.length !== 1 || !verifier.includes('arithmeticResult(node.instruction)')) process.exit(3);
     const regex = new RegExp(literal[0][1], 'u');
     process.stdout.write(JSON.stringify(JSON.parse(readFileSync(0, 'utf8')).map(text => regex.exec(text) !== null)));
     """#

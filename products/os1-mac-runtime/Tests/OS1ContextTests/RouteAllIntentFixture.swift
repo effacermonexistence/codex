@@ -78,7 +78,39 @@ func runRouteAllIntentFixtures() throws {
         expectedRequestSHA256: input.requestSHA256)
     check(["Local · 1+1", "Codex · 2+2", "Claude Code · 1+1", "Claude chat · 2+2"].allSatisfy { title in
         graph.nodes.contains { $0.title == title } }, "the task graph names every surface with its own expression")
-    print("Route-all intent: \(count) checks passed (incident, number table, negatives, unsupported holds, real Node Core)")
+    check(snapshot.skippedRoutes == nil, "a task that ran every route reports no skipped route")
+
+    // Best effort across the wire: the Claude chat gate refuses this route's
+    // payload in the Swift builder (no chat row), and the real Core runs the
+    // other three routes instead of holding all four; the Swift decoder reads
+    // its skipped route and the host names it.
+    var refused = input
+    refused.chatLaneEligible = false
+    let refusedID = taskID + "-chat"
+    refused.taskID = refusedID
+    let refusedCatalog = try B.catalogData(B.build(refused), taskID: refusedID, requestSHA256: input.requestSHA256)
+    let bestEffortHost = RCCRuntimeContract.HostContext(workspace: "/tmp", context: nil, providerPreference: "auto",
+        codexSessionID: nil, claudeSessionID: nil, requireReadOnly: true, ownerPolicy: nil, explicitRoutes: plan.routes,
+        explicitRoutesBestEffort: true)
+    check((try? RCCRuntimeContract.validate(bestEffortHost)) != nil, "a best-effort host context validates")
+    var invalid = bestEffortHost; invalid.explicitRoutesBestEffort = false
+    check((try? RCCRuntimeContract.validate(invalid)) == nil, "best effort is only ever true")
+    let skippedBytes = try routeAllNodeRun(try JSONSerialization.data(withJSONObject: [
+        "task_id": refusedID, "request": incident, "best_effort": true,
+        "routes": plan.routes.map { ["surface": $0.surface.rawValue, "instruction": $0.instruction] },
+        "catalog": try JSONSerialization.jsonObject(with: refusedCatalog)]))
+    let partial = try RCCRuntimeContract.decodeSnapshot(skippedBytes)
+    check(partial.state == .completed && partial.result?.taskVerified == true,
+          "the three routes that can run complete and verify (state \(partial.state.rawValue), error \(partial.error ?? "none"))")
+    check(partial.children.map(\.requestedSurface) == [.local, .codex, .claude], "local, Codex and Claude Code ran")
+    check(partial.skippedRoutes?.map(\.surface) == [.claudeChat] && partial.skippedRoutes?.first?.instruction == "2+2",
+          "Core skipped only Claude chat, with its own expression (\(String(describing: partial.skippedRoutes)))")
+    let partialGraph = try RCCRuntimeProjection.project(partial, conversationID: UUID(), submissionID: UUID(), objective: incident,
+        observedAt: Date(), firstObservedAt: Date().addingTimeInterval(-600), maxParallelism: 4,
+        expectedRequestSHA256: input.requestSHA256)
+    check(["Local · 1+1", "Codex · 2+2", "Claude Code · 1+1"].allSatisfy { title in partialGraph.nodes.contains { $0.title == title } },
+          "the task graph shows the routes that ran")
+    print("Route-all intent: \(count) checks passed (incident, number table, negatives, unsupported holds, real Node Core, best effort)")
 }
 
 /// Runs the incident through the real Node Core and plugin executor with a
@@ -103,6 +135,7 @@ private func routeAllNodeRun(_ input: Data) throws -> Data {
     try {
       const host = {workspace: root, context: null, provider_preference: 'auto', codex_session_id: null,
         claude_session_id: null, require_read_only: true, owner_policy: null, explicit_routes: input.routes};
+      if (input.best_effort) host.explicit_routes_best_effort = true;
       const policy = 'route-all fixture policy';
       const task = {schema: 1, task_id: input.task_id, request: input.request, request_sha256: sha(input.request),
         objective: input.request, policy_sha256: sha(policy), source_fingerprint: hostContextFingerprint(host),
@@ -126,9 +159,10 @@ private func routeAllNodeRun(_ input: Data) throws -> Data {
         return record;
       };
       const runtime = await createRCCRuntime({stateDir: root, catalog: async () => input.catalog,
-        plan: async () => ({schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
-          nodes: input.routes.map((route, index) => ({id: `requested-${index + 1}`, instruction: route.instruction,
-            dependencies: [], kind: 'agent', route_class: 'trivial', scope: 'read_only', owned_paths: [], context_refs: []}))}),
+        plan: async ({task: admitted}) => ({schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
+          nodes: admitted.host_context.explicit_routes.map((route, index) => route.skipped ? null : ({id: `requested-${index + 1}`,
+            instruction: route.instruction, dependencies: [], kind: 'agent', route_class: 'trivial', scope: 'read_only',
+            owned_paths: [], context_refs: []})).filter(Boolean)}),
         execute: (ticket, signal) => ticket.selected_config.surface === 'local' ? local(ticket, signal) : native(ticket),
         verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir: root})});
       try {

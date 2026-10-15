@@ -223,10 +223,14 @@ function policy(task) {
 // The only task-quality verifier currently registered in the OpenClaw owner.
 // It checks an exact host-parsed multi-surface arithmetic request using the
 // actual native execution receipts. It is not a model critic, a generic
-// completion judge, or a flagship-quality/parity certificate.
-const arithmeticSum = instruction => {
-  const parts = /^\s*(-?\d{1,9})\s*\+\s*(-?\d{1,9})\s*$/u.exec(instruction);
-  return parts ? (BigInt(parts[1]) + BigInt(parts[2])).toString() : null;
+// completion judge, or a flagship-quality/parity certificate. Its family is
+// every operator the host's route-all parser sends ("+", "-", "*"; the same
+// grammar as Core's pureArithmetic, nine digits a side, a signed result).
+export const arithmeticResult = instruction => {
+  const parts = /^\s*(-?\d{1,9})\s*([+*\-])\s*(-?\d{1,9})\s*$/u.exec(instruction);
+  if (!parts) return null;
+  const a = BigInt(parts[1]), b = BigInt(parts[3]);
+  return (parts[2] === '+' ? a + b : parts[2] === '*' ? a * b : a - b).toString();
 };
 const stableJSON = value => Array.isArray(value) ? `[${value.map(stableJSON).join(',')}]` :
   value !== null && typeof value === 'object' ?
@@ -436,10 +440,18 @@ export function localModelExecutor({complete, stateDir, lifetimeSignal = () => n
       response = await complete(localWorkerCompletionRequest({instruction: ticket.instruction,
         signal: signals.length ? AbortSignal.any(signals) : undefined}));
     } catch {
-      // Started, no finished answer: tools-free and read-only, so nothing
-      // happened, but the outcome is preserved as uncertain, never replayed
-      // (the native adapter's own report for this case).
-      record.error = 'native_outcome_uncertain_preserved';
+      // The completion call returned no answer: the turn is over, and on a
+      // tools-free, read-only, quota-free surface it changed nothing. An
+      // owner cancel or a service stop is a cancelled turn (Core counts it a
+      // safe cancel); any other failure (Ollama down or restarted, a model
+      // load error, a Gateway change) is a finished attempt with no answer:
+      // Core holds only this route and the sibling routes keep their answers.
+      // Never "uncertain": that made the whole route-all task
+      // effects_uncertain and dropped every sibling answer.
+      record.native_turn_terminated = true;
+      record.usage = localUsage(null, Date.now() - started);
+      if (signals.some(value => value.aborted)) record.error = 'local_model_completion_aborted';
+      else Object.assign(record, {status: 'succeeded', error: 'local_model_completion_failed'});
       return write();
     }
     const durationMS = Date.now() - started;
@@ -458,9 +470,9 @@ export function localModelExecutor({complete, stateDir, lifetimeSignal = () => n
       Object.assign(record, {status: 'succeeded', error: output ? 'local_model_output_oversize' : 'local_model_output_empty'});
       return write();
     }
-    // The same exact check the native adapter records: an a+b instruction
-    // answered with exactly its sum is task-verified at the source.
-    const expected = arithmeticSum(ticket.instruction);
+    // The same exact check the native adapter records: an exact arithmetic
+    // instruction answered with exactly its result is task-verified at the source.
+    const expected = arithmeticResult(ticket.instruction);
     const exact = expected !== null && output === expected;
     Object.assign(record, {status: 'succeeded', acknowledged_config: config, output, execution_verified: true,
       task_verified: exact, task_quality: exact ? 'task_verified' : 'execution_only',
@@ -507,7 +519,7 @@ export async function verifyExactExplicitArithmetic({task, plan, children}, {sta
   for (const node of plan.nodes) {
     const child = byID.get(node.id);
     const config = child?.selected_config;
-    const expected = typeof node.instruction === 'string' ? arithmeticSum(node.instruction) : null;
+    const expected = typeof node.instruction === 'string' ? arithmeticResult(node.instruction) : null;
     if (node.kind !== 'agent' || node.dependencies?.length !== 0 || !child || !config ||
         child.state !== 'completed' || child.candidate_id !== node.candidate_id ||
         child.instruction !== node.instruction || config.scope !== 'read_only' ||

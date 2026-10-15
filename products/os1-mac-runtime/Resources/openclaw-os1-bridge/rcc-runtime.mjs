@@ -299,10 +299,27 @@ export function canonicalHostContext(value) { return stable(value); }
 export function hostContextFingerprint(value) { return sha(Buffer.from(canonicalHostContext(value))); }
 
 /** The explicit routes that still run. A GPT/ChatGPT-named route is dropped,
- * never substituted; the immutable host contract keeps the original list. */
+ * never substituted; the immutable host contract keeps the original list. A
+ * route Core skipped at admission of a best-effort route test (`admittedTask`)
+ * does not run either. */
 export function effectiveExplicitRoutes(task) {
   const routes = task?.host_context?.explicit_routes;
-  return Array.isArray(routes) ? routes.filter(route => !DROPPED_ROUTE_SURFACES.has(route.surface)) : routes;
+  return Array.isArray(routes) ? routes.filter(route => !DROPPED_ROUTE_SURFACES.has(route.surface) &&
+    route.skipped !== true) : routes;
+}
+/** The task as Core admitted it. A best-effort route test (route-all,
+ * host_context.explicit_routes_best_effort) runs the routes that have a
+ * runnable row at admission; the others are recorded in skipped_routes with
+ * their reason, never held for the whole set. Every later plan, repair,
+ * re-resolution and the verifier then bind exactly the routes that run: the
+ * skipped ones are marked on a copy, the immutable task keeps the original. */
+export function admittedTask(snapshot) {
+  const skipped = snapshot?.skipped_routes;
+  if (!Array.isArray(skipped) || skipped.length === 0) return snapshot.task;
+  const task = structuredClone(snapshot.task);
+  const routes = task.host_context?.explicit_routes;
+  for (const item of skipped) if (Array.isArray(routes) && routes[item.index]) routes[item.index].skipped = true;
+  return task;
 }
 function droppedExplicitRoutes(task) {
   const routes = task?.host_context?.explicit_routes;
@@ -350,7 +367,8 @@ function validateTask(task) {
   const h = task.host_context;
   const hostKeys = ['workspace', 'context', 'provider_preference', 'codex_session_id',
     'claude_session_id', 'require_read_only', 'owner_policy'];
-  const hostOptionalKeys = ['explicit_routes', 'conversation_id', 'submission_id', 'capacity_plan'];
+  const hostOptionalKeys = ['explicit_routes', 'conversation_id', 'submission_id', 'capacity_plan',
+    'explicit_routes_best_effort'];
   const uuid = value => typeof value === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
   assert(plain(h) && hostKeys.every(key => Object.hasOwn(h, key)) &&
@@ -372,6 +390,9 @@ function validateTask(task) {
          boundedText(route.instruction, 12_000)) &&
        new Set(h.explicit_routes.map(route => stable(route))).size === h.explicit_routes.length)) &&
     (h.explicit_routes == null || task.mode === 'explicit_routing_test') &&
+    // Route-all only: run the routes that can run, skip (visibly) the rest.
+    (h.explicit_routes_best_effort === undefined ||
+      (h.explicit_routes_best_effort === true && Array.isArray(h.explicit_routes))) &&
     hostContextFingerprint(h) === task.source_fingerprint, 'host_context_invalid');
   assert(Buffer.byteLength(stable(task)) <= MAX_TASK_BYTES, 'task_oversize');
   return immutable(task);
@@ -507,7 +528,8 @@ function explicitRouteOf(node, task, catalog) {
   const match = EXPLICIT_NODE_ID.exec(node?.id ?? '');
   const index = match ? Number(match[1]) - 1 : -1;
   const route = Array.isArray(routes) ? routes[index] : undefined;
-  assert(route && !DROPPED_ROUTE_SURFACES.has(route.surface) && node.instruction === route.instruction &&
+  assert(route && !DROPPED_ROUTE_SURFACES.has(route.surface) && route.skipped !== true &&
+    node.instruction === route.instruction &&
     (node.dependencies ?? []).length === 0, 'explicit_route_binding_mismatch');
   const intent = Array.isArray(catalog?.explicit_route_intents) ? catalog.explicit_route_intents[index] ?? null : null;
   return {index, surface: route.surface, intent};
@@ -1951,6 +1973,9 @@ function publicSnapshot(snapshot) {
     }),
     result: snapshot.result ? immutable(snapshot.result) : null,
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
+    // A best-effort route test's routes Core did not run, with the reason.
+    ...(Array.isArray(snapshot.skipped_routes) && snapshot.skipped_routes.length ? {
+      skipped_routes: snapshot.skipped_routes.map(({surface, instruction, reason}) => ({surface, instruction, reason}))} : {}),
     error: snapshot.error ?? null };
 }
 
@@ -2031,6 +2056,10 @@ function recordTurnSettlement(entry, result) {
   if (typeof result.native_turn_terminated !== 'boolean') return;
   entry.native_turn_terminated = result.native_turn_terminated;
   if (result.native_turn_terminated) entry.settled_side_effects = result.side_effects;
+}
+/** Another child of this task is still running a dispatched attempt. */
+function siblingRunning(snapshot, nodeID) {
+  return snapshot.children.some(c => c.id !== nodeID && c.state === 'running' && c.dispatched_at_ms !== null);
 }
 /** The quota-pool lease key of an exact configuration, or null. */
 function poolKeyOf(config) {
@@ -2795,29 +2824,47 @@ class RCCRuntime {
     this._update(taskID, 'catalog_bound', snapshot => {
       snapshot.catalog = catalog; snapshot.catalog_bound_at_ms = boundAt;
     });
+    // The task the plan binds: the submitted one, or (a best-effort route
+    // test with a route that cannot run now) the routes that run.
+    let admitted = task;
     if (task.mode === 'explicit_routing_test') {
       const now = boundAt;
-      const unavailable = effectiveExplicitRoutes(task).find(route =>
-        !catalog.candidates.some(candidate => candidate.surface === route.surface &&
+      const runnable = route => catalog.candidates.some(candidate => candidate.surface === route.surface &&
           (route.surface !== 'local' || localWorkerRow(candidate)) &&
           candidate.availability === 'available' && candidate.availability_valid_until_ms > now &&
           candidate.quality_state !== 'mismatch' &&
           (candidate.quota_pool === 'none' || (candidate.quota_pool !== 'unknown' &&
-            candidate.quota_remaining_fraction > 0 && candidate.quota_valid_until_ms > now))));
-      if (unavailable) {
-        // Name the host's recorded exclusion reasons for that provider, so a
-        // capacity, sign-in or quota exclusion is visible in the hold.
-        const provider = unavailable.surface === 'codex' ? 'codex' :
-          ['claude', 'claude-chat'].includes(unavailable.surface) ? 'claude' : null;
+            candidate.quota_remaining_fraction > 0 && candidate.quota_valid_until_ms > now)));
+      // Name the host's recorded exclusion reasons for that provider, so a
+      // capacity, sign-in or quota exclusion is visible.
+      const reasons = route => {
+        const provider = route.surface === 'codex' ? 'codex' :
+          ['claude', 'claude-chat'].includes(route.surface) ? 'claude' : null;
         // The local surface has no exclusion record: its row is present and
         // observed unavailable (the readiness probe failed), or absent.
-        const why = unavailable.surface === 'local' ?
+        return route.surface === 'local' ?
           [catalog.candidates.some(localWorkerRow) ? 'local_model_not_ready' : 'local_model_absent'] :
           [...new Set((catalog.exclusions ?? []).filter(item => item.provider === provider)
             .map(item => item.reason))].sort();
-        this._holdExplicitRoutes(taskID, `explicit_route_surface_unavailable:${unavailable.surface}` +
+      };
+      const effective = effectiveExplicitRoutes(task);
+      const unavailable = effective.filter(route => !runnable(route));
+      // A named route test needs every named route: one that cannot run holds
+      // the set. A best-effort one (route-all) holds only when none can run.
+      if (unavailable.length > 0 && (task.host_context.explicit_routes_best_effort !== true ||
+          unavailable.length === effective.length)) {
+        const [first] = unavailable, why = reasons(first);
+        this._holdExplicitRoutes(taskID, `explicit_route_surface_unavailable:${first.surface}` +
           (why.length ? ':' + why.join('+') : ''));
         return;
+      }
+      if (unavailable.length > 0) {
+        const original = task.host_context.explicit_routes;
+        state = this._update(taskID, 'explicit_routes_skipped', snapshot => {
+          snapshot.skipped_routes = unavailable.map(route => ({index: original.indexOf(route),
+            surface: route.surface, instruction: route.instruction, reason: reasons(route).join('+') || 'unavailable'}));
+        });
+        admitted = admittedTask(state);
       }
     } else {
       // Nothing that could run now: say why per pool, before a planner call.
@@ -2835,14 +2882,14 @@ class RCCRuntime {
       // context for the local model. It receives the immutable host state,
       // never a model-authored replacement for that state. Outside explicit
       // route tests it grades nodes; the host then binds exact rows.
-      const proposed = await this.plan({task: immutable(task), catalog: immutable(catalog)});
-      const resolved = resolveRoutePlan(proposed, task, catalog, boundAt,
+      const proposed = await this.plan({task: immutable(admitted), catalog: immutable(catalog)});
+      const resolved = resolveRoutePlan(proposed, admitted, catalog, boundAt,
         {verifierRegistry: this.verifierRegistry, ledgerStats: (...key) => this._ladderStats(...key),
          costEvidence: query => this._costEvidence(query)});
       // One indivisible task runs the owner's own words, never a planner
       // paraphrase (lockIndivisibleInstruction); the decision says so.
-      const locked = lockIndivisibleInstruction(resolved.plan, task);
-      plan = validatePlan(locked.plan, task, catalog);
+      const locked = lockIndivisibleInstruction(resolved.plan, admitted);
+      plan = validatePlan(locked.plan, admitted, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
       lockedID = locked.changed ? plan.nodes[0].id : null;
       if (lockedID !== null && decisions[lockedID])
@@ -2873,7 +2920,7 @@ class RCCRuntime {
         // validatePlan already requires this exact surface/instruction pair
         // to exist in the original host contract. Requested is not executed.
         requested_surface: task.mode === 'explicit_routing_test'
-          ? effectiveExplicitRoutes(task).find(route =>
+          ? effectiveExplicitRoutes(admitted).find(route =>
               route.surface === catalog.candidates.find(candidate => candidate.id === node.candidate_id).surface &&
               route.instruction === node.instruction).surface : null,
         routing_decision: decisions[node.id] ?? null, re_resolutions: 0, avoided_candidate_ids: [],
@@ -2991,7 +3038,7 @@ class RCCRuntime {
         costEvidence: query => this._costEvidence(query)});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
-    const plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, fresh, [nodeID]));
+    const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, fresh, [nodeID]));
     const reason = /^[a-z0-9_]{1,64}$/.test(failure) ? failure : 'pre_dispatch_failure';
     this._update(taskID, 'candidate_re_resolved', state => {
       assert(!state.cancel_requested && !TERMINAL.has(state.state), 're_resolution_raced_cancel');
@@ -3076,7 +3123,7 @@ class RCCRuntime {
     try {
       const next = {...state.plan, nodes: state.plan.nodes.map(n =>
         n.id === node.id ? {...n, candidate_id: choice.candidate.id} : n)};
-      plan = validatePlan(next, state.task, repairCatalog(state, next, state.catalog, [node.id]));
+      plan = validatePlan(next, admittedTask(state), repairCatalog(state, next, state.catalog, [node.id]));
     } catch { return false; }
     const catalog = state.catalog;
     try {
@@ -3237,12 +3284,13 @@ class RCCRuntime {
       // available only after the failure is a valid repair candidate.
       // The admitted single node already runs the owner's words: the repair
       // proposal is locked the same way, so only its candidate can differ.
-      proposed = validatePlan(lockIndivisibleInstruction(await this.plan({task: immutable(snapshot.task),
+      const admitted = admittedTask(snapshot);
+      proposed = validatePlan(lockIndivisibleInstruction(await this.plan({task: immutable(admitted),
         catalog: immutable(fresh), repair: {
           failed_node_id: childID, failed_candidate_id: oldNode.candidate_id,
           failed_attempt_id: child.attempt_id,
           failure_receipt: child.attempt_history.at(-1)?.native_receipt ?? null,
-          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), snapshot.task).plan, snapshot.task,
+          allowed_change: 'candidate_id_only_same_scope_and_objective'}}), admitted).plan, admitted,
         repairCatalog(snapshot, snapshot.plan, fresh, [childID]));
       assert(proposed.nodes.length === snapshot.plan.nodes.length, 'repair_plan_shape_changed');
       const currentByID = new Map(snapshot.plan.nodes.map(n => [n.id, n]));
@@ -3305,12 +3353,20 @@ class RCCRuntime {
       if (finished.size === snapshot.children.length) {
         await this._settleTask(taskID); return;
       }
-      if (snapshot.children.some(c => ['failed', 'held', 'effects_uncertain'].includes(c.state))) {
+      // A best-effort route test (route-all) runs every route it can: a route
+      // held without effects (the local model gave no answer) does not stop
+      // the routes still queued behind a shared pool. Anything else settles.
+      const continuing = snapshot.task.host_context?.explicit_routes_best_effort === true &&
+        !snapshot.children.some(c => ['failed', 'effects_uncertain'].includes(c.state)) &&
+        snapshot.children.some(c => c.state === 'queued');
+      if (!continuing && snapshot.children.some(c => ['failed', 'held', 'effects_uncertain'].includes(c.state))) {
         if (active.size) { await this._waitForActiveOrTerminal(active, taskID); continue; }
         const uncertain = snapshot.children.some(c => c.state === 'effects_uncertain');
         const failed = snapshot.children.some(c => c.state === 'failed');
         if (uncertain) this._update(taskID, 'task_effects_uncertain', state => {
-          state.state = 'effects_uncertain'; state.error = 'child_effects_uncertain_no_replay';
+          state.state = 'effects_uncertain';
+          state.error = state.children.find(c => c.state === 'effects_uncertain' && typeof c.uncertain_error === 'string')
+            ?.uncertain_error ?? 'child_effects_uncertain_no_replay';
         });
         else if (failed) this._update(taskID, 'task_failed', state => {
           state.state = 'failed'; state.error = 'child_failed';
@@ -4041,7 +4097,7 @@ class RCCRuntime {
       n.id === nodeID ? {...n, candidate_id: reference.id} : n)};
     const rows = snapshot.catalog.candidates.some(c => c.id === reference.id) ? snapshot.catalog :
       {...snapshot.catalog, candidates: [...snapshot.catalog.candidates, reference]};
-    const plan = validatePlan(next, snapshot.task, repairCatalog(snapshot, next, rows, [nodeID]));
+    const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, rows, [nodeID]));
     this._update(taskID, 'ladder_escalated_to_reference', state => {
       assert(!state.cancel_requested && !TERMINAL.has(state.state), 'ladder_escalation_raced_cancel');
       const target = state.children.find(c => c.id === nodeID);
@@ -4151,8 +4207,14 @@ class RCCRuntime {
           verifierOutcome = interrupted;
           this._update(taskID, 'cancel_reconciled', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
-            const safe = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
+            const notDispatched = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
               result.side_effects === 'none' && result.native_receipt !== null;
+            // The local model surface is tools-free, read-only and quota-free:
+            // a completion that its executor attests ended (aborted) with no
+            // side effects changed nothing, so its cancel is safe as well.
+            const localEnded = localWorkerRow(candidate) && result.side_effects === 'none' &&
+              result.native_turn_terminated === true && result.native_receipt !== null;
+            const safe = notDispatched || localEnded;
             child.state = safe ? 'cancelled' : 'effects_uncertain';
             child.finished_at_ms = Date.now();
             child.attempt_history.at(-1).state = child.state;
@@ -4162,8 +4224,18 @@ class RCCRuntime {
             recordTurnSettlement(child.attempt_history.at(-1), result);
             child.usage = result.usage ?? null;
             child.attempt_history.at(-1).usage = result.usage ?? null;
-            snapshot.state = safe ? 'cancelled' : 'effects_uncertain';
-            snapshot.error = safe ? 'cancelled_before_backend_dispatch' : 'cancel_effects_uncertain';
+            // A sibling still running reconciles its own record first: the
+            // task becomes terminal with the last one, so no sibling's record
+            // is dropped and no running child keeps its pool's lease. (A
+            // service stop keeps its first-record rule: no later record lands.)
+            if (snapshot.cancel_requested && !this.stopping && siblingRunning(snapshot, node.id)) return;
+            const uncertain = snapshot.children.some(c => c.state === 'effects_uncertain');
+            // A route still queued behind a busy pool never starts now.
+            for (const other of snapshot.children)
+              if (other.state === 'queued' || (other.state === 'waiting' && other.dispatched_at_ms === null)) other.state = 'cancelled';
+            snapshot.state = uncertain ? 'effects_uncertain' : 'cancelled';
+            snapshot.error = uncertain ? 'cancel_effects_uncertain' : notDispatched ?
+              'cancelled_before_backend_dispatch' : 'cancelled_without_effects';
           });
           return;
         }
@@ -4294,6 +4366,12 @@ class RCCRuntime {
           child.usage = result.usage ?? null;
           child.attempt_history.at(-1).usage = result.usage ?? null;
           child.finished_at_ms = Date.now();
+          // A no-effect dispatched failure while a sibling runs: the DAG
+          // settles the task after that sibling's record is reconciled (its
+          // answer kept, its lease released), with this child's reason.
+          if (child.attempt_history.at(-1).dispatched_failure === 'no_effects' && siblingRunning(snapshot, node.id)) {
+            child.uncertain_error = 'dispatched_failure_no_replay'; return;
+          }
           snapshot.state = 'effects_uncertain'; snapshot.error = 'dispatched_failure_no_replay';
         });
         return;
@@ -4341,7 +4419,7 @@ class RCCRuntime {
     }
     let verdict;
     try {
-      verdict = await this.verifyTask({task: immutable(snapshot.task), plan: immutable(snapshot.plan),
+      verdict = await this.verifyTask({task: immutable(admittedTask(snapshot)), plan: immutable(snapshot.plan),
         children: immutable(snapshot.children)});
       assert(keys(verdict, ['schema', 'task_id', 'task_verified', 'output', 'parity_state', 'reason']) &&
         verdict.schema === 1 && verdict.task_id === taskID &&

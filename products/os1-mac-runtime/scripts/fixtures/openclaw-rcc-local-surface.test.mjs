@@ -212,10 +212,30 @@ test('the local executor never adopts a foreign or broken answer and never fabri
     assert.equal(record.error, error, label); assert.equal(record.acknowledged_config, null, label);
     assert.deepEqual(JSON.parse(await readFile(record.native_receipt, 'utf8')), record, label);
   }
-  const thrown = await run(async () => { throw Object.assign(Error('LLM_COMPLETION_FAILED'), {code: 'LLM_COMPLETION_FAILED'}); });
-  assert.equal(thrown.status, 'failed'); assert.equal(thrown.dispatch_stage, 'dispatched');
-  assert.equal(thrown.side_effects, 'none'); assert.equal(thrown.error, 'native_outcome_uncertain_preserved');
-  assert.equal(Object.hasOwn(thrown, 'native_turn_terminated'), false);
+  // A completion that throws (Ollama down or restarted, a model-load error,
+  // a Gateway change) is a finished turn with no answer, never "uncertain":
+  // tools-free and read-only, it changed nothing.
+  for (const error of [Object.assign(Error('LLM_COMPLETION_FAILED'), {code: 'LLM_COMPLETION_FAILED'}),
+    Object.assign(Error('connect ECONNREFUSED 127.0.0.1:11434'), {code: 'ECONNREFUSED'})]) {
+    const thrown = await run(async () => { throw error; });
+    assert.equal(thrown.status, 'succeeded', error.code); assert.equal(thrown.dispatch_stage, 'dispatched');
+    assert.equal(thrown.side_effects, 'none'); assert.equal(thrown.error, 'local_model_completion_failed');
+    assert.equal(thrown.execution_verified, false); assert.equal(thrown.task_quality, 'failed');
+    assert.equal(thrown.output, null); assert.equal(thrown.native_turn_terminated, true);
+    assert.equal(thrown.usage.provider_calls, 1);
+    assert.deepEqual(JSON.parse(await readFile(thrown.native_receipt, 'utf8')), thrown);
+  }
+  // An owner cancel or a service stop aborts it: an ended turn, reported as such.
+  const controller = new AbortController();
+  const aborted = localModelExecutor({stateDir: dir, complete: async request => new Promise((_, reject) => {
+    if (request.signal.aborted) reject(request.signal.reason);
+    request.signal.addEventListener('abort', () => reject(request.signal.reason), {once: true}); })})(
+    {...ticket, attempt_id: randomUUID()}, controller.signal);
+  controller.abort(Error('cancel_requested'));
+  const cancelled = await aborted;
+  assert.equal(cancelled.status, 'failed'); assert.equal(cancelled.dispatch_stage, 'dispatched');
+  assert.equal(cancelled.side_effects, 'none'); assert.equal(cancelled.native_turn_terminated, true);
+  assert.equal(cancelled.error, 'local_model_completion_aborted');
   for (const [label, change] of [['a provider row', {surface: 'codex', transport: 'codex_app_server', quota_pool: 'openai_codex'}],
     ['another model', {model: 'qwen3:8b'}], ['a writer', {scope: 'workspace_write', permission_profile: 'workspace_write'}],
     ['tools', {tools: ['read']}]])
@@ -346,4 +366,276 @@ quota_observed_at_ms:null,quota_valid_until_ms:null,quality_state:'policy_admitt
     await service.stop();
     for (const key of keys) previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key];
   }
+});
+
+// ---- A failed or cancelled local completion keeps the sibling routes --------
+// Review of 1bd83c4: a thrown local completion was an uncertain dispatched
+// failure, so the route-all task became effects_uncertain the moment local
+// returned (it returns first, in-process), the Codex and Claude answers that
+// came back afterwards were dropped, their children stayed "running" and kept
+// both quota pools: every later Codex or Claude task was held, even after a
+// restart. A cancel during the local completion did the same.
+
+const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return {promise, resolve}; };
+// What the host sends for a route-all order: the routes are best effort.
+function bestEffortTask(dir, routes = ROUTE_ALL) {
+  const task = explicitTask(dir, routes);
+  task.host_context.explicit_routes_best_effort = true;
+  task.source_fingerprint = hostContextFingerprint(task.host_context);
+  return task;
+}
+async function siblingsRun(t, {stateDir, local, release, providerOnCancel = null, bestEffort = true}) {
+  const request = bestEffort ? bestEffortTask(stateDir) : explicitTask(stateDir);
+  const started = [];
+  const runtime = await createRCCRuntime({stateDir,
+    catalog: async value => catalog(value),
+    plan: async value => plan(value.task ?? value, (value.task ?? value).host_context.explicit_routes
+      .map((_, index) => routeNode(index, (value.task ?? value).host_context.explicit_routes))),
+    execute: async (ticket, signal) => {
+      if (ticket.selected_config.surface === 'local') return local(ticket, signal);
+      started.push(ticket.selected_config.surface);
+      // The provider turns finish after local has returned, or on cancel.
+      await Promise.race([release.promise, new Promise(resolve => signal.addEventListener('abort', resolve, {once: true}))]);
+      if (signal.aborted && providerOnCancel) return providerOnCancel(ticket);
+      return nativeRecord(stateDir, ticket);
+    },
+    verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir})});
+  t.after(async () => { await runtime.close(); });
+  return {request, runtime, started};
+}
+async function nextProviderTaskRuns(runtime, stateDir, surface) {
+  const request = explicitTask(stateDir, [{surface, instruction: '3+3'}]);
+  await runtime.submit(request);
+  return runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 5_000});
+}
+
+test('a local completion that throws holds only the local route; Codex and Claude answers are kept, their pools free', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'throw');
+  await mkdir(stateDir, {mode: 0o700});
+  const release = gate();
+  const local = localModelExecutor({stateDir, complete: async () => {
+    throw Object.assign(Error('connect ECONNREFUSED 127.0.0.1:11434'), {code: 'ECONNREFUSED'}); }});
+  const {request, runtime} = await siblingsRun(t, {stateDir, local: async (ticket, signal) => {
+    const record = await local(ticket, signal); setTimeout(() => release.resolve(), 100); return record; }, release});
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'returned_unverified', done.error);
+  assert.deepEqual(done.children.map(child => `${child.requested_surface}:${child.state}`),
+    ['local:held', 'codex:completed', 'claude:completed', 'claude-chat:completed']);
+  assert.equal(done.result.output, 'requested-2: 4\n\nrequested-3: 2\n\nrequested-4: 4', 'every sibling answer is returned');
+  // No child is left running with a lease: the next Codex and Claude tasks run.
+  for (const surface of ['codex', 'claude']) {
+    const next = await nextProviderTaskRuns(runtime, stateDir, surface);
+    assert.equal(next.state, 'completed', `${surface}: ${next.state} ${next.error}`);
+  }
+});
+
+test('cancelling a route-all task while the local model answers ends cancelled once every route returned; pools free', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'cancel');
+  await mkdir(stateDir, {mode: 0o700});
+  const release = gate(), localStarted = gate();
+  const local = localModelExecutor({stateDir, complete: async value => { localStarted.resolve();
+    return new Promise((_, reject) => value.signal.addEventListener('abort', () => reject(value.signal.reason), {once: true})); }});
+  // A provider turn that stops on cancel before any backend work: a safe cancel.
+  const providerOnCancel = async ticket => {
+    const record = await nativeRecord(stateDir, ticket, null);
+    return {...record, status: 'failed', dispatch_stage: 'not_dispatched', output: null, execution_verified: false,
+      task_quality: 'failed', acknowledged_config: null};
+  };
+  const {request, runtime, started} = await siblingsRun(t, {stateDir, local, release, providerOnCancel});
+  await runtime.submit(request);
+  await localStarted.promise;
+  // Codex and Claude Code run; Claude chat waits behind Claude Code's pool.
+  while (started.length < 2) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(runtime.cancel({schema: 1, task_id: request.task_id}).state, 'cancelling');
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'cancelled', done.error);
+  assert.deepEqual(done.children.map(child => child.state), ['cancelled', 'cancelled', 'cancelled', 'cancelled'],
+    'no sibling record is dropped and none stays running');
+  release.resolve();
+  for (const surface of ['codex', 'claude']) {
+    const next = await nextProviderTaskRuns(runtime, stateDir, surface);
+    assert.equal(next.state, 'completed', `${surface}: ${next.state} ${next.error}`);
+  }
+});
+
+test('a no-effect dispatched failure waits for its running siblings before the task settles', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'uncertain');
+  await mkdir(stateDir, {mode: 0o700});
+  const release = gate();
+  // A local turn whose executor (an older one) reports an uncertain no-effect failure.
+  const local = async ticket => {
+    const record = await nativeRecord(stateDir, ticket, null);
+    setTimeout(() => release.resolve(), 100);
+    return {...record, status: 'failed', output: null, execution_verified: false, task_quality: 'failed',
+      acknowledged_config: null, error: 'native_outcome_uncertain_preserved'};
+  };
+  const {request, runtime} = await siblingsRun(t, {stateDir, local, release, bestEffort: false});
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'effects_uncertain'); assert.equal(done.error, 'dispatched_failure_no_replay');
+  // The running siblings are reconciled; nothing new starts after an uncertain child.
+  assert.deepEqual(done.children.map(child => child.state),
+    ['effects_uncertain', 'completed', 'completed', 'queued'], 'the siblings were reconciled, not left running');
+  for (const surface of ['codex', 'claude']) {
+    const next = await nextProviderTaskRuns(runtime, stateDir, surface);
+    assert.equal(next.state, 'completed', `${surface}: ${next.state} ${next.error}`);
+  }
+});
+
+// ---- Route-all is best effort: one route that cannot run never holds the set ----
+// Review of 1bd83c4: the host included every surface its cached health did
+// not rule out; Core then held EVERY route when one had no runnable row (a
+// Claude CLI on API billing, a stale quota, the catalog's own local probe).
+
+function withoutChat(value) {
+  const rows = catalog(value);
+  // Claude signed in on API billing: no Claude row at all, the reason recorded.
+  rows.candidates = rows.candidates.filter(row => !['claude', 'claude-chat'].includes(row.surface));
+  rows.model_tiers = {'gpt-6-luna': 'fast', 'gpt-6-astra': 'frontier'};
+  rows.exclusions = [{provider: 'claude', reason: 'non_subscription', count: 4}];
+  return rows;
+}
+
+test('route-all runs every route that can run and skips the rest with its reason; a named test still holds the set', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'best-effort');
+  await mkdir(stateDir, {mode: 0o700});
+  const planned = [];
+  const make = async (name, catalogFn) => {
+    const executeLocal = localModelExecutor({stateDir: join(stateDir, name),
+      complete: async value => completion(exact(value.messages[0].content))});
+    const runtime = await createRCCRuntime({stateDir: join(stateDir, name),
+      catalog: async value => catalogFn(value),
+      plan: async ({task}) => { planned.push(task.host_context.explicit_routes.filter(route => !route.skipped).length);
+        return plan(task, task.host_context.explicit_routes.map((route, index) => route.skipped ? null : routeNode(index,
+          task.host_context.explicit_routes)).filter(Boolean)); },
+      execute: async (ticket, signal) => ticket.selected_config.surface === 'local' ? executeLocal(ticket, signal) :
+        nativeRecord(join(stateDir, name), ticket),
+      verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir: join(stateDir, name)})});
+    t.after(async () => { await runtime.close(); });
+    return runtime;
+  };
+  for (const name of ['a', 'b', 'c', 'd']) await mkdir(join(stateDir, name), {mode: 0o700});
+  const runtime = await make('a', withoutChat);
+  const request = bestEffortTask(join(stateDir, 'a'));
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.equal(done.result.task_verified, true, 'the routes that ran are verified');
+  assert.deepEqual(done.children.map(child => `${child.id}:${child.requested_surface}`),
+    ['requested-1:local', 'requested-2:codex']);
+  assert.deepEqual(done.skipped_routes, [{surface: 'claude', instruction: '1+1', reason: 'non_subscription'},
+    {surface: 'claude-chat', instruction: '2+2', reason: 'non_subscription'}]);
+  assert.equal(done.result.output, 'requested-1: 2\n\nrequested-2: 4');
+  assert.deepEqual(planned, [2], 'the planner sees only the routes that run');
+  // The same catalog for a named route test (no best effort) holds every route.
+  const named = await make('b', withoutChat);
+  const strict = explicitTask(join(stateDir, 'b'));
+  await named.submit(strict);
+  const held = await wait(named, strict);
+  assert.equal(held.state, 'held'); assert.equal(held.error, 'explicit_route_surface_unavailable:claude:non_subscription');
+  assert.equal(Object.hasOwn(held, 'skipped_routes'), false);
+  // Best effort with nothing runnable still holds, with the first reason.
+  const nothing = await make('c', value => ({...catalog(value), model_tiers: {},
+    candidates: [LOCAL_ROW({availability: 'unavailable'})],
+    exclusions: [{provider: 'codex', reason: 'quota_zero', count: 2}, {provider: 'claude', reason: 'signed_out', count: 4}]}));
+  const none = bestEffortTask(join(stateDir, 'c'));
+  await nothing.submit(none);
+  const unheld = await wait(nothing, none);
+  assert.equal(unheld.state, 'held');
+  assert.equal(unheld.error, 'explicit_route_surface_unavailable:local:local_model_not_ready');
+  // The local model not ready at the catalog's own probe skips only local.
+  const notReady = await make('d', value => catalog(value, {local: 'unavailable'}));
+  const local = bestEffortTask(join(stateDir, 'd'));
+  await notReady.submit(local);
+  const ran = await wait(notReady, local);
+  assert.equal(ran.state, 'completed', ran.error);
+  assert.deepEqual(ran.skipped_routes, [{surface: 'local', instruction: '1+1', reason: 'local_model_not_ready'}]);
+  assert.deepEqual(ran.children.map(child => child.requested_surface), ['codex', 'claude', 'claude-chat']);
+});
+
+test('a skipped best-effort route stays skipped through a REVAS escalation of a route that ran', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'best-effort-escalation');
+  await mkdir(stateDir, {mode: 0o700});
+  const request = bestEffortTask(stateDir, [{surface: 'codex', instruction: '2+2'}, {surface: 'claude', instruction: '1+1'},
+    {surface: 'claude-chat', instruction: '3+3'}]);
+  const models = [];
+  const runtime = await createRCCRuntime({stateDir,
+    catalog: async value => { const rows = catalog(value);
+      rows.candidates = rows.candidates.filter(row => row.surface !== 'claude-chat');
+      rows.exclusions = [{provider: 'claude', reason: 'chat_gate_refused', count: 2}]; return rows; },
+    plan: async ({task}) => plan(task, task.host_context.explicit_routes.map((route, index) => route.skipped ? null :
+      routeNode(index, task.host_context.explicit_routes)).filter(Boolean)),
+    execute: async ticket => { models.push(ticket.selected_config.model);
+      // The cheap Claude Code tier answers nothing: the node escalates once to its reference.
+      return nativeRecord(stateDir, ticket, ticket.selected_config.model === 'claude-sonnet-5-5' ? '' : exact(ticket.instruction)); },
+    verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir})});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.ok(models.includes('claude-fable-5-1'), 'the Claude Code route escalated to its reference: ' + models.join(','));
+  assert.deepEqual(done.skipped_routes.map(route => route.surface), ['claude-chat']);
+  assert.deepEqual(done.children.map(child => child.requested_surface), ['codex', 'claude']);
+});
+
+test('best effort is a property of a route list and only ever true', async t => {
+  const dir = await fixture(t);
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'contract'), catalog: async value => catalog(value),
+    plan: async () => { throw Error('unused'); }, execute: async () => { throw Error('unused'); }});
+  t.after(async () => { await runtime.close(); });
+  for (const value of [false, 'true', 1]) {
+    const task = bestEffortTask(dir);
+    task.host_context.explicit_routes_best_effort = value;
+    task.source_fingerprint = hostContextFingerprint(task.host_context);
+    await assert.rejects(Promise.resolve().then(() => runtime.submit(task)), /host_context_invalid/, String(value));
+  }
+  const auto = explicitTask(dir, null, {request: 'Summarize the plan'});
+  auto.host_context.explicit_routes_best_effort = true;
+  auto.source_fingerprint = hostContextFingerprint(auto.host_context);
+  await assert.rejects(Promise.resolve().then(() => runtime.submit(auto)), /host_context_invalid/);
+});
+
+// ---- Every operator route-all sends is in the exact verifier's family ---------
+
+test('route-all with minus and times completes and every route is task-verified', async t => {
+  const dir = await fixture(t);
+  const stateDir = join(dir, 'operators');
+  await mkdir(stateDir, {mode: 0o700});
+  // "다 라우팅 해봐. 파이브 마이너스 원, 식스곱하기투" (Swift RouteAllIntent).
+  const routes = [{surface: 'local', instruction: '5-1'}, {surface: 'codex', instruction: '6*2'},
+    {surface: 'claude', instruction: '9-10'}, {surface: 'claude-chat', instruction: '-3*-4'}];
+  const value = instruction => String(Function(`"use strict"; return (${instruction.replace(/--/g, '- -')});`)());
+  const executeLocal = localModelExecutor({stateDir, complete: async request => completion(value(request.messages[0].content))});
+  let localRecord = null;
+  const request = explicitTask(stateDir, routes);
+  const runtime = await createRCCRuntime({stateDir,
+    catalog: async task => catalog(task),
+    plan: async () => plan(request, routes.map((_, index) => routeNode(index, routes))),
+    execute: async (ticket, signal) => ticket.selected_config.surface === 'local' ?
+      (localRecord = await executeLocal(ticket, signal)) : nativeRecord(stateDir, ticket, value(ticket.instruction)),
+    verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir})});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed', done.error);
+  assert.equal(done.result.task_verified, true);
+  assert.equal(done.result.output, 'requested-1: 4\n\nrequested-2: 12\n\nrequested-3: -1\n\nrequested-4: 12');
+  assert.equal(localRecord.task_quality, 'task_verified', 'the local answer is verified at the source');
+  // A wrong answer is still refused, whatever the operator.
+  const wrong = explicitTask(stateDir, [{surface: 'codex', instruction: '6*2'}]);
+  const second = await createRCCRuntime({stateDir: join(stateDir, 'wrong'),
+    catalog: async task => catalog(task), plan: async () => plan(wrong, [routeNode(0, [{surface: 'codex', instruction: '6*2'}])]),
+    execute: async ticket => nativeRecord(join(stateDir, 'wrong'), ticket, '8'),
+    verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir: join(stateDir, 'wrong')})});
+  t.after(async () => { await second.close(); });
+  await mkdir(join(stateDir, 'wrong'), {recursive: true, mode: 0o700});
+  await second.submit(wrong);
+  const refused = await wait(second, wrong);
+  assert.equal(refused.result?.task_verified ?? false, false);
 });

@@ -850,6 +850,16 @@ private func providerIntentSelfTest() throws {
           // Build 381: a route-all order names no surface; it still runs on Auto.
           requestedProvider(for: "너 라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐. 원플러스원 투플러스투", configured: .claude) == .auto,
           requestedProvider(for: "다 라우팅이 안 돼", configured: .claude) == .claude,
+          // Ordinary work that only looks like one keeps its pinned provider.
+          requestedProvider(for: "그거 전체 경로 보내줘", configured: .claude) == .claude,
+          requestedProvider(for: "nginx 설정 바꿔서 요청을 모든 백엔드로 보내", configured: .codex) == .codex,
+          requestedProvider(for: "Update the nginx config to route the requests to all backends", configured: .claude) == .claude,
+          // A recognised order that is held ("this" with nothing written) keeps the tile; the CLI holds it.
+          requestedProvider(for: "이거 모든 모델로 보내봐", configured: .claude) == .claude,
+          // Named routes with the local model run on Auto.
+          requestedProvider(for: "로컬이랑 클로드 코드랑 코덱스 이렇게 세 개로 라우팅 해봐. 원플러스원 투플러스투", configured: .claude) == .auto,
+          requestedProvider(for: "1+1 Codex한테. 2+2 Claude Code한테. 3+3 로컬한테.", configured: .claude) == .auto,
+          requestedProvider(for: "GPT 빼고 다 라우팅 해봐", configured: .codex) == .auto,
           isChatLaneRoutePart(chatPart), !isChatLaneRoutePart(fullPart), !isChatLaneRoutePart(review) else {
         throw RunnerError.message("OS-1 route fan-out UI self-test failed.")
     }
@@ -6566,13 +6576,22 @@ private func responseAvailabilityReceiptSelfTest() throws {
 /// A request that names a route for each of its parts ("1+1 GPT한테. 2+2
 /// Codex한테. …") runs on auto, so the runtime can send every part where it
 /// was named; that holds on a conversation pinned to one tile as well, since
-/// the request is the more specific instruction. So does an order to route to
-/// every available route ("라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐",
-/// `RouteAllIntent`): the CLI turns it into one explicit route per surface.
-/// Anything else keeps the tile, or the one provider the request directs work to.
+/// the request is the more specific instruction. So does a supported order to
+/// route to every available route ("라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐",
+/// `RouteAllIntent`) or to named routes with the local model ("3+3 로컬한테"):
+/// the CLI turns it into one explicit route per surface. A recognised order
+/// the CLI will hold keeps the tile (the CLI holds it there as well), and so
+/// does everything else, or the one provider the request directs work to.
 private func requestedProvider(for request: String, configured: ProviderChoice) -> ProviderChoice {
-    if RouteFanout.plan(request) != nil || RouteAllIntent.recognizes(request) { return .auto }
+    if routesPerPart(request) { return .auto }
     return configured == .auto ? (explicitlyRequestedProvider(in: request) ?? .auto) : configured
+}
+
+/// The request runs as explicit routes: named parts (`RouteFanout`, or with the
+/// local model `RouteAllIntent.namedParts`) or a supported route-all order.
+private func routesPerPart(_ request: String) -> Bool {
+    RouteFanout.plan(request) != nil || RouteAllIntent.namedParts(request) != nil ||
+        RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil
 }
 
 /// The owner's explicit retry may predate the exact fan-out parser. Re-resolve
@@ -6581,7 +6600,7 @@ private func requestedProvider(for request: String, configured: ProviderChoice) 
 private func routeFanoutRetrySubmission(_ original: PendingSubmission) -> PendingSubmission {
     guard original.deliveryID == nil, original.savedResultNeedsReview != true,
           original.readOnlyReconciliation != true, original.recoveryParentID == nil,
-          RouteFanout.plan(original.executionRequest) != nil || RouteAllIntent.recognizes(original.executionRequest)
+          routesPerPart(original.executionRequest)
     else { return original }
     var retry = original
     retry.provider = .auto

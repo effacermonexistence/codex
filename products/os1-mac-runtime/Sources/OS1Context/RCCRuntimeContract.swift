@@ -113,16 +113,21 @@ public enum RCCRuntimeContract {
         public var conversationID: String?
         public var submissionID: String?
         public var capacityPlan: CapacityPlan?
+        /// Route-all only (true or absent): Core runs every explicit route
+        /// with a runnable row and skips the others with their reason, never
+        /// holding the set for one surface. Absent: every named route is needed.
+        public var explicitRoutesBestEffort: Bool?
         public init(workspace: String, context: String?, providerPreference: String, codexSessionID: String?,
                     claudeSessionID: String?, requireReadOnly: Bool, ownerPolicy: OwnerPolicySnapshot?,
                     explicitRoutes: [ExplicitRoute]? = nil, conversationID: String? = nil, submissionID: String? = nil,
-                    capacityPlan: CapacityPlan? = nil) {
+                    capacityPlan: CapacityPlan? = nil, explicitRoutesBestEffort: Bool? = nil) {
             self.workspace = workspace; self.context = context; self.providerPreference = providerPreference
             self.codexSessionID = codexSessionID; self.claudeSessionID = claudeSessionID
             self.requireReadOnly = requireReadOnly; self.ownerPolicy = ownerPolicy
             self.explicitRoutes = explicitRoutes
             self.conversationID = conversationID; self.submissionID = submissionID
             self.capacityPlan = capacityPlan
+            self.explicitRoutesBestEffort = explicitRoutesBestEffort
         }
         enum CodingKeys: String, CodingKey {
             case workspace, context, providerPreference = "provider_preference", codexSessionID = "codex_session_id"
@@ -130,6 +135,7 @@ public enum RCCRuntimeContract {
             case explicitRoutes = "explicit_routes"
             case conversationID = "conversation_id", submissionID = "submission_id"
             case capacityPlan = "capacity_plan"
+            case explicitRoutesBestEffort = "explicit_routes_best_effort"
         }
     }
     public struct Request: Codable, Equatable, Sendable {
@@ -699,6 +705,16 @@ public enum RCCRuntimeContract {
             case taskQuality = "task_quality"
         }
     }
+    /// A route of a best-effort route test (route-all) that Core did not
+    /// run because no runnable row offered it at admission, with the reason.
+    public struct SkippedRoute: Codable, Equatable, Sendable {
+        public var surface: Surface
+        public var instruction: String
+        public var reason: String
+        public init(surface: Surface, instruction: String, reason: String) {
+            self.surface = surface; self.instruction = instruction; self.reason = reason
+        }
+    }
     public struct Snapshot: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -709,15 +725,18 @@ public enum RCCRuntimeContract {
         public var result: Result?
         public var error: String?
         public var installHandoff: InstallHandoff?
+        /// Present only when Core skipped a best-effort route; older snapshots have none.
+        public var skippedRoutes: [SkippedRoute]?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, state: State, revision: Int,
-                    children: [ChildSnapshot], result: Result?, error: String?, installHandoff: InstallHandoff? = nil) {
+                    children: [ChildSnapshot], result: Result?, error: String?, installHandoff: InstallHandoff? = nil,
+                    skippedRoutes: [SkippedRoute]? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.state = state
             self.revision = revision; self.children = children; self.result = result; self.error = error
-            self.installHandoff = installHandoff
+            self.installHandoff = installHandoff; self.skippedRoutes = skippedRoutes
         }
         enum CodingKeys: String, CodingKey {
             case schema, state, revision, children, result, error, taskID = "task_id", requestSHA256 = "request_sha256"
-            case installHandoff = "install_handoff"
+            case installHandoff = "install_handoff", skippedRoutes = "skipped_routes"
         }
     }
     public struct Event: Codable, Equatable, Sendable {
@@ -797,6 +816,10 @@ public enum RCCRuntimeContract {
         if let routes = value.explicitRoutes {
             guard routes.count <= 8, routes.allSatisfy({ text($0.instruction, max: 12_000) }),
                   Set(routes.map { $0.surface.rawValue + "\0" + $0.instruction }).count == routes.count else { throw Rejection.invalidInput }
+        }
+        // Best effort is a property of a route list, and only ever "true".
+        if let bestEffort = value.explicitRoutesBestEffort {
+            guard bestEffort, value.explicitRoutes != nil else { throw Rejection.invalidInput }
         }
         if let policy = value.ownerPolicy {
             guard policy.schema == 1, isHash(policy.sourceSHA256), isHash(policy.projectionSHA256),
@@ -1122,6 +1145,10 @@ public enum RCCRuntimeContract {
             guard value.installHandoff?.state == .staged, value.result?.taskVerified != true else { throw Rejection.invalidSnapshot }
         }
         guard value.error.map({ text($0, max: 8_192) }) ?? true else { throw Rejection.invalidSnapshot }
+        if let skipped = value.skippedRoutes {
+            guard !skipped.isEmpty, skipped.count <= 8,
+                  skipped.allSatisfy({ text($0.instruction, max: 12_000) && text($0.reason, max: 1_024) }) else { throw Rejection.invalidSnapshot }
+        }
     }
     public static func validate(_ value: Event) throws {
         guard value.schema == schema else { throw Rejection.invalidSchema }
@@ -1160,7 +1187,7 @@ public enum RCCRuntimeContract {
     private static let ownerPolicyShape = Shape.object(["schema", "sourceSHA256", "sourceFile", "projectionSHA256", "projection", "sourceID", "sourceModified", "checkedAt", "routing"])
     private static let explicitRouteShape = Shape.object(["surface", "instruction"])
     private static let capacityPlanShape = Shape.object(["codex", "claude"])
-    private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id", "capacity_plan"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape), "capacity_plan": capacityPlanShape])
+    private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id", "capacity_plan", "explicit_routes_best_effort"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape), "capacity_plan": capacityPlanShape])
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
@@ -1178,7 +1205,8 @@ public enum RCCRuntimeContract {
     private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
     private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])
     private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision"], ["selected_config": configShape, "routing_decision": routingDecisionShape])
-    private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape])
+    private static let skippedRouteShape = Shape.object(["surface", "instruction", "reason"])
+    private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff", "skipped_routes"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape, "skipped_routes": .array(skippedRouteShape)])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])
     private static func checkShape(_ object: Any, _ shape: Shape, depth: Int = 0) throws {
         guard depth <= 32 else { throw Rejection.oversized }

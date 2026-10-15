@@ -149,9 +149,10 @@ check('let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + sourceCom
       'guard scope == .readOnly, let explicitRoutes,' in ENVELOPE and
       'scope == .readOnly && (answerOnly || ProviderSurface(rawValue: surface.rawValue)?.forcesChatLane == true)' in ENVELOPE,
       "answer-only needs read_only like the verifier; the direct lead only for read-only answer children")
-check("const parts = /^\\s*(-?\\d{1,9})\\s*\\+\\s*(-?\\d{1,9})\\s*$/u.exec(instruction);" in PLUGIN and
-      "arithmeticSum(node.instruction)" in PLUGIN and "/^\\s*(-?\\d{1,9})\\s*\\+\\s*(-?\\d{1,9})\\s*$/u" in ENVELOPE,
-      "answer-only predicate mirrors the unchanged exact verifier regex (OS1ContextTests cross-checks it in Node)")
+check("const parts = /^\\s*(-?\\d{1,9})\\s*([+*\\-])\\s*(-?\\d{1,9})\\s*$/u.exec(instruction);" in PLUGIN and
+      "arithmeticResult(node.instruction)" in PLUGIN and
+      "/^\\s*(-?\\d{1,9})\\s*([+*\\-])\\s*(-?\\d{1,9})\\s*$/u" in ENVELOPE,
+      "answer-only predicate mirrors the exact verifier regex, the route-all operators included (OS1ContextTests cross-checks it in Node)")
 
 catalog_host = section(MAIN, "private func rccNativeCatalog(", "private func rccContinuationParent(")
 check("claudeCatalogs(workspace: host.workspace, config: config))?.configured" in catalog_host and
@@ -246,9 +247,16 @@ check("'USER', 'LOGNAME'" in PLUGIN, "bridge forwards USER/LOGNAME to native chi
 run_body = section(MAIN, "func runOpenClawRCCTask(", "let configuration = try await OwnerPolicyContext")
 check("routeAllRouting(prompt: prompt, capacityPlan: capacityPlan," in run_body and
       "explicit = routeAll.routes" in run_body and
-      "requireReadOnly: requireReadOnly || routeAll != nil" in run_body and
-      "mode: fanout != nil || routeAll != nil ? .explicitRoutingTest : .auto" in run_body,
-      "a route-all order becomes a read-only explicit route test on Auto")
+      "requireReadOnly: requireReadOnly || routeAll != nil || parts != nil" in run_body and
+      "mode: fanout != nil || parts != nil || routeAll != nil ? .explicitRoutingTest : .auto" in run_body and
+      "let parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil" in run_body and
+      "RouteAllIntent.namesLocalRoute(prompt) ? nil : RouteFanout.plan(prompt)" in run_body,
+      "a route-all order (or named parts with the local model) becomes a read-only explicit route test on Auto")
+check("explicitRoutesBestEffort: routeAll != nil ? true : nil" in run_body and
+      "'explicit_routes_best_effort'" in RUNTIME and "export function admittedTask(snapshot)" in RUNTIME and
+      "unavailable.length === effective.length" in RUNTIME and
+      "routeAllSkippedNotice(result.skippedRoutes)" in MAIN,
+      "route-all routes are best effort: Core skips (visibly) a route that cannot run, never the whole set")
 check(run_body.index("guard !routeAll.routes.isEmpty else {") < run_body.index("let host = RCCRuntimeContract.HostContext(") and
       'RunSummary(status: "workflow_blocked", steps: [], monitorTaskID: taskID, workflowBlocker: routeAll.notice)' in run_body,
       "a recognised route-all order with nothing to run is held before Core, never sent as one worker task")
@@ -266,6 +274,12 @@ check("execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal)
 check("if (explicitRoute?.surface === 'local')" in RUNTIME and "'local_agent_node_not_explicit'" in RUNTIME and
       "export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';" in RUNTIME,
       "Core binds the local model only for an explicit local route")
-check("RouteAllIntent.recognizes(request)" in APP, "the app runs a route-all order on Auto")
+check("RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil" in APP and
+      "RouteAllIntent.recognizes(request)" not in APP,
+      "the app runs a supported route-all order on Auto; a held one keeps its tile")
+check("if (signals.some(value => value.aborted)) record.error = 'local_model_completion_aborted';" in PLUGIN and
+      "'local_model_completion_failed'" in PLUGIN and "'native_outcome_uncertain_preserved'" not in
+      section(PLUGIN, "export function localModelExecutor(", "async function readExactNativeReceipt("),
+      "a failed or cancelled local completion is a finished no-effect turn, never an uncertain one")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")
