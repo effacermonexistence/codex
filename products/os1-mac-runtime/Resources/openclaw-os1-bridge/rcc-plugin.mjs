@@ -109,7 +109,7 @@ async function verifyNative() {
  * fallback account, routing decision, API key, or autonomous retry. */
 export async function nativeOperation(operation, payload, signal,
                                       {cancelGraceMs = 6_000, cancelKillMs = 2_000} = {}) {
-  if (!['rcc-catalog', 'rcc-adapter', 'rcc-stage', 'rcc-install-status',
+  if (!['rcc-intent', 'rcc-catalog', 'rcc-adapter', 'rcc-stage', 'rcc-install-status',
     'rcc-install-cancel'].includes(operation)) throw Error('native_operation_denied');
   if (!Number.isSafeInteger(cancelGraceMs) || cancelGraceMs < 100 || cancelGraceMs > 30_000 ||
       !Number.isSafeInteger(cancelKillMs) || cancelKillMs < 100 || cancelKillMs > 10_000)
@@ -370,6 +370,78 @@ export function assertLocalPlannerCompletion(result) {
   return assertLocalModelCompletion(result, 'planner_local_model_receipt_invalid');
 }
 
+/** A compiler operation inside the SAME Core task, not a second task owner.
+ * Native code owns source/payload/recipient admission; OpenClaw owns the local
+ * candidate completion, deadline/cancellation and subsequent dispatch. Neither
+ * a JSON classifier answer nor a native operation creates provider authority. */
+export function routingIntentResolver({complete, native = nativeOperation,
+  lifetimeSignal = () => null, stateDir = null}) {
+  return async ({task, signal}) => {
+    const signals = [signal, lifetimeSignal()].filter(value => value instanceof AbortSignal);
+    const combined = signals.length ? AbortSignal.any(signals) : undefined;
+    const checkAbort = () => { if (combined?.aborted) throw new RCCRuntimeError('intent_cancelled'); };
+    const bound = value => {
+      if (value?.schema !== 1 || value.task_id !== task.task_id ||
+          value.request_sha256 !== task.request_sha256 || value.policy_sha256 !== task.policy_sha256 ||
+          value.source_fingerprint !== task.source_fingerprint)
+        throw new RCCRuntimeError('intent_source_binding_invalid');
+      return value;
+    };
+    checkAbort();
+    const probe = bound(await native('rcc-intent', {schema: 1, task}, combined));
+    checkAbort();
+    if (probe.kind !== 'needs_model') return {...probe, model_answer: null};
+    if (typeof complete !== 'function' || typeof probe.model_prompt !== 'string' ||
+        Buffer.byteLength(probe.model_prompt) > 16_384 || typeof probe.model_input !== 'string' ||
+        Buffer.byteLength(probe.model_input) > 8_192 || probe.model_schema?.type !== 'object' ||
+        typeof probe.model_schema_json !== 'string' || Buffer.byteLength(probe.model_schema_json) > 8_192 ||
+        Buffer.byteLength(JSON.stringify(probe.model_schema)) > 8_192)
+      throw new RCCRuntimeError('intent_model_contract_invalid');
+    // Schema property order is part of this classifier's frozen input. Native
+    // canonical wire encoding sorts object keys; the literal preserves the
+    // original schema order without accepting a different schema.
+    let responseFormat;
+    try { responseFormat = JSON.parse(probe.model_schema_json); }
+    catch { throw new RCCRuntimeError('intent_model_contract_invalid'); }
+    if (stableJSON(responseFormat) !== stableJSON(probe.model_schema))
+      throw new RCCRuntimeError('intent_model_contract_invalid');
+    // The policy is still applied to this child operation. Source text stays
+    // in the user message; it cannot change the internal JSON-only objective.
+    const instructions = policy(task) + '\n\n' +
+      'INTERNAL ROUTING INTENT ONLY. Persona is OFF. Do not execute or answer the user task. ' +
+      'Return only the classifier JSON schema. This is a candidate; code admits it.\n\n' +
+      probe.model_prompt;
+    if (Buffer.byteLength(instructions) + Buffer.byteLength(probe.model_input) > MAX_PLANNER_OWN_INPUT_BYTES)
+      throw new RCCRuntimeError('intent_input_budget_exceeded');
+    const started = Date.now();
+    const response = await complete({model: LOCAL_MODEL,
+      messages: [{role: 'user', content: probe.model_input}], systemPrompt: instructions,
+      responseFormat, maxTokens: 192, temperature: 0, reasoning: 'off',
+      signal: combined, purpose: 'os1.rcc.internal-routing-intent'});
+    checkAbort();
+    const answer = assertLocalModelCompletion(response, 'intent_local_model_receipt_invalid');
+    if (!answer || Buffer.byteLength(answer) > 4_096)
+      throw new RCCRuntimeError('intent_model_output_invalid');
+    if (isAbsolute(stateDir ?? '')) {
+      // A task-bound visible-output receipt, not hidden model introspection.
+      await writeFile(join(stateDir, `intent-output-${randomUUID()}.json`), JSON.stringify({
+        schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
+        source_fingerprint: task.source_fingerprint, policy_sha256: task.policy_sha256,
+        model_requested: LOCAL_MODEL, provider_observed: response.provider,
+        model_observed: response.model, response_model_observed: response.responseModel ?? null,
+        execution_mode_observed: response.execution.mode, stop_reason_observed: response.stopReason ?? null,
+        usage_observed: response.usage ?? null, elapsed_ms: Date.now() - started,
+        output_sha256: sha(Buffer.from(answer)), text: answer,
+      }), {flag: 'wx', mode: 0o600});
+    }
+    checkAbort();
+    const admitted = bound(await native('rcc-intent', {schema: 1, task, answer}, combined));
+    checkAbort();
+    if (admitted.kind === 'needs_model') throw new RCCRuntimeError('intent_compiler_did_not_settle');
+    return {...admitted, model_answer: answer};
+  };
+}
+
 // ---- Local execution surface (route-all, 2026-10-14) ----
 // An explicit route that names the local surface runs its one instruction on
 // the SAME local model the planner uses, through the same OpenClaw completion
@@ -573,6 +645,9 @@ export function registerRCCRuntime(api) {
       const local = ticket => ticket?.selected_config?.surface === 'local';
       starting = createRCCRuntime({ stateDir,
         maximumWorkers: 4,
+        resolveIntent: routingIntentResolver({stateDir,
+          complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request)),
+          lifetimeSignal: () => plannerLifetime?.signal ?? null}),
         catalog: task => nativeOperation('rcc-catalog', task),
         plan: async ({ task, catalog, ...feedback }) => {
           const {instructions, message, responseFormat} = buildBoundedPlannerInput({task, catalog,

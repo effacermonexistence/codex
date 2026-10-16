@@ -113,11 +113,18 @@ public enum RCCRuntimeProjection {
         let priorRoot = prior?.nodes.first { $0.id == rootID }
         let rootStarted: Date? = rootState == .pending ? nil : (priorRoot?.startedAt ?? firstObservedAt)
         let rootFinished: Date? = rootState.isTerminal ? (priorRoot?.finishedAt ?? observedAt) : nil
-        let rootDescription = core.state == .returnedUnverified
+        let rootDescription: String
+        if let intent = core.routingIntent, intent.state == .resolving {
+            rootDescription = "OpenClaw core is interpreting the original request; no worker dispatched."
+        } else if let intent = core.routingIntent, intent.state == .held {
+            rootDescription = "OpenClaw core held routing interpretation: " + (intent.reason ?? "unconfirmed")
+        } else {
+        rootDescription = core.state == .returnedUnverified
             ? "Output returned · task quality unverified; candidate retained."
             : core.state == .awaitingInstall
             ? "Verified staged artifact · installation pending; task is not complete."
             : "OpenClaw core state: " + core.state.rawValue
+        }
         let root = ParallelAgentTask.Node(id: rootID, title: "OpenClaw task", role: .coordinator,
             state: rootState, startedAt: rootStarted, finishedAt: rootFinished,
             progressText: rootDescription,

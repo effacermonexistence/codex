@@ -174,6 +174,8 @@ const MAX_OUTPUT_BYTES = 256_000;
 const MAX_NATIVE_SUMMARY_BYTES = 512_000;
 const MAX_PUBLIC_WIRE_BYTES = 8_388_608;
 const MAX_USAGE_BYTES = 2_048;
+const INTENT_RESOLUTION_TIMEOUT_MS = 30_000;
+const INTENT_ROUTE_SURFACES = new Set(['local', 'codex', 'claude', 'claude-chat']);
 
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function keys(value, names) { return plain(value) && Object.keys(value).sort().join('|') === [...names].sort().join('|'); }
@@ -309,6 +311,61 @@ export class RCCRuntimeError extends Error {
 export function canonicalHostContext(value) { return stable(value); }
 export function hostContextFingerprint(value) { return sha(Buffer.from(canonicalHostContext(value))); }
 
+/** Original owner input stays snapshot.task. Only Core may persist a narrower
+ * effective task; every routing/verification path must use this same view. */
+export function executionTask(snapshot) { return snapshot.effective_task ?? snapshot.task; }
+
+function validateIntentResolution(value, original) {
+  assert(keys(value, ['schema', 'task_id', 'request_sha256', 'policy_sha256', 'source_fingerprint',
+    'kind', 'routes', 'best_effort', 'notices', 'reason', 'model_answer']) &&
+    value.schema === 1 && value.task_id === original.task_id &&
+    value.request_sha256 === original.request_sha256 && value.policy_sha256 === original.policy_sha256 &&
+    value.source_fingerprint === original.source_fingerprint &&
+    ['ordinary', 'routes', 'hold'].includes(value.kind) && typeof value.best_effort === 'boolean' &&
+    Array.isArray(value.routes) && value.routes.length <= 8 &&
+    value.routes.every(route => keys(route, ['surface', 'instruction']) &&
+      INTENT_ROUTE_SURFACES.has(route.surface) && boundedText(route.instruction, 12_000)) &&
+    new Set(value.routes.map(stable)).size === value.routes.length &&
+    Array.isArray(value.notices) && value.notices.length <= 16 &&
+    value.notices.every(notice => boundedText(notice, 4_096)) &&
+    (value.reason === null || boundedText(value.reason, 1_024)) &&
+    (value.model_answer === null || (typeof value.model_answer === 'string' &&
+      !value.model_answer.includes('\0') && Buffer.byteLength(value.model_answer) <= 4_096)),
+  'intent_resolution_invalid');
+  assert(value.kind === 'routes' ? value.routes.length > 0 && original.material_refs.length === 0 :
+    value.routes.length === 0 && value.best_effort === false, 'intent_resolution_scope_invalid');
+  assert(value.kind !== 'hold' || value.reason !== null, 'intent_resolution_hold_reason_missing');
+  return immutable(value);
+}
+
+/** Fixed, cross-language canonical receipt: not a user-authored authority
+ * token. The native executor independently recompiles the original request
+ * and raw model answer before accepting the narrow derived host context. */
+export function intentResolutionFingerprint(original, resolution) {
+  return sha(Buffer.from(stable({schema: 1, task_id: original.task_id,
+    request_sha256: original.request_sha256, policy_sha256: original.policy_sha256,
+    source_fingerprint: original.source_fingerprint, routes: resolution.routes,
+    best_effort: resolution.best_effort, model_answer: resolution.model_answer})));
+}
+
+function deriveIntentTask(original, resolution) {
+  assert(original.mode === 'auto' && original.host_context.explicit_routes == null &&
+    resolution.kind === 'routes', 'intent_derivation_scope_invalid');
+  const derived = immutable(original);
+  derived.mode = 'explicit_routing_test';
+  if (Object.hasOwn(original, 'provider_preference')) derived.provider_preference = 'auto';
+  derived.host_context.provider_preference = 'auto';
+  derived.host_context.require_read_only = true;
+  derived.host_context.explicit_routes = immutable(resolution.routes);
+  if (resolution.best_effort) derived.host_context.explicit_routes_best_effort = true;
+  derived.source_fingerprint = hostContextFingerprint(derived.host_context);
+  derived.core_routing = {schema: 1, original_source_fingerprint: original.source_fingerprint,
+    original_mode: 'auto', original_provider_preference: original.host_context.provider_preference,
+    original_require_read_only: original.host_context.require_read_only,
+    model_answer: resolution.model_answer, resolution_sha256: intentResolutionFingerprint(original, resolution)};
+  return validateTask(derived, {allowCoreRouting: true});
+}
+
 /** The explicit routes that still run. A GPT/ChatGPT-named route is dropped,
  * never substituted; the immutable host contract keeps the original list. A
  * route Core skipped at admission of a best-effort route test (`admittedTask`)
@@ -326,8 +383,8 @@ export function effectiveExplicitRoutes(task) {
  * skipped ones are marked on a copy, the immutable task keeps the original. */
 export function admittedTask(snapshot) {
   const skipped = snapshot?.skipped_routes;
-  if (!Array.isArray(skipped) || skipped.length === 0) return snapshot.task;
-  const task = structuredClone(snapshot.task);
+  if (!Array.isArray(skipped) || skipped.length === 0) return executionTask(snapshot);
+  const task = structuredClone(executionTask(snapshot));
   const routes = task.host_context?.explicit_routes;
   for (const item of skipped) if (Array.isArray(routes) && routes[item.index]) routes[item.index].skipped = true;
   return task;
@@ -341,10 +398,11 @@ function validCapacityPlan(plan) {
     int(plan.codex, 0, 100) && int(plan.claude, 0, 100) && plan.codex + plan.claude > 0);
 }
 
-function validateTask(task) {
+function validateTask(task, {allowCoreRouting = false} = {}) {
   const required = ['schema', 'task_id', 'request', 'request_sha256', 'objective', 'policy_sha256',
     'source_fingerprint', 'mode', 'material_refs', 'budget', 'host_context'];
-  const optional = ['context', 'workspace', 'native_sessions', 'provider_preference', 'policy'];
+  const optional = ['context', 'workspace', 'native_sessions', 'provider_preference', 'policy',
+    ...(allowCoreRouting ? ['core_routing'] : [])];
   assert(plain(task) && required.every(key => Object.hasOwn(task, key)) &&
     Object.keys(task).every(key => required.includes(key) || optional.includes(key)), 'task_shape_invalid');
   assert(task.schema === 1 && ID.test(task.task_id) && boundedText(task.request, 64_000) &&
@@ -406,6 +464,19 @@ function validateTask(task) {
       (h.explicit_routes_best_effort === true && Array.isArray(h.explicit_routes))) &&
     hostContextFingerprint(h) === task.source_fingerprint, 'host_context_invalid');
   assert(Buffer.byteLength(stable(task)) <= MAX_TASK_BYTES, 'task_oversize');
+  if (task.core_routing !== undefined) {
+    const core = task.core_routing;
+    assert(allowCoreRouting && keys(core, ['schema', 'original_source_fingerprint', 'original_mode',
+      'original_provider_preference', 'original_require_read_only', 'model_answer', 'resolution_sha256']) &&
+      core.schema === 1 && HASH.test(core.original_source_fingerprint) && core.original_mode === 'auto' &&
+      boundedText(core.original_provider_preference, 256) && typeof core.original_require_read_only === 'boolean' &&
+      (core.model_answer === null || (typeof core.model_answer === 'string' &&
+        !core.model_answer.includes('\0') && Buffer.byteLength(core.model_answer) <= 4_096)) &&
+      HASH.test(core.resolution_sha256) && task.mode === 'explicit_routing_test' &&
+      h.require_read_only === true && h.provider_preference === 'auto' &&
+      (task.provider_preference === undefined || task.provider_preference === 'auto'),
+    'core_routing_invalid');
+  }
   return immutable(task);
 }
 
@@ -2049,8 +2120,8 @@ function requestedSurface(snapshot, child) {
   // Those children were created from the full original list (GPT routes
   // included), so their ordinals index that immutable list, not the
   // GPT-filtered routes a new hold or plan uses.
-  const routes = snapshot.task.host_context?.explicit_routes;
-  if (snapshot.task.mode !== 'explicit_routing_test' || !Array.isArray(routes)) return null;
+  const routes = executionTask(snapshot).host_context?.explicit_routes;
+  if (executionTask(snapshot).mode !== 'explicit_routing_test' || !Array.isArray(routes)) return null;
   const ordinal = /^requested-([1-8])$/.exec(child.id);
   if (ordinal) {
     const route = routes[Number(ordinal[1]) - 1];
@@ -2077,6 +2148,11 @@ function publicSnapshot(snapshot) {
     }),
     result: snapshot.result ? immutable(snapshot.result) : null,
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
+    ...(snapshot.intent_resolution_state ? {routing_intent: {
+      state: snapshot.intent_resolution_state,
+      notices: immutable(snapshot.intent_resolution?.notices ?? []),
+      reason: snapshot.intent_resolution?.reason ?? snapshot.intent_resolution_error ?? null,
+      resolution_sha256: snapshot.effective_task?.core_routing?.resolution_sha256 ?? null}} : {}),
     // A best-effort route test's routes Core did not run, with the reason.
     ...(Array.isArray(snapshot.skipped_routes) && snapshot.skipped_routes.length ? {
       skipped_routes: snapshot.skipped_routes.map(({surface, instruction, reason}) => ({surface, instruction, reason}))} : {}),
@@ -2151,7 +2227,7 @@ function settledReadOnly(child, legacyBefore = null) {
 /** An owner start's cutoff for a pre-attestation record (settledReadOnly):
  * its task's whole duration budget ago. */
 function legacySettleCutoff(snapshot) {
-  return Date.now() - snapshot.task.budget.max_duration_ms;
+  return Date.now() - executionTask(snapshot).budget.max_duration_ms;
 }
 /** What a returned record attests about its native turn, on its attempt
  * entry: settled_side_effects only when the adapter attested the turn ended
@@ -2230,7 +2306,7 @@ function alive(pid) {
  * registers none, so every graded node runs its reference route. `ledgerStats`
  * overrides the ledger reader the ladder gate uses (tests only); `ledgerLog`
  * receives a ledger write failure code, which never fails or holds a task. */
-export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation,
+export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                          maximumWorkers = 4, cancelGraceMs = 5_000,
                                          verifierRegistry = null, ledgerStats = null, ledgerLog = null} = {}) {
@@ -2242,6 +2318,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
     typeof family === 'string' && family.length <= 128 && typeof verify === 'function'), 'verifier_registry_invalid');
   assert(ledgerStats === null || typeof ledgerStats === 'function', 'ledger_stats_invalid');
   assert(ledgerLog === null || typeof ledgerLog === 'function', 'ledger_log_invalid');
+  assert(resolveIntent === undefined || typeof resolveIntent === 'function', 'intent_resolver_invalid');
   await mkdir(stateDir, {recursive: true, mode: 0o700});
   const directory = await lstat(stateDir);
   assert(directory.isDirectory() && !directory.isSymbolicLink() &&
@@ -2279,7 +2356,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   } catch (error) { db.close(); throw error; }
 
   const ledger = openRoutingLedger(stateDir);
-  const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation,
+  const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, cancelGraceMs,
                                  transaction, verifierRegistry: registry, ledger,
@@ -2291,12 +2368,13 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 }
 
 class RCCRuntime {
-  constructor({db, token, stateDir, catalog, plan, execute, executeContinuation,
+  constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                maximumWorkers, cancelGraceMs, transaction, verifierRegistry, ledger, ledgerStats, ledgerLog}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
+    this.resolveIntent = resolveIntent;
     this.stageSelfUpdate = stageSelfUpdate;
     this.reconcileInstallation = reconcileInstallation;
     this.cancelInstallation = cancelInstallation;
@@ -2314,6 +2392,10 @@ class RCCRuntime {
     this.maximumWorkers = maximumWorkers; this.cancelGraceMs = cancelGraceMs;
     this.transaction = transaction;
     this.runningTasks = new Map(); this.controllers = new Map();
+    // The original task's compiler is cancellable work of THIS Core owner,
+    // never a second task/queue. Keep it tracked until the actual callback
+    // settles, even when a timeout has already held the task.
+    this.intentControllers = new Map();
     this.installationObservations = new Map();
     this.poolReservations = new Set(); this.activeWriteWorkspaces = new Set();
     // Per task: the catalog bind instant a pool spread already re-probed.
@@ -2362,7 +2444,7 @@ class RCCRuntime {
   _holdExplicitRoutes(taskID, reason) {
     return this._update(taskID, 'explicit_routes_held', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
-      const routes = heldExplicitRoutes(snapshot.task);
+      const routes = heldExplicitRoutes(executionTask(snapshot));
       if (Array.isArray(routes)) snapshot.children = routes.map((route, index) => ({
         id: `requested-${index + 1}`, state: 'held', attempt_id: null,
         candidate_id: null, attempts: 0, attempt_history: [], repair_needed: false,
@@ -2493,11 +2575,15 @@ class RCCRuntime {
       const active = state.children.some(child => child.state === 'running' && child.dispatched_at_ms !== null);
       state.state = active ? 'cancelling' : 'cancelled';
       state.error = active ? 'cancellation_pending_effect_reconciliation' : 'cancelled_before_dispatch';
+      if (state.intent_resolution_state === 'resolving') {
+        state.intent_resolution_state = 'held'; state.intent_resolution_error = state.error;
+      }
       if (!active) for (const child of state.children)
         if (child.state === 'queued' || child.state === 'waiting') child.state = 'cancelled';
     });
     for (const [attemptID, item] of this.controllers) if (item.taskID === value.task_id)
       item.controller.abort(new RCCRuntimeError('cancel_requested'));
+    this.intentControllers.get(value.task_id)?.controller.abort(new RCCRuntimeError('cancel_requested'));
     if (snapshot.state === 'cancelling') {
       const timer = setTimeout(() => {
         if (this.closed) return;
@@ -2552,19 +2638,22 @@ class RCCRuntime {
     // Admission pause is deliberately not cancellation: existing native work
     // and dependent nodes must finish under this owner before a safe upgrade.
     this.quiescing = true;
+    for (const item of this.intentControllers.values())
+      item.controller.abort(new RCCRuntimeError('intent_resolution_quiesced'));
     const rows = this.transaction(() => this.db.prepare('SELECT snapshot FROM tasks').all()
       .map(row => JSON.parse(row.snapshot)));
     const active = rows.reduce((count, snapshot) => count + snapshot.children.filter(child =>
       child.state === 'running' && child.dispatched_at_ms !== null).length, 0);
     const inProgress = rows.some(snapshot => ['planning', 'running', 'cancelling'].includes(snapshot.state));
     return {schema: 1, request_id: value.request_id, owner_pid: process.pid,
-      active_dispatches: Math.max(active, this.controllers.size) + this.installationObservations.size,
+      active_dispatches: Math.max(active, this.controllers.size) + this.installationObservations.size + this.intentControllers.size,
       queued_preserved: true, queued_tasks: rows.filter(snapshot => snapshot.state === 'queued').length,
       accepting_submissions: false,
       // A prior terminal effects_uncertain row remains durable and unreplayed;
       // it is not evidence that this owner still has a live child process.
       safe_to_stop: !inProgress && this.runningTasks.size === 0 &&
-        this.controllers.size === 0 && this.activeWorkers === 0 && this.installationObservations.size === 0};
+        this.controllers.size === 0 && this.intentControllers.size === 0 &&
+        this.activeWorkers === 0 && this.installationObservations.size === 0};
   }
 
   reconcileRestart() {
@@ -2581,6 +2670,9 @@ class RCCRuntime {
         snapshot.error = dispatched ? 'restart_active_dispatch_no_replay' :
           pendingContinuation ? 'continuation_pending_recovery_required' :
           verifierPending ? 'restart_node_verifier_pending' : 'restart_before_dispatch';
+        if (snapshot.intent_resolution_state === 'resolving') {
+          snapshot.intent_resolution_state = 'held'; snapshot.intent_resolution_error = snapshot.error;
+        }
         for (const child of snapshot.children) if (child.state === 'running') {
           child.state = child.stage ? 'completed' : dispatched ? 'effects_uncertain' : 'held';
           if (child.state === 'effects_uncertain') settleDispatchEntry(child, 'effects_uncertain');
@@ -2679,7 +2771,7 @@ class RCCRuntime {
    * inside a transaction; the task snapshot itself is unchanged. */
   _leaseEvent(snapshot, kind) {
     this.db.prepare('INSERT INTO events(task_id,revision,kind,at_ms,payload) VALUES(?,?,?,?,?)')
-      .run(snapshot.task.task_id, snapshot.revision, kind, Date.now(), stable(publicSnapshot(snapshot)));
+      .run(executionTask(snapshot).task_id, snapshot.revision, kind, Date.now(), stable(publicSnapshot(snapshot)));
   }
 
   async _aggregateReceipt(taskID, children, output) {
@@ -2733,13 +2825,13 @@ class RCCRuntime {
     assert(snapshot.plan.nodes.length === 1 && node.kind === 'agent' &&
       candidate.surface === 'claude' && candidate.transport === 'claude_cli' &&
       candidate.scope === 'workspace_write' && candidate.permission_profile === 'workspace_write' &&
-      snapshot.task.host_context.require_read_only === false &&
+      executionTask(snapshot).host_context.require_read_only === false &&
       result.execution_verified && result.status === 'succeeded' &&
       !snapshot.cancel_requested, 'handback_original_authority_unavailable');
     let sourceRoot, workspace;
     try {
       sourceRoot = realpathSync(h.protected_root);
-      workspace = realpathSync(snapshot.task.host_context.workspace);
+      workspace = realpathSync(executionTask(snapshot).host_context.workspace);
     } catch { throw new RCCRuntimeError('handback_source_root_unavailable'); }
     assert(sourceRoot === h.protected_root && isAbsolute(sourceRoot), 'handback_source_root_not_canonical');
     if (h.kind === 'os1_change_required')
@@ -2750,17 +2842,17 @@ class RCCRuntime {
   _authorizeRepairSource(snapshot, node, candidate, result) {
     const source = result.repair_source;
     assert(snapshot.plan.nodes.length === 1 && node.kind === 'agent' &&
-      node.instruction === snapshot.task.request && node.dependencies.length === 0 &&
+      node.instruction === executionTask(snapshot).request && node.dependencies.length === 0 &&
       ['codex', 'claude'].includes(candidate.surface) &&
       candidate.scope === 'workspace_write' && candidate.permission_profile === 'workspace_write' &&
-      snapshot.task.host_context.require_read_only === false &&
+      executionTask(snapshot).host_context.require_read_only === false &&
       result.status === 'succeeded' && result.execution_verified &&
       result.side_effects === 'confirmed' && source.source_before_clean === true &&
       !snapshot.cancel_requested, 'repair_source_original_authority_unavailable');
     let sourceRoot, workspace;
     try {
       sourceRoot = realpathSync(source.source_root);
-      workspace = realpathSync(snapshot.task.host_context.workspace);
+      workspace = realpathSync(executionTask(snapshot).host_context.workspace);
     } catch { throw new RCCRuntimeError('repair_source_root_unavailable'); }
     assert(sourceRoot === source.source_root && within(sourceRoot, workspace),
       'repair_source_workspace_unbound');
@@ -2847,7 +2939,7 @@ class RCCRuntime {
         });
         return;
       }
-      handoff = validateInstallHandoff(response, snapshot.task, node, source, result.attempt_id);
+      handoff = validateInstallHandoff(response, executionTask(snapshot), node, source, result.attempt_id);
     } catch (error) {
       if (!this.closed)
         this._update(taskID, 'source_stage_effects_uncertain', state => {
@@ -2878,10 +2970,81 @@ class RCCRuntime {
     });
   }
 
+  async _resolveTaskIntent(taskID) {
+    const state = this._load(taskID);
+    if (!state || TERMINAL.has(state.state) || state.cancel_requested) return null;
+    // Exactly one persisted interpretation per original task. Restart never
+    // replays a planning task, and a catalog refresh never calls this path.
+    if (state.intent_resolution !== undefined) return executionTask(state);
+    const original = state.task;
+    if (original.mode !== 'auto' || typeof this.resolveIntent !== 'function') return original;
+    const remaining = original.budget.max_duration_ms - (Date.now() - state.created_at_ms);
+    if (remaining <= 0) { this._hold(taskID, 'task_duration_budget_exhausted'); return null; }
+    this._update(taskID, 'intent_resolution_started', snapshot => {
+      assert(snapshot.state === 'queued' && !snapshot.cancel_requested, 'intent_resolution_not_active');
+      snapshot.state = 'planning';
+      snapshot.intent_resolution_state = 'resolving';
+    });
+    const controller = new AbortController(), item = {controller, promise: null};
+    this.intentControllers.set(taskID, item);
+    let timeout, abort;
+    const aborted = new Promise((_, reject) => {
+      abort = () => reject(controller.signal.reason ?? new RCCRuntimeError('intent_resolution_aborted'));
+      controller.signal.addEventListener('abort', abort, {once: true});
+    });
+    const expiresAt = Math.min(Date.now() + INTENT_RESOLUTION_TIMEOUT_MS,
+      state.created_at_ms + original.budget.max_duration_ms);
+    timeout = setTimeout(() => controller.abort(new RCCRuntimeError('intent_resolution_timeout')),
+      Math.max(0, expiresAt - Date.now()));
+    // Promise.resolve captures synchronous throws too. A non-cooperative
+    // callback remains tracked for quiescence until it actually terminates;
+    // the race never installs a late result or replays its original request.
+    item.promise = Promise.resolve().then(() => {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      return this.resolveIntent({task: immutable(original), signal: controller.signal});
+    })
+      .finally(() => { if (this.intentControllers.get(taskID) === item) this.intentControllers.delete(taskID); });
+    try {
+      const resolution = validateIntentResolution(await Promise.race([item.promise, aborted]), original);
+      if (this.closed) return null;
+      const current = this._load(taskID);
+      if (!current || current.cancel_requested || TERMINAL.has(current.state)) return null;
+      if (Date.now() >= expiresAt) throw new RCCRuntimeError('intent_resolution_timeout');
+      if (controller.signal.aborted || this.stopping || this.quiescing) {
+        this._hold(taskID, 'intent_resolution_interrupted'); return null;
+      }
+      const effective = resolution.kind === 'routes' ? deriveIntentTask(original, resolution) : null;
+      const changed = this._update(taskID, 'intent_resolution_admitted', snapshot => {
+        assert(!snapshot.cancel_requested && !TERMINAL.has(snapshot.state) &&
+          snapshot.intent_resolution === undefined && stable(snapshot.task) === stable(original),
+        'intent_resolution_raced_state');
+        snapshot.intent_resolution = resolution;
+        snapshot.intent_resolution_state = resolution.kind === 'hold' ? 'held' : resolution.kind;
+        if (effective !== null) snapshot.effective_task = effective;
+        if (resolution.kind === 'hold') { snapshot.state = 'held'; snapshot.error = resolution.reason; }
+      });
+      return resolution.kind === 'hold' ? null : executionTask(changed);
+    } catch (error) {
+      if (this.closed) return null;
+      const current = this._load(taskID);
+      if (current && !current.cancel_requested && !TERMINAL.has(current.state)) {
+        const reason = error instanceof RCCRuntimeError ? error.code : 'intent_resolver_failed';
+        this._update(taskID, 'intent_resolution_failed', snapshot => {
+          snapshot.intent_resolution_state = 'held'; snapshot.intent_resolution_error = reason;
+          snapshot.state = 'held'; snapshot.error = reason;
+        });
+      }
+      return null;
+    } finally {
+      clearTimeout(timeout);
+      controller.signal.removeEventListener('abort', abort);
+    }
+  }
+
   async _runTask(taskID) {
     let state = this._load(taskID);
     if (!state || state.state !== 'queued') return;
-    const {task} = state;
+    let task = executionTask(state);
     if (task.mode === 'explicit_routing_test' && !Array.isArray(task.host_context.explicit_routes)) {
       this._hold(taskID, 'explicit_route_contract_missing'); return;
     }
@@ -2914,7 +3077,12 @@ class RCCRuntime {
         return;
       }
     }
-    state = this._update(taskID, 'planning', snapshot => { snapshot.state = 'planning'; });
+    task = await this._resolveTaskIntent(taskID);
+    if (task === null || this.closed || this.stopping || this.quiescing) return;
+    state = this._update(taskID, 'planning', snapshot => {
+      assert(!snapshot.cancel_requested && !TERMINAL.has(snapshot.state), 'planning_raced_cancel');
+      snapshot.state = 'planning';
+    });
     if (typeof this.catalog !== 'function') {
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, 'catalog_unavailable');
       else this._hold(taskID, 'catalog_unavailable');
@@ -3062,7 +3230,7 @@ class RCCRuntime {
         candidate_id: 'local-core', attempts: 0, attempt_history: [], repair_needed: false,
         dispatched_at_ms: null, output, execution_verified: true,
         task_quality: 'task_verified', parity_state: 'unverified', native_receipt: null,
-        native_summary: null, usage: null, selected_config: config, requested_surface: null, instruction: snapshot.task.request,
+        native_summary: null, usage: null, selected_config: config, requested_surface: null, instruction: executionTask(snapshot).request,
         dependencies: [], started_at_ms: now, finished_at_ms: now}];
       snapshot.state = 'completed';
       snapshot.result = {output, execution_verified: true, task_verified: true,
@@ -3144,7 +3312,7 @@ class RCCRuntime {
     const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
     // An escalated tier route stays at the reference wherever it moves.
     const escalated = child.ladder?.source === 'tier' && child.ladder.escalated === true;
-    const choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, fresh,
+    const choice = selectRouteCandidate(node, child.routing_decision.route_class, executionTask(snapshot), fresh,
       Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs, referenceOnly: escalated,
         costEvidence: query => this._costEvidence(query)});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
@@ -3206,15 +3374,15 @@ class RCCRuntime {
       const poolKey = this._poolKey(planned);
       if (!poolKey || !this.poolReservations.has(poolKey)) return false;
       const owner = this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey);
-      if (owner?.task_id !== snapshot.task.task_id) return false;
+      if (owner?.task_id !== executionTask(snapshot).task_id) return false;
     }
     const pick = (catalog, now) => {
       try {
-        const choice = selectRouteCandidate(node, child.routing_decision.route_class, snapshot.task, catalog,
+        const choice = selectRouteCandidate(node, child.routing_decision.route_class, executionTask(snapshot), catalog,
           now, {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id],
             costEvidence: query => this._costEvidence(query)});
         return choice.candidate.quota_pool !== planned.quota_pool &&
-          this._leasePossible(choice.candidate, snapshot.task) ? choice : null;
+          this._leasePossible(choice.candidate, executionTask(snapshot)) ? choice : null;
       } catch { return null; }
     };
     let state = snapshot;
@@ -3264,7 +3432,7 @@ class RCCRuntime {
     assert(prior && !prior.cancel_requested && !TERMINAL.has(prior.state), 'catalog_refresh_not_active');
     assert(typeof this.catalog === 'function', 'catalog_unavailable');
     let fresh;
-    try { fresh = validateCatalog(await this.catalog(immutable(prior.task)), prior.task); }
+    try { fresh = validateCatalog(await this.catalog(immutable(executionTask(prior))), executionTask(prior)); }
     catch (error) { throw new RCCRuntimeError(error.code ?? 'catalog_refresh_failed'); }
     // A row a node was admitted with keeps its exact configuration even after
     // it left and re-entered the catalog.
@@ -3356,7 +3524,7 @@ class RCCRuntime {
     const child = snapshot.children.find(c => c.id === childID);
     const oldNode = snapshot.plan.nodes.find(n => n.id === childID);
     if (!child?.repair_needed || !oldNode) return;
-    if (chargedAttempts(child, Boolean(this._resolverNode(snapshot, childID))) >= snapshot.task.budget.max_attempts) {
+    if (chargedAttempts(child, Boolean(this._resolverNode(snapshot, childID))) >= executionTask(snapshot).budget.max_attempts) {
       this._update(taskID, 'safe_retry_budget_exhausted', state => {
         state.children.find(c => c.id === childID).state = 'failed';
         state.state = 'failed'; state.error = 'verified_not_dispatched_retry_exhausted';
@@ -3418,7 +3586,7 @@ class RCCRuntime {
       assert(alternate && alternate.scope === failed.scope &&
         alternate.permission_profile === failed.permission_profile &&
         alternate.tools.every(tool => failed.tools.includes(tool)), 'repair_authority_broadened');
-      this._candidate(snapshot.task, fresh, proposed.nodes.find(n => n.id === childID));
+      this._candidate(executionTask(snapshot), fresh, proposed.nodes.find(n => n.id === childID));
     } catch (error) {
       this._hold(taskID, error instanceof RCCRuntimeError ? error.code : 'subset_replan_unavailable');
       return;
@@ -3467,7 +3635,7 @@ class RCCRuntime {
       // A best-effort route test (route-all) runs every route it can: a route
       // held without effects (the local model gave no answer) does not stop
       // the routes still queued behind a shared pool. Anything else settles.
-      const continuing = snapshot.task.host_context?.explicit_routes_best_effort === true &&
+      const continuing = executionTask(snapshot).host_context?.explicit_routes_best_effort === true &&
         !snapshot.children.some(c => ['failed', 'effects_uncertain'].includes(c.state)) &&
         snapshot.children.some(c => c.state === 'queued');
       if (!continuing && snapshot.children.some(c => ['failed', 'held', 'effects_uncertain'].includes(c.state))) {
@@ -3508,7 +3676,7 @@ class RCCRuntime {
         }
         return;
       }
-      const cap = Math.min(snapshot.task.budget.max_parallel, this.maximumWorkers);
+      const cap = Math.min(executionTask(snapshot).budget.max_parallel, this.maximumWorkers);
       const ready = snapshot.plan.nodes.filter(node => {
         const child = snapshot.children.find(c => c.id === node.id);
         return child?.state === 'queued' && node.dependencies.every(finished.has.bind(finished));
@@ -3535,7 +3703,7 @@ class RCCRuntime {
         // another task's lease on the pool it left. bound_rows stays for
         // validation only.
         const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
-        if (planned && !this._leasePossible(planned, snapshot.task)) {
+        if (planned && !this._leasePossible(planned, executionTask(snapshot))) {
           // Independent graded work waits for the busy pool only when the
           // other admitted pool cannot take it now either.
           if (await this._spreadAcrossPools(taskID, snapshot, node, planned)) { reResolved = true; break; }
@@ -3547,7 +3715,7 @@ class RCCRuntime {
           // A host-resolved row may be replaced if it vanished, so its absence
           // is checked by _candidate instead of failing the refresh itself.
           fresh = await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
-          candidate = this._candidate(snapshot.task, fresh, node);
+          candidate = this._candidate(executionTask(snapshot), fresh, node);
           refreshFailures.delete(node.id);
         }
         catch (error) {
@@ -3575,7 +3743,7 @@ class RCCRuntime {
           return;
         }
         let reservation;
-        try { reservation = this._tryReserve(candidate, snapshot.task, node.id); }
+        try { reservation = this._tryReserve(candidate, executionTask(snapshot), node.id); }
         catch (error) {
           if (active.size) await this._waitForActiveOrTerminal(active, taskID);
           if (!TERMINAL.has(this._load(taskID).state)) this._hold(taskID, error.code ?? 'write_scope_unavailable');
@@ -3614,8 +3782,8 @@ class RCCRuntime {
   }
 
   _ticket(snapshot, node, candidate, attemptID) {
-    const policySource = snapshot.task.host_context.owner_policy;
-    const sourceSHA = policySource?.sourceSHA256 ?? policySource?.source_sha256 ?? snapshot.task.policy?.source_sha256;
+    const policySource = executionTask(snapshot).host_context.owner_policy;
+    const sourceSHA = policySource?.sourceSHA256 ?? policySource?.source_sha256 ?? executionTask(snapshot).policy?.source_sha256;
     assert(HASH.test(sourceSHA ?? ''), 'policy_source_unavailable');
     const isSingleFullAgent = snapshot.plan?.nodes.length === 1 &&
       snapshot.plan.nodes[0]?.id === node.id && node.kind === 'agent';
@@ -3631,17 +3799,18 @@ class RCCRuntime {
     const cheapLadder = child?.route_kind === 'ladder' && child.ladder != null && child.ladder.escalated !== true;
     const pendingTier = child?.route_kind === 'tier' && pendingEscalation(child);
     const resumeSession = cheapLadder || pendingTier ? null : isSingleFullAgent && candidate.surface === 'codex' ?
-      snapshot.task.host_context.codex_session_id :
+      executionTask(snapshot).host_context.codex_session_id :
       isSingleFullAgent && candidate.surface === 'claude' ?
-        snapshot.task.host_context.claude_session_id : null;
+        executionTask(snapshot).host_context.claude_session_id : null;
     assert(resumeSession === null || ID.test(resumeSession), 'native_resume_session_invalid');
-    return {schema: 1, task_id: snapshot.task.task_id, node_id: node.id,
+    return {schema: 1, task_id: executionTask(snapshot).task_id, node_id: node.id,
       attempt_id: attemptID, candidate_id: candidate.id,
       objective: node.instruction,
-      original_request: snapshot.task.request, original_objective: snapshot.task.objective,
-      request_sha256: snapshot.task.request_sha256, policy_sha256: snapshot.task.policy_sha256,
-      policy_source_sha256: sourceSHA, source_fingerprint: snapshot.task.source_fingerprint,
-      host_context: immutable(snapshot.task.host_context),
+      original_request: executionTask(snapshot).request, original_objective: executionTask(snapshot).objective,
+      request_sha256: executionTask(snapshot).request_sha256, policy_sha256: executionTask(snapshot).policy_sha256,
+      policy_source_sha256: sourceSHA, source_fingerprint: executionTask(snapshot).source_fingerprint,
+      host_context: immutable(executionTask(snapshot).host_context),
+      ...(executionTask(snapshot).core_routing ? {core_routing: immutable(executionTask(snapshot).core_routing)} : {}),
       native_resume_session_id: resumeSession,
       configuration_sha256: candidate.configuration_sha256,
       selected_config: exactConfig(candidate), instruction: node.instruction,
@@ -3770,10 +3939,10 @@ class RCCRuntime {
       }
       snapshot = this._load(taskID);
       if (snapshot.cancel_requested || this.stopping) { this._markCancelled(taskID); return; }
-      if (snapshot.children.find(c => c.id === node.id).attempts >= snapshot.task.budget.max_attempts) {
+      if (snapshot.children.find(c => c.id === node.id).attempts >= executionTask(snapshot).budget.max_attempts) {
         this._holdContinuation(taskID, node.id, 'continuation_attempt_budget_exhausted'); return;
       }
-      if (Date.now() - snapshot.created_at_ms - ladderExemptMs(snapshot) >= snapshot.task.budget.max_duration_ms) {
+      if (Date.now() - snapshot.created_at_ms - ladderExemptMs(snapshot) >= executionTask(snapshot).budget.max_duration_ms) {
         this._holdContinuation(taskID, node.id, 'continuation_duration_budget_exhausted'); return;
       }
       // The ticket stays bound to the same row id; the ledger records the
@@ -3781,7 +3950,7 @@ class RCCRuntime {
       let current;
       try {
         const fresh = await this._refreshCatalog(taskID, [candidate.id]);
-        current = this._candidate(snapshot.task, fresh, node);
+        current = this._candidate(executionTask(snapshot), fresh, node);
       } catch (error) {
         this._holdContinuation(taskID, node.id, error.code ?? 'continuation_candidate_unavailable'); return;
       }
@@ -3797,8 +3966,8 @@ class RCCRuntime {
         protected_root: prior.handback.protected_root,
         source_head: prior.handback.source_head,
         protected_source_sha256: prior.handback.protected_source_sha256,
-        source_fingerprint: snapshot.task.source_fingerprint,
-        request_sha256: snapshot.task.request_sha256};
+        source_fingerprint: executionTask(snapshot).source_fingerprint,
+        request_sha256: executionTask(snapshot).request_sha256};
       let route = null;
       this._update(taskID, 'continuation_dispatch_started', state => {
         const child = state.children.find(c => c.id === node.id);
@@ -3928,7 +4097,7 @@ class RCCRuntime {
   /** Route facts for the routing ledger, fixed when an attempt dispatches.
    * `verifier` (internal) says a family verifier was relevant to it. */
   _ledgerRoute(snapshot, child, candidate) {
-    const explicitRoute = snapshot.task.mode === 'explicit_routing_test';
+    const explicitRoute = executionTask(snapshot).mode === 'explicit_routing_test';
     // An explicit route the host graded and bound (tier-routed catalog) keeps
     // its class, tier and REVAS guard as evidence; a planner-chosen explicit
     // row (older catalog) has none.
@@ -3962,7 +4131,7 @@ class RCCRuntime {
   _pendLedger(snapshot, child, candidate, attemptID) {
     const route = this._ledgerRoute(snapshot, child, candidate);
     this.db.prepare('INSERT OR REPLACE INTO ledger_pending(attempt_id,task_id,node_id,route) VALUES(?,?,?,?)')
-      .run(attemptID, snapshot.task.task_id, child.id, stable(route));
+      .run(attemptID, executionTask(snapshot).task_id, child.id, stable(route));
     return route;
   }
   _logLedger(error) {
@@ -4185,12 +4354,12 @@ class RCCRuntime {
       snapshot.catalog.candidates.find(c => c.id === id) ?? snapshot.bound_rows?.[id];
     const cheap = node && find(node.candidate_id);
     const tier = child.ladder?.source === 'tier';
-    const explicitRoute = snapshot.task.mode === 'explicit_routing_test';
+    const explicitRoute = executionTask(snapshot).mode === 'explicit_routing_test';
     let reference = find(child.ladder?.reference_candidate_id);
     if (tier && node && cheap) {
       const now = Date.now();
       const offered = reference && snapshot.catalog.candidates.find(c => c.id === reference.id);
-      if (!(offered && dispatchable(offered, snapshot.task, now))) {
+      if (!(offered && dispatchable(offered, executionTask(snapshot), now))) {
         // Now, else as last observed: the bound catalog's rows may have
         // outlived their validity window while the cheaper attempt ran, and
         // that must not make a reference observed then look unavailable
@@ -4198,7 +4367,7 @@ class RCCRuntime {
         for (const at of [now, snapshot.catalog_bound_at_ms]) {
           if (!Number.isSafeInteger(at)) continue;
           try {
-            reference = selectRouteCandidate(node, child.routing_decision?.route_class, snapshot.task,
+            reference = selectRouteCandidate(node, child.routing_decision?.route_class, executionTask(snapshot),
               snapshot.catalog, at, {referenceOnly: true, preferPool: cheap.quota_pool, avoidIDs: [cheap.id]}).candidate;
             break;
           } catch { /* Keep the admitted reference row, if any: dispatch re-resolves it. */ }
@@ -4252,7 +4421,7 @@ class RCCRuntime {
   /** `releaseReservation` (idempotent) frees this node's worker slot and pool
    * reservation once no provider work runs for it, before a node verifier. */
   async _executeNode(taskID, node, candidate, releaseReservation = null) {
-    const task = this._load(taskID).task;
+    const task = executionTask(this._load(taskID));
     const start = this._load(taskID);
     const resolver = Boolean(this._resolverNode(start, node.id));
     // One dispatch per call: every path below returns. The budget counts
@@ -4574,7 +4743,9 @@ class RCCRuntime {
     assert(int(timeoutMs, 0, 60_000), 'close_timeout_invalid');
     this.stopping = true;
     for (const item of this.controllers.values()) item.controller.abort(new RCCRuntimeError('runtime_closing'));
-    await Promise.race([Promise.allSettled([...this.runningTasks.values(), ...this.installationObservations.values()]),
+    for (const item of this.intentControllers.values()) item.controller.abort(new RCCRuntimeError('runtime_closing'));
+    await Promise.race([Promise.allSettled([...this.runningTasks.values(), ...this.installationObservations.values(),
+      ...[...this.intentControllers.values()].map(item => item.promise)]),
       new Promise(resolve => setTimeout(resolve, timeoutMs))]);
     const rows = this.transaction(() => this.db.prepare('SELECT task_id,snapshot FROM tasks').all());
     for (const row of rows) {
@@ -4588,6 +4759,9 @@ class RCCRuntime {
         // so, instead of claiming nothing was dispatched.
         snapshot.error = dispatched ? 'owner_stopped_active_dispatch' :
           verifierPending ? 'owner_stopped_node_verifier_pending' : 'owner_stopped_before_dispatch';
+        if (snapshot.intent_resolution_state === 'resolving') {
+          snapshot.intent_resolution_state = 'held'; snapshot.intent_resolution_error = snapshot.error;
+        }
         for (const child of snapshot.children) {
           if (child.state === 'running') {
             child.state = dispatched ? 'effects_uncertain' : 'held';

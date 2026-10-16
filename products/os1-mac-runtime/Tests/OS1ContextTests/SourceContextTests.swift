@@ -24,6 +24,16 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--desktop-relay-checkpoint-only") { try runDesktopRelayCheckpointFixtures(); return }
         if CommandLine.arguments.contains("--installed-native-entry-only") { try runInstalledNativeEntryFixtures(); return }
         if CommandLine.arguments.contains("--installed-resource-seal-only") { try runInstalledResourceSealFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-core-validate-request") {
+            guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--rcc-core-validate-request" else {
+                throw RCCRuntimeContract.Rejection.invalidInput
+            }
+            let request = try RCCRuntimeContract.decodeRequest(Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
+            let receipt: [String: Any] = ["validated": true, "task_id": request.taskID]
+            print(String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self))
+            return
+        }
+        if CommandLine.arguments.contains("--rcc-core-intent-only") { try runRCCCoreRoutingCompilerFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--rcc-native-catalog-builder-only") { try runRCCNativeCatalogBuilderFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
@@ -51,6 +61,7 @@ final class SourceContextTests {
         try runTaskQualityCorrectionFixtures()
         try runLocalTaskInterpretationFixtures()
         try runRCCRuntimeContractFixture()
+        try runRCCCoreRoutingCompilerFixtures()
         try runRCCNativeCatalogBuilderFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
         try runRCCDelegatedEnvelopeFixtures()

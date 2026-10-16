@@ -22,6 +22,7 @@ test('durable local planner does not inherit a released submit RPC root', async 
   const native = join(root, 'native.mjs');
   const body = `#!${process.execPath}\nimport{readFileSync}from'node:fs';import{createHash}from'node:crypto';
 const p=JSON.parse(readFileSync(process.argv[4],'utf8'));const sha=s=>createHash('sha256').update(s).digest('hex');
+if(process.argv[2]==='rcc-intent'){const t=p.task;console.log(JSON.stringify({schema:1,task_id:t.task_id,request_sha256:t.request_sha256,policy_sha256:t.policy_sha256,source_fingerprint:t.source_fingerprint,kind:'ordinary',routes:[],best_effort:false,notices:[],reason:null}));process.exit(0);}
 if(process.argv[1]&&process.argv[2]==='rcc-catalog') {await new Promise(r=>setTimeout(r,35));const n=Date.now();console.log(JSON.stringify({schema:1,task_id:p.task_id,request_sha256:p.request_sha256,candidates:[{id:'fixture',surface:'codex',transport:'codex_app_server',account_id:'fixture',model:'fixture',effort:'low',tools:[],scope:'read_only',permission_profile:'read_only',quota_pool:'openai_codex',allowed_paths:[],configuration_sha256:sha('fixture'),availability:'available',availability_observed_at_ms:n,availability_valid_until_ms:n+300000,quota_remaining_fraction:1,quota_observed_at_ms:n,quota_valid_until_ms:n+300000,quality_state:'policy_admitted',estimated_cost_units:1}]}));}
 else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,task_id:p.task_id,node_id:p.node_id,attempt_id:p.attempt_id,candidate_id:p.candidate_id,configuration_sha256:p.configuration_sha256,selected_config:p.selected_config,acknowledged_config:p.selected_config,observed_config:null,status:'succeeded',dispatch_stage:'dispatched',side_effects:'none',output:'hello',execution_verified:true,task_verified:false,task_quality:'execution_only',parity_state:'unverified',native_receipt:'private-fixture-receipt',usage:{provider_calls:0},error:null,native_summary:null}));else process.exit(91);`;
   await writeFile(native, body, { mode: 0o700 });
@@ -111,6 +112,7 @@ const p=JSON.parse(readFileSync(inputFile,'utf8')),root=realpathSync(process.env
 const sha=x=>createHash('sha256').update(x).digest('hex');
 const log=entry=>appendFileSync(join(root,'native-calls.jsonl'),JSON.stringify({command,flag,...entry})+'\\n');
 const reply=value=>process.stdout.write(JSON.stringify(value));
+if(command==='rcc-intent'){const t=p.task;reply({schema:1,task_id:t.task_id,request_sha256:t.request_sha256,policy_sha256:t.policy_sha256,source_fingerprint:t.source_fingerprint,kind:'ordinary',routes:[],best_effort:false,notices:[],reason:null});process.exit(0);}
 if(command==='rcc-catalog') {
   log({task_id:p.task_id,request_sha256:p.request_sha256});
   const now=Date.now();reply({schema:1,task_id:p.task_id,request_sha256:p.request_sha256,candidates:[{

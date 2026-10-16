@@ -162,6 +162,26 @@ check("RCCNativeCatalogBuilder.codexInventory(" in catalog_host and "codex.quota
       "input.codexQuotaExhaustedModels = shaped.quotaExhausted" in catalog_host,
       "RCC catalog keeps a quota-exhausted Codex slug marked exhausted, never silently stripped")
 
+# Core-owned intent interpretation: compiler functions are pure native code;
+# OS1 transport submits raw input only, and the same task owns its lifecycle.
+ingress = section(MAIN, "func runOpenClawRCCTask(", "\n}")
+check("mode: .auto" in ingress and "explicitRoutes: nil" in ingress and
+      "request: prompt" in ingress and "objective: prompt" in ingress,
+      "ingress submits original input/settings once, not a precomputed semantic plan")
+check(all(name not in ingress for name in ["RouteFanout.plan", "interpretRoutingOrder(",
+      "ollamaAsk", "routeAllRouting(", "BackendHealth.load", "localModelReady()"]),
+      "ingress has no interpreter, availability selector or pre-Core semantic hold")
+check('case "rcc-intent":' in MAIN and 'RCCCoreRoutingCompiler.compileEnvelope(rccPrivateInput(arguments[2]))' in MAIN,
+      "native bridge exposes only pure source-bound intent compilation")
+check("routingIntentResolver" in PLUGIN and "resolveIntent: routingIntentResolver({stateDir," in PLUGIN and
+      "api.runtime.llm.complete(request)" in PLUGIN and "model_schema_json" in PLUGIN,
+      "same OpenClaw service performs optional intent completion with original schema order")
+check("snapshot.intent_resolution" in RUNTIME and "snapshot.effective_task" in RUNTIME and
+      "executionTask(snapshot)" in RUNTIME and "intent_resolution_invalid" in RUNTIME,
+      "original task and source-bound derivation stay separate across execution")
+check("this.intentControllers" in RUNTIME and "intent_cancelled" in PLUGIN and
+      "intent_resolution_timeout" in RUNTIME,
+      "intent operation belongs to Core cancellation and bounded lifetime")
 pins = {
     "index.mjs": "pinnedPluginIndexSHA256",
     "openclaw.plugin.json": "pinnedPluginManifestSHA256",
@@ -241,25 +261,20 @@ check("LoginIdentityEnvironment.missing(in: env" in CLIENT and "env[\"OS1_RCC_ST
       "gateway process environment carries USER/LOGNAME for its native children")
 check("'USER', 'LOGNAME'" in PLUGIN, "bridge forwards USER/LOGNAME to native children")
 
-# Route-all (2026-10-14, build 381 task ac5a5fd6): an order to route to every
-# available route is one explicit route per surface, the local model included,
-# held before Core when nothing may run; never the routing order as one task.
-run_body = section(MAIN, "func runOpenClawRCCTask(", "let configuration = try await OwnerPolicyContext")
-check("routeAllRouting(prompt: prompt, capacityPlan: capacityPlan," in run_body and
-      "explicit = routeAll.routes" in run_body and
-      "requireReadOnly: requireReadOnly || routeAll != nil || parts != nil" in run_body and
-      "mode: fanout != nil || parts != nil || routeAll != nil ? .explicitRoutingTest : .auto" in run_body and
-      "var parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil" in run_body and
-      "RouteAllIntent.namesLocalRoute(prompt) ? nil : RouteFanout.plan(prompt)" in run_body,
-      "a route-all order (or named parts with the local model) becomes a read-only explicit route test on Auto")
-check("explicitRoutesBestEffort: routeAll != nil ? true : nil" in run_body and
-      "'explicit_routes_best_effort'" in RUNTIME and "export function admittedTask(snapshot)" in RUNTIME and
-      "unavailable.length === effective.length" in RUNTIME and
+# Build387: existing route-all semantics move into the pure compiler, after
+# Core accepted the original request. Availability belongs to the later catalog.
+COMPILER = (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text().split("public enum RCCCoreRoutingCompiler {", 1)[1]
+check("RouteAllIntent.namesLocalRoute(request)" in COMPILER and "RouteFanout.plan(request)" in COMPILER and
+      "RouteAllIntent.namedParts(request)" in COMPILER and "RouteAllIntent.order(request)" in COMPILER and
+      "RouteAllIntent.plan(order, available: RouteAllIntent.surfaceOrder)" in COMPILER,
+      "Core compiler preserves named/all grammar and all intended surfaces, without prefiltering by health")
+check("bestEffort: true" in COMPILER and "explicit_routes_best_effort" in RUNTIME and
+      "export function admittedTask(snapshot)" in RUNTIME and "unavailable.length === effective.length" in RUNTIME and
       "routeAllSkippedNotice(result.skippedRoutes)" in MAIN,
-      "route-all routes are best effort: Core skips (visibly) a route that cannot run, never the whole set")
-check(run_body.index("guard !routeAll.routes.isEmpty else {") < run_body.index("let host = RCCRuntimeContract.HostContext(") and
-      'RunSummary(status: "workflow_blocked", steps: [], monitorTaskID: taskID, workflowBlocker: routeAll.notice)' in run_body,
-      "a recognised route-all order with nothing to run is held before Core, never sent as one worker task")
+      "Core keeps best-effort route-all skipping visible and separate from mandatory named routes")
+check("return result(.hold" in COMPILER and "if let hold = order.hold" in COMPILER and
+      "snapshot.state = 'held'; snapshot.error = resolution.reason" in RUNTIME,
+      "recognised missing/unsafe payload is held within Core before any worker dispatch")
 check("LocalRouterBridge.localModelReady()" in catalog_fn and "input.localModel = .init(ready: ready, at: Date())" in catalog_fn and
       catalog_fn.index("LocalRouterBridge.localModelReady()") < catalog_fn.index("input.now = Date()") and
       "$0.surface == .local" in catalog_fn,
@@ -274,40 +289,20 @@ check("execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal)
 check("if (explicitRoute?.surface === 'local')" in RUNTIME and "'local_agent_node_not_explicit'" in RUNTIME and
       "export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';" in RUNTIME,
       "Core binds the local model only for an explicit local route")
-# Build 385 (2026-10-15): a routing order no parser recognises is read by the
-# local model, adopted only by deterministic checks, and then takes the
-# grammar's own path; a grammar hold is never re-read, a failed or disagreeing
-# reading is held before Core, and the run records the interpreter receipt
-# even when Core is not reached (2026-10-15 review).
+# Existing interpreter semantics remain a deterministic candidate gate. The
+# production local completion now belongs to Core, not the legacy test helper.
 INTERPRETER = (ROOT / "Sources/OS1Context/RoutingOrderInterpreter.swift").read_text()
-interpret_fn = section(MAIN, "func interpretRoutingOrder(", "func routingOrderInterpreterHostSelfTest(")
-check("let interpreted = await interpretRoutingOrder(prompt: prompt, fanoutPlanned: fanout != nil, parts: parts, routeAll: routeAll," in run_body and
-      run_body.index("var routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(") <
-      run_body.index("let interpreted = await interpretRoutingOrder(") < run_body.index("if let parts {") <
-      run_body.index("if let routeAll {") < run_body.index("let host = RCCRuntimeContract.HostContext(") and
-      "parts = interpreted.parts" in run_body and "routeAll = interpreted.routeAll" in run_body and
-      "routing: { routeAllRouting(order: $0, capacityPlan: capacityPlan, showCodex: showCodex, health: health," in run_body and
-      "guard LocalRouterBridge.localModelReady() else { throw RoutingOrderInterpreter.Failure.modelNotReady }" in run_body and
-      run_body.index("RuntimeActivity.emit(.routing, provider: \"local\", model: RoutingOrderInterpreter.model") <
-      run_body.index("return try await RoutingOrderInterpreter.ollamaAsk()(system, request)") and
-      "held.routingInterpreter = interpreted.receipt" in run_body and "interpreterRecord?.receipt = interpreted.receipt" in run_body,
-      "the interpreter runs after the deterministic parsers and before the route-all/named-part paths, on the pinned local model only, announced first")
-check("RoutingOrderInterpreter.consults(fanoutPlanned: fanoutPlanned, namedParts: parts != nil," in interpret_fn and
-      "grammarRecognized: routeAll != nil) else { return result }" in interpret_fn and "grammarHeld" not in interpret_fn and
-      "!fanoutPlanned && !namedParts && !grammarRecognized" in INTERPRETER and
-      "if outcome.unconfirmed { result.routeAll = RouteAllRouting(routes: [], notice: routingInterpreterHoldNotice(outcome.receipt)) }" in interpret_fn and
-      "public static func screen(" in INTERPRETER and "public static func verify(" in INTERPRETER and
-      INTERPRETER.index("switch screen(prompt, hasAttachments: hasAttachments)") <
-      INTERPRETER.index("raw = try await bounded(timeout) { try await ask(systemPrompt, facts.text) }") and
-      '","stream":false,"think":false,"format":"# + schemaJSON' in INTERPRETER and 'URL(string: "http://127.0.0.1:11434/api/chat")!' in INTERPRETER and
-      '"num_predict":\\#(maximumAnswerTokens)' in INTERPRETER,
-      "the model is consulted only when no parser recognised anything, after the prefilter, on loopback Ollama; a failed reading holds")
-run_cmd = section(MAIN, "let interpreterRecord = InterpretedRoutingRecord()", "if outputFormat == \"json\" { print(String(decoding: try JSONEncoder().encode(summary)")
-check("capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)" in run_cmd and
-      "summary.routingInterpreter = interpreterRecord.receipt" in run_cmd and
-      "summary.routingInterpreter = interpreted.receipt" in MAIN and "var routingInterpreter: RoutingOrderInterpreter.Receipt? = nil" in APP and
-      'appendTaskEvent(conversationID: submission.sessionID, kind: "routing_interpreter",' in APP,
-      "the run records the interpreter receipt, also when Core is not reached, and the app keeps it in the task log")
+check("RoutingOrderInterpreter.screen(request, hasAttachments: false)" in COMPILER and
+      "RoutingOrderInterpreter.decode(modelAnswer)" in COMPILER and
+      "RoutingOrderInterpreter.verify(answer, facts: facts)" in COMPILER and
+      COMPILER.index("if let order = RouteAllIntent.order(request)") <
+      COMPILER.index("RoutingOrderInterpreter.screen(") and
+      "model_schema_json" in COMPILER and "RoutingOrderInterpreter.schemaJSON" in COMPILER,
+      "same strict recipient/payload verifier runs after grammar and preserves exact schema literal")
+check("assertLocalModelCompletion(response, 'intent_local_model_receipt_invalid')" in PLUGIN and
+      "native('rcc-intent', {schema: 1, task, answer}, combined)" in PLUGIN and
+      "function deriveIntentTask(" in RUNTIME and "resolutionSHA256(modelAnswer: String?)" in COMPILER,
+      "Core's candidate is independently compiled and bound before native execution")
 check("try await routingOrderInterpreterHostSelfTest()" in MAIN and "try RoutingOrderInterpreter.selfTest()" in MAIN,
       "the interpreter's gate and host wiring run in os1 self-test with canned answers")
 check("RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil" in APP and

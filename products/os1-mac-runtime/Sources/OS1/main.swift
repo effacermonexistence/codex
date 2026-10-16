@@ -17795,6 +17795,12 @@ struct OS1Main {
                 let output = command == "rcc-stage" ? try rccStageOperation(input)
                     : try RCCRuntimeContract.encode(rccObserveInstallation(input, cancel: command == "rcc-install-cancel"))
                 print(String(decoding: output, as: UTF8.self))
+            case "rcc-intent":
+                guard arguments.count == 3, arguments[1] == "--request-file" else {
+                    throw OS1Error.message("RCC intent compiler accepts one private bound input")
+                }
+                let output = try RCCCoreRoutingCompiler.compileEnvelope(rccPrivateInput(arguments[2]))
+                print(String(decoding: output, as: UTF8.self))
             case "rcc-catalog", "rcc-adapter":
                 guard arguments.count == 3,
                       arguments[1] == (command == "rcc-catalog" ? "--request-file" : "--ticket-file") else {
@@ -19572,96 +19578,10 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
             "GPT is no longer a routed surface. Running on Codex with the same OpenAI account (\(surface.rawValue) → codex)."))
         surface = .codex
     }
-    // A GPT-named part of an explicit fan-out is dropped, visibly; the other
-    // named routes still run. A part addressed as "Codex chat" names Codex and
-    // runs there, visibly. Only when EVERY part named GPT is the original list
-    // sent, so Core holds it with the dropped routes shown.
-    // RouteFanout knows no local name: a request that names the local model
-    // as a route ("3+3 로컬한테", "로컬이랑 코덱스 다 라우팅 해봐") is planned by
-    // RouteAllIntent, never split by RouteFanout without its local route.
-    let fanout = RouteAllIntent.namesLocalRoute(prompt) ? nil : RouteFanout.plan(prompt)
-    var explicit = fanout?.targets.map { target in
-        RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: target.surface.rawValue)!, instruction: target.payload)
-    }
-    if let targets = fanout?.targets {
-        let partition = RouteFanout.droppingGPT(targets)
-        if !partition.remapped.isEmpty { routingNotices.append(RouteFanout.codexChatRemappedNotice(partition.remapped)) }
-        if !partition.dropped.isEmpty {
-            routingNotices.append(RouteFanout.gptDroppedNotice(partition.dropped, remaining: partition.kept.count))
-        }
-        if !partition.kept.isEmpty, !partition.dropped.isEmpty || !partition.remapped.isEmpty {
-            explicit = partition.kept.map { RCCRuntimeContract.ExplicitRoute(surface: RCCRuntimeContract.Surface(rawValue: $0.surface.rawValue)!, instruction: $0.payload) }
-        }
-    }
+    // Interpretation belongs to the SAME OpenClaw task. Ingress preserves
+    // source and UI settings; it never calls a local model, builds semantic
+    // route plans, probes availability or holds a routing interpretation.
     let materialRefs = PromptAttachments.imagePaths(in: prompt)
-    // Parts that each name their route, the local model among them ("1+1
-    // Codex한테. 3+3 로컬한테."): one explicit route per part, read-only.
-    var parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil
-    // "라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐 … 원플러스원 투플러스투" names no
-    // surface (build 381, task ac5a5fd6): it ran on Auto as ONE task and the
-    // routing order escalated to gpt-6-astra/max. A route-all order is an
-    // explicit route test on every surface that can run now, one exact
-    // expression each, on Auto and read-only; never a single worker task.
-    let showCodex = OS1Settings.load().showCodex, health = BackendHealth.load(maxAge: 900)
-    let chatGate: (String) -> Bool = { claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
-                                                      objective: $0, ownerSelected: true) }
-    var routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(prompt: prompt, capacityPlan: capacityPlan,
-        showCodex: showCodex, health: health, localReady: { LocalRouterBridge.localModelReady() }, chatGate: chatGate)
-    // Build 385 (2026-10-15): "다 넘겨봐 1+1", "1+1 to all models", "다 라우팅 해줄
-    // 수 있어? 1+1" ran as one single-model task, because the grammar above is
-    // a closed list. When nothing above recognised anything, the local model
-    // OpenClaw already runs reads the request; code adopts its reading only on
-    // deterministic agreement with the owner's words (RoutingOrderInterpreter),
-    // and the routes take the grammar's own path.
-    let interpreted = await interpretRoutingOrder(prompt: prompt, fanoutPlanned: fanout != nil, parts: parts, routeAll: routeAll,
-        hasAttachments: !PromptAttachments.paths(in: prompt).isEmpty,
-        ask: { system, request in
-            // Seconds of reading: say so before the call (2026-10-15 review).
-            RuntimeActivity.emit(.routing, provider: "local", model: RoutingOrderInterpreter.model, effort: "none",
-                publicText: os1Tr("로컬 모델이 이 요청을 라우팅 명령으로 읽고 있습니다", "The local model is reading this request as a routing order"))
-            // Only the pinned model OpenClaw runs, at its pinned digest.
-            guard LocalRouterBridge.localModelReady() else { throw RoutingOrderInterpreter.Failure.modelNotReady }
-            return try await RoutingOrderInterpreter.ollamaAsk()(system, request)
-        },
-        routing: { routeAllRouting(order: $0, capacityPlan: capacityPlan, showCodex: showCodex, health: health,
-                                   localReady: { LocalRouterBridge.localModelReady() }, chatGate: chatGate) })
-    parts = interpreted.parts
-    routeAll = interpreted.routeAll
-    if let notice = interpreted.notice { routingNotices.append(notice) }
-    interpreterRecord?.receipt = interpreted.receipt
-    if let parts {
-        if !parts.gptParts.isEmpty {
-            let list = parts.gptParts.joined(separator: ", ")
-            routingNotices.append(os1Tr("GPT 경로는 더 이상 라우팅하지 않아 제외했습니다(\(list)). 나머지 \(parts.routes.count)개 경로는 그대로 실행합니다.",
-                "GPT is no longer routed, so these parts were dropped (\(list)). The other \(parts.routes.count) route(s) still run."))
-        }
-        explicit = parts.routes
-        surface = .auto
-    }
-    if let routeAll {
-        // Nothing may run: held here, before Core, with the reason as the
-        // blocker; never the routing order as one worker task.
-        guard !routeAll.routes.isEmpty else {
-            for notice in routingNotices + [routeAll.notice] { RuntimeActivity.emit(.routing, publicText: notice) }
-            var held = RunSummary(status: "workflow_blocked", steps: [], monitorTaskID: taskID, workflowBlocker: routeAll.notice)
-            if !routingNotices.isEmpty { held.routingNotices = routingNotices }
-            held.routingInterpreter = interpreted.receipt
-            return held
-        }
-        routingNotices.append(routeAll.notice)
-        explicit = routeAll.routes
-        surface = .auto
-    }
-    if interpreted.receipt != nil { interpreterRecord?.notices = routingNotices }
-    // An explicit Claude chat choice the chat gate refuses is held by Core
-    // with chat_gate_refused; say why here, before any provider call.
-    if fanout == nil, parts == nil, routeAll == nil, surface == .claudeChat,
-       !claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
-                       objective: prompt, ownerSelected: true) {
-        routingNotices.append(claudeChatLaneRefusal(objective: prompt, hasSource: !materialRefs.isEmpty)
-            ?? os1Tr("이 요청은 도구 없는 Claude 채팅 레인 조건에 맞지 않아 실행하지 않고 보존했습니다. Claude Code나 자동을 고르세요.",
-                     "This request does not qualify for the tool-free Claude chat lane, so nothing ran and it is preserved. Choose Claude Code or Auto."))
-    }
     for notice in routingNotices { RuntimeActivity.emit(.routing, publicText: notice) }
     let id = taskID ?? UUID().uuidString.lowercased(), observed = Date()
     let conversationID = ProcessInfo.processInfo.environment["OS1_CONVERSATION_ID"].flatMap(UUID.init(uuidString:))
@@ -19669,12 +19589,12 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let submissionID = UUID(uuidString: id) ?? UUID()
     let host = RCCRuntimeContract.HostContext(workspace: LocalProjectWorkspace.executionPath(workspace), context: context,
         providerPreference: surface.rawValue, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
-        requireReadOnly: requireReadOnly || routeAll != nil || parts != nil, ownerPolicy: owner, explicitRoutes: explicit,
+        requireReadOnly: requireReadOnly, ownerPolicy: owner, explicitRoutes: nil,
         conversationID: conversationID.uuidString, submissionID: submissionID.uuidString, capacityPlan: capacityPlan,
-        explicitRoutesBestEffort: routeAll != nil ? true : nil)
+        explicitRoutesBestEffort: nil)
     let request = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
-        mode: fanout != nil || parts != nil || routeAll != nil ? .explicitRoutingTest : .auto, materialRefs: materialRefs,
+        mode: .auto, materialRefs: materialRefs,
         budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000),
         policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
@@ -19732,6 +19652,5 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     var summary = RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
         steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)
     if !routingNotices.isEmpty { summary.routingNotices = routingNotices }
-    summary.routingInterpreter = interpreted.receipt
     return summary
 }

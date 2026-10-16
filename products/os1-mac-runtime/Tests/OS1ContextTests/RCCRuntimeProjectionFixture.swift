@@ -25,6 +25,19 @@ func runRCCRuntimeProjectionFixtures() throws {
         children: [], result: nil, error: nil)
     let queued = try project(core)
     try check(queued.nodes.count == 1 && queued.nodes[0].state == .pending, "no fabricated children before plan")
+    var interpreting = core
+    interpreting.state = .planning
+    interpreting.routingIntent = .init(state: .resolving, notices: [])
+    let interpretingGraph = try project(interpreting)
+    try check(interpretingGraph.nodes.count == 1 && interpretingGraph.nodes[0].state == .running &&
+        interpretingGraph.nodes[0].progressText?.contains("interpreting the original request") == true,
+        "Core interpretation is a real recorded root, not invented parallel workers")
+    interpreting.state = .held
+    interpreting.routingIntent = .init(state: .held, notices: [], reason: "ambiguous_recipient")
+    let intentHeldGraph = try project(interpreting)
+    try check(intentHeldGraph.nodes.count == 1 && intentHeldGraph.nodes[0].state == .blocked &&
+        intentHeldGraph.nodes[0].progressText?.contains("ambiguous_recipient") == true,
+        "Core intent hold remains visible before provider dispatch")
     core.state = .running
     core.children = [.init(id: "one", state: .running, attemptID: "attempt", candidateID: "candidate")]
     let single = try project(core)

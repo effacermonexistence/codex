@@ -308,6 +308,7 @@ test('the Gateway plugin runs a local route on the planner model in the service 
 import {readFileSync,appendFileSync} from 'node:fs';import {createHash} from 'node:crypto';
 const sha=s=>createHash('sha256').update(s).digest('hex');const p=JSON.parse(readFileSync(process.argv[4],'utf8'));
 appendFileSync(process.env.HOME+'/native-calls.log',process.argv[2]+'\\n');
+if(process.argv[2]==='rcc-intent'){const t=p.task;console.log(JSON.stringify({schema:1,task_id:t.task_id,request_sha256:t.request_sha256,policy_sha256:t.policy_sha256,source_fingerprint:t.source_fingerprint,kind:'ordinary',routes:[],best_effort:false,notices:[],reason:null}));process.exit(0);}
 if(process.argv[2]!=='rcc-catalog')process.exit(91);
 const n=Date.now();console.log(JSON.stringify({schema:1,task_id:p.task_id,request_sha256:p.request_sha256,model_tiers:{},
 candidates:[{id:'cfg-local',surface:'local',transport:'local',account_id:'os1-local',model:'qwen3.5:4b',effort:'none',
