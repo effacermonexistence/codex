@@ -6589,6 +6589,13 @@ private func requestedProvider(for request: String, configured: ProviderChoice) 
 
 /// The request runs as explicit routes: named parts (`RouteFanout`, or with the
 /// local model `RouteAllIntent.namedParts`) or a supported route-all order.
+/// Only the deterministic parsers decide here: the CLI's routing interpreter
+/// (`RoutingOrderInterpreter`, a local model call of seconds, 2026-10-15) is
+/// not run on the send path. A request only it reads keeps the tile's label
+/// here; the CLI still runs it as an explicit route test on Auto, and its
+/// answers arrive as Core's result (`summary.rccRuntime`), which the delivery
+/// presents before the tile-backend check, as for every route test. So this
+/// predicate picks the provider label and the retry's re-resolution only.
 private func routesPerPart(_ request: String) -> Bool {
     RouteFanout.plan(request) != nil || RouteAllIntent.namedParts(request) != nil ||
         RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil
@@ -8023,6 +8030,8 @@ private struct AppRunSummary: Decodable, Sendable {
     var rccTransportFailure: String? = nil
     /// Routing adjustments the CLI made before Core (e.g. a dropped GPT route).
     var routingNotices: [String]? = nil
+    /// The local model read a routing order; whether the CLI adopted it.
+    var routingInterpreter: RoutingOrderInterpreter.Receipt? = nil
 }
 
 private struct NativeIngestionOutcome: Sendable {
@@ -11177,6 +11186,14 @@ private final class SessionStore: ObservableObject {
                 // stated in the transcript, never silently omitted.
                 for notice in summary.routingNotices ?? [] {
                     sessions[target].messages.append(ChatMessage(role: .system, text: notice))
+                }
+                // The CLI asked the local model to read a routing order (2026-10-15):
+                // kept in the task log whether or not its reading was adopted.
+                if let interpreter = summary.routingInterpreter {
+                    appendTaskEvent(conversationID: submission.sessionID, kind: "routing_interpreter",
+                        summary: "local model \(interpreter.model) · kind \(interpreter.kind ?? "none") · " +
+                            (interpreter.adopted ? "adopted" : "not adopted (\(interpreter.rejectReason ?? "unknown"))") +
+                            " · \(interpreter.latencyMS) ms" + (interpreter.routes.map { " · " + $0.joined(separator: ", ") } ?? ""))
                 }
                 if summary.rccTransportFailure != nil {
                     let note = summary.workflowBlocker ?? "OpenClaw connection unavailable · request preserved"

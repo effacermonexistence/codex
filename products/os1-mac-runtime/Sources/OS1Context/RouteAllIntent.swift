@@ -570,6 +570,10 @@ public enum RouteAllIntent {
         if ["아까", "방금", "저번", "지난번", "이전"].contains(where: { bare.hasPrefix($0) }) { return true }
         if !afterExclusion, bare.hasPrefix("나머지") || stemmed == "남은" { return true }
         if ["다른", "다시"].contains(stemmed) || bare == "다시" { return true }
+        if bare == "더", previous?.lowercased() == "한번" { return true }
+        // "같은 걸로": the same as before (2026-10-15, "다 라우팅 해봐 같은 걸로" sent the
+        // defaults). With the arithmetic written it is that arithmetic ("1+1 같은 걸로").
+        if ["걸로", "거로", "것으로", "거", "걸"].contains(bare), previous.map({ ["같은", "똑같은"].contains($0.lowercased()) }) == true { return true }
         if let previous, pointers.contains(previous), referencedNouns.contains(stemmed) { return true }
         return false
     }
@@ -649,8 +653,10 @@ public enum RouteAllIntent {
     ]
     /// Operators as written, and the canonical one each means. Every one is
     /// in the exact verifier's family ("+", "-", "*").
+    /// "원플원", "투플투": the owner's short "플" for 플러스 (2026-10-15: "다 라우팅
+    /// 시켜봐 원플원" was held, the local model read it as 원플러스원).
     public static let operatorWords: [(word: String, symbol: String)] = [
-        ("플러스", "+"), ("더하기", "+"), ("plus", "+"), ("+", "+"),
+        ("플러스", "+"), ("더하기", "+"), ("plus", "+"), ("+", "+"), ("플", "+"),
         ("마이너스", "-"), ("빼기", "-"), ("minus", "-"), ("-", "-"),
         ("곱하기", "*"), ("times", "*"), ("×", "*"), ("*", "*"),
     ]
@@ -659,7 +665,9 @@ public enum RouteAllIntent {
     /// A particle or a joining word right after an expression ("원플러스원이랑",
     /// "원 플러스 원 이랑", "원플러스원은?"): blanked with it. A one-letter
     /// particle attaches to the expression; a longer one may stand apart.
-    static let trailingParticle = #"(?:\s*(?:이랑|하고|하구|이나)|(?:랑|과|와|나|은|는|이|가|을|를|도|요|으로|로|만))(?![가-힣])"#
+    /// "1+1부터" starts the test with 1+1 (2026-10-15; "1+1부터 4+4까지", a
+    /// range, keeps "까지" and is held).
+    static let trailingParticle = #"(?:\s*(?:이랑|하고|하구|이나)|(?:부터|랑|과|와|나|은|는|이|가|을|를|도|요|으로|로|만))(?![가-힣])"#
     /// Particles and joining words that may stand alone between expressions.
     static let particleWords: Set<String> = ["이랑", "랑", "하고", "하구", "과", "와", "이나", "나", "은", "는", "이", "가",
                                              "을", "를", "도", "요", "그리고", "또", "and", "or", "또는"]
@@ -766,6 +774,9 @@ public enum RouteAllIntent {
         // The owner's openers and asides, and ways of naming the arithmetic.
         "근데", "아니", "걍", "씨발", "존나", "루아", "루아야", "lua", "pls", "plz", "yo", "쫌", "함", "아니면", "이걸로", "이거로",
         "그걸로", "아무거나", "아무", "대충", "개쉬운", "초간단", "몽땅", "죄다",
+        // "한번 더": once more (2026-10-15, "한번 더 다 라우팅 해봐 1+1" was held). With
+        // nothing written it points at the earlier test, like "다시" (`referential`).
+        "더",
     ]
     /// The owner's openers and address words.
     static let openerWords: Set<String> = [
@@ -775,6 +786,9 @@ public enum RouteAllIntent {
         "씨발", "존나", "엄청", "아주", "진짜", "완전", "되게", "매우", "정말", "뭐", "있잖아", "있잖아요", "말이야", "please", "pls", "plz",
         "now", "ok", "okay", "hey", "yo", "just", "quickly", "let's", "lets", "so", "then", "go", "ahead", "os1", "os1아", "os-1",
         "os-1아", "오에스원", "오에스원아", "루아", "루아야", "lua",
+        // "I want to route 1+1 to all models", "I'd like to …" (2026-10-15): an opener,
+        // held until now; the interpreter never re-reads a hold.
+        "i", "want", "wanna", "i'd", "id", "to",
     ]
     static let chatLetters = #"^(?:ㅋ+|ㅎ+|ㄱ+|ㅇㅇ|ㅇㅋ|ㅠ+|ㅜ+)$"#
     /// Allowed words that name something: what is sent or which routes ("거",
@@ -796,7 +810,9 @@ public enum RouteAllIntent {
     /// A verbless order beside these is a reply, a report or a stop, not an
     /// order: "다 라우팅 1+1 오케이", "모든 모델 1+1 뭐야", "다 라우팅 그만 1+1".
     static let fragmentReplies: Set<String> = ["오케이", "좋아", "알았어", "알겠어", "ok", "okay", "그래", "뭐야", "뭐지", "몇이야",
-        "그만", "됐어", "됐다", "맞아", "맞지", "어때", "봤어", "했어", "나왔어", "왔어", "완료", "끝", "done"]
+        "그만", "됐어", "됐다", "맞아", "맞지", "어때", "봤어", "했어", "나왔어", "왔어", "완료", "끝", "done",
+        // "1+1 다 라우팅 아니야" (isn't it / no): a reply, never an order (2026-10-15).
+        "아니야", "아냐", "아님", "아니지", "아니잖아", "no", "nope"]
     static let particleSuffix = #"(?:으로요|으로|이랑|처럼|이나|은|는|이|가|을|를|도|만|로|에|요|야|랑|나)$"#
     static func stem(_ word: String) -> String {
         word.replacingOccurrences(of: particleSuffix, with: "", options: .regularExpression)
@@ -1122,6 +1138,92 @@ public enum RouteAllIntent {
         return (name.kind, mention, extracted.expressions[0])
     }
 
+    // MARK: Self-test fixtures
+    //
+    // Requests the grammar never sends as a route test: no order, or an order
+    // it holds. `RoutingOrderInterpreter.selfTest` runs every one of them
+    // through the interpreter's gate with a model that agrees with everything
+    // it can: none may be adopted (2026-10-15 review).
+
+    static let notOrderFixtures: [String] = ["다 라우팅이 안 돼", "라우팅 다 됐어?", "왜 다 라우팅 안 했어", "다 라우팅하면 비용이 얼마야",
+        "다 라우팅 하지 마", "모든 백엔드로 라우팅되는 거 맞아?", "모든 모델로 라우팅하는 로직 고쳐",
+        "또 내가 이렇게 시켰잖아? 라우팅 할 수 있는데 다 시켜라고?", "다 라우팅 했잖아",
+        "모든 백엔드로 보내 버렸어", "다 라우팅 해보겠습니다", "라우팅 로직 좀 봐줘", "라우팅이 이상해",
+        "다 라우팅 해야지", "다 라우팅 하라고 했잖아", "\"다 라우팅 해봐\"라고 쓰면 돼",
+        "if you route it to all backends what happens", "why didn't you route it to all backends",
+        "다 라우팅 해봐 코덱스한테", "코덱스한테 다 라우팅 해봐", "1+1 계산해", "원플러스원 해봐",
+        "다 돌려봐", "모든 테스트 돌려", "이거 다 해봐", "다 라우팅 해봐 했더니 안 되더라", "왜 다 라우팅 해",
+        "다 라우팅 해?",
+        // "전체 경로" is a full path; running every model is a benchmark.
+        "전체 경로 보내줘", "그거 전체 경로 보내줘", "이거 전체 경로 보내줘", "전체 경로로 보내줘", "모든 경로 보내줘",
+        "그 스크린샷 전체 경로 보내줘", "전체 모델 돌려봐", "벤치마크 전체 모델 돌려봐", "벤치마크 전체 모델로 보내봐",
+        // Work orders that route requests, traffic or code.
+        "nginx 설정 바꿔서 요청을 모든 백엔드로 보내", "Update the nginx config to route the requests to all backends",
+        "nginx 설정에서 /api 트래픽을 모든 백엔드로 라우팅해", "API 게이트웨이에서 /v1 요청을 전부 라우팅해",
+        "로드밸런서에서 요청을 다 라우팅 해줘", "이 PR 요청들 전부 라우팅해",
+        "Update the Envoy config and route the requests to all backends.",
+        "dispatch these to all providers in the webhook fan-out code"]
+    static let heldFixtures: [String] = ["다 라우팅 해봐. 수도가 어디야", "모든 모델로 보내봐, 그리고 코드 리뷰 받아",
+        "다 라우팅 해봐. 그리고 커밋해", "최대한 다 라우팅 해봐 README 요약해서",
+        "다 라우팅 해봐 원플러스원 투플러스투 아까처럼 아스트라로 가지 말고",
+        "1+1 Codex한테. 다 라우팅 해봐", "이 질문 다 라우팅 해봐"]
+    static let heldReferencedFixtures: [String] = ["이거 모든 모델로 보내봐", "그거 다 라우팅 해봐", "이거 할 수 있는 쪽으로 다 보내봐",
+        "send this to every available model", "Route it to all backends", "route it everywhere",
+        "route this to as many backends as possible"]
+    static let notOrderFixtures384: [String] = ["할 수 있는 거 중에 제일 싼 모델로 이 버그 고쳐", "네가 할 수 있는 거 중에 다 라우팅 시켜서 이 레포 테스트 전부 돌려",
+        "쿼터 남은 거 중에 다 라우팅 해서 이 리팩터링 나눠서 시켜봐", "할 수 있는 모델 다 써서 이 함수 최적화해봐",
+        "할 수 있는 모델 다한테 이 코드 리뷰 시켜봐", "니가 다 라우팅 할 수 있는 거 맞아?",
+        "다 라우팅 시켜봐 하면 어디어디로 가는 거야", "할 수 있는 거 중에 다 라우팅 시키면 로컬도 포함돼?",
+        "\"할 수 있는 거 중에 다 라우팅 시켜봐\" 이 문장 왜 안 먹혀", "어제 할 수 있는 거 중에 다 라우팅 시켜봐 라고 쳤더니 안 됐어",
+        "1+1 다 라우팅 하면 답 네 개 다 나와?", "1+1 2+2 다 라우팅 시키고 그 다음에 빌드 돌려",
+        "모든 모델한테 이 프롬프트 던져서 누가 제일 잘하나 봐봐", "1+1 코덱스한테만 보내봐",
+        "route all the eval prompts to every model and write the scores to a csv",
+        "don't route anything to all models, just answer 1+1 yourself",
+        "route 1+1 to every model and then open a PR with the results",
+        "되는 거 다 해봐", "할 수 있는 거 다 해봐 이 버그 고쳐", "할 수 있는 거 다 해봐 1+1이 안 나와", "다른 모델한테 1+1 보내봐",
+        "다 써봐 1+1", "니가 할 수 있는 거 중에 다 라우팅 시켜볼래?", "can you route to all backends?"]
+    static let heldFixtures384: [String] = ["할 수 있는 거 중에 다 라우팅 해봐 1+1 그리고 이 PR 머지해", "할 수 있는 거 중에 다 라우팅 시켜봐 이 에러 메시지 원인 뭐야",
+        "할 수 있는 거 중에 다 라우팅 시켜봐 이 문장도 인식되게 정규식 추가해", "다 라우팅 시켜봐 원플러스원이 왜 2인지 증명해",
+        "다 라우팅 시켜봐 2+2 결과 나오면 슬랙으로 보내줘"]
+    static let heldFixturesReview: [String] = ["1+1 다 라우팅 시켜봐 그리고 테스트 전부 다시 돌려", "다 라우팅 해봐 1+1 그리고 아까 거 다시 돌려",
+        "1+1 다 라우팅 해봐 그리고 나머지 테스트도 다 돌려", "다 라우팅 시켜봐 1+1 그리고 아까 거 다 보여줘",
+        "1+1 다 라우팅 해봐 그리고 나머지 알려줘", "다 라우팅 시켜봐 2+2 그리고 아까 거 가져와",
+        "다 라우팅 해봐 1+1 그리고 나머지는 니가 해", "다 라우팅 해봐 1+1. 그리고 테스트 전부 다시 돌려.",
+        "다 라우팅 해봐 1+1. 나머지는 니가 해.", "다 라우팅 해봐 1+1. 아까 거도 다 보내.", "다 라우팅 해봐 1+1 그리고 아까 거 보자",
+        "1+1 다 라우팅 시켜봐 그리고 테스트 다시 돌려", "다 라우팅 시켜봐 1+1 그리고 아까 거", "다 라우팅 해봐 1+1 아니 2+2",
+        "확인 안 된 거 빼고 다 라우팅 해봐", "테스트 안 된 거 빼고 다 라우팅 시켜봐", "체크 안 된 거 빼고 전부 다 라우팅 해",
+        "1-2 문제 다 라우팅 해봐", "다 라우팅 해봐 1+1 그만", "두 개 다 라우팅 해봐 1+1", "문제 4개 다 라우팅 해봐", "다 라우팅 해봐 똑같이", "다 라우팅 해봐 그대로"]
+    static let heldReferencedFixturesReview: [String] = ["다 라우팅 시켜봐 아까 거", "다 라우팅 시켜봐 아까 그 문제", "모든 모델로 보내봐 아까 거", "라우팅 되는 데 다 물어봐 그거",
+        "라우팅 되는 거 다 써서 해봐 아까 거", "route all 해봐 그 문제", "route-all 해봐 아까 거", "every model한테 보내봐 그거",
+        "all routes로 보내봐 아까 거", "클로드 챗 빼고 다 라우팅 해봐 그 문제", "각 모델한테 하나씩 보내봐 그거",
+        "모델 다한테 동시에 보내봐 아까 거", "다 route 해봐 그거", "할 수 있는 거 중에 다 라우팅 시켜봐 이거",
+        "모든 경로로 라우팅 해 아까 거", "다 라우팅 시켜봐 그 문제", "다 라우팅 시켜봐 이거",
+        "please send this to all models", "please route it to every model", "please route it everywhere",
+        "broadcast this to every model", "distribute these to all models", "try sending this to all backends",
+        "please send them to every model", "please send this to codex and qwen", "broadcast it to codex, claude and qwen",
+        "send the question to all models", "send the problem to every model", "route the test to all backends",
+        "dispatch the question across all models", "send the real question to every model available",
+        "send the question to codex and claude", "route the question everywhere", "send the sum to every model",
+        "fan out the question to all your models", "send the easy test to every model", "send the smoke test to all models",
+        "send the sanity check to every model",
+        "다른 모델들한테도 전부 보내봐", "다른 모델한테도 다 라우팅 시켜봐", "코덱스랑 클로드한테 테스트 보내봐",
+        "로컬이랑 코덱스한테 문제 보내봐", "코덱스랑 클로드한테 다시 보내봐", "모든 모델로 다시 보내봐", "다 다시 라우팅 해봐",
+        "전부 다시 라우팅 시켜", "있는 거 다 라우팅 해봐", "지금 있는 거 다 라우팅 해봐", "나머지 거 다 라우팅 해봐",
+        "나머지도 다 라우팅 해봐", "나머지 문제도 다 라우팅 시켜봐", "아까처럼 다 라우팅 해봐", "아까 계산 다 라우팅 해봐",
+        "아까 테스트 다 라우팅 해봐", "아까 수학 문제 다 라우팅 해봐", "나머지 계산도 다 라우팅 해봐", "이 모델들한테 다 보내봐",
+        "다 라우팅 해봐 같은 걸로", "한번 더 다 라우팅 해봐"]
+    static let notOrderFixturesReview: [String] = ["라우팅 할 수 있는 데 다 물어봐", "1+1 전 모델로 다시 보내봐", "아까 전 모델로 보내봐", "전 모델한테 다시 물어봐 1+1",
+        "1+1 전 엔진으로 다시 돌려봐", "모든 모델 1+1 뭐야", "every model 2+2 ok", "모든 모델 1+1 오케이", "모든 모델 1+1 좋아",
+        "다 라우팅 1+1 오케이", "전부 라우팅 2+2 알았어", "다 라우팅 1+1 좋아", "다 라우팅 아까 1+1", "다 라우팅 그만 1+1",
+        "모든 모델 그만 1+1", "3-4 문제 다 보내봐", "10-15 다 돌려봐", "1+1 테스트 다 돌려봐", "다 돌려봐 1+1 테스트 전부",
+        "1+1 2+2 문제 전부 다시 돌려봐", "send 1+1 to all of them", "send 1+1 to everyone", "ask everyone 1+1",
+        "다 라우팅 하라고", "다 라우팅 하자고 했잖아", "1+1 다 라우팅 아니야", "모든 모델 1+1 아냐"]
+    /// Every fixture above: what no reading of the request may send.
+    public static var neverSentFixtures: [String] {
+        notOrderFixtures + heldFixtures + heldReferencedFixtures + notOrderFixtures384 + heldFixtures384 + heldFixturesReview +
+            heldReferencedFixturesReview + notOrderFixturesReview
+    }
+
     // MARK: Self-test
 
     public static func selfTest() throws {
@@ -1215,38 +1317,16 @@ public enum RouteAllIntent {
         check(plan("다 라우팅 해봐. 1+1, 2+2, 3+3", available: [.codex, .claude])?.unsent == ["3+3"],
               "an expression no route receives is reported, not dropped")
         // Not an order to route everywhere.
-        for prompt in ["다 라우팅이 안 돼", "라우팅 다 됐어?", "왜 다 라우팅 안 했어", "다 라우팅하면 비용이 얼마야",
-                       "다 라우팅 하지 마", "모든 백엔드로 라우팅되는 거 맞아?", "모든 모델로 라우팅하는 로직 고쳐",
-                       "또 내가 이렇게 시켰잖아? 라우팅 할 수 있는데 다 시켜라고?", "다 라우팅 했잖아",
-                       "모든 백엔드로 보내 버렸어", "다 라우팅 해보겠습니다", "라우팅 로직 좀 봐줘", "라우팅이 이상해",
-                       "다 라우팅 해야지", "다 라우팅 하라고 했잖아", "\"다 라우팅 해봐\"라고 쓰면 돼",
-                       "if you route it to all backends what happens", "why didn't you route it to all backends",
-                       "다 라우팅 해봐 코덱스한테", "코덱스한테 다 라우팅 해봐", "1+1 계산해", "원플러스원 해봐",
-                       "다 돌려봐", "모든 테스트 돌려", "이거 다 해봐", "다 라우팅 해봐 했더니 안 되더라", "왜 다 라우팅 해",
-                       "다 라우팅 해?",
-                       // "전체 경로" is a full path; running every model is a benchmark.
-                       "전체 경로 보내줘", "그거 전체 경로 보내줘", "이거 전체 경로 보내줘", "전체 경로로 보내줘", "모든 경로 보내줘",
-                       "그 스크린샷 전체 경로 보내줘", "전체 모델 돌려봐", "벤치마크 전체 모델 돌려봐", "벤치마크 전체 모델로 보내봐",
-                       // Work orders that route requests, traffic or code.
-                       "nginx 설정 바꿔서 요청을 모든 백엔드로 보내", "Update the nginx config to route the requests to all backends",
-                       "nginx 설정에서 /api 트래픽을 모든 백엔드로 라우팅해", "API 게이트웨이에서 /v1 요청을 전부 라우팅해",
-                       "로드밸런서에서 요청을 다 라우팅 해줘", "이 PR 요청들 전부 라우팅해",
-                       "Update the Envoy config and route the requests to all backends.",
-                       "dispatch these to all providers in the webhook fan-out code"] {
+        for prompt in notOrderFixtures {
             check(!recognizes(prompt), "not route-all: " + prompt)
         }
         // Recognised, but carrying something besides arithmetic, or routing
         // "this" with nothing written: never a single task, never sent.
-        for prompt in ["다 라우팅 해봐. 수도가 어디야", "모든 모델로 보내봐, 그리고 코드 리뷰 받아",
-                       "다 라우팅 해봐. 그리고 커밋해", "최대한 다 라우팅 해봐 README 요약해서",
-                       "다 라우팅 해봐 원플러스원 투플러스투 아까처럼 아스트라로 가지 말고",
-                       "1+1 Codex한테. 다 라우팅 해봐", "이 질문 다 라우팅 해봐"] {
+        for prompt in heldFixtures {
             check(recognizes(prompt) && order(prompt)?.hold == .notArithmetic && plan(prompt, available: all) == nil,
                   "recognised but unsupported: " + prompt)
         }
-        for prompt in ["이거 모든 모델로 보내봐", "그거 다 라우팅 해봐", "이거 할 수 있는 쪽으로 다 보내봐",
-                       "send this to every available model", "Route it to all backends", "route it everywhere",
-                       "route this to as many backends as possible"] {
+        for prompt in heldReferencedFixtures {
             check(recognizes(prompt) && order(prompt)?.hold == .referencedContent && plan(prompt, available: all) == nil,
                   "routes what was referenced, nothing written: held, never the defaults: " + prompt)
         }
@@ -1269,6 +1349,7 @@ public enum RouteAllIntent {
                        "다 route 시켜봐 1+1", "원플러스원 다 돌려봐", "야 진짜 간단한 거 1+1 니가 할 수 있는 거 중에 전부 라우팅",
                        "all routes에 간단한 계산 하나씩 1+1 2+2 3+3 4+4", "every model한테 1+1 보내봐",
                        "send a quick 2+2 test to all backends", "can you route 1+1 to all the routes you have just as a sanity check",
+                       "I want to route 1+1 to all models", "I'd like to send 2+2 to every model",
                        "let's see if every route works, send each one 1+1", "send 1+1 to qwen codex claude code and claude, all of them",
                        "로컬 큐웬 코덱스 클코 클로드 전부 2+2 돌려봐", "각 모델한테 1+1 2+2 하나씩 나눠서 보내봐 전부 다",
                        "되는 거 다 해봐 1+1 안 되는 건 빼고"] {
@@ -1279,23 +1360,10 @@ public enum RouteAllIntent {
         check(routes("클로드 코드만 빼고 나머지 다 1+1 보내봐") == ["local:1+1", "codex:1+1", "claude-chat:1+1"], "an exclusion with 만")
         // Not orders: work, questions, reports, a weak order with no arithmetic
         // or with anything else beside it, a request question with nothing to send.
-        for prompt in ["할 수 있는 거 중에 제일 싼 모델로 이 버그 고쳐", "네가 할 수 있는 거 중에 다 라우팅 시켜서 이 레포 테스트 전부 돌려",
-                       "쿼터 남은 거 중에 다 라우팅 해서 이 리팩터링 나눠서 시켜봐", "할 수 있는 모델 다 써서 이 함수 최적화해봐",
-                       "할 수 있는 모델 다한테 이 코드 리뷰 시켜봐", "니가 다 라우팅 할 수 있는 거 맞아?",
-                       "다 라우팅 시켜봐 하면 어디어디로 가는 거야", "할 수 있는 거 중에 다 라우팅 시키면 로컬도 포함돼?",
-                       "\"할 수 있는 거 중에 다 라우팅 시켜봐\" 이 문장 왜 안 먹혀", "어제 할 수 있는 거 중에 다 라우팅 시켜봐 라고 쳤더니 안 됐어",
-                       "1+1 다 라우팅 하면 답 네 개 다 나와?", "1+1 2+2 다 라우팅 시키고 그 다음에 빌드 돌려",
-                       "모든 모델한테 이 프롬프트 던져서 누가 제일 잘하나 봐봐", "1+1 코덱스한테만 보내봐",
-                       "route all the eval prompts to every model and write the scores to a csv",
-                       "don't route anything to all models, just answer 1+1 yourself",
-                       "route 1+1 to every model and then open a PR with the results",
-                       "되는 거 다 해봐", "할 수 있는 거 다 해봐 이 버그 고쳐", "할 수 있는 거 다 해봐 1+1이 안 나와", "다른 모델한테 1+1 보내봐",
-                       "다 써봐 1+1", "니가 할 수 있는 거 중에 다 라우팅 시켜볼래?", "can you route to all backends?"] {
+        for prompt in notOrderFixtures384 {
             check(!recognizes(prompt), "not route-all (build 384 wording): " + prompt)
         }
-        for prompt in ["할 수 있는 거 중에 다 라우팅 해봐 1+1 그리고 이 PR 머지해", "할 수 있는 거 중에 다 라우팅 시켜봐 이 에러 메시지 원인 뭐야",
-                       "할 수 있는 거 중에 다 라우팅 시켜봐 이 문장도 인식되게 정규식 추가해", "다 라우팅 시켜봐 원플러스원이 왜 2인지 증명해",
-                       "다 라우팅 시켜봐 2+2 결과 나오면 슬랙으로 보내줘"] {
+        for prompt in heldFixtures384 {
             check(order(prompt)?.hold == .notArithmetic && plan(prompt, available: all) == nil, "held (build 384 wording): " + prompt)
         }
         // Build 384 review (2026-10-15). Over-capture first: a work order after
@@ -1303,43 +1371,14 @@ public enum RouteAllIntent {
         // English "this"/"the question", the previous model ("전 모델"), a
         // verbless order beside a reply, an exclusion of work items and an item
         // range are never sent as a route test.
-        for prompt in ["1+1 다 라우팅 시켜봐 그리고 테스트 전부 다시 돌려", "다 라우팅 해봐 1+1 그리고 아까 거 다시 돌려",
-                       "1+1 다 라우팅 해봐 그리고 나머지 테스트도 다 돌려", "다 라우팅 시켜봐 1+1 그리고 아까 거 다 보여줘",
-                       "1+1 다 라우팅 해봐 그리고 나머지 알려줘", "다 라우팅 시켜봐 2+2 그리고 아까 거 가져와",
-                       "다 라우팅 해봐 1+1 그리고 나머지는 니가 해", "다 라우팅 해봐 1+1. 그리고 테스트 전부 다시 돌려.",
-                       "다 라우팅 해봐 1+1. 나머지는 니가 해.", "다 라우팅 해봐 1+1. 아까 거도 다 보내.", "다 라우팅 해봐 1+1 그리고 아까 거 보자",
-                       "1+1 다 라우팅 시켜봐 그리고 테스트 다시 돌려", "다 라우팅 시켜봐 1+1 그리고 아까 거", "다 라우팅 해봐 1+1 아니 2+2",
-                       "확인 안 된 거 빼고 다 라우팅 해봐", "테스트 안 된 거 빼고 다 라우팅 시켜봐", "체크 안 된 거 빼고 전부 다 라우팅 해",
-                       "1-2 문제 다 라우팅 해봐", "다 라우팅 해봐 1+1 그만", "두 개 다 라우팅 해봐 1+1", "문제 4개 다 라우팅 해봐"] {
+        for prompt in heldFixturesReview {
             check(order(prompt)?.hold == .notArithmetic && plan(prompt, available: all) == nil, "held, never sent (build 384 review): " + prompt)
         }
-        for prompt in ["다 라우팅 시켜봐 아까 거", "다 라우팅 시켜봐 아까 그 문제", "모든 모델로 보내봐 아까 거", "라우팅 되는 데 다 물어봐 그거",
-                       "라우팅 되는 거 다 써서 해봐 아까 거", "route all 해봐 그 문제", "route-all 해봐 아까 거", "every model한테 보내봐 그거",
-                       "all routes로 보내봐 아까 거", "클로드 챗 빼고 다 라우팅 해봐 그 문제", "각 모델한테 하나씩 보내봐 그거",
-                       "모델 다한테 동시에 보내봐 아까 거", "다 route 해봐 그거", "할 수 있는 거 중에 다 라우팅 시켜봐 이거",
-                       "모든 경로로 라우팅 해 아까 거", "다 라우팅 시켜봐 그 문제", "다 라우팅 시켜봐 이거",
-                       "please send this to all models", "please route it to every model", "please route it everywhere",
-                       "broadcast this to every model", "distribute these to all models", "try sending this to all backends",
-                       "please send them to every model", "please send this to codex and qwen", "broadcast it to codex, claude and qwen",
-                       "send the question to all models", "send the problem to every model", "route the test to all backends",
-                       "dispatch the question across all models", "send the real question to every model available",
-                       "send the question to codex and claude", "route the question everywhere", "send the sum to every model",
-                       "fan out the question to all your models", "send the easy test to every model", "send the smoke test to all models",
-                       "send the sanity check to every model",
-                       "다른 모델들한테도 전부 보내봐", "다른 모델한테도 다 라우팅 시켜봐", "코덱스랑 클로드한테 테스트 보내봐",
-                       "로컬이랑 코덱스한테 문제 보내봐", "코덱스랑 클로드한테 다시 보내봐", "모든 모델로 다시 보내봐", "다 다시 라우팅 해봐",
-                       "전부 다시 라우팅 시켜", "있는 거 다 라우팅 해봐", "지금 있는 거 다 라우팅 해봐", "나머지 거 다 라우팅 해봐",
-                       "나머지도 다 라우팅 해봐", "나머지 문제도 다 라우팅 시켜봐", "아까처럼 다 라우팅 해봐", "아까 계산 다 라우팅 해봐",
-                       "아까 테스트 다 라우팅 해봐", "아까 수학 문제 다 라우팅 해봐", "나머지 계산도 다 라우팅 해봐", "이 모델들한테 다 보내봐"] {
+        for prompt in heldReferencedFixturesReview {
             check(order(prompt)?.hold == .referencedContent && plan(prompt, available: all) == nil,
                   "points at earlier content, nothing written: held (build 384 review): " + prompt)
         }
-        for prompt in ["라우팅 할 수 있는 데 다 물어봐", "1+1 전 모델로 다시 보내봐", "아까 전 모델로 보내봐", "전 모델한테 다시 물어봐 1+1",
-                       "1+1 전 엔진으로 다시 돌려봐", "모든 모델 1+1 뭐야", "every model 2+2 ok", "모든 모델 1+1 오케이", "모든 모델 1+1 좋아",
-                       "다 라우팅 1+1 오케이", "전부 라우팅 2+2 알았어", "다 라우팅 1+1 좋아", "다 라우팅 아까 1+1", "다 라우팅 그만 1+1",
-                       "모든 모델 그만 1+1", "3-4 문제 다 보내봐", "10-15 다 돌려봐", "1+1 테스트 다 돌려봐", "다 돌려봐 1+1 테스트 전부",
-                       "1+1 2+2 문제 전부 다시 돌려봐", "send 1+1 to all of them", "send 1+1 to everyone", "ask everyone 1+1",
-                       "다 라우팅 하라고", "다 라우팅 하자고 했잖아"] {
+        for prompt in notOrderFixturesReview {
             check(!recognizes(prompt), "not route-all (build 384 review): " + prompt)
         }
         // Genuine orders the grammar missed: the arithmetic with its particle
@@ -1380,6 +1419,12 @@ public enum RouteAllIntent {
               "unpunctuated named parts with topic particles")
         check(plan("다 던져봐 1+1 2+2 3+3 4+4 5+5", available: all)?.unsent == ["5+5"], "a fifth expression is reported unsent")
         check(routes("코덱스 빼고 세 개 다 라우팅 해봐 1+1") == ["local:1+1", "claude:1+1", "claude-chat:1+1"], "a count matching the routes left")
+        // 2026-10-15: "한번 더" (once more), "원플원" (one plus one), "1+1부터" (starting with 1+1).
+        check(routes("한번 더 다 라우팅 해봐 1+1") == ["local:1+1", "codex:1+1", "claude:1+1", "claude-chat:1+1"] &&
+              order("한번 더 다 라우팅 해봐")?.hold == .referencedContent, "once more with the arithmetic sends it; with nothing written it points back")
+        check(routes("다 라우팅 시켜봐 원플원") == ["local:1+1", "codex:1+1", "claude:1+1", "claude-chat:1+1"] &&
+              routes("1+1부터 다 라우팅 해봐") == ["local:1+1", "codex:1+1", "claude:1+1", "claude-chat:1+1"] &&
+              order("1+1부터 4+4까지 다 라우팅 해봐")?.hold == .notArithmetic, "원플원 and 1+1부터 are the arithmetic; a range is held")
         check(order("다 라우팅 해봐 아까 거")?.hold == .referencedContent && routes("야 아까처럼 다 라우팅 시켜봐 1+1")?.count == 4 &&
               routes("아까 하나로만 갔잖아 이번엔 다 라우팅 해봐")?.count == 4, "a pointer with nothing written holds; with arithmetic or in a remark it does not")
         guard failed.isEmpty else { throw RouteAllIntentError.selfTest(failed) }

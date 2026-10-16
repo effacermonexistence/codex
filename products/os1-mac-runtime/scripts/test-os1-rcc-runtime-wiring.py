@@ -249,7 +249,7 @@ check("routeAllRouting(prompt: prompt, capacityPlan: capacityPlan," in run_body 
       "explicit = routeAll.routes" in run_body and
       "requireReadOnly: requireReadOnly || routeAll != nil || parts != nil" in run_body and
       "mode: fanout != nil || parts != nil || routeAll != nil ? .explicitRoutingTest : .auto" in run_body and
-      "let parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil" in run_body and
+      "var parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil" in run_body and
       "RouteAllIntent.namesLocalRoute(prompt) ? nil : RouteFanout.plan(prompt)" in run_body,
       "a route-all order (or named parts with the local model) becomes a read-only explicit route test on Auto")
 check("explicitRoutesBestEffort: routeAll != nil ? true : nil" in run_body and
@@ -274,6 +274,42 @@ check("execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal)
 check("if (explicitRoute?.surface === 'local')" in RUNTIME and "'local_agent_node_not_explicit'" in RUNTIME and
       "export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';" in RUNTIME,
       "Core binds the local model only for an explicit local route")
+# Build 385 (2026-10-15): a routing order no parser recognises is read by the
+# local model, adopted only by deterministic checks, and then takes the
+# grammar's own path; a grammar hold is never re-read, a failed or disagreeing
+# reading is held before Core, and the run records the interpreter receipt
+# even when Core is not reached (2026-10-15 review).
+INTERPRETER = (ROOT / "Sources/OS1Context/RoutingOrderInterpreter.swift").read_text()
+interpret_fn = section(MAIN, "func interpretRoutingOrder(", "func routingOrderInterpreterHostSelfTest(")
+check("let interpreted = await interpretRoutingOrder(prompt: prompt, fanoutPlanned: fanout != nil, parts: parts, routeAll: routeAll," in run_body and
+      run_body.index("var routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(") <
+      run_body.index("let interpreted = await interpretRoutingOrder(") < run_body.index("if let parts {") <
+      run_body.index("if let routeAll {") < run_body.index("let host = RCCRuntimeContract.HostContext(") and
+      "parts = interpreted.parts" in run_body and "routeAll = interpreted.routeAll" in run_body and
+      "routing: { routeAllRouting(order: $0, capacityPlan: capacityPlan, showCodex: showCodex, health: health," in run_body and
+      "guard LocalRouterBridge.localModelReady() else { throw RoutingOrderInterpreter.Failure.modelNotReady }" in run_body and
+      run_body.index("RuntimeActivity.emit(.routing, provider: \"local\", model: RoutingOrderInterpreter.model") <
+      run_body.index("return try await RoutingOrderInterpreter.ollamaAsk()(system, request)") and
+      "held.routingInterpreter = interpreted.receipt" in run_body and "interpreterRecord?.receipt = interpreted.receipt" in run_body,
+      "the interpreter runs after the deterministic parsers and before the route-all/named-part paths, on the pinned local model only, announced first")
+check("RoutingOrderInterpreter.consults(fanoutPlanned: fanoutPlanned, namedParts: parts != nil," in interpret_fn and
+      "grammarRecognized: routeAll != nil) else { return result }" in interpret_fn and "grammarHeld" not in interpret_fn and
+      "!fanoutPlanned && !namedParts && !grammarRecognized" in INTERPRETER and
+      "if outcome.unconfirmed { result.routeAll = RouteAllRouting(routes: [], notice: routingInterpreterHoldNotice(outcome.receipt)) }" in interpret_fn and
+      "public static func screen(" in INTERPRETER and "public static func verify(" in INTERPRETER and
+      INTERPRETER.index("switch screen(prompt, hasAttachments: hasAttachments)") <
+      INTERPRETER.index("raw = try await bounded(timeout) { try await ask(systemPrompt, facts.text) }") and
+      '","stream":false,"think":false,"format":"# + schemaJSON' in INTERPRETER and 'URL(string: "http://127.0.0.1:11434/api/chat")!' in INTERPRETER and
+      '"num_predict":\\#(maximumAnswerTokens)' in INTERPRETER,
+      "the model is consulted only when no parser recognised anything, after the prefilter, on loopback Ollama; a failed reading holds")
+run_cmd = section(MAIN, "let interpreterRecord = InterpretedRoutingRecord()", "if outputFormat == \"json\" { print(String(decoding: try JSONEncoder().encode(summary)")
+check("capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)" in run_cmd and
+      "summary.routingInterpreter = interpreterRecord.receipt" in run_cmd and
+      "summary.routingInterpreter = interpreted.receipt" in MAIN and "var routingInterpreter: RoutingOrderInterpreter.Receipt? = nil" in APP and
+      'appendTaskEvent(conversationID: submission.sessionID, kind: "routing_interpreter",' in APP,
+      "the run records the interpreter receipt, also when Core is not reached, and the app keeps it in the task log")
+check("try await routingOrderInterpreterHostSelfTest()" in MAIN and "try RoutingOrderInterpreter.selfTest()" in MAIN,
+      "the interpreter's gate and host wiring run in os1 self-test with canned answers")
 check("RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil" in APP and
       "RouteAllIntent.recognizes(request)" not in APP,
       "the app runs a supported route-all order on Auto; a held one keeps its tile")

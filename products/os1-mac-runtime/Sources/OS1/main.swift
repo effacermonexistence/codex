@@ -1344,6 +1344,9 @@ struct RunSummary: Codable {
     /// Owner-visible routing adjustments made before Core, e.g. a dropped GPT
     /// route. Facts about this request's routing, never a retry instruction.
     var routingNotices: [String]? = nil
+    /// The local model was asked to read a routing order (2026-10-15): its
+    /// kind, model, latency, and whether code adopted it. Absent: not asked.
+    var routingInterpreter: RoutingOrderInterpreter.Receipt? = nil
 }
 
 struct ProviderExecution {
@@ -17482,6 +17485,7 @@ func selfTest() throws {
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()
     try RouteAllIntent.selfTest()
+    try RoutingOrderInterpreter.selfTest()
     try routeAllRoutingSelfTest()
     try routeFanoutSummarySelfTest()
     try providerSurfaceRoutingSelfTest()
@@ -17856,6 +17860,7 @@ struct OS1Main {
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()
                 try selfTest()
+                try await routingOrderInterpreterHostSelfTest()
                 try await consumerChatGPTDispatchSelfTest()
                 try await os1AttemptSourceSelfTest()
                 try rccNativeContinuationSelfTest()
@@ -18114,12 +18119,13 @@ struct OS1Main {
                         throw OS1Error.message("At least one backend capacity must be above zero")
                     }
                     var summary: RunSummary
+                    let interpreterRecord = InterpretedRoutingRecord()
                     do {
                         summary = try await runOpenClawRCCTask(prompt: prompt, workspace: workspace,
                             context: try readSessionContext(contextPath), surface: surface,
                             codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
                             requireReadOnly: requireReadOnly, taskID: rccTaskID,
-                            capacityPlan: capacityPlan, routingNotices: routingNotices)
+                            capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)
                     } catch {
                         // Transport/policy failure is NOT permission for an old
                         // OS-1 coordinator to redispatch this request.
@@ -18127,7 +18133,10 @@ struct OS1Main {
                         summary = RunSummary(status: "rcc_transport_preserved", steps: [],
                             workflowBlocker: "OpenClaw task connection unavailable (" + code + "); request preserved; no alternate route",
                             rccTransportFailure: code)
-                        if !routingNotices.isEmpty { summary.routingNotices = routingNotices }
+                        // What the local model read is kept even when Core was not reached.
+                        let notices = interpreterRecord.notices.isEmpty ? routingNotices : interpreterRecord.notices
+                        if !notices.isEmpty { summary.routingNotices = notices }
+                        summary.routingInterpreter = interpreterRecord.receipt
                     }
                     if outputFormat == "json" { print(String(decoding: try JSONEncoder().encode(summary), as: UTF8.self)) }
                     else { printRunSummary(summary) }
@@ -19025,6 +19034,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
 struct RouteAllRouting {
     let routes: [RCCRuntimeContract.ExplicitRoute]
     let notice: String
+    /// The grammar recognised the order and held it (`RouteAllIntent.Hold`);
+    /// the routing interpreter never re-reads a hold (2026-10-15 review).
+    var hold: RouteAllIntent.Hold? = nil
 }
 
 /// The owner-facing name of an execution surface in a routing notice.
@@ -19051,6 +19063,15 @@ func routeAllSkippedNotice(_ skipped: [RCCRuntimeContract.SkippedRoute]?) -> Str
 func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPlan?, showCodex: Bool,
                      health: BackendHealth?, localReady: () -> Bool, chatGate: (String) -> Bool) -> RouteAllRouting? {
     guard let order = RouteAllIntent.order(prompt) else { return nil }
+    return routeAllRouting(order: order, capacityPlan: capacityPlan, showCodex: showCodex, health: health,
+                           localReady: localReady, chatGate: chatGate)
+}
+
+/// An order, the grammar's or one the routing interpreter read
+/// (`RoutingOrderInterpreter`), on the surfaces that can run now: the same
+/// availability, capacity and chat-gate facts for both.
+func routeAllRouting(order: RouteAllIntent.Order, capacityPlan: RCCRuntimeContract.CapacityPlan?, showCodex: Bool,
+                     health: BackendHealth?, localReady: () -> Bool, chatGate: (String) -> Bool) -> RouteAllRouting? {
     typealias Surface = RCCRuntimeContract.Surface
     var notes: [String] = []
     if !order.gptNames.isEmpty {
@@ -19066,11 +19087,13 @@ func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPl
     case .notArithmetic?:
         return RouteAllRouting(routes: [], notice: joined(os1Tr(
             "가능한 모든 경로로 보내는 요청은 간단한 산수(예: 원플러스원, 투플러스투)만 지원합니다. 다른 내용이 함께 있어 한 모델에 통째로 보내지 않고 보존했습니다.",
-            "Routing to every available route supports simple arithmetic only (for example one plus one, two plus two). This request carries more than that, so it was preserved instead of being sent whole to one model.")))
+            "Routing to every available route supports simple arithmetic only (for example one plus one, two plus two). This request carries more than that, so it was preserved instead of being sent whole to one model.")),
+            hold: .notArithmetic)
     case .referencedContent?:
         return RouteAllRouting(routes: [], notice: joined(os1Tr(
             "‘이거/그거’, ‘아까 거’, ‘나머지’, ‘다시’처럼 앞의 내용을 가리키는 요청은 그 내용을 모든 경로로 보낼 수 없습니다. 보낼 산수(예: 원플러스원)를 직접 써 주세요. 기본 산수로 바꾸거나 한 모델에 통째로 보내지 않고 보존했습니다.",
-            "What \u{201C}this\u{201D}, \u{201C}the earlier one\u{201D}, \u{201C}the rest\u{201D} or \u{201C}again\u{201D} refers to cannot be sent to every route. Write the arithmetic to send (for example one plus one). It was preserved, not replaced by default arithmetic or sent whole to one model.")))
+            "What \u{201C}this\u{201D}, \u{201C}the earlier one\u{201D}, \u{201C}the rest\u{201D} or \u{201C}again\u{201D} refers to cannot be sent to every route. Write the arithmetic to send (for example one plus one). It was preserved, not replaced by default arithmetic or sent whole to one model.")),
+            hold: .referencedContent)
     case nil: break
     }
     func unusable(_ backend: BackendHealth.Backend?) -> String? {
@@ -19213,6 +19236,177 @@ func routeAllRoutingSelfTest() throws {
     try check(skipped?.contains("Claude") == true && skipped?.contains("non_subscription") == true && routeAllSkippedNotice([]) == nil,
               "a route Core skipped is named with its reason")
     print("Route-all routing: \(checks) checks PASS; local probe, providers and models not called")
+}
+
+/// What the routing interpreter made of a request's routing: named parts, or
+/// a route-all order on the surfaces that can run now, a notice, and the
+/// receipt of the one local model call. Unchanged when it was not consulted,
+/// its prefilter skipped the request, or the model refused it; a visible hold
+/// (`routeAll` with no route) when the model failed or read the request
+/// differently from its words.
+struct InterpretedRouting {
+    var parts: RouteAllIntent.NamedParts?
+    var routeAll: RouteAllRouting?
+    var notice: String? = nil
+    var receipt: RoutingOrderInterpreter.Receipt? = nil
+}
+
+/// Where `runOpenClawRCCTask` leaves the interpreter's receipt and notice
+/// for its caller: a transport or configuration failure after the model was
+/// asked still records that it was asked, and what it read (2026-10-15 review).
+final class InterpretedRoutingRecord: @unchecked Sendable {
+    var receipt: RoutingOrderInterpreter.Receipt?
+    var notices: [String] = []
+}
+
+/// The routing order reads as one, but the local model could not confirm it:
+/// held before Core with the reason, never sent whole to one model.
+func routingInterpreterHoldNotice(_ receipt: RoutingOrderInterpreter.Receipt?) -> String {
+    let reason = receipt?.rejectReason ?? "model_error"
+    let why: (String, String) = reason == "model_timeout"
+        ? ("제한 시간(\(Int(RoutingOrderInterpreter.timeout))초) 안에 답하지 않아", "did not answer within \(Int(RoutingOrderInterpreter.timeout)) s")
+        : reason == "model_not_ready" ? ("준비되어 있지 않아", "is not ready")
+        : reason.hasPrefix("model_") ? ("연결되지 않아", "could not be reached")
+        : reason == "schema_mismatch" ? ("정해진 형식으로 답하지 않아", "did not answer in the required format")
+        : ("읽은 식이나 경로가 요청 원문과 맞지 않아", "read expressions or routes your words do not say")
+    return os1Tr("모든 경로로 산수를 보내는 요청으로 보이지만, 이를 확인하는 로컬 모델(\(RoutingOrderInterpreter.model))이 \(why.0) 확인하지 못했습니다. 한 모델에 통째로 보내지 않고 보존했습니다. ‘다 라우팅 해봐 1+1’처럼 다시 말해 주세요.",
+                 "This reads as an order to send arithmetic to every route, but the local model that confirms such orders (\(RoutingOrderInterpreter.model)) \(why.1), so it was not confirmed. It was preserved, not sent whole to one model. Say it again, for example ‘다 라우팅 해봐 1+1’ (route 1+1 to every route).")
+}
+
+/// Build 385 (2026-10-15): the owner's route-all order in a new wording ran
+/// as one single-model task each time ("다 넘겨봐 1+1", "1+1 to all models",
+/// "다 라우팅 해줄 수 있어? 1+1"). When no parser recognised anything, the local
+/// model reads the request; `RoutingOrderInterpreter` adopts that reading only
+/// on deterministic agreement with the request, and its routes take the
+/// grammar's own path: `routeAllRouting(order:)` (availability, capacity, the
+/// chat gate) or named parts. The model proposes; code decides. A grammar
+/// hold is never re-read (it was held for what the model could only drop).
+func interpretRoutingOrder(prompt: String, fanoutPlanned: Bool, parts: RouteAllIntent.NamedParts?, routeAll: RouteAllRouting?,
+                           hasAttachments: Bool, ask: @escaping RoutingOrderInterpreter.Ask,
+                           routing: (RouteAllIntent.Order) -> RouteAllRouting?) async -> InterpretedRouting {
+    var result = InterpretedRouting(parts: parts, routeAll: routeAll)
+    guard RoutingOrderInterpreter.consults(fanoutPlanned: fanoutPlanned, namedParts: parts != nil,
+                                           grammarRecognized: routeAll != nil) else { return result }
+    let outcome = await RoutingOrderInterpreter.interpret(prompt, hasAttachments: hasAttachments, ask: ask)
+    result.receipt = outcome.receipt
+    guard let decision = outcome.decision, let receipt = outcome.receipt else {
+        if outcome.unconfirmed { result.routeAll = RouteAllRouting(routes: [], notice: routingInterpreterHoldNotice(outcome.receipt)) }
+        return result
+    }
+    let seconds = String(format: "%.1f", Double(receipt.latencyMS) / 1000)
+    let note = os1Tr("로컬 모델(\(RoutingOrderInterpreter.model))이 이 요청을 라우팅 명령으로 해석했고, OS-1이 식과 경로를 요청 원문과 대조해 확인했습니다(해석 \(seconds)초).",
+                     "The local model (\(RoutingOrderInterpreter.model)) read this request as a routing order; OS-1 checked its expressions and routes against your words (interpreted in \(seconds) s).")
+    switch decision {
+    case .routeAll(let order):
+        // An interpreted order is never held (`verify` builds it unheld), so
+        // `routeAllRouting(order:)` always answers; nil keeps today's routing.
+        guard let routing = routing(order) else { return result }
+        result.routeAll = RouteAllRouting(routes: routing.routes, notice: note + " " + routing.notice)
+        result.parts = nil
+    case .namedRoutes(let named):
+        result.parts = named
+        result.routeAll = nil
+        result.notice = note
+    }
+    return result
+}
+
+/// The host's use of the routing interpreter with canned model answers: no
+/// model, Ollama, provider, probe, config or HOME.
+func routingOrderInterpreterHostSelfTest() async throws {
+    var checks = 0
+    func check(_ value: Bool, _ message: String) throws {
+        guard value else { throw OS1Error.message("Routing interpreter host self-test failed: " + message) }
+        checks += 1
+    }
+    try await RoutingOrderInterpreter.selfTestInterpret()
+    let routeAllAnswer = #"{"kind":"route_all","expressions":["1+1"],"named":[],"excluded":[],"other_instruction":false,"sends_pointed_content":false}"#
+    final class Calls: @unchecked Sendable {
+        var count = 0; let lock = NSLock()
+        func add() { lock.lock(); count += 1; lock.unlock() }
+    }
+    func run(_ prompt: String, answer: String = routeAllAnswer, local: Bool = true, chat: Bool = true,
+             plan: RCCRuntimeContract.CapacityPlan? = .init(codex: 30, claude: 100), calls: Calls = Calls(),
+             failure: RoutingOrderInterpreter.Failure? = nil) async -> InterpretedRouting {
+        let fanout = RouteAllIntent.namesLocalRoute(prompt) ? nil : RouteFanout.plan(prompt)
+        let parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil
+        let routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(prompt: prompt, capacityPlan: plan, showCodex: true,
+            health: nil, localReady: { local }, chatGate: { _ in chat })
+        return await interpretRoutingOrder(prompt: prompt, fanoutPlanned: fanout != nil, parts: parts, routeAll: routeAll,
+            hasAttachments: false, ask: { _, _ in calls.add(); if let failure { throw failure }; return answer },
+            routing: { routeAllRouting(order: $0, capacityPlan: plan, showCodex: true, health: nil, localReady: { local }, chatGate: { _ in chat }) })
+    }
+    func tuples(_ routing: RouteAllRouting?) -> [String]? { routing?.routes.map { $0.surface.rawValue + ":" + $0.instruction } }
+    let all = ["local:1+1", "codex:1+1", "claude:1+1", "claude-chat:1+1"]
+    // Build 385's failures become route tests on every available route: read
+    // by the local model, or ("1+1 to all models", since the grammar's framing
+    // knows "to") by the grammar with no model call.
+    let direct = Calls()
+    let english = await run("1+1 to all models", calls: direct)
+    try check(tuples(english.routeAll) == all && english.receipt == nil && direct.count == 0, "1+1 to all models: the grammar sends it")
+    for prompt in ["다 넘겨봐 1+1", "다 라우팅 해줄 수 있어? 1+1", "다 날려봐 1+1", "everyone answer 1+1"] {
+        let result = await run(prompt)
+        try check(tuples(result.routeAll) == all && result.receipt?.adopted == true && result.receipt?.model == "qwen3.5:4b",
+                  "interpreted and adopted: " + prompt)
+        try check(result.routeAll?.notice.contains("qwen3.5:4b") == true && result.routeAll?.notice.contains("Claude Code") == true,
+                  "the notice says the local model interpreted it, and which route gets which expression: " + prompt)
+    }
+    // The same availability facts as the grammar's orders.
+    try check(tuples((await run("다 넘겨봐 1+1", local: false)).routeAll) == ["codex:1+1", "claude:1+1", "claude-chat:1+1"],
+              "a local model that is not ready is left out, as for the grammar's orders")
+    try check(tuples((await run("다 넘겨봐 1+1", chat: false)).routeAll) == ["local:1+1", "codex:1+1", "claude:1+1"],
+              "the chat gate applies to an interpreted order")
+    let nothing = await run("다 넘겨봐 1+1", local: false, plan: .init(codex: 0, claude: 0))
+    try check(nothing.routeAll?.routes.isEmpty == true && nothing.routeAll?.notice.isEmpty == false,
+              "nothing can run: a visible hold before Core, never the order as one task")
+    // A grammar order is never re-read: no model call.
+    let grammar = Calls()
+    let incident = await run("야 네가 할 수 있는 거 중에 다 라우팅 시켜봐. 엄청 간단한 문제 뭐 1+1, 2+2 이런 거.", calls: grammar)
+    let named = await run("1+1 Codex한테. 2+2 Claude Code한테. 3+3 로컬한테.", calls: grammar)
+    try check(grammar.count == 0 && incident.receipt == nil && tuples(incident.routeAll)?.count == 4 && named.parts?.routes.count == 3,
+              "a request the grammar sends asks no model")
+    // A grammar hold stays the grammar's hold, whatever the model would say
+    // (2026-10-15 review: a correction, a count, a second instruction).
+    let held = Calls()
+    for prompt in ["다 라우팅 해봐 1+1 그리고 이 PR 머지해", "다 라우팅 해봐 1+1 아니 2+2", "두 개 다 라우팅 해봐 1+1",
+                   "다 라우팅 해봐 1+1 그리고 나머지는 니가 해", "다 라우팅 해봐 1+1. 나머지는 니가 해."] {
+        let result = await run(prompt, answer: #"{"kind":"route_all","expressions":["1+1","2+2"],"named":[],"excluded":[],"other_instruction":false,"sends_pointed_content":false}"#, calls: held)
+        try check(result.routeAll?.routes.isEmpty == true && result.routeAll?.hold == .notArithmetic && result.receipt == nil,
+                  "the grammar's hold, the model not asked: " + prompt)
+    }
+    try check(held.count == 0, "no model call for a grammar hold")
+    // The model's refusal keeps today's routing; a failure or a disagreeing
+    // reading holds the order visibly, before Core.
+    let refused = await run("다 넘겨봐 1+1", answer: #"{"kind":"other","expressions":[],"named":[],"excluded":[],"other_instruction":false,"sends_pointed_content":false}"#)
+    try check(refused.routeAll == nil && refused.parts == nil && refused.receipt?.adopted == false && refused.receipt?.rejectReason == "kind_other",
+              "the model's refusal: the request runs as before, the receipt kept")
+    let invented = await run("다 넘겨봐 1+1", answer: #"{"kind":"route_all","expressions":["1+1","9*9"],"named":[],"excluded":[],"other_instruction":false,"sends_pointed_content":false}"#)
+    try check(invented.routeAll?.routes.isEmpty == true && invented.receipt?.rejectReason == "expressions_invented" &&
+              invented.routeAll?.notice.contains("qwen3.5:4b") == true, "an invented expression is never sent; the order is held")
+    for failure in [RoutingOrderInterpreter.Failure.timeout, .modelNotReady, .transport("connection")] {
+        let failed = await run("다 넘겨봐 1+1", failure: failure)
+        try check(failed.routeAll?.routes.isEmpty == true && failed.parts == nil && failed.routeAll?.notice.isEmpty == false &&
+                  failed.receipt?.adopted == false, "a model failure holds the order visibly (\(failure)), never one task")
+    }
+    try check(routingInterpreterHoldNotice(.init(model: "qwen3.5:4b", kind: nil, adopted: false, rejectReason: "model_timeout", latencyMS: 30_000, routes: nil))
+                .contains("30"), "the timeout hold says the bound")
+    // Ordinary work is never read by the model.
+    let ordinary = Calls()
+    for prompt in ["이 버그 고쳐", "1+1 계산해줘", "다 했으면 커밋해", "nginx 설정 바꿔서 요청을 모든 백엔드로 보내"] {
+        let result = await run(prompt, calls: ordinary)
+        try check(result.routeAll == nil && result.parts == nil && result.receipt == nil, "ordinary work unchanged: " + prompt)
+    }
+    try check(ordinary.count == 0, "ordinary work asks no model")
+    // Named routes: run like the grammar's named parts.
+    let parts = await run("코덱스는 1+1, 로컬은 2+2 넘겨봐",
+        answer: #"{"kind":"named_routes","expressions":["1+1","2+2"],"named":[{"route":"codex","expression":"1+1"},{"route":"local","expression":"2+2"}],"excluded":[],"other_instruction":false,"sends_pointed_content":false}"#)
+    try check(parts.parts?.routes.map { $0.surface.rawValue + ":" + $0.instruction } == ["codex:1+1", "local:2+2"] &&
+              parts.routeAll == nil && parts.notice?.contains("qwen3.5:4b") == true, "named routes are explicit routes, with the notice")
+    let encoded = try JSONEncoder().encode(RunSummary(status: "complete", steps: [], routingInterpreter: parts.receipt))
+    let decoded = try JSONDecoder().decode(RunSummary.self, from: encoded)
+    try check(decoded.routingInterpreter == parts.receipt && String(decoding: encoded, as: UTF8.self).contains("routingInterpreter"),
+              "the run summary carries the interpreter receipt")
+    print("Routing interpreter host: \(checks) checks PASS; canned answers only, local model, providers and Core not called")
 }
 
 /// Core's zero-model exact route answers a request that only asks one sum,
@@ -19365,7 +19559,8 @@ func effortlessRoutingSelfTest() throws {
 
 func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
     codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?,
-    capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = []) async throws -> RunSummary {
+    capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = [],
+    interpreterRecord: InterpretedRoutingRecord? = nil) async throws -> RunSummary {
     let owner = try loadCurrentOwnerPolicy(), cfg = try RuntimeConfig.load()
     let text = owner.map { $0.routing + "\n" + $0.projection } ?? cfg.executorContract.directives.joined(separator: "\n")
     var routingNotices = priorNotices
@@ -19401,7 +19596,39 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let materialRefs = PromptAttachments.imagePaths(in: prompt)
     // Parts that each name their route, the local model among them ("1+1
     // Codex한테. 3+3 로컬한테."): one explicit route per part, read-only.
-    let parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil
+    var parts = fanout == nil ? RouteAllIntent.namedParts(prompt) : nil
+    // "라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐 … 원플러스원 투플러스투" names no
+    // surface (build 381, task ac5a5fd6): it ran on Auto as ONE task and the
+    // routing order escalated to gpt-6-astra/max. A route-all order is an
+    // explicit route test on every surface that can run now, one exact
+    // expression each, on Auto and read-only; never a single worker task.
+    let showCodex = OS1Settings.load().showCodex, health = BackendHealth.load(maxAge: 900)
+    let chatGate: (String) -> Bool = { claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
+                                                      objective: $0, ownerSelected: true) }
+    var routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(prompt: prompt, capacityPlan: capacityPlan,
+        showCodex: showCodex, health: health, localReady: { LocalRouterBridge.localModelReady() }, chatGate: chatGate)
+    // Build 385 (2026-10-15): "다 넘겨봐 1+1", "1+1 to all models", "다 라우팅 해줄
+    // 수 있어? 1+1" ran as one single-model task, because the grammar above is
+    // a closed list. When nothing above recognised anything, the local model
+    // OpenClaw already runs reads the request; code adopts its reading only on
+    // deterministic agreement with the owner's words (RoutingOrderInterpreter),
+    // and the routes take the grammar's own path.
+    let interpreted = await interpretRoutingOrder(prompt: prompt, fanoutPlanned: fanout != nil, parts: parts, routeAll: routeAll,
+        hasAttachments: !PromptAttachments.paths(in: prompt).isEmpty,
+        ask: { system, request in
+            // Seconds of reading: say so before the call (2026-10-15 review).
+            RuntimeActivity.emit(.routing, provider: "local", model: RoutingOrderInterpreter.model, effort: "none",
+                publicText: os1Tr("로컬 모델이 이 요청을 라우팅 명령으로 읽고 있습니다", "The local model is reading this request as a routing order"))
+            // Only the pinned model OpenClaw runs, at its pinned digest.
+            guard LocalRouterBridge.localModelReady() else { throw RoutingOrderInterpreter.Failure.modelNotReady }
+            return try await RoutingOrderInterpreter.ollamaAsk()(system, request)
+        },
+        routing: { routeAllRouting(order: $0, capacityPlan: capacityPlan, showCodex: showCodex, health: health,
+                                   localReady: { LocalRouterBridge.localModelReady() }, chatGate: chatGate) })
+    parts = interpreted.parts
+    routeAll = interpreted.routeAll
+    if let notice = interpreted.notice { routingNotices.append(notice) }
+    interpreterRecord?.receipt = interpreted.receipt
     if let parts {
         if !parts.gptParts.isEmpty {
             let list = parts.gptParts.joined(separator: ", ")
@@ -19411,16 +19638,6 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         explicit = parts.routes
         surface = .auto
     }
-    // "라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐 … 원플러스원 투플러스투" names no
-    // surface (build 381, task ac5a5fd6): it ran on Auto as ONE task and the
-    // routing order escalated to gpt-6-astra/max. A route-all order is an
-    // explicit route test on every surface that can run now, one exact
-    // expression each, on Auto and read-only; never a single worker task.
-    let routeAll = fanout != nil || parts != nil ? nil : routeAllRouting(prompt: prompt, capacityPlan: capacityPlan,
-        showCodex: OS1Settings.load().showCodex, health: BackendHealth.load(maxAge: 900),
-        localReady: { LocalRouterBridge.localModelReady() },
-        chatGate: { claudeChatLane(provider: "claude", permission: "read_only", hasSource: !materialRefs.isEmpty,
-                                    objective: $0, ownerSelected: true) })
     if let routeAll {
         // Nothing may run: held here, before Core, with the reason as the
         // blocker; never the routing order as one worker task.
@@ -19428,12 +19645,14 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
             for notice in routingNotices + [routeAll.notice] { RuntimeActivity.emit(.routing, publicText: notice) }
             var held = RunSummary(status: "workflow_blocked", steps: [], monitorTaskID: taskID, workflowBlocker: routeAll.notice)
             if !routingNotices.isEmpty { held.routingNotices = routingNotices }
+            held.routingInterpreter = interpreted.receipt
             return held
         }
         routingNotices.append(routeAll.notice)
         explicit = routeAll.routes
         surface = .auto
     }
+    if interpreted.receipt != nil { interpreterRecord?.notices = routingNotices }
     // An explicit Claude chat choice the chat gate refuses is held by Core
     // with chat_gate_refused; say why here, before any provider call.
     if fanout == nil, parts == nil, routeAll == nil, surface == .claudeChat,
@@ -19513,5 +19732,6 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     var summary = RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
         steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)
     if !routingNotices.isEmpty { summary.routingNotices = routingNotices }
+    summary.routingInterpreter = interpreted.receipt
     return summary
 }
