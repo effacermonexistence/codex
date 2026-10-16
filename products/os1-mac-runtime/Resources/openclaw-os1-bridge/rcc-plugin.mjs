@@ -232,6 +232,29 @@ export const arithmeticResult = instruction => {
   const a = BigInt(parts[1]), b = BigInt(parts[3]);
   return (parts[2] === '+' ? a + b : parts[2] === '*' ? a * b : a - b).toString();
 };
+/** Already-admitted exact route diagnostics need no model to rediscover a
+ * DAG whose recipients/payloads are fixed. This creates AGENT nodes, never
+ * answers: every named worker still executes and its actual receipt is
+ * verified. The same downstream host resolver honors model/effort/quota and
+ * permission gates. Legacy catalogs and every non-exact task abstain.
+ * Original route ordinals survive skipped/dropped routes. No owner policy,
+ * conversation context, task identity or native source context is altered. */
+export function deterministicExplicitArithmeticPlan(task, catalog) {
+  if (!explicitTierRouting(task, catalog) || task?.host_context?.require_read_only !== true ||
+      !Array.isArray(task.material_refs) || task.material_refs.length !== 0 ||
+      catalog?.schema !== 1 || catalog.task_id !== task.task_id ||
+      catalog.request_sha256 !== task.request_sha256 || !Array.isArray(catalog.candidates) ||
+      catalog.candidates.length === 0 || catalog.candidates.length > 256) return null;
+  const original = task.host_context.explicit_routes, effective = effectiveExplicitRoutes(task);
+  if (!Array.isArray(original) || original.length === 0 || original.length > 8 ||
+      !Array.isArray(effective) || effective.length === 0 ||
+      effective.some(route => !['local', 'codex', 'claude', 'claude-chat'].includes(route?.surface) ||
+        typeof route?.instruction !== 'string' || arithmeticResult(route.instruction) === null)) return null;
+  return {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
+    nodes: original.flatMap((route, index) => effective.includes(route) ? [{
+      id: explicitRouteNodeID(index), instruction: route.instruction, dependencies: [], kind: 'agent',
+      route_class: 'trivial', scope: 'read_only', owned_paths: [], context_refs: []}] : [])};
+}
 const stableJSON = value => Array.isArray(value) ? `[${value.map(stableJSON).join(',')}]` :
   value !== null && typeof value === 'object' ?
     `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJSON(value[key])}`).join(',')}}` :
@@ -650,8 +673,11 @@ export function registerRCCRuntime(api) {
           lifetimeSignal: () => plannerLifetime?.signal ?? null}),
         catalog: task => nativeOperation('rcc-catalog', task),
         plan: async ({ task, catalog, ...feedback }) => {
+          const policyText = policy(task);
+          const deterministic = deterministicExplicitArithmeticPlan(task, catalog);
+          if (deterministic) return deterministic;
           const {instructions, message, responseFormat} = buildBoundedPlannerInput({task, catalog,
-            feedback, policyText: policy(task)});
+            feedback, policyText});
           let response;
           try { response = await plannerScope.runInAsyncScope(() => api.runtime.llm.complete(
             plannerCompletionRequest({instructions, message, responseFormat,

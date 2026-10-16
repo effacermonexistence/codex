@@ -12,7 +12,16 @@ for (const [fingerprint, provenance] of Object.entries(policy.publicTokenProvena
     throw new Error('Invalid exact audited-token provenance');
   }
   if (provenance.tokenKind === 'compiler_type') {
-    if (!/^_TtC(?:[CVFO])?\d/.test(provenance.publicToken)) {
+    // One source-audited static-function-local class uses Swift's Z marker.
+    // This is diagnostic classification of an already exact-hash policy row,
+    // not a scanner prefix/section exception or a broader mangling grammar.
+    const exactStaticLocalClass = fingerprint === 'c2c8a7293079209e730fee3cec9d9dfa737c70f16b11e34cd893148370760e66' &&
+      provenance.demangledPublicType === 'Box #1 in static OS1.LocalRouterBridge.localModelReady(timeout: Swift.Double) -> Swift.Bool' &&
+      provenance.source === 'products/os1-mac-runtime/Sources/OS1/LocalRouterBridge.swift' &&
+      provenance.sourceRevision === '27fe23154bb9d2188abce0504ae9aab3d885d2eb' &&
+      provenance.sourceSHA256 === '0704222d797cfa98f08e694201b66eaae6bf413d8e554f6ba4b34bc3babff05f' &&
+      provenance.sourceURL === `https://github.com/effacermonexistence/codex/blob/${provenance.sourceRevision}/${provenance.source}`;
+    if (!/^_TtC(?:[CVFO])?\d/.test(provenance.publicToken) && !exactStaticLocalClass) {
       throw new Error('Invalid audited compiler-token kind');
     }
   } else if (provenance.tokenKind === 'diagnostic_source_path') {

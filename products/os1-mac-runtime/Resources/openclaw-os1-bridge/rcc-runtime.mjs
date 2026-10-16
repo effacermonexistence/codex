@@ -174,7 +174,12 @@ const MAX_OUTPUT_BYTES = 256_000;
 const MAX_NATIVE_SUMMARY_BYTES = 512_000;
 const MAX_PUBLIC_WIRE_BYTES = 8_388_608;
 const MAX_USAGE_BYTES = 2_048;
-const INTENT_RESOLUTION_TIMEOUT_MS = 30_000;
+// The full owner policy stays in the intent prompt. Installed build387's
+// cold live trial used 5.3s model load + 17.4s prefill (4914 tokens), then
+// reached only 67 output tokens when the former 30s bound cancelled it.
+// This bounded 60s allowance includes that measured substrate overhead;
+// the owner's remaining whole-task duration remains the tighter ceiling.
+const INTENT_RESOLUTION_TIMEOUT_MS = 60_000;
 const INTENT_ROUTE_SURFACES = new Set(['local', 'codex', 'claude', 'claude-chat']);
 
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }

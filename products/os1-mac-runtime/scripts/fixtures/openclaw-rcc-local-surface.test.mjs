@@ -358,8 +358,8 @@ quota_observed_at_ms:null,quota_valid_until_ms:null,quality_state:'policy_admitt
     assert.equal(snapshot.state, 'completed', snapshot.error);
     assert.equal(snapshot.result.task_verified, true);
     assert.equal(snapshot.result.output, '2');
-    assert.deepEqual(calls.map(params => params.purpose), ['os1.rcc.internal-route-plan', LOCAL_WORKER_PURPOSE]);
-    assert.equal(Object.hasOwn(calls[1], 'responseFormat'), false);
+    assert.deepEqual(calls.map(params => params.purpose), [LOCAL_WORKER_PURPOSE]);
+    assert.equal(Object.hasOwn(calls[0], 'responseFormat'), false);
     assert.ok((await readFile(join(dir, 'native-calls.log'), 'utf8')).trim().split('\n').every(line => line === 'rcc-catalog'),
       'the native adapter is never called for a local route');
     assert.equal((await readdir(join(dir, 'native-receipts'))).length, 1);

@@ -71,7 +71,10 @@
       "8d94dddb3339ba54f8f00b8cb9ec15329259bb82c8d0d0d577b1ba1e0cc612a9",
       "3e630fdc1fc9651e1f4530d7cee6ec64500d649ff2c4d75064e02db23fb7b390",
       "f761aebee4696767104b0782f0903b448892ff6907ee077f3b5214690435bfa1",
-      "1eb53f3566f89eed208e9e278c4fa00331f8ab51c7a134808275a3a499681efa"
+      "1eb53f3566f89eed208e9e278c4fa00331f8ab51c7a134808275a3a499681efa",
+      "c2c8a7293079209e730fee3cec9d9dfa737c70f16b11e34cd893148370760e66",
+      "114a70e2f9a615ddc64b64b9bf14bea793b36dc63dde82edbea962b78d2b528f",
+      "a91c1be85c496305576c4c07e080f1d302bc081ba102714b24d17e1e4433a4bb"
     ]
   },
   "publicTokenProvenance": {
@@ -436,6 +439,39 @@
       "sourceRevision": "a148126dcc7641bb82b937de83fb40dedf845bc9",
       "sourceSHA256": "ebc7654e88ddf81814dbca7cec3046986134a5ff6ac1ba82bec74e728ca5d488",
       "sourceURL": "https://github.com/effacermonexistence/codex/blob/a148126dcc7641bb82b937de83fb40dedf845bc9/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "tokenKind": "compiler_type"
+    },
+    "c2c8a7293079209e730fee3cec9d9dfa737c70f16b11e34cd893148370760e66": {
+      "description": "Exact public-source Swift compiler type observed in CI and verified in both local universal architectures; no section, prefix or binary-wide exemption.",
+      "publicToken": "_TtCZFO3OS117LocalRouterBridge15localModelReadyFT7timeoutSd_SbL_3Box",
+      "demangledPublicType": "Box #1 in static OS1.LocalRouterBridge.localModelReady(timeout: Swift.Double) -> Swift.Bool",
+      "source": "products/os1-mac-runtime/Sources/OS1/LocalRouterBridge.swift",
+      "sourceRevision": "27fe23154bb9d2188abce0504ae9aab3d885d2eb",
+      "sourceSHA256": "0704222d797cfa98f08e694201b66eaae6bf413d8e554f6ba4b34bc3babff05f",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/27fe23154bb9d2188abce0504ae9aab3d885d2eb/products/os1-mac-runtime/Sources/OS1/LocalRouterBridge.swift",
+      "sourceAnchor": "static func localModelReady",
+      "tokenKind": "compiler_type"
+    },
+    "114a70e2f9a615ddc64b64b9bf14bea793b36dc63dde82edbea962b78d2b528f": {
+      "description": "Exact public-source Swift compiler type observed in CI and verified in both local universal architectures; no section, prefix or binary-wide exemption.",
+      "publicToken": "_TtCO3OS123RCCRuntimeGatewayClientP33_687EE7E4FFED6C9AC708D5F6A7BFB2F212Cancellation",
+      "demangledPublicType": "OS1.RCCRuntimeGatewayClient.(Cancellation in _687EE7E4FFED6C9AC708D5F6A7BFB2F2)",
+      "source": "products/os1-mac-runtime/Sources/OS1/RCCRuntimeGatewayClient.swift",
+      "sourceRevision": "27fe23154bb9d2188abce0504ae9aab3d885d2eb",
+      "sourceSHA256": "0ec29571c75a9db3a79a17b4f674a924b4574e4d272ea712b8747000c2ead671",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/27fe23154bb9d2188abce0504ae9aab3d885d2eb/products/os1-mac-runtime/Sources/OS1/RCCRuntimeGatewayClient.swift",
+      "sourceAnchor": "private final class Cancellation",
+      "tokenKind": "compiler_type"
+    },
+    "a91c1be85c496305576c4c07e080f1d302bc081ba102714b24d17e1e4433a4bb": {
+      "description": "Exact public-source Swift compiler type observed in CI and verified in both local universal architectures; no section, prefix or binary-wide exemption.",
+      "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63327rccTerminalDeliverySelfTestFzZT_T_L_7Control",
+      "demangledPublicType": "Control #1 in OS1App.(rccTerminalDeliverySelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()",
+      "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "27fe23154bb9d2188abce0504ae9aab3d885d2eb",
+      "sourceSHA256": "df8d0924058723b7c85704031e6c1beef50543902d45d19b371516fdd96c0026",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/27fe23154bb9d2188abce0504ae9aab3d885d2eb/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceAnchor": "private func rccTerminalDeliverySelfTest",
       "tokenKind": "compiler_type"
     }
   }

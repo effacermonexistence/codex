@@ -108,6 +108,72 @@ describe("client release artifact hygiene gate", () => {
     expect(unknownOnly.stdout).toBe("");
   });
 
+  it("allows only the three audited CI compiler types, with exact source provenance and no appended entropy", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-ci-public-types-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "ci-cstrings.bin");
+    const policy = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprints = [
+      "c2c8a7293079209e730fee3cec9d9dfa737c70f16b11e34cd893148370760e66",
+      "114a70e2f9a615ddc64b64b9bf14bea793b36dc63dde82edbea962b78d2b528f",
+      "a91c1be85c496305576c4c07e080f1d302bc081ba102714b24d17e1e4433a4bb",
+    ];
+    const tokens: string[] = [];
+    for (const fingerprint of fingerprints) {
+      const entry = policy.publicTokenProvenance[fingerprint];
+      expect(entry.tokenKind).toBe("compiler_type");
+      expect(entry.sourceRevision).toBe("27fe23154bb9d2188abce0504ae9aab3d885d2eb");
+      expect(entry.sourceSHA256).toMatch(/^[a-f0-9]{64}$/);
+      expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
+      const source = await readFile(new URL("../../../" + entry.source, import.meta.url), "utf8");
+      expect(source).toContain(entry.sourceAnchor);
+      expect(createHash("sha256").update(entry.publicToken).digest("hex")).toBe(fingerprint);
+      expect(entry.demangledPublicType).toBeTruthy();
+      tokens.push(entry.publicToken);
+    }
+    expect(policy.entropy.minimumLength).toBe(48);
+    expect(policy.entropy.minimumBitsPerCharacter).toBe(4.7);
+    await writeFile(file, machoCStringFixture(tokens.join("\0")));
+    expect((await scanClientArtifacts([file])).findings).toEqual([]);
+    const canary = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/";
+    const mutants = tokens.map(token => token + canary);
+    await writeFile(file, machoCStringFixture([...mutants, canary, "private routing prompt"].join("\0")));
+    const result = await scanClientArtifacts([file]);
+    const rejected = new Set(result.findings.filter(row => row.kind === "high_entropy").map(row => row.fingerprint));
+    for (const token of [...mutants, canary]) expect(rejected.has(createHash("sha256").update(token).digest("hex"))).toBe(true);
+    expect(result.findings.some(row => row.kind === "forbidden_content")).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(canary);
+  });
+
+  it("rejects altered hash, wrong demangling or missing source provenance for the exact static-local diagnostic", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-ci-type-provenance-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "scripts"));
+    await mkdir(join(directory, "security"));
+    const helper = join(directory, "scripts", "explain-client-scan.mjs");
+    await writeFile(helper, await readFile(new URL("../scripts/explain-client-scan.mjs", import.meta.url)));
+    const original = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprint = "c2c8a7293079209e730fee3cec9d9dfa737c70f16b11e34cd893148370760e66";
+    const input = join(directory, "compiler-type.bin");
+    await writeFile(input, original.publicTokenProvenance[fingerprint].publicToken);
+    for (const delta of [
+      { publicToken: original.publicTokenProvenance[fingerprint].publicToken + "Altered" },
+      { demangledPublicType: "A different type" },
+      { sourceSHA256: undefined },
+      { source: undefined },
+      { sourceRevision: undefined },
+      { sourceURL: "https://example.invalid/not-an-audited-source" },
+    ]) {
+      const policy = structuredClone(original);
+      Object.assign(policy.publicTokenProvenance[fingerprint], delta);
+      await writeFile(join(directory, "security", "client-artifact-scan-policy.json"), JSON.stringify(policy));
+      const diagnostic = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+      expect(diagnostic.status).not.toBe(0);
+      expect(diagnostic.stdout).toBe("");
+      expect(diagnostic.stderr).not.toContain(original.publicTokenProvenance[fingerprint].publicToken);
+    }
+  });
+
   it("allows only the two source-verified browser diagnostic paths, never similar paths or added credentials", async () => {
     const directory = await mkdtemp(join(tmpdir(), "os1-browser-diagnostics-"));
     temporaryDirectories.push(directory);
