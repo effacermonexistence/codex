@@ -2758,7 +2758,12 @@ test('a verified ladder output is adopted; a failed one re-dispatches once at th
   const always = await ladderRuntime(t, dir, 'always fail', {rows: ladderRows,
     verify: async () => ({passed: false, reason: 'fake fail'})});
   assert.deepEqual(always.dispatched, ['low', 'max']);
-  assert.equal(always.done.result?.output, 'answer at max');
+  assert.equal(always.done.state, 'returned_unverified');
+  assert.equal(always.done.error, 'node_verifier_failed');
+  assert.equal(always.done.result?.task_verified, false);
+  assert.equal(always.runtime._load(always.request.task_id).children[0].output, 'answer at max',
+    'the rejected reference remains raw evidence, not an adopted answer');
+  assert.equal(always.done.result?.output, 'n: answer at max', 'held output keeps the existing partial-result label');
   assert.equal(always.runtime.events({schema: 1, task_id: always.request.task_id})
     .filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
   // A throwing or malformed verifier counts as a failure, never as a pass.
@@ -2766,7 +2771,11 @@ test('a verified ladder output is adopted; a failed one re-dispatches once at th
     verify: async input => { if (input.selected_config.effort === 'low') throw Error('verifier crashed');
       return {passed: 'yes'}; }});
   assert.deepEqual(broken.dispatched, ['low', 'max']);
-  assert.equal(broken.done.result?.output, 'answer at max');
+  assert.equal(broken.done.state, 'returned_unverified');
+  assert.equal(broken.done.error, 'node_verifier_failed');
+  assert.equal(broken.done.result?.task_verified, false);
+  assert.equal(broken.runtime._load(broken.request.task_id).children[0].output, 'answer at max');
+  assert.equal(broken.done.result?.output, 'n: answer at max');
   // No parity evidence: the reference runs first and only once.
   const noParity = await ladderRuntime(t, dir, 'no parity', {rows: ladderRows, stats: parity(19),
     verify: async () => ({passed: true, reason: 'fake pass'})});

@@ -490,6 +490,79 @@ test('a registered verifier failing escalates once; a failing reference is never
     .filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
 });
 
+test('a failed reference or explicit verifier holds its candidate and never releases dependent work', async t => {
+  const dir = await fixture(t);
+  const verdicts = [
+    ['false', async () => ({passed: false, reason: 'fixture rejection'})],
+    ['throw', async () => { throw Error('fixture verifier unavailable'); }],
+    ['malformed', async () => ({passed: 'yes'})],
+  ];
+  for (const routeKind of ['reference', 'explicit', 'escalated']) for (const [name, verify] of verdicts) {
+    const request = task(dir, 'Verify a bounded candidate before dependent work');
+    const tickets = [];
+    let parentVerifierCalls = 0;
+    const intent = routeKind === 'explicit' ? {model_family: 'astra', effort: 'max'} : null;
+    const routeClass = routeKind === 'escalated' ? 'standard' : 'deep';
+    const runtime = await createRCCRuntime({stateDir: join(dir, routeKind + '-' + name),
+      verifierRegistry: new Map([[routeClass + ':read_only:agent', verify]]),
+      catalog: async value => tierCatalog(value, {intent}),
+      plan: async () => plan(request, [graded('candidate', routeClass),
+        {...graded('dependent', routeClass), dependencies: ['candidate']}]),
+      execute: async ticket => { tickets.push(ticket); return execution(ticket); },
+      // Intentionally permissive: a failed child must not get this far.
+      verifyTask: value => { parentVerifierCalls++; return taskVerdict(value); }});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'returned_unverified', `${routeKind}/${name}: failed candidate is retained, not adopted`);
+    assert.equal(done.error, 'node_verifier_failed');
+    assert.equal(parentVerifierCalls, 0, 'parent verifier cannot wash a rejected child');
+    const attempts = routeKind === 'escalated' ? 2 : 1;
+    assert.deepEqual(tickets.map(ticket => ticket.node_id), Array(attempts).fill('candidate'),
+      'no descendant dispatch or replay beyond the one existing escalation');
+    const child = runtime._load(request.task_id).children.find(value => value.id === 'candidate');
+    assert.equal(child.route_kind, routeKind === 'escalated' ? 'reference' : routeKind);
+    assert.equal(child.state, 'held');
+    assert.equal(child.node_verifier, 'fail');
+    assert.equal(child.task_quality, 'failed');
+    assert.equal(child.output, 'answer from gpt-6-astra/max', 'failed candidate remains private evidence');
+    assert.equal(child.attempt_history.length, attempts);
+    assert.equal(child.attempt_history.at(-1).state, 'held');
+    assert.equal(child.attempt_history.at(-1).verifier, 'fail');
+    assert.equal(done.children.find(value => value.id === 'dependent').state, 'queued');
+    assert.equal(done.result.task_verified, false);
+    assert.equal(done.result.parity_state, 'unverified');
+    assert.match(done.result.output, /answer from gpt-6-astra\/max/);
+    await runtime.close();
+  }
+});
+
+test('a passing reference or explicit verifier releases dependent work exactly once', async t => {
+  const dir = await fixture(t);
+  for (const routeKind of ['reference', 'explicit']) {
+    const request = task(dir, 'Verify a passing bounded candidate before dependent work');
+    const tickets = [];
+    const verified = [];
+    const intent = routeKind === 'explicit' ? {model_family: 'astra', effort: 'max'} : null;
+    const runtime = await createRCCRuntime({stateDir: join(dir, routeKind),
+      verifierRegistry: new Map([['deep:read_only:agent', async input => {
+        verified.push(input.node_id); return {passed: true, reason: 'fixture accepted'}; }]]),
+      catalog: async value => tierCatalog(value, {intent}),
+      plan: async () => plan(request, [graded('candidate', 'deep'),
+        {...graded('dependent', 'deep'), dependencies: ['candidate']}]),
+      execute: async ticket => { tickets.push(ticket.node_id); return execution(ticket); },
+      verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'completed', done.error);
+    assert.deepEqual(tickets, ['candidate', 'dependent']);
+    assert.deepEqual(verified, tickets);
+    assert.equal(done.result.task_verified, true);
+    await runtime.close();
+  }
+});
+
 test('a write is never escalated: its failure keeps the existing no-replay semantics', async t => {
   const dir = await fixture(t);
   const write = await run(t, dir, 'write', {extras: {write: true}, catalog: {write: true},

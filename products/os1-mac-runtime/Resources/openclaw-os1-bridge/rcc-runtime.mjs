@@ -4260,8 +4260,10 @@ class RCCRuntime {
     return typeof verify === 'function' ? {verify, family} : null;
   }
   /** Run the family verifier on a returned read-only node. Pass adopts it;
-   * a ladder route that fails goes to _ladderFailed (its output is never
-   * adopted). Returns the ledger outcome. */
+   * a ladder route that fails goes to _ladderFailed. A rejected reference
+   * or explicit route is retained as evidence but held, never released to
+   * dependents or laundered through a parent verifier. Returns the ledger
+   * outcome; a reference is never replayed merely because it was rejected. */
   async _verifyNode(taskID, node, candidate, result, {verify, family}) {
     let passed = false, timer;
     try {
@@ -4286,9 +4288,13 @@ class RCCRuntime {
     this._update(taskID, passed ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
       const target = snapshot.children.find(c => c.id === node.id);
       if (target?.state !== 'waiting' || target.attempt_id !== result.attempt_id) return;
-      target.state = 'completed'; target.node_verifier = outcome;
+      target.state = passed ? 'completed' : 'held'; target.node_verifier = outcome;
+      if (!passed) {
+        target.hold_reason = 'node_verifier_failed';
+        target.task_quality = 'failed'; target.parity_state = 'unverified';
+      }
       const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
-      if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; }
+      if (attempt) { attempt.state = target.state; attempt.verifier = outcome; }
     });
     return outcome;
   }
