@@ -19069,8 +19069,8 @@ func routeAllRouting(prompt: String, capacityPlan: RCCRuntimeContract.CapacityPl
             "Routing to every available route supports simple arithmetic only (for example one plus one, two plus two). This request carries more than that, so it was preserved instead of being sent whole to one model.")))
     case .referencedContent?:
         return RouteAllRouting(routes: [], notice: joined(os1Tr(
-            "‘이거/그거’가 가리키는 내용은 모든 경로로 보낼 수 없습니다. 보낼 산수(예: 원플러스원)를 직접 써 주세요. 기본 산수로 바꾸거나 한 모델에 통째로 보내지 않고 보존했습니다.",
-            "What \u{201C}this\u{201D} refers to cannot be sent to every route. Write the arithmetic to send (for example one plus one). It was preserved, not replaced by default arithmetic or sent whole to one model.")))
+            "‘이거/그거’, ‘아까 거’, ‘나머지’, ‘다시’처럼 앞의 내용을 가리키는 요청은 그 내용을 모든 경로로 보낼 수 없습니다. 보낼 산수(예: 원플러스원)를 직접 써 주세요. 기본 산수로 바꾸거나 한 모델에 통째로 보내지 않고 보존했습니다.",
+            "What \u{201C}this\u{201D}, \u{201C}the earlier one\u{201D}, \u{201C}the rest\u{201D} or \u{201C}again\u{201D} refers to cannot be sent to every route. Write the arithmetic to send (for example one plus one). It was preserved, not replaced by default arithmetic or sent whole to one model.")))
     case nil: break
     }
     func unusable(_ backend: BackendHealth.Backend?) -> String? {
@@ -19156,6 +19156,11 @@ func routeAllRoutingSelfTest() throws {
               "the incident fans out to local, Codex, Claude Code and Claude chat")
     try check(run()?.notice.contains("qwen3.5:4b") == true && run()?.notice.contains("Claude Code") == true,
               "the owner sees which surface gets which expression")
+    // Build 384 (2026-10-15): "할 수 있는 거 중에" before the order was held.
+    try check(tuples(run("야 네가 할 수 있는 거 중에 다 라우팅 시켜봐. 엄청 간단한 문제 뭐 1+1, 2+2 이런 거.")) ==
+              ["local:1+1", "codex:2+2", "claude:1+1", "claude-chat:2+2"], "the build 384 incident fans out to every route")
+    let worded = run("할 수 있는 거 중에 다 라우팅 해봐 1+1 그리고 이 PR 머지해")
+    try check(worded?.routes.isEmpty == true && worded?.notice.isEmpty == false, "the same order with a work order is held, never sent")
     try check(run("1+1 GPT한테. 2+2 Codex한테.") == nil && run("이 버그 고쳐") == nil, "not a route-all order: nil")
     try check(tuples(run(local: false)) == ["codex:1+1", "claude:2+2", "claude-chat:1+1"] &&
               run(local: false)?.notice.contains("qwen3.5:4b") == true, "a local model that is not ready is left out, visibly")
@@ -19181,6 +19186,14 @@ func routeAllRoutingSelfTest() throws {
     let referenced = run("이거 모든 모델로 보내봐")
     try check(referenced?.routes.isEmpty == true && referenced?.notice.contains("1+1") == false,
               "an order routing what was referenced is held, not sent as 1+1..4+4")
+    // Build 384 review: a second instruction after the order, and earlier
+    // content pointed at after it, are held, never sent as a route test.
+    let rerun = run("다 라우팅 해봐 1+1 그리고 아까 거 다시 돌려")
+    try check(rerun?.routes.isEmpty == true && rerun?.notice.isEmpty == false, "a work order after the route-all order is held")
+    let earlier = run("다 라우팅 시켜봐 아까 거")
+    try check(earlier?.routes.isEmpty == true &&
+              (earlier?.notice.contains("아까 거") == true || earlier?.notice.contains("the earlier one") == true),
+              "earlier content pointed at after the order is held and named, not replaced by 1+1..4+4")
     // GPT excluded, the local model named, expressions left over.
     let noGPT = run("GPT 빼고 다 라우팅 해봐")
     try check(tuples(noGPT)?.count == 4 && noGPT?.notice.contains("GPT") == true, "GPT excluded: every route runs, GPT named in the notice")
