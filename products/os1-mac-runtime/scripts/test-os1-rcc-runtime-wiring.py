@@ -182,6 +182,10 @@ check("snapshot.intent_resolution" in RUNTIME and "snapshot.effective_task" in R
 check("this.intentControllers" in RUNTIME and "intent_cancelled" in PLUGIN and
       "intent_resolution_timeout" in RUNTIME,
       "intent operation belongs to Core cancellation and bounded lifetime")
+plan_activity = section(MAIN, "if plannerActivity.firstEngagement(state)", "if let graph")
+check("model: nil, effort: nil" in plan_activity and "OpenClaw execution plan is ready" in plan_activity and
+      "RCCNativeCatalogBuilder.localWorkerModel" not in plan_activity,
+      "a deterministic DAG does not fabricate planner-model execution in UI activity")
 pins = {
     "index.mjs": "pinnedPluginIndexSHA256",
     "openclaw.plugin.json": "pinnedPluginManifestSHA256",

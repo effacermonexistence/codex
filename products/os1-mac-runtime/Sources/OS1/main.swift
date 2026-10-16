@@ -19559,7 +19559,7 @@ func effortlessRoutingSelfTest() throws {
     try check(!gate.firstEngagement(snapshot(.planning, [])) && !gate.firstEngagement(snapshot(.held, [])),
               "planning before the catalog, and a hold there, name no planner model")
     try check(gate.firstEngagement(snapshot(.running, ["n1"])) && !gate.firstEngagement(snapshot(.running, ["n1", "n2"])),
-              "the first planned child names it, once")
+              "the first planned child announces the Core plan once, without claiming a model call")
     print("Effortless Claude, one-shot cache and exact arithmetic notice: \(checks) checks PASS; config file, providers and Core not touched")
 }
 
@@ -19607,9 +19607,11 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     let terminal = try await RCCRuntimeGatewayClient.run(request: data, configuration: configuration) { snapshot in
         guard let state = try? RCCRuntimeContract.decodeSnapshot(snapshot) else { return }
         if plannerActivity.firstEngagement(state) {
-            RuntimeActivity.emit(.routing, provider: "local", model: RCCNativeCatalogBuilder.localWorkerModel, effort: "dynamic",
-                publicText: os1Tr("OpenClaw RCC 플래너(로컬 모델)가 정확한 실행 구성을 고릅니다",
-                                  "The OpenClaw RCC planner (local model) is choosing the exact configuration"))
+            // A source-admitted exact DAG can be compiled without a planner
+            // model. Announce the Core plan, not an unobserved model call.
+            RuntimeActivity.emit(.routing, provider: "local", model: nil, effort: nil,
+                publicText: os1Tr("OpenClaw 실행 계획이 준비됐습니다. 모델은 각 작업에 따로 표시됩니다",
+                                  "OpenClaw execution plan is ready; each worker's model is shown separately"))
         }
         if let graph = try? RCCRuntimeProjection.project(state, conversationID: conversationID,
             submissionID: submissionID, objective: prompt, observedAt: Date(), firstObservedAt: observed,
