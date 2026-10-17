@@ -19,8 +19,16 @@ public enum RCCNativeAttemptOutcome {
     public static let providerQuotaRejectedBeforeExecution = RCCRuntimeContract.providerQuotaRejectedBeforeExecution
     public static let outcomeUncertain = "native_outcome_uncertain_preserved"
     public static let configurationUnavailable = "native_configuration_or_authorization_unavailable"
-    /// The routing server refused this exact tuple before any dispatch
-    /// (`RCCRuntimeContract.nativeAuthorizationRefused`).
+    /// A successfully observed provider catalog no longer admits the exact
+    /// selected tuple. Never apply this label to old combined-error receipts.
+    public static let verifiedConfigurationUnavailable = "native_configuration_unavailable"
+    /// No backend was dispatched, but the failure does not establish model
+    /// incompatibility. Credential, transport, authorization and ticket checks
+    /// hold the chosen route rather than sending the task to another model.
+    public static let preDispatchFailed = "native_pre_dispatch_failed"
+    /// Historical opaque routing-server refusal before dispatch. Its HTTP400
+    /// does not prove model incompatibility; current Core holds this legacy
+    /// reason without changing candidates. The new adapter uses preDispatchFailed.
     public static let authorizationRefused = RCCRuntimeContract.nativeAuthorizationRefused
     /// Recorded beside a finished read-only attempt whose native stream
     /// reported a tool call of the model's own that broke down and was never
@@ -45,10 +53,10 @@ public enum RCCNativeAttemptOutcome {
     ///   proves no model or tool work ran before the rejection.
     /// - workspaceUnchanged: the workspace part of the no-effect proof holds
     ///   for this attempt (`workspaceEvidenceHolds`; false when not observed).
-    /// - authorizationRefused: the routing server answered the exact tuple's
-    ///   authorization request with its refusal. The adapter asks before any
-    ///   ticket, lease or backend process exists, so nothing ran in either
-    ///   scope; Core moves the node without charging the owner's budget.
+    /// - authorizationRefused: legacy routing-server rejection before dispatch.
+    ///   This preserves the historical wire label, not proof of a model-specific
+    ///   cause or authority to choose another candidate. Current adapter/
+    ///   Core classification holds opaque authentication/authorization failures.
     public static func failure(knownFinishedCandidate: Bool, dispatched: Bool, scope: RCCRuntimeContract.Scope,
                                quotaRejectedBeforeExecution: Bool, workspaceUnchanged: Bool,
                                authorizationRefused: Bool = false) -> Report {

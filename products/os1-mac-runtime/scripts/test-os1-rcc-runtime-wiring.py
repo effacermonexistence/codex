@@ -112,6 +112,42 @@ check('provider: provider, codex: {' in preparation and '}, claude: {' in prepar
 check("providerQuotaContext(codex: observations.codex?.quotaSnapshot, claude: observations.claude?.quota," in native and
       native.count("ModelAvailability.claudeQuota(") == 1 and native.count("ModelAvailability.codexCatalog(") == 1,
       "native admission keeps fresh selected quota without an unrelated provider re-probe")
+check("try ModelAvailability.codexCatalog(" in preparation and "try ModelAvailability.claudeCatalogs(" in preparation and
+      "try?" not in preparation and 'source: "unavailable"' not in preparation and
+      "inventoryObserved: !catalogs.configured.isEmpty" in preparation and
+      native.count("catalogProvedUnavailable = observations.codex != nil || observations.claude?.inventoryObserved == true") == 1,
+      "metadata failures propagate; only observed catalog evidence, not Claude's empty cooldown shortcut, proves tuple absence")
+authorization = section(native, "timing.mark(.authorizationStarted)", "var custody = OS1AttemptSourceState()")
+authorization_steps = ["timing.mark(.credentialStarted)", "let credential = try githubToken()", "timing.mark(.credentialReady)",
+    "timing.mark(.deviceIdentityStarted)", "let authorizationDeviceID = try deviceID()", "timing.mark(.deviceIdentityReady)",
+    "timing.mark(.authorizationHTTPStarted)", 'post("/v1/execution-authorizations"', "timing.mark(.authorizationHTTPReturned)",
+    "timing.mark(.ticketVerificationStarted)", "try verifyTicket(signed, config: config, requiresStartupContract: true)",
+    "guard signed.provider == provider", "timing.mark(.ticketVerified)", "record.acknowledgedConfig = t.selectedConfig",
+    "timing.mark(.authorizationReady)"]
+check(all(step in authorization for step in authorization_steps) and
+      [authorization.index(step) for step in authorization_steps] == sorted(authorization.index(step) for step in authorization_steps),
+      "credential, device, HTTP and verified-ticket phases surround the unchanged exact authorization gates")
+check("timing.recordFailure(category: diagnosticCategory, httpStatus: diagnosticHTTPStatus," in native and
+      "nsErrorCode: (error as NSError).code)" in native and
+      native.index("timing.recordFailure(") < native.index("timing.mark(.attemptFailed)") and
+      "case .service(let status, _, _)" in native and "authorizationRefused = true" not in native,
+      "safe first-failure phase and bounded codes are captured before failure/persistence; opaque HTTP400 is not model refusal")
+check("let report = RCCNativePreparation.preserveFailureBoundary(observedReport," in native and
+      "catalogProvedUnavailable: catalogProvedUnavailable)" in native and
+      native.index("let report = RCCNativePreparation.preserveFailureBoundary(") < native.index("record.error = report.error"),
+      "predispatch error boundary is normalized without changing execution receipt schema or authorizing a retry")
+PREPARATION = (ROOT / "Sources/OS1Context/RCCNativePreparation.swift").read_text()
+OUTCOME = (ROOT / "Sources/OS1Context/RCCNativeAttemptOutcome.swift").read_text()
+diagnostic = section(PREPARATION, "public func recordFailure(", "/// The existing private runtime root")
+check("category: ErrorCategory" in diagnostic and "httpStatus: Int?" in diagnostic and "nsErrorCode: Int?" in diagnostic and
+      "guard failure == nil" in diagnostic and "(100...599).contains($0)" in diagnostic and
+      not any(term in diagnostic for term in ["localizedDescription", "userInfo", "NSError", "URL(", "Error)"]),
+      "private diagnostics accept finite categories and numeric codes only, never arbitrary errors, bodies or credentials")
+check('preDispatchFailed = "native_pre_dispatch_failed"' in OUTCOME and
+      'verifiedConfigurationUnavailable = "native_configuration_unavailable"' in OUTCOME and
+      'configurationUnavailable = "native_configuration_or_authorization_unavailable"' in OUTCOME and
+      "catalogProvedUnavailable ? RCCNativeAttemptOutcome.verifiedConfigurationUnavailable" in PREPARATION,
+      "new catalog-negative and predispatch labels remain distinct from historical mixed receipts")
 check("RCCNativePreparationTiming(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID," in native and
       "configurationSHA256: t.configurationSHA256, sourceFingerprint: t.sourceFingerprint, provider: provider)" in native and
       "try? timing.persist(root: root.deletingLastPathComponent(), receiptPersisted: receiptPersisted," in native and

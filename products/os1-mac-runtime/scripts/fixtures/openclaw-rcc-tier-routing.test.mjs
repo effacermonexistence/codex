@@ -877,19 +877,19 @@ test('a pre-execution quota rejection re-resolves a tier node at its own class i
   assert.equal(child.routing_decision.ladder.reference_model, 'claude-fable-5-1');
 });
 
-// Review 2026-10-15 (version skew): a build-383 host against the routing
-// server's 78-profile policy. The gateway refuses each tuple build 383 added,
-// before any ticket or process; os1 rcc-execute reports it as
-// native_authorization_refused. Charged, two refusals had exhausted the
-// budget, so Claude-only standard work (writes included) failed outright.
-// Uncharged, the node moves on to a profile the server authorizes.
+// Contract repair 2026-10-17: an opaque routing HTTP 400 never established
+// the old native_authorization_refused interpretation. That legacy code now
+// holds (separately regressed). This synthetic positive fixture instead
+// supplies the NEW native catalog's explicit unsupported tuple observation,
+// before dispatch/effects. Only that precise evidence permits configuration
+// repair; the same bounded movement and write-scope gates stay enforced.
 const ADDED_IN_383 = new Set(['claude-opus-5-5/medium', 'claude-opus-5-5/high', 'claude-sonnet-5-5/medium',
   'claude-sonnet-5-5/high', 'claude-fable-5-1/medium', 'claude-fable-5-1/high', 'claude-haiku-4-5-20251001/none']);
 const refused = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched', side_effects: 'none',
-  output: null, execution_verified: false, task_quality: 'failed', usage: null, error: 'native_authorization_refused'});
+  output: null, execution_verified: false, task_quality: 'failed', usage: null, error: 'native_configuration_unavailable'});
 const olderServer = ticket => ADDED_IN_383.has(`${ticket.selected_config.model}/${ticket.selected_config.effort}`) ?
   refused(ticket) : execution(ticket);
-test('a routing server that refuses the newest signed tuples costs no budget: Claude-only work moves to a tuple it authorizes', async t => {
+test('verified native catalog unsupported tuples cost no budget: bounded same-scope configuration repair remains possible', async t => {
   const dir = await fixture(t);
   for (const [name, routeClass, write] of [['skew standard', 'standard', false], ['skew standard write', 'standard', true],
     ['skew trivial write', 'trivial', true], ['skew trivial', 'trivial', false]]) {
@@ -900,13 +900,13 @@ test('a routing server that refuses the newest signed tuples costs no budget: Cl
       ['claude-haiku-4-5-20251001/none', 'claude-sonnet-5-5/low'] :
       ['claude-opus-5-5/medium', 'claude-sonnet-5-5/medium', 'sonnet/medium'], name);
     const child = result.done.children[0];
-    assert.match(child.routing_decision.reason, /^re_resolved_after:native_authorization_refused;/, name);
+    assert.match(child.routing_decision.reason, /^re_resolved_after:native_configuration_unavailable;/, name);
     const history = result.runtime._load(result.request.task_id).children[0].attempt_history;
     assert.deepEqual(history.map(entry => [entry.state, entry.error ?? null]),
-      [...Array(result.tuples.length - 1).fill(['verified_not_dispatched', 'native_authorization_refused']),
+      [...Array(result.tuples.length - 1).fill(['verified_not_dispatched', 'native_configuration_unavailable']),
         ['completed', null]], name);
   }
-  // Still bounded: a server that refuses everything holds the node after
+  // Still bounded: a catalog that reports every tuple unsupported stops after
   // MAX_RE_RESOLUTIONS moves, never an unbounded walk of the catalog.
   const all = await run(t, dir, 'skew refuses all', {routeClass: 'standard', execute: refused, catalog: {codex: []}});
   assert.equal(all.done.state, 'failed');
@@ -915,7 +915,7 @@ test('a routing server that refuses the newest signed tuples costs no budget: Cl
   // A refusal is valid only on a not-dispatched, no-effect report.
   const laundered = await run(t, dir, 'skew dispatched refusal', {routeClass: 'standard', catalog: {codex: []},
     execute: ticket => execution(ticket, {status: 'failed', dispatch_stage: 'dispatched', side_effects: 'none',
-      output: null, execution_verified: false, task_quality: 'failed', error: 'native_authorization_refused'})});
+      output: null, execution_verified: false, task_quality: 'failed', error: 'native_configuration_unavailable'})});
   assert.equal(laundered.tickets.length, 1);
   assert.notEqual(laundered.done.state, 'completed');
 });

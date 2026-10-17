@@ -63,6 +63,44 @@ func runRCCNativePreparationFixtures() throws {
         }
     }
 
+    // Only new, observed catalog evidence permits configuration repair. An
+    // authorization/credential/transport error must hold the selected tuple.
+    for finished in [false, true] {
+        for dispatched in [false, true] {
+            for scope in [RCCRuntimeContract.Scope.readOnly, .workspaceWrite] {
+                for quota in [false, true] {
+                    for unchanged in [false, true] {
+                        let original = RCCNativeAttemptOutcome.failure(knownFinishedCandidate: finished,
+                            dispatched: dispatched, scope: scope, quotaRejectedBeforeExecution: quota,
+                            workspaceUnchanged: unchanged)
+                        for observedNegative in [false, true] {
+                            let revised = RCCNativePreparation.preserveFailureBoundary(original,
+                                knownFinishedCandidate: finished, dispatched: dispatched,
+                                catalogProvedUnavailable: observedNegative)
+                            let unchangedReason = finished || dispatched ||
+                                original.error == RCCNativeAttemptOutcome.providerQuotaRejectedBeforeExecution
+                            let expected = unchangedReason ? original.error : observedNegative ?
+                                RCCNativeAttemptOutcome.verifiedConfigurationUnavailable : RCCNativeAttemptOutcome.preDispatchFailed
+                            try check(revised.error == expected, "typed predispatch cause respects observed boundary")
+                            try check(revised.status == original.status && revised.dispatchStage == original.dispatchStage &&
+                                revised.sideEffects == original.sideEffects, "cause repair never upgrades execution or effects")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for legacyReason in [RCCNativeAttemptOutcome.configurationUnavailable, RCCNativeAttemptOutcome.authorizationRefused] {
+        let legacy = RCCNativeAttemptOutcome.Report(status: .failed, dispatchStage: .notDispatched,
+            sideEffects: .none, error: legacyReason)
+        let held = RCCNativePreparation.preserveFailureBoundary(legacy, knownFinishedCandidate: false,
+            dispatched: false, catalogProvedUnavailable: false)
+        try check(held.error == "native_pre_dispatch_failed" && legacy.error == legacyReason,
+            "opaque authorization refusal cannot become catalog evidence; original report immutable")
+    }
+    try check(RCCNativeAttemptOutcome.verifiedConfigurationUnavailable != RCCNativeAttemptOutcome.configurationUnavailable,
+              "new verified catalog label is not the historical mixed authorization/configuration label")
+
     let base = FileManager.default.temporaryDirectory.appendingPathComponent("os1-native-preparation-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions: 0o700])
@@ -96,6 +134,7 @@ func runRCCNativePreparationFixtures() throws {
     try check(record.receiptPersisted && record.executionStatus == "succeeded" && record.executionVerified &&
               record.marks.count == 11 && zip(record.marks, record.marks.dropFirst()).allSatisfy { $0.elapsedMS <= $1.elapsedMS },
               "phases are bounded monotonic diagnostics, separate from execution authority")
+    try check(record.failure == nil, "old schema-one timing without failure remains decodable")
     let fileMode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber).intValue
     let directoryMode = (try FileManager.default.attributesOfItem(atPath: file.deletingLastPathComponent().path)[.posixPermissions] as! NSNumber).intValue
     try check(fileMode == 0o600 && directoryMode == 0o700, "private timing file and directory modes")
@@ -119,6 +158,51 @@ func runRCCNativePreparationFixtures() throws {
     let boundedFile = try bounded.persist(root: root, receiptPersisted: false, executionStatus: "failed", executionVerified: false)
     try check(try decoder.decode(RCCNativePreparationTiming.Record.self, from: Data(contentsOf: boundedFile)).marks.count == 32,
               "diagnostic mark count cannot grow unbounded")
+    let failureCases: [(RCCNativePreparationTiming.Phase, RCCNativePreparationTiming.ErrorCategory, Int?, Int)] = [
+        (.inventoryStarted, .localCheck, nil, 1),
+        (.credentialStarted, .localCheck, nil, 2),
+        (.deviceIdentityStarted, .localCheck, nil, 3),
+        (.authorizationHTTPStarted, .urlTransport, nil, -1001),
+        (.authorizationHTTPStarted, .decoding, nil, 4),
+        (.authorizationHTTPStarted, .cancelled, nil, -999),
+        (.ticketVerificationStarted, .localCheck, nil, 5),
+        (.executeStarted, .other, nil, 6)
+    ] + [400, 401, 403, 429, 500, 503].map { (.authorizationHTTPStarted, .httpService, $0, 7) }
+    for (phase, category, status, code) in failureCases {
+        let trace = try timing()
+        trace.mark(.authorizationStarted); trace.mark(phase)
+        let injected = NSError(domain: "PRIVATE_AUTH_DOMAIN", code: code, userInfo: [
+            NSLocalizedDescriptionKey: "PRIVATE_AUTH_MESSAGE", "token": "PRIVATE_TOKEN",
+            "url": "https://private.invalid/PRIVATE_URL", "body": "PRIVATE_RESPONSE_BODY"
+        ])
+        trace.recordFailure(category: category, httpStatus: status, nsErrorCode: injected.code)
+        trace.mark(.attemptFailed)
+        trace.recordFailure(category: .other, httpStatus: 599, nsErrorCode: 99)
+        trace.mark(.receiptPersistStarted)
+        let target = try trace.persist(root: root, receiptPersisted: false, executionStatus: "failed", executionVerified: false)
+        let bytes = try Data(contentsOf: target)
+        let decoded = try decoder.decode(RCCNativePreparationTiming.Record.self, from: bytes)
+        try check(decoded.failure?.phase == phase && decoded.failure?.category == category &&
+            decoded.failure?.httpStatus == status && decoded.failure?.nsErrorCode == code,
+            "injected phase/error has first-failure origin, not receipt-persistence phase")
+        let object = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+        let diagnostic = object["failure"] as! [String: Any]
+        let expectedKeys: Set<String> = status == nil ? ["phase", "category", "ns_error_code"] :
+            ["phase", "category", "http_status", "ns_error_code"]
+        try check(Set(diagnostic.keys) == expectedKeys, "diagnostic accepts only finite enums and bounded numeric codes")
+        try check(!String(decoding: bytes, as: UTF8.self).contains("PRIVATE_"),
+            "NSError domain, secret, message, body and URL are never serialized")
+        try check(decoded.executionStatus == "failed" && !decoded.executionVerified && !decoded.receiptPersisted,
+            "diagnostics do not upgrade failed execution")
+    }
+    for (status, code) in [(99, Int.min), (600, Int.max)] {
+        let trace = try timing()
+        trace.recordFailure(category: .other, httpStatus: status, nsErrorCode: code)
+        let target = try trace.persist(root: root, receiptPersisted: false, executionStatus: "failed", executionVerified: false)
+        let decoded = try decoder.decode(RCCNativePreparationTiming.Record.self, from: Data(contentsOf: target))
+        try check(decoded.failure?.phase == .adapterEntered && decoded.failure?.httpStatus == nil &&
+            decoded.failure?.nsErrorCode == nil, "out-of-bound codes omitted; unknown phase does not become invented phase")
+    }
     try rejects("invalid node path rejected before timing file creation") { _ = try timing(node: "../secret") }
     try rejects("invalid status cannot become arbitrary diagnostic text") {
         _ = try timing().persist(root: root, receiptPersisted: false, executionStatus: "arbitrary-secret", executionVerified: false)

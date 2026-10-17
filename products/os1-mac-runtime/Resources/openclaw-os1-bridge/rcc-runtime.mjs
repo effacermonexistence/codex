@@ -34,15 +34,15 @@ const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unav
 // rejection before any work, on a read-only attempt with an unchanged
 // workspace. Core then re-resolves the node to another pool.
 const PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION = 'provider_quota_rejected_before_execution';
-// The routing server refused to authorize the exact tuple before any ticket,
-// lease or backend process existed, in either scope. A host whose signed
-// profiles are newer than the server's policy meets it for every newly added
-// tuple: build 383 against the 78-profile bundle failed Claude-only standard
-// work after two refused rows (review 2026-10-15). Not charged, like a quota
-// rejection; the node moves to another row.
+// A legacy adapter called opaque HTTP rejections an authorization refusal.
+// That does not establish a model/configuration negative: old records remain
+// held, not silently reinterpreted as permission to change candidate/account.
 const NATIVE_AUTHORIZATION_REFUSED = 'native_authorization_refused';
+// Only the native catalog's explicit unsupported tuple observation emits
+// this code. It is not the legacy mixed configuration/authentication error.
+const NATIVE_CONFIGURATION_UNAVAILABLE = 'native_configuration_unavailable';
 const UNCHARGED_PRE_EXECUTION_ERRORS = new Set([PROVIDER_QUOTA_REJECTED_BEFORE_EXECUTION,
-  NATIVE_AUTHORIZATION_REFUSED]);
+  NATIVE_CONFIGURATION_UNAVAILABLE]);
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
@@ -146,6 +146,11 @@ const UNSETTLED_DISPATCH_STATES = new Set(['dispatch_started', 'continuation_dis
 // Separate from the attempt budget: how often one node's host-resolved row may
 // be replaced after a pre-dispatch failure, always within the same scope.
 const MAX_RE_RESOLUTIONS = 2;
+// Authentication, transport and opaque pre-dispatch refusals do not prove
+// that another model/account is an authorized or working alternative. The
+// legacy spelling stays fail-closed for an already persisted native record.
+const HELD_PRE_DISPATCH_ERRORS = new Set(['native_pre_dispatch_failed', 'pre_dispatch_failed',
+  'native_configuration_or_authorization_unavailable', NATIVE_AUTHORIZATION_REFUSED]);
 const RE_RESOLVABLE_FAILURES = new Set(['candidate_unavailable', 'candidate_quota_unknown_or_exhausted',
   'candidate_missing', 'selected_candidate_disappeared']);
 // A native catalog probe that failed (not a binding/configuration change) is
@@ -2875,6 +2880,23 @@ class RCCRuntime {
     return path;
   }
 
+  /** Existing partial-result shape, scoped to exactly the supplied returned
+   * children. A failed/missing child supplies neither answer nor execution
+   * evidence. This never adopts the quality of the original whole task. */
+  async _partialResult(taskID, returned) {
+    if (!returned.length) return null;
+    const output = returned.map(c => `${c.id}: ${c.output}`).join('\n\n');
+    assert(Buffer.byteLength(output) <= MAX_OUTPUT_BYTES, 'partial_output_oversize');
+    let receipt;
+    try { receipt = await this._aggregateReceipt(taskID, returned, output); }
+    catch { throw new RCCRuntimeError('aggregate_receipt_unavailable'); }
+    return {output, execution_verified: returned.every(c => c.execution_verified), task_verified: false,
+      task_quality: 'execution_only', parity_state: 'unverified', native_receipt: receipt,
+      native_summary: returned.length === 1 ? returned[0].native_summary : null,
+      native_summaries: returned.flatMap(c => c.native_summaries ??
+        (c.native_summary ? [c.native_summary] : []))};
+  }
+
   async _verifiedNativeReceiptDigest(result) {
     const directory = join(this.stateDir, 'native-receipts');
     const path = result.native_receipt;
@@ -3647,10 +3669,20 @@ class RCCRuntime {
     const child = snapshot.children.find(c => c.id === childID);
     const oldNode = snapshot.plan.nodes.find(n => n.id === childID);
     if (!child?.repair_needed || !oldNode) return;
+    // A queued repair persisted by an older owner is not fresh authority to
+    // route around an opaque authentication/transport refusal after restart.
+    const priorError = child.attempt_history.at(-1)?.error;
+    if (HELD_PRE_DISPATCH_ERRORS.has(priorError)) {
+      this._update(taskID, 'child_pre_dispatch_held', state => {
+        const target = state.children.find(c => c.id === childID);
+        target.state = 'held'; target.hold_reason = priorError; target.repair_needed = false;
+      });
+      return;
+    }
     if (chargedAttempts(child, Boolean(this._resolverNode(snapshot, childID))) >= executionTask(snapshot).budget.max_attempts) {
       this._update(taskID, 'safe_retry_budget_exhausted', state => {
-        state.children.find(c => c.id === childID).state = 'failed';
-        state.state = 'failed'; state.error = 'verified_not_dispatched_retry_exhausted';
+        const target = state.children.find(c => c.id === childID);
+        target.state = 'failed'; target.failure_reason = 'verified_not_dispatched_retry_exhausted';
       });
       return;
     }
@@ -3659,8 +3691,8 @@ class RCCRuntime {
     const resolverNode = this._resolverNode(snapshot, childID);
     if (resolverNode && (resolverNode.re_resolutions ?? 0) >= MAX_RE_RESOLUTIONS) {
       this._update(taskID, 'safe_re_resolution_exhausted', state => {
-        state.children.find(c => c.id === childID).state = 'failed';
-        state.state = 'failed'; state.error = 'verified_not_dispatched_re_resolution_exhausted';
+        const target = state.children.find(c => c.id === childID);
+        target.state = 'failed'; target.failure_reason = 'verified_not_dispatched_re_resolution_exhausted';
       });
       return;
     }
@@ -3770,32 +3802,30 @@ class RCCRuntime {
           state.error = state.children.find(c => c.state === 'effects_uncertain' && typeof c.uncertain_error === 'string')
             ?.uncertain_error ?? 'child_effects_uncertain_no_replay';
         });
-        else if (failed) this._update(taskID, 'task_failed', state => {
-          state.state = 'failed'; state.error = 'child_failed';
-        });
+        else if (failed) {
+          // Failure remains failure, but a supported earlier or concurrently
+          // completed result must not disappear behind the terminal error.
+          // Aggregation failure does not replace that original failure reason.
+          let partial = null;
+          try { partial = await this._partialResult(taskID,
+            snapshot.children.filter(c => c.state === 'completed' && c.output !== null)); }
+          catch { /* Child records remain intact if no bounded receipt can be assembled. */ }
+          this._update(taskID, 'task_failed', state => {
+            if (TERMINAL.has(state.state)) return;
+            state.state = 'failed';
+            state.error = snapshot.children.find(c => c.state === 'failed' && typeof c.failure_reason === 'string')
+              ?.failure_reason ?? 'child_failed';
+            if (partial) state.result = partial;
+          });
+        }
         else {
           // A child held for a typed reason (a ladder that could not reach its
           // reference) names the hold; any other held child is unverified.
           const reason = snapshot.children.find(c => c.state === 'held' && typeof c.hold_reason === 'string')
             ?.hold_reason ?? 'child_task_quality_unverified';
           const returned = snapshot.children.filter(c => c.output !== null);
-          const output = returned.map(c => `${c.id}: ${c.output}`).join('\n\n');
-          if (Buffer.byteLength(output) > MAX_OUTPUT_BYTES) {
-            this._hold(taskID, 'partial_output_oversize'); return;
-          }
-          let receipt = null;
-          if (returned.length) {
-            try { receipt = await this._aggregateReceipt(taskID, returned, output); }
-            catch { this._hold(taskID, 'aggregate_receipt_unavailable'); return; }
-          }
-          this._hold(taskID, reason, returned.length ? {
-            output,
-            execution_verified: returned.every(c => c.execution_verified), task_verified: false,
-            task_quality: 'execution_only', parity_state: 'unverified',
-            native_receipt: receipt,
-            native_summary: returned.length === 1 ? returned[0].native_summary : null,
-            native_summaries: returned.flatMap(c => c.native_summaries ??
-              (c.native_summary ? [c.native_summary] : []))} : null);
+          try { this._hold(taskID, reason, await this._partialResult(taskID, returned)); }
+          catch (error) { this._hold(taskID, error.code ?? 'aggregate_receipt_unavailable'); }
         }
         return;
       }
@@ -3983,9 +4013,9 @@ class RCCRuntime {
       assert(result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
         result.side_effects === 'none' && !result.execution_verified && result.native_receipt != null &&
         ticket.selected_config.scope === 'read_only', 'execution_receipt_invalid');
-    // A refusal precedes any ticket or process, so it is valid in either
-    // scope, but only on a not-dispatched, no-effect report with a receipt.
-    if (result.error === NATIVE_AUTHORIZATION_REFUSED)
+    // Only an actual native catalog negative permits configuration repair in
+    // either scope, with no dispatch/effects and an exact native receipt.
+    if (result.error === NATIVE_CONFIGURATION_UNAVAILABLE)
       assert(result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
         result.side_effects === 'none' && !result.execution_verified && result.native_receipt != null,
       'execution_receipt_invalid');
@@ -4726,6 +4756,20 @@ class RCCRuntime {
           verifierOutcome = route.verifier ? 'not_dispatched' : 'not_registered';
           const typedError = typeof result.error === 'string' && /^[a-z0-9_]{1,64}$/.test(result.error) ?
             result.error : null;
+          if (HELD_PRE_DISPATCH_ERRORS.has(typedError)) {
+            this._update(taskID, 'child_pre_dispatch_held', snapshot => {
+              const child = snapshot.children.find(c => c.id === node.id);
+              child.state = 'held'; child.hold_reason = typedError;
+              child.repair_needed = false; child.dispatched_at_ms = null;
+              child.output = null; child.execution_verified = false;
+              child.task_quality = 'unverified'; child.parity_state = 'unverified';
+              child.native_receipt = result.native_receipt; child.native_summary = null;
+              Object.assign(child.attempt_history.at(-1), {state: 'verified_not_dispatched',
+                error: typedError, native_receipt: result.native_receipt, usage: result.usage ?? null});
+              child.usage = result.usage ?? null; child.finished_at_ms = Date.now();
+            });
+            return;
+          }
           const recorded = current.children.find(c => c.id === node.id);
           const charged = chargedAttempts({attempts: recorded.attempts, attempt_history: [
             ...recorded.attempt_history.slice(0, -1), {state: 'verified_not_dispatched', error: typedError}]},
@@ -4751,7 +4795,7 @@ class RCCRuntime {
             child.usage = result.usage ?? null;
             child.attempt_history.at(-1).usage = result.usage ?? null;
             child.finished_at_ms = Date.now();
-            snapshot.state = 'failed'; snapshot.error = 'verified_not_dispatched_retry_exhausted';
+            child.failure_reason = 'verified_not_dispatched_retry_exhausted';
           });
           return;
         }
@@ -4812,8 +4856,8 @@ class RCCRuntime {
     // dispatch: fail closed instead of leaving a queued node behind.
     this._update(taskID, 'safe_retry_budget_exhausted', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
-      snapshot.children.find(c => c.id === node.id).state = 'failed';
-      snapshot.state = 'failed'; snapshot.error = 'verified_not_dispatched_retry_exhausted';
+      const child = snapshot.children.find(c => c.id === node.id);
+      child.state = 'failed'; child.failure_reason = 'verified_not_dispatched_retry_exhausted';
     });
   }
 

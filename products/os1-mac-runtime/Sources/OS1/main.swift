@@ -18697,7 +18697,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         throw OS1Error.message("RCC selected account/config no longer authorized")
     }
     var dispatched = false
-    var authorizationRefused = false
+    var catalogProvedUnavailable = false
     // The execution workspace and its hash before dispatch, so a failure can
     // prove the workspace unchanged (pre-execution quota rejection).
     var executionWorkspace: String?
@@ -18731,18 +18731,26 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // Unrelated provider discovery belongs to its catalog, not every
         // native attempt. Keep fresh selected inventory/quota; no substitute.
         let observations = try RCCNativePreparation.collect(provider: provider, codex: {
-            (try? ModelAvailability.codexCatalog(workspace: h.workspace, config: config)) ??
-                ActiveCodexCatalog(models: [], source: "unavailable")
+            try ModelAvailability.codexCatalog(workspace: h.workspace, config: config)
         }, claude: {
-            (models: (try? ModelAvailability.claudeCatalogs(workspace: h.workspace, config: config))?.routable ?? [],
-             quota: ModelAvailability.claudeQuota(workspace: h.workspace))
+            let catalogs = try ModelAvailability.claudeCatalogs(workspace: h.workspace, config: config)
+            // Empty configured rows can also be the pre-probe account
+            // cooldown shortcut; absence alone cannot certify incompatibility.
+            return (models: catalogs.routable, quota: ModelAvailability.claudeQuota(workspace: h.workspace),
+                    inventoryObserved: !catalogs.configured.isEmpty)
         })
         let codex = observations.codex ?? ActiveCodexCatalog(models: [], source: "not_selected")
         let claude = observations.claude?.models ?? []
         timing.mark(.inventoryReady)
         let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
             : claude.contains { $0.model == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
-        guard supported else { throw OS1Error.message("RCC configuration unavailable before dispatch") }
+        guard supported else {
+            // Codex returns only after its live metadata probe succeeds.
+            // Claude additionally needs evidence it did not take its empty
+            // pre-probe cooldown shortcut. Unknown inventory holds the tuple.
+            catalogProvedUnavailable = observations.codex != nil || observations.claude?.inventoryObserved == true
+            throw OS1Error.message("RCC configuration unavailable before dispatch")
+        }
         var input = ExecutionInputContext(inputUTF8Bytes: max(1, t.instruction.utf8.count + policyText.utf8.count + (h.context?.utf8.count ?? 0)), sourceUTF8Bytes: 0, historyUTF8Bytes: h.context?.utf8.count ?? 0)
         input.executionPermissionProfile = t.selectedConfig.permissionProfile.rawValue
         // Effortless rows ride only their own authorization (version skew:
@@ -18770,24 +18778,24 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             capacityPlan: .init(codex: capacity.codex, claude: capacity.claude), executorContractVersion: config.executorContract.version,
             executorContractSHA256: config.executorContract.sha256, availableCodexModels: codex.models, executionContext: input)
         timing.mark(.authorizationStarted)
-        let signed: Ticket
-        do {
-            signed = try await APIClient(config: config, token: try githubToken(), deviceID: try deviceID()).post("/v1/execution-authorizations",
+        timing.mark(.credentialStarted)
+        let credential = try githubToken()
+        timing.mark(.credentialReady)
+        timing.mark(.deviceIdentityStarted)
+        let authorizationDeviceID = try deviceID()
+        timing.mark(.deviceIdentityReady)
+        timing.mark(.authorizationHTTPStarted)
+        let signed = try await APIClient(config: config, token: credential, deviceID: authorizationDeviceID).post("/v1/execution-authorizations",
                 body: RCCAuthorizationWire(request: request, selected: .init(provider: provider,
                     model: t.selectedConfig.model, effort: t.selectedConfig.effort.rawValue,
                     permission_profile: t.selectedConfig.permissionProfile.rawValue)), as: Ticket.self)
-        } catch {
-            // The gateway's opaque refusal (HTTP 400) of this exact tuple, before
-            // any ticket, lease or process: Core moves the node uncharged. A
-            // build-383 client met it for every profile the server's 78-profile
-            // policy lacked (review 2026-10-15). Transport and 5xx stay charged.
-            if case OS1Error.service(status: 400, _, _) = error { authorizationRefused = true }
-            throw error
-        }
+        timing.mark(.authorizationHTTPReturned)
+        timing.mark(.ticketVerificationStarted)
         try verifyTicket(signed, config: config, requiresStartupContract: true)
         guard signed.provider == provider, signed.permissionProfile == t.selectedConfig.permissionProfile.rawValue,
               signed.startupContract?.model == t.selectedConfig.model,
               signed.startupContract?.effort == t.selectedConfig.effort.rawValue else { throw OS1Error.message("RCC authorization changed requested tuple") }
+        timing.mark(.ticketVerified)
         record.acknowledgedConfig = t.selectedConfig
         timing.mark(.authorizationReady)
         var custody = OS1AttemptSourceState()
@@ -18959,6 +18967,19 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             }
         }
     } catch {
+        let diagnosticCategory: RCCNativePreparationTiming.ErrorCategory
+        var diagnosticHTTPStatus: Int?
+        if let failure = error as? OS1Error {
+            switch failure {
+            case .service(let status, _, _): diagnosticCategory = .httpService; diagnosticHTTPStatus = status
+            default: diagnosticCategory = .localCheck
+            }
+        } else if error is URLError { diagnosticCategory = .urlTransport }
+        else if error is DecodingError { diagnosticCategory = .decoding }
+        else if error is CancellationError { diagnosticCategory = .cancelled }
+        else { diagnosticCategory = .other }
+        timing.recordFailure(category: diagnosticCategory, httpStatus: diagnosticHTTPStatus,
+            nsErrorCode: (error as NSError).code)
         timing.mark(.attemptFailed)
         var knownFinishedCandidate = false
         if let rejected = error as? RejectedProviderExecution {
@@ -19028,10 +19049,12 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // Native execution success and answer adoption are independent. A
         // known finished candidate may be rejected without becoming an
         // invented lost/uncertain execution, or being erased by strict decode.
-        let report = RCCNativeAttemptOutcome.failure(knownFinishedCandidate: knownFinishedCandidate,
+        let observedReport = RCCNativeAttemptOutcome.failure(knownFinishedCandidate: knownFinishedCandidate,
             dispatched: dispatched, scope: t.selectedConfig.scope,
-            quotaRejectedBeforeExecution: beforeExecution, workspaceUnchanged: unchanged,
-            authorizationRefused: authorizationRefused)
+            quotaRejectedBeforeExecution: beforeExecution, workspaceUnchanged: unchanged)
+        let report = RCCNativePreparation.preserveFailureBoundary(observedReport,
+            knownFinishedCandidate: knownFinishedCandidate, dispatched: dispatched,
+            catalogProvedUnavailable: catalogProvedUnavailable)
         record.status = report.status
         record.dispatchStage = report.dispatchStage
         record.sideEffects = report.sideEffects

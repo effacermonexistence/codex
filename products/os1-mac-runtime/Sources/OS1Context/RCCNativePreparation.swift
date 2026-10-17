@@ -20,6 +20,19 @@ public enum RCCNativePreparation {
         default: throw Failure.unknownProvider
         }
     }
+
+    /// Only an observed selected-provider inventory can prove this tuple is
+    /// unavailable. An opaque admission/credential/transport failure cannot.
+    /// This changes only the reason; execution and side-effect facts survive.
+    public static func preserveFailureBoundary(_ report: RCCNativeAttemptOutcome.Report,
+        knownFinishedCandidate: Bool, dispatched: Bool, catalogProvedUnavailable: Bool) -> RCCNativeAttemptOutcome.Report {
+        guard !knownFinishedCandidate, !dispatched,
+              report.error != RCCNativeAttemptOutcome.providerQuotaRejectedBeforeExecution else { return report }
+        var result = report
+        result.error = catalogProvedUnavailable ? RCCNativeAttemptOutcome.verifiedConfigurationUnavailable :
+            RCCNativeAttemptOutcome.preDispatchFailed
+        return result
+    }
 }
 
 /// Private, attempt-bound diagnostic timings only. No prompt, output, auth
@@ -30,6 +43,10 @@ public final class RCCNativePreparationTiming: @unchecked Sendable {
         case adapterEntered = "adapter_entered"
         case inventoryStarted = "inventory_started", inventoryReady = "inventory_ready"
         case authorizationStarted = "authorization_started", authorizationReady = "authorization_ready"
+        case credentialStarted = "credential_started", credentialReady = "credential_ready"
+        case deviceIdentityStarted = "device_identity_started", deviceIdentityReady = "device_identity_ready"
+        case authorizationHTTPStarted = "authorization_http_started", authorizationHTTPReturned = "authorization_http_returned"
+        case ticketVerificationStarted = "ticket_verification_started", ticketVerified = "ticket_verified"
         case workspaceHashStarted = "workspace_hash_started", workspaceHashReady = "workspace_hash_ready"
         case executeStarted = "execute_started", executeReturned = "execute_returned"
         case attemptFailed = "attempt_failed"
@@ -41,14 +58,24 @@ public final class RCCNativePreparationTiming: @unchecked Sendable {
         public let elapsedMS: Int64
         enum CodingKeys: String, CodingKey { case phase, elapsedMS = "elapsed_ms" }
     }
+    public enum ErrorCategory: String, Codable, Sendable {
+        case httpService = "http_service", urlTransport = "url_transport", decoding
+        case cancelled, localCheck = "local_check", other
+    }
+    public struct FailureDiagnostic: Codable, Sendable {
+        public let phase: Phase, category: ErrorCategory
+        public let httpStatus: Int?, nsErrorCode: Int?
+        enum CodingKeys: String, CodingKey { case phase, category, httpStatus = "http_status", nsErrorCode = "ns_error_code" }
+    }
     public struct Record: Codable, Sendable {
         public let schema: Int
         public let taskID: String, nodeID: String, attemptID: String
         public let configurationSHA256: String, sourceFingerprint: String, provider: String
         public let startedAt: Date, receiptPersisted: Bool, executionStatus: String, executionVerified: Bool
         public let marks: [Mark]
+        public let failure: FailureDiagnostic?
         enum CodingKeys: String, CodingKey {
-            case schema, provider, marks
+            case schema, provider, marks, failure
             case taskID = "task_id", nodeID = "node_id", attemptID = "attempt_id"
             case configurationSHA256 = "configuration_sha256", sourceFingerprint = "source_fingerprint"
             case startedAt = "started_at", receiptPersisted = "receipt_persisted"
@@ -60,6 +87,7 @@ public final class RCCNativePreparationTiming: @unchecked Sendable {
     private let configurationSHA256: String, sourceFingerprint: String, provider: String
     private let startedAt: Date, startedUptime: TimeInterval
     private var marks: [Mark] = []
+    private var failure: FailureDiagnostic?
 
     public init(taskID: String, nodeID: String, attemptID: String,
                 configurationSHA256: String, sourceFingerprint: String, provider: String) throws {
@@ -85,6 +113,16 @@ public final class RCCNativePreparationTiming: @unchecked Sendable {
         let milliseconds = max(0, (ProcessInfo.processInfo.systemUptime - startedUptime) * 1_000)
         guard milliseconds.isFinite, milliseconds <= Double(Int64.max) else { return }
         marks.append(Mark(phase: phase, elapsedMS: Int64(milliseconds.rounded())))
+    }
+
+    /// Code-defined labels and bounded numeric codes only. No Error object,
+    /// domain, message, request/response body, URL or credential is accepted.
+    public func recordFailure(category: ErrorCategory, httpStatus: Int? = nil, nsErrorCode: Int? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        guard failure == nil else { return }
+        failure = FailureDiagnostic(phase: marks.last?.phase ?? .adapterEntered, category: category,
+            httpStatus: httpStatus.flatMap { (100...599).contains($0) ? $0 : nil },
+            nsErrorCode: nsErrorCode.flatMap { (-1_000_000_000...1_000_000_000).contains($0) ? $0 : nil })
     }
 
     /// The existing private runtime root is required. Never follow a directory
@@ -121,7 +159,7 @@ public final class RCCNativePreparationTiming: @unchecked Sendable {
         let record = Record(schema: 1, taskID: taskID, nodeID: nodeID, attemptID: attemptID,
             configurationSHA256: configurationSHA256, sourceFingerprint: sourceFingerprint, provider: provider,
             startedAt: startedAt, receiptPersisted: receiptPersisted, executionStatus: executionStatus,
-            executionVerified: executionVerified, marks: marks)
+            executionVerified: executionVerified, marks: marks, failure: failure)
         lock.unlock()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
