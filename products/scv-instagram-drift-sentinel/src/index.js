@@ -1,4 +1,4 @@
-const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-08-v29-v167-running-release-v167-recovery-gold'
+const SENTINEL_SCHEMA = 'scv-instagram-drift-sentinel-2026-09-14-v41-v180-running-release-v167-recovery-gold'
 // GOLD-3 (2026-09-03): v148 (owner-verified v145 plus the owner-ordered polish, live red-team verified) frozen as the reference; the pointer and manifest below are pinned by hash.
 const GOLD_LATEST_KEY = 'scv-instagram-automation/gold/LATEST.json'
 const GOLD_MANIFEST_KEY = 'scv-instagram-automation/gold/SCV_GOLD_MANIFEST_v148.json'
@@ -8,11 +8,14 @@ const GOLD_MANIFEST_SHA256 = '31ea4507381e6ec2c3ce4458d70af4a311f331a4a26651f5d9
 // Comparing the gold manifest against the running release id made the check fail by construction.
 const GOLD_RELEASE_ID = 'scv-instagram-single-20260902-v148'
 const GOLD_CONTENT_FINGERPRINT = '3a9a18631443f4738d13dd803f080979ff4d21ab0d9de1f5054b2f26e2ea3609'
-// v29 (2026-09-08): the running release and latest approved recovery Gold are both v167.
-// v151 remains a separately pinned previous recovery point and GOLD-3 v148 remains unchanged.
-const RELEASE_ID = 'scv-instagram-single-20260908-v167'
-const CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
-const RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
+// v41 (2026-09-14): v180 makes the owner, Lua and the account one person to the client (owner order),
+// removing the v179 AI-role / no-offline-life author policy while preserving identity, booking/delivery
+// state, and customer-triggered tattoo routing.
+// The latest approved recovery Gold stays v167. Previous v151, GOLD-3 v148, April Golden,
+// and all recovery/reset evidence pins remain unchanged. A deployed release is not a Gold.
+const RELEASE_ID = 'scv-instagram-single-20260914-v180'
+const CONTENT_FINGERPRINT = '4f18ad47de8f95569867528948cef404ab0fceb5fed44a4b948f6a47c740221e'
+const RELEASE_MANIFEST = '06c0f31ccedc2e23cd2a001549b7c3e7169f171a855b8d52f6e1b7331dfc0840'
 const RECOVERY_POINT_RELEASE_ID = 'scv-instagram-single-20260908-v167'
 const RECOVERY_POINT_CONTENT_FINGERPRINT = '6b85a63a25c23e9815491413eeb895e6b78ed8faa523f18aefea6b88f392faa7'
 const RECOVERY_POINT_RELEASE_MANIFEST = '2f12a00d12114bbbb05080438dda88a6278a82ae65a9fc9aaaff70a2a25ad4b6'
