@@ -3555,6 +3555,31 @@ class RCCRuntime {
     });
     return fresh;
   }
+  /** One scheduler-ready wave only, never a persisted or cross-task cache.
+   * The full effective task binds source, policy, context, account constraint
+   * and budgets. Exact plan/rows/catalog/bind-time changes invalidate reuse;
+   * dispatch still rechecks the row and native admission checks independently. */
+  _readyWaveBinding(snapshot) {
+    return sha(Buffer.from(stable({task: executionTask(snapshot), plan: snapshot.plan,
+      bound_rows: snapshot.bound_rows ?? {}, catalog: snapshot.catalog,
+      catalog_bound_at_ms: snapshot.catalog_bound_at_ms})));
+  }
+  _readyWaveEligible(snapshot, node, candidate) {
+    if (!snapshot || snapshot.cancel_requested || TERMINAL.has(snapshot.state) || this.stopping || this.closed ||
+        !candidate || !this._readPoolEligible(candidate, executionTask(snapshot)) ||
+        snapshot.plan?.nodes.length < 2 || node.kind !== 'agent' ||
+        !snapshot.plan.nodes.every(n => n.scope === 'read_only' && n.owned_paths.length === 0 &&
+          n.dependencies.length === 0)) return false;
+    const child = snapshot.children.find(c => c.id === node.id);
+    // The actual multi-node ticket uses a fresh native thread. Legacy
+    // native_sessions, continuations, source staging, retries and re-resolution
+    // cannot borrow this wave's observation, even if their row still exists.
+    return child?.state === 'queued' && child.attempts === 0 &&
+      snapshot.children.every(c => ['queued', 'running', 'completed'].includes(c.state) &&
+        c.attempts <= 1 && !c.repair_needed && c.continuation == null && c.stage == null &&
+        !(c.re_resolutions > 0) && !(c.spreads > 0) && c.spread !== true &&
+        (c.attempt_history ?? []).every(a => ['dispatch_started', 'completed'].includes(a.state)));
+  }
   _poolKey(candidate) {
     return candidate.quota_pool === 'none' ? null : `${candidate.quota_pool}:${candidate.account_id}`;
   }
@@ -3835,8 +3860,19 @@ class RCCRuntime {
         return child?.state === 'queued' && node.dependencies.every(finished.has.bind(finished));
       });
       let reResolved = false;
+      // Only siblings already ready together can share the first successful
+      // pre-dispatch refresh. A later loop/wave always starts without it.
+      let readyWave = null;
+      const readyIDs = new Set(ready.map(node => node.id));
+      const admissionCurrent = state => state && !state.cancel_requested && !TERMINAL.has(state.state) &&
+        !state.children.some(c => ['failed', 'effects_uncertain'].includes(c.state)) &&
+        !state.children.some(c => c.state === 'held' && HELD_PRE_DISPATCH_ERRORS.has(c.hold_reason));
+      // Other held-verifier/best-effort behavior remains the existing DAG's
+      // responsibility. It invalidates wave reuse, not fresh legacy admission.
       for (const node of ready) {
         if (active.size >= cap || snapshot.cancel_requested) break;
+        let current = this._load(taskID);
+        if (!admissionCurrent(current)) { reResolved = true; break; }
         if (node.kind === 'deterministic') {
           const value = pureArithmetic(node.instruction);
           const candidate = snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
@@ -3855,20 +3891,31 @@ class RCCRuntime {
         // where a host-resolved node re-resolves, instead of waiting behind
         // another task's lease on the pool it left. bound_rows stays for
         // validation only.
-        const planned = snapshot.catalog.candidates.find(c => c.id === node.candidate_id);
-        if (planned && !this._leasePossible(planned, executionTask(snapshot))) {
+        const planned = current.catalog.candidates.find(c => c.id === node.candidate_id);
+        if (planned && !this._leasePossible(planned, executionTask(current))) {
           // Independent graded work waits for the busy pool only when the
           // other admitted pool cannot take it now either.
-          if (await this._spreadAcrossPools(taskID, snapshot, node, planned)) { reResolved = true; break; }
-          if (!this._joinReadPool(planned, executionTask(snapshot))) continue;
+          if (await this._spreadAcrossPools(taskID, current, node, planned)) { reResolved = true; break; }
+          current = this._load(taskID);
+          if (!admissionCurrent(current)) { reResolved = true; break; }
+          if (!this._joinReadPool(planned, executionTask(current))) continue;
         }
-        const resolverNode = this._resolverNode(snapshot, node.id);
+        const resolverNode = this._resolverNode(current, node.id);
         let candidate, fresh;
         try {
           // A host-resolved row may be replaced if it vanished, so its absence
           // is checked by _candidate instead of failing the refresh itself.
-          fresh = await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
-          candidate = this._candidate(executionTask(snapshot), fresh, node);
+          const reusable = readyWave && readyWave.ids.has(node.id) &&
+            this._readyWaveEligible(current, node, planned) &&
+            readyWave.binding === this._readyWaveBinding(current) &&
+            dispatchable(planned, executionTask(current), Date.now());
+          fresh = reusable ? current.catalog :
+            await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
+          current = this._load(taskID);
+          if (!admissionCurrent(current)) { reResolved = true; break; }
+          candidate = this._candidate(executionTask(current), fresh, node);
+          if (!reusable) readyWave = this._readyWaveEligible(current, node, candidate) ?
+            {ids: readyIDs, binding: this._readyWaveBinding(current)} : null;
           refreshFailures.delete(node.id);
         }
         catch (error) {
@@ -3896,7 +3943,7 @@ class RCCRuntime {
           return;
         }
         let reservation;
-        try { reservation = this._tryReserve(candidate, executionTask(snapshot), node.id); }
+        try { reservation = this._tryReserve(candidate, executionTask(current), node.id); }
         catch (error) {
           if (active.size) await this._waitForActiveOrTerminal(active, taskID);
           if (!TERMINAL.has(this._load(taskID).state)) this._hold(taskID, error.code ?? 'write_scope_unavailable');

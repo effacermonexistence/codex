@@ -766,6 +766,44 @@ public enum OwnerIntentText {
         return text
     }
 
+    /// Pair inline delimiters before classifying their contents. A filename's
+    /// closing quote cannot open another span across a preservation clause.
+    private static func inlineQuoteView(_ source: String, opening: Character, closing: Character)
+        -> (text: String, ambiguous: Bool) {
+        var result = "", cursor = source.startIndex, ambiguous = false
+        func escaped(_ at: String.Index) -> Bool {
+            var index = at, count = 0
+            while index > source.startIndex {
+                index = source.index(before: index)
+                guard source[index] == "\\" else { break }; count += 1
+            }
+            return count % 2 == 1
+        }
+        let action = #"delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼"#
+        while let start = source[cursor...].firstIndex(of: opening) {
+            let prefix = source[cursor..<start]
+            if opening != closing && prefix.contains(closing) { ambiguous = true }
+            result += prefix
+            let body = source.index(after: start)
+            let lineEnd = source[body...].firstIndex(of: "\n") ?? source.endIndex
+            guard let end = source[body..<lineEnd].firstIndex(of: closing) else {
+                // Never erase an uncertain trailing prohibition.
+                result += source[start..<lineEnd]; cursor = lineEnd; ambiguous = true; continue
+            }
+            let after = source.index(after: end)
+            let uncertain = escaped(start) || escaped(end) ||
+                (opening == closing && (body == end || (after < source.endIndex && source[after] == closing)))
+            if uncertain { result += source[start..<after]; ambiguous = true }
+            else if source[body..<end].range(of: action, options: [.caseInsensitive, .regularExpression]) != nil { result += " " }
+            else { result += source[start..<after] }
+            cursor = after
+        }
+        let tail = source[cursor...]
+        if opening != closing && tail.contains(closing) { ambiguous = true }
+        result += tail
+        return (result, ambiguous)
+    }
+
     public static func authorityText(_ prompt: String) -> String {
         var text = strippedTextOperationPayload(prompt.precomposedStringWithCanonicalMapping)
         for pattern in [
@@ -778,15 +816,22 @@ public enum OwnerIntentText {
             #"(?ms)^[ \t]*[']\s*\n.*?\n[ \t]*['][ \t]*(?=\n|$)"#,
             #"(?ms)^[ \t]*[“]\s*\n.*?\n[ \t]*[”][ \t]*(?=\n|$)"#,
             #"(?ms)^[ \t]*[‘]\s*\n.*?\n[ \t]*[’][ \t]*(?=\n|$)"#,
-            #"(?i)`[^`\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^`\n]*`"#,
-            #"(?i)[\"“][^\"”\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^\"”\n]*[\"”]"#,
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        var ambiguousInlineQuote = false
+        for (opening, closing): (Character, Character) in [("`", "`"), ("\"", "\""), ("“", "”")] {
+            let view = inlineQuoteView(text, opening: opening, closing: closing)
+            text = view.text; ambiguousInlineQuote = ambiguousInlineQuote || view.ambiguous
+        }
+        for pattern in [
             #"(?i)(?<![A-Za-z0-9])['‘][^'’\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^'’\n]*['’](?![A-Za-z0-9])"#,
             #"(?im)\b(?:how\s+(?:do|can|should)\s+(?:i|we)|(?:can|could|should|may)\s+(?:i|we))\b[^.!?;\n]*[?]?"#,
             #"[^.!?;\n]*(?:해도\s*(?:돼|되|될)|고쳐졌는지|수정됐는지|삭제됐는지|방법\s*(?:알려|설명))[^.!?;\n]*[?]?"#,
         ] {
             text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
         }
-        return text
+        return ambiguousInlineQuote ? text + " read-only " : text
     }
 
     public static func normalized(_ prompt: String) -> String {
@@ -861,7 +906,7 @@ public struct ScopeResolution: Equatable, Sendable {
     // Unknown targets/conditional or mixed clauses are not consumed.
     static let concretePathPattern = #"(?:[\"“'‘`][^\"”'’`\n*?\[\]{}\\]+\.[A-Za-z0-9]{1,16}[\"”'’`]|/?(?:[A-Za-z0-9_.~-]+/)+[A-Za-z0-9_.~-]*[A-Za-z0-9_~-]|[A-Za-z0-9_][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,16}|\.[A-Za-z0-9_-]+)"#
     static let namedTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+((?:(?:the\s+)?file\s+)?"# + concretePathPattern +
-        #"(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:(?:the\s+)?file\s+)?"# + concretePathPattern + #"){0,8})(?:\s+or\s+(?:create|write|save)\s+(?:any\s+)?other\s+(?:files?|deliverables?))?\s*(?=[.!?;\n]|$)"#
+        #"(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:(?:the\s+)?file\s+)?"# + concretePathPattern + #"){0,8})(?:(?:\s+or\s+|,\s*and\s+(?:do not|don't|never)\s+)(?:create|write|save)\s+(?:any\s+)?other\s+(?:files?|deliverables?))?\s*(?=[.!?;\n]|$)"#
     static let directFileEditPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:implement|create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
     // Exempt a named preservation fence only for a completely parsed ONE-file
     // directive. Rename/copy/move destinations and compound action operands
@@ -873,6 +918,40 @@ public struct ScopeResolution: Equatable, Sendable {
     // Globs/escaped paths are not exact targets. Never turn failure to parse
     // one into permission, even for negative verbs outside the legacy list.
     static let ambiguousPathRestrictionPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:(?:the\s+)?file\s+)?(?:[\"“'‘`][^\"”'’`\n]*[*?\[\]{}\\][^\"”'’`\n]*[\"”'’`]|[^\s\"“'‘`;\n]*[*?\[\]{}\\][^\s\"“'‘`;\n]*)"#
+
+    /// Scope-analysis view only; the original instruction is never rewritten.
+    /// One closed first directive can name a supplied file, followed by one
+    /// exact same-target anaphor. Unknown/multiple operands, conditions and
+    /// quoted/hypothetical introductions never acquire a target from this rule.
+    private static func suppliedFileEditView(_ value: String) -> String {
+        let first = #"(?i)^\s*(?:please\s+)?(?:fix|modify|edit|update)\s+(?:the\s+)?supplied\s+("# + concretePathPattern +
+            #")\s+in\s+this\s+isolated\s+workspace\s*(?=[.;\n]|$)"#
+        guard let pattern = try? NSRegularExpression(pattern: first),
+              let match = pattern.firstMatch(in: value, range: NSRange(value.startIndex..<value.endIndex, in: value)),
+              let directive = Range(match.range, in: value), let target = Range(match.range(at: 1), in: value),
+              // Quotation stripping has a separate authority boundary; this
+              // bounded new grammar does not infer through quoted operands.
+              let start = value[target].first, !"\"“'‘`".contains(start),
+              !value[target].hasPrefix("/"), !value[target].hasPrefix("~"),
+              value[target].split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              namedPaths(String(value[target])).count == 1 else { return value }
+        var rest = String(value[directive.upperBound...])
+        let opening = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:fix|modify|edit|update|change)\s+(?:exactly\s+)?(?:that|this|those|these)\s+files?\b"#
+        let closed = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:fix|modify|edit|update)\s+exactly\s+that\s+file\s*(?=[.;\n]|$)"#
+        guard let starts = try? NSRegularExpression(pattern: opening),
+              let complete = try? NSRegularExpression(pattern: closed) else { return value }
+        let range = NSRange(rest.startIndex..<rest.endIndex, in: rest)
+        let references = starts.matches(in: rest, range: range)
+        guard references.count <= 1 else { return value }
+        if let reference = references.first {
+            guard let parsed = complete.firstMatch(in: rest, range: NSRange(location: reference.range.location,
+                    length: NSMaxRange(range) - reference.range.location)),
+                  parsed.range.location == reference.range.location,
+                  let clause = Range(parsed.range, in: rest) else { return value }
+            rest.replaceSubrange(clause, with: " ")
+        }
+        return "modify " + String(value[target]) + rest
+    }
 
     private static func namedPaths(_ text: String) -> [String] {
         guard let pattern = try? NSRegularExpression(pattern: concretePathPattern) else { return [] }
@@ -1013,7 +1092,7 @@ public struct ScopeResolution: Equatable, Sendable {
     public static func resolve(_ prompt: String) -> ScopeResolution {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         var prohibitions: [String] = []
-        var remaining = value
+        var remaining = suppliedFileEditView(value)
         var protectedPaths: [String] = []
         var unresolvedTargetFence = false
         if let pattern = try? NSRegularExpression(pattern: namedTargetFencePattern) {

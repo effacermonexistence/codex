@@ -14,7 +14,9 @@ import {createRCCRuntime, hostContextFingerprint, resolveRoutePlan}
 
 const sha = text => createHash('sha256').update(text).digest('hex');
 const NOW = 1_792_254_384_635;
-const atomic = {source: 'request', grade: 'trivial', scope: 'read_only'};
+const atomicNode = {instruction: '', grade: 'trivial', scope: 'read_only', deps: []};
+const atomic = {nodes: [atomicNode]};
+const atomicWith = extra => ({nodes: [{...atomicNode, ...extra}]});
 function task(dir = '/tmp/fixture', extras = {}) {
   const request = extras.request ?? 'Preserve source exactly; no tools, writes or delegation.';
   const policyText = 'FULL_RCC_POLICY_SENTINEL\nsource-bound states; preserve unknown; no permission invention.';
@@ -84,8 +86,9 @@ test('full policy, semantic inputs and exact catalog are unchanged by compact ou
   assert.equal(compact.wireProtocol, COMPACT_PLANNER_PROTOCOL);
   assert.equal(compact.responseFormat.type, 'object');
   assert.equal(JSON.stringify(compact.responseFormat).includes('"oneOf"'), false);
-  assert.deepEqual(compact.responseFormat.properties.source.enum, ['request', 'dag']);
-  assert.deepEqual(compact.responseFormat.required, ['source']);
+  assert.deepEqual(Object.keys(compact.responseFormat.properties), ['nodes', 'final']);
+  assert.deepEqual(compact.responseFormat.required, ['nodes']);
+  assert.equal(compact.responseFormat.properties.nodes.items.properties.instruction.minLength, 0);
   assert.equal(JSON.stringify(compact.responseFormat).includes(t.task_id), false);
   assert.equal(JSON.stringify(compact.responseFormat).includes(t.request_sha256), false);
   assert.deepEqual({t, rows}, before);
@@ -97,12 +100,12 @@ test('full policy, semantic inputs and exact catalog are unchanged by compact ou
 test('compact malformed, duplicate, foreign or authority-bearing fields are rejected without legacy fallback', () => {
   const t = task();
   const bad = [null, [], {}, {source: 'unknown'}, {source: 'request'}, {source: 'dag'},
-    {...atomic, grade: undefined}, {...atomic, scope: undefined}, {...atomic, nodes: []},
-    {...atomic, grade: 'smart'}, {...atomic, scope: 'admin'},
+    atomicWith({grade: undefined}), atomicWith({scope: undefined}), {...atomic, nodes: []},
+    atomicWith({grade: 'smart'}), atomicWith({scope: 'admin'}),
     {...atomic, task_id: t.task_id}, {...atomic, request_sha256: t.request_sha256}, {...atomic, schema: 1},
     {...atomic, candidate_id: 'codex-fast'}, {...atomic, model: 'gpt-6-astra'}, {...atomic, effort: 'ultra'},
-    {...atomic, account: 'root'}, {...atomic, permission: 'full'}, {...atomic, kind: 'agent'},
-    {...atomic, instruction: t.request}, {...atomic, paths: ['**']}, {...atomic, refs: []},
+    {...atomic, account: 'root'}, {...atomic, permission: 'full'}, atomicWith({kind: 'agent'}),
+    {...atomic, instruction: t.request}, {...atomic, paths: ['**']}, atomicWith({refs: []}),
     {schema: 1, task_id: t.task_id, request_sha256: t.request_sha256, nodes: [normalizedNode(t.request)]},
     'prefix {"source":"request","grade":"trivial","scope":"read_only"}',
     '```json\n{"source":"request","grade":"trivial","scope":"read_only"}\n```',
@@ -110,18 +113,62 @@ test('compact malformed, duplicate, foreign or authority-bearing fields are reje
     '{"source":"request","grade":"trivial","grade":"deep","scope":"read_only"}',
     '{"source":"request","grade":"trivial","\\u0067rade":"deep","scope":"read_only"}'];
   for (const value of bad) assert.throws(() => decode(value, t), /planner_compact/);
+  for (const injected of [{task_id: t.task_id}, {request_sha256: t.request_sha256}, {candidate_id: 'codex-fast'},
+    {model: 'gpt-6-astra'}, {effort: 'ultra'}, {permission_profile: 'workspace_write'},
+    {account_id: 'another-account'}, {source_fingerprint: t.source_fingerprint}])
+    assert.throws(() => decode(atomicWith(injected), t), /planner_compact/);
+  for (const duplicate of [
+    '{"nodes":[{"instruction":"","grade":"trivial","grade":"deep","scope":"read_only","deps":[]}]}',
+    '{"nodes":[{"instruction":"","grade":"trivial","\\u0067rade":"deep","scope":"read_only","deps":[]}]}',
+    '{"nodes":[],"nodes":[{"instruction":"","grade":"trivial","scope":"read_only","deps":[]}]}'])
+    assert.throws(() => decode(duplicate, t), /planner_compact_duplicate_key/);
+});
+
+test('derived mixed-variant regression remains rejected; uniform atomic envelope copies the original instead', () => {
+  // Derived from the observed T02 shape, not its private task/materials or a
+  // repaired historical answer. Original raw bytes remain in its private arm.
+  const t = task(), rows = catalog(t), mixed = {source: 'request', grade: 'standard', scope: 'read_only', nodes: [
+    {instruction: 'Inspect supplied synthetic material.', grade: 'standard', scope: 'read_only', deps: []},
+    {instruction: 'Assemble the prescribed output.', grade: 'standard', scope: 'read_only', deps: [0]}], final: 1};
+  assert.throws(() => decode(mixed, t, rows), /planner_compact_plan_invalid/);
+  assert.throws(() => decode(mixed, t, rows, {protocol: 'os1-compact-plan-v1'}), /planner_compact_plan_invalid/);
+  const oldAtomic = {source: 'request', grade: 'standard', scope: 'read_only'};
+  assert.throws(() => decode(oldAtomic, t, rows), /planner_compact_plan_invalid/);
+  assert.throws(() => decode(atomic, t, rows, {protocol: 'os1-compact-plan-v1'}), /planner_compact_plan_invalid/);
+  assert.equal(decode(oldAtomic, t, rows, {protocol: 'os1-compact-plan-v1'}).nodes[0].instruction, t.request,
+    'historical explicitly selected protocol stays inspectable, never a live response fallback');
+  assert.equal(decode(atomicWith({grade: 'standard'}), t, rows).nodes[0].instruction, t.request);
+  const schema = buildCompactPlannerSchema(t, rows, NOW);
+  assert.deepEqual(Object.keys(schema.properties), ['nodes', 'final']);
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(Object.hasOwn(schema.properties.nodes.items.properties, 'source'), false);
+});
+
+test('uniform atomic copy has exact UTF8 boundary and cannot be mixed into a genuine DAG', () => {
+  const edge = task('/tmp/fixture', {request: '한'.repeat(4_000)});
+  assert.equal(decode(atomic, edge).nodes[0].instruction, edge.request);
+  const long = task('/tmp/fixture', {request: edge.request + '한'});
+  assert.throws(() => decode(atomic, long), /planner_compact_plan_invalid/);
+  const genuine = {instruction: 'A separately scoped actual subtask.', grade: 'standard', scope: 'read_only', deps: []};
+  assert.throws(() => decode({nodes: [atomicNode, genuine]}), /planner_compact_plan_invalid/);
+  assert.throws(() => decode({nodes: [genuine, atomicNode]}), /planner_compact_plan_invalid/);
+  assert.throws(() => decode(atomicWith({instruction: 'Rephrase the original request.'})), /planner_compact_plan_invalid/);
+  assert.throws(() => decode(atomicWith({deps: [0]})), /planner_compact_plan_invalid/);
+  assert.equal(decode({nodes: [genuine]}, long).nodes[0].instruction, genuine.instruction,
+    'long source retains bounded one-node handling, not forced invented decomposition or source truncation');
 });
 
 test('long atomic source never truncates; bounded real DAGs retain dependencies and optional integration', () => {
   const t = task('/tmp/fixture', {request: 'long'.repeat(3_001)}), rows = catalog(t);
   assert.throws(() => decode(atomic, t, rows), /planner_compact_plan_invalid/);
   const schema = buildCompactPlannerSchema(t, rows, NOW);
-  assert.equal(schema.properties.source.const, 'dag');
+  assert.equal(Object.hasOwn(schema.properties, 'source'), false);
+  assert.equal(schema.properties.nodes.items.properties.instruction.minLength, 1);
   assert.equal(schema.properties.nodes.minItems, 1);
-  const boundedLong = decode({source: 'dag', nodes: [{instruction: 'Process the full original supplied source under its original objective.',
+  const boundedLong = decode({nodes: [{instruction: 'Process the full original supplied source under its original objective.',
     grade: 'deep', scope: 'read_only', deps: []}]}, t, rows);
   assert.equal(boundedLong.nodes.length, 1, 'long original must not be forced into invented multiple subtasks');
-  const wire = {source: 'dag', nodes: [
+  const wire = {nodes: [
     {instruction: 'Inspect first independent module.', grade: 'standard', scope: 'read_only', deps: []},
     {instruction: 'Inspect second independent module.', grade: 'deep', scope: 'read_only', deps: []},
     {instruction: 'Integrate only the two preceding findings.', grade: 'standard', scope: 'read_only', deps: [0, 1]}], final: 2};
@@ -136,50 +183,50 @@ test('long atomic source never truncates; bounded real DAGs retain dependencies 
 test('DAG invalid dependencies, cycles, IDs, bounds and finals cannot be normalized into a valid plan', () => {
   const node = {instruction: 'A bounded actual subtask.', grade: 'standard', scope: 'read_only', deps: []};
   const bad = [
-    {source: 'dag', nodes: []}, {source: 'dag', nodes: [node]}, {source: 'dag', nodes: Array(9).fill(node)},
-    {source: 'dag', nodes: [{...node, deps: [0]}]},
-    {source: 'dag', nodes: [{...node, deps: [1]}]},
-    {source: 'dag', nodes: [{...node, deps: [false]}]},
-    {source: 'dag', nodes: [{...node, deps: [0.5]}]},
-    {source: 'dag', nodes: [{...node, deps: [1, 1]}, node]},
-    {source: 'dag', nodes: [{...node, deps: [1]}, {...node, deps: [0]}]},
-    {source: 'dag', nodes: [{...node, id: 'foreign'}]},
-    {source: 'dag', nodes: [{...node, source: 'request'}]},
-    {source: 'dag', nodes: [{...node, instruction: 'x'.repeat(12_001)}]},
-    {source: 'dag', nodes: [node], final: 1}, {source: 'dag', nodes: [node], final: null},
-    {source: 'dag', nodes: [node], final: false}, {source: 'dag', nodes: [node], final: 'foreign'},
+    {nodes: []}, {nodes: [node]}, {nodes: Array(9).fill(node)},
+    {nodes: [{...node, deps: [0]}]},
+    {nodes: [{...node, deps: [1]}]},
+    {nodes: [{...node, deps: [false]}]},
+    {nodes: [{...node, deps: [0.5]}]},
+    {nodes: [{...node, deps: [1, 1]}, node]},
+    {nodes: [{...node, deps: [1]}, {...node, deps: [0]}]},
+    {nodes: [{...node, id: 'foreign'}]},
+    {nodes: [{...node, source: 'request'}]},
+    {nodes: [{...node, instruction: 'x'.repeat(12_001)}]},
+    {nodes: [node], final: 1}, {nodes: [node], final: null},
+    {nodes: [node], final: false}, {nodes: [node], final: 'foreign'},
     '{"source":"dag","nodes":[{"instruction":"one","instruction":"two","grade":"standard","scope":"read_only","deps":[]}]}'];
   for (const value of bad) assert.throws(() => decode(value), /planner_compact/);
   const t = task(), schema = buildCompactPlannerSchema(t, catalog(t), NOW);
-  assert.equal(schema.properties.nodes.minItems, 2);
+  assert.equal(schema.properties.nodes.minItems, 1);
   const input = buildBoundedPlannerInput({task: t, catalog: catalog(t), policyText: t.policy.text,
     wireProtocol: COMPACT_PLANNER_PROTOCOL, now: NOW});
   assert.ok(input.instructions.includes('you MUST use'));
-  assert.ok(input.instructions.includes('never emit a one-node DAG'));
+  assert.ok(input.instructions.includes('Do not emit source or root-level grade/scope'));
 });
 
 test('material-ref selection is explicit, bounded, unique and source-bound; missing means reject, not select-all', () => {
   const t = task('/tmp/fixture', {refs: ['first-source', 'second-source', 'third-source']});
-  for (const bad of [atomic, {...atomic, refs: [3]}, {...atomic, refs: [-1]}, {...atomic, refs: [0.2]},
-    {...atomic, refs: [false]}, {...atomic, refs: ['first-source']}, {...atomic, refs: [1, 1]},
-    {...atomic, refs: null}, {...atomic, refs: ['foreign-source']}])
+  for (const bad of [atomic, atomicWith({refs: [3]}), atomicWith({refs: [-1]}), atomicWith({refs: [0.2]}),
+    atomicWith({refs: [false]}), atomicWith({refs: ['first-source']}), atomicWith({refs: [1, 1]}),
+    atomicWith({refs: null}), atomicWith({refs: ['foreign-source']})])
     assert.throws(() => decode(bad, t), /planner_compact/);
-  assert.deepEqual(decode({...atomic, refs: [2, 0]}, t).nodes[0].context_refs, ['third-source', 'first-source']);
-  assert.deepEqual(decode({...atomic, refs: []}, t).nodes[0].context_refs, []);
+  assert.deepEqual(decode(atomicWith({refs: [2, 0]}), t).nodes[0].context_refs, ['third-source', 'first-source']);
+  assert.deepEqual(decode(atomicWith({refs: []}), t).nodes[0].context_refs, []);
   assert.deepEqual(t.material_refs, ['first-source', 'second-source', 'third-source']);
 });
 
 test('writes require offered scope and explicit paths; compact output grants no wider permission', () => {
   const read = task(), write = task('/tmp/fixture', {write: true});
-  const wire = {...atomic, scope: 'workspace_write', paths: ['**']};
+  const wire = atomicWith({scope: 'workspace_write', paths: ['**']});
   assert.throws(() => decode(wire, read), /planner_compact/);
-  assert.throws(() => decode({...wire, paths: undefined}, write, catalog(write, {write: true})), /planner_compact/);
+  assert.throws(() => decode(atomicWith({scope: 'workspace_write', paths: undefined}), write, catalog(write, {write: true})), /planner_compact/);
   assert.deepEqual(decode(wire, write, catalog(write, {write: true})).nodes[0].owned_paths, ['**']);
   const narrow = catalog(write, {write: true, narrow: true});
-  const expanded = decode({...wire, paths: ['Sources/one.swift']}, write, narrow);
+  const expanded = decode(atomicWith({scope: 'workspace_write', paths: ['Sources/one.swift']}), write, narrow);
   assert.deepEqual(expanded.nodes[0].owned_paths, ['Sources/one.swift']);
   assert.throws(() => resolveRoutePlan(decode(wire, write, narrow), write, narrow, NOW), /no_dispatchable_candidate/);
-  assert.throws(() => decode({...wire, paths: []}, write, narrow), /planner_compact/);
+  assert.throws(() => decode(atomicWith({scope: 'workspace_write', paths: []}), write, narrow), /planner_compact/);
 });
 
 test('agent versus exact deterministic execution remains a real choice when the host offers both', () => {
@@ -188,11 +235,11 @@ test('agent versus exact deterministic execution remains a real choice when the 
     surface: 'local', transport: 'local', quota_pool: 'none', account_id: 'local',
     quota_remaining_fraction: null, quota_observed_at_ms: null, quota_valid_until_ms: null});
   assert.throws(() => decode(atomic, t, rows), /planner_compact/);
-  assert.equal(decode({...atomic, kind: 'agent'}, t, rows).nodes[0].kind, 'agent');
-  const exact = decode({...atomic, kind: 'deterministic'}, t, rows);
+  assert.equal(decode(atomicWith({kind: 'agent'}), t, rows).nodes[0].kind, 'agent');
+  const exact = decode(atomicWith({kind: 'deterministic'}), t, rows);
   assert.equal(exact.nodes[0].kind, 'deterministic');
   assert.equal(resolveRoutePlan(exact, t, rows, NOW).plan.nodes[0].candidate_id, 'local-exact');
-  assert.throws(() => decode({...atomic, kind: 'arbitrary'}, t, rows), /planner_compact/);
+  assert.throws(() => decode(atomicWith({kind: 'arbitrary'}), t, rows), /planner_compact/);
 });
 
 test('graded mixed fan-out keeps original ordinals/cardinality/payloads, including skipped routes', () => {
@@ -239,7 +286,7 @@ test('captured invocation binding and cancellation hold before normalization; no
   const respondB = new Promise(resolve => {releaseB = resolve;});
   const pendingA = respondA.then(raw => decode(raw, a, catalog(a), {binding: ab}));
   const pendingB = respondB.then(raw => decode(raw, b, catalog(b), {binding: bb}));
-  releaseB({...atomic, grade: 'deep'}); const resultB = await pendingB;
+  releaseB(atomicWith({grade: 'deep'})); const resultB = await pendingB;
   releaseA(atomic); const resultA = await pendingA;
   assert.equal(resultA.task_id, a.task_id); assert.equal(resultA.nodes[0].instruction, a.request);
   assert.equal(resultB.task_id, b.task_id); assert.equal(resultB.nodes[0].instruction, b.request);
@@ -248,7 +295,7 @@ test('captured invocation binding and cancellation hold before normalization; no
 
 test('existing Auto writer serialization remains intact after compact DAG compilation', () => {
   const request = task('/tmp/fixture', {write: true}), rows = catalog(request, {write: true});
-  const wire = {source: 'dag', nodes: [0, 1].map(index => ({instruction: 'Write intended part ' + index,
+  const wire = {nodes: [0, 1].map(index => ({instruction: 'Write intended part ' + index,
     grade: 'deep', scope: 'workspace_write', deps: [], paths: ['**']}))};
   const resolved = resolveRoutePlan(decode(wire, request, rows), request, rows, NOW);
   assert.deepEqual(resolved.plan.nodes[0].dependencies, []);
@@ -289,7 +336,7 @@ else if(command==='rcc-adapter'){mkdirSync(root+'/native-receipts',{recursive:tr
   registerRCCRuntime({on() {}, registerService(value) {service = value;}, registerGatewayMethod(name, fn) {methods.set(name, fn);},
     runtime: {llm: {async complete(input) {
       completions++; assert.ok(input.systemPrompt.includes(request.policy.text));
-      assert.ok(input.systemPrompt.includes('OS1 COMPACT PLAN v1'));
+      assert.ok(input.systemPrompt.includes('OS1 COMPACT PLAN v2'));
       return {provider: 'ollama', model: 'qwen3.5:4b', execution: {mode: 'direct-provider', owner: {kind: 'provider', id: 'ollama'}},
         stopReason, text: raw, usage: {inputTokens: 10, outputTokens: 8}};
     }}}});

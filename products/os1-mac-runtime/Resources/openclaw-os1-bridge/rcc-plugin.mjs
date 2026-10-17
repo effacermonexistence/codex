@@ -92,7 +92,10 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
     required: ['schema', 'task_id', 'request_sha256', 'nodes'], properties};
 }
 
-export const COMPACT_PLANNER_PROTOCOL = 'os1-compact-plan-v1';
+export const COMPACT_PLANNER_PROTOCOL = 'os1-compact-plan-v2';
+// Historical raw receipts can be inspected under their explicit old protocol;
+// new calls never select it or retry a malformed response with another format.
+const legacyCompactPlannerProtocol = 'os1-compact-plan-v1';
 const fullPlannerProtocol = 'os1-full-plan-v1';
 const plannerRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function plannerKeys(value, required, optional = []) {
@@ -143,21 +146,16 @@ export function buildCompactPlannerSchema(task, catalog, now = Date.now()) {
         maxItems: ordinals.length, items: compactNodeSchema(branches, task,
           ['route'], {route: {type: 'integer', enum: ordinals}})}}};
   }
-  const nodes = {type: 'array', minItems: canCopyPlannerRequest(task) ? 2 : 1, maxItems: 8,
+  const nodes = {type: 'array', minItems: 1, maxItems: 8,
       items: compactNodeSchema(branches, task, ['instruction', 'deps'], {
-        instruction: {type: 'string', minLength: 1, maxLength: 12_000},
+        instruction: {type: 'string', minLength: canCopyPlannerRequest(task) ? 0 : 1, maxLength: 12_000},
         deps: {type: 'array', maxItems: 8, uniqueItems: true, items: {type: 'integer', minimum: 0, maximum: 7}}})};
   const final = {type: 'integer', minimum: 0, maximum: 7};
-  if (!canCopyPlannerRequest(task)) return {type: 'object', additionalProperties: false,
-    required: ['source', 'nodes'], properties: {source: {type: 'string', const: 'dag'}, nodes, final}};
-  // One object grammar avoids root/scope oneOf overlap. Native union-grammar
-  // compatibility is tested separately, not assumed from schema validity.
-  // Branch-required/forbidden fields are
-  // still checked by the strict source discriminator below before adoption;
-  // optional here is not permission to omit a material planning choice.
-  const atomic = compactNodeSchema(branches, task, [], {}).properties;
-  return {type: 'object', additionalProperties: false, required: ['source'], properties: {
-    source: {type: 'string', enum: ['request', 'dag']}, ...atomic, nodes, final}};
+  // One Auto envelope, not an optional union of request and DAG fields.
+  // A single empty instruction copies the immutable original; genuine DAG
+  // nodes carry their own nonempty instructions. No source discriminator or
+  // root grade/scope can coexist ambiguously with a second set of node fields.
+  return {type: 'object', additionalProperties: false, required: ['nodes'], properties: {nodes, final}};
 }
 
 /** JSON.parse alone accepts duplicate keys. Scan already-valid JSON to reject
@@ -219,7 +217,8 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
     const text = rawText.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
     const parsed = JSON.parse(text); abort(); return assertPlannerRouteChoice(task, parsed, catalog);
   }
-  if (protocol !== COMPACT_PLANNER_PROTOCOL) throw new RCCRuntimeError('planner_protocol_invalid');
+  if (![COMPACT_PLANNER_PROTOCOL, legacyCompactPlannerProtocol].includes(protocol))
+    throw new RCCRuntimeError('planner_protocol_invalid');
   const value = strictCompactJSON(rawText), branches = compactNodeBranches(task, catalog, now);
   const invalid = () => { throw new RCCRuntimeError('planner_compact_plan_invalid'); };
   const refs = task.material_refs ?? [];
@@ -263,19 +262,23 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
       if (!entryKeys(entry, ['route'], entry?.scope) || entry.route !== active[index].index + 1) invalid();
       return compile(entry, {id: explicitRouteNodeID(active[index].index), instruction: active[index].route.instruction});
     });
-  } else if (value?.source === 'request') {
+  } else if (protocol === legacyCompactPlannerProtocol && value?.source === 'request') {
     if (!entryKeys(value, ['source'], value.scope) || !canCopyPlannerRequest(task)) invalid();
     nodes = [compile(value, {id: 'node_0', instruction: task.request})];
-  } else if (value?.source === 'dag') {
-    if (!plannerKeys(value, ['source', 'nodes'], ['final']) || !Array.isArray(value.nodes) ||
-        value.nodes.length < (canCopyPlannerRequest(task) ? 2 : 1) || value.nodes.length > 8) invalid();
+  } else if (protocol === COMPACT_PLANNER_PROTOCOL || value?.source === 'dag') {
+    const uniform = protocol === COMPACT_PLANNER_PROTOCOL;
+    if (!plannerKeys(value, uniform ? ['nodes'] : ['source', 'nodes'], ['final']) || !Array.isArray(value.nodes) ||
+        value.nodes.length < (uniform || !canCopyPlannerRequest(task) ? 1 : 2) || value.nodes.length > 8) invalid();
     const count = value.nodes.length;
     nodes = value.nodes.map((entry, index) => {
+      const copyOriginal = uniform && count === 1 && canCopyPlannerRequest(task);
       if (!entryKeys(entry, ['instruction', 'deps'], entry?.scope) ||
-          typeof entry.instruction !== 'string' || !entry.instruction || Buffer.byteLength(entry.instruction) > 12_000 ||
+          typeof entry.instruction !== 'string' ||
+          (copyOriginal ? entry.instruction !== '' : entry.instruction.length === 0) ||
+          Buffer.byteLength(entry.instruction) > 12_000 ||
           !Array.isArray(entry.deps) || entry.deps.length > 8 || new Set(entry.deps).size !== entry.deps.length ||
           entry.deps.some(dep => !Number.isSafeInteger(dep) || dep < 0 || dep >= count || dep === index)) invalid();
-      return compile(entry, {id: `node_${index}`, instruction: entry.instruction,
+      return compile(entry, {id: `node_${index}`, instruction: copyOriginal ? task.request : entry.instruction,
         dependencies: entry.deps.map(dep => `node_${dep}`)});
     });
     const visited = new Set(), visiting = new Set();
@@ -568,12 +571,12 @@ export function plannerWireProtocol(task, catalog, feedback = {}) {
 function compactPlannerInstructions(base, explicit, copyOriginal) {
   // Replace only our old wire-format footer, never any owner policy bytes.
   const semantics = base.replace(/Return only JSON \{schema:1[^\n]*?\}\.[ ]*/, '');
-  return semantics + '\nOS1 COMPACT PLAN v1. Return only the schema-constrained JSON, no fences. ' +
+  return semantics + '\nOS1 COMPACT PLAN v2. Return only the schema-constrained JSON, no fences. ' +
     'Task identity, original payloads and authority are bound by the host; never echo or override task_id, request_sha256, model or candidate_id. ' +
     (explicit ? 'Use source:"routes", nodes in exact original route order, each naming its original 1-based route ordinal, grade and scope. Do not repeat route instructions or add dependencies. ' :
-      (copyOriginal ? 'For ANY unsplit original task you MUST use {"source":"request","grade":"trivial|standard|deep","scope":"read_only|workspace_write"}; the host preserves the original request byte for byte. A DAG MUST have at least two genuinely separate subtasks; never emit a one-node DAG or rephrase the original request. ' :
-        'This original request exceeds the node instruction byte bound, so source:"request" is unavailable. Keep its full source in the input; use bounded actual subtask instructions, never truncate source to make an atomic branch fit. ') +
-      'For genuine decomposition use {"source":"dag","nodes":[{"instruction":"actual bounded subtask","grade":"trivial|standard|deep","scope":"read_only|workspace_write","deps":[]}]} with zero-based dependency indices; optional final is a node index. Do not force an atomic task when decomposition is needed. ') +
+      (copyOriginal ? 'For ANY unsplit original task you MUST use {"nodes":[{"instruction":"","grade":"trivial|standard|deep","scope":"read_only|workspace_write","deps":[]}]}; the empty instruction makes the host preserve the original request byte for byte. Do not repeat or rephrase the original. ' :
+        'This original request exceeds the node instruction byte bound, so an empty copy instruction is unavailable. Keep its full source in the input; use bounded actual subtask instructions, never truncate source to make an atomic node fit. ') +
+      'For genuine decomposition use the SAME nodes envelope with at least two genuinely separate nonempty subtask instructions and zero-based dependency indices; optional final is a node index. Never mix an empty copy instruction with a decomposition. Do not emit source or root-level grade/scope. Do not force an atomic task when decomposition is needed. ') +
     'Include kind only if the schema requires a choice. Writers must supply paths exactly within the offered ownership schema; no implicit write grant. When materials exist, supply refs as the chosen zero-based indices in material_refs, including [] for an intentionally empty selection. Otherwise omit empty fields.';
 }
 export function buildBoundedPlannerInput({task, catalog, feedback = {}, policyText, now = Date.now(),

@@ -104,6 +104,97 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         try check(!forced.candidates.isEmpty && forced.candidates.allSatisfy { $0["scope"] as? String == "read_only" },
                   "hard host read-only still wins")
     }
+    // Actual395 prospective smoke scope failure, now a development regression.
+    // The original request and failed arm remain frozen; this is not a rerun.
+    let boundedSuppliedImplementation = """
+    Fix the supplied stock_reconcile.py in this isolated workspace. Modify exactly that file; do not modify AGENTS.md or CLAUDE.md, and do not create other deliverables. Keep exactly one top-level function reconcile_stock(stock, changes), with those two positional parameters and no decorators, annotations or default arguments. A module/function docstring is allowed.
+
+    Contract:
+    - stock must have exact type dict. Each key must have exact type str and be nonempty; preserve keys literally (case and whitespace), without stripping or normalization. Each initial count must have exact type int and be >=0; bool and subclasses of int are invalid.
+    - changes must have exact type list or tuple. Each member must have exact type list or tuple and exactly two elements: a valid key under the same rule, and a delta of exact type int (bool/subclasses invalid). A new key is allowed. Any invalid input raises ValueError.
+    - Aggregate ALL deltas for each key as a transaction. Only FINAL counts must be nonnegative: an intermediate deficit that is later offset is valid. A negative final count raises ValueError. Do not reject a valid transaction merely because its input order has a temporary negative count.
+    - Return a NEW ordinary dict containing every original key and every key mentioned by a change, including zero-valued keys and keys with net-zero changes. Preserve arbitrary-size integer arithmetic. No floats/coercion.
+    - Never mutate stock, changes, or any nested change member, on success OR failure. Repeated calls share no state.
+    - Pure Python only; no imports, nested functions, classes, I/O, network, process operations or external dependencies. Allowed builtins: isinstance,type,int,bool,str,list,tuple,dict,set,len,sorted,range,enumerate,zip,all,any,min,max,sum,ValueError. Permitted attributes/methods: append,add,get,copy,sort,items,keys,values,discard,remove. No underscore-prefixed names or attributes.
+
+    Examples: reconcile_stock({'bolt':1}, [('bolt',-3),('bolt',3)]) returns {'bolt':1}; reconcile_stock({}, [('nut',0)]) returns {'nut':0}.
+
+    Do not inspect parent/sibling evaluation files or invoke another model/agent. Private evaluator tests are not supplied. Briefly report the artifact change; do not claim private evaluator tests ran or passed.
+    """
+    let suppliedWrites = [
+        boundedSuppliedImplementation,
+        "Fix the supplied settings.yaml in this isolated workspace. Modify exactly that file; do not modify secrets.env or accounts.json, and do not create other deliverables.",
+        "Update the supplied result.py in this isolated workspace. Do not modify AGENTS.md.",
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file. Do not modify settings.yaml.",
+    ]
+    for request in suppliedWrites {
+        let resolved = ScopeResolution.resolve(request)
+        try check(resolved.scope == .workspaceWrite, "closed one-target supplied-file edit preserves writer scope: \(request.prefix(180))")
+        try check(resolved.prohibitions.contains { $0.contains("do not modify") },
+                  "named file prohibition is retained: \(request.prefix(200)); actual=\(resolved.prohibitions)")
+        let output = try B.build(input(request))
+        try check(output.candidates.contains { $0["scope"] as? String == "workspace_write" }, "native catalog must expose eligible writers for actual bounded edit")
+        let forced = try B.build(input(request, readOnly: true))
+        try check(!forced.candidates.isEmpty && forced.candidates.allSatisfy { $0["scope"] as? String == "read_only" }, "hard host read-only always wins over named-file edit")
+    }
+    for request in [
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file; do not modify result.py.",
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file; do not modify files.",
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file; do not modify AGENTS.md. Read-only.",
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file and settings.yaml; do not modify settings.yaml.",
+        "Fix the supplied result.py and settings.yaml in this isolated workspace. Modify exactly that file; do not modify AGENTS.md.",
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file if allowed; do not modify AGENTS.md.",
+        "If approved, fix the supplied result.py in this isolated workspace. Modify exactly that file; do not modify AGENTS.md.",
+        "Modify exactly that file; do not modify AGENTS.md.",
+        "Explain this quoted instruction: \"Fix the supplied result.py in this isolated workspace. Modify exactly that file; do not modify AGENTS.md.\"",
+        "Fix the supplied result.py in this isolated workspace. Do not modify '/known/workspace/result.py'.",
+        "Fix the supplied out/result.py in this isolated workspace. Do not modify 'out/*.py'.",
+        "Fix the supplied result.py in this isolated workspace. Modify exactly that file; do not modify AGENTS.md unless necessary.",
+        "Fix the supplied ../result.py in this isolated workspace. Do not modify AGENTS.md.",
+        "Fix the supplied /tmp/result.py in this isolated workspace. Do not modify AGENTS.md.",
+    ] {
+        try check(ScopeResolution.resolve(request).scope == .readOnly, "ambiguous/global/conflicting supplied-file restrictions stay read-only: \(request)")
+        try check((try B.build(input(request))).candidates.allSatisfy { $0["scope"] as? String == "read_only" }, "denial does not create writer catalog rows")
+    }
+    // Separate preexisting quoted-span defect, observed while checking the
+    // bounded supplied-file repair (the failed diagnostic/log is preserved).
+    // Pair delimiters first: a filename's closing delimiter cannot swallow
+    // the later prohibition. This does NOT extend the new supplied grammar
+    // to infer write authority through quoted operands.
+    let observedQuotedFence = "Edit the supplied `config.yaml` in this isolated workspace. Modify exactly that file; do not modify `secrets.env`."
+    try check(OwnerIntentText.authorityText(observedQuotedFence) == observedQuotedFence,
+              "original failed quoted filename control preserves every intervening clause verbatim")
+    try check(ScopeResolution.resolve(observedQuotedFence).prohibitions.contains { $0.contains("secrets.env") },
+              "the observed named prohibition cannot disappear")
+    for request in [
+        "Create `output.txt`. Do not modify `settings.yaml`.",
+        "Modify `config.yaml`. Never edit `secrets.env`.",
+        "Create \"output.txt\". Do not modify \"settings.yaml\".",
+        "Modify “config.yaml”. Never edit “secrets.env”.",
+    ] {
+        try check(OwnerIntentText.authorityText(request) == request, "quoted filenames and fences remain verbatim")
+        let resolved = ScopeResolution.resolve(request)
+        try check(resolved.scope == .workspaceWrite && !resolved.prohibitions.isEmpty,
+                  "independently supported quoted exact targets retain their actual preservation fence")
+    }
+    for request in [
+        "Explain this instruction: `Create unsafe.py. Do not modify settings.yaml`.",
+        "Explain this instruction: \"Create unsafe.py. Do not modify settings.yaml\".",
+        "Explain this instruction: “Create unsafe.py. Do not modify settings.yaml”.",
+        "If needed later, consider `Modify unsafe.py`; explain only now.",
+        "Explain `Create unsafe.py", "Explain \"Create unsafe.py", "Explain “Create unsafe.py",
+        "Explain Create unsafe.py”.",
+        "Create output.txt. Do not modify `settings.yaml", "Create output.txt. Do not modify \"settings.yaml",
+        #"Create output.txt. Do not modify \"settings.yaml\"."#,
+        #"Explain \`Create unsafe.py\`."#,
+        "Explain ``Create unsafe.py``.",
+    ] {
+        try check(ScopeResolution.resolve(request).scope == .readOnly,
+                  "quoted commands and ambiguous/unmatched delimiters cannot acquire authority: \(request)")
+    }
+    for request in ["Create output.txt. Do not modify `settings.yaml", "Create output.txt. Do not modify \"settings.yaml"] {
+        try check(OwnerIntentText.authorityText(request).contains("Do not modify"), "an unmatched span never silently drops a prohibition")
+    }
     let globalReadOnly = [
         "Create result.py. Do not modify files.",
         "Create result.py. Never modify files.",
