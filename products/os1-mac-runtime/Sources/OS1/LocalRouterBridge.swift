@@ -63,10 +63,25 @@ enum LocalRouterBridge {
             var parameters = entries[index]["params"] as! [String: Any]
             parameters["num_ctx"] = 32768
             parameters["num_predict"] = 4096
+            // Finite residency for this private tools-free RCC model only.
+            // This avoids avoidable reloads, not a promise of KV-cache reuse.
+            parameters["keep_alive"] = "30m"
             entries[index]["params"] = parameters
         }
         ollama["models"] = entries; providers["ollama"] = ollama
         models["providers"] = providers; config["models"] = models
+        // OpenClaw's per-agent model params override provider-row params.
+        // Normalize the same private model there without changing global
+        // Ollama defaults, other models, permissions, or user configuration.
+        var agents = config["agents"] as! [String: Any]
+        var defaults = agents["defaults"] as! [String: Any]
+        var agentModels = defaults["models"] as! [String: Any]
+        var routerModel = agentModels["ollama/" + model] as! [String: Any]
+        var routerParameters = routerModel["params"] as! [String: Any]
+        routerParameters["keep_alive"] = "30m"
+        routerModel["params"] = routerParameters
+        agentModels["ollama/" + model] = routerModel
+        defaults["models"] = agentModels; agents["defaults"] = defaults; config["agents"] = agents
         let publicPolicy = try RuntimeConfig.load().executorContract.directives.joined(separator: "\n")
         return RCCRuntimeGatewayClient.Configuration(identity: .init(nodePath: old.nodePath, nodeSHA256: old.nodeSHA256,
             entryPath: old.entryPath, entrySHA256: old.entrySHA256, pluginDirectory: plugin.path,
@@ -76,8 +91,8 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "2006c3569bfd60fee6d568ee71828f3d1ece043202cd57d13ed031f71c932298"
-    static let rccRuntimePluginSHA256 = "b0446f835f6cf2365a2defe6afb7f522b534e8c629467c870df3ebcfe062ff12"
+    static let rccRuntimeModuleSHA256 = "23184c920e74ce517ebf289d9faa662e091bb4f92269cfb8ef04662609aa510e"
+    static let rccRuntimePluginSHA256 = "c5678c3bf154f7cd482feccde6e9b71d2d763e0feabaa4e919a9ddd6880e3a2a"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"

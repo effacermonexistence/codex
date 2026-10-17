@@ -99,7 +99,31 @@ check("createRCCRuntime" not in CLIENT and "runTaskWithOwnerPolicy" not in CLIEN
       "Swift transport never becomes an independent core/scheduler")
 check("_validateExecution" in RUNTIME and "selected_config" in RUNTIME and "configuration_sha256" in RUNTIME,
       "same runtime reconciles exact configured execution records")
+check('parameters["keep_alive"] = "30m"' in BRIDGE and
+      'routerParameters["keep_alive"] = "30m"' in BRIDGE and
+      'agentModels["ollama/" + model] = routerModel' in BRIDGE and
+      "OLLAMA_KEEP_ALIVE" not in BRIDGE,
+      "finite private RCC model residency covers overriding agent params without changing global Ollama settings")
 native = section(MAIN, "private func rccNativeAdapter(", "func runOpenClawRCCTask(")
+preparation = section(native, "let observations = try RCCNativePreparation.collect(", "let supported = ")
+check('provider: provider, codex: {' in preparation and '}, claude: {' in preparation and
+      preparation.index("ModelAvailability.codexCatalog(") < preparation.index("}, claude: {") <
+      preparation.index("ModelAvailability.claudeCatalogs(") < preparation.index("ModelAvailability.claudeQuota("),
+      "native preparation probes only the selected provider through mutually exclusive readers")
+check("providerQuotaContext(codex: observations.codex?.quotaSnapshot, claude: observations.claude?.quota," in native and
+      native.count("ModelAvailability.claudeQuota(") == 1 and native.count("ModelAvailability.codexCatalog(") == 1,
+      "native admission keeps fresh selected quota without an unrelated provider re-probe")
+check("RCCNativePreparationTiming(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID," in native and
+      "configurationSHA256: t.configurationSHA256, sourceFingerprint: t.sourceFingerprint, provider: provider)" in native and
+      "try? timing.persist(root: root.deletingLastPathComponent(), receiptPersisted: receiptPersisted," in native and
+      "executionStatus: record.status.rawValue, executionVerified: record.executionVerified)" in native,
+      "optional timing record is attempt/config/source bound and cannot rewrite execution outcome")
+check(all("timing.mark(." + phase + ")" in native for phase in ["inventoryStarted", "inventoryReady",
+          "authorizationStarted", "authorizationReady", "workspaceHashStarted", "workspaceHashReady",
+          "executeStarted", "executeReturned", "attemptFailed", "receiptPersistStarted", "receiptPersisted"]) and
+      native.index("timing.mark(.receiptPersistStarted)") < native.index("RCCRuntimeContract.encode(record)") <
+      native.index('"RCC native receipt readback failed"') < native.index("receiptPersisted = true"),
+      "phase timings surround existing checks and mark receipt persistence only after its unchanged readback gate")
 check("input.completionFeedback = PublicCompletionFeedback(" in native and
       "objectiveSHA256: sha256Hex(Data(objective.utf8)), observations: []" in native,
       "first native attempt explicitly binds empty feedback to its immutable authorization objective")

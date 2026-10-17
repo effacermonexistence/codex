@@ -1,0 +1,23 @@
+# Build393 — shorter local plans, selected-provider preparation, bounded Codex readers
+
+## Objective and boundary
+
+Continue the installed Codex execution path, not the abandoned ChatGPT relay. Preserve the one OpenClaw task owner, RCC policy, exact execution/model/effort authorization, quotas, session state, queues, cancellation, artifact custody and honest quality labels. No extra API inference, account, OhMyBug, mandatory frontier judge or competing coordinator.
+
+## Observations and repairs
+
+The prior392 real UI request took78.361 seconds within the Core. Its local planner took53.633 seconds; raw Ollama timings showed7.450 seconds of cold loading,25.049 seconds of input evaluation and20.752 seconds of JSON generation. Native execution wrapper time is not pure model time. Missing native preparation phases were not retrospectively invented.
+
+1. **Compact wire protocol.** For an unsplit original request, the local model returns only the source selector, grade and scope (plus kind/paths/material indices when required). The host binds original request bytes and task identity. For real decomposition the model still chooses bounded subtask instructions/dependencies; a DAG requires at least two nodes when the original-request form is available. Graded explicit route probes retain original route ordinals and exact owner payloads. Legacy candidate-choice and feedback protocols remain separate.
+2. **Strict decoder.** Reject duplicate keys, foreign authority fields, invalid scopes/paths/refs, cycles, malformed or truncated data. Bind responses to the invocation's task/request/source/policy identities and cancellation. Save raw output before decoding. No hidden legacy fallback or model replay on a compact failure. This is not an answer-cache/carry certificate and does not establish quality parity.
+3. **Selected-provider preparation.** Native Codex admission queries Codex only; native Claude admission queries Claude only. Keep fresh selected quota and signed exact-tuple admission. Preserve workspace hashing rather than removing it on an unmeasured guess. Add optional, private, attempt-bound timing records around inventory, authorization, workspace hash, execute and receipt persistence. Timings cannot upgrade an outcome or replace a native receipt.
+4. **One-parent read pool.** Explicitly enable at most four independent, fresh read-only Codex children per parent/account pool. Keep global and parent worker limits, durable foreign-parent fence, writer exclusivity, native-session/resume checks, permission checks and current quota admission. Existing cross-provider spreading is still considered first. Single resumed native threads remain exclusive. Unknown native effects quarantine the pool; they do not become success. Already dispatched siblings must retain their returned records even when another sibling fails.
+5. **Finite local residency.** Request30-minute keep-alive only for the private RCC Qwen model, including its overriding per-agent row. Do not change global Ollama settings or other models. Residency may be evicted and does not guarantee a prefix-cache hit. A direct preflight's warm run still spent22.144 seconds reprocessing its input; no false hidden-reasoning or cache-success claim.
+
+## Required verification and adoption
+
+Compact positive/negative fixtures, same-parent concurrency and foreign-parent/writer/resume/cancellation/quarantine regressions, selected-provider preparation fixtures, all existing JS/Swift/release checks, exact-source package, rollback-capable local installation, preserved data and real installed native/UI observations. A fake backend barrier proves scheduler logic only; real native session intervals and UI task nodes are required for actual parallel execution evidence.
+
+The source is a repair candidate until the installed path passes. Final runtime observations, failures and locked bounded comparison artifacts live in private evaluation receipts, not invented source-time results. Existing391 synthetic parity cases remain historical391 evidence;393 comparisons must be separately frozen, use a predeclared maximum-effort reference, lock outputs before scoring and retain negative outcomes. Neither a small diagnostic suite nor native execution verification proves universal latest-model parity or per-task subscription quota savings.
+
+Method references inspected: [ReAct](https://arxiv.org/abs/2210.03629), [intrinsic self-correction limitations](https://arxiv.org/abs/2310.01798), [Ollama API](https://docs.ollama.com/api/generate). Actual logs, regression execution and downstream receipts decide adoption, not those references or generated agreement.

@@ -92,6 +92,207 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
     required: ['schema', 'task_id', 'request_sha256', 'nodes'], properties};
 }
 
+export const COMPACT_PLANNER_PROTOCOL = 'os1-compact-plan-v1';
+const fullPlannerProtocol = 'os1-full-plan-v1';
+const plannerRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function plannerKeys(value, required, optional = []) {
+  return plannerRecord(value) && required.every(key => Object.hasOwn(value, key)) &&
+    Object.keys(value).every(key => required.includes(key) || optional.includes(key));
+}
+const canCopyPlannerRequest = task => typeof task?.request === 'string' && task.request.length > 0 &&
+  Buffer.byteLength(task.request) <= 12_000;
+function compactNodeBranches(task, catalog, now) {
+  const full = buildRoutePlanSchema(task, catalog, now).properties.nodes.items;
+  return full.oneOf ?? [full];
+}
+function compactRefsSchema(task) {
+  const count = task.material_refs?.length ?? 0;
+  return {type: 'array', maxItems: Math.min(128, count), uniqueItems: true,
+    items: {type: 'integer', minimum: 0, maximum: Math.max(0, count - 1)}};
+}
+function compactNodeSchema(branches, task, extraRequired, extraProperties) {
+  const properties = {grade: {type: 'string', enum: [...ROUTE_CLASSES]},
+    scope: {type: 'string', enum: branches.map(branch => branch.properties.scope.const)},
+    ...extraProperties};
+  const required = [...extraRequired, 'grade', 'scope'];
+  if (branches.some(branch => branch.properties.kind.const !== 'agent')) {
+    properties.kind = {type: 'string', enum: [...new Set(branches.flatMap(branch =>
+      branch.properties.kind.const ? [branch.properties.kind.const] : branch.properties.kind.enum))]};
+    if (branches.every(branch => branch.properties.kind.const !== 'agent')) required.push('kind');
+  }
+  const writer = branches.find(branch => branch.properties.scope.const === 'workspace_write');
+  if (writer) {
+    properties.paths = writer.properties.owned_paths;
+    if (branches.every(branch => branch.properties.scope.const === 'workspace_write')) required.push('paths');
+  }
+  if ((task.material_refs?.length ?? 0) > 0) { properties.refs = compactRefsSchema(task); required.push('refs'); }
+  return {type: 'object', additionalProperties: false, required, properties};
+}
+/** The host selects the wire protocol before the call. The model never
+ * supplies task identity or authorization, and this compiler does not adopt
+ * its grade as quality proof. Full legacy candidate-choice plans stay full. */
+export function buildCompactPlannerSchema(task, catalog, now = Date.now()) {
+  if (task.mode === 'explicit_routing_test' && !explicitTierRouting(task, catalog))
+    throw new RCCRuntimeError('planner_compact_legacy_explicit_forbidden');
+  const branches = compactNodeBranches(task, catalog, now);
+  if (task.mode === 'explicit_routing_test') {
+    const originals = task.host_context?.explicit_routes ?? [], effective = effectiveExplicitRoutes(task);
+    const ordinals = originals.map((route, index) => effective.includes(route) ? index + 1 : null).filter(Boolean);
+    return {type: 'object', additionalProperties: false, required: ['source', 'nodes'], properties: {
+      source: {type: 'string', const: 'routes'}, nodes: {type: 'array', minItems: ordinals.length,
+        maxItems: ordinals.length, items: compactNodeSchema(branches, task,
+          ['route'], {route: {type: 'integer', enum: ordinals}})}}};
+  }
+  const nodes = {type: 'array', minItems: canCopyPlannerRequest(task) ? 2 : 1, maxItems: 8,
+      items: compactNodeSchema(branches, task, ['instruction', 'deps'], {
+        instruction: {type: 'string', minLength: 1, maxLength: 12_000},
+        deps: {type: 'array', maxItems: 8, uniqueItems: true, items: {type: 'integer', minimum: 0, maximum: 7}}})};
+  const final = {type: 'integer', minimum: 0, maximum: 7};
+  if (!canCopyPlannerRequest(task)) return {type: 'object', additionalProperties: false,
+    required: ['source', 'nodes'], properties: {source: {type: 'string', const: 'dag'}, nodes, final}};
+  // One object grammar avoids root/scope oneOf overlap. Native union-grammar
+  // compatibility is tested separately, not assumed from schema validity.
+  // Branch-required/forbidden fields are
+  // still checked by the strict source discriminator below before adoption;
+  // optional here is not permission to omit a material planning choice.
+  const atomic = compactNodeSchema(branches, task, [], {}).properties;
+  return {type: 'object', additionalProperties: false, required: ['source'], properties: {
+    source: {type: 'string', enum: ['request', 'dag']}, ...atomic, nodes, final}};
+}
+
+/** JSON.parse alone accepts duplicate keys. Scan already-valid JSON to reject
+ * ambiguous compact objects (including escaped duplicate keys), never repair
+ * them or make another model call. No provider text is executed. */
+function strictCompactJSON(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(text) > 65_536)
+    throw new RCCRuntimeError('planner_compact_json_invalid');
+  let result;
+  try { result = JSON.parse(text); } catch { throw new RCCRuntimeError('planner_compact_json_invalid'); }
+  let at = 0;
+  const whitespace = () => { while (/\s/.test(text[at] ?? '') && at < text.length) at++; };
+  const string = () => {
+    const start = at++;
+    while (at < text.length) {
+      if (text[at] === '\\') { at += 2; continue; }
+      if (text[at++] === '"') return JSON.parse(text.slice(start, at));
+    }
+    throw new RCCRuntimeError('planner_compact_json_invalid');
+  };
+  const value = depth => {
+    if (depth > 32) throw new RCCRuntimeError('planner_compact_json_invalid');
+    whitespace();
+    if (text[at] === '"') { string(); return; }
+    if (text[at] === '{') {
+      at++; whitespace(); const seen = new Set();
+      if (text[at] === '}') { at++; return; }
+      while (at < text.length) {
+        whitespace(); const key = string();
+        if (seen.has(key)) throw new RCCRuntimeError('planner_compact_duplicate_key');
+        seen.add(key); whitespace(); at++; value(depth + 1); whitespace();
+        if (text[at++] === '}') return;
+      }
+    } else if (text[at] === '[') {
+      at++; whitespace(); if (text[at] === ']') { at++; return; }
+      while (at < text.length) { value(depth + 1); whitespace(); if (text[at++] === ']') return; }
+    } else {
+      const literal = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(at));
+      if (literal) { at += literal[0].length; return; }
+    }
+    throw new RCCRuntimeError('planner_compact_json_invalid');
+  };
+  value(0); whitespace();
+  if (at !== text.length) throw new RCCRuntimeError('planner_compact_json_invalid');
+  return result;
+}
+export function plannerResponseBinding(task) {
+  return Object.freeze({task_id: task.task_id, request_sha256: task.request_sha256,
+    source_fingerprint: task.source_fingerprint, policy_sha256: task.policy_sha256});
+}
+export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPlannerProtocol,
+  binding = plannerResponseBinding(task), signal, now = Date.now()} = {}) {
+  const abort = () => { if (signal?.aborted) throw new RCCRuntimeError('planner_cancelled'); };
+  abort();
+  if (!plannerKeys(binding, ['task_id', 'request_sha256', 'source_fingerprint', 'policy_sha256']) ||
+      Object.entries(binding).some(([key, value]) => task?.[key] !== value))
+    throw new RCCRuntimeError('planner_response_binding_changed');
+  if (protocol === fullPlannerProtocol) {
+    const text = rawText.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
+    const parsed = JSON.parse(text); abort(); return assertPlannerRouteChoice(task, parsed, catalog);
+  }
+  if (protocol !== COMPACT_PLANNER_PROTOCOL) throw new RCCRuntimeError('planner_protocol_invalid');
+  const value = strictCompactJSON(rawText), branches = compactNodeBranches(task, catalog, now);
+  const invalid = () => { throw new RCCRuntimeError('planner_compact_plan_invalid'); };
+  const refs = task.material_refs ?? [];
+  const compile = (entry, {id, instruction, dependencies = []}) => {
+    if (!ROUTE_CLASSES.includes(entry.grade)) invalid();
+    const branch = branches.find(b => b.properties.scope.const === entry.scope);
+    if (!branch) invalid();
+    const kindSpec = branch.properties.kind, kind = kindSpec.const === 'agent' ? 'agent' : entry.kind;
+    if (kindSpec.const ? kind !== kindSpec.const : !kindSpec.enum?.includes(kind)) invalid();
+    let paths = [];
+    if (entry.scope === 'workspace_write') {
+      paths = entry.paths; const spec = branch.properties.owned_paths;
+      if (!Array.isArray(paths) || paths.length < spec.minItems || paths.length > spec.maxItems ||
+          paths.some(path => typeof path !== 'string' || !path || (spec.items.enum && !spec.items.enum.includes(path)))) invalid();
+    }
+    let indices = [];
+    if (refs.length > 0) {
+      indices = entry.refs;
+      if (!Array.isArray(indices) || indices.length > Math.min(128, refs.length) ||
+          new Set(indices).size !== indices.length ||
+          indices.some(index => !Number.isSafeInteger(index) || index < 0 || index >= refs.length)) invalid();
+    }
+    return {id, instruction, dependencies, kind, route_class: entry.grade, scope: entry.scope,
+      owned_paths: paths, context_refs: indices.map(index => refs[index])};
+  };
+  const entryKeys = (entry, required, scope) => {
+    const branch = branches.find(b => b.properties.scope.const === scope);
+    if (!branch) return false;
+    return plannerKeys(entry, [...required, 'grade', 'scope',
+      ...(branch.properties.kind.const === 'agent' ? [] : ['kind']),
+      ...(scope === 'workspace_write' ? ['paths'] : []), ...(refs.length ? ['refs'] : [])]);
+  };
+  let nodes, final;
+  if (task.mode === 'explicit_routing_test') {
+    if (!explicitTierRouting(task, catalog) || !plannerKeys(value, ['source', 'nodes']) || value.source !== 'routes' ||
+        !Array.isArray(value.nodes)) invalid();
+    const original = task.host_context?.explicit_routes ?? [], effective = effectiveExplicitRoutes(task);
+    const active = original.map((route, index) => effective.includes(route) ? {route, index} : null).filter(Boolean);
+    if (value.nodes.length !== active.length) invalid();
+    nodes = value.nodes.map((entry, index) => {
+      if (!entryKeys(entry, ['route'], entry?.scope) || entry.route !== active[index].index + 1) invalid();
+      return compile(entry, {id: explicitRouteNodeID(active[index].index), instruction: active[index].route.instruction});
+    });
+  } else if (value?.source === 'request') {
+    if (!entryKeys(value, ['source'], value.scope) || !canCopyPlannerRequest(task)) invalid();
+    nodes = [compile(value, {id: 'node_0', instruction: task.request})];
+  } else if (value?.source === 'dag') {
+    if (!plannerKeys(value, ['source', 'nodes'], ['final']) || !Array.isArray(value.nodes) ||
+        value.nodes.length < (canCopyPlannerRequest(task) ? 2 : 1) || value.nodes.length > 8) invalid();
+    const count = value.nodes.length;
+    nodes = value.nodes.map((entry, index) => {
+      if (!entryKeys(entry, ['instruction', 'deps'], entry?.scope) ||
+          typeof entry.instruction !== 'string' || !entry.instruction || Buffer.byteLength(entry.instruction) > 12_000 ||
+          !Array.isArray(entry.deps) || entry.deps.length > 8 || new Set(entry.deps).size !== entry.deps.length ||
+          entry.deps.some(dep => !Number.isSafeInteger(dep) || dep < 0 || dep >= count || dep === index)) invalid();
+      return compile(entry, {id: `node_${index}`, instruction: entry.instruction,
+        dependencies: entry.deps.map(dep => `node_${dep}`)});
+    });
+    const visited = new Set(), visiting = new Set();
+    const walk = index => { if (visiting.has(index)) invalid(); if (visited.has(index)) return;
+      visiting.add(index); for (const dep of value.nodes[index].deps) walk(dep);
+      visiting.delete(index); visited.add(index); };
+    for (let i = 0; i < count; i++) walk(i);
+    if (Object.hasOwn(value, 'final')) {
+      if (!Number.isSafeInteger(value.final) || value.final < 0 || value.final >= count) invalid();
+      final = `node_${value.final}`;
+    }
+  } else invalid();
+  abort();
+  return assertPlannerRouteChoice(task, {schema: 1, task_id: binding.task_id,
+    request_sha256: binding.request_sha256, nodes, ...(final === undefined ? {} : {final_node_id: final})}, catalog);
+}
+
 async function verifyNative() {
   const file = process.env.OS1_RCC_NATIVE_PATH;
   const expected = process.env.OS1_RCC_NATIVE_SHA256;
@@ -357,11 +558,34 @@ export function plannerContextProjection(context) {
   return JSON.stringify({...envelope, memoryPaging: {...rest, allowedSessionScope: binding}});
 }
 
-export function buildBoundedPlannerInput({task, catalog, feedback, policyText, now = Date.now()}) {
+export function plannerWireProtocol(task, catalog, feedback = {}) {
+  // A repair must preserve existing node IDs and completed-child state. Never
+  // reinterpret that stored full plan as a newly indexed compact DAG.
+  return !Object.hasOwn(feedback, 'repair') && plannerRecord(catalog?.model_tiers) &&
+    (task.mode !== 'explicit_routing_test' || explicitTierRouting(task, catalog)) ?
+    COMPACT_PLANNER_PROTOCOL : fullPlannerProtocol;
+}
+function compactPlannerInstructions(base, explicit, copyOriginal) {
+  // Replace only our old wire-format footer, never any owner policy bytes.
+  const semantics = base.replace(/Return only JSON \{schema:1[^\n]*?\}\.[ ]*/, '');
+  return semantics + '\nOS1 COMPACT PLAN v1. Return only the schema-constrained JSON, no fences. ' +
+    'Task identity, original payloads and authority are bound by the host; never echo or override task_id, request_sha256, model or candidate_id. ' +
+    (explicit ? 'Use source:"routes", nodes in exact original route order, each naming its original 1-based route ordinal, grade and scope. Do not repeat route instructions or add dependencies. ' :
+      (copyOriginal ? 'For ANY unsplit original task you MUST use {"source":"request","grade":"trivial|standard|deep","scope":"read_only|workspace_write"}; the host preserves the original request byte for byte. A DAG MUST have at least two genuinely separate subtasks; never emit a one-node DAG or rephrase the original request. ' :
+        'This original request exceeds the node instruction byte bound, so source:"request" is unavailable. Keep its full source in the input; use bounded actual subtask instructions, never truncate source to make an atomic branch fit. ') +
+      'For genuine decomposition use {"source":"dag","nodes":[{"instruction":"actual bounded subtask","grade":"trivial|standard|deep","scope":"read_only|workspace_write","deps":[]}]} with zero-based dependency indices; optional final is a node index. Do not force an atomic task when decomposition is needed. ') +
+    'Include kind only if the schema requires a choice. Writers must supply paths exactly within the offered ownership schema; no implicit write grant. When materials exist, supply refs as the chosen zero-based indices in material_refs, including [] for an intentionally empty selection. Otherwise omit empty fields.';
+}
+export function buildBoundedPlannerInput({task, catalog, feedback = {}, policyText, now = Date.now(),
+  wireProtocol = fullPlannerProtocol}) {
   const explicit = task.mode === 'explicit_routing_test';
   const gradedExplicit = explicitTierRouting(task, catalog);
+  if (![fullPlannerProtocol, COMPACT_PLANNER_PROTOCOL].includes(wireProtocol))
+    throw new RCCRuntimeError('planner_protocol_invalid');
+  const compact = wireProtocol === COMPACT_PLANNER_PROTOCOL;
+  const footer = gradedExplicit ? EXPLICIT_GRADED_PLAN_INSTRUCTIONS : explicit ? EXPLICIT_PLAN_INSTRUCTIONS : GRADED_PLAN_INSTRUCTIONS;
   const instructions = ROUTER_MODE_LOCK + '\n\n' + policyText + '\n\n' + ROUTER_MODE_LOCK + '\n\n' +
-    (gradedExplicit ? EXPLICIT_GRADED_PLAN_INSTRUCTIONS : explicit ? EXPLICIT_PLAN_INSTRUCTIONS : GRADED_PLAN_INSTRUCTIONS);
+    (compact ? compactPlannerInstructions(footer, explicit, canCopyPlannerRequest(task)) : footer);
   // Only an explicit route test on an older catalog shows the planner the
   // candidate catalog. Otherwise it gets no candidate ID (feedback included):
   // a graded explicit test gets the named routes with their ids, anything
@@ -384,11 +608,11 @@ export function buildBoundedPlannerInput({task, catalog, feedback, policyText, n
     availability: routingAvailability(task, catalog, now)});
   // Only our own visible prompt bytes are bounded here; OpenClaw's hidden
   // system overhead still requires an actual local-model context smoke.
-  const responseFormat = buildRoutePlanSchema(task, catalog, now);
+  const responseFormat = compact ? buildCompactPlannerSchema(task, catalog, now) : buildRoutePlanSchema(task, catalog, now);
   if (Buffer.byteLength(instructions) + Buffer.byteLength(message) +
       Buffer.byteLength(JSON.stringify(responseFormat)) > MAX_PLANNER_OWN_INPUT_BYTES)
     throw new RCCRuntimeError('planner_input_budget_exceeded');
-  return {instructions, message, responseFormat};
+  return {instructions, message, responseFormat, ...(compact ? {wireProtocol} : {})};
 }
 
 /** The local planner grades nodes; it chooses a row only in an explicit
@@ -701,6 +925,7 @@ export function registerRCCRuntime(api) {
       const local = ticket => ticket?.selected_config?.surface === 'local';
       starting = createRCCRuntime({ stateDir,
         maximumWorkers: 4,
+        maximumReadWorkersPerPool: 4,
         resolveIntent: routingIntentResolver({stateDir,
           complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request)),
           lifetimeSignal: () => plannerLifetime?.signal ?? null}),
@@ -709,13 +934,16 @@ export function registerRCCRuntime(api) {
           const policyText = policy(task);
           const deterministic = deterministicExplicitArithmeticPlan(task, catalog);
           if (deterministic) return deterministic;
+          const wireProtocol = plannerWireProtocol(task, catalog, feedback);
+          const binding = plannerResponseBinding(task), invocationID = randomUUID();
+          const plannerBoundAt = Date.now();
           const {instructions, message, responseFormat} = buildBoundedPlannerInput({task, catalog,
-            feedback, policyText});
+            feedback, policyText, wireProtocol, now: plannerBoundAt});
+          const inputSHA256 = sha(Buffer.from(JSON.stringify({instructions, message, responseFormat, wireProtocol})));
           let response;
           try { response = await plannerScope.runInAsyncScope(() => api.runtime.llm.complete(
             plannerCompletionRequest({instructions, message, responseFormat,
               signal: plannerLifetime.signal})));
-            assertLocalPlannerCompletion(response);
           } catch (error) {
             // Raw exception details stay in this private, task-bound diagnostic;
             // no prompt, policy, auth token or stack is printed into the UI.
@@ -736,26 +964,29 @@ export function registerRCCRuntime(api) {
           // Preserve the model's raw returned text before normalization/JSON
           // validation. This is an output artifact, never a hidden-reasoning
           // trace or proof that the selected execution route ran.
-          const rawText = assertLocalPlannerCompletion(response);
+          const rawText = typeof response?.text === 'string' ? response.text : null;
           const stateRoot = process.env.OS1_RCC_STATE_ROOT;
-          if (isAbsolute(stateRoot ?? '') && Buffer.byteLength(rawText) <= 65_536) {
+          if (rawText !== null && isAbsolute(stateRoot ?? '') && Buffer.byteLength(rawText) <= 65_536) {
             await writeFile(join(stateRoot, `planner-output-${randomUUID()}.json`), JSON.stringify({
               schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
               policy_sha256: task.policy_sha256, model_requested: LOCAL_MODEL,
-              provider_observed: response.provider, model_observed: response.model,
-              response_model_observed: response.responseModel ?? null,
-              execution_mode_observed: response.execution.mode,
-              stop_reason_observed: response.stopReason ?? null,
-              usage_observed: response.usage ?? null,
+              source_fingerprint: binding.source_fingerprint, planner_invocation_id: invocationID,
+              planner_wire_protocol: wireProtocol, planner_input_sha256: inputSHA256,
+              provider_observed: response?.provider ?? null, model_observed: response?.model ?? null,
+              response_model_observed: response?.responseModel ?? null,
+              execution_mode_observed: response?.execution?.mode ?? null,
+              stop_reason_observed: response?.stopReason ?? null,
+              usage_observed: response?.usage ?? null,
               observed_at_ms: Date.now(), output_sha256: sha(Buffer.from(rawText)), text: rawText,
             }), { flag: 'wx', mode: 0o600 }).catch(() => {});
           }
-          const text = response.text.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
-          const parsed = JSON.parse(text);
           // The core's independent typed verifier checks objective binding, DAG,
           // permissions, scopes, catalogue and quota before any child dispatch.
-          // Outside explicit route tests the core binds each graded node.
-          return assertPlannerRouteChoice(task, parsed, catalog);
+          // The compact compiler binds only static host fields, never adopts
+          // a grade as quality proof. A malformed compact response does not
+          // fall back to full JSON, a retry, or another provider.
+          return decodePlannerResponse(assertLocalPlannerCompletion(response), {task, catalog, protocol: wireProtocol,
+            binding, signal: plannerLifetime.signal, now: plannerBoundAt});
         },
         execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :
           nativeOperation('rcc-adapter', ticket, signal),

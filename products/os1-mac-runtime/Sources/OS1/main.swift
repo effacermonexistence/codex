@@ -18713,10 +18713,33 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         acknowledgedConfig: nil, observedConfig: nil, status: .failed, output: nil,
         executionVerified: false, taskVerified: false, taskQuality: .unverified, parityState: .unverified,
         nativeReceipt: receipt.path, sideEffects: .none, usage: nil, dispatchStage: .notDispatched)
+    let timing = try RCCNativePreparationTiming(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID,
+        configurationSHA256: t.configurationSHA256, sourceFingerprint: t.sourceFingerprint, provider: provider)
+    var receiptPersisted = false
+    defer {
+        // This is a separate optional diagnostic, never execution/adoption
+        // authority. A failed timing write cannot turn a failed attempt into
+        // success or erase its original native receipt/error.
+        if !receiptPersisted { timing.mark(.receiptPersistFailed) }
+        try? timing.persist(root: root.deletingLastPathComponent(), receiptPersisted: receiptPersisted,
+            executionStatus: record.status.rawValue, executionVerified: record.executionVerified)
+    }
     do {
         let parent = try rccContinuationParent(t)
-        let codex = (try? ModelAvailability.codexCatalog(workspace: h.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
-        let claude = (try? ModelAvailability.claudeCatalogs(workspace: h.workspace, config: config))?.routable ?? []
+        timing.mark(.inventoryStarted)
+        // The OpenClaw owner already selected this exact provider/config.
+        // Unrelated provider discovery belongs to its catalog, not every
+        // native attempt. Keep fresh selected inventory/quota; no substitute.
+        let observations = try RCCNativePreparation.collect(provider: provider, codex: {
+            (try? ModelAvailability.codexCatalog(workspace: h.workspace, config: config)) ??
+                ActiveCodexCatalog(models: [], source: "unavailable")
+        }, claude: {
+            (models: (try? ModelAvailability.claudeCatalogs(workspace: h.workspace, config: config))?.routable ?? [],
+             quota: ModelAvailability.claudeQuota(workspace: h.workspace))
+        })
+        let codex = observations.codex ?? ActiveCodexCatalog(models: [], source: "not_selected")
+        let claude = observations.claude?.models ?? []
+        timing.mark(.inventoryReady)
         let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
             : claude.contains { $0.model == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
         guard supported else { throw OS1Error.message("RCC configuration unavailable before dispatch") }
@@ -18731,7 +18754,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // they do not fabricate prior quality evidence or invoke a second owner.
         input.completionFeedback = PublicCompletionFeedback(
             objectiveSHA256: sha256Hex(Data(objective.utf8)), observations: [])
-        input.providerQuota = providerQuotaContext(codex: codex.quotaSnapshot, claude: ModelAvailability.claudeQuota(workspace: h.workspace),
+        input.providerQuota = providerQuotaContext(codex: observations.codex?.quotaSnapshot, claude: observations.claude?.quota,
             codexAccountID: BackendAccounts.active(provider: "codex", in: BackendAccounts.load()).id,
             claudeAccountID: BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id)
         // The owner's capacity mix when the host carried one; absent = 100/100.
@@ -18746,6 +18769,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let request = StartExecutionRequest(task: objective, providerPreference: provider,
             capacityPlan: .init(codex: capacity.codex, claude: capacity.claude), executorContractVersion: config.executorContract.version,
             executorContractSHA256: config.executorContract.sha256, availableCodexModels: codex.models, executionContext: input)
+        timing.mark(.authorizationStarted)
         let signed: Ticket
         do {
             signed = try await APIClient(config: config, token: try githubToken(), deviceID: try deviceID()).post("/v1/execution-authorizations",
@@ -18765,6 +18789,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
               signed.startupContract?.model == t.selectedConfig.model,
               signed.startupContract?.effort == t.selectedConfig.effort.rawValue else { throw OS1Error.message("RCC authorization changed requested tuple") }
         record.acknowledgedConfig = t.selectedConfig
+        timing.mark(.authorizationReady)
         var custody = OS1AttemptSourceState()
         let boundRoot = LocalProjectWorkspace.root(containing: h.workspace, projectID: "os1-clodex")
         let sourceRoot = OS1SourceWatch.containedRoot(workspace: h.workspace)
@@ -18797,7 +18822,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // The catalog admitted this chat-lane row through the chat gate, so
         // it is a selected lane: never hand a tool-free lane the real workspace.
         let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true) : h.workspace
+        timing.mark(.workspaceHashStarted)
         let before = workspaceHash(workspace)
+        timing.mark(.workspaceHashReady)
         executionWorkspace = workspace; executionWorkspaceBefore = before
         var measuredUsage: CompletionMeasuredUsage?
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
@@ -18824,6 +18851,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                                              fingerprint: OS1SourceWatch.fingerprint(root: protectedRoot))
             sourceBeforeClean = rccSourceIsVerifiedClean(protectedRoot)
         }
+        timing.mark(.executeStarted)
         let execution = try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
         try await OS1FullAccessContinuation.$protectedPaths.withValue(isFullAccess ? protected : []) {
         try await OS1ChangeEscalation.$available.withValue(!h.requireReadOnly && t.selectedConfig.scope == .workspaceWrite && sourceRoot != nil) {
@@ -18848,6 +18876,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         }
         }
         }
+        timing.mark(.executeReturned)
         let a = execution.artifact
         // execute returned: the native turn ended (a finished answer).
         record.nativeTurnTerminated = true
@@ -18930,6 +18959,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             }
         }
     } catch {
+        timing.mark(.attemptFailed)
         var knownFinishedCandidate = false
         if let rejected = error as? RejectedProviderExecution {
             // A post-check refusal does not erase a real finished candidate.
@@ -19013,9 +19043,12 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         record.nativeTurnTerminated = record.nativeTurnTerminated == true || RCCNativeAttemptOutcome.turnTerminated(
             dispatched: dispatched, transportAttested: rejected?.nativeTurnTerminated == true)
     }
+    timing.mark(.receiptPersistStarted)
     let data = try RCCRuntimeContract.encode(record)
     try data.write(to: receipt, options: [.atomic]); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receipt.path)
     guard try Data(contentsOf: receipt) == data else { throw OS1Error.message("RCC native receipt readback failed") }
+    receiptPersisted = true
+    timing.mark(.receiptPersisted)
     return data
 }
 

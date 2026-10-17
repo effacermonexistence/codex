@@ -2387,10 +2387,11 @@ function alive(pid) {
  * receives a ledger write failure code, which never fails or holds a task. */
 export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
-                                         maximumWorkers = 4, cancelGraceMs = 5_000,
+                                         maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, ledgerStats = null, ledgerLog = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
+  assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
   assert(int(cancelGraceMs, 100, 30_000), 'cancel_grace_invalid');
   const registry = verifierRegistry ?? new Map();
   assert(registry instanceof Map && [...registry].every(([family, verify]) =>
@@ -2437,7 +2438,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   const ledger = openRoutingLedger(stateDir);
   const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
-                                 maximumWorkers, cancelGraceMs,
+                                 maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, ledger,
                                  ledgerStats: ledgerStats ?? ledger.stats, ledgerLog});
   runtime.reconcileRestart();
@@ -2449,7 +2450,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
-               maximumWorkers, cancelGraceMs, transaction, verifierRegistry, ledger, ledgerStats, ledgerLog}) {
+               maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, ledger, ledgerStats, ledgerLog}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -2476,7 +2477,8 @@ class RCCRuntime {
     // settles, even when a timeout has already held the task.
     this.intentControllers = new Map();
     this.installationObservations = new Map();
-    this.poolReservations = new Set(); this.activeWriteWorkspaces = new Set();
+    this.poolReservations = new Set(); this.readPoolReservations = new Map();
+    this.maximumReadWorkersPerPool = maximumReadWorkersPerPool; this.activeWriteWorkspaces = new Set();
     // Per task: the catalog bind instant a pool spread already re-probed.
     this.spreadProbes = new Map();
     this.activeWorkers = 0; this.closed = false; this.stopping = false;
@@ -3534,6 +3536,32 @@ class RCCRuntime {
   _poolKey(candidate) {
     return candidate.quota_pool === 'none' ? null : `${candidate.quota_pool}:${candidate.account_id}`;
   }
+  /** Sharing is bounded to new, independent read-only Codex children of
+   * ONE parent. The durable pool lease still fences every other task and all
+   * writes. A resumed native thread is never used by simultaneous turns. */
+  _readPoolEligible(candidate, task) {
+    if (!(this.maximumReadWorkersPerPool > 1 && task.budget.max_parallel > 1 &&
+        candidate.surface === 'codex' && candidate.transport === 'codex_app_server' &&
+        candidate.scope === 'read_only' && candidate.permission_profile === 'read_only' &&
+        candidate.quota_pool === 'openai_codex' &&
+        (task.native_sessions == null || Object.keys(task.native_sessions).length === 0))) return false;
+    const state = this._load(task.task_id);
+    // _ticket creates fresh side sessions for a real multi-node plan even
+    // when the conversation itself already owns a thread. Do not confuse
+    // that history with concurrent turns on one resumed native thread.
+    const detached = state?.plan?.nodes.length > 1 &&
+      !state.children.some(child => child.continuation != null || child.stage != null);
+    return task.host_context.codex_session_id === null || detached;
+  }
+  _joinReadPool(candidate, task) {
+    if (!this._readPoolEligible(candidate, task)) return false;
+    const key = this._poolKey(candidate), owned = this.readPoolReservations.get(key);
+    if (!owned || owned.taskID !== task.task_id || owned.nodes.size >= this.maximumReadWorkersPerPool) return false;
+    const state = this._load(task.task_id);
+    return state && !state.cancel_requested && !TERMINAL.has(state.state) &&
+      !state.children.some(child => poolKeyOf(child.selected_config) === key &&
+        child.state === 'effects_uncertain' && !settledReadOnly(child));
+  }
   _tryReserve(candidate, task, nodeID) {
     const poolKey = this._poolKey(candidate);
     let workspaceKey = null;
@@ -3542,7 +3570,7 @@ class RCCRuntime {
       catch { throw new RCCRuntimeError('write_workspace_unavailable'); }
     }
     if (this.activeWorkers >= this.maximumWorkers ||
-        (poolKey && this.poolReservations.has(poolKey)) ||
+        (poolKey && this.poolReservations.has(poolKey) && !this._joinReadPool(candidate, task)) ||
         (workspaceKey && this.activeWriteWorkspaces.has(workspaceKey))) return null;
     const lease = this.transaction(() => {
       let pool = poolKey ? this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey) : null;
@@ -3573,20 +3601,36 @@ class RCCRuntime {
     if (lease === 'uncertain_workspace') throw new RCCRuntimeError('write_workspace_effects_uncertain');
     if (lease !== 'owned') return null;
     this.activeWorkers += 1;
-    if (poolKey) this.poolReservations.add(poolKey);
+    if (poolKey) {
+      this.poolReservations.add(poolKey);
+      if (this._readPoolEligible(candidate, task)) {
+        const readers = this.readPoolReservations.get(poolKey);
+        this.readPoolReservations.set(poolKey, {taskID: task.task_id, nodes: new Set([...(readers?.nodes ?? []), nodeID])});
+      }
+    }
     if (workspaceKey) this.activeWriteWorkspaces.add(workspaceKey);
     return {poolKey, workspaceKey, taskID: task.task_id, nodeID};
   }
   _release(reservation) {
     this.activeWorkers -= 1;
-    if (reservation.poolKey) this.poolReservations.delete(reservation.poolKey);
+    if (reservation.poolKey) {
+      const readers = this.readPoolReservations.get(reservation.poolKey);
+      if (readers && readers.taskID === reservation.taskID) {
+        const nodes = new Set(readers.nodes); nodes.delete(reservation.nodeID);
+        if (nodes.size) this.readPoolReservations.set(reservation.poolKey, {...readers, nodes});
+        else { this.readPoolReservations.delete(reservation.poolKey); this.poolReservations.delete(reservation.poolKey); }
+      } else this.poolReservations.delete(reservation.poolKey);
+    }
     if (reservation.workspaceKey) this.activeWriteWorkspaces.delete(reservation.workspaceKey);
     if (reservation.poolKey && !this.closed) {
       const snapshot = this._load(reservation.taskID);
       const child = snapshot?.children.find(c => c.id === reservation.nodeID);
       // A settled read-only attempt releases its pool even when its outcome
       // is effects_uncertain: its process exited and it changed nothing.
-      if (!leaseProtectingChild(child)) {
+      // One sibling finishing must not release the parent's fence while
+      // another sibling is active or an unsettled native turn protects it.
+      if (!this.poolReservations.has(reservation.poolKey) &&
+          !protectedPools(snapshot).has(reservation.poolKey)) {
         this.transaction(() => {
           const released = this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?')
             .run(reservation.poolKey, reservation.taskID).changes;
@@ -3786,7 +3830,7 @@ class RCCRuntime {
           // Independent graded work waits for the busy pool only when the
           // other admitted pool cannot take it now either.
           if (await this._spreadAcrossPools(taskID, snapshot, node, planned)) { reResolved = true; break; }
-          continue;
+          if (!this._joinReadPool(planned, executionTask(snapshot))) continue;
         }
         const resolverNode = this._resolverNode(snapshot, node.id);
         let candidate, fresh;
@@ -3839,8 +3883,16 @@ class RCCRuntime {
               const dispatched = child?.state === 'running' && child.dispatched_at_ms !== null;
               child.state = dispatched ? 'effects_uncertain' : 'held';
               if (dispatched) child.attempt_history.at(-1).state = 'effects_uncertain';
+              // Keep the task observable until already-dispatched siblings
+              // return their own records. The scheduler sees this failed
+              // child and starts nothing new, but a premature parent terminal
+              // would discard those siblings' late results below.
+              const reason = error.code ?? (dispatched ? 'node_execution_unknown' : 'node_pre_dispatch_failed');
+              if (dispatched) child.uncertain_error = reason;
+              else child.hold_reason = reason;
+              if (siblingRunning(state, node.id)) return;
               state.state = dispatched ? 'effects_uncertain' : 'held';
-              state.error = error.code ?? (dispatched ? 'node_execution_unknown' : 'node_pre_dispatch_failed');
+              state.error = reason;
             });
           }).finally(() => { releaseOnce(); active.delete(node.id); });
         active.set(node.id, work);
@@ -4560,8 +4612,11 @@ class RCCRuntime {
           if (!this.closed) this._update(taskID, 'dispatch_effects_uncertain', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             child.state = 'effects_uncertain'; settleDispatchEntry(child, 'effects_uncertain');
+            const reason = error instanceof RCCRuntimeError ? error.code : 'executor_return_unknown';
+            child.uncertain_error = reason;
+            if (siblingRunning(snapshot, node.id)) return;
             snapshot.state = 'effects_uncertain';
-            snapshot.error = error instanceof RCCRuntimeError ? error.code : 'executor_return_unknown';
+            snapshot.error = reason;
           });
           return;
         }
@@ -4737,10 +4792,12 @@ class RCCRuntime {
           child.usage = result.usage ?? null;
           child.attempt_history.at(-1).usage = result.usage ?? null;
           child.finished_at_ms = Date.now();
-          // A no-effect dispatched failure while a sibling runs: the DAG
+          // Any dispatched failure while a sibling runs: the DAG
           // settles the task after that sibling's record is reconciled (its
-          // answer kept, its lease released), with this child's reason.
-          if (child.attempt_history.at(-1).dispatched_failure === 'no_effects' && siblingRunning(snapshot, node.id)) {
+          // answer kept, its lease released), with this child's reason. An
+          // unsettled native turn still quarantines its pool; waiting for the
+          // sibling never supplies a made-up settlement for that turn.
+          if (siblingRunning(snapshot, node.id)) {
             child.uncertain_error = 'dispatched_failure_no_replay'; return;
           }
           snapshot.state = 'effects_uncertain'; snapshot.error = 'dispatched_failure_no_replay';
