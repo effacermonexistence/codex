@@ -28,6 +28,15 @@ Neither failed answer is reclassified as successful by these repairs.
   means byte-exact host-side original-request binding; actual decomposition
   uses bounded nonempty instructions. Historical mixed v1 output remains
   invalid. There is no parser fallback that salvages an invalid answer.
+  A production local grammar probe subsequently exposed another schema/decoder
+  disagreement: a read-only node carried a `paths` annotation that the mixed
+  scope schema offered. The bounded compiler treats only valid, offered
+  annotations as non-adopted metadata; a read-only node always has zero owned
+  paths and read-only execution authority. Unknown fields or unoffered paths
+  remain invalid. The raw failed probe remains a failed observation, not a
+  successful runtime execution. Planner instructions also distinguish execution
+  units from reasoning steps: routine checks and a completion report stay in
+  the same worker unless independent work actually requires another worker.
 * A closed, uniquely targeted supplied-file edit may coexist with preserved
   named-file exclusions. Global no-write requests, conflicting targets and
   unresolved targets remain restricted. An unrelated quote-boundary defect is

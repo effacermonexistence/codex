@@ -207,7 +207,7 @@ export function plannerResponseBinding(task) {
     source_fingerprint: task.source_fingerprint, policy_sha256: task.policy_sha256});
 }
 export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPlannerProtocol,
-  binding = plannerResponseBinding(task), signal, now = Date.now()} = {}) {
+  binding = plannerResponseBinding(task), signal, now = Date.now(), annotationNow = Date.now()} = {}) {
   const abort = () => { if (signal?.aborted) throw new RCCRuntimeError('planner_cancelled'); };
   abort();
   if (!plannerKeys(binding, ['task_id', 'request_sha256', 'source_fingerprint', 'policy_sha256']) ||
@@ -222,6 +222,26 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
   const value = strictCompactJSON(rawText), branches = compactNodeBranches(task, catalog, now);
   const invalid = () => { throw new RCCRuntimeError('planner_compact_plan_invalid'); };
   const refs = task.material_refs ?? [];
+  const offeredWriter = branches.find(b => b.properties.scope.const === 'workspace_write');
+  // In v2's mixed-scope item grammar, paths is a known optional field even
+  // on a read-only entry. It cannot create read-only ownership. Accept only
+  // schema-valid paths one live offered writer row could own, then retain
+  // ZERO owned paths for the read-only node. Never union separate grants or
+  // accept this field when the host offered only read-only execution.
+  const nonAdoptedReadPaths = entry => {
+    const spec = offeredWriter?.properties.owned_paths, paths = entry.paths;
+    if (protocol !== COMPACT_PLANNER_PROTOCOL || !Number.isSafeInteger(annotationNow) || annotationNow < 0 ||
+        !spec || !Array.isArray(paths) ||
+        paths.length < spec.minItems || paths.length > spec.maxItems ||
+        paths.some(path => typeof path !== 'string' || !path || Buffer.byteLength(path) > 512 ||
+          path.includes('\0') || (spec.items.enum && !spec.items.enum.includes(path)) ||
+          (path !== '**' && (isAbsolute(path) || path.startsWith('~') || path.includes('\\') ||
+            path.split('/').some(part => !part || part === '.' || part === '..'))))) return false;
+    return catalog.candidates.some(row => row.scope === 'workspace_write' && row.permission_profile === 'workspace_write' &&
+      !['chatgpt', 'gpt-chat'].includes(row.surface) && dispatchable(row, task, annotationNow) &&
+      Array.isArray(row.allowed_paths) && (row.allowed_paths.includes('**') ||
+        paths.every(path => row.allowed_paths.some(allowed => path === allowed || path.startsWith(allowed + '/')))));
+  };
   const compile = (entry, {id, instruction, dependencies = []}) => {
     if (!ROUTE_CLASSES.includes(entry.grade)) invalid();
     const branch = branches.find(b => b.properties.scope.const === entry.scope);
@@ -233,7 +253,7 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
       paths = entry.paths; const spec = branch.properties.owned_paths;
       if (!Array.isArray(paths) || paths.length < spec.minItems || paths.length > spec.maxItems ||
           paths.some(path => typeof path !== 'string' || !path || (spec.items.enum && !spec.items.enum.includes(path)))) invalid();
-    }
+    } else if (Object.hasOwn(entry, 'paths') && !nonAdoptedReadPaths(entry)) invalid();
     let indices = [];
     if (refs.length > 0) {
       indices = entry.refs;
@@ -249,7 +269,8 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
     if (!branch) return false;
     return plannerKeys(entry, [...required, 'grade', 'scope',
       ...(branch.properties.kind.const === 'agent' ? [] : ['kind']),
-      ...(scope === 'workspace_write' ? ['paths'] : []), ...(refs.length ? ['refs'] : [])]);
+      ...(scope === 'workspace_write' ? ['paths'] : []), ...(refs.length ? ['refs'] : [])],
+      protocol === COMPACT_PLANNER_PROTOCOL && scope === 'read_only' && offeredWriter ? ['paths'] : []);
   };
   let nodes, final;
   if (task.mode === 'explicit_routing_test') {
@@ -577,6 +598,7 @@ function compactPlannerInstructions(base, explicit, copyOriginal) {
       (copyOriginal ? 'For ANY unsplit original task you MUST use {"nodes":[{"instruction":"","grade":"trivial|standard|deep","scope":"read_only|workspace_write","deps":[]}]}; the empty instruction makes the host preserve the original request byte for byte. Do not repeat or rephrase the original. ' :
         'This original request exceeds the node instruction byte bound, so an empty copy instruction is unavailable. Keep its full source in the input; use bounded actual subtask instructions, never truncate source to make an atomic node fit. ') +
       'For genuine decomposition use the SAME nodes envelope with at least two genuinely separate nonempty subtask instructions and zero-based dependency indices; optional final is a node index. Never mix an empty copy instruction with a decomposition. Do not emit source or root-level grade/scope. Do not force an atomic task when decomposition is needed. ') +
+    'An execution unit is not a reasoning step: keep an implementation, its routine checks and its completion report in the SAME worker. Do not create a separate completion-note or formatting worker unless it requires genuinely independent verification or external work. ' +
     'Include kind only if the schema requires a choice. Writers must supply paths exactly within the offered ownership schema; no implicit write grant. When materials exist, supply refs as the chosen zero-based indices in material_refs, including [] for an intentionally empty selection. Otherwise omit empty fields.';
 }
 export function buildBoundedPlannerInput({task, catalog, feedback = {}, policyText, now = Date.now(),

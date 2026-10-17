@@ -55,7 +55,7 @@ function catalog(t, {write = false, narrow = false, legacy = false, now = NOW} =
 }
 function decode(value, t = task(), rows = catalog(t), extras = {}) {
   return decodePlannerResponse(typeof value === 'string' ? value : JSON.stringify(value),
-    {task: t, catalog: rows, protocol: COMPACT_PLANNER_PROTOCOL, now: NOW, ...extras});
+    {task: t, catalog: rows, protocol: COMPACT_PLANNER_PROTOCOL, now: NOW, annotationNow: NOW, ...extras});
 }
 function normalizedNode(instruction, extra = {}) {
   return {id: 'node_0', instruction, dependencies: [], kind: 'agent', route_class: 'trivial',
@@ -227,6 +227,71 @@ test('writes require offered scope and explicit paths; compact output grants no 
   assert.deepEqual(expanded.nodes[0].owned_paths, ['Sources/one.swift']);
   assert.throws(() => resolveRoutePlan(decode(wire, write, narrow), write, narrow, NOW), /no_dispatchable_candidate/);
   assert.throws(() => decode(atomicWith({scope: 'workspace_write', paths: []}), write, narrow), /planner_compact/);
+});
+
+test('derived mixed-scope annotation compiles with ZERO read-only ownership; historical failure is not a rerun', () => {
+  // Derived from the one local 396 probe, whose raw/error remain private and
+  // FAILED. This is a deterministic compiler regression, not model success.
+  const t = task('/tmp/fixture', {write: true}), rows = catalog(t, {write: true});
+  const wire = {nodes: [
+    {instruction: 'Create the one declared synthetic artifact.', grade: 'standard', scope: 'workspace_write', deps: [], paths: ['**']},
+    {instruction: 'Return the completion report.', grade: 'trivial', scope: 'read_only', deps: [0], paths: ['**']}
+  ]};
+  const before = structuredClone(wire), compiled = decode(wire, t, rows);
+  assert.deepEqual(compiled.nodes.map(n => [n.scope, n.owned_paths]), [['workspace_write', ['**']], ['read_only', []]]);
+  assert.deepEqual(wire, before, 'raw annotation is preserved, never rewritten into authority');
+  const resolved = resolveRoutePlan(compiled, t, rows, NOW);
+  const reader = rows.candidates.find(c => c.id === resolved.plan.nodes[1].candidate_id);
+  assert.equal(reader.scope, 'read_only'); assert.equal(reader.permission_profile, 'read_only');
+  assert.deepEqual(resolved.plan.nodes[1].owned_paths, []);
+  const historical = {source: 'dag', ...wire};
+  assert.throws(() => decode(historical, t, rows, {protocol: 'os1-compact-plan-v1'}), /planner_compact/);
+  const input = buildBoundedPlannerInput({task: t, catalog: rows, policyText: t.policy.text,
+    wireProtocol: COMPACT_PLANNER_PROTOCOL, now: NOW});
+  assert.ok(input.instructions.includes('An execution unit is not a reasoning step'));
+  assert.ok(input.instructions.includes('routine checks and its completion report in the SAME worker'));
+});
+
+test('optional RO paths require an offered mixed-scope field, one live covering writer, and unchanged RO permissions', () => {
+  const read = task(), write = task('/tmp/fixture', {write: true});
+  const annotated = atomicWith({paths: ['**']});
+  assert.throws(() => decode(annotated, read, catalog(read, {write: true})), /planner_compact/,
+    'global read-only constraint cannot be overridden even by a catalog containing writer rows');
+  assert.throws(() => decode(annotated, write, catalog(write)), /planner_compact/, 'RO-only offered catalog has no paths field');
+  const narrow = catalog(write, {write: true, narrow: true});
+  assert.deepEqual(decode(atomicWith({paths: ['Sources/one.swift']}), write, narrow).nodes[0].owned_paths, []);
+  for (const paths of [null, 'Sources', [], [false], [0], [{}], [''], ['/tmp/outside'], ['~/outside'], ['..'],
+    ['Sources/../secret'], ['Sources//file'], ['Sources\\file'], ['Sources/./file'], ['Sources/\0file'],
+    ['Sources/' + '한'.repeat(169)], ['elsewhere/file'], ['**'], Array(65).fill('Sources/file')])
+    assert.throws(() => decode(atomicWith({paths}), write, narrow), /planner_compact/);
+  const split = structuredClone(narrow);
+  split.candidates.find(c => c.id === 'codex-writer').allowed_paths = ['Sources/A'];
+  split.candidates.push({...row('other-writer', 'codex', 'gpt-6-astra', 'ultra', 'workspace_write', ['Sources/B'])});
+  assert.deepEqual(decode(atomicWith({paths: ['Sources/A/file']}), write, split).nodes[0].owned_paths, []);
+  assert.throws(() => decode(atomicWith({paths: ['Sources/A/file', 'Sources/B/file']}), write, split), /planner_compact/,
+    'independent writer grants cannot be unioned');
+  const wildcard = structuredClone(split);
+  wildcard.candidates.push({...row('whole-writer', 'codex', 'gpt-6-astra', 'ultra', 'workspace_write', ['**'])});
+  assert.deepEqual(decode(atomicWith({paths: ['README.md', 'notes.txt']}), write, wildcard).nodes[0].owned_paths, [],
+    'one wildcard writer covers the entire set when the mixed writer schema permits concrete paths');
+  assert.throws(() => decode(atomicWith({paths: ['Sources/A/file']}), write, split,
+    {annotationNow: NOW + 300_000}), /planner_compact/,
+    'live annotation coverage must not inherit the old frozen route-grading timestamp');
+  for (const annotationNow of [-1, NaN, Infinity, 1.5])
+    assert.throws(() => decode(atomicWith({paths: ['Sources/A/file']}), write, split, {annotationNow}), /planner_compact/);
+  for (const mutate of [c => { c.availability_valid_until_ms = NOW; }, c => { c.availability = 'unknown'; },
+    c => { c.quota_remaining_fraction = 0; }, c => { c.quota_valid_until_ms = NOW; },
+    c => { c.quality_state = 'mismatch'; }, c => { c.permission_profile = 'read_only'; }]) {
+    const unavailable = structuredClone(split); mutate(unavailable.candidates.find(c => c.id === 'codex-writer'));
+    assert.throws(() => decode(atomicWith({paths: ['Sources/A/file']}), write, unavailable), /planner_compact/);
+  }
+  for (const injection of [{candidate_id: 'codex-writer'}, {permission_profile: 'workspace_write'},
+    {model: 'gpt-6-astra'}, {account_id: 'another-account'}, {owned_paths: ['**']}])
+    assert.throws(() => decode(atomicWith({paths: ['Sources/one.swift'], ...injection}), write, narrow), /planner_compact/);
+  const materials = task('/tmp/fixture', {write: true, refs: ['protected-source']});
+  assert.throws(() => decode(atomicWith({paths: ['**'], refs: [1]}), materials, catalog(materials, {write: true})), /planner_compact/);
+  const controller = new AbortController(); controller.abort();
+  assert.throws(() => decode(annotated, write, catalog(write, {write: true}), {signal: controller.signal}), /planner_cancelled/);
 });
 
 test('agent versus exact deterministic execution remains a real choice when the host offers both', () => {

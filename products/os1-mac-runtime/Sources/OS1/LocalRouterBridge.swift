@@ -80,7 +80,7 @@ enum LocalRouterBridge {
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
     static let rccRuntimeModuleSHA256 = "df66649c53289780f90518fc273d852039390ab4b6db7c9633d16a4961b2cabc"
-    static let rccRuntimePluginSHA256 = "fa471ad432a37acc2abcb5d050602850d42578bb5d58e83d4494edee463b624c"
+    static let rccRuntimePluginSHA256 = "e2a2380c63e0a39ea31a59746975154dd26c0639855c384804b39a8100e2a990"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"
