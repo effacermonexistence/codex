@@ -100,6 +100,132 @@ func runOpenClawAgentControllerFixture() throws {
     let defaults = (config["agents"] as! [String: Any])["defaults"] as! [String: Any]
     try check(defaults["contextInjection"] as? String == "never", "no ambient bootstrap")
     try check((defaults["model"] as! [String: Any])["fallbacks"] as? [String] == [], "no hosted fallback")
+    // Use the real constructor, not the richer JSON template: it deliberately
+    // has no agents.defaults.models override map (build393 warmup regression).
+    let residencyInput = try JSONSerialization.jsonObject(with: C.configBytes(
+        pluginDirectory: "/signed/OS1/OpenClawBridge", workspace: "/private/os1/workspace")) as! [String: Any]
+    typealias Residency = RCCModelResidencyConfiguration
+    func canonical(_ value: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+    }
+    func residencyRow(_ value: [String: Any]) -> [String: Any]? {
+        let providers = (value["models"] as? [String: Any])?["providers"] as? [String: Any]
+        let rows = (providers?["ollama"] as? [String: Any])?["models"] as? [[String: Any]]
+        return rows?.first(where: { $0["id"] as? String == Residency.modelID })
+    }
+    let inputBytes = try canonical(residencyInput)
+    let resident = try Residency.applying(to: residencyInput)
+    let residentDefaults = (resident["agents"] as? [String: Any])?["defaults"] as? [String: Any]
+    try check(defaults["models"] == nil && residentDefaults?["models"] == nil,
+              "actual constructor without agent override remains valid and no override is manufactured")
+    try check((residencyRow(resident)?["params"] as? [String: Any])?["keep_alive"] as? String == "30m",
+              "only the actual RCC provider row gets finite thirty-minute residency")
+    try check(try canonical(residencyInput) == inputBytes, "residency transformation cannot mutate its input")
+    var expectedResidency = residencyInput
+    var expectedModels = expectedResidency["models"] as! [String: Any]
+    var expectedProviders = expectedModels["providers"] as! [String: Any]
+    var expectedOllama = expectedProviders["ollama"] as! [String: Any]
+    var expectedRows = expectedOllama["models"] as! [[String: Any]]
+    var expectedParams = expectedRows[0]["params"] as! [String: Any]
+    expectedParams["keep_alive"] = "30m"; expectedRows[0]["params"] = expectedParams
+    expectedOllama["models"] = expectedRows; expectedProviders["ollama"] = expectedOllama
+    expectedModels["providers"] = expectedProviders; expectedResidency["models"] = expectedModels
+    try check(try canonical(resident) == canonical(expectedResidency),
+              "provider residency changes no unrelated context, tools, permissions, policy or fallback values")
+    var overridden = residencyInput
+    var overriddenAgents = overridden["agents"] as! [String: Any]
+    var overriddenDefaults = overriddenAgents["defaults"] as! [String: Any]
+    overriddenDefaults["models"] = ["ollama/qwen3.5:4b": ["params": ["keep_alive": "5m", "temperature": 0], "alias": "router"],
+                                    "ollama/other": ["params": ["keep_alive": "2m"], "alias": "unrelated"]]
+    overriddenAgents["defaults"] = overriddenDefaults; overridden["agents"] = overriddenAgents
+    var extraModels = overridden["models"] as! [String: Any]
+    var extraProviders = extraModels["providers"] as! [String: Any]
+    var extraOllama = extraProviders["ollama"] as! [String: Any]
+    var extraRows = extraOllama["models"] as! [[String: Any]]
+    extraRows.append(["id": "other", "params": ["keep_alive": "1m", "temperature": 0.4]])
+    extraOllama["models"] = extraRows; extraProviders["ollama"] = extraOllama
+    extraProviders["other-provider"] = ["models": [["id": "qwen3.5:4b", "params": ["keep_alive": "1m"]]]]
+    extraModels["providers"] = extraProviders; overridden["models"] = extraModels
+    overridden["global-keep-alive"] = "unchanged"
+    let withOverride = try Residency.applying(to: overridden)
+    let appliedOverrides = (((withOverride["agents"] as? [String: Any])?["defaults"] as? [String: Any])?["models"] as? [String: Any]) ?? [:]
+    let appliedRouter = appliedOverrides["ollama/qwen3.5:4b"] as? [String: Any]
+    try check((appliedRouter?["params"] as? [String: Any])?["keep_alive"] as? String == "30m" &&
+              appliedRouter?["alias"] as? String == "router" &&
+              (appliedRouter?["params"] as? [String: Any])?["temperature"] as? Int == 0,
+              "existing exact agent model override is normalized without replacing its other parameters")
+    try check(try canonical(appliedOverrides["ollama/other"] as! [String: Any]) ==
+              canonical((overriddenDefaults["models"] as! [String: Any])["ollama/other"] as! [String: Any]) &&
+              withOverride["global-keep-alive"] as? String == "unchanged",
+              "unrelated agent model and global residency fields are preserved")
+    try check(try canonical((withOverride["models"] as! [String: Any])["providers"] as! [String: Any]) !=
+              canonical(extraProviders) &&
+              canonical(((withOverride["models"] as! [String: Any])["providers"] as! [String: Any])["other-provider"] as! [String: Any]) ==
+              canonical(extraProviders["other-provider"] as! [String: Any]),
+              "only Ollama provider changes; unrelated provider is byte-equivalent")
+    for missing in ["agents", "defaults", "models", "row", "params"] {
+        var value = residencyInput
+        if missing == "agents" { value.removeValue(forKey: "agents") }
+        else if missing == "defaults" { value["agents"] = [:] as [String: Any] }
+        else {
+            var a = value["agents"] as! [String: Any], d = a["defaults"] as! [String: Any]
+            if missing == "row" { d["models"] = ["ollama/other": ["params": ["keep_alive": "2m"]]] }
+            if missing == "params" { d["models"] = ["ollama/qwen3.5:4b": ["alias": "router"]] }
+            a["defaults"] = d; value["agents"] = a
+        }
+        let applied = try Residency.applying(to: value)
+        try check((residencyRow(applied)?["params"] as? [String: Any])?["keep_alive"] as? String == "30m",
+                  "optional absent (missing) does not trap or prevent provider normalization")
+        if missing != "params" {
+            try check((try canonical(applied["agents"] as? [String: Any] ?? [:])) ==
+                      canonical(value["agents"] as? [String: Any] ?? [:]), "absent optional (missing) creates no override")
+        }
+    }
+    func residencyRejects(_ label: String, _ mutation: (inout [String: Any]) -> Void) throws {
+        var value = overridden; mutation(&value)
+        do { _ = try Residency.applying(to: value) }
+        catch is Residency.Failure { checks += 1; return }
+        throw NSError(domain: "OpenClawAgentControllerFixture", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "malformed residency accepted: " + label])
+    }
+    for key in ["models", "agents"] {
+        try residencyRejects(key) { $0[key] = NSNull() }
+    }
+    try residencyRejects("providers") { value in
+        var m = value["models"] as! [String: Any]; m["providers"] = []; value["models"] = m
+    }
+    try residencyRejects("Ollama provider") { value in
+        var m = value["models"] as! [String: Any], p = m["providers"] as! [String: Any]
+        p["ollama"] = "wrong"; m["providers"] = p; value["models"] = m
+    }
+    for field in ["rows", "params", "missing", "duplicate"] {
+        try residencyRejects(field) { value in
+            var m = value["models"] as! [String: Any], p = m["providers"] as! [String: Any], o = p["ollama"] as! [String: Any]
+            var rows = o["models"] as! [[String: Any]]
+            if field == "rows" { o["models"] = ["wrong"] }
+            else {
+                if field == "params" { rows[0]["params"] = [] }
+                if field == "missing" { rows.removeFirst() }
+                if field == "duplicate" { rows.append(rows[0]) }
+                o["models"] = rows
+            }
+            p["ollama"] = o; m["providers"] = p; value["models"] = m
+        }
+    }
+    for field in ["defaults", "models", "row", "params"] {
+        try residencyRejects("agent " + field) { value in
+            var a = value["agents"] as! [String: Any]
+            if field == "defaults" { a["defaults"] = "wrong" }
+            else {
+                var d = a["defaults"] as! [String: Any]
+                if field == "models" { d["models"] = [] }
+                if field == "row" { d["models"] = ["ollama/qwen3.5:4b": NSNull()] }
+                if field == "params" { d["models"] = ["ollama/qwen3.5:4b": ["params": NSNull()]] }
+                a["defaults"] = d
+            }
+            value["agents"] = a
+        }
+    }
     func envelope(_ overrides: [String: Any] = [:]) throws -> Data {
         var value: [String: Any] = ["ok": true, "status": "ok", "final": "Candidate only",
                                     "provider": "ollama", "model": C.model, "sessionId": "ephemeral-id",

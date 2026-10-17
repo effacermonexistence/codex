@@ -99,11 +99,10 @@ check("createRCCRuntime" not in CLIENT and "runTaskWithOwnerPolicy" not in CLIEN
       "Swift transport never becomes an independent core/scheduler")
 check("_validateExecution" in RUNTIME and "selected_config" in RUNTIME and "configuration_sha256" in RUNTIME,
       "same runtime reconciles exact configured execution records")
-check('parameters["keep_alive"] = "30m"' in BRIDGE and
-      'routerParameters["keep_alive"] = "30m"' in BRIDGE and
-      'agentModels["ollama/" + model] = routerModel' in BRIDGE and
+check("config = try RCCModelResidencyConfiguration.applying(to: config)" in BRIDGE and
+      'defaults["models"] as!' not in BRIDGE and
       "OLLAMA_KEEP_ALIVE" not in BRIDGE,
-      "finite private RCC model residency covers overriding agent params without changing global Ollama settings")
+      "finite private RCC residency uses the actual optional-constructor helper, never a template forced cast")
 native = section(MAIN, "private func rccNativeAdapter(", "func runOpenClawRCCTask(")
 preparation = section(native, "let observations = try RCCNativePreparation.collect(", "let supported = ")
 check('provider: provider, codex: {' in preparation and '}, claude: {' in preparation and
