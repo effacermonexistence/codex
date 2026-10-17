@@ -25,5 +25,8 @@ export type AttemptCommand = {
 export type AttemptLease = { execution_deadline: number; submission_deadline: number };
 // Public operational deadlines, not model selection weights. Start is single-use
 // and retries return the original deadlines; no sliding refresh or new authority.
-export const EXECUTION_WINDOW_MS = 1_800_000;
+// Four hours is the ceiling for one attempt that keeps working; the device stops
+// a silent backend much earlier. A 30-minute window cut seven real owner tasks
+// while they were still streaming (2026-09-15..09-23).
+export const EXECUTION_WINDOW_MS = 14_400_000;
 export const SUBMISSION_GRACE_MS = 86_400_000;

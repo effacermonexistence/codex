@@ -157,16 +157,30 @@ struct ActiveCodexCatalog {
 
 /// Health of the local backends as this preflight observed them. The Claude
 /// login probe runs only when the catalog came back empty; a populated
-/// catalog is proof of a usable backend on its own.
+/// catalog is proof of a usable backend on its own. `claudeLimitedOnly` is set
+/// only when the native inventory answered and model-scoped limits alone
+/// emptied the catalog; a failed probe is never reported as a quota wait.
 func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog: ActiveCodexCatalog,
-                           workspace: String, now: Date = Date()) -> BackendHealth {
+                           workspace: String, claudeLimitedOnly: Bool = false,
+                           receipts: URL = ClaudeQuotaBackoff.defaultDirectory,
+                           authProbe: ((String) -> ModelAvailability.ClaudeAuthProbe)? = nil,
+                           now: Date = Date()) -> BackendHealth {
     let claude: BackendHealth.Backend
-    if !claudeCatalog.isEmpty {
-        claude = BackendHealth.Backend(state: .usable)
+    let modelLimited = ClaudeQuotaBackoff.activeModels(directory: receipts, now: now).joined(separator: ", ")
+    if ClaudeQuotaBackoff.active(at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now) != nil {
+        claude = BackendHealth.Backend(state: .quotaExhausted,
+            detail: "최근 실행에서 한도 거절됨 · 5분 재시도 간격 적용, 실제 한도 복구 시각은 미확인")
+    } else if !claudeCatalog.isEmpty {
+        claude = BackendHealth.Backend(state: .usable,
+            detail: modelLimited.isEmpty ? nil : "모델별 한도로 \(modelLimited) 제외 · 나머지 Claude 모델 사용 가능")
+    } else if claudeLimitedOnly, !modelLimited.isEmpty {
+        claude = BackendHealth.Backend(state: .quotaExhausted,
+            detail: "모델별 한도(\(modelLimited))로 실행 가능한 Claude 모델 없음 · 1시간 재확인, 실제 복구 시각은 미확인")
     } else {
-        switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
-        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함")
-        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "OAuth 세션 만료 또는 로그아웃")
+        switch (authProbe ?? ModelAvailability.claudeAuthProbe)(workspace) {
+        case .loggedIn: claude = BackendHealth.Backend(state: .probeFailed, detail: "로그인은 유효하지만 사용 가능한 모델 목록을 받지 못함"
+            + (modelLimited.isEmpty ? "" : " · 모델별 한도 기록: \(modelLimited)"))
+        case .loggedOut: claude = BackendHealth.Backend(state: .loggedOut, detail: "현재 Claude CLI가 loggedIn=false를 반환함; 원인과 만료 여부는 미확인")
         case .missing: claude = BackendHealth.Backend(state: .missing, detail: "claude 실행 파일 없음")
         case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
         }
@@ -175,6 +189,35 @@ func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog:
         resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil,
         window: codexCatalog.quotaWindow)
     return BackendHealth(claude: claude, codex: codex, checkedAt: now)
+}
+
+/// The health label may blame a model-scoped limit only when the inventory
+/// answered and those limits alone emptied the catalog. Isolated receipts;
+/// no login probe, no model call.
+func backendHealthLabelSelfTest() throws {
+    let receipts = FileManager.default.temporaryDirectory.appendingPathComponent("os1-health-label-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: receipts) }
+    try ClaudeQuotaBackoff.record(model: "fable", directory: receipts)
+    let codex = ActiveCodexCatalog(models: [], source: "self-test")
+    var probes = 0
+    let loggedIn: (String) -> ModelAvailability.ClaudeAuthProbe = { _ in probes += 1; return .loggedIn(nil) }
+    func health(_ catalog: [ClaudeModelCapability], limitedOnly: Bool) -> BackendHealth.Backend {
+        observedBackendHealth(claudeCatalog: catalog, codexCatalog: codex, workspace: receipts.path,
+                              claudeLimitedOnly: limitedOnly, receipts: receipts, authProbe: loggedIn).claude
+    }
+    let limited = health([], limitedOnly: true)
+    let probeFailed = health([], limitedOnly: false)
+    let usable = health([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limitedOnly: false)
+    try ClaudeQuotaBackoff.record(at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent))
+    let account = health([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limitedOnly: false)
+    let checks = [
+        limited.state == .quotaExhausted, limited.detail?.contains("모델별 한도(fable)") == true,
+        probeFailed.state == .probeFailed, probeFailed.detail?.contains("모델별 한도 기록: fable") == true,
+        usable.state == .usable, usable.detail?.contains("fable 제외") == true,
+        account.state == .quotaExhausted, account.detail?.contains("5분") == true, probes == 1,
+    ]
+    guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Backend health label regression failed") }
+    print("Backend health label: \(checks.count) checks OK; failed inventory never reported as a model-limit wait")
 }
 
 /// Full read-only probe of both backends (native metadata only, no inference).
@@ -187,8 +230,9 @@ func probeBackendHealth(workspace: String, config: RuntimeConfig) -> BackendHeal
         ? ((try? ModelAvailability.codexCatalog(workspace: workspace, config: config))
             ?? ActiveCodexCatalog(models: [], source: "native account metadata unavailable"))
         : ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
-    let claude = (try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? []
-    let health = observedBackendHealth(claudeCatalog: claude, codexCatalog: codex, workspace: workspace)
+    let claude = (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config)) ?? (configured: [], routable: [])
+    let health = observedBackendHealth(claudeCatalog: claude.routable, codexCatalog: codex, workspace: workspace,
+                                       claudeLimitedOnly: !claude.configured.isEmpty && claude.routable.isEmpty)
     try? health.save()
     return health
 }
@@ -203,17 +247,18 @@ func selfRepairBackends(health: BackendHealth, codexCatalog: ActiveCodexCatalog,
                         reconnect: () throws -> String = verifyClaudeConnection,
                         claudeCatalog: () -> [ClaudeModelCapability]? = { nil })
     -> (catalogs: (claude: [ClaudeModelCapability], codex: ActiveCodexCatalog)?, note: String?) {
+    guard !health.anyUsable else { return (nil, nil) }
     var notes: [String] = []
     for step in health.repairSteps {
         switch step {
         case .reconnectClaude:
             guard environment["OS1_ALLOW_AUTHENTICATION"] == "1" else {
-                notes.append("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱에서 같은 요청을 보내거나 터미널에서 `claude auth login`을 실행하세요.")
+                notes.append("이 실행 환경에서는 공식 로그인 창을 열 수 없습니다. OS-1 앱 왼쪽 CLAUDE 타일에서 로그인하거나 `os1 accounts login --provider claude`를 실행하세요.")
                 continue
             }
             RuntimeActivity.emit(.authorizing,
-                publicText: os1Tr("Claude 로그인이 만료됐고 다른 백엔드가 없어 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 팝업에 붙여넣으면 같은 요청을 이어서 실행합니다.",
-                                  "Claude's sign-in expired and no other backend is available, so the official Claude sign-in is opening. Approve in the browser, paste the code into the dialog, and this request continues."),
+                publicText: os1Tr("Claude CLI에 활성 로그인이 확인되지 않고 다른 백엔드가 없어 공식 Claude 로그인을 엽니다. 브라우저 승인 후 표시된 코드를 팝업에 붙여넣으면 같은 요청을 이어서 실행합니다.",
+                                  "Claude CLI reports no active sign-in and no other backend is available, so the official Claude sign-in is opening. Approve in the browser, paste the code into the dialog, and this request continues."),
                 tool: "claude")
             do {
                 let verified = try reconnect()
@@ -254,10 +299,30 @@ func executableCodexCatalog(_ catalog: ActiveCodexCatalog, config: RuntimeConfig
                               quotaWindow: catalog.quotaWindow)
 }
 
+/// Why the Claude Code rail cannot run, with the owner's fix when there is
+/// one. The Claude app's own Code tab is signed in separately; OS-1 runs the
+/// Claude Code CLI on this Mac, which has its own sign-in.
+func claudeUnavailableDescription(workspace: String) -> String? {
+    switch ModelAvailability.claudeAuthProbe(workspace: workspace) {
+    case .loggedOut:
+        let account = BackendAccounts.active(provider: "claude", in: BackendAccountState.shared.book())
+        return os1Tr("Claude 계정(\(account.label))이 로그아웃 상태입니다 · 왼쪽 CLAUDE 타일에서 로그인하면 Claude로 실행됩니다",
+                     "the Claude account (\(account.label)) is signed out · sign in from the CLAUDE tile on the left and Claude runs again")
+    case .missing:
+        return os1Tr("claude 실행 파일이 없습니다", "the claude executable is missing")
+    case .loggedIn:
+        let limited = ClaudeQuotaBackoff.activeModels().joined(separator: ", ")
+        return limited.isEmpty ? nil : os1Tr("모델별 한도: \(limited)", "model limits: \(limited)")
+    case .failed(let detail):
+        return detail
+    }
+}
+
 func executableProviderPreference(requested: String, prompt: String, codexAvailable: Bool,
                                   claudeAvailable: Bool, localAvailable: Bool = false,
                                   evidenceSupplied: Bool = false, scope: TaskContext.Scope? = nil,
-                                  codexUnavailableReason: String? = nil) throws -> String {
+                                  codexUnavailableReason: String? = nil,
+                                  claudeUnavailableReason: (() -> String?)? = nil) throws -> String {
     // Only the read-only Claude lane lacks a shell. When OS-1 itself supplies
     // the verified evidence, or the ticket carries a write profile, the
     // objective is not shell-bound and either backend may execute it.
@@ -276,10 +341,13 @@ func executableProviderPreference(requested: String, prompt: String, codexAvaila
     }
     if constrained == "claude" {
         if claudeAvailable { return "claude" }
+        // Asked only here: the owner named Claude and it is missing, so say
+        // why and how to bring it back instead of a bare switch notice.
+        let why = claudeUnavailableReason?().map { " (\($0))" } ?? ""
         guard codexAvailable else {
-            throw OS1Error.message("선택한 Claude 실행 환경이 없고 Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
+            throw OS1Error.message("선택한 Claude 실행 환경이 없고\(why) Codex 실행 환경도 없습니다. 모델 호출 없이 사전 검사에서 중단했으며 요청은 보존했습니다.")
         }
-        RuntimeActivity.emit(.routing, publicText: "Claude를 사용할 수 없어 이 작업을 Codex로 수행합니다.")
+        RuntimeActivity.emit(.routing, publicText: "Claude를 사용할 수 없어\(why) 이 작업을 Codex로 수행합니다.")
         return "codex"
     }
     if !codexAvailable && !claudeAvailable && localAvailable { return "auto" }
@@ -294,6 +362,9 @@ struct RuntimeConfig: Codable {
     let ticketVerifyingKeyRaw: String
     let maximumSteps: Int
     let executionTimeoutSeconds: Int
+    /// Seconds a provider may stay silent before its attempt stops; the
+    /// attempt itself may run up to `executionTimeoutSeconds` while active.
+    var executionIdleTimeoutSeconds: Int? = nil
     let modelProfiles: ModelProfiles?
     let effortProfiles: EffortProfiles?
     let executionProfiles: [String: RoutedExecutionProfile]?
@@ -309,6 +380,7 @@ struct RuntimeConfig: Codable {
         case ticketVerifyingKeyRaw = "ticket_verifying_key_raw"
         case maximumSteps = "maximum_steps"
         case executionTimeoutSeconds = "execution_timeout_seconds"
+        case executionIdleTimeoutSeconds = "execution_idle_timeout_seconds"
         case modelProfiles = "model_profiles"
         case effortProfiles = "effort_profiles"
         case executionProfiles = "execution_profiles"
@@ -319,6 +391,10 @@ struct RuntimeConfig: Codable {
         case exoStartupTimeoutSeconds = "exo_startup_timeout_seconds"
         case exoMaximumOutputTokens = "exo_maximum_output_tokens"
     }
+
+    /// An older config without the idle key keeps its single cap as the
+    /// quiet limit, so nothing it allowed before is stopped earlier.
+    var providerIdleTimeoutSeconds: Int { executionIdleTimeoutSeconds ?? executionTimeoutSeconds }
 
     private static func executableURL() -> URL {
         var size: UInt32 = 0
@@ -359,6 +435,7 @@ struct RuntimeConfig: Codable {
             guard URL(string: value.apiURL)?.scheme == "https",
                   value.maximumSteps >= 1, value.maximumSteps <= 4,
                   value.executionTimeoutSeconds >= 60,
+                  value.executionIdleTimeoutSeconds.map({ (60...value.executionTimeoutSeconds).contains($0) }) ?? true,
                   value.modelProfiles.map({ profiles in
                       [
                           profiles.codex.standard,
@@ -479,17 +556,58 @@ struct ArtifactUpload: Codable {
     }
 }
 
+/// Tokens a step spent, signed with its result so the route core can charge
+/// them to the route that ran (route learning schema 2). Counts only.
+struct StepUsage: Codable, Equatable {
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let cacheTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cacheTokens = "cache_tokens"
+    }
+
+    /// The gateway requires all three keys; an unmeasured count is null.
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        if let inputTokens { try values.encode(inputTokens, forKey: .inputTokens) } else { try values.encodeNil(forKey: .inputTokens) }
+        if let outputTokens { try values.encode(outputTokens, forKey: .outputTokens) } else { try values.encodeNil(forKey: .outputTokens) }
+        if let cacheTokens { try values.encode(cacheTokens, forKey: .cacheTokens) } else { try values.encodeNil(forKey: .cacheTokens) }
+    }
+
+    /// The same trust rule completion feedback uses: Codex counts only from
+    /// the deduplicated rollout accounting (v2); Claude's result counts as is.
+    static func measured(_ usage: CompletionMeasuredUsage?, provider: String) -> StepUsage? {
+        guard let usage, provider == "claude" || provider == "codex" else { return nil }
+        if provider == "codex", !(usage.resource.format == .codexRolloutJSONL && usage.resource.accountingVersion == 2) {
+            return nil
+        }
+        let limit = 10_000_000_000
+        func bounded(_ value: Int?) -> Int? { value.flatMap { (0...limit).contains($0) ? $0 : nil } }
+        let input = bounded(usage.inputTokens), output = bounded(usage.outputTokens)
+        var cache = bounded(usage.cacheTokens)
+        if let value = cache, let input, value > input { cache = input }
+        guard input != nil || output != nil, (input ?? 0) + (output ?? 0) > 0 else { return nil }
+        return StepUsage(inputTokens: input, outputTokens: output, cacheTokens: cache)
+    }
+}
+
 struct ResultSubmission: Codable {
     let ticket: Ticket
     let resultHash: String
     let artifactRef: String
     let deviceSignature: String
+    /// Present only on an os1-result-v2 submission.
+    var usage: StepUsage? = nil
 
     enum CodingKeys: String, CodingKey {
         case ticket
         case resultHash = "result_hash"
         case artifactRef = "artifact_ref"
         case deviceSignature = "device_signature"
+        case usage
     }
 }
 
@@ -649,6 +767,7 @@ struct RunStepSummary: Codable {
     let durationMS: Int64
     let nativeRecord: NativeRecordEvidence?
     var workflowStage: String? = nil
+    var verifiedPreviewDelivery: VerifiedPreviewDelivery? = nil
     var ownerPolicySourceSHA256: String? = OwnerPolicyContext.snapshot?.sourceSHA256
     var ownerPolicyProjectionSHA256: String? = OwnerPolicyContext.snapshot?.projectionSHA256
 
@@ -660,6 +779,7 @@ struct RunStepSummary: Codable {
         case exitCode = "exit_code"
         case durationMS = "duration_ms"
         case nativeRecord = "native_record"
+        case verifiedPreviewDelivery = "verified_preview_delivery"
         case workflowStage = "workflow_stage"
         case ownerPolicySourceSHA256 = "owner_policy_source_sha256"
         case ownerPolicyProjectionSHA256 = "owner_policy_projection_sha256"
@@ -706,6 +826,8 @@ struct RejectedProviderExecution: Error, CustomStringConvertible {
     let execution: ProviderExecution
     let cause: Error
     var quotaRejectedBeforeExecution: Bool = false
+    /// Scope of a Claude quota rejection; nil when unclassified (treated as account-wide).
+    var quotaScope: ClaudeQuotaScope? = nil
     var description: String { String(describing: cause) }
 }
 
@@ -741,7 +863,7 @@ func unavailableProviderExecution(
             stderr: "",
             durationMS: 0,
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: observedStateHash(workspace),
             nativeRecord: nativeRecord
         ),
         sessionID: UUID().uuidString.lowercased(),
@@ -994,6 +1116,74 @@ func sourceRoutingTask(_ prompt: String, hasSource: Bool) -> String {
 /// A question about recoverability is not authorization to back up or restore
 /// production. Preserve the original request for the executor; only normalize
 /// the public routing objective. Explicit action clauses retain their intent.
+/// Build 228: finished turns refused by a local post-check are rejected
+/// results (answer shown, no readback), interrupted ones stay uncertain.
+/// Only a request about OS-1 itself is an OS-1 repair: its verified workflow
+/// may skip an already-satisfied edit and still stage and install a release.
+/// Any other staged task that merely runs inside a checkout of this
+/// repository (a fleet job's clone, the owner's main checkout) finishes an
+/// OS-1 release only if it actually changed OS-1's source. 2026-09-25: a
+/// split test that wrote /tmp/os1-split/calc.py started a full OS-1 release
+/// build in a fleet clone, headed for a self-repair commit and push.
+func workflowIsOS1Repair(repairRoot: String?, projectID: String?) -> Bool {
+    repairRoot != nil && projectID == "os1-clodex"
+}
+
+private func postCheckRejectionChecks() -> [(String, Bool)] {
+    func rejected(exit: Int32, output: String, persistence: String, cause: Error) -> RejectedProviderExecution {
+        let record = NativeRecordEvidence(turnID: nil, recordPath: nil, persistence: persistence, desktopVisibility: "fixture")
+        let artifact = Artifact(provider: "codex", action: "execute", permissionProfile: "workspace_write", model: "fixture",
+            effort: "none", executorContractVersion: "fixture", executorContractSHA256: "fixture", exitCode: exit, output: output,
+            stderr: "", durationMS: 0, workspaceBeforeHash: "a", workspaceAfterHash: "a", nativeRecord: record)
+        return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: UUID().uuidString, nativeRecord: record), cause: cause)
+    }
+    let languageCheck = OS1Error.message("Answer the user's Korean request in Korean, not English-only prose.")
+    return [
+        ("finished turn refused by a language check is a rejected result",
+         finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "CFBundleVersion: 188", persistence: "verified", cause: languageCheck), classified: .effectsUncertain)),
+        ("interrupted turn stays effects-uncertain",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 69, output: "partial", persistence: "interrupted_unverified", cause: languageCheck), classified: .effectsUncertain)),
+        ("unverified native record stays effects-uncertain",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "unverified: transcript not found", cause: languageCheck), classified: .effectsUncertain)),
+        ("a protocol blocker keeps its own class",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "verified", cause: OS1Error.backendBlocked(.quotaExhausted)), classified: .effectsUncertain)),
+        ("a read-only lane keeps its bounded retry",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "answer", persistence: "verified", cause: languageCheck), classified: .unclassified)),
+        ("a finished write turn that names a limit is its answer, not effects-uncertain",
+         finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "파일은 고쳤고, 샌드박스라 배포는 실행할 수 없었습니다", persistence: "verified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .effectsUncertain)),
+        ("a read-only answer naming a limit is shown when no other backend can try",
+         finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "그 로그에는 접근할 수 없어 대신 설정을 확인했습니다", persistence: "verified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .unclassified, alternateAvailable: false)),
+        ("a read-only answer naming a limit still lets another backend try",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 0, output: "그 로그에는 접근할 수 없습니다", persistence: "verified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .unclassified, alternateAvailable: true)),
+        ("an interrupted turn naming a limit stays effects-uncertain",
+         !finishedTurnRejectedByPostCheck(rejected(exit: 69, output: "실행할 수 없", persistence: "interrupted_unverified",
+            cause: OS1Error.backendBlocked(.capabilityUnavailable)), classified: .effectsUncertain)),
+        // Build 253: runs are dispatched with write permission, so a read-scope
+        // question refused only by a post-check, with nothing changed, still
+        // gets the bounded corrective retry (2026-09-25, Korean → English).
+        ("a read-scope question refused by the language check is corrected, not final",
+         postCheckRetryEligible(rejected(exit: 0, output: "It accepts one verdict word.", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "effectsVerdict가 어떤 형식을 인정하는지 두 줄로 설명해. 수정하지 마.", workspaceChanged: false)),
+        ("a changed state is never retried",
+         !postCheckRetryEligible(rejected(exit: 0, output: "It accepts one verdict word.", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "effectsVerdict가 어떤 형식을 인정하는지 두 줄로 설명해.", workspaceChanged: true)),
+        ("a write-scope request is never retried",
+         !postCheckRetryEligible(rejected(exit: 0, output: "Fixed it.", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "이 버그 고쳐줘", workspaceChanged: false)),
+        ("only OS-1's own post-check drift is retried",
+         !postCheckRetryEligible(rejected(exit: 0, output: "answer", persistence: "verified",
+            cause: OS1Error.backendBlocked(.quotaExhausted)), prompt: "RCC가 뭐야?", workspaceChanged: false)),
+        ("an interrupted or unrecorded turn is never retried here",
+         !postCheckRetryEligible(rejected(exit: 69, output: "partial", persistence: "interrupted_unverified",
+            cause: DriftDetected(.presentation)), prompt: "RCC가 뭐야?", workspaceChanged: false)
+         && !postCheckRetryEligible(rejected(exit: 0, output: "  ", persistence: "verified",
+            cause: DriftDetected(.presentation)), prompt: "RCC가 뭐야?", workspaceChanged: false)),
+    ]
+}
+
 private func asksRecoveryReadiness(_ prompt: String) -> Bool {
     // Quoted OS-1 output ("복구 기준점(Gold 포인터): 기록 없음") is not the
     // user's question; classify only the user's own lines.
@@ -1022,6 +1212,10 @@ private func promptRequestsCapabilityExplanation(_ prompt: String) -> Bool {
 /// nonzero unavailable artifact, never an adopted chat answer.
 func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evidenceSupplied: Bool = false,
                                              boundedShell: Bool = false) -> Bool {
+    // A readback reports what it could not verify ("권한이 없어 … 증거 없음")
+    // and ends with its OS1_EFFECTS verdict; that verdict decides the outcome,
+    // and the quoted old objective ("고쳐") is not the current request.
+    if BackendRecovery.isReadbackPrompt(prompt) { return false }
     let request = prompt.precomposedStringWithCanonicalMapping.lowercased()
     let repairRequested = ["고쳐", "수정해", "수정 해", "진행해", "실행해", "배포해", "fix it", "repair it", "deploy it"]
         .contains(where: request.contains)
@@ -1041,9 +1235,13 @@ func providerOutputDeclaresCapabilityFailure(_ data: Data, prompt: String, evide
         "cannot run", "can't run", "unable to run", "cannot execute", "can't execute", "unable to execute",
         "cannot access", "can't access", "unable to access", "tool is unavailable", "tools are unavailable",
         "permission is unavailable", "no bash", "no shell", "no wrangler",
-        "못 한다", "못합니다", "failed to upload", "cannot continue", "can't continue",
+        "failed to upload", "cannot continue", "can't continue",
     ]
-    return markers.contains(where: output.contains)
+    // A technical diagnosis ("the existing code cannot prevent activation")
+    // is not the executor declining its task. Bare inability words match both.
+    let selfRefusal = #"(?:저는|제가|나는|내가)[^.\n]{0,80}(?:수행|실행|진행|처리|접근|조회)(?:하지|을|를)?\s*못(?:합니다|한다|해)"#
+    return markers.contains(where: output.contains) ||
+        output.range(of: selfRefusal, options: .regularExpression) != nil
 }
 
 private func outputContractIssues(_ data: Data, prompt: String, snapshotOnly: Bool = false) -> [String] {
@@ -1597,10 +1795,26 @@ func ticketBytes(_ ticket: Ticket) -> Data {
 }
 
 func resultBytes(_ result: ResultSubmission) -> Data {
-    Data([
-        "os1-result-v1", result.ticket.executionID, String(result.ticket.sequence),
-        result.ticket.nonce, result.resultHash, result.artifactRef,
-    ].joined(separator: "\n").utf8)
+    let base = [result.ticket.executionID, String(result.ticket.sequence),
+                result.ticket.nonce, result.resultHash, result.artifactRef]
+    // v2 also signs the step's usage; without usage the bytes stay v1 exactly.
+    guard let usage = result.usage else { return Data((["os1-result-v1"] + base).joined(separator: "\n").utf8) }
+    func count(_ value: Int?) -> String { value.map(String.init) ?? "null" }
+    return Data((["os1-result-v2"] + base + [count(usage.inputTokens), count(usage.cacheTokens), count(usage.outputTokens)])
+        .joined(separator: "\n").utf8)
+}
+
+/// Delivers a result; when a gateway from before signed usage refuses the v2
+/// submission, delivers the same result without usage. That v1 submission is
+/// signed by exactly the bytes the artifact upload was signed with.
+func deliverResult(_ client: APIClient, _ submission: ResultSubmission, v1Signature: String) async throws -> RouteResponse {
+    do {
+        return try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+    } catch OS1Error.service(let status, _, _) where submission.usage != nil && (400...403).contains(status) {
+        let plain = ResultSubmission(ticket: submission.ticket, resultHash: submission.resultHash,
+                                     artifactRef: submission.artifactRef, deviceSignature: v1Signature)
+        return try await client.deliver("/v1/results", body: plain, as: RouteResponse.self)
+    }
 }
 
 func verifyTicket(_ ticket: Ticket, config: RuntimeConfig) throws {
@@ -1684,6 +1898,7 @@ func commandOutput(
     _ arguments: [String],
     input: Data? = nil,
     timeout: Int = 30,
+    idleTimeout: TimeInterval? = nil,
     currentDirectory: String? = nil,
     isProvider: Bool = false,
     environmentOverrides: [String: String] = [:],
@@ -1720,6 +1935,10 @@ func commandOutput(
     }
     process.standardOutput = stdout
     process.standardError = stderr
+    // Wake the wait loop the moment the child exits instead of on the next
+    // 100 ms tick; a run spawns dozens of short git/gh/python children.
+    let exited = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in exited.signal() }
     if let input {
         let pipe = Pipe()
         process.standardInput = pipe
@@ -1740,22 +1959,41 @@ func commandOutput(
         try process.run()
         onLaunch?()
     }
-    let deadline = Date().addingTimeInterval(TimeInterval(timeout))
+    // `timeout` is the hard ceiling. With `idleTimeout`, a provider that keeps
+    // writing (stream-json events, progress) runs on until that ceiling;
+    // only silence for `idleTimeout` seconds stops it earlier.
+    var watchdog = ProviderActivityWatchdog(ceiling: Date().addingTimeInterval(TimeInterval(timeout)), idle: idleTimeout)
+    var observedBytes: Int64 = -1
+    func writtenBytes() -> Int64 {
+        var total: Int64 = 0
+        for handle in [stdout, stderr] {
+            var info = stat()
+            if fstat(handle.fileDescriptor, &info) == 0 { total += Int64(info.st_size) }
+        }
+        return total
+    }
     let reader = onOutput == nil ? nil : try FileHandle(forReadingFrom: stdoutURL)
     defer { try? reader?.close() }
     func drain() throws {
         guard let reader, let onOutput else { return }
         while let bytes = try reader.read(upToCount: 65_536), !bytes.isEmpty { onOutput(bytes) }
     }
-    while process.isRunning && Date() < deadline && !ExecutionCancellation.isCancelled {
-        try drain(); Thread.sleep(forTimeInterval: 0.1)
+    while process.isRunning && !watchdog.expired() && !ExecutionCancellation.isCancelled {
+        try drain()
+        if idleTimeout != nil {
+            let bytes = writtenBytes()
+            if bytes != observedBytes { observedBytes = bytes; watchdog.observeActivity() }
+        }
+        _ = exited.wait(timeout: .now() + 0.1)
     }
     if process.isRunning {
         process.terminate()
         Thread.sleep(forTimeInterval: 1)
         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
-        if isProvider { throw OS1Error.message("Local provider execution timed out") }
+        if isProvider {
+            throw OS1Error.message(idleTimeout == nil ? ProviderActivityWatchdog.timeoutText : watchdog.expiryReason())
+        }
         // Do not mislabel a preflight/source utility as a model failure or
         // send it into provider retry logic. Never expose command arguments.
         throw OS1Error.message("로컬 자료·연결 확인 중 \(URL(fileURLWithPath: executable).lastPathComponent) 응답 대기시간(\(timeout)초)을 초과했습니다. 기존 대화와 자료는 유지했습니다.")
@@ -1840,8 +2078,8 @@ func activeCodexCatalog(
     cacheURL: URL? = nil,
     now: Date = Date()
 ) throws -> ActiveCodexCatalog {
-    let url = cacheURL ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex/models_cache.json")
+    let url = cacheURL ?? BackendAccounts.home(provider: "codex", in: BackendAccountState.shared.book())
+        .appendingPathComponent("models_cache.json")
     if let data = try? Data(contentsOf: url),
        let cache = try? JSONDecoder().decode(CachedCodexCatalog.self, from: data) {
         var seen = Set<String>()
@@ -1981,8 +2219,11 @@ private func claudeLoginAlreadyRunning() -> Bool {
     return result.0 == 0 && !result.1.isEmpty
 }
 
-private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
+func runClaudeLoginInTerminal(home: URL? = nil, deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
     let claude = try findExecutable("claude")
+    // Which account signs in: an added account has its own config directory,
+    // and the default one keeps the CLI's own.
+    let configDirectory = home?.path ?? backendAccountEnvironment("claude")["CLAUDE_CONFIG_DIR"]
     // Starting `claude auth login` clears the stored session immediately, so a
     // flow the owner never finishes turns "expired" into "no credential at
     // all". Never stack a second window on top of a pending one: wait for the
@@ -1996,7 +2237,7 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
         while Date() < deadline {
             if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
             Thread.sleep(forTimeInterval: 3)
-            if (try? existingClaudeConnection()) != nil { return (0, Data(), Data()) }
+            if (try? existingClaudeConnection(home: home)) != nil { return (0, Data(), Data()) }
             if !claudeLoginAlreadyRunning() { break }
         }
         throw ConnectionFailure.authentication
@@ -2015,6 +2256,7 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     #!/bin/zsh
     set -u
     claude_bin="$1"
+    [[ -n "${2:-}" ]] && export CLAUDE_CONFIG_DIR="$2"
     run_dir="$(mktemp -d "${TMPDIR:-/tmp}/os1-claude-login.XXXXXX")"
     chmod 700 "$run_dir"
     fifo="$run_dir/stdin"
@@ -2024,7 +2266,13 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     "$claude_bin" auth login --claudeai < "$fifo" > /dev/null 2>&1 &
     login_pid=$!
     exec 3> "$fifo"
-    sleep 3
+    # The browser callback finishes most sign-ins on its own. Ask for a code
+    # only when it has not, so the owner is never handed a step they do not need.
+    for _ in {1..12}; do
+      "$claude_bin" auth status --json 2>/dev/null | grep -q '"loggedIn": *true' && { exec 3>&-; exit 0; }
+      kill -0 "$login_pid" 2>/dev/null || break
+      sleep 2
+    done
     osascript > "$run_dir/answer" 2>/dev/null <<'APPLESCRIPT'
     tell me to activate
     set reply to display dialog "\(message)" default answer "" with hidden answer with title "\(title)" buttons {"\(cancel)", "\(confirm)"} default button "\(confirm)" with icon note
@@ -2045,7 +2293,8 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     try Data(body.utf8).write(to: script, options: .atomic)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
     func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    let launched = try commandOutput("/bin/sh", ["-c", "nohup \(quoted(script.path)) \(quoted(claude)) > /dev/null 2>&1 &"], timeout: 20)
+    let launched = try commandOutput("/bin/sh", ["-c",
+        "nohup \(quoted(script.path)) \(quoted(claude)) \(quoted(configDirectory ?? "")) > /dev/null 2>&1 &"], timeout: 20)
     guard launched.0 == 0 else { throw ConnectionFailure.unavailable }
     RuntimeActivity.emit(.authorizing,
         publicText: os1Tr("공식 Claude 로그인을 열었습니다. 브라우저에서 승인한 뒤 표시된 코드를 앞에 뜬 팝업에 붙여넣으면 OS1이 같은 작업을 이어갑니다.",
@@ -2055,9 +2304,50 @@ private func runClaudeLoginInTerminal(deadlineSeconds: Int = 300) throws -> (Int
     while Date() < deadline {
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         Thread.sleep(forTimeInterval: 3)
-        if (try? existingClaudeConnection()) != nil { return (0, Data(), Data()) }
+        if (try? existingClaudeConnection(home: home)) != nil { return (0, Data(), Data()) }
     }
     throw ConnectionFailure.authentication
+}
+
+/// Codex signs in through its own local callback server, so the CLI finishes
+/// on its own once the owner approves in the browser: no dialog, no code, and
+/// nothing for OS-1 to relay.
+func runCodexLogin(home: URL? = nil, deadlineSeconds: Int = 300) throws -> (Int32, Data, Data) {
+    let codex = try findExecutable("codex")
+    var environment = home.map { ["CODEX_HOME": $0.path] } ?? backendAccountEnvironment("codex")
+    if let directory = environment["CODEX_HOME"] {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+    }
+    environment["OS1_INTERNAL_PROVIDER_EXECUTION"] = "1"
+    func signedIn() -> Bool {
+        guard let status = try? commandOutput(codex, ["login", "status"], timeout: 15,
+                                              environmentOverrides: environment) else { return false }
+        return status.0 == 0 && String(decoding: status.1, as: UTF8.self).lowercased().contains("logged in")
+    }
+    if signedIn() { return (0, Data(), Data()) }
+    var launch = ["nohup", quotedShellArgument(codex), "login"]
+    for (key, value) in environment.sorted(by: { $0.key < $1.key }) {
+        launch.insert("\(key)=\(quotedShellArgument(value))", at: 0)
+    }
+    let command = "env " + launch.joined(separator: " ") + " > /dev/null 2>&1 &"
+    let launched = try commandOutput("/bin/sh", ["-c", command], timeout: 20)
+    guard launched.0 == 0 else { throw ConnectionFailure.unavailable }
+    RuntimeActivity.emit(.authorizing,
+        publicText: os1Tr("공식 Codex 로그인을 열었습니다. 브라우저에서 승인하면 그대로 이어집니다.",
+                          "The official Codex sign-in is open. Approve it in the browser and it continues on its own."),
+        tool: "codex")
+    let deadline = Date().addingTimeInterval(TimeInterval(deadlineSeconds))
+    while Date() < deadline {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        Thread.sleep(forTimeInterval: 3)
+        if signedIn() { return (0, Data(), Data()) }
+    }
+    throw ConnectionFailure.authentication
+}
+
+func quotedShellArgument(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 private struct ConnectionControlTargets: OptionSet {
@@ -2072,19 +2362,27 @@ private struct ConnectionControlTargets: OptionSet {
 /// coding task. Keep its recognizer public and narrow so ordinary repository
 /// or R2 work still goes through RCC.
 private func connectionControlTargets(_ prompt: String) -> ConnectionControlTargets? {
-    // Per line: a pasted transcript can mention "연결" in one paragraph and a
-    // service name pages away; only a line that carries both a connection verb
-    // and a service is the owner asking for a connection action.
-    let verbs = ["연결", "접속", "로그인", "세팅", "설정해", "connect", "connection", "sign in", "setup", "configure"]
+    // Only a complete, explicit connection directive may bypass the normal
+    // task router. Mentioning login/auth inside a code-repair or test request
+    // does not authorize login (which can invalidate an existing CLI session).
     let githubNames = ["github", "git hub", "깃허브", "깃헙", "기터브", "기타브", "기탑", "기타보", "기터보", "기터부"]
-    let claudeNames = ["claude", "클로드", "클로드코드", "클로드 코드"]
+    let claudeNames = ["claude code", "claude", "클로드코드", "클로드 코드", "클로드"]
+    let r2Names = ["r2", "r 2", "알투", "알츠"]
+    let service = (githubNames + claudeNames + r2Names)
+        .map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+    let prefix = #"(?:야\s*|너\s*|지금\s*|다시\s*|일단\s*|please\s+)*"#
+    let names = "(?:" + service + ")"
+    let targetList = names + "(?:\\s*(?:랑|와|과|하고|,|&|and)\\s*" + names + ")*"
+    let action = #"(?:연결|접속|로그인|세팅)(?:을|좀)?\s*(?:확인)?(?:해(?:봐|줘|주세요|라)?|시켜(?:줘|주세요)?|하세요|하자)"#
+    let korean = "^" + prefix + targetList + "(?:에|을|를)?\\s*(?:좀\\s*)?" + action + "[.!? ]*$"
+    let english = "^(?:please\\s+)?(?:connect|configure|setup|sign in to|log in to)\\s+" + targetList + "[.!? ]*$"
     var targets: ConnectionControlTargets = []
     for rawLine in prompt.precomposedStringWithCanonicalMapping.lowercased().split(separator: "\n") {
-        let line = String(rawLine)
-        guard verbs.contains(where: line.contains) else { continue }
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        guard line.range(of: korean, options: .regularExpression) != nil ||
+              line.range(of: english, options: .regularExpression) != nil else { continue }
         if githubNames.contains(where: line.contains) { targets.insert(.github) }
-        if line.range(of: #"(?<![a-z0-9])r\s*2(?![a-z0-9])"#, options: .regularExpression) != nil ||
-            line.contains("알투") || line.contains("알츠") { targets.insert(.r2) }
+        if r2Names.contains(where: line.contains) { targets.insert(.r2) }
         if claudeNames.contains(where: line.contains) { targets.insert(.claude) }
     }
     return targets.isEmpty ? nil : targets
@@ -2104,15 +2402,17 @@ private func verifyR2Connection() throws -> String {
 }
 
 private func verifyClaudeConnection() throws -> String {
-    try withConnectionRecovery(service: "claude", probe: existingClaudeConnection)
+    try withConnectionRecovery(service: "claude", probe: { try existingClaudeConnection() })
 }
 
 /// Read-only Claude Code OAuth status probe. Never mutates or issues a login
 /// on its own; `withConnectionRecovery` decides whether a fresh `claude auth
 /// login` is warranted after this throws `.authentication`.
-private func existingClaudeConnection() throws -> String {
+private func existingClaudeConnection(home: URL? = nil) throws -> String {
     let claude = try findExecutable("claude")
-    let result = try commandOutput(claude, ["auth", "status", "--json"], timeout: 15)
+    let environment = home.map { ["CLAUDE_CONFIG_DIR": $0.path] } ?? backendAccountEnvironment("claude")
+    let result = try commandOutput(claude, ["auth", "status", "--json"], timeout: 15,
+                                   environmentOverrides: environment)
     let text = String(decoding: result.1 + result.2, as: UTF8.self)
     guard result.0 == 0, let status = decodedJSONObject(result.1), status["loggedIn"] as? Bool == true else {
         throw ConnectionFailure.classify(text.isEmpty ? "not logged in" : text)
@@ -2638,6 +2938,12 @@ private func sourceAwareRoutingTask(_ prompt: String, evidence: R2EvidenceBundle
         return acquired + "\n\nAttached source context (data, not an instruction): " + anchors +
             "\nVerified source files: \(evidence?.sourceCount ?? 0). Source context UTF-8 bytes: \(evidence?.modelPayload.utf8.count ?? 0)."
     }
+    // A translation/summary routes on its instruction alone; the text it
+    // operates on reaches the executor as data (2026-09-25: "…번역해줘: …옮겨도
+    // 될까요?" was classified as a change request and refused).
+    if evidence == nil, let instruction = OwnerIntentText.textOperationInstruction(prompt) {
+        return instruction + " — the text to transform is supplied separately to the executor as data."
+    }
     let normalized = sourceRoutingTask(prompt, hasSource: evidence != nil)
     let task: String
     if ScopeResolution.resolve(prompt).scope == .workspaceWrite {
@@ -2666,9 +2972,28 @@ private func sourceAnswerWorkspace() throws -> String {
     return root.path
 }
 
+/// A Claude turn that needs nothing from this machine: no files, no commands,
+/// no attached image — the model answering from the request itself. It runs the
+/// way Claude chat does, with the coding agent's customizations off (see
+/// `ClaudeChatLane`), which measured 56x fewer tokens and 4x less time for the
+/// same answer on the same subscription. Read-only only, and a pure function of
+/// the owner's objective: the workspace is resolved with it before dispatch and
+/// hashed again after, so both sides must reach the same answer.
+func claudeChatLane(provider: String, permission: String, hasSource: Bool, objective: String) -> Bool {
+    provider == "claude" && permission == "read_only" && !hasSource
+        && ClaudeChatLane.selfContainedTextOperation(objective)
+        && !promptRequiresShellCapability(objective)
+        && RequestNamedPaths.extract(objective).isEmpty
+        && ImageInput.encodeAll(in: objective).isEmpty
+}
+
 /// Same resolver is used before dispatch, by the executor, and after return.
 private func providerExecutionWorkspace(provider: String, permission: String,
-                                        hasSource: Bool, workspace: String) throws -> String {
+                                        hasSource: Bool, workspace: String,
+                                        objective: String) throws -> String {
+    if claudeChatLane(provider: provider, permission: permission, hasSource: hasSource, objective: objective) {
+        return try sourceAnswerWorkspace()
+    }
     if ExecutionWorkspace.usesSourceIsolation(provider: provider, permission: permission,
         hasSource: hasSource, workspace: workspace,
         home: FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path) {
@@ -3582,9 +3907,10 @@ private func preparedStateBundle(_ evidence: R2EvidenceBundle, context: TaskCont
         contentAnchors: evidence.contentAnchors, projectBaseline: evidence.projectBaseline ?? context.project)
 }
 
-private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objective decided: R2RetrievalObjective? = nil,
+private func r2RetrievalEvidence(_ prompt: String, context: String? = nil, objective decided: R2RetrievalObjective?,
                                  scvLive: SCVLiveRelease? = nil) throws -> R2EvidenceBundle? {
-    guard let objective = decided ?? resolveR2RetrievalObjective(prompt: prompt, context: context) else { return nil }
+    // A nil owner decision is authoritative, not a request to classify generated handoff text.
+    guard let objective = decided else { return nil }
     guard !protectedRouteMaterialRequested(prompt, context: context) else {
         throw OS1Error.message("OS-1 protected route material cannot enter a model evidence channel")
     }
@@ -4070,9 +4396,32 @@ struct APIClient {
     let deviceID: String
     var requestTimeoutSeconds: TimeInterval = 30
 
+    /// Delays before each re-probe of `/v1/capabilities`. A gateway whose
+    /// inner service timed out answers 200 with a null schema, which looks
+    /// exactly like an old server; one such miss must not fail the task.
+    static let capabilityRetryDelaysMS: [UInt64] = [500, 1_500]
+
     /// Metadata negotiation only: never spends a model call or changes auth.
     /// Older/offline gateways retain their existing three-field contract.
+    /// The GET is unpaid and side-effect free, so a miss is confirmed twice
+    /// more with a short backoff before the run is refused.
     func supportsCompletionFeedback(requireModelAvailability: Bool = false) async -> Bool {
+        if await probeCompletionFeedback(requireModelAvailability: requireModelAvailability) { return true }
+        for (attempt, delay) in Self.capabilityRetryDelaysMS.enumerated() {
+            // A stop request ends the re-check at once; the caller then reports
+            // the cancellation instead of holding a run slot for more probes.
+            if ExecutionCancellation.isCancelled { return false }
+            RuntimeActivity.emit(.routing, publicText: os1Tr(
+                "라우팅 서버 모델 확인 재시도 \(attempt + 2)/\(Self.capabilityRetryDelaysMS.count + 1) · 유료 호출 없음",
+                "Re-checking routing-server model support \(attempt + 2)/\(Self.capabilityRetryDelaysMS.count + 1) · no paid call"))
+            try? await Task.sleep(nanoseconds: delay * 1_000_000)
+            if ExecutionCancellation.isCancelled { return false }
+            if await probeCompletionFeedback(requireModelAvailability: requireModelAvailability) { return true }
+        }
+        return false
+    }
+
+    private func probeCompletionFeedback(requireModelAvailability: Bool) async -> Bool {
         guard let base = URL(string: config.apiURL),
               let url = URL(string: "/v1/capabilities", relativeTo: base) else { return false }
         var request = URLRequest(url: url)
@@ -4250,6 +4599,24 @@ func workspaceHash(_ workspace: String) -> String {
     return sha256Hex(material)
 }
 
+/// Paths named in the current request (RequestNamedPaths), set once around a
+/// task so every before/after comparison in it — including the one each
+/// backend runner takes after the turn — observes the same state.
+enum RequestObservation {
+    @TaskLocal static var namedPaths: [String] = []
+}
+
+/// The state OS-1 compares before and after a backend turn: the workspace
+/// plus every path the request names. With no named path it equals
+/// `workspaceHash`, so requests without paths behave exactly as before.
+func observedStateHash(_ workspace: String, named: [String] = RequestObservation.namedPaths) -> String {
+    let base = workspaceHash(workspace)
+    guard !named.isEmpty else { return base }
+    var material = Data(base.utf8)
+    material.append(RequestNamedPaths.stateMaterial(named))
+    return sha256Hex(material)
+}
+
 func readSessionContext(_ path: String?) throws -> String? {
     guard let path else { return nil }
     let url = URL(fileURLWithPath: path).standardizedFileURL
@@ -4361,6 +4728,11 @@ final class CodexAppServerClient: @unchecked Sendable {
     private var rejectedApprovalTurns = Set<String>()
     private var nextRequestID = 1
     private var closed = false
+    private(set) var ownsThreadWriter = false
+    /// A new thread's title is cosmetic (Codex Desktop's list) and cost
+    /// ≈0.5 s before the turn (2026-09-24 trace); it is sent right after the
+    /// turn starts, and its reply is ignored like any non-turn message.
+    private(set) var pendingThreadName: (threadID: String, name: String)?
     private var activeTurn: (thread: String, turn: String)?
     private var steeringRequests: [Int: SteeringInput] = [:]
     private let steering: ExecutionSteering
@@ -4382,7 +4754,11 @@ final class CodexAppServerClient: @unchecked Sendable {
         // otherwise waits through repeated OAuth transport failures before a
         // simple turn can begin.
         process.arguments = ["app-server", "-c", "mcp_servers.cloudflare-api.enabled=false"]
-        process.environment = ProviderExecutionEnvironment.marked(ProcessInfo.processInfo.environment)
+        // The account the owner chose owns this run's CODEX_HOME; the default
+        // account adds nothing, so the app server starts exactly as before.
+        process.environment = ProviderExecutionEnvironment
+            .marked(ProcessInfo.processInfo.environment)
+            .merging(backendAccountEnvironment("codex")) { _, new in new }
         process.currentDirectoryURL = URL(fileURLWithPath: workspace, isDirectory: true)
         process.standardInput = input
         process.standardOutput = output
@@ -4490,6 +4866,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         title: String,
         deadline: Date
     ) throws -> String {
+        ownsThreadWriter = false
         let sandbox: String
         switch permissionProfile {
         case "read_only": sandbox = "read-only"
@@ -4508,7 +4885,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         if let model { params["model"] = model }
 
         let result: [String: Any]
-        var forkedFromDesktopOwnedThread = false
+        let forkedFromDesktopOwnedThread = false
         if let existingSessionID {
             params["threadId"] = existingSessionID
             params["excludeTurns"] = true
@@ -4517,15 +4894,13 @@ final class CodexAppServerClient: @unchecked Sendable {
             } catch {
                 guard codexWriterConflictMessage(error, threadID: existingSessionID) != nil else { throw error }
 
-                // Opening an OS-1 thread in Codex Desktop deliberately gives
-                // Desktop the single writer lock. Preserve continuity without
-                // asking the user to quit Desktop: fork the complete persisted
-                // history into a new first-class thread and execute there.
-                var forkParams = params
-                forkParams["ephemeral"] = false
-                forkParams["threadSource"] = "os1"
-                result = try request("thread/fork", params: forkParams, deadline: deadline)
-                forkedFromDesktopOwnedThread = true
+                // Desktop owns this exact thread. Do not fork it or steal its
+                // writer lock. The Desktop transport will resume it in-place.
+                let read = try request("thread/read", params: ["threadId": existingSessionID, "includeTurns": false], deadline: deadline)
+                guard let thread = read["thread"] as? [String: Any], thread["id"] as? String == existingSessionID else {
+                    throw OS1Error.message("Desktop-owned thread identity mismatch")
+                }
+                return existingSessionID
             }
         } else {
             params["ephemeral"] = false
@@ -4535,6 +4910,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             result = try request("thread/start", params: params, deadline: deadline)
         }
 
+        AttemptLatencyTrace.mark(existingSessionID == nil ? "thread_started" : "thread_resumed")
         guard var thread = result["thread"] as? [String: Any],
               let rawID = thread["id"] as? String,
               var threadID = try normalizedSessionID(rawID) else {
@@ -4576,15 +4952,31 @@ final class CodexAppServerClient: @unchecked Sendable {
         // A fork is the new writable/visible continuation, so name it after
         // the request that created this handoff instead of inheriting a stale
         // title from the first turn in the chain.
-        if forkedFromDesktopOwnedThread || existingName?.isEmpty != false {
-            _ = try request(
-                "thread/name/set",
-                params: ["threadId": threadID, "name": title],
-                deadline: deadline
-            )
-        }
+        pendingThreadName = forkedFromDesktopOwnedThread || existingName?.isEmpty != false ? (threadID, title) : nil
         try makeVisible(threadID: threadID, deadline: deadline)
+        ownsThreadWriter = true
         return threadID
+    }
+
+    /// Names a thread that will not run through `runTurn` on this connection.
+    func applyPendingThreadName(deadline: Date) {
+        guard let pending = pendingThreadName else { return }
+        pendingThreadName = nil
+        _ = try? request("thread/name/set", params: ["threadId": pending.threadID, "name": pending.name], deadline: deadline)
+    }
+
+    /// Prepare only. A real developer message persists a new empty thread;
+    /// no assistant output or completed turn is invented for Desktop discovery.
+    func persistDesktopHandoff(threadID: String, instructions: String, deadline: Date) throws {
+        _ = try request("thread/inject_items", params: ["threadId": threadID, "items": [[
+            "type": "message", "role": "developer", "content": [["type": "input_text", "text": instructions]]
+        ]]], deadline: deadline)
+    }
+
+    func observeDesktopTurn(threadID: String, turnID: String, deadline: Date) throws -> [String: Any]? {
+        let result = try request("thread/turns/list", params: ["threadId": threadID, "limit": 20,
+            "itemsView": "full", "sortDirection": "desc"], deadline: deadline)
+        return (result["data"] as? [[String: Any]])?.first { $0["id"] as? String == turnID }
     }
 
     func runTurn(
@@ -4595,6 +4987,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         effort: String,
         permissionProfile: String,
         deadline: Date,
+        idleTimeout: TimeInterval? = nil,
         onDispatch: (() -> Void)? = nil,
         onStarted: (() -> Void)? = nil
     ) throws -> CodexTurnOutput {
@@ -4640,6 +5033,12 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw OS1Error.message("Codex did not start a persistent desktop turn")
         }
         activeTurn = (threadID, turnID)
+        if let pending = pendingThreadName, pending.threadID == threadID {
+            pendingThreadName = nil
+            let id = nextRequestID; nextRequestID += 1
+            try? send(["jsonrpc": "2.0", "id": id, "method": "thread/name/set",
+                       "params": ["threadId": pending.threadID, "name": pending.name]])
+        }
         onStarted?()
         // Only the provider's turn/start acknowledgement establishes a running turn.
         RuntimeActivity.emit(.executing, provider: "codex", model: model, effort: effort,
@@ -4653,7 +5052,7 @@ final class CodexAppServerClient: @unchecked Sendable {
                 .record(submissionID: id, threadID: threadID, turnID: turnID)
             try steering.open(submissionID: id, threadID: threadID, turnID: turnID)
         }
-        let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline)
+        let output = try waitForTurn(threadID: threadID, turnID: turnID, deadline: deadline, idleTimeout: idleTimeout)
         return CodexTurnOutput(turnID: turnID, output: output)
     }
 
@@ -4748,18 +5147,25 @@ final class CodexAppServerClient: @unchecked Sendable {
         )
     }
 
-    private func waitForTurn(threadID: String, turnID: String, deadline: Date) throws -> Data {
+    private func waitForTurn(threadID: String, turnID: String, deadline: Date, idleTimeout: TimeInterval? = nil) throws -> Data {
         let stream = ExecutionStream()
         interruptedPublicProgress = ""
         defer { interruptedPublicProgress = stream.text }
         var revision = 0
+        // Every app-server message (item, delta, usage, status) is activity:
+        // a working turn runs to the ceiling, a silent one stops at `idle`.
+        var watchdog = ProviderActivityWatchdog(ceiling: deadline, idle: idleTimeout)
         while true {
             let message: [String: Any]
             if !deferredNotifications.isEmpty {
                 message = deferredNotifications.removeFirst()
             } else {
-                message = try nextMessage(deadline: deadline)
+                do { message = try nextMessage(deadline: watchdog.deadline) }
+                catch OS1Error.message(let text) where text == ProviderActivityWatchdog.timeoutText && idleTimeout != nil {
+                    throw OS1Error.message(watchdog.expiryReason())
+                }
             }
+            watchdog.observeActivity()
             if let method = message["method"] as? String, message["id"] != nil {
                 try rejectServerRequest(message, method: method)
                 continue
@@ -4909,7 +5315,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             lock.unlock()
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else {
-                throw OS1Error.message("Local provider execution timed out")
+                throw OS1Error.message(ProviderActivityWatchdog.timeoutText)
             }
             if messageAvailable.wait(timeout: .now() + min(remaining, 0.2)) == .timedOut { continue }
             if !process.isRunning {
@@ -4922,6 +5328,113 @@ final class CodexAppServerClient: @unchecked Sendable {
             }
         }
     }
+}
+
+/// Desktop executes and supplies live owner snapshots. No second writer
+/// and no CLI fallback after a possibly delivered start request.
+func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
+                         model: String?, effort: String, permissionProfile: String, instructions: String, deadline: Date,
+                         idleTimeout: TimeInterval? = nil,
+                         onDispatch: () -> Void) throws -> CodexTurnOutput {
+    // Automatic routing: never activate Desktop. A running owner is reached
+    // through its IPC socket, so no reopen event is sent and the owner's
+    // frontmost application keeps the foreground.
+    try CodexDesktopTransport.ensureRunning(threadID: threadID,
+        launch: BackendWindowFocus.desktopLaunch(isRunning: codexDesktopIsRunning()))
+    var connection: CodexDesktopTransport?
+    let discoveryDeadline = min(deadline, Date().addingTimeInterval(20))
+    while Date() < discoveryDeadline {
+        if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
+        do {
+            let candidate = try CodexDesktopTransport()
+            try candidate.discover(threadID: threadID)
+            connection = candidate; break
+        } catch { Thread.sleep(forTimeInterval: 0.5) }
+    }
+    guard let desktop = connection else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+    let sandbox: [String: Any]
+    switch permissionProfile {
+    case "read_only": sandbox = ["type": "readOnly", "networkAccess": true]
+    case "workspace_write": sandbox = ["type": "workspaceWrite", "writableRoots": [workspace], "networkAccess": true]
+    default: throw OS1Error.message("Server ticket permission profile rejected")
+    }
+    var input: [[String: Any]] = [CodexDesktopTransport.textInput(prompt)]
+    for path in PromptAttachments.imagePaths(in: prompt).prefix(8) where FileManager.default.isReadableFile(atPath: path) {
+        input.append(["type": "localImage", "path": path])
+    }
+    var request: [String: Any] = ["threadId": threadID, "input": input, "cwd": workspace,
+        "effort": effort, "approvalPolicy": UnifiedExecution.codexApprovalPolicy,
+        "approvalsReviewer": UnifiedExecution.codexApprovalsReviewer, "sandboxPolicy": sandbox,
+        "runtimeWorkspaceRoots": [workspace], "turnTrigger": "os1"]
+    if let model { request["model"] = model }
+    onDispatch()
+    let turnID = try desktop.startTurn(threadID: threadID, request: request,
+        context: ["inheritThreadSettings": false,
+            "responseItems": [["type": "message", "role": "developer",
+                "content": [["type": "input_text", "text": instructions]]]]], deadline: deadline)
+    RuntimeActivity.emit(.executing, provider: "codex", model: model, effort: effort, nativeSessionID: threadID)
+    let mailbox = ExecutionSteering()
+    if let submission = ExecutionSteering.currentSubmission {
+        try ManagedNativeTurns(root: mailbox.root.deletingLastPathComponent().appendingPathComponent("managed-native-turns"))
+            .record(submissionID: submission, threadID: threadID, turnID: turnID)
+        try mailbox.open(submissionID: submission, threadID: threadID, turnID: turnID)
+    }
+    defer { if let submission = ExecutionSteering.currentSubmission { mailbox.close(submission) } }
+    defer { try? desktop.follow(threadID: threadID, following: false) }
+    var previous = ""
+    // Desktop state changes (new items, a growing current item, status) are
+    // activity: a working turn runs to the ceiling, a silent one stops at `idle`.
+    var watchdog = ProviderActivityWatchdog(ceiling: deadline, idle: idleTimeout)
+    var observed = ""
+    while !watchdog.expired() {
+        if ExecutionCancellation.isCancelled {
+            _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
+                "conversationId": threadID, "expectedTurnId": turnID, "mode": "user-stop"])
+            throw OS1Error.backendBlocked(.cancelled)
+        }
+        if let submission = ExecutionSteering.currentSubmission {
+            for correction in mailbox.inputs(submission) where mailbox.receipt(correction) == nil {
+                if protectedRouteMaterialInEvidence(correction.text) {
+                    try mailbox.record(correction, state: .rejected, threadID: threadID, turnID: turnID); continue
+                }
+                guard let active = try desktop.observeTurn(threadID: threadID, turnID: turnID, deadline: deadline),
+                      active["status"] as? String == "inProgress" else {
+                    try mailbox.record(correction, state: .rejected, threadID: threadID, turnID: turnID); continue
+                }
+                try mailbox.record(correction, state: .sending, threadID: threadID, turnID: turnID)
+                let acknowledgement = try desktop.request("thread-follower-steer-turn", version: 1, params: [
+                    "conversationId": threadID, "input": [CodexDesktopTransport.textInput(correction.text)]])
+                let result = acknowledgement["result"] as? [String: Any]
+                let accepted = (result?["turnId"] as? String) == turnID
+                try mailbox.record(correction, state: accepted ? .accepted : .rejected, threadID: threadID, turnID: turnID)
+            }
+        }
+        if let current = try desktop.observeTurn(threadID: threadID, turnID: turnID, deadline: deadline) {
+            let items = current["items"] as? [[String: Any]] ?? []
+            let lastItemBytes = items.last.flatMap { try? JSONSerialization.data(withJSONObject: $0) }?.count ?? 0
+            let marker = "\(items.count)|\(current["status"] as? String ?? "")|\(lastItemBytes)"
+            if marker != observed { observed = marker; watchdog.observeActivity() }
+            let agents = items.filter { $0["type"] as? String == "agentMessage" }
+            let progress = agents.compactMap { $0["text"] as? String }.joined(separator: "\n\n")
+            if progress != previous {
+                previous = progress
+                RuntimeActivity.emit(.executing, provider: "codex", publicText: progress)
+            }
+            if let blocker = codexTurnBlocker(current, approvalRejected: false) { throw OS1Error.backendBlocked(blocker) }
+            let status = current["status"] as? String
+            if status == "completed" {
+                guard let final = (agents.last(where: { $0["phase"] as? String == "final_answer" }) ?? agents.last)?["text"] as? String else {
+                    throw OS1Error.message("Desktop completed without a final answer")
+                }
+                return CodexTurnOutput(turnID: turnID, output: Data(final.utf8))
+            }
+            if status == "failed" || status == "interrupted" { throw OS1Error.message("Desktop turn ended without completion") }
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+    _ = try? desktop.request("thread-follower-interrupt-turn", version: 4, params: [
+        "conversationId": threadID, "expectedTurnId": turnID, "mode": "system"])
+    throw OS1Error.message("Desktop turn timed out (\(watchdog.expiryReason())); preserved for inspection, not replayed")
 }
 
 struct CodexTurnOutput {
@@ -4968,17 +5481,24 @@ func codexTurnIsPersisted(_ turns: Any?, turnID: String, finalAnswer: String, co
     }
 }
 
-let codexDesktopBundleID = "com.openai.codex"
+// One identifier for both the running check and the launch decision, so the
+// focus policy cannot drift from the app it is supposed to leave alone.
+let codexDesktopBundleID = CodexDesktopTransport.desktopBundleID
 
 /// Codex threads have a single writer: whichever app-server process opens a
-/// thread takes `~/.codex/thread-writer-locks/<id>.lock` and Codex Desktop
-/// keeps every thread it has opened locked until it quits. OS-1 therefore
-/// forks the persisted history on the next turn when Desktop owns the prior
-/// thread, instead of failing or pretending that the session is synchronized.
+/// thread takes `~/.codex/thread-writer-locks/<id>.lock`. Execution now goes
+/// through the Desktop owner; persisted-record reveal remains a separate
+/// compatibility path and is not proof that a turn is currently running.
 enum DesktopRevealMode: String {
-    // `background` is retained for existing callers, but is record-only. A URL
-    // recipient may activate itself even when `open -g` requested background.
+    // `background` is retained for existing callers, but is record-only.
+    // Automatic backend startup never sends a thread URL to the desktop.
     case never, background, always
+
+    /// `always` is only ever requested by an explicit owner reveal; every other
+    /// mode belongs to automatic work that must not take the foreground.
+    var focusIntent: BackendWindowFocus.Intent {
+        self == .always ? .explicitUserReveal : .automaticBackendWork
+    }
 }
 
 func codexDesktopIsRunning() -> Bool {
@@ -5002,7 +5522,9 @@ func codexDesktopVisibility(
     reveal: (String) throws -> Void,
     threadID: String
 ) -> String {
-    guard mode == .always else {
+    // The deep link activates Codex Desktop, so only an explicit owner reveal
+    // may send it. Automatic modes keep the native record and the foreground.
+    guard BackendWindowFocus.mayActivateBackendWindow(mode.focusIntent) else {
         return mode == .background ? "native_record_only" : "not_revealed"
     }
     guard desktopRunning else { return "desktop_not_running" }
@@ -5082,7 +5604,8 @@ func claudeDesktopVisibility(
     reveal: (String) throws -> String,
     sessionID: String
 ) -> String {
-    guard mode == .always else {
+    // `claude://resume` activates Claude Desktop; same rule as Codex above.
+    guard BackendWindowFocus.mayActivateBackendWindow(mode.focusIntent) else {
         return mode == .background ? "native_record_only" : "not_revealed"
     }
     do {
@@ -5102,6 +5625,8 @@ func publishAdoptedNativeRecord(
     guard record.persistence == "verified" else { return record }
     let visibility: String
     switch provider {
+    case "codex" where record.desktopVisibility == "desktop_owned":
+        visibility = "desktop_owned"
     case "codex":
         visibility = codexDesktopVisibility(
             mode: mode,
@@ -5127,7 +5652,7 @@ func publishAdoptedNativeRecord(
 }
 
 /// Identifies the app-server's single-writer conflict. The runtime uses this
-/// signal to fork the persisted history and continue in a visible new thread.
+/// signal to hand off to the existing Desktop owner without changing thread identity.
 func codexWriterConflictMessage(_ error: Error, threadID: String) -> String? {
     guard "\(error)".contains("already has an active writer") else { return nil }
     return "Codex Desktop currently owns Codex session \(threadID)"
@@ -5145,8 +5670,9 @@ func claudeTranscriptPath(
     modifiedAfter: Date? = nil,
     containing assistantText: String? = nil
 ) -> String? {
-    let root = projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/projects", isDirectory: true)
+    // Claude writes its transcript under the active account's config
+    // directory, so a second account's records are read from its own home.
+    let root = projectsRoot ?? claudeProjectsRoot()
     guard let projects = try? FileManager.default.contentsOfDirectory(
         at: root,
         includingPropertiesForKeys: [.isDirectoryKey],
@@ -5205,7 +5731,7 @@ private func interruptedExecution(ticket: Ticket, model: String?, effort: String
         model: model ?? "provider-default", effort: effort, executorContractVersion: contract.version,
         executorContractSHA256: contract.sha256, exitCode: 69, output: String(publicProgress.suffix(24_000)), stderr: "",
         durationMS: Int64(Date().timeIntervalSince(started) * 1_000), workspaceBeforeHash: beforeHash,
-        workspaceAfterHash: workspaceHash(workspace), nativeRecord: record)
+        workspaceAfterHash: observedStateHash(workspace), nativeRecord: record)
     return RejectedProviderExecution(execution: ProviderExecution(artifact: artifact, sessionID: sessionID, nativeRecord: record), cause: cause)
 }
 
@@ -5237,6 +5763,8 @@ private func execute(
     prompt: String,
     workspace: String,
     timeout: Int,
+    idleTimeout: Int? = nil,
+    trustedCodexModels: [CodexModelCapability]? = nil,
     providerSessionID: String?,
     model: String?,
     effort: String,
@@ -5250,10 +5778,12 @@ private func execute(
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil
 ) throws -> ProviderExecution {
+    AttemptLatencyTrace.mark("execute_entered")
     let started = Date()
-    let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
-        permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace)
     let lockedObjective = objectivePrompt ?? prompt
+    let executionWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
+        permission: ticket.permissionProfile, hasSource: preloadedR2Evidence != nil, workspace: workspace,
+        objective: lockedObjective)
     // Claude's read-only lane carries a bounded shell (ClaudeReadOnlyShell):
     // a shell-bound objective is not refused here; the backend is told the
     // bound so it verifies what it can and names what it could not run.
@@ -5295,13 +5825,20 @@ private func execute(
         // Startup may run configured hooks or MCP initialization before the
         // first turn. Once the process starts, absent local diffs cannot prove
         // that replaying a write-profile objective would be safe.
+        AttemptLatencyTrace.mark("instructions_ready")
         let appServer = try CodexAppServerClient(executable: codex, workspace: workspace,
-            onLaunch: { onDispatch?(expectedSessionID) }, submissionID: ExecutionSteering.currentSubmission)
+            submissionID: ExecutionSteering.currentSubmission)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
-        guard let model, try appServer.models(deadline: min(deadline, Date().addingTimeInterval(12))).contains(where: {
-            $0.slug == model && $0.supportedEfforts.contains(effort)
-        }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        AttemptLatencyTrace.mark("codex_initialized")
+        func listed(_ rows: [CodexModelCapability]) -> Bool {
+            rows.contains { $0.slug == model && $0.supportedEfforts.contains(effort) }
+        }
+        guard model != nil, try trustedCodexModels.map(listed) == true ||
+                listed(appServer.models(deadline: min(deadline, Date().addingTimeInterval(12)))) else {
+            throw OS1Error.backendBlocked(.capabilityUnavailable)
+        }
+        AttemptLatencyTrace.mark("codex_ready")
         let actualSessionID = try appServer.startOrResumeThread(
             existingSessionID: expectedSessionID,
             workspace: workspace,
@@ -5311,27 +5848,41 @@ private func execute(
             title: codexSessionTitle(from: lockedObjective),
             deadline: deadline
         )
+        AttemptLatencyTrace.mark("thread_ready")
+        // A newly created thread has no Desktop renderer owner. Its current
+        // app-server writer must execute it; waiting for a nonexistent UI owner
+        // deadlocks dispatch. Only an actual writer conflict uses Desktop IPC.
         let turn: CodexTurnOutput
-        do { turn = try appServer.runTurn(
-            threadID: actualSessionID,
-            prompt: prompt,
-            workspace: workspace,
-            model: model,
-            effort: effort,
-            permissionProfile: ticket.permissionProfile,
-            deadline: deadline,
-            onDispatch: { onDispatch?(actualSessionID) }
-        ) } catch {
+        do {
+            if appServer.ownsThreadWriter {
+                turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
+                    workspace: workspace, model: model, effort: effort,
+                    permissionProfile: ticket.permissionProfile, deadline: deadline,
+                    idleTimeout: idleTimeout.map(TimeInterval.init),
+                    onDispatch: { onDispatch?(actualSessionID) })
+            } else {
+                appServer.applyPendingThreadName(deadline: min(deadline, Date().addingTimeInterval(10)))
+                appServer.close()
+                turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
+                    prompt: prompt, workspace: workspace, model: model, effort: effort,
+                    permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
+                    idleTimeout: idleTimeout.map(TimeInterval.init),
+                    onDispatch: { onDispatch?(actualSessionID) })
+            }
+        } catch {
+            // No alternate turn is dispatched after an ambiguous failure.
             throw interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
-                sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress,
-                beforeHash: workspaceBeforeHash, workspace: executionWorkspace, started: started, cause: error)
+                sessionID: actualSessionID, publicProgress: appServer.interruptedPublicProgress, beforeHash: workspaceBeforeHash,
+                workspace: executionWorkspace, started: started, cause: error)
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
         var recordPath: String?
         var persistence = "verified"
+        AttemptLatencyTrace.mark("turn_completed")
         let writerStderr = appServer.stderr()
         appServer.close()
+        AttemptLatencyTrace.mark("writer_closed")
         do {
             // A live writer's in-memory turn list is not persistence evidence.
             // This new process only reads; it never resumes/starts another turn.
@@ -5365,6 +5916,7 @@ private func execute(
         } catch {
             persistence = "unverified: \(error)"
         }
+        AttemptLatencyTrace.mark("record_verified")
         let correctedObjective = ExecutionSteering.currentSubmission.map { id in
             let mailbox = ExecutionSteering()
             return mailbox.inputs(id).filter { mailbox.receipt($0)?.state == .persisted }
@@ -5404,7 +5956,7 @@ private func execute(
             turnID: turn.turnID,
             recordPath: recordPath,
             persistence: persistence,
-            desktopVisibility: "pending_adoption"
+            desktopVisibility: "desktop_owned"
         )
         sessionID = actualSessionID
     } else {
@@ -5412,6 +5964,15 @@ private func execute(
             throw OS1Error.backendBlocked(.capabilityUnavailable)
         }
         let sourceOnly = hasPreloadedR2Evidence && ticket.permissionProfile == "read_only"
+        // Same customization-free shape as a source-only answer, chosen for an
+        // objective that needs nothing from this machine.
+        let chatLane = claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
+                                      hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        if chatLane {
+            RuntimeActivity.emit(.preparing, provider: "claude", model: model, effort: effort,
+                publicText: os1Tr("Claude 대화 모드로 실행합니다 · 코딩 도구·지침 없이 모델만 사용해 토큰을 아낍니다.",
+                                  "Running Claude in chat mode · the model alone, without coding tools or instructions, to save tokens."))
+        }
         let projectlessRead = ticket.permissionProfile == "read_only" &&
             workspace == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         let previousSessionID = try normalizedSessionID(providerSessionID)
@@ -5423,22 +5984,31 @@ private func execute(
         let desktopOwnsPrevious = previousSessionID.flatMap {
             claudeDesktopSessionMetadataPath(sessionID: $0)
         } != nil
-        let requestedSessionID = (previousSessionID == nil || desktopOwnsPrevious || sourceOnly)
+        // A chat-mode turn starts its own session: resuming a full Claude Code
+        // thread would reload everything this lane exists to leave out.
+        let requestedSessionID = (previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane)
             ? UUID().uuidString.lowercased()
             : previousSessionID!
-        let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly
+        let startsNewSession = previousSessionID == nil || desktopOwnsPrevious || sourceOnly || chatLane
         let activeSessionID = requestedSessionID
-        guard let nativeModel = try ModelAvailability.claudeModels(workspace: executionWorkspace).first(where: {
-            $0.model == model && $0.efforts.contains(effort)
-        }) else { throw OS1Error.backendBlocked(.capabilityUnavailable) }
+        // The inventory this run probed a moment ago is reused (≈1 s per
+        // Claude attempt); a model it does not list is re-probed live before
+        // the route is refused.
+        func routed(_ rows: [NativeClaudeModel]) -> NativeClaudeModel? {
+            rows.first { $0.model == model && $0.efforts.contains(effort) }
+        }
+        guard let nativeModel = try routed(ModelAvailability.claudeModels(workspace: executionWorkspace, maxAge: 60))
+            ?? routed(ModelAvailability.claudeModels(workspace: executionWorkspace)) else {
+            throw OS1Error.backendBlocked(.capabilityUnavailable)
+        }
         // Live steering: with an owning OS-1 submission, the run reads
         // stream-json user messages from stdin so the owner's corrections
         // join this same session mid-run — Codex parity. Source-only answers
         // stay one-shot.
-        let steeringSubmission = sourceOnly ? nil : ExecutionSteering.currentSubmission
+        let steeringSubmission = (sourceOnly || chatLane) ? nil : ExecutionSteering.currentSubmission
         // Attached images ride the same stream as real image blocks — a path
         // string is useless to a read-only lane that cannot open Desktop.
-        let attachedImages = sourceOnly ? [] : ImageInput.encodeAll(in: prompt)
+        let attachedImages = (sourceOnly || chatLane) ? [] : ImageInput.encodeAll(in: prompt)
         let steerDriver: ClaudeSteerDriver? = (steeringSubmission != nil || !attachedImages.isEmpty)
             ? ClaudeSteerDriver(submissionID: steeringSubmission, sessionID: activeSessionID, prompt: prompt, images: attachedImages)
             : nil
@@ -5456,10 +6026,10 @@ private func execute(
             title: claudeSessionTitle(from: lockedObjective),
             permissionProfile: ticket.permissionProfile,
             prompt: prompt,
-            sourceContextOnly: hasPreloadedR2Evidence,
+            sourceContextOnly: hasPreloadedR2Evidence || chatLane,
             streamInput: steerDriver != nil
         )
-        if projectlessRead && !sourceOnly { arguments.insert("--safe-mode", at: 1) }
+        if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }
         let stream = ExecutionStream()
         var revision = 0
         let raw: (Int32, Data, Data)
@@ -5467,8 +6037,10 @@ private func execute(
             claude,
             arguments,
             timeout: timeout,
+            idleTimeout: idleTimeout.map(TimeInterval.init),
             currentDirectory: executionWorkspace,
             isProvider: true,
+            environmentOverrides: backendAccountEnvironment("claude"),
             onLaunch: { onDispatch?(activeSessionID) },
             onOutput: { bytes in
                 stream.ingestClaude(bytes)
@@ -5488,6 +6060,7 @@ private func execute(
                 workspace: executionWorkspace, started: started, cause: error)
         }
         stream.finishClaude()
+        AttemptLatencyTrace.mark("provider_exited")
         let resultData = stream.result ?? raw.1
         onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
         let parsed: ClaudePrintResult
@@ -5501,6 +6074,13 @@ private func execute(
                 workspace: executionWorkspace, started: started, cause: error)
             rejection.quotaRejectedBeforeExecution = backendBlocker(error) == .quotaExhausted &&
                 stream.claudeQuotaRejectedBeforeExecution(sessionID: activeSessionID)
+            if backendBlocker(error) == .quotaExhausted, var scoped = object {
+                // Scope the same envelope the parser classified: the read-only
+                // lane's denials are the bound doing its job, not a policy verdict.
+                if ticket.permissionProfile == "read_only" { scoped["permission_denials"] = [] as [Any] }
+                rejection.quotaScope = BackendRecovery.claudeQuotaScope(status: raw.0 == 0 ? 1 : raw.0,
+                    object: scoped, dispatchedModel: model)
+            }
             throw rejection
         }
         let outputIssues = outputContractIssues(parsed.output, prompt: lockedObjective, snapshotOnly: hasPreloadedR2Evidence)
@@ -5575,13 +6155,14 @@ private func execute(
             stderr: boundedString(result.2, maximum: 180_000),
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(executionWorkspace),
+            workspaceAfterHash: observedStateHash(executionWorkspace),
             nativeRecord: nativeRecord
         ),
         sessionID: sessionID,
         nativeRecord: nativeRecord,
         driftApplication: driftApplication
     )
+    AttemptLatencyTrace.mark("candidate_built")
     do { try validateCandidate?() }
     catch {
         if let drift = error as? DriftDetected, let driftApplication,
@@ -5596,6 +6177,7 @@ private func execute(
         }
         throw RejectedProviderExecution(execution: candidate, cause: error)
     }
+    AttemptLatencyTrace.mark("candidate_validated")
     return candidate
 }
 
@@ -5736,7 +6318,7 @@ func executePublicDeterministic(
             stderr: "",
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: observedStateHash(workspace),
             nativeRecord: nativeRecord
         ),
         sessionID: ticket.executionID,
@@ -5812,7 +6394,7 @@ func executeLocalDeterministic(
             stderr: "",
             durationMS: Int64(Date().timeIntervalSince(started) * 1_000),
             workspaceBeforeHash: workspaceBeforeHash,
-            workspaceAfterHash: workspaceHash(workspace),
+            workspaceAfterHash: observedStateHash(workspace),
             nativeRecord: NativeRecordEvidence(
                 turnID: decision.routeID,
                 recordPath: receiptURL.path,
@@ -5852,7 +6434,7 @@ func runLocalTask(
     if sourceStatusRequested(prompt, context: context) {
         return try runSourceStatusControl(config: config)
     }
-    let r2Evidence = try r2RetrievalEvidence(prompt, context: context)
+    let r2Evidence = try r2RetrievalEvidence(prompt, context: context, objective: r2Objective)
     if let r2Objective, !r2Objective.requiresTransformation, let r2Evidence {
         var summary = try runR2RetrievalControl(r2Evidence, objective: r2Objective, startedAt: objectiveStartedAt)
         summary.sourceContext = try persistSource(r2Evidence)
@@ -5889,7 +6471,8 @@ func runLocalTask(
         let ticket = localTicket(decision, sequence: attempt)
         RuntimeActivity.emit(.preparing, provider: decision.provider, model: decision.model, effort: decision.effort)
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
-            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace)
+            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: workspace,
+            objective: prompt)
         let beforeHash = workspaceHash(observedWorkspace)
         let executionPrompt: String
         if let retryReason {
@@ -5919,6 +6502,7 @@ func runLocalTask(
                     prompt: executionPrompt,
                     workspace: workspace,
                     timeout: r2Evidence == nil ? config.executionTimeoutSeconds : min(config.executionTimeoutSeconds, 120),
+                    idleTimeout: r2Evidence == nil ? config.providerIdleTimeoutSeconds : nil,
                     providerSessionID: nativeSessions[decision.provider] ?? nil,
                     model: decision.model,
                     effort: decision.effort,
@@ -6036,6 +6620,39 @@ func sourceOnlyFailoverProvider(requested: String, failed: String, permission: S
     if failed == "claude", codexAvailable { return "codex" }
     if failed == "codex", claudeAvailable { return "claude" }
     return nil
+}
+
+/// A turn that finished (exit 0, answer, verified native record) and was
+/// refused only by OS-1's own post-check is a rejected result, not an
+/// interrupted write with uncertain effects. Protocol blockers (quota, denial,
+/// timeout) and interrupted artifacts keep their own classification.
+func finishedTurnRejectedByPostCheck(_ error: Error, classified: BackendBlocker, alternateAvailable: Bool = false) -> Bool {
+    guard let rejected = error as? RejectedProviderExecution else { return false }
+    let blocker = backendBlocker(error)
+    // A finished answer that names a limit ("…can't access X, so I did Y") is
+    // the backend's own account, the way Codex or Claude Code would show it.
+    // It is the result, unless another backend can still try a read-only task.
+    let limitWording = blocker == .capabilityUnavailable && (classified == .effectsUncertain || !alternateAvailable)
+    guard (classified == .effectsUncertain && blocker == nil) || limitWording else { return false }
+    return BackendRecovery.rejectedAdoptionBlocker(exitCode: Int(rejected.execution.artifact.exitCode),
+        output: rejected.execution.artifact.output,
+        persistence: rejected.execution.nativeRecord.persistence) == .verificationRejected
+}
+
+/// Every run is dispatched with write permission (438c757, 2026-09-19), so
+/// the ticket's permission no longer tells a question from a change request,
+/// and a finished answer refused only by OS-1's own post-check (language,
+/// format, objective, deliverable) became final instead of corrected
+/// (2026-09-25: a Korean question answered in English). When the request's
+/// scope is read-only and nothing in the observed state changed, re-running
+/// can repeat no effect, so the bounded retry that carries the rejected
+/// answer and the exact defect applies — as it always did for read_only
+/// tickets. A changed state or a write-scope request stays final.
+func postCheckRetryEligible(_ error: Error, prompt: String, workspaceChanged: Bool) -> Bool {
+    guard !workspaceChanged, let rejected = error as? RejectedProviderExecution, rejected.cause is DriftDetected,
+          rejected.execution.artifact.exitCode == 0, rejected.execution.nativeRecord.persistence == "verified",
+          !rejected.execution.artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+    return ScopeResolution.resolve(prompt).scope == .readOnly
 }
 
 func backendBlocker(_ error: Error) -> BackendBlocker? {
@@ -6157,6 +6774,8 @@ private func recordCompletionAttempt(store: CompletionFeedbackStore, scope: Comp
                                      ticket: Ticket, model: String, effort: String,
                                      outcome: CompletionOutcome, usage: CompletionMeasuredUsage?,
                                      startedAt: Date, source: SourceReference?, monitorTaskID: String, monitorScope: CompletionFeedbackScope) {
+    AttemptLatencyTrace.mark("recorded")
+    AttemptLatencyTrace.finish(executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider)
     let observation = CompletionFeedbackObservation(
             executionID: ticket.executionID, sequence: ticket.sequence, provider: ticket.provider,
             model: model, effort: effort,
@@ -6220,11 +6839,15 @@ func runWorkflowTaskWithOwnerPolicy(
 ) async throws -> RunSummary {
     let handoff = try SessionHandoff.decode(context)
     let workflowStartedAt = Date()
-    let projectID = PreparationIntent.detect(prompt)?.projectID ?? handoff.taskContext?.project?.projectID
+    let namedProjectID = PreparationIntent.detect(prompt)?.projectID
+    let projectID = localProjectBinding(request: prompt, workspace: workspace, namedProjectID: namedProjectID,
+        boundProjectID: handoff.taskContext?.project?.projectID, readOnly: false).projectID
+        ?? namedProjectID ?? handoff.taskContext?.project?.projectID
     let workflowWorkspace = projectID == "os1-clodex"
-        ? (LocalProjectWorkspace.resolve(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
+        ? (resolveLocalProjectWorkspace(projectID: "os1-clodex", requested: workspace)?.workspace ?? workspace)
         : workspace
     let repairRoot = LocalProjectWorkspace.root(containing: workflowWorkspace, projectID: "os1-clodex")
+    let os1Repair = workflowIsOS1Repair(repairRoot: repairRoot, projectID: projectID)
     // Hold custody across architecture, implementation and independent verification.
     // Child stages share this in-process lease; no staged build exists before PASS.
     let workflowLease = try repairRoot.map { try acquireOS1SourceWriteLease(root: $0) }
@@ -6244,6 +6867,7 @@ func runWorkflowTaskWithOwnerPolicy(
     var architectureOutput = ""
     var stagePlan: [TaskWorkflow] = TaskWorkflow.allCases
     var stageIndex = 0
+    var repairAttempted = false
     // Governance measures the owner's whole task, not three apparently
     // successful subtasks. Every stage attempt is charged to this one id.
     let workflowMonitorID = UUID().uuidString.lowercased()
@@ -6262,7 +6886,7 @@ func runWorkflowTaskWithOwnerPolicy(
     while stageIndex < stagePlan.count {
         let stage = stagePlan[stageIndex]
         RuntimeActivity.emit(.preparing, publicText: stage.progressText)
-        var stagePrompt = stage == .implementation && stageIndex > 2
+        var stagePrompt = stage == .implementation && repairAttempted
             ? TaskWorkflow.repairPrompt(original: prompt, architecture: architectureOutput,
                 failedVerification: priorOutput ?? "")
             : stage.prompt(original: prompt, prior: priorOutput)
@@ -6276,6 +6900,9 @@ func runWorkflowTaskWithOwnerPolicy(
             }.joined(separator: "\n")
             stagePrompt += "\nRUNTIME-VERIFIED EXECUTION RECORD LOCATORS (record persistence and permissions verified by OS-1, not blanket proof of model claims):\n" + records
             stagePrompt += "\nRead these primary records when checking pre-change observations, tool results and historical scope. Architecture handoff for locating evidence (not itself proof):\n" + String(architectureOutput.prefix(8_000))
+        }
+        if os1Repair && stage == .architecture {
+            stagePrompt += "\nIDEMPOTENT SELF-REPAIR: Inspect source and existing regressions. If the requested source behavior is already implemented, identify exact source/test evidence and end with OS1_SOURCE_STATE: ALREADY_SATISFIED. This only skips redundant editing; a fresh independent verifier must still validate source readiness, and OS-1 must stage/install a verified release. Never invent a change just to satisfy a mutation check. If a defect remains, return the implementation contract without that marker."
         }
         if repairRoot != nil {
             stagePrompt += "\nSELF-REPAIR RELEASE BOUNDARY: This workflow verifies source readiness first. Do not install, stage a release, bump versions, or commit/push. OS-1 performs those mechanical steps only after the independent verification PASS. Check actual source, deterministic tests, and a local rendering when relevant. Do not require the old installed app to already contain this uninstalled patch; do not claim installation or live recovery. Installation has its own later receipt and rollback gate."
@@ -6313,19 +6940,25 @@ func runWorkflowTaskWithOwnerPolicy(
         }
         if stage == .verification && TaskWorkflow.verdict(adopted.output) != true {
             guard TaskWorkflow.permitsBoundedRepair(verdict: TaskWorkflow.verdict(adopted.output),
-                stageIndex: stageIndex) else {
+                stageIndex: stageIndex, repairAttempted: repairAttempted) else {
                 return held("verification: 분리된 검증 단계가 PASS를 증명하지 못했습니다. 구현 결과와 검증 기록은 보존했습니다. 이전 쓰기 단계를 자동 재실행하지 말고 실패 근거를 확인한 뒤 수정 범위를 다시 지정해야 합니다.")
             }
             // Only an explicit, verified BLOCK opens one bounded repair pass.
             // Missing/malformed verdicts and uncertain implementation writes
             // cannot authorize replay.
+            repairAttempted = true
             stagePlan.append(contentsOf: [.implementation, .verification])
         }
         if stage != .verification {
             if adopted.provider == "codex" { codexID = adopted.sessionID }
             if adopted.provider == "claude" { claudeID = adopted.sessionID }
         }
-        if stage == .architecture { architectureOutput = adopted.output }
+        if stage == .architecture {
+            architectureOutput = adopted.output
+            if os1Repair && TaskWorkflow.sourceAlreadySatisfied(adopted.output) {
+                stagePlan = [.architecture, .verification]
+            }
+        }
         priorOutput = adopted.output
         stageContext = try SessionHandoff(transcript: handoff.transcript,
             source: source, taskContext: taskState).encoded()
@@ -6333,7 +6966,7 @@ func runWorkflowTaskWithOwnerPolicy(
     }
     if let repairRoot, TaskWorkflow.permitsSelfUpdate(stage: .verification, finalVerdict: TaskWorkflow.verdict(priorOutput ?? "")) {
         switch completeOS1SelfRepair(root: repairRoot, objective: prompt,
-            startedAt: workflowStartedAt, startHead: workflowStartHead) {
+            startedAt: workflowStartedAt, startHead: workflowStartHead, verifiedSourceReady: os1Repair) {
         case .notApplicable: break
         case .staged(_, let note):
             RuntimeActivity.emit(.verifying, publicText: note)
@@ -6345,6 +6978,44 @@ func runWorkflowTaskWithOwnerPolicy(
     workflowAdopted = true
     return RunSummary(status: "complete", steps: steps, sourceContext: source,
         taskContext: taskState, monitorTaskID: workflowMonitorID)
+}
+
+/// The unpaid account-inventory probes, started as early as possible so they
+/// overlap the owner-policy refresh and the device/registration setup. They
+/// read local account metadata only: no routing, no model call.
+/// Device identity, gateway registration and the gateway's model-check
+/// capability do not depend on the owner policy, so they overlap its refresh
+/// (≈0.5 s registration + ≈0.4 s capability probe, 2026-09-24 latency trace).
+struct PreparedGateway: @unchecked Sendable {
+    let client: APIClient
+    let key: SigningKey
+    let feedbackSupported: Bool
+}
+
+struct PreflightInventory: Sendable {
+    let workspace: String
+    let codex: Task<ActiveCodexCatalog, Never>?
+    let claude: Task<(configured: [ClaudeModelCapability], routable: [ClaudeModelCapability]), Never>
+    var gateway: Task<PreparedGateway?, Never>? = nil
+
+    static func start(workspace: String, config: RuntimeConfig, showCodex: Bool, prepareGateway: Bool = false) -> PreflightInventory {
+        PreflightInventory(workspace: workspace, codex: showCodex ? Task.detached {
+            (try? ModelAvailability.codexCatalog(workspace: workspace, config: config)) ??
+                ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+        } : nil, claude: Task.detached {
+            (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config))
+                ?? (configured: [ClaudeModelCapability](), routable: [ClaudeModelCapability]())
+        }, gateway: prepareGateway ? Task.detached {
+            // Any failure leaves the inline path to redo it and report it.
+            do {
+                let key = try SigningKey.loadOrCreate()
+                let client = APIClient(config: config, token: try githubToken(), deviceID: try deviceID())
+                try await register(client: client, key: key)
+                return PreparedGateway(client: client, key: key,
+                    feedbackSupported: await client.supportsCompletionFeedback(requireModelAvailability: true))
+            } catch { return nil }
+        } : nil)
+    }
 }
 
 // Refresh the device owner policy before dispatch; absence is never a silent
@@ -6384,8 +7055,18 @@ func runTask(
     monitorTaskIDOverride: String? = nil,
     heldOS1SourceRoot: String? = nil
 ) async throws -> RunSummary {
+    // Inventories first: they overlap the policy refresh (≈1 s, 2026-09-24).
+    // A refused policy still stops the run before any routing or model call.
+    AttemptLatencyTrace.begin()
+    let preflight = (try? RuntimeConfig.load()).map {
+        PreflightInventory.start(workspace: URL(fileURLWithPath: workspace).standardizedFileURL.path,
+                                 config: $0, showCodex: OS1Settings.load().showCodex, prepareGateway: true)
+    }
     let policy = try loadCurrentOwnerPolicy()
+    AttemptLatencyTrace.mark("policy")
+    let namedPaths = RequestNamedPaths.extract((ownerPrompt.map { $0 + "\n" } ?? "") + prompt)
     return try await OwnerPolicyContext.$snapshot.withValue(policy) {
+        try await RequestObservation.$namedPaths.withValue(namedPaths) {
         try await runTaskWithOwnerPolicy(
                 prompt: prompt,
                 workspace: workspace,
@@ -6402,7 +7083,9 @@ func runTask(
                 workflowStage: workflowStage,
                 ownerPrompt: ownerPrompt,
                 monitorTaskIDOverride: monitorTaskIDOverride,
-                heldOS1SourceRoot: heldOS1SourceRoot)
+                heldOS1SourceRoot: heldOS1SourceRoot,
+                preflight: preflight)
+        }
     }
 }
 
@@ -6422,11 +7105,16 @@ func runTaskWithOwnerPolicy(
     workflowStage: TaskWorkflow? = nil,
     ownerPrompt: String? = nil,
     monitorTaskIDOverride: String? = nil,
-    heldOS1SourceRoot: String? = nil
+    heldOS1SourceRoot: String? = nil,
+    preflight: PreflightInventory? = nil
 ) async throws -> RunSummary {
     RuntimeActivity.emit(.preparing)
+    if requireReadOnly, let verified = try await RailwayDelivery.recoverySummary(request: prompt) {
+        return verified
+    }
     let handoff = try SessionHandoff.decode(context)
-    let sourceDetached = detachesConversationSource(prompt)
+    let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
+    let sourceDetached = detachesConversationSource(objectiveRequest)
     let context: String? = sourceDetached || handoff.transcript.isEmpty ? nil : handoff.transcript
     let attachedSource = sourceDetached ? nil : handoff.source
     let objectiveStartedAt = Date()
@@ -6445,16 +7133,26 @@ func runTaskWithOwnerPolicy(
     var taskState = handoff.taskContext ?? TaskContext.migrated(conversationID: UUID(), request: prompt, workspace: workspace,
         sourceContext: attachedSource, codexSessionID: codexSessionID, claudeSessionID: claudeSessionID, now: objectiveStartedAt)
     if sourceDetached { taskState.sources.removeAll(); taskState.touch(now: objectiveStartedAt) }
-    let objectiveRequest = TaskWorkflow.objectiveRequest(owner: ownerPrompt, executionPrompt: prompt)
     let scopeResolution = ScopeResolution.resolve(objectiveRequest)
     let preparation = requireReadOnly ? nil : PreparationIntent.detect(TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt))
+    // Only an explicit preparation-only request is labelled "prepare"; a
+    // continuation or "can it…?" question is ordinary work for the backend.
     let kind: TaskContext.ObjectiveKind = preparation.map {
-        $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .prepare)
+        $0.preparationOnly ? .prepare : $0.modifies ? .modify : ($0.kind == .explainFromContext ? .explain : .other)
     } ?? TaskContext.ObjectiveKind.classify(objectiveRequest)
     // The dispatcher delegates execution capability, not guessed intent.
     // Original task text/prohibitions remain binding for both backends.
     let internalReadOnly = requireReadOnly
-    let resolvedScope = ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
+    // A text operation carrying its own payload delegates a read-only envelope
+    // and asks the route core for a read-only ticket. Both come from this one
+    // predicate on this one text, so the authority floor and the signed ticket
+    // cannot disagree; every other request keeps the executable envelope.
+    let selfContainedText = workflowStage == nil && !requireReadOnly
+        && ClaudeChatLane.selfContainedTextOperation(prompt)
+        && !promptRequiresShellCapability(prompt)
+    let resolvedScope = selfContainedText
+        ? TaskContext.Scope.readOnly
+        : ScopeResolution.delegationScope(internalReadOnly: internalReadOnly)
     if taskState.objective.requestText != objectiveRequest || taskState.objective.kind != kind || taskState.objective.scope != resolvedScope {
         taskState.setObjective(TaskContext.Objective(requestText: objectiveRequest, kind: kind,
             scope: resolvedScope, prohibitions: scopeResolution.prohibitions), now: objectiveStartedAt)
@@ -6464,18 +7162,40 @@ func runTaskWithOwnerPolicy(
     // A registered local-workspace project is its own source tree. When the
     // conversation lives elsewhere (usually HOME), work in the project's
     // registered root; the bound project keeps that root for later turns.
-    let localProjectID = preparation?.projectID.flatMap { ProjectAdapterRegistry.kind(for: $0) == .localWorkspace ? $0 : nil }
-        ?? taskState.project.flatMap { ProjectAdapterRegistry.kind(for: $0.projectID) == .localWorkspace ? $0.projectID : nil }
+    // A request about OS-1 itself that names no project ("말풍선이 안 맞아,
+    // 코덱스 기준으로 고쳐") binds OS-1 too, so OS-1 can finish the repair.
+    let projectBinding = localProjectBinding(request: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt),
+        workspace: requestedWorkspace, namedProjectID: preparation?.projectID, boundProjectID: taskState.project?.projectID,
+        readOnly: requireReadOnly)
+    let localProjectID = projectBinding.projectID
     var canonicalWorkspace = requestedWorkspace
     if let localProjectID, LocalProjectWorkspace.root(containing: requestedWorkspace, projectID: localProjectID) == nil {
-        if let resolved = LocalProjectWorkspace.resolve(projectID: localProjectID, requested: requestedWorkspace) {
+        if let resolved = resolveLocalProjectWorkspace(projectID: localProjectID, requested: requestedWorkspace) {
             canonicalWorkspace = resolved.workspace
-            RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
-                + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
+            if projectBinding.inferred {
+                RuntimeActivity.emit(.preparing, publicText: os1Tr(
+                    "OS-1 자체 수정 요청으로 보고 OS-1 소스 \(resolved.workspace)에서 작업합니다 (근거: \(projectBinding.inference?.signals.prefix(3).joined(separator: " · ") ?? "")). 끝나면 OS-1이 직접 빌드·검증·설치합니다.",
+                    "Treating this as a change to OS-1 itself: working in OS-1's source \(resolved.workspace) (evidence: \(projectBinding.inference?.signals.prefix(3).joined(separator: " · ") ?? "")). OS-1 builds, verifies and installs it itself."))
+                _ = applyWorkspaceBaseline(projectID: localProjectID, workspace: resolved.workspace, context: &taskState)
+            } else {
+                RuntimeActivity.emit(.preparing, publicText: "\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 작업 폴더로 \(resolved.workspace)을(를) 사용합니다. 대화 폴더 \(requestedWorkspace)에는 해당 소스가 없습니다."
+                    + (resolved.alternates.isEmpty ? "" : " 다른 등록 후보: \(resolved.alternates.joined(separator: ", "))"))
+            }
         } else if preparation?.projectID == localProjectID {
             throw OS1Error.message("\(ProjectAdapterRegistry.label(for: localProjectID)) 소스 폴더를 찾지 못했습니다. 대화 폴더 \(requestedWorkspace)에는 \(LocalProjectWorkspace.marker(for: localProjectID) ?? "프로젝트 표식")이(가) 없고 등록된 프로젝트 목록에도 해당 소스 트리가 없습니다. 소스 체크아웃 폴더를 이 대화의 작업 폴더로 선택한 뒤 다시 요청하세요.")
         }
     }
+    // A readback observes the previous operation; it must never mint a new
+    // deployment identity or ask the backend to redeploy just to match it.
+    let previewDeploymentTarget = PreviewTargetBinding.shouldBindNewDeployment(request: objectiveRequest, readOnly: requireReadOnly)
+        ? try await PreviewDeploymentTarget.resolve(request: objectiveRequest, requestID: executionID) : nil
+    if let target = previewDeploymentTarget {
+        canonicalWorkspace = target.workspace
+        taskState.setProject(TaskContext.ProjectBaseline(projectID: "workspace:" + URL(fileURLWithPath: target.workspace).lastPathComponent,
+            workspace: target.workspace), now: objectiveStartedAt)
+        RuntimeActivity.emit(.preparing, publicText: "요청한 로컬 미리보기의 실제 소스 폴더를 확인했습니다: \(target.workspace)")
+    }
+    canonicalWorkspace = LocalProjectWorkspace.executionPath(canonicalWorkspace)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: canonicalWorkspace, isDirectory: &isDirectory), isDirectory.boolValue else {
         throw OS1Error.message("Workspace directory does not exist")
@@ -6492,10 +7212,14 @@ func runTaskWithOwnerPolicy(
         if heldOS1SourceRoot.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }) != URL(fileURLWithPath: os1Root).resolvingSymlinksInPath().standardizedFileURL.path { os1SourceLease = try acquireOS1SourceWriteLease(root: os1Root) }
         os1StartHead = gitHead(os1Root)
     }
-    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(prompt)) ? attachedSource.map { try loadSource($0) } : nil
-    let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(prompt)
+    // A write task in a folder that contains OS-1's live tree (HOME) can
+    // still change OS-1; then OS-1 finishes that repair after the turn.
+    let os1SourceWatch = resolvedScope == .workspaceWrite && previewDeploymentTarget == nil && os1StartHead == nil
+        ? OS1SourceWatch.capture(workspace: canonicalWorkspace) : nil
+    let pinnedEvidence = try (requireReadOnly || !requestsFreshSource(objectiveRequest)) ? attachedSource.map { try loadSource($0) } : nil
+    let discussesPinnedProvenance = pinnedEvidence != nil && RegisteredProjectSource.discussesAttachedProvenance(objectiveRequest)
     let sourceSelectionContext = SCVProjectMaterials.isVerificationMode(pinnedEvidence?.verificationMode) &&
-        !qmGRMaterialRequested(prompt) ? nil : context
+        !qmGRMaterialRequested(objectiveRequest) ? nil : context
     var r2Objective = requireReadOnly || discussesPinnedProvenance ? nil : resolveR2RetrievalObjective(prompt: TaskWorkflow.preparationRequest(owner: ownerPrompt, stagePrompt: prompt), context: sourceSelectionContext)
     // Work preparation is a task capability: an aliased project ("인스타",
     // "instagram") or the conversation's bound project selects the adapter.
@@ -6514,13 +7238,13 @@ func runTaskWithOwnerPolicy(
                            pinnedEvidence?.sources.first?["live_manifest_sha256"] == scvLive?.manifestSHA256))
     if r2Objective == nil, scvPreparation, let preparation {
         r2Objective = R2RetrievalObjective(inheritedSource: scvAttached,
-            requiresTransformation: preparation.modifies || preparation.kind == .explainFromContext,
+            requiresTransformation: !preparation.preparationOnly,
             materialKind: .scvProject, requestSHA256: sha256Hex(Data(prompt.utf8)), contextSHA256: nil)
     }
-    if protectedRouteMaterialRequested(prompt, context: context) || protectedRouteMaterialInEvidence(prompt) {
+    if protectedRouteMaterialRequested(objectiveRequest, context: context) || protectedRouteMaterialInEvidence(objectiveRequest) {
         return try runProtectedRouteMaterialControl()
     }
-    if sourceStatusRequested(prompt, context: context) {
+    if sourceStatusRequested(objectiveRequest, context: context) {
         var summary = try runSourceStatusControl(config: config)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
@@ -6532,7 +7256,7 @@ func runTaskWithOwnerPolicy(
     // Pasted OS-1 output ("Claude 연결됨", login notices) is context, not a
     // request to open a login; classify the user's own words only.
     if !requireReadOnly, !discussesPinnedProvenance, !requestsR2Retrieval,
-       let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(prompt)) {
+       let targets = connectionControlTargets(OS1SelfOutput.stripQuoted(objectiveRequest)) {
         var summary = try runConnectionControl(targets)
         summary.sourceContext = attachedSource
         summary.taskContext = taskState
@@ -6542,7 +7266,9 @@ func runTaskWithOwnerPolicy(
     if let preparation, preparationAdapter == .localWorkspace, let projectID = preparationProject, r2Objective == nil {
         // Same capability, different adapter: the workspace is the source.
         let revision = applyWorkspaceBaseline(projectID: projectID, workspace: canonicalWorkspace, context: &taskState)
-        if !preparation.modifies && preparation.kind != .explainFromContext {
+        // The canned prepared-state answer is only for "준비만 해"-style
+        // requests; asking for work (fix, continue, finish, can-you) runs.
+        if preparation.preparationOnly {
             var summary = try runWorkspacePreparationControl(projectID: projectID, workspace: canonicalWorkspace,
                 revision: revision, context: taskState, startedAt: objectiveStartedAt)
             summary.sourceContext = attachedSource
@@ -6557,14 +7283,14 @@ func runTaskWithOwnerPolicy(
     // Once attached, source delivery does not depend on spelling, pronouns,
     // immediately preceding USER text, backend identity, or transcript limits.
     // Explicit/new retrieval still executes a real R2 read and replaces it.
-    let explicitRemoteSource = !discussesPinnedProvenance && !RegisteredProjectSource.mayUseForPreparation(prompt)
+    let explicitRemoteSource = !discussesPinnedProvenance && !RegisteredProjectSource.mayUseForPreparation(objectiveRequest)
     let localAttachedForRemote = explicitRemoteSource && pinnedEvidence?.verificationMode == RegisteredProjectSource.verificationMode
-    let preparedAlready = scvPreparation && scvAttached && !requestsFreshSource(prompt) && !localAttachedForRemote
-    let mayContinueSource = r2Objective == nil || preparedAlready || (r2Objective!.requiresTransformation && !requestsFreshSource(prompt))
+    let preparedAlready = scvPreparation && scvAttached && !requestsFreshSource(objectiveRequest) && !localAttachedForRemote
+    let mayContinueSource = r2Objective == nil || preparedAlready || (r2Objective!.requiresTransformation && !requestsFreshSource(objectiveRequest))
     let attachedEvidence = mayContinueSource && !(scvPreparation && !scvAttached) ? pinnedEvidence : nil
-    let repairedSource = !requireReadOnly && repairsMismatchedResearchSource(prompt, context: context, evidence: attachedEvidence)
+    let repairedSource = !requireReadOnly && repairsMismatchedResearchSource(objectiveRequest, context: context, evidence: attachedEvidence)
     let reuseSource = requireReadOnly || discussesPinnedProvenance || preparedAlready ||
-        (!localAttachedForRemote && !repairedSource && reusesAttachedEvidence(prompt, objective: r2Objective, evidence: attachedEvidence))
+        (!localAttachedForRemote && !repairedSource && reusesAttachedEvidence(objectiveRequest, objective: r2Objective, evidence: attachedEvidence))
     let r2Evidence: R2EvidenceBundle?
     if repairedSource {
         _ = try verifyR2Connection()
@@ -6583,7 +7309,7 @@ func runTaskWithOwnerPolicy(
                         RuntimeActivity.emit(.source, publicText: "등록 원본 검증을 통과하지 못해 GitHub·R2의 동일 운영 원본을 확인합니다.")
                     }
                 }
-                r2Evidence = try registered ?? r2RetrievalEvidence(prompt, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
+                r2Evidence = try registered ?? r2RetrievalEvidence(objectiveRequest, context: sourceSelectionContext, objective: r2Objective, scvLive: scvLive)
             }
         } catch {
             guard scvPreparation, let scvLive else { throw error }
@@ -6667,27 +7393,53 @@ func runTaskWithOwnerPolicy(
             persistedCorrectionIDs: ExecutionSteering.currentSubmission.map { ExecutionSteering().persistedIDs($0) },
             monitorTaskID: monitorTaskID)
     }
-    let key = try SigningKey.loadOrCreate()
-    let id = try deviceID()
-    let client = APIClient(config: config, token: try githubToken(), deviceID: id)
-    try await register(client: client, key: key)
+    // The two account inventories are unpaid, independent local probes. They
+    // run while the device key, GitHub token and registration are prepared;
+    // one after another they cost about 1.2 s more per run (2026-09-24).
     let userSettings = OS1Settings.load()
+    // Reuse the probes runTask started before the policy refresh when they
+    // cover this exact workspace and Codex setting; otherwise probe now.
+    let inventory = preflight.flatMap { $0.workspace == canonicalWorkspace && ($0.codex != nil) == userSettings.showCodex ? $0 : nil }
+        ?? PreflightInventory.start(workspace: canonicalWorkspace, config: config, showCodex: userSettings.showCodex)
+    let codexProbe = inventory.codex
+    let claudeProbe = inventory.claude
+    let prepared: PreparedGateway? = await inventory.gateway?.value ?? nil
+    let key: SigningKey
+    let id: String
+    let client: APIClient
+    if let prepared, prepared.client.config.apiURL == config.apiURL {
+        key = prepared.key
+        client = prepared.client
+        id = client.deviceID
+    } else {
+        key = try SigningKey.loadOrCreate()
+        id = try deviceID()
+        client = APIClient(config: config, token: try githubToken(), deviceID: id)
+        try await register(client: client, key: key)
+    }
+    AttemptLatencyTrace.mark("registered")
     var codexCatalog: ActiveCodexCatalog
-    if userSettings.showCodex {
-        codexCatalog = (try? ModelAvailability.codexCatalog(workspace: canonicalWorkspace, config: config)) ??
-            ActiveCodexCatalog(models: [], source: "native account metadata unavailable")
+    // The account check and model list this run just made are reused by an
+    // attempt that starts soon after (≈0.35 s account/read per attempt).
+    var codexInventoryObservedAt: Date?
+    if let codexProbe {
+        codexCatalog = await codexProbe.value
+        codexInventoryObservedAt = Date()
     } else {
         // The user removed Codex in Settings: never probe it, never route to
         // it, and never treat its absence as a failure to repair.
         codexCatalog = ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
     }
-    var observedClaudeCatalog = (try? ModelAvailability.claudeCatalog(workspace: canonicalWorkspace, config: config)) ?? []
+    let claudeCatalogs = await claudeProbe.value
+    var observedClaudeCatalog = claudeCatalogs.routable
+    let claudeLimitedOnly = !claudeCatalogs.configured.isEmpty && claudeCatalogs.routable.isEmpty
     // Owner's rule: a dead-backend preflight is a repair trigger, not a dead
     // end. Diagnose, run the repair OS-1 may do itself, and continue in place;
     // otherwise hold the request with the diagnosis so the app can replay it
     // by itself once a backend is back.
     if codexCatalog.models.isEmpty, observedClaudeCatalog.isEmpty, publicDeterministicExpression(prompt) == nil {
-        let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace)
+        let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
+                                           workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly)
         try? health.save()
         RuntimeActivity.emit(.recovering, publicText: health.publicSummary)
         let repair = selfRepairBackends(health: health, codexCatalog: codexCatalog, workspace: canonicalWorkspace, config: config)
@@ -6702,14 +7454,16 @@ func runTaskWithOwnerPolicy(
             throw OS1Error.message(diagnosis)
         }
     } else {
-        try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace).save()
+        try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
+                                   workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly).save()
     }
     // The signed router receives only stage-eligible native model/effort
     // tuples. A stage directive in prose alone would not enforce this policy.
     if let workflowStage {
-        let models = (providerPreference == "claude" || codexCapacity <= 0 ? [] : codexCatalog.models.map(\.slug)) +
-            (providerPreference == "codex" || claudeCapacity <= 0 ? [] : observedClaudeCatalog.map(\.model))
-        let selected = workflowStage.preferredModels(models)
+        let selected = workflowStage.eligibleModelsByProvider([
+            providerPreference == "claude" || codexCapacity <= 0 ? [] : codexCatalog.models.map(\.slug),
+            providerPreference == "codex" || claudeCapacity <= 0 ? [] : observedClaudeCatalog.map(\.model)
+        ])
         codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.compactMap { row in
             guard selected.contains(row.slug) else { return nil }
             let efforts = workflowStage.preferredEfforts(row.supportedEfforts)
@@ -6728,7 +7482,7 @@ func runTaskWithOwnerPolicy(
             throw OS1Error.message("\(workflowStage.rawValue): 현재 계정·설정에서 실행 가능한 단계별 모델이 없어 호출하지 않았습니다.")
         }
     }
-    let claudeCatalog = observedClaudeCatalog
+    var claudeCatalog = observedClaudeCatalog
     let hasClaudeExecutable = !claudeCatalog.isEmpty
     let repairedContext = repairedSource ? (context ?? "") + """
 
@@ -6738,22 +7492,30 @@ The newly supplied verified research map replaces that mismatched snapshot, not 
 Answer the current question using this map. Briefly acknowledge the earlier retrieval mismatch, then explain
 the actual completed work and remaining limits. Do not repeat the prior answer's archive-wide absence claim.
 """ : context
-    var workspaceContext = r2Evidence == nil ? WorkspaceDiscovery.context(workspace: canonicalWorkspace, prompt: prompt) : ""
+    var workspaceContext = r2Evidence == nil && previewDeploymentTarget == nil ? WorkspaceDiscovery.context(workspace: canonicalWorkspace, prompt: prompt) : ""
     // OS-1 working on OS-1: the backend gets the self-repair contract (how a
     // write task must finish: stage, never install by hand) and a read-only
     // task can answer capability questions truthfully.
-    if let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
+    if previewDeploymentTarget == nil, let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
         workspaceContext += "\n" + SelfUpdate.capabilityCard(root: os1Root, installedVersion: os1RuntimeVersionString,
             installedBuild: installedOS1Build(), sourceCommit: gitHead(os1Root), scope: "\(resolvedScope)",
             os1Executable: currentOS1Executable())
     }
     let sourcePayload = try retainedSourcePayload(taskContext, primary: sourceContext, evidence: r2Evidence)
+    if resolvedScope == .workspaceWrite { workspaceContext += "\n" + ManagedPreview.capabilityCard + "\n" + WebsiteDelivery.capabilityCard }
+    if let target = previewDeploymentTarget { workspaceContext += "\n" + target.contract }
+    if let validation = TaskWorkflow.validationContract(ownerRequest: objectiveRequest, scope: resolvedScope) {
+        workspaceContext += "\n" + validation
+    }
     let localPrompt = try providerPrompt(current: prompt, context: repairedContext,
         r2Evidence: sourcePayload, taskContext: taskContext.handoffBlock(), workspaceContext: workspaceContext,
         languageDirective: userSettings.outputLanguageDirective)
     // The quoted original operation is context, not a second execute request.
     // Keep this new review's task identity distinct while retaining all source
     // and full-input accounting without downgrading backend capability.
+    // The routing task is what the private router classifies and what
+    // completion feedback is keyed on; build 245 appended a fixed surface
+    // directive here, which changed every task's classification and key.
     let routingTask = ScopeResolution.delegationRoutingObjective(
         routingTaskOverride ?? (requireReadOnly ? statusReconciliationRoutingTask
             : sourceAwareRoutingTask(prompt, evidence: r2Evidence)), internalReadOnly: internalReadOnly)
@@ -6770,9 +7532,12 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         objective: DriftScope.digest(prompt))
     var feedbackScope = instructionFeedbackScope(initialCorrections?.instructions ?? "", input: localPrompt,
         codexID: codexSessionID, claudeID: claudeSessionID)
-    let feedbackSupported = await client.supportsCompletionFeedback(requireModelAvailability: true)
+    // A probe answered during the policy refresh is reused; a miss is re-probed.
+    let feedbackSupported = prepared?.feedbackSupported == true && prepared?.client.config.apiURL == config.apiURL
+        ? true : await client.supportsCompletionFeedback(requireModelAvailability: true)
+    if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
     guard feedbackSupported else {
-        throw OS1Error.message("사용자별 모델 확인을 지원하는 라우팅 서버에 연결하지 못했습니다. 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
+        throw OS1Error.message("라우팅 서버에서 사용자별 모델 확인을 \(1 + APIClient.capabilityRetryDelaysMS.count)회 시도했지만 확인되지 않았습니다(연결 실패, 서버 내부 지연 또는 미지원 서버). 모델을 임의 선택하지 않았으며 유료 호출은 하지 않았습니다.")
     }
     guard feedbackSupported || !codexCatalog.models.isEmpty else {
         // Legacy servers require a nonempty Codex catalog even for Claude.
@@ -6781,7 +7546,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     }
     var inputContext = try executionInputContext(prompt: prompt, assembled: localPrompt,
         history: context, evidence: r2Evidence, config: config)
-    inputContext.executionPermissionProfile = "workspace_write"
+    // 438c757 asked for workspace_write on every run so delegated workflow
+    // stages stayed executable, and the route core takes this value over the
+    // policy's own: since then no ticket has been read-only, so a translation
+    // ran Claude with bypassPermissions and the whole coding agent. Ask for
+    // read-only where the request provably needs nothing here — its own text to
+    // translate or summarize — and leave every other run exactly as it was.
+    inputContext.executionPermissionProfile = selfContainedText ? "read_only" : "workspace_write"
     inputContext.availableClaudeModels = claudeCatalog
     if feedbackSupported {
         inputContext.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
@@ -6804,7 +7575,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             prompt: requireReadOnly ? routingTask : prompt, codexAvailable: !codexCatalog.models.isEmpty,
             claudeAvailable: hasClaudeExecutable, localAvailable: publicDeterministicExpression(prompt) != nil,
             evidenceSupplied: r2Evidence != nil, scope: resolvedScope,
-            codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil),
+            codexUnavailableReason: codexCatalog.models.isEmpty ? codexCatalog.source : nil,
+            claudeUnavailableReason: { claudeUnavailableDescription(workspace: canonicalWorkspace) }),
         capacityPlan: CapacityPlan(codex: codexCapacity, claude: claudeCapacity),
         executorContractVersion: config.executorContract.version,
         executorContractSHA256: config.executorContract.sha256,
@@ -6816,11 +7588,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
     // app's 100 ms poll could read it, so the owner's "Auto" was redirected
     // to Codex with nothing on screen.
     RuntimeActivity.emit(.routing, provider: burnNotice == nil ? nil : "codex", publicText: burnNotice)
+    // The first attempt's before-state is read while the route is decided
+    // (≈0.45 s hidden). Nothing OS-1 does in between writes the workspace;
+    // a concurrent outside edit can only read as "changed", never as "none".
+    let routedWorkspace = canonicalWorkspace
+    // Detached tasks do not inherit task-locals: pass the named paths.
+    let observedNamedPaths = RequestObservation.namedPaths
+    let speculativeBeforeHash = Task.detached { observedStateHash(routedWorkspace, named: observedNamedPaths) }
+    AttemptLatencyTrace.mark("route_request")
     var route: RouteResponse = try await client.post(
         "/v1/executions",
         body: request,
         as: RouteResponse.self
     )
+    AttemptLatencyTrace.mark("routed")
     recordRoutingInput(request, ticket: route.ticket, source: sourceContext)
     var steps: [RunStepSummary] = []
     var failedCandidates = Set<String>()
@@ -6835,17 +7616,20 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         else { lastFailureNotice?.emit() }
     }
     var nativeSessions = [
-        "codex": try normalizedSessionID(repairedSource ? nil : codexSessionID),
-        "claude": try normalizedSessionID(repairedSource ? nil : claudeSessionID),
+        "codex": try normalizedSessionID(repairedSource || previewDeploymentTarget != nil ? nil : codexSessionID),
+        "claude": try normalizedSessionID(repairedSource || previewDeploymentTarget != nil ? nil : claudeSessionID),
     ]
     // An automatic readback is bounded separately: at most a probe plus one
     // eligible alternate. It never recursively starts another review.
     // A workflow implementation is one native write attempt. The workflow
     // verifier, not the model retry loop, decides whether a bounded repair is
     // warranted; uncertain writes must never be replayed implicitly.
-    let attemptLimit = workflowStage == .implementation ? 1 :
+    var attemptLimit = workflowStage == .implementation ? 1 :
         (requireReadOnly ? min(2, config.maximumSteps) : config.maximumSteps)
-    for step in 1...attemptLimit {
+    var quotaBudgetExtended = false
+    var step = 0
+    while step < attemptLimit {
+        step += 1
         if ExecutionCancellation.isCancelled { throw OS1Error.backendBlocked(.cancelled) }
         if route.status == "complete" {
             let adopted = steps.filter { $0.revasDisposition == "adopted" }
@@ -6892,6 +7676,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("라우팅된 Claude 모델·effort가 현재 계정의 모델 목록과 달라 유료 호출 전에 차단했습니다.")
         }
         let startData = Data(["os1-attempt-start-v1", ticket.executionID, String(ticket.sequence), ticket.nonce, ticket.signature].joined(separator: "\n").utf8)
+        AttemptLatencyTrace.beginIfIdle()
         let lease: AttemptStartReceipt = try await client.post("/v1/attempts/start",
             body: AttemptStartRequest(ticket: ticket, device_signature: Base64URL.encode(try key.sign(startData))), as: AttemptStartReceipt.self)
         guard lease.execution_id == ticket.executionID, lease.sequence == ticket.sequence,
@@ -6899,13 +7684,16 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
             throw OS1Error.message("실행 시작 확인이 일치하지 않아 백엔드를 호출하지 않았습니다.")
         }
         let attemptTimeout = min(config.executionTimeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow) - 1))
+        AttemptLatencyTrace.mark("lease")
         RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model, effort: effort)
         if progress {
             print("OS-1 step \(step): \(ticket.provider) / \(ticket.action) / \(effort) / \(ticket.permissionProfile)")
         }
         let observedWorkspace = try providerExecutionWorkspace(provider: ticket.provider,
-            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace)
-        let beforeHash = workspaceHash(observedWorkspace)
+            permission: ticket.permissionProfile, hasSource: r2Evidence != nil, workspace: canonicalWorkspace,
+            objective: prompt)
+        let beforeHash = step == 1 && observedWorkspace == routedWorkspace
+            ? await speculativeBeforeHash.value : observedStateHash(observedWorkspace)
         let attemptPrompt = localPrompt + (try continuation?.handoffBlock() ?? "")
         let attemptInputSHA256 = CompletionFeedbackScope.inputDigest(assembledInput: attemptPrompt,
             codexSessionID: nativeSessions["codex"] ?? nil, claudeSessionID: nativeSessions["claude"] ?? nil,
@@ -6934,6 +7722,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         var execution: ProviderExecution
         var sourceRecoveryProvider: String?
         var terminalPermissionFailure: OS1Error?
+        // A read-scope answer refused only by OS-1's own post-check, with
+        // nothing changed, gets the bounded corrective retry (see below).
+        var postCheckRetry = false
         if ticket.provider == "local", r2Evidence != nil, !reuseSource {
             execution = unavailableProviderExecution(
                 ticket: ticket,
@@ -6954,12 +7745,16 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 workspaceBeforeHash: beforeHash
             )
         } else {
+            AttemptLatencyTrace.mark("attempt_prepared")
             do {
                 execution = try execute(
                     ticket: ticket,
                     prompt: attemptPrompt,
                     workspace: canonicalWorkspace,
                     timeout: attemptTimeout,
+                    idleTimeout: config.providerIdleTimeoutSeconds,
+                    trustedCodexModels: codexInventoryObservedAt.map { Date().timeIntervalSince($0) < 120 } == true
+                        ? codexCatalog.models : nil,
                     providerSessionID: nativeSessions[ticket.provider] ?? nil,
                     model: model,
                     effort: effort,
@@ -6972,6 +7767,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         r2RetrievalRequiresTransformation(prompt) || referencesPriorSource(prompt),
                     onUsage: { attemptUsage = $0 },
                     onDispatch: { sessionID in
+                        AttemptLatencyTrace.mark("dispatched")
                         dispatchStage = .dispatched
                         interruptedSessionID = sessionID
                         RuntimeActivity.emit(.preparing, provider: ticket.provider, model: model,
@@ -6999,13 +7795,23 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     blocker: backendBlocker(error) ?? .unclassified,
                     publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output ?? "")
                 if backendBlocker(error) == .quotaExhausted {
+                    // Scope comes from the CLI's own sentence checked against the
+                    // dispatched model; unknown or mixed evidence stays account-wide.
+                    let claudeScope: ClaudeQuotaScope? = ticket.provider == "claude"
+                        ? ((error as? RejectedProviderExecution)?.quotaScope ?? .account) : nil
+                    switch claudeScope {
+                    case .model(let family)?: try? ClaudeQuotaBackoff.record(model: family)
+                    case .account?: try? ClaudeQuotaBackoff.record()
+                    case nil: break
+                    }
+                    let modelScoped = claudeScope.map { $0 != .account } ?? false
                     if (error as? RejectedProviderExecution)?.quotaRejectedBeforeExecution == true,
-                       workspaceHash(observedWorkspace) == beforeHash {
+                       observedStateHash(observedWorkspace) == beforeHash {
                         dispatchStage = .rejectedBeforeExecution
                     }
                     lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                         blocker: BackendRecovery.classifiedBlocker(.quotaExhausted, permission: ticket.permissionProfile,
-                            stage: dispatchStage, workspaceChanged: workspaceHash(observedWorkspace) != beforeHash),
+                            stage: dispatchStage, workspaceChanged: observedStateHash(observedWorkspace) != beforeHash),
                         dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                         publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
                     lastFailureNotice?.emit()
@@ -7014,23 +7820,35 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         startedAt: attemptStartedAt, source: sourceContext, monitorTaskID: monitorTaskID, monitorScope: monitorScope)
                     attemptRecorded = true
                     failedCandidates.insert(candidateKey)
-                    guard providerPreference == "auto", step < attemptLimit,
+                    let quotaLimit = BackendRecovery.quotaAttemptLimit(requested: providerPreference,
+                        stage: dispatchStage, step: step, limit: attemptLimit, alreadyExtended: quotaBudgetExtended,
+                        modelScoped: modelScoped)
+                    if quotaLimit > attemptLimit {
+                        quotaBudgetExtended = true
+                        attemptLimit = quotaLimit
+                    }
+                    guard step < attemptLimit,
                           BackendRecovery.permitsAutomaticReplay(permission: ticket.permissionProfile, stage: dispatchStage) else { throw error }
                     if ticket.provider == "codex" {
                         codexCatalog = ActiveCodexCatalog(models: codexCatalog.models.filter { $0.slug != model }, source: codexCatalog.source)
                         if codexCatalog.models.isEmpty { quotaUnavailableProviders.insert("codex") }
-                    } else if ticket.provider == "claude" {
-                        quotaUnavailableProviders.insert("claude")
                     }
-                    guard let nextPreference = BackendRecovery.quotaRecoveryPreference(requested: providerPreference,
-                        failed: ticket.provider, codexAvailable: !codexCatalog.models.isEmpty,
-                        claudeAvailable: hasClaudeExecutable && !quotaUnavailableProviders.contains("claude")) else { throw error }
+                    // Auto re-routes anywhere; an explicit Claude choice only within
+                    // Claude after a model-scoped limit; every other pin stops here.
+                    let reroute = BackendRecovery.quotaReroute(failed: ticket.provider, scope: claudeScope,
+                        requested: providerPreference, claudeModels: claudeCatalog.map(\.model),
+                        codexAvailable: !codexCatalog.models.isEmpty, claudeExecutable: hasClaudeExecutable,
+                        unavailable: quotaUnavailableProviders)
+                    claudeCatalog = claudeCatalog.filter { reroute.claudeModels.contains($0.model) }
+                    quotaUnavailableProviders = reroute.unavailable
+                    guard let nextPreference = reroute.nextPreference else { throw error }
                     var freshContext = request.executionContext
                     if let existing = freshContext, let continuation {
                         freshContext = ExecutionInputContext(executionPermissionProfile: existing.executionPermissionProfile, inputUTF8Bytes: existing.inputUTF8Bytes + (try continuation.handoffBlock()).utf8.count,
                             sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                             completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                     }
+                    freshContext?.availableClaudeModels = claudeCatalog
                     if feedbackSupported {
                         freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                     }
@@ -7038,10 +7856,15 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                         capacityPlan: request.capacityPlan, executorContractVersion: request.executorContractVersion,
                         executorContractSHA256: request.executorContractSHA256, availableCodexModels: codexCatalog.models,
                         executionContext: freshContext)
-                    RuntimeActivity.emit(.recovering)
+                    let remaining = [claudeCatalog.isEmpty ? "" : "Claude: " + claudeCatalog.map(\.model).joined(separator: ", "),
+                                     nextPreference == "claude" || codexCatalog.models.isEmpty ? "" : "Codex"].filter { !$0.isEmpty }
+                    RuntimeActivity.emit(.recovering, publicText: modelScoped
+                        ? "Claude \(model) 모델 한도에 도달했습니다. 이 모델만 1시간 제외하고 같은 요청을 남은 모델(\(remaining.joined(separator: " · ")))로 다시 라우팅합니다. 로그인은 변경하지 않습니다."
+                        : "\(ticket.provider) 사용량 한도에 도달했습니다. 같은 요청을 \(nextPreference)로 이어갑니다. 로그인은 변경하지 않습니다.")
                     route = try await client.post("/v1/executions", body: next, as: RouteResponse.self)
-                    guard route.ticket?.permissionProfile == ticket.permissionProfile,
-                          route.ticket?.provider == nextPreference else { throw error }
+                    guard let nextTicket = route.ticket, nextTicket.permissionProfile == ticket.permissionProfile,
+                          nextPreference == "auto" ? ["claude", "codex"].contains(nextTicket.provider)
+                                                   : nextTicket.provider == nextPreference else { throw error }
                     lastFailureNotice = nil
                     continue
                 }
@@ -7082,6 +7905,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                                 sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                                 completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
                         }
+                        freshContext?.availableClaudeModels = claudeCatalog
                         if feedbackSupported {
                             freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
                         }
@@ -7100,12 +7924,32 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 if let failure = ((error as? RejectedProviderExecution)?.cause ?? error) as? OS1Error, failure.isTerminalBackendFailure {
                     terminalPermissionFailure = failure
                 }
-                let afterHash = workspaceHash(observedWorkspace)
+                let afterHash = observedStateHash(observedWorkspace)
                 let blocker = backendBlocker(error) ?? .unclassified
                 // Local diffs cannot prove remote effects absent. Never replay a
                 // partially executed write operation after an unknown outcome.
-                let safeBlocker = BackendRecovery.classifiedBlocker(blocker, permission: ticket.permissionProfile,
+                var safeBlocker = BackendRecovery.classifiedBlocker(blocker, permission: ticket.permissionProfile,
                     stage: dispatchStage, workspaceChanged: beforeHash != afterHash)
+                // A turn that finished (exit 0, answer, verified native record)
+                // and was refused only by OS-1's own post-check (language,
+                // delivery receipt, capability wording) is not an interrupted
+                // write: its answer states what it did. It stays terminal and
+                // is never replayed, but it is shown as a rejected result, not
+                // "effects uncertain" with a readback (8 owner turns, 105
+                // readbacks in the week to 2026-09-24).
+                let alternateForLimit = BackendRecovery.alternate(requested: providerPreference,
+                    failed: ticket.provider, permission: ticket.permissionProfile, blocker: .capabilityUnavailable,
+                    codexAvailable: !codexCatalog.models.isEmpty && codexCapacity > 0,
+                    claudeAvailable: hasClaudeExecutable && claudeCapacity > 0,
+                    alreadySwitched: sourceBackendSwitched, remainingAttempts: attemptLimit - step,
+                    dispatchStage: dispatchStage, unavailableProviders: quotaUnavailableProviders) != nil
+                postCheckRetry = postCheckRetryEligible(error, prompt: prompt, workspaceChanged: beforeHash != afterHash)
+                if postCheckRetry {
+                    safeBlocker = .unclassified
+                } else if finishedTurnRejectedByPostCheck(error, classified: safeBlocker, alternateAvailable: alternateForLimit) {
+                    safeBlocker = .verificationRejected
+                    if terminalPermissionFailure == nil { terminalPermissionFailure = .backendBlocked(.verificationRejected) }
+                }
                 lastFailureNotice = BackendFailureNotice(provider: ticket.provider, sessionID: interruptedSessionID,
                     blocker: safeBlocker, dispatchStage: dispatchStage, source: sourceContext, permissionProfile: ticket.permissionProfile,
                     publicProgress: (error as? RejectedProviderExecution)?.execution.artifact.output)
@@ -7113,6 +7957,13 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     terminalPermissionFailure = .backendBlocked(safeBlocker)
                 }
                 if backendBlocker(error) != nil {
+                    let alternateAvailable = ticket.provider == "codex"
+                        ? hasClaudeExecutable && claudeCapacity > 0
+                        : !codexCatalog.models.isEmpty && codexCapacity > 0
+                    let expandedLimit = BackendRecovery.undispatchedAttemptLimit(requested: providerPreference,
+                        stage: dispatchStage, blocker: safeBlocker, step: step, limit: attemptLimit,
+                        alreadyExtended: quotaBudgetExtended, alternateAvailable: alternateAvailable)
+                    if expandedLimit > attemptLimit { quotaBudgetExtended = true; attemptLimit = expandedLimit }
                     sourceRecoveryProvider = BackendRecovery.alternate(requested: providerPreference,
                         failed: ticket.provider, permission: ticket.permissionProfile, blocker: safeBlocker,
                         codexAvailable: !codexCatalog.models.isEmpty && codexCapacity > 0,
@@ -7155,7 +8006,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         // self-repair task can never end with the fix living only in the
         // working tree — which is exactly how the rail fix of 2026-09-16 was
         // "done" twice and never reached the owner's screen.
-        if TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
+        if previewDeploymentTarget == nil, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil, dispatchStage == .dispatched, execution.artifact.exitCode == 0,
            ticket.permissionProfile == "workspace_write",
            let os1Root = LocalProjectWorkspace.root(containing: canonicalWorkspace, projectID: "os1-clodex") {
             switch completeOS1SelfRepair(root: os1Root, objective: prompt, startedAt: attemptStartedAt, startHead: os1StartHead) {
@@ -7173,29 +8024,62 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 attemptFailure = note
                 terminalPermissionFailure = OS1Error.message(note)
             }
+        } else if let os1SourceWatch, TaskWorkflow.permitsSelfUpdate(stage: workflowStage, finalVerdict: nil), attemptFailure == nil,
+                  dispatchStage == .dispatched, execution.artifact.exitCode == 0, ticket.permissionProfile == "workspace_write",
+                  os1SourceWatch.changed() {
+            // Not bound to OS-1, yet OS-1's source changed: never leave a fix
+            // that only lives in the working tree, and never interleave with
+            // another OS-1 writer (then its build carries this change).
+            let note = finishUnboundOS1Change(os1SourceWatch, objective: prompt, startedAt: attemptStartedAt)
+            if !note.isEmpty { execution = execution.appendingOutput(note) }
         }
+        // Observe delivered loopback URLs outside the provider process. Never
+        // adopt a dead preview just because files or the model response exist.
+        if attemptFailure == nil, execution.artifact.exitCode == 0,
+           ManagedPreview.shouldCheckDelivery(objective: objectiveRequest, output: execution.artifact.output,
+               workspaceWrite: resolvedScope == .workspaceWrite, architecture: workflowStage == .architecture) {
+            if let failure = await ManagedPreview.deliveryFailure(output: execution.artifact.output) {
+                attemptFailure = failure
+                execution = execution.appendingOutput("\nOS1_DELIVERY_BLOCK: " + failure)
+                terminalPermissionFailure = OS1Error.message(failure)
+            }
+        }
+        if attemptFailure == nil, execution.artifact.exitCode == 0, workflowStage != .architecture,
+           let failure = await RailwayDelivery.failure(output: execution.artifact.output, workspace: canonicalWorkspace, target: previewDeploymentTarget) {
+            attemptFailure = failure
+            execution = execution.appendingOutput("\nOS1_DELIVERY_BLOCK: " + failure)
+            terminalPermissionFailure = OS1Error.message(failure)
+        }
+        let verifiedPreviewDelivery = attemptFailure == nil && execution.artifact.exitCode == 0 && requireReadOnly
+            ? await RailwayDelivery.recoveredPreview(output: execution.artifact.output, workspace: canonicalWorkspace, request: prompt) : nil
         let artifact = execution.artifact
+        AttemptLatencyTrace.mark("artifact_ready")
         let artifactData = try JSONEncoder().encode(artifact)
         let resultHash = sha256Hex(artifactData)
         RuntimeActivity.emit(.verifying, provider: ticket.provider, model: model, effort: effort)
         let artifactRef = "r2://os1-private-results/\(ticket.executionID)/\(ticket.sequence)/\(resultHash).json"
-        var submission = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef, deviceSignature: "")
-        submission = ResultSubmission(
-            ticket: ticket,
-            resultHash: resultHash,
-            artifactRef: artifactRef,
-            deviceSignature: Base64URL.encode(try key.sign(resultBytes(submission)))
-        )
+        // The artifact upload keeps the v1 signature; the result also signs the
+        // step's measured tokens (v2) so route learning can charge them.
+        let unsigned = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef, deviceSignature: "")
+        let v1Signature = Base64URL.encode(try key.sign(resultBytes(unsigned)))
+        var submission = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef, deviceSignature: v1Signature)
+        if let usage = StepUsage.measured(attemptUsage, provider: ticket.provider) {
+            var measured = unsigned
+            measured.usage = usage
+            submission = ResultSubmission(ticket: ticket, resultHash: resultHash, artifactRef: artifactRef,
+                                          deviceSignature: Base64URL.encode(try key.sign(resultBytes(measured))), usage: usage)
+        }
         let upload = ArtifactUpload(
             ticket: ticket,
             artifactBase64: Base64URL.encode(artifactData),
             resultHash: resultHash,
-            deviceSignature: submission.deviceSignature
+            deviceSignature: v1Signature
         )
         let pendingStep = RunStepSummary(sequence: ticket.sequence, provider: ticket.provider, action: ticket.action,
             model: model, effort: effort, revasDisposition: "verification_pending", sessionID: execution.sessionID,
             permissionProfile: ticket.permissionProfile, exitCode: artifact.exitCode, output: artifact.output,
-            stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord)
+            stderr: artifact.stderr, durationMS: artifact.durationMS, nativeRecord: execution.nativeRecord,
+            verifiedPreviewDelivery: verifiedPreviewDelivery)
         var delivery = DeliveryRecord(id: "\(ticket.executionID)-\(ticket.sequence)", apiURL: config.apiURL, deviceID: id,
             resultSHA256: resultHash, artifact: artifactData, upload: try JSONEncoder().encode(upload),
             submission: try JSONEncoder().encode(submission), step: try JSONEncoder().encode(pendingStep),
@@ -7211,7 +8095,9 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         do {
             let uploaded: [String: String] = try await client.deliver("/v1/artifacts", body: upload, as: [String: String].self)
             guard uploaded["artifact_ref"] == artifactRef else { throw OS1Error.message("Artifact upload binding failed") }
-            route = try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+            AttemptLatencyTrace.mark("artifact_uploaded")
+            route = try await deliverResult(client, submission, v1Signature: v1Signature)
+            AttemptLatencyTrace.mark("remote_verified")
             delivery.response = try JSONEncoder().encode(route)
             try DeliveryOutbox().save(delivery)
         } catch {
@@ -7239,7 +8125,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
         let locallyAdoptable = completionLocallyAdoptable(failure: attemptFailure,
             exitCode: artifact.exitCode, output: artifact.output, persistence: execution.nativeRecord.persistence)
         if route.status == "complete", !locallyAdoptable, sourceRecoveryProvider == nil, terminalPermissionFailure == nil,
-           step < attemptLimit, ticket.permissionProfile == "read_only", let diagnostic = attemptFailure,
+           step < attemptLimit, ticket.permissionProfile == "read_only" || postCheckRetry, let diagnostic = attemptFailure,
            !artifact.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // The route service accepted the artifact but the answer failed a
             // local contract (source use, claim ceiling, structure). Read-only
@@ -7259,6 +8145,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
+            freshContext?.availableClaudeModels = claudeCatalog
             if feedbackSupported {
                 freshContext?.completionFeedback = try feedbackStore.load(scope: feedbackScope)?.publicFeedback()
             }
@@ -7328,6 +8215,7 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                     sourceUTF8Bytes: existing.sourceUTF8Bytes, historyUTF8Bytes: existing.historyUTF8Bytes,
                     completionFeedback: existing.completionFeedback, availableClaudeModels: existing.availableClaudeModels)
             }
+            recoveryContext?.availableClaudeModels = claudeCatalog
             if feedbackSupported {
                 recoveryContext?.completionFeedback = try ((try? feedbackStore.load(scope: feedbackScope)) ??
                     CompletionFeedbackLedger(scope: feedbackScope)).publicFeedback()
@@ -7381,7 +8269,8 @@ the actual completed work and remaining limits. Do not repeat the prior answer's
                 output: artifact.output,
                 stderr: artifact.stderr,
                 durationMS: artifact.durationMS,
-                nativeRecord: adoptedRecord
+                nativeRecord: adoptedRecord,
+                verifiedPreviewDelivery: verifiedPreviewDelivery
             ))
         }
         if route.status == "failed" {
@@ -7422,7 +8311,10 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
           step.nativeRecord?.persistence == artifact.nativeRecord.persistence,
           submission.ticket.provider == artifact.provider, submission.ticket.action == artifact.action,
           submission.ticket.permissionProfile == artifact.permissionProfile,
-          upload.ticket.signature == submission.ticket.signature, upload.deviceSignature == submission.deviceSignature,
+          upload.ticket.signature == submission.ticket.signature,
+          // A v2 result is signed over its usage too, so only a v1 result
+          // shares the upload's signature byte for byte.
+          submission.usage != nil || upload.deviceSignature == submission.deviceSignature,
           submission.ticket.executionID + "-" + String(submission.ticket.sequence) == record.id,
           try Base64URL.decode(upload.artifactBase64) == record.artifact else { throw OS1Error.message("저장된 결과 무결성 확인 실패") }
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
@@ -7435,7 +8327,7 @@ func resumeDelivery(_ identifier: String) async throws -> RunSummary {
         }
         // Local cache is custody, not proof of server adoption. The immutable
         // signed result is always read back through the idempotent ledger.
-        route = try await client.deliver("/v1/results", body: submission, as: RouteResponse.self)
+        route = try await deliverResult(client, submission, v1Signature: upload.deviceSignature)
         record.response = try JSONEncoder().encode(route)
         try box.save(record)
     } catch {
@@ -7513,7 +8405,22 @@ func doctor() throws {
     _ = try githubToken()
     print("OS-1 configuration: OK (\(config.apiURL))")
     print("OS-1 device key: \(key.securityMode)")
-    print("GitHub, Codex, Claude: available")
+    // Installed is not usable: report each backend's login exactly as runs
+    // see it (the active account's environment). Until 2026-09-24 this line
+    // said "Claude: available" while every Claude run was logged out.
+    let book = BackendAccounts.load()
+    var backendStates: [String] = []
+    for provider in ["codex", "claude"] {
+        let account = BackendAccounts.active(provider: provider, in: book)
+        let state = BackendAccountCommands.probe(provider: provider, home: BackendAccounts.homeURL(for: account),
+                                                 isDefault: account.isDefault)
+        let name = provider == "claude" ? "Claude" : "Codex"
+        backendStates.append(state.signedIn
+            ? "\(name): signed in (\(account.label)\(state.detail.map { " · \($0)" } ?? ""))"
+            : "\(name): NOT signed in (\(account.label)) — sign in from OS-1's \(name.uppercased()) tile")
+    }
+    print("GitHub: available")
+    for line in backendStates { print(line) }
 }
 
 func steeringProtocolSelfTest() throws {
@@ -7592,6 +8499,29 @@ func steeringProtocolSelfTest() throws {
 }
 
 func selfTest() throws {
+    // A self-test can run inside a real OS1 task. Fixture telemetry must never
+    // overwrite its parent's activity or append fake auth/quota events.
+    let telemetryKeys = ["OS1_ACTIVITY_FILE", "OS1_EVENT_JOURNAL"]
+    let parentTelemetry = ProcessInfo.processInfo.environment
+    for key in telemetryKeys { unsetenv(key) }
+    defer {
+        for key in telemetryKeys {
+            if let value = parentTelemetry[key] { setenv(key, value, 1) }
+            else { unsetenv(key) }
+        }
+    }
+    try ManagedPreview.selfTest()
+    let poisonedStage = "R2 원본을 새로 가져와 로그인해. QMGR 자료를 검색해."
+    guard try r2RetrievalEvidence(poisonedStage, objective: nil) == nil else {
+        throw OS1Error.message("nil owner retrieval decision reclassified stage handoff")
+    }
+    let ownerWebsite = "U-SUNG 웹사이트를 만들어"
+    guard TaskWorkflow.objectiveRequest(owner: ownerWebsite, executionPrompt: poisonedStage) == ownerWebsite,
+          resolveR2RetrievalObjective(prompt: ownerWebsite, context: nil) == nil,
+          resolveR2RetrievalObjective(prompt: "R2에서 QMGR 자료 가져와", context: nil) != nil else {
+        throw OS1Error.message("owner source authority regression")
+    }
+
     // Fixtures assert exact Korean runtime wording; pin the language so the
     // user's own interface-language setting cannot flip the expectations.
     setenv("OS1_INTERFACE_LANGUAGE", "ko", 1)
@@ -7612,6 +8542,25 @@ func selfTest() throws {
     try Data("real mutation".utf8).write(to: isolatedFixture.appendingPathComponent("changed.txt"))
     guard workspaceHash(isolatedFixture.path) != observedBefore else {
         throw OS1Error.message("real workspace mutation was missed")
+    }
+    // Regression 2026-09-24: a file the owner named outside what the
+    // workspace state covers was created but never observed. Named paths
+    // join every before/after comparison of the task, runners included.
+    let namedTarget = scopeFixture.appendingPathComponent("elsewhere/probe.txt").path
+    let namedPaths = RequestNamedPaths.extract("\(namedTarget) 파일을 만들고 정확히 OK 한 줄로 답해")
+    guard namedPaths == [(namedTarget as NSString).standardizingPath],
+          observedStateHash(isolatedFixture.path, named: []) == workspaceHash(isolatedFixture.path) else {
+        throw OS1Error.message("named path observation regression (extraction or no-path identity)")
+    }
+    let namedBefore = RequestObservation.$namedPaths.withValue(namedPaths) { observedStateHash(isolatedFixture.path) }
+    let namedUnchanged = RequestObservation.$namedPaths.withValue(namedPaths) { observedStateHash(isolatedFixture.path) }
+    try FileManager.default.createDirectory(atPath: (namedTarget as NSString).deletingLastPathComponent,
+                                            withIntermediateDirectories: true)
+    try Data("OK".utf8).write(to: URL(fileURLWithPath: namedTarget))
+    let namedAfter = RequestObservation.$namedPaths.withValue(namedPaths) { observedStateHash(isolatedFixture.path) }
+    guard namedBefore == namedUnchanged, namedAfter != namedBefore,
+          workspaceHash(isolatedFixture.path) == observedStateHash(isolatedFixture.path) else {
+        throw OS1Error.message("a write to a named path outside the workspace was not observed")
     }
 
     guard r2ReadOnlyProfileArguments == [
@@ -8117,6 +9066,14 @@ func selfTest() throws {
           connectionControlTargets("R2 자료를 찾아봐") == nil,
           connectionControlTargets("QM과 GR 통합 스키마") == nil,
           connectionControlTargets("클로드 연결시켜") == [.claude],
+          connectionControlTargets("Claude 로그인 상태 검증과 quota fallback 코드를 고쳐서 테스트해") == nil,
+          connectionControlTargets("Claude quota fallback 수정은 보존하세요. 실제 로그인/한도 상태 검증을 구분해서 문서를 작성하세요.") == nil,
+          connectionControlTargets("클로드 로그인하지 말고 Codex로 라우팅해") == nil,
+          connectionControlTargets("Claude 로그인돼 있는데 토큰을 다 썼으니 라우터 고쳐") == nil,
+          connectionControlTargets("Claude 연결됨") == nil,
+          connectionControlTargets("Claude 로그인 버튼을 구현해") == nil,
+          connectionControlTargets("클로드 로그인해") == [.claude],
+          connectionControlTargets("please connect Claude") == [.claude],
           // A pasted transcript: the verb and the service live on different
           // lines, so no line is the owner asking for a connection action.
           connectionControlTargets("야 이거 고쳐 로그 다 까봐\n지원되는 백엔드는 Claude입니다\n설정을 켜도 Codex 백엔드가 정상 연결되는지는 확인 필요") == nil,
@@ -8285,6 +9242,51 @@ func selfTest() throws {
           codexWriterConflictMessage(OS1Error.message("Codex desktop protocol rejected thread/resume"), threadID: "x") == nil else {
         throw OS1Error.message("Codex desktop reveal policy validation failed")
     }
+    // Automatic routing must never activate a backend window. A running Desktop
+    // owner is reached through its IPC socket, so `ensureRunning` sends no
+    // reopen event — the exact call that used to pull Codex in front of the
+    // app the owner was using. `.useRunningOwner` therefore has to be a no-op
+    // that still validates its thread identity.
+    let runningThread = "0f9b2c68-49cf-4f2f-9a6e-2b0cd1a4f7e3"
+    var automaticLaunches: [(URL, [String])] = []
+    let recordAutomaticLaunch: (URL, [String]) throws -> Int32 = { executable, arguments in
+        automaticLaunches.append((executable, arguments))
+        return 0
+    }
+    try CodexDesktopTransport.ensureRunning(
+        threadID: runningThread,
+        launch: .useRunningOwner,
+        launcher: recordAutomaticLaunch
+    )
+    var refusedInvalidThread = false
+    do {
+        try CodexDesktopTransport.ensureRunning(
+            threadID: "not-a-uuid",
+            launch: .useRunningOwner,
+            launcher: recordAutomaticLaunch
+        )
+    }
+    catch { refusedInvalidThread = true }
+    try CodexDesktopTransport.ensureRunning(
+        threadID: runningThread,
+        launch: .backgroundLaunch,
+        launcher: recordAutomaticLaunch
+    )
+    guard refusedInvalidThread,
+          automaticLaunches.count == 1,
+          automaticLaunches[0].0.path == "/usr/bin/open",
+          automaticLaunches[0].1 == ["-g", "-b", codexDesktopBundleID],
+          BackendWindowFocus.desktopLaunch(isRunning: true) == .useRunningOwner,
+          BackendWindowFocus.desktopLaunch(isRunning: false) == .backgroundLaunch,
+          BackendWindowFocus.mayActivateBackendWindow(.explicitUserReveal),
+          !BackendWindowFocus.mayActivateBackendWindow(.automaticBackendWork),
+          DesktopRevealMode.always.focusIntent == .explicitUserReveal,
+          DesktopRevealMode.background.focusIntent == .automaticBackendWork,
+          DesktopRevealMode.never.focusIntent == .automaticBackendWork,
+          BackendWindowFocus.backgroundLaunchOptions == ["-g", "-b"],
+          codexDesktopBundleID == CodexDesktopTransport.desktopBundleID else {
+        throw OS1Error.message("Backend window focus policy validation failed")
+    }
     let transcriptRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("os1-self-test-\(UUID().uuidString)", isDirectory: true)
     let transcriptProject = transcriptRoot.appendingPathComponent("-Users-example-project", isDirectory: true)
@@ -8411,6 +9413,12 @@ func selfTest() throws {
     }
     guard !OS1Error.message("Local provider execution timed out").isTerminalPermissionFailure else {
         throw OS1Error.message("Transient failures must retain their bounded recovery path")
+    }
+    guard ModelAvailability.parsedClaudeAuth(["loggedIn": true]) == .loggedIn(nil),
+          ModelAvailability.parsedClaudeAuth(["loggedIn": false]) == .loggedOut,
+          ModelAvailability.parsedClaudeAuth([:]) == .failed("auth status did not include a valid loggedIn field"),
+          ModelAvailability.parsedClaudeAuth(["loggedIn": "false"]) == .failed("auth status did not include a valid loggedIn field") else {
+        throw OS1Error.message("Claude auth metadata must not turn unknown into logged out")
     }
     var protocolRecoveryChecks = 0
     for (subtype, expected) in [("error_max_turns", BackendBlocker.incomplete),
@@ -8550,6 +9558,60 @@ func selfTest() throws {
         throw OS1Error.message("Already-dispatched providers must not recursively enqueue Fleet work")
     }
     protocolRecoveryChecks += 1
+    // Idle watchdog (2026-09-24): a provider that keeps writing outlives the
+    // idle limit; silence stops it; the ceiling still bounds a chatty one.
+    let chatty = try commandOutput("/bin/sh", ["-c", "for i in 1 2 3 4 5 6; do echo $i; sleep 0.25; done"],
+        timeout: 30, idleTimeout: 0.8, isProvider: true)
+    guard chatty.0 == 0, String(decoding: chatty.1, as: UTF8.self).contains("6") else {
+        throw OS1Error.message("An active provider must not be stopped by the idle limit")
+    }
+    protocolRecoveryChecks += 1
+    for (script, ceiling, expected) in [("echo started; exec sleep 20", 30, "no backend activity"),
+                                        ("while true; do echo x; sleep 0.1; done", 1, "attempt ceiling")] {
+        let started = Date()
+        do {
+            _ = try commandOutput("/bin/sh", ["-c", script], timeout: ceiling, idleTimeout: 0.5, isProvider: true)
+            throw OS1Error.message("Provider watchdog did not stop: \(expected)")
+        } catch OS1Error.message(let text) where text.hasPrefix(ProviderActivityWatchdog.timeoutText) {
+            guard text.contains(expected), Date().timeIntervalSince(started) < 8,
+                  backendBlocker(OS1Error.message(text)) == .timeout else {
+                throw OS1Error.message("Provider watchdog reason or timing is wrong: \(text)")
+            }
+        }
+        protocolRecoveryChecks += 1
+    }
+    // A new writer must run its own turn: no Desktop renderer exists yet.
+    // An existing writer conflict must retain the same thread and use IPC.
+    for desktopOwned in [false, true] {
+        let ownerID = UUID().uuidString.lowercased()
+        let ownerPeer = approvalFixture.appendingPathComponent("owner-\(desktopOwned).py")
+        try Data("""
+        #!/usr/bin/python3
+        import sys, json
+        for line in sys.stdin:
+            r=json.loads(line)
+            if 'id' not in r: continue
+            m=r.get('method')
+            if m=='thread/resume' and \(desktopOwned ? "True" : "False"):
+                out={'error': {'code': -32000, 'message': 'thread already has an active writer'}}
+            elif m in ('thread/start','thread/resume','thread/read'):
+                out={'result': {'thread': {'id':'\(ownerID)', 'name':'fixture', 'source':'os1'}}}
+            elif m=='threadSection/list':
+                out={'result': {'data':[{'id':'fixture-section','name':'OS-1 Backend'}]}}
+            else: out={'result': {}}
+            print(json.dumps(dict({'jsonrpc':'2.0','id':r['id']}, **out)),flush=True)
+        """.utf8).write(to: ownerPeer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: ownerPeer.path)
+        let ownerServer = try CodexAppServerClient(executable: ownerPeer.path, workspace: approvalFixture.path)
+        defer { ownerServer.close() }
+        let selectedID = try ownerServer.startOrResumeThread(existingSessionID: desktopOwned ? ownerID : nil,
+            workspace: approvalFixture.path, model: nil, instructions: "fixture", permissionProfile: "workspace_write",
+            title: "fixture", deadline: Date().addingTimeInterval(8))
+        guard selectedID == ownerID, ownerServer.ownsThreadWriter == !desktopOwned else {
+            throw OS1Error.message("Codex writer ownership must determine direct versus Desktop dispatch")
+        }
+        protocolRecoveryChecks += 1
+    }
     let capturedRequest = approvalFixture.appendingPathComponent("request.json")
     let recoveredSession = UUID().uuidString.lowercased()
     let recoveredTurn = UUID().uuidString.lowercased()
@@ -8574,6 +9636,97 @@ func selfTest() throws {
     guard wireDispatched && wireStarted && recovered.turnID == recoveredTurn &&
           String(decoding: recovered.output, as: UTF8.self) == "fixture readback complete" else {
         throw OS1Error.message("Recovery adapter failed real stdio dispatch/result binding")
+    }
+    protocolRecoveryChecks += 1
+    // A short child returns when it exits, not on the next 100 ms poll tick.
+    let shortStarted = Date()
+    for _ in 0..<10 { _ = try commandOutput("/usr/bin/true", [], timeout: 10) }
+    guard Date().timeIntervalSince(shortStarted) < 0.6 else {
+        throw OS1Error.message("Ten short child processes took \(Date().timeIntervalSince(shortStarted)) s; exit must wake the wait")
+    }
+    protocolRecoveryChecks += 1
+    // Latency marks are relative to the attempt start, written once, then cleared.
+    let latencyRoot = approvalFixture.appendingPathComponent("latency", isDirectory: true)
+    let latencyExecution = UUID().uuidString.lowercased()
+    AttemptLatencyTrace.begin(at: Date(timeIntervalSince1970: 100))
+    AttemptLatencyTrace.mark("lease", at: Date(timeIntervalSince1970: 100.25))
+    AttemptLatencyTrace.mark("dispatched", at: Date(timeIntervalSince1970: 101.5))
+    AttemptLatencyTrace.finish(executionID: latencyExecution, sequence: 2, provider: "codex", root: latencyRoot)
+    let latencyRecord = (try? JSONSerialization.jsonObject(with: Data(contentsOf:
+        latencyRoot.appendingPathComponent("latency-\(latencyExecution)-2.json")))) as? [String: Any]
+    let latencyMarks = latencyRecord?["marks"] as? [[String: Any]] ?? []
+    AttemptLatencyTrace.mark("after-finish")
+    guard latencyMarks.count == 2, latencyMarks[0]["name"] as? String == "lease", latencyMarks[0]["ms"] as? Int == 250,
+          latencyMarks[1]["ms"] as? Int == 1_500, latencyRecord?["provider"] as? String == "codex",
+          AttemptLatencyTrace.take() == nil else {
+        throw OS1Error.message("Attempt latency marks must be attempt-relative, written once and cleared")
+    }
+    protocolRecoveryChecks += 1
+    // A turn that keeps emitting events outlives the idle limit; a silent one
+    // stops at it (never at a fixed 30-minute cap).
+    for streaming in [true, false] {
+        let idlePeer = approvalFixture.appendingPathComponent("idle-\(streaming).sh")
+        let idleTurn = UUID().uuidString.lowercased()
+        let usage = #"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"\#(recoveredSession)","turnId":"\#(idleTurn)"}}"#
+        try Data("""
+        #!/bin/sh
+        IFS= read -r request
+        printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{"turn":{"id":"\(idleTurn)"}}}'
+        \(streaming ? "for i in 1 2 3 4 5 6; do sleep 0.25; printf '%s\\n' '\(usage)'; done" : "")
+        \(streaming ? "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"\(recoveredSession)\",\"turn\":{\"id\":\"\(idleTurn)\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"phase\":\"final_answer\",\"text\":\"long turn done\"}]}}}'" : "")
+        while IFS= read -r ignored; do :; done
+        """.utf8).write(to: idlePeer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: idlePeer.path)
+        let idleServer = try CodexAppServerClient(executable: idlePeer.path, workspace: approvalFixture.path)
+        defer { idleServer.close() }
+        let started = Date()
+        do {
+            let turn = try idleServer.runTurn(threadID: recoveredSession, prompt: "fixture", workspace: approvalFixture.path,
+                model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(30), idleTimeout: 0.8)
+            guard streaming, String(decoding: turn.output, as: UTF8.self) == "long turn done" else {
+                throw OS1Error.message("A silent Codex turn must stop at the idle limit")
+            }
+        } catch OS1Error.message(let text) where text.hasPrefix(ProviderActivityWatchdog.timeoutText) {
+            guard !streaming, text.contains("no backend activity"), Date().timeIntervalSince(started) < 8 else {
+                throw OS1Error.message("A streaming Codex turn must not be stopped for idleness: \(text)")
+            }
+        }
+        protocolRecoveryChecks += 1
+    }
+    // A new thread's title goes out right after turn/start, never before it.
+    let namingLog = approvalFixture.appendingPathComponent("naming-requests.log")
+    let namingPeer = approvalFixture.appendingPathComponent("naming-peer.py")
+    let namingThread = UUID().uuidString.lowercased(), namingTurn = UUID().uuidString.lowercased()
+    try Data("""
+    #!/usr/bin/python3
+    import sys, json
+    log = open('\(namingLog.path)', 'a')
+    for line in sys.stdin:
+        r = json.loads(line)
+        if 'method' in r: log.write(r['method'] + '\\n'); log.flush()
+        if 'id' not in r: continue
+        m = r.get('method')
+        if m == 'thread/start': out = {'result': {'thread': {'id': '\(namingThread)', 'source': 'os1'}}}
+        elif m == 'threadSection/list': out = {'result': {'data': [{'id': 'fixture-section', 'name': 'OS-1 Backend'}]}}
+        elif m == 'turn/start': out = {'result': {'turn': {'id': '\(namingTurn)'}}}
+        else: out = {'result': {}}
+        print(json.dumps(dict({'jsonrpc': '2.0', 'id': r['id']}, **out)), flush=True)
+        if m == 'turn/start':
+            print(json.dumps({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'threadId': '\(namingThread)', 'turn': {'id': '\(namingTurn)', 'status': 'completed', 'items': [{'type': 'agentMessage', 'phase': 'final_answer', 'text': 'named'}]}}}), flush=True)
+    """.utf8).write(to: namingPeer)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: namingPeer.path)
+    let namingServer = try CodexAppServerClient(executable: namingPeer.path, workspace: approvalFixture.path)
+    let namedThread = try namingServer.startOrResumeThread(existingSessionID: nil, workspace: approvalFixture.path,
+        model: nil, instructions: "fixture", permissionProfile: "read_only", title: "fixture title",
+        deadline: Date().addingTimeInterval(8))
+    let namedTurn = try namingServer.runTurn(threadID: namedThread, prompt: "fixture", workspace: approvalFixture.path,
+        model: nil, effort: "low", permissionProfile: "read_only", deadline: Date().addingTimeInterval(8))
+    namingServer.close()
+    let namingMethods = ((try? String(contentsOf: namingLog, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    guard String(decoding: namedTurn.output, as: UTF8.self) == "named",
+          let startIndex = namingMethods.firstIndex(of: "turn/start"),
+          let nameIndex = namingMethods.firstIndex(of: "thread/name/set"), nameIndex > startIndex else {
+        throw OS1Error.message("A new Codex thread must be titled right after turn/start: \(namingMethods)")
     }
     protocolRecoveryChecks += 1
     let noAckPeer = approvalFixture.appendingPathComponent("no-ack.sh")
@@ -8993,7 +10146,39 @@ func selfTest() throws {
             Data("R2 원문과 최신 GitHub 상태를 검증했고 결과는 다음과 같습니다.".utf8),
             prompt: incidentPrompt
         )),
-    ]
+        // 2026-09-24: a readback that honestly named what it could not verify
+        // was rejected because the quoted old objective said "고쳐".
+        ("readback naming an unverifiable step is a verdict, not a capability failure", !providerOutputDeclaresCapabilityFailure(
+            Data("배포 로그는 확인했지만 권한이 없어 라이브 동작 증거가 없음\nOS1_EFFECTS: partial".utf8),
+            prompt: BackendRecovery.readbackPrompt(objective: "인스타 가격 버그 고쳐")
+        )),
+        // Build 262/263: the chat lane takes only a self-contained text operation.
+        ("chat lane answers a translation", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+            objective: "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?")),
+        ("chat lane answers a summary", claudeChatLane(provider: "claude", permission: "read_only", hasSource: false,
+            objective: "다음 글을 한 줄로 요약해줘: 오늘 회의에서 출시를 2주 미루고 QA 두 명을 추가하기로 했다.")),
+        ("chat lane keeps an action request on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "그럼 실제로 해봐 다 되는지 하나씩 하나씩 4개 다 해봐")),
+        ("chat lane keeps a status question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "그래서 했냐고")),
+        ("chat lane keeps a repository question on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "이 저장소에서 동시 실행 기본값이 몇인지 소스에서 찾아 한 줄로 답해.")),
+        ("chat lane keeps a file translation on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "README.md를 번역해서 README.en.md로 저장해")),
+        ("chat lane keeps a named path on the full lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: false, objective: "~/Documents 안에 뭐가 있는지 알려줘")),
+        ("chat lane never takes a write ticket", !claudeChatLane(provider: "claude", permission: "workspace_write",
+            hasSource: false, objective: "2의 10제곱은?")),
+        ("chat lane never takes Codex", !claudeChatLane(provider: "codex", permission: "read_only", hasSource: false,
+            objective: "2의 10제곱은?")),
+        ("chat lane leaves an attached source to its own lane", !claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: true, objective: "2의 10제곱은?")),
+        // Build 258: a staged task inside a checkout of this repository is an
+        // OS-1 repair only when the request is about OS-1.
+        ("staged OS-1 request is an OS-1 repair", workflowIsOS1Repair(repairRoot: "/checkout", projectID: "os1-clodex")),
+        ("staged unrelated task in an OS-1 checkout is not an OS-1 repair", !workflowIsOS1Repair(repairRoot: "/checkout", projectID: nil)),
+        ("staged task outside an OS-1 checkout is not an OS-1 repair", !workflowIsOS1Repair(repairRoot: nil, projectID: "os1-clodex")),
+    ] + postCheckRejectionChecks()
     let failedCapabilityChecks = capabilityGateChecks.filter { !$0.1 }.map(\.0)
     guard failedCapabilityChecks.isEmpty else {
         throw OS1Error.message("Capability routing validation failed: \(failedCapabilityChecks.joined(separator: ", "))")
@@ -9141,6 +10326,22 @@ func selfTest() throws {
         ("catalog effort intersection", mapped.models.first?.supportedEfforts == ["high"] && mapped.models.first?.defaultEffort == "high"),
         ("missing Codex auto routes available Claude", try executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: false, claudeAvailable: true) == "claude"),
         ("missing Claude auto routes available Codex", try executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: true, claudeAvailable: false) == "codex"),
+        ("a named Claude that cannot run says why", {
+            do {
+                _ = try executableProviderPreference(requested: "claude", prompt: "Explain this source", codexAvailable: false,
+                    claudeAvailable: false, claudeUnavailableReason: { "signed out · run claude auth login" })
+                return false
+            } catch { return String(describing: error).contains("signed out · run claude auth login") }
+        }()),
+        ("the Claude reason is asked only when Claude was named and is missing", {
+            var asked = 0
+            let reason: () -> String? = { asked += 1; return "signed out" }
+            let routed = (try? executableProviderPreference(requested: "auto", prompt: "Explain", codexAvailable: true,
+                claudeAvailable: false, claudeUnavailableReason: reason)) == "codex" &&
+                (try? executableProviderPreference(requested: "claude", prompt: "Explain", codexAvailable: true,
+                    claudeAvailable: true, claudeUnavailableReason: reason)) == "claude"
+            return routed && asked == 0
+        }()),
         ("explicit missing pin falls back to the available backend",
          (try? executableProviderPreference(requested: "codex", prompt: "Explain this source", codexAvailable: false, claudeAvailable: true)) == "claude" &&
          (try? executableProviderPreference(requested: "claude", prompt: "Explain this source", codexAvailable: true, claudeAvailable: false)) == "codex"),
@@ -9184,14 +10385,17 @@ func selfTest() throws {
          CodexContextBudget.excluded(models: [("small", 128_000), ("large", 272_000), ("unknown", nil)], baseInstructionBytes: 859_674) == ["small"]),
         ("context budget never guesses without sizes",
          CodexContextBudget.excluded(models: [("small", 128_000)], baseInstructionBytes: nil).isEmpty),
-        ("feasibility question about a registered project prepares without modifying",
-         PreparationIntent.detect("야 여기서 OS1 수정 가능하냐?").map { $0.kind == .prepare && $0.projectID == "os1-clodex" && !$0.modifies } == true),
+        ("feasibility question binds the project, reaches a backend and does not modify",
+         PreparationIntent.detect("야 여기서 OS1 수정 가능하냐?").map { $0.kind == .prepare && $0.projectID == "os1-clodex" && !$0.modifies && !$0.preparationOnly } == true),
+        ("finish-it request is not answered with the canned preparation card",
+         PreparationIntent.detect("OS1 하던 거 마저 해줘")?.preparationOnly == false && PreparationIntent.detect("OS1 준비만 해")?.preparationOnly == true),
         ("feasibility question without a registered project stays a plain question",
          PreparationIntent.detect("이거 수정 가능하냐?") == nil),
         ("modification request keeps modifying", PreparationIntent.detect("OS1 앱 라우팅 버그 고쳐")?.modifies == true),
         ("write-scope request without a listed verb still modifies",
          PreparationIntent.detect("OS1 앱 저장소의 README.md 맨 끝에 한 줄만 추가해. 다른 파일은 건드리지 마.")?.modifies == true),
-        ("bare preparation stays non-modifying", PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해")?.modifies == false),
+        ("bare preparation stays non-modifying and local",
+         PreparationIntent.detect("OS1 앱 수정 좀 하자 준비해").map { !$0.modifies && $0.preparationOnly } == true),
         ("evidence-backed shell wording may run on Claude",
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true, evidenceSupplied: true)) == "claude"),
         ("write-scope shell wording may run on Claude",
@@ -9200,6 +10404,10 @@ func selfTest() throws {
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: true)) == "claude"),
         ("read-only shell wording with no backend at all still stops",
          (try? executableProviderPreference(requested: "auto", prompt: "GitHub 최신 상태 확인해", codexAvailable: false, claudeAvailable: false)) == nil),
+        ("technical inability is not executor incapability",
+         !providerOutputDeclaresCapabilityFailure(Data("open -g는 새로 뜬 앱이 자기 창을 활성화하는 것은 막지 못합니다.".utf8), prompt: "자동 라우팅 때 창이 앞으로 나오지 않게 수정하라")),
+        ("direct first-person inability remains blocked",
+         providerOutputDeclaresCapabilityFailure(Data("저는 이 작업을 직접 수행하지 못합니다.".utf8), prompt: "수정해")),
         ("snapshot-only explanation that notes no execution is not a capability failure",
          !providerOutputDeclaresCapabilityFailure(Data("이번 작업은 읽기 전용이라 실행할 수 없어 첨부된 자료만 정리했습니다.".utf8),
                                                   prompt: "QM이랑 GR자료 R2에서 다 가져와 설명만 해", evidenceSupplied: true)),
@@ -9419,7 +10627,7 @@ func selfTest() throws {
                       route.adoptedTasks == 2, route.firstPassTasks == 1, route.firstPassRate == 0.5 else {
                     FileHandle.standardError.write(Data("owner-retry: governance routes \(routes.map { "\($0.id) t=\($0.terminalTasks) a=\($0.adoptedTasks) f=\($0.firstPassTasks)" })\n".utf8)); return false }
                 var priced = route; priced.meteredTasks = 2; priced.taskTokens = 30_000
-                return priced.tokensPerCompletedTask == 30_000 && route.tokensPerCompletedTask == nil
+                return priced.tokensPerCompletedTask == 15_000 && route.tokensPerCompletedTask == nil
             } catch { FileHandle.standardError.write(Data("owner-retry: threw \(error)\n".utf8)); return false }
         }()),
         ("pasted backup-pipeline talk is not an R2 material request", {
@@ -9480,6 +10688,93 @@ func selfTest() throws {
                 return selfRepairSecretHit(root: "/nonexistent-os1-root", git: "/usr/bin/true") == nil
             } catch { return false }
         }()),
+        ("a request about OS-1 without its name binds OS-1; named or bound projects win", {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let bubble = "왜 말풍선이 딱 안 맞냐? 코덱스 보면 딱딱 맞거든? 코덱스 기준으로 고쳐"
+            func bind(_ request: String, named: String? = nil, bound: String? = nil, readOnly: Bool = false) -> LocalProjectBinding {
+                localProjectBinding(request: request, workspace: home, namedProjectID: named, boundProjectID: bound, readOnly: readOnly, os1Roots: [])
+            }
+            let inferred = bind(bubble), named = bind("OS1 고쳐", named: "os1-clodex")
+            return inferred.projectID == "os1-clodex" && inferred.inferred && named.projectID == "os1-clodex" && !named.inferred
+                && bind(bubble, named: "scv-instagram").projectID == nil && bind(bubble, bound: "scv-instagram").projectID == nil
+                && bind(bubble, bound: "workspace:LUA").projectID == "os1-clodex" && bind(bubble, bound: "os1-clodex").projectID == "os1-clodex"
+                && bind(bubble, readOnly: true).projectID == nil && bind("이번 주 작업 목록 만들어줘").projectID == nil
+        }()),
+        ("an unbound task's OS-1 source change is detected and never finished over another writer", {
+            guard let git = try? findExecutable("git") else { return false }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-source-watch-" + UUID().uuidString, isDirectory: true)
+            let source = root.appendingPathComponent("products/os1-mac-runtime/Sources/OS1", isDirectory: true)
+            defer {
+                try? FileManager.default.removeItem(at: root)
+                if let lock = try? os1SourceWriteLeaseURL(root: root.path) { try? FileManager.default.removeItem(at: lock) }
+            }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            do {
+                try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+                try "let a = 1\n".write(to: source.appendingPathComponent("A.swift"), atomically: true, encoding: .utf8)
+                guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "base"]) else { return false }
+                let watch = OS1SourceWatch(root: root.path, head: gitHead(root.path), fingerprint: OS1SourceWatch.fingerprint(root: root.path))
+                guard watch.fingerprint != nil, !watch.changed() else { return false }
+                try "let a = 2\n".write(to: source.appendingPathComponent("A.swift"), atomically: true, encoding: .utf8)
+                guard watch.changed() else { return false }
+                // Another OS-1 writer holds the source: report, never interleave.
+                var other = try tryAcquireOS1SourceWriteLease(root: root.path)
+                guard other != nil else { return false }
+                let busy = finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date())
+                other = nil
+                guard busy.contains(root.path), gitHead(root.path) == watch.head else { return false }
+                // A commit OS-1 itself made meanwhile belongs to another repair.
+                guard run(["commit", "-q", "-am", "os1: self-repair build 999 — another repair"]), let otherRepair = gitHead(root.path) else { return false }
+                return finishUnboundOS1Change(watch, objective: "fixture", startedAt: Date()).contains(root.path) && gitHead(root.path) == otherRepair
+            } catch { return false }
+        }()),
+        ("a checkout without the installed build's commit is never staged", {
+            guard let git = try? findExecutable("git") else { return false }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-stale-root-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try "a\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+                guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "old"]), let old = gitHead(root.path) else { return false }
+                try "b\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+                guard run(["commit", "-q", "-am", "installed"]), let installed = gitHead(root.path) else { return false }
+                // Current tree: fine. Back at the old commit (a stale copy): refused.
+                guard staleOS1SourceDiagnostic(root: root.path, installedCommit: installed) == nil,
+                      staleOS1SourceDiagnostic(root: root.path, installedCommit: nil) == nil,
+                      run(["checkout", "-q", old]) else { return false }
+                return staleOS1SourceDiagnostic(root: root.path, installedCommit: installed)?.contains(String(installed.prefix(7))) == true
+                    && staleOS1SourceDiagnostic(root: root.path, installedCommit: String(repeating: "e", count: 40)) != nil
+            } catch { return false }
+        }()),
+        ("an uncommitted OS-1 source tree is never staged by the stage command", {
+            guard let git = try? findExecutable("git") else { return false }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-dirty-root-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            func run(_ arguments: [String]) -> Bool {
+                (try? commandOutput(git, ["-C", root.path, "-c", "user.name=OS-1 fixture", "-c", "user.email=fixture@os1.invalid"] + arguments, timeout: 30))?.0 == 0
+            }
+            do {
+                let runtime = root.appendingPathComponent(SelfUpdate.runtimeRelativePath, isDirectory: true)
+                try FileManager.default.createDirectory(at: runtime.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+                try "a\n".write(to: runtime.appendingPathComponent("Sources/a.swift"), atomically: true, encoding: .utf8)
+                try "other\n".write(to: root.appendingPathComponent("unrelated.txt"), atomically: true, encoding: .utf8)
+                guard run(["init", "-q"]), run(["add", "-A"]), run(["commit", "-q", "-m", "clean"]) else { return false }
+                // Clean, or dirty only outside OS-1's runtime: allowed.
+                guard uncommittedOS1SourceDiagnostic(root: root.path) == nil else { return false }
+                try "changed\n".write(to: root.appendingPathComponent("unrelated.txt"), atomically: true, encoding: .utf8)
+                guard uncommittedOS1SourceDiagnostic(root: root.path) == nil else { return false }
+                // An edited or new runtime file: refused, and the reason says to commit.
+                try "b\n".write(to: runtime.appendingPathComponent("Sources/a.swift"), atomically: true, encoding: .utf8)
+                try "new\n".write(to: runtime.appendingPathComponent("Sources/b.swift"), atomically: true, encoding: .utf8)
+                guard let refused = uncommittedOS1SourceDiagnostic(root: root.path), refused.contains("2 uncommitted"), refused.contains("Commit") else { return false }
+                return run(["add", "-A"]) && run(["commit", "-q", "-m", "committed"]) && uncommittedOS1SourceDiagnostic(root: root.path) == nil
+            } catch { return false }
+        }()),
         ("self-update applies only a newer, fresh, idle-time intent", {
             let now = Date()
             func intent(build: Int, stagedAt: Date = now, state: String = "pending", attempts: Int = 0, lastAttempt: Date? = nil) -> SelfUpdate.Intent {
@@ -9523,7 +10818,60 @@ func selfTest() throws {
     }
     print("OS-1 completion preflight, feedback wire, replay guard and adoption: \(completionChecks.count) checks OK")
     try ModelAvailability.selfTest()
+    try backendHealthLabelSelfTest()
+    try resultUsageSelfTest()
     print("OS-1 native session, permission orchestration, model, effort, and executor contract self-test: OK")
+}
+
+/// Route learning schema 2: the device signs a step's tokens with its result.
+/// The v1 bytes must never change (the artifact upload and older gateways
+/// verify them), and the v2 bytes must match the gateway's canonical form.
+func resultUsageSelfTest() throws {
+    var checks = 0
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw OS1Error.message("Result usage regression: " + label) }
+        checks += 1
+    }
+    let ticket = Ticket(executionID: "3f7c2a82-3b21-4f39-9e3a-8dd9af83c79c", sequence: 2, provider: "claude",
+                        action: "cl_sonnet_medium", permissionProfile: "read_only", expiresAt: "2026-09-01T00:00:00.000Z",
+                        nonce: "Q2hhbmdlTWVOb3RBbmRUaGVuQ2hhbmdlTWVBZ2Fpbg", signature: String(repeating: "A", count: 86))
+    let plain = ResultSubmission(ticket: ticket, resultHash: String(repeating: "b", count: 64),
+                                 artifactRef: "r2://os1-private-results/execution/result.json", deviceSignature: "")
+    try check(String(decoding: resultBytes(plain), as: UTF8.self) == [
+        "os1-result-v1", ticket.executionID, "2", ticket.nonce, plain.resultHash, plain.artifactRef].joined(separator: "\n"),
+        "v1 bytes changed")
+    var measured = plain
+    measured.usage = StepUsage(inputTokens: 800_000, outputTokens: 3_000, cacheTokens: 790_000)
+    try check(String(decoding: resultBytes(measured), as: UTF8.self) == [
+        "os1-result-v2", ticket.executionID, "2", ticket.nonce, plain.resultHash, plain.artifactRef,
+        "800000", "790000", "3000"].joined(separator: "\n"), "v2 bytes differ from the gateway's canonical form")
+    let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(measured)) as? [String: Any]
+    try check(Set((json?["usage"] as? [String: Any])?.keys ?? [:].keys) == ["input_tokens", "output_tokens", "cache_tokens"],
+              "usage must carry exactly the three counts")
+    let plainJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
+    try check(plainJSON?["usage"] == nil, "a result without usage must not send the key")
+    let unmeasured = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+        StepUsage(inputTokens: 5, outputTokens: nil, cacheTokens: nil))) as? [String: Any]
+    try check(unmeasured?["output_tokens"] is NSNull && unmeasured?["cache_tokens"] is NSNull, "unmeasured counts are null")
+    // Stored deliveries from before usage still decode.
+    let legacy = Data(#"{"ticket":{"execution_id":"3f7c2a82-3b21-4f39-9e3a-8dd9af83c79c","sequence":2,"provider":"claude","action":"cl_sonnet_medium","permission_profile":"read_only","expires_at":"2026-09-01T00:00:00.000Z","nonce":"Q2hhbmdlTWVOb3RBbmRUaGVuQ2hhbmdlTWVBZ2Fpbg","signature":"AAAA"},"result_hash":"bb","artifact_ref":"r2://x","device_signature":"sig"}"#.utf8)
+    try check((try JSONDecoder().decode(ResultSubmission.self, from: legacy)).usage == nil, "a stored v1 delivery must still decode")
+    // Trust rule: Codex counts only from deduplicated rollout accounting.
+    func resource(_ format: CompletionUsageFormat, _ version: Int?) -> CompletionUsageResourceMetadata {
+        CompletionUsageResourceMetadata(format: format, byteCount: 1, sha256: String(repeating: "c", count: 64),
+                                        usageRecordCount: 1, accountingVersion: version)
+    }
+    let claudeUsage = CompletionMeasuredUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 400,
+                                              resource: resource(.claudeResultJSON, 1))
+    try check(StepUsage.measured(claudeUsage, provider: "claude") == StepUsage(inputTokens: 100, outputTokens: 10, cacheTokens: 100),
+              "cache never exceeds input")
+    try check(StepUsage.measured(CompletionMeasuredUsage(inputTokens: 5, outputTokens: 1, cacheTokens: 0,
+        resource: resource(.codexRolloutJSONL, 1)), provider: "codex") == nil, "old Codex accounting is not trusted")
+    try check(StepUsage.measured(CompletionMeasuredUsage(inputTokens: 5, outputTokens: 1, cacheTokens: 0,
+        resource: resource(.codexRolloutJSONL, 2)), provider: "codex") != nil, "deduplicated Codex accounting is sent")
+    try check(StepUsage.measured(claudeUsage, provider: "local") == nil && StepUsage.measured(nil, provider: "claude") == nil,
+              "no usage for local steps or unmeasured runs")
+    print("Result usage: \(checks) checks OK; v1 bytes unchanged, v2 matches the gateway")
 }
 
 func usage() {
@@ -9532,6 +10880,9 @@ func usage() {
 
       os1 doctor
       os1 self-test
+      os1 accounts list [--json]
+      os1 accounts login --provider codex|claude [--id ACCOUNT] [--new] [--label NAME]
+      os1 accounts use|logout|forget --provider codex|claude [--id ACCOUNT]
       os1 fleet-snapshot
       os1 fleet-run --workspace /path --prompt "task" [--profile codex|claude|os1|build|test|exo]
       os1 fleet-wait --job UUID [--timeout-seconds 5...3600]
@@ -9562,9 +10913,14 @@ struct OS1Main {
             if try await selfUpdateCommand(arguments) { return }
             if try await selfRepairCommand(arguments) { return }
             if try await fleetCommand(arguments) { return }
+            if try await ManagedPreview.command(arguments) { return }
             switch command {
             case "version", "--version", "-V": print(os1RuntimeVersionString)
             case "doctor": try doctor()
+            // Owner-facing sign-in for the backends, with more than one
+            // account each. OS-1 starts the provider's own browser login and
+            // records the label and home only — never a credential.
+            case "accounts": try BackendAccountCommands.run(arguments)
             case "sidebar-pin":
                 guard (4...5).contains(arguments.count), arguments[1] == "codex",
                       let id = try normalizedSessionID(arguments[2]), ["true", "false"].contains(arguments[3]) else {
@@ -9742,9 +11098,11 @@ struct OS1Main {
                     throw OS1Error.message("At least one backend capacity must be above zero")
                 }
                 let sessionContext = try readSessionContext(contextPath)
+                let boundProjectID = try SessionHandoff.decode(sessionContext).taskContext?.project?.projectID
                 let workflow = !requireReadOnly &&
-                    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope) &&
-                    PreparationIntent.detect(prompt)?.modifies != false
+                    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope,
+                        projectID: boundProjectID) &&
+                    PreparationIntent.detect(prompt)?.preparationOnly != true
                 let summary = try await (workflow ? runWorkflowTask(
                     prompt: prompt, workspace: workspace, providerPreference: providerPreference,
                     context: sessionContext, codexSessionID: codexSessionID,

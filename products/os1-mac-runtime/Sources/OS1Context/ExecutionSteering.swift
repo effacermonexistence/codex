@@ -114,7 +114,7 @@ public struct ExecutionSteering: Sendable {
               !["배포", "삭제", "업로드", "커밋", "푸시", "병합", "설치", "리셋", "초기화", "복원",
                 "deploy", "delete", "upload", "commit", "push", "merge", "install", "reset", "restore", "execute"]
                 .contains(where: value.contains) else { return false }
-        if PreparationIntent.detect(value).map({ !$0.modifies && $0.kind == .prepare }) == true { return true }
+        if PreparationIntent.detect(value)?.preparationOnly == true { return true }
         return ["자료", "문서", "r2", "github", "file", "document", "source"].contains(where: value.contains) &&
             ["가져와", "가져 와", "찾아", "읽어", "조회", "fetch", "retrieve", "read ", "find "].contains(where: value.contains)
     }

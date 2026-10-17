@@ -12,12 +12,12 @@ class Tests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.root=pathlib.Path(self.tmp.name)/'policy'
     def tearDown(self): self.tmp.cleanup()
-    def capture(self, indexes=None, source=SOURCE):
-        answers=iter(indexes or [INDEX,INDEX]); self.exports=0
+    def capture(self, indexes=None, source=SOURCE, now=None):
+        answers=iter(indexes or [INDEX,INDEX]); self.exports=0; self.index_reads=0
         def call(script):
-            if script==m.INDEX_SCRIPT: return next(answers)
+            if script==m.INDEX_SCRIPT: self.index_reads+=1; return next(answers)
             self.exports+=1; return source
-        return m.refresh(self.root,call)
+        return m.refresh(self.root,call,now or m.time.time)
     def test_roundtrip_and_cache(self):
         result=self.capture(); raw=(self.root/'active.json').read_bytes()
         record=json.loads(raw); self.assertEqual(result['sourceSHA256'],m.sha(SOURCE+'\n'))
@@ -28,9 +28,28 @@ class Tests(unittest.TestCase):
         self.capture(); before=(self.root/'active.json').read_bytes()
         with self.assertRaises(ValueError): self.capture([INDEX.replace('100','101'), INDEX.replace('100','102')])
         self.assertEqual(before,(self.root/'active.json').read_bytes())
-    def test_newer_note_during_cache_preserves_pointer(self):
+    def test_cache_hit_is_one_read_and_no_write(self):
+        self.capture(); p=self.root/'active.json'; before=p.read_bytes(); stamp=p.stat().st_mtime_ns
+        record=json.loads(before); source=self.root/record['sourceFile']; source_stamp=source.stat().st_mtime_ns
+        result=self.capture([INDEX])
+        self.assertEqual((self.index_reads,self.exports),(1,0))
+        self.assertEqual((p.read_bytes(),p.stat().st_mtime_ns,source.stat().st_mtime_ns),(before,stamp,source_stamp))
+        self.assertEqual(result['sourceSHA256'],record['sourceSHA256'])
+    def test_stale_certification_is_renewed_without_recapture(self):
+        self.capture(); record=json.loads((self.root/'active.json').read_text())
+        later=record['checkedAt']+m.RECERTIFY_SECONDS+5
+        self.capture([INDEX], now=lambda: later)
+        renewed=json.loads((self.root/'active.json').read_text())
+        self.assertEqual((self.exports,renewed['checkedAt'],renewed['sourceSHA256']),(0,later,record['sourceSHA256']))
+    def test_newer_note_on_index_forces_capture(self):
+        self.capture(); newer=INDEX.replace('100','101')
+        self.capture([newer,newer],SOURCE+'added rule\n')
+        record=json.loads((self.root/'active.json').read_text())
+        self.assertEqual((self.exports,record['sourceModified'],record['sourceSHA256']),(1,'101',m.sha(SOURCE+'added rule\n'+'\n')))
+    def test_newer_note_during_capture_preserves_pointer(self):
         self.capture(); before=(self.root/'active.json').read_bytes()
-        with self.assertRaises(ValueError): self.capture([INDEX, INDEX+'\nx-coredata://other\t101'])
+        newer=INDEX.replace('100','101')
+        with self.assertRaises(ValueError): self.capture([newer, newer+'\nx-coredata://other\t102'])
         self.assertEqual(before,(self.root/'active.json').read_bytes())
     def test_latest_selection(self):
         self.assertEqual(m.latest_note(INDEX+'\nx-coredata://older\t99'),tuple(INDEX.split('\t')))

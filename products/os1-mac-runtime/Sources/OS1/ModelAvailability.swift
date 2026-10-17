@@ -11,6 +11,25 @@ struct ClaudeModelCapability: Codable, Equatable {
     }
 }
 
+/// Process-local, short-lived: the native Claude inventory probed for this
+/// run. Never persisted, never shared across runs or workspaces.
+final class ClaudeInventoryCache: @unchecked Sendable {
+    static let shared = ClaudeInventoryCache()
+    private let lock = NSLock()
+    private var entry: (workspace: String, at: Date, models: [NativeClaudeModel])?
+    func models(workspace: String, maxAge: TimeInterval, now: Date = Date()) -> [NativeClaudeModel]? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry, entry.workspace == workspace, maxAge > 0,
+              now.timeIntervalSince(entry.at) >= 0, now.timeIntervalSince(entry.at) <= maxAge else { return nil }
+        return entry.models
+    }
+    func store(_ models: [NativeClaudeModel], workspace: String, at: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        entry = (workspace, at, models)
+    }
+    func clear() { lock.lock(); entry = nil; lock.unlock() }
+}
+
 struct NativeClaudeModel {
     let model: String
     let invocation: String
@@ -44,9 +63,26 @@ enum ModelAvailability {
             !claudeRows([defaults, sonnet]).contains { $0.model == "opus" },
             claudeRows([["value": "fable"]]).isEmpty,
             claudeRows([fable.merging(["supportedEffortLevels": ["ultra"]]) { _, n in n }]).isEmpty,
-        ]
+            excludingModelLimited(["fable", "opus", "sonnet", "claude-fable-5-1[1m]"].map {
+                ClaudeModelCapability(model: $0, supportedEfforts: ["low"]) }, limited: ["fable"]).map(\.model) == ["opus", "sonnet"],
+            excludingModelLimited([ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])], limited: []).count == 1,
+        ] + inventoryCacheChecks(claudeRows([sonnet]))
         guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Model availability regression failed") }
         print("OS-1 account model metadata: \(checks.count) checks OK")
+    }
+    /// The per-run inventory reuse: same workspace and fresh only.
+    static func inventoryCacheChecks(_ rows: [NativeClaudeModel]) -> [Bool] {
+        let cache = ClaudeInventoryCache()
+        let t = Date(timeIntervalSince1970: 1_790_000_000)
+        cache.store(rows, workspace: "/w", at: t)
+        return [
+            cache.models(workspace: "/w", maxAge: 60, now: t.addingTimeInterval(30))?.map(\.model) == rows.map(\.model),
+            cache.models(workspace: "/w", maxAge: 60, now: t.addingTimeInterval(61)) == nil,
+            cache.models(workspace: "/other", maxAge: 60, now: t.addingTimeInterval(1)) == nil,
+            cache.models(workspace: "/w", maxAge: 0, now: t) == nil,
+            cache.models(workspace: "/w", maxAge: 60, now: t.addingTimeInterval(-5)) == nil,
+            { cache.clear(); return cache.models(workspace: "/w", maxAge: 60, now: t) == nil }(),
+        ]
     }
     static func codexRows(_ rows: [[String: Any]]) -> [CodexModelCapability] {
         var seen = Set<String>()
@@ -100,21 +136,41 @@ enum ModelAvailability {
     /// login; used to explain an empty catalog and to decide self-repair.
     static func claudeAuthProbe(workspace: String) -> ClaudeAuthProbe {
         guard let executable = try? findExecutable("claude") else { return .missing }
-        guard let auth = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 8, currentDirectory: workspace) else {
+        guard let auth = try? commandOutput(executable, ["auth", "status", "--json"], timeout: 8, currentDirectory: workspace,
+                                            environmentOverrides: backendAccountEnvironment("claude")) else {
             return .failed("auth status probe did not run")
         }
         guard let status = (try? JSONSerialization.jsonObject(with: auth.1)) as? [String: Any] else {
             let text = String(decoding: (auth.1 + auth.2).prefix(200), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             return .failed(text.isEmpty ? "auth status exit \(auth.0)" : text)
         }
-        if status["loggedIn"] as? Bool == true { return .loggedIn(status["email"] as? String) }
-        return .loggedOut
+        return parsedClaudeAuth(status)
     }
 
+    static func parsedClaudeAuth(_ status: [String: Any]) -> ClaudeAuthProbe {
+        guard let loggedIn = status["loggedIn"] as? Bool else {
+            return .failed("auth status did not include a valid loggedIn field")
+        }
+        return loggedIn ? .loggedIn(status["email"] as? String) : .loggedOut
+    }
+
+    /// A recent inventory from this process (same workspace), else a live probe.
+    static func claudeModels(workspace: String, maxAge: TimeInterval) throws -> [NativeClaudeModel] {
+        if let cached = ClaudeInventoryCache.shared.models(workspace: workspace, maxAge: maxAge) { return cached }
+        return try claudeModels(workspace: workspace)
+    }
+
+    /// Always a live probe; a successful one refreshes the process cache.
     static func claudeModels(workspace: String) throws -> [NativeClaudeModel] {
+        let models = try probeClaudeModels(workspace: workspace)
+        ClaudeInventoryCache.shared.store(models, workspace: workspace)
+        return models
+    }
+
+    private static func probeClaudeModels(workspace: String) throws -> [NativeClaudeModel] {
         let executable = try findExecutable("claude")
         let auth = try commandOutput(executable, ["auth", "status", "--json"], timeout: 8,
-            currentDirectory: workspace)
+            currentDirectory: workspace, environmentOverrides: backendAccountEnvironment("claude"))
         guard auth.0 == 0, let status = try JSONSerialization.jsonObject(with: auth.1) as? [String: Any],
               status["loggedIn"] as? Bool == true else { throw OS1Error.message("Claude account is unavailable") }
         let id = UUID().uuidString
@@ -125,7 +181,8 @@ enum ModelAvailability {
         let output = try commandOutput(executable, ["--print", "--input-format", "stream-json",
             "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
             "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"], input: input,
-            timeout: 12, currentDirectory: workspace, isProvider: true)
+            timeout: 12, currentDirectory: workspace, isProvider: true,
+            environmentOverrides: backendAccountEnvironment("claude"))
         guard output.0 == 0, output.1.count <= 2_000_000 else { throw OS1Error.message("Claude model metadata unavailable") }
         for line in output.1.split(separator: 10) {
             guard let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
@@ -140,14 +197,30 @@ enum ModelAvailability {
     }
 
     static func claudeCatalog(workspace: String, config: RuntimeConfig) throws -> [ClaudeModelCapability] {
+        try claudeCatalogs(workspace: workspace, config: config).routable
+    }
+
+    /// `configured`: the native inventory mapped to configured profiles, before
+    /// model-scoped limits. `routable` removes families with an active receipt.
+    /// Only when `configured` is non-empty and `routable` empty is an empty
+    /// catalog caused by model limits rather than a failed inventory probe.
+    static func claudeCatalogs(workspace: String, config: RuntimeConfig) throws
+        -> (configured: [ClaudeModelCapability], routable: [ClaudeModelCapability]) {
+        guard ClaudeQuotaBackoff.active() == nil else { return ([], []) }
         let native = try claudeModels(workspace: workspace)
         let profiles = config.executionProfiles ?? [:]
-        return Set(profiles.values.filter { $0.provider == "claude" }.map(\.model)).sorted().compactMap { model in
+        let configured: [ClaudeModelCapability] = Set(profiles.values.filter { $0.provider == "claude" }.map(\.model)).sorted().compactMap { model in
             guard let row = native.first(where: { $0.model == model }) else { return nil }
             let mapped = Set(profiles.values.filter { $0.provider == "claude" && $0.model == model }.map(\.effort))
             let efforts = row.efforts.filter { mapped.contains($0) }
             return efforts.isEmpty ? nil : ClaudeModelCapability(model: model, supportedEfforts: efforts)
         }
+        return (configured, excludingModelLimited(configured, limited: Set(ClaudeQuotaBackoff.activeModels())))
+    }
+
+    /// A model-scoped limit removes only that family; the rest stays routable.
+    static func excludingModelLimited(_ catalog: [ClaudeModelCapability], limited: Set<String>) -> [ClaudeModelCapability] {
+        catalog.filter { !limited.contains(BackendRecovery.claudeModelFamily($0.model)) }
     }
 
     static func codexCatalog(workspace: String, config: RuntimeConfig) throws -> ActiveCodexCatalog {

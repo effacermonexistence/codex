@@ -1,5 +1,10 @@
 export const FLEET_OBJECTIVE_VERSION = "os1-fleet-objective-v1";
 export const FLEET_NODE_STALE_AFTER_MS = 30_000;
+// A queued job must start within its submission TTL; a started job may run as
+// long as its OS-1 attempts keep working (each up to the four-hour execution
+// window, several steps per job). Expiring a running job at the queue TTL made
+// its completion undeliverable and left the executor retrying delivery forever.
+export const FLEET_CLAIMED_JOB_TTL_MS = 43_200_000;
 
 export const FLEET_PROFILES = [
   "codex",

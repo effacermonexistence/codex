@@ -6,6 +6,12 @@ import Foundation
 /// Roots come from the existing Codex project table; nothing is searched
 /// recursively and nothing is created or written.
 public enum LocalProjectWorkspace {
+    /// Resolve aliases before giving a backend a writable root. Codex rejects
+    /// symlinked writable roots; keep the same target and permission, not a wider sandbox.
+    public static func executionPath(_ workspace: String) -> String {
+        URL(fileURLWithPath: workspace).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     public static let markers: [String: String] = ["os1-clodex": "products/os1-mac-runtime/Package.swift"]
 
     public static func marker(for projectID: String) -> String? { markers[projectID] }
@@ -56,10 +62,13 @@ public enum LocalProjectWorkspace {
     }
 
     /// Prefer the requested workspace when it is inside the project; otherwise
-    /// the most recently changed registered root (its git index, else the
-    /// directory itself). Other matching roots are reported as alternates.
+    /// a current registered root (`isCurrent`, e.g. one that contains the
+    /// installed build's commit) before a stale one, then the most recently
+    /// changed (its git index, else the directory itself). Other matching
+    /// roots are reported as alternates.
     public static func resolve(projectID: String, requested: String,
-                               home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Resolution? {
+                               home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                               isCurrent: ((String) -> Bool)? = nil) -> Resolution? {
         if let root = root(containing: requested, projectID: projectID) {
             return Resolution(workspace: root, alternates: [], fromRequestedWorkspace: true)
         }
@@ -70,7 +79,14 @@ public enum LocalProjectWorkspace {
             let path = FileManager.default.fileExists(atPath: index) ? index : root
             return (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date ?? .distantPast
         }
-        let ordered = found.sorted { changedAt($0) > changedAt($1) }
+        // One answer per real directory (a registered symlink shares it).
+        let distinct = Set(found.map(executionPath)).count
+        var currentByTarget: [String: Bool] = [:]
+        for root in found where currentByTarget[executionPath(root)] == nil {
+            currentByTarget[executionPath(root)] = distinct > 1 ? isCurrent?(root) ?? true : true
+        }
+        func current(_ root: String) -> Int { currentByTarget[executionPath(root)] == true ? 1 : 0 }
+        let ordered = found.sorted { (current($0), changedAt($0)) > (current($1), changedAt($1)) }
         return Resolution(workspace: ordered[0], alternates: Array(ordered.dropFirst()), fromRequestedWorkspace: false)
     }
 }

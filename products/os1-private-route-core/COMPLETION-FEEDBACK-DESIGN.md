@@ -108,3 +108,74 @@ claim lease. An unrelated private evaluation/network failure can still leave
 a claimed result pending; fixing that lease is outside this patch. The legacy
 epoch-week initial-route counter is also not a rolling or retry usage ledger
 and is not used as measured cost by this implementation.
+
+## Cross-task route learning (policy v37, 2026-09-24)
+
+The owner asked for routing that tries models, keeps the ones that complete
+work, prefers the cheaper one, and keeps adapting. Exact-objective feedback
+above only helps when the same task is sent again, so every new task used the
+static source preference; `gpt-6-astra` was in no preference list.
+
+State. `RoutingBudgetState` (one per owner principal) keeps a `learning`
+table: decayed attempts `n`, adopted `s`, and the geometric-mean seconds of
+adopted steps, per (provider, model, effort, verification class), with a
+7-day half-life. `RouteState` stores the ledger name and the step start time.
+After a result's decision persists, `claimLearning(sequence)` lets exactly one
+delivery record `adopted = evaluator pass` and the measured step time. Local
+steps and `deterministic_exact` are not learned. Prompts, answers and
+principals never enter the ledger; tokens are not known server-side, so step
+time is the cost signal.
+
+Decision. When the pinned adapter answers `route_learning_schema: 1`, route
+starts and retries send `route_learning` (at most 256 rows) and a per-run
+`route_seed` to the policy. The v37 adapter keeps every existing constraint
+(effort floor, provider pin, inventory, current-run exclusions, same-objective
+history, permission and verification profile) and ranks only the tuples those
+constraints admit, by expected time to a verified result, where a failure
+costs a retry. A bounded share of first attempts tries the cheapest admitted
+effort of a model this task class has barely measured, only when an optimistic
+estimate beats the best known route; retries never explore. Weights and
+priors stay in the private source-locked adapter, as above.
+
+Failure behaviour. An unreadable ledger or an unrecordable outcome is logged
+(`route_learning_unavailable` / `route_learning_unrecorded`) and routing
+continues without learning. Capability answers are cached per binding for a
+minute; failed probes are not cached. Rolling the route core back re-pins v36;
+the worker keeps the v36 adapter byte-identical.
+
+## Token learning (policy v38)
+
+Owner order (2026-09-24): every task's completion and token use is recorded
+automatically, and routing keeps updating toward fewer tokens, more finished
+tasks and less time — the more the account is used, the better it routes.
+
+Structure. This is the backpropagation loop mapped onto routing: the forward
+pass is the route decision and its execution; the loss is the time and tokens
+spent to reach a verified result; credit assignment charges the step's outcome
+to the exact (provider, model, effort, task class) that ran; the update is the
+decayed ledger; decay is the learning rate; priors are the regulariser; bounded
+exploration keeps the gradient estimate honest for routes rarely taken.
+
+Signal. The device measures each step's usage (input, cache and output tokens)
+and signs it with the result (`os1-result-v2`; results without usage keep the
+byte-identical `os1-result-v1`). The gateway verifies and forwards it; the
+route core converts it to input-token equivalents (fresh input + 0.1 × cache
+reads + 5 × output) and adds it to the ledger for every attempt, adopted or
+not, since a failed route still spent its tokens. A result without usage (an
+older client) records the outcome as unmeasured, never as zero.
+
+Decision. A pinned adapter that answers `route_learning_schema: 2` receives
+rows that also carry `k` (geometric-mean weighted tokens per measured attempt)
+and `kn`; a schema-1 adapter keeps receiving v37 rows. v38 ranks the admitted
+tuples by time to a verified result and tokens to a verified result together,
+with completion weighing in both, so a cheaper route never wins by failing.
+Tokens are compared against what a typical task spends on the same provider:
+Codex and Claude draw on separate quotas, so raw totals never move work
+between them. Exploration is optimistic about tokens as well as completion for
+routes with few measurements. Constants stay in the private adapter.
+
+Rollout. Route core (accepts usage, stores tokens, still pinned to v37) →
+gateway (verifies and forwards usage) → worker hosting v38 beside v37 and v36 →
+bundle → route core pinned to v38 → client that sends usage. Each step is
+backward compatible with the one before it; rolling the route core back re-pins
+v37 and schema-1 rows.

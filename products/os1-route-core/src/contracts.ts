@@ -72,12 +72,34 @@ export type EvaluatedResult = {
   verified_artifact_hash: string;
 };
 
+/**
+ * Token counts the device measured for this step and signed with its result.
+ * Counts only — no content. Route learning charges them to the route that ran.
+ */
+export type StepUsage = {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_tokens: number | null;
+};
+
 export type ResultRequest = {
   ticket: Ticket;
   result_hash: string;
   artifact_ref: string;
   device_signature: string;
+  usage?: StepUsage;
 };
+
+const MAX_STEP_TOKENS = 10_000_000_000;
+
+export function isStepUsage(value: unknown): value is StepUsage {
+  const count = (item: unknown) =>
+    item === null || (Number.isSafeInteger(item) && (item as number) >= 0 && (item as number) <= MAX_STEP_TOKENS);
+  return isRecord(value) && hasExactKeys(value, ["input_tokens", "output_tokens", "cache_tokens"]) &&
+    count(value.input_tokens) && count(value.output_tokens) && count(value.cache_tokens) &&
+    (value.cache_tokens === null || value.input_tokens === null ||
+      (value.cache_tokens as number) <= (value.input_tokens as number));
+}
 
 export type DeviceRegistration = {
   device_id: string;
@@ -261,17 +283,17 @@ export function parseTicket(value: unknown): Ticket {
 }
 
 export function parseResultRequest(value: unknown): ResultRequest {
+  // `usage` is optional so a client from before route learning schema 2 keeps
+  // working; when present it is part of the signed result (os1-result-v2).
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
-      "ticket",
-      "result_hash",
-      "artifact_ref",
-      "device_signature",
-    ]) ||
+    !hasExactKeys(value, value.usage === undefined
+      ? ["ticket", "result_hash", "artifact_ref", "device_signature"]
+      : ["ticket", "result_hash", "artifact_ref", "device_signature", "usage"]) ||
     !boundedString(value.result_hash, 64, 64, SHA256) ||
     !isArtifactRef(value.artifact_ref) ||
-    !boundedString(value.device_signature, 64, 256, BASE64URL)
+    !boundedString(value.device_signature, 64, 256, BASE64URL) ||
+    (value.usage !== undefined && !isStepUsage(value.usage))
   ) {
     reject();
   }
@@ -280,6 +302,13 @@ export function parseResultRequest(value: unknown): ResultRequest {
     result_hash: value.result_hash,
     artifact_ref: value.artifact_ref,
     device_signature: value.device_signature,
+    ...(value.usage === undefined ? {} : {
+      usage: {
+        input_tokens: (value.usage as StepUsage).input_tokens,
+        output_tokens: (value.usage as StepUsage).output_tokens,
+        cache_tokens: (value.usage as StepUsage).cache_tokens,
+      },
+    }),
   };
 }
 

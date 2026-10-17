@@ -1,4 +1,7 @@
 import Foundation
+import Darwin
+import OS1System
+
 
 /// OS-1 repairing OS-1, end to end. A write-scope task edits the source
 /// checkout and runs `os1 self-update stage`, which builds the signed release,
@@ -8,6 +11,26 @@ import Foundation
 /// receipt into the conversation that asked for the change. Public state only;
 /// the installer's own signature, self-test and idle checks still apply.
 public enum SelfUpdate {
+    /// Installation identity is independent of whichever staged executable is running.
+    public static func installedAppURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent("Applications/OS-1 CLODEX.app")
+    }
+    public static func isInstalledApp(_ bundleURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        bundleURL.resolvingSymlinksInPath().standardizedFileURL == installedAppURL(home: home).resolvingSymlinksInPath().standardizedFileURL
+    }
+    public static func installedBuild(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Int {
+        let info = installedAppURL(home: home).appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: info),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return 0 }
+        if let value = plist["CFBundleVersion"] as? String { return Int(value) ?? 0 }
+        return (plist["CFBundleVersion"] as? NSNumber)?.intValue ?? 0
+    }
+    public static func isTransientInstallFailure(_ text: String) -> Bool {
+        ["leave the installation unchanged", "leave installation unchanged", "Fleet work/claim unresolved",
+         "queue changed during installation", "another installer owns maintenance lease", "non-installed OS1 writer is running"]
+            .contains(where: text.contains)
+    }
+
     /// Match credential tokens, not an embedded suffix in `task-...` filenames.
     public static func secretPatternHit(_ text: String) -> String? {
         let patterns = [
@@ -18,6 +41,15 @@ public enum SelfUpdate {
     }
 
     public static let runtimeRelativePath = "products/os1-mac-runtime"
+    /// build-release.sh re-points this tracked link at the checkout's own
+    /// cache on every release build. It is per-machine state, never a source
+    /// change: counting or committing it made a fleet-job self-repair push a
+    /// link into that job's temporary cache.
+    public static let releaseEntryRelativePath = "products/os1-mac-runtime/release"
+    /// Changed paths that count as a self-repair source change.
+    public static func sourceChanges(_ paths: [String]) -> [String] {
+        paths.filter { !$0.isEmpty && $0 != releaseEntryRelativePath }
+    }
     public static let intentRelativePath = "products/os1-mac-runtime/release/self-update-intent.json"
     public static let stagedAppRelativePath = "products/os1-mac-runtime/release/stage/Applications/OS-1 CLODEX.app"
     public static let installerRelativePath = "products/os1-mac-runtime/scripts/install-local-verified.mjs"
@@ -208,11 +240,12 @@ public enum SelfUpdate {
         let lines = [
             "--- OS-1 SELF-REPAIR CONTRACT ---",
             "This conversation targets OS-1's own source tree: \(root)",
+            "Native UI target map: RCC Governance / RCC 거버넌스 is the OS-1 macOS app panel opened by the lower-left green governance button, NOT a website, R2 document, or static benchmark page. UI: \(root)/\(runtimeRelativePath)/Sources/OS1App/GovernanceMonitorView.swift; telemetry: \(root)/\(runtimeRelativePath)/Sources/OS1Context/GovernanceActivity.swift and GovernanceRuntime.swift; navigation: Sources/OS1App/OS1App.swift. Inspect these existing files before searching elsewhere. Preserve the user's actual target; bare RCC benchmark requests are separate objects.",
             "Installed runtime: \(installedVersion) (build \(installedBuild)). Source HEAD: \(head). Task scope: \(scope).",
             "OS-1 repairs itself end to end: diagnose -> edit -> build -> test -> [OS-1: version bump -> signed release -> self-tests -> stage -> commit -> push -> self-install -> receipt]. The only steps that need the owner are browser logins (OAuth) and GitHub pull-request merges.",
             "In a write-scope task your job ends when the source is changed and green:",
             "1. Change the source under \(root)/\(runtimeRelativePath). Make the exact change the owner asked for; when the request is visual, measure (render or pixel-check) instead of estimating.",
-            "2. Build and verify: `swift build` (all products) in that directory, then run `.build/debug/OS1ContextTests`, `OS1_CONFIG=\"$HOME/Applications/OS-1 CLODEX.app/Contents/Resources/config.json\" .build/debug/os1 self-test`, `.build/debug/os1 fleet-self-test`, and `.build/debug/OS1App` with each of `--self-test`, `--self-test-shell`, `--self-test-composer`, `--self-test-steering`, `--self-test-sidebar-queue`, `--self-test-queue-fork`, `--self-test-parallel`; fix failures before finishing. A tree that does not build or fails a self-test makes this task FAIL with the diagnostic.",
+            "2. Build and verify: `swift build` (all products) in that directory, then run `.build/debug/OS1ContextTests`, `OS1_CONFIG=\"$HOME/Applications/OS-1 CLODEX.app/Contents/Resources/config.json\" .build/debug/os1 self-test`, `OS1_CONFIG=\"$HOME/Applications/OS-1 CLODEX.app/Contents/Resources/config.json\" .build/debug/os1 fleet-self-test`, and `.build/debug/OS1App` with each of `--self-test`, `--self-test-shell`, `--self-test-composer`, `--self-test-steering`, `--self-test-sidebar-queue`, `--self-test-queue-fork`, `--self-test-parallel`; fix failures before finishing. A tree that does not build or fails a self-test makes this task FAIL with the diagnostic.",
             "3. Do NOT bump versions, do NOT run `self-update stage`, do NOT run scripts/install-local-verified.mjs, and do not kill, relaunch or reinstall OS-1. After independent workflow verification passes (or a verified single-step task finishes), OS-1 itself bumps the build past \(installedBuild), builds the signed release, runs the release self-tests, stages it, commits the change on the current branch, pushes it, installs the build by itself as soon as no task is running, restarts with every conversation and queue preserved, and posts the install receipt into this conversation.",
             "4. Report what you changed and how you verified it. Never claim the build is installed: OS-1 reports that itself in the receipt.",
             "In a read-only task, answer capability questions from this contract and never say OS-1 can only be partially self-repaired; describe the pipeline above and what a write-scope request would do.",
@@ -232,4 +265,17 @@ public enum SelfUpdate {
         return "OS-1 자체 업데이트 build \(intent.build) (\(intent.version)) 설치 실패 · 이전 빌드를 유지합니다\(commit)"
             + (error.map { " · 원인: \(String($0.suffix(300)))" } ?? "")
     }
+}
+
+/// Exactly one installed GUI may open the live store. Diagnostic modes exit before acquiring this lease.
+public final class OS1LiveStoreLease {
+    private let descriptor: Int32
+    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        let root = home.appendingPathComponent("Library/Application Support/OS-1")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        descriptor = Darwin.open(root.appendingPathComponent("live-gui.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+    }
+    public func tryAcquire() -> Bool { os1_flock(descriptor, LOCK_EX | LOCK_NB) == 0 }
+    deinit { _ = os1_flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
 }

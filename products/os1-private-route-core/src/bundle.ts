@@ -45,7 +45,7 @@ function parseExecutionProfile(value: unknown): ExecutionProfile {
 export function parseExecutionProfiles(value: unknown): ExecutionProfiles {
   if (!record(value)) throw new Error("invalid policy bundle");
   const entries = Object.entries(value);
-  if (entries.length < 5 || entries.length > 64) throw new Error("invalid policy bundle");
+  if (entries.length < 5 || entries.length > 128) throw new Error("invalid policy bundle");
   const output: ExecutionProfiles = {};
   for (const [action, candidate] of entries) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(action) || !record(candidate) ||

@@ -64,16 +64,21 @@ export function canonicalTicket(ticket: TicketUnsigned): Uint8Array {
 }
 
 export function canonicalResult(result: ResultRequest): Uint8Array {
-  return encoder.encode(
-    [
-      "os1-result-v1",
-      result.ticket.execution_id,
-      String(result.ticket.sequence),
-      result.ticket.nonce,
-      result.result_hash,
-      result.artifact_ref,
-    ].join("\n"),
-  );
+  const base = [
+    result.ticket.execution_id,
+    String(result.ticket.sequence),
+    result.ticket.nonce,
+    result.result_hash,
+    result.artifact_ref,
+  ];
+  // v2 signs the step's measured usage with the result, so a forwarded token
+  // count is exactly what the device reported; v1 stays byte-identical.
+  if (!result.usage) return encoder.encode(["os1-result-v1", ...base].join("\n"));
+  const count = (value: number | null) => value === null ? "null" : String(value);
+  return encoder.encode([
+    "os1-result-v2", ...base,
+    count(result.usage.input_tokens), count(result.usage.cache_tokens), count(result.usage.output_tokens),
+  ].join("\n"));
 }
 
 export async function signTicket(

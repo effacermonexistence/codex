@@ -116,9 +116,15 @@ export default {
 };`;
 
 const currentWorkerSource = `
-import { RouteState as ProductionRouteState } from "./src/index.ts";
+import { RouteState as ProductionRouteState, RoutingBudgetState as ProductionBudgetState } from "./src/index.ts";
+export class RoutingBudgetState extends ProductionBudgetState {
+  testObserve(observation) { this.observe(observation); return this.learningRows(); }
+  testRows() { return this.learningRows(); }
+  testRows2() { return this.learningRows(2); }
+}
 export class RouteState extends ProductionRouteState {
   testBegin(input) { return this.begin(input); }
+  testClaim(sequence) { return this.claimLearning(sequence); }
   testSnapshot(sequence) { return this.snapshot(sequence); }
   testAdvance(sequence, outcome, hash, next, executionContext, currentRun) {
     return this.advance(sequence, outcome, hash, next, executionContext, currentRun);
@@ -141,6 +147,10 @@ export default {
       else if (body.op === "advance") value = await state.testAdvance(
         body.sequence, body.outcome, body.hash, body.next, body.executionContext, body.currentRun);
       else if (body.op === "inspect") value = await state.inspect();
+      else if (body.op === "claim") value = await state.testClaim(body.sequence);
+      else if (body.op === "observe") value = await env.ROUTING_BUDGETS.getByName(body.name).testObserve(body.observation);
+      else if (body.op === "rows") value = await env.ROUTING_BUDGETS.getByName(body.name).testRows();
+      else if (body.op === "rows2") value = await env.ROUTING_BUDGETS.getByName(body.name).testRows2();
       else throw new Error("unknown operation");
       return Response.json({ ok: true, value });
     } catch { return Response.json({ ok: false }, { status: 409 }); }
@@ -165,7 +175,9 @@ function options(source, persistencePath) {
     compatibilityDate: "2026-09-01",
     compatibilityFlags: ["nodejs_compat"],
     modules: [{ type: "ESModule", path: "index.mjs", contents: source }],
-    durableObjects: { ROUTES: { className: "RouteState", useSQLite: true, unsafeUniqueKey: uniqueKey } },
+    durableObjects: { ROUTES: { className: "RouteState", useSQLite: true, unsafeUniqueKey: uniqueKey },
+      ...(source.includes("RoutingBudgetState") ? { ROUTING_BUDGETS: { className: "RoutingBudgetState", useSQLite: true,
+        unsafeUniqueKey: uniqueKey + "-budget" } } : {}) },
     resourcePersistencePath: persistencePath,
     logRequests: false,
     telemetry: { enabled: false },
@@ -213,6 +225,11 @@ try {
   assert.equal(migratedRaw.columns.includes("current_run_observations_json"), true);
   assert.equal(migratedRaw.row.execution_context_json, null);
   assert.equal(migratedRaw.row.current_run_observations_json, null);
+  // A route begun before learning existed carries no ledger and no step clock.
+  assert.equal(migratedRaw.columns.includes("learning_object"), true);
+  assert.equal(migratedRaw.columns.includes("step_started_ms"), true);
+  assert.equal("learning_object" in migrated.value, false);
+  assert.equal("step_started_ms" in migrated.value, false);
 
   // The old no-feedback state continues through the old-form advance call.
   const legacyNext = step("claude", "claude_medium", 2);
@@ -279,7 +296,38 @@ try {
   assert.deepEqual((await call(miniflare, { op: "snapshot", name: "atomic", sequence: 2 })).value.current_run_observations,
     [firstFailure]);
 
-  console.log("route-state workerd integration: 4/4 checks passed");
+  // Learning: the route remembers its owner's ledger and the step clock; each
+  // step can be learned once; the ledger decays and exports the policy wire.
+  const learningInput = { ...beginInput("learning task", 10, initialContext), learning_object: "fixture:owner" };
+  assert.equal((await call(miniflare, { op: "begin", name: "learning", input: learningInput })).value, "created");
+  const learningFirst = (await call(miniflare, { op: "snapshot", name: "learning", sequence: 1 })).value;
+  assert.equal(learningFirst.learning_object, "fixture:owner");
+  assert.equal(typeof learningFirst.step_started_ms, "number");
+  assert.equal((await call(miniflare, { op: "claim", name: "learning", sequence: 1 })).value, true);
+  assert.equal((await call(miniflare, { op: "claim", name: "learning", sequence: 1 })).value, false);
+  await call(miniflare, { op: "advance", name: "learning", sequence: 1, outcome: "retry", hash: verifiedHash,
+    next: step("claude", "claude_medium", 11), executionContext: firstContext, currentRun: [firstFailure] });
+  const learningSecond = (await call(miniflare, { op: "snapshot", name: "learning", sequence: 2 })).value;
+  assert.ok(learningSecond.step_started_ms >= learningFirst.step_started_ms);
+  assert.equal((await call(miniflare, { op: "claim", name: "learning", sequence: 2 })).value, true);
+  const outcome = { provider: "codex", model: "gpt-test", effort: "medium", task_class: "source_review", adopted: true,
+    duration_ms: 30_000, tokens: 100_000 };
+  await call(miniflare, { op: "observe", name: "fixture:owner", observation: outcome });
+  const ledger = (await call(miniflare, { op: "observe", name: "fixture:owner",
+    observation: { ...outcome, adopted: false, duration_ms: 5_000, tokens: 400_000 } })).value;
+  assert.equal(ledger.length, 1);
+  assert.equal(ledger[0].class, "source_review");
+  assert.ok(Math.abs(ledger[0].n - 2) < 0.001 && Math.abs(ledger[0].s - 1) < 0.001);
+  assert.equal(ledger[0].d, 30);
+  // Schema 2 reads the real SQLite columns: both attempts' tokens, geometric mean.
+  const tokenRows = (await call(miniflare, { op: "rows2", name: "fixture:owner" })).value;
+  assert.equal(tokenRows[0].k, 200_000);
+  assert.ok(Math.abs(tokenRows[0].kn - 2) < 0.001);
+  assert.equal(ledger[0].k, undefined, "schema 1 rows never carry tokens");
+  await call(miniflare, { op: "observe", name: "fixture:owner", observation: { ...outcome, task_class: "deterministic_exact" } }, 409);
+  assert.deepEqual((await call(miniflare, { op: "rows", name: "fixture:other" })).value, []);
+
+  console.log("route-state workerd integration: 6/6 checks passed");
 } finally {
   clearTimeout(watchdog);
   if (miniflare) await miniflare.dispose();

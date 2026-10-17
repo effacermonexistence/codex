@@ -8,6 +8,43 @@ import OS1HookSupport
 private let fleetProfiles = ["codex", "claude", "os1", "build", "test", "exo"]
 let fleetAgentCycleInterval: Duration = .seconds(20)
 let fleetJobStatusInterval: Duration = .seconds(5)
+
+/// A job this Mac submits for itself wakes the local agent at once instead of
+/// on its next 20 s cycle (submitter and agent are separate processes). The
+/// wake is only a hint: the agent still claims through the gateway.
+enum FleetLocalWake {
+    static var url: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet/wake")
+    }
+
+    static func stamp(at url: URL = url) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    static func signal(at url: URL = url) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
+    /// Sleeps up to `limit`, returning early once the wake file changes after `seen`.
+    static func sleep(upTo limit: Duration, since seen: Date?, at url: URL = url,
+                      step: Duration = .milliseconds(250)) async throws {
+        let deadline = ContinuousClock.now + limit
+        while ContinuousClock.now < deadline {
+            try await Task.sleep(for: min(step, deadline - ContinuousClock.now))
+            if let now = stamp(at: url), now != seen { return }
+        }
+    }
+}
+
+/// Status polling for a job just submitted: quick at first, then every 5 s.
+func fleetStatusInterval(elapsed: Duration) -> Duration {
+    elapsed < .seconds(120) ? .seconds(1) : fleetJobStatusInterval
+}
 let fleetLaunchAgentThrottleIntervalSeconds = 20
 
 private struct FleetNodeHeartbeat: Codable {
@@ -490,17 +527,61 @@ private func fleetJobDirectory(_ jobID: String) throws -> URL {
     return directory
 }
 
+/// A per-repository bare mirror makes each job's checkout a local, hard-linked
+/// clone (≈1 s) instead of a fresh network clone (≈8 s for this repository,
+/// 2026-09-24). Any mirror failure falls back to the network clone.
+func fleetMirrorClone(repository: String, revision: String, into destination: URL,
+                      mirrors: URL = FileManager.default.homeDirectoryForCurrentUser
+                          .appendingPathComponent(".os1/fleet/mirrors", isDirectory: true),
+                      remote: String? = nil) -> Bool {
+    let parts = repository.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+    guard parts.count == 2, parts.allSatisfy({ $0.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._-]{0,99}/) != nil }),
+          revision.wholeMatch(of: /[0-9a-f]{40}/) != nil, let git = try? findExecutable("git") else { return false }
+    let origin = remote ?? "https://github.com/\(repository).git"
+    let mirror = mirrors.appendingPathComponent(parts[0], isDirectory: true)
+        .appendingPathComponent(parts[1] + ".git", isDirectory: true)
+    func run(_ arguments: [String], timeout: Int) -> Bool {
+        (try? commandOutput(git, arguments, timeout: timeout))?.0 == 0
+    }
+    do {
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+    } catch { return false }
+    if !FileManager.default.fileExists(atPath: mirror.appendingPathComponent("HEAD").path) {
+        try? FileManager.default.removeItem(at: mirror)
+        guard run(["clone", "--bare", "--no-tags", "--quiet", origin, mirror.path], timeout: 900) else {
+            try? FileManager.default.removeItem(at: mirror)
+            return false
+        }
+    }
+    guard run(["-C", mirror.path, "fetch", "--no-tags", "--quiet", origin, revision], timeout: 600),
+          run(["-C", mirror.path, "cat-file", "-e", revision + "^{commit}"], timeout: 20),
+          run(["clone", "--local", "--no-checkout", "--quiet", mirror.path, destination.path], timeout: 300),
+          run(["-C", destination.path, "remote", "set-url", "origin", origin], timeout: 20),
+          run(["-C", destination.path, "cat-file", "-e", revision + "^{commit}"], timeout: 20) else {
+        try? FileManager.default.removeItem(at: destination)
+        return false
+    }
+    return true
+}
+
 private func fleetCheckout(_ assignment: FleetAssignment) throws -> String {
     let directory = try fleetJobDirectory(assignment.jobID)
     let repository = directory.appendingPathComponent("repository", isDirectory: true)
     let git = try findExecutable("git")
-    if !FileManager.default.fileExists(atPath: repository.appendingPathComponent(".git").path) {
+    if !FileManager.default.fileExists(atPath: repository.appendingPathComponent(".git").path),
+       !fleetMirrorClone(repository: assignment.workspaceRepository, revision: assignment.workspaceRevision, into: repository) {
         let gh = try findExecutable("gh")
         let cloned = try commandOutput(gh, ["repo", "clone", assignment.workspaceRepository, repository.path, "--", "--filter=blob:none"], timeout: 600)
         guard cloned.0 == 0 else { throw OS1Error.message("Fleet repository clone failed") }
     }
-    let fetched = try commandOutput(git, ["-C", repository.path, "fetch", "--no-tags", "origin", assignment.workspaceRevision], timeout: 600)
-    guard fetched.0 == 0 else { throw OS1Error.message("Fleet revision fetch failed") }
+    // A mirror-cloned (or resumed) checkout that already holds the revision
+    // skips the network fetch.
+    let present = try commandOutput(git, ["-C", repository.path, "cat-file", "-e", assignment.workspaceRevision + "^{commit}"], timeout: 20)
+    if present.0 != 0 {
+        let fetched = try commandOutput(git, ["-C", repository.path, "fetch", "--no-tags", "origin", assignment.workspaceRevision], timeout: 600)
+        guard fetched.0 == 0 else { throw OS1Error.message("Fleet revision fetch failed") }
+    }
     let checked = try commandOutput(git, ["-C", repository.path, "checkout", "--detach", assignment.workspaceRevision], timeout: 60)
     guard checked.0 == 0 else { throw OS1Error.message("Fleet revision checkout failed") }
     let workspace = assignment.workspaceSubpath.isEmpty
@@ -571,12 +652,17 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         case "test": prompt = "Run and verify the requested repository tests.\n\n\(assignment.task)"
         default: prompt = assignment.task
         }
-        run = try await runTask(
-            prompt: prompt, workspace: workspace,
-            providerPreference: ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto",
+        let preference = ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto"
+        let mix = fleetCapacityMix(preference: preference)
+        run = try await (fleetRunsStaged(prompt) ? runWorkflowTask(
+            prompt: prompt, workspace: workspace, providerPreference: preference,
             context: nil, codexSessionID: nil, claudeSessionID: nil,
-            codexCapacity: 100, claudeCapacity: 100, progress: false, desktopReveal: .never
-        )
+            codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
+        ) : runTask(
+            prompt: prompt, workspace: workspace, providerPreference: preference,
+            context: nil, codexSessionID: nil, claudeSessionID: nil,
+            codexCapacity: mix.codex, claudeCapacity: mix.claude, progress: false, desktopReveal: .never
+        ))
         guard run.status == "complete", !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else {
             throw OS1Error.message("Fleet governed execution has not completed")
         }
@@ -598,6 +684,40 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
     let data = try encoder.encode(receipt)
     guard data.count <= 65_536 else { throw OS1Error.message("Fleet result exceeds the signed result limit") }
     return String(decoding: data, as: UTF8.self)
+}
+
+/// An automatic fleet job routes with the same capacity mix as a new app
+/// conversation (Codex 30 %, Claude 100 %), so a task handed over from a Claude
+/// Code session is routed the way the same task typed into OS-1 would be. A
+/// job that names a backend keeps both at 100 %: its backend is already fixed.
+func fleetCapacityMix(preference: String) -> (codex: Int, claude: Int) {
+    preference == "auto" ? (CapacityMix.defaultCodex, CapacityMix.defaultClaude) : (100, 100)
+}
+
+/// A fleet job splits exactly when `os1 run` would: the owner asked for
+/// separate stages ("쪼개서", "각각 라우팅", "독립 검증") on a change request.
+/// Until build 257 a fleet job always ran one turn, so the same request split
+/// in the app and not when a Claude Code session handed it to OS-1.
+func fleetRunsStaged(_ prompt: String) -> Bool {
+    TaskWorkflow.shouldDecompose(prompt, scope: ScopeResolution.resolve(prompt).scope) &&
+        PreparationIntent.detect(prompt)?.preparationOnly != true
+}
+
+/// A failed job still returns what its backend produced when only adoption
+/// failed (the answer the app shows): the caller must not lose a correct
+/// answer to a verifier disagreement. Bounded; never a success claim.
+func fleetFailureResult(error: Error, jobID: String, notice: BackendFailureNotice?) -> [String: String] {
+    var result = [
+        "error": String(String(describing: error).prefix(8_000)),
+        "job_id": jobID,
+        "partial_work": "Inspect this job's native records and checkout before resuming remaining work.",
+    ]
+    if let notice, let answer = notice.publicProgress?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty {
+        result["blocker"] = notice.blocker.rawValue
+        result["unadopted_answer"] = String(answer.suffix(8_000))
+        result["unadopted_answer_note"] = "Backend answer saved but not adopted (\(notice.blocker.rawValue)); treat as unverified."
+    }
+    return result
 }
 
 private func completeFleetJob(
@@ -640,6 +760,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
     var maintenance: Task<Void, Never>?
     defer { maintenance?.cancel() }
     repeat {
+        let wakeSeen = FleetLocalWake.stamp()
         do {
             if !registered {
                 try await register(client: client, key: key)
@@ -684,15 +805,14 @@ func runFleetAgent(role: String, once: Bool) async throws {
                     }
                     work.phase = "running"
                     try fleetPersist(work, at: activeFile)
+                    _ = BackendFailureNotice.takeLastEmitted()
                     do {
                         work.result = try await executeFleetAssignment(work.assignment, role: role, config: config)
                         work.outcome = "complete"
                     } catch {
-                        work.result = String(decoding: try JSONEncoder().encode([
-                            "error": String(String(describing: error).prefix(8_000)),
-                            "job_id": work.assignment.jobID,
-                            "partial_work": "Inspect this job's native records and checkout before resuming remaining work.",
-                        ]), as: UTF8.self)
+                        work.result = String(decoding: try JSONEncoder().encode(
+                            fleetFailureResult(error: error, jobID: work.assignment.jobID,
+                                               notice: BackendFailureNotice.takeLastEmitted())), as: UTF8.self)
                         work.outcome = "failed"
                     }
                     work.phase = "delivery_pending"
@@ -701,7 +821,15 @@ func runFleetAgent(role: String, once: Bool) async throws {
                 guard work.phase == "delivery_pending", let result = work.result, let outcome = work.outcome else {
                     throw OS1Error.message("Fleet result outbox is invalid; preserved without re-execution")
                 }
-                try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
+                do {
+                    try await completeFleetJob(client: client, key: key, assignment: work.assignment, outcome: outcome, result: result)
+                } catch {
+                    // An expired job can never accept this result. Keep the
+                    // result locally and free the agent instead of retrying
+                    // delivery forever; never re-execute.
+                    guard try await fleetJobState(client: client, key: key, jobID: work.assignment.jobID) == "expired" else { throw error }
+                    fputs("OS-1 fleet: job \(work.assignment.jobID) expired before delivery; result kept at ~/.os1/fleet/jobs/\(work.assignment.jobID)/fleet-result.json\n", stderr)
+                }
                 if once { try? await refreshFleetResultCache(client: client, key: key) }
                 try fleetPersist(work, at: fleetJobDirectory(work.assignment.jobID).appendingPathComponent("fleet-result.json"))
                 try FileManager.default.removeItem(at: activeFile)
@@ -714,7 +842,7 @@ func runFleetAgent(role: String, once: Bool) async throws {
             if once { throw error }
             fputs("OS-1 fleet agent retry: \(error)\n", stderr)
         }
-        try await Task.sleep(for: fleetAgentCycleInterval)
+        try await FleetLocalWake.sleep(upTo: fleetAgentCycleInterval, since: wakeSeen)
     } while true
 }
 
@@ -849,10 +977,32 @@ enum FleetSubmissionError: Error, CustomStringConvertible {
     case pending(String)
     var description: String {
         switch self {
-        case .noCapacity: return "No eligible OS-1 fleet node is online; no remote job was created"
+        case .noCapacity:
+            // "No node online" alone sent the owner looking for a network
+            // fault when this Mac was online but its Claude was logged out
+            // (2026-09-24). Say what this Mac itself cannot run.
+            return "No eligible OS-1 fleet node is online; no remote job was created"
+                + (fleetLocalBackendNote().map { ". " + $0 } ?? "")
         case .pending(let id): return "Fleet submission delivery is uncertain; recover with fleet-resume-submit --intent \(id). Do not submit duplicate work."
         }
     }
+}
+
+/// This Mac's backends that cannot run now, from the last health check.
+func fleetLocalBackendNote(health: BackendHealth? = BackendHealth.load(maxAge: 900)) -> String? {
+    guard let health else { return nil }
+    let blocked = [("Codex", health.codex), ("Claude", health.claude)].compactMap { name, backend -> String? in
+        switch backend.state {
+        case .usable, .disabled: return nil
+        case .loggedOut: return "\(name) is not signed in — sign in from OS-1's \(name.uppercased()) tile"
+        case .quotaExhausted: return "\(name) usage limit reached"
+            + (backend.recoversAt.map { " until " + ISO8601DateFormatter().string(from: $0) } ?? "")
+        default: return "\(name) \(backend.state.rawValue.replacingOccurrences(of: "_", with: " "))"
+        }
+    }
+    guard !blocked.isEmpty else { return nil }
+    let checked = ISO8601DateFormatter().string(from: health.checkedAt)
+    return "On this Mac: " + blocked.joined(separator: "; ") + " (checked \(checked))"
 }
 
 private struct FleetSubmissionIntent: Codable {
@@ -919,6 +1069,7 @@ func resumeFleetSubmission(_ intentID: String) async throws -> FleetEnqueueRecei
             objectiveVersion: assignment.objectiveVersion)
         intent.receipt = receipt
         try fleetPersist(intent, at: file)
+        if assignment.executorDeviceID == id { FleetLocalWake.signal() }
         return receipt
     } catch FleetSubmissionError.noCapacity { throw FleetSubmissionError.noCapacity }
     catch { throw FleetSubmissionError.pending(intentID) }
@@ -933,8 +1084,9 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
     let id = try deviceID()
     let client = APIClient(config: config, token: try githubToken(), deviceID: id)
     let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    let waitStarted = ContinuousClock.now
     while Date() < deadline {
-        try await Task.sleep(for: fleetJobStatusInterval)
+        try await Task.sleep(for: fleetStatusInterval(elapsed: ContinuousClock.now - waitStarted))
         let statusAt = fleetNowMs()
         let statusNonce = try randomNonce()
         let signature = Base64URL.encode(try key.sign(statusBytes(
@@ -951,6 +1103,24 @@ func waitForFleetTask(jobID: String, timeoutSeconds: Int = 3_600) async throws -
         if let result = try fleetValidatedResult(status, jobID: jobID) { return result }
     }
     throw OS1Error.message("Fleet wait ended; job may still be running. Resume fleet-wait with the same job ID; do not submit duplicate work.")
+}
+
+/// The executor may read its own job's state (the gateway accepts submitter or executor).
+private func fleetJobState(client: APIClient, key: SigningKey, jobID: String) async throws -> String {
+    let statusAt = fleetNowMs()
+    let statusNonce = try randomNonce()
+    let signature = Base64URL.encode(try key.sign(statusBytes(
+        deviceID: client.deviceID, jobID: jobID, sentAtMs: statusAt, nonce: statusNonce
+    )))
+    let status: FleetJobStatus = try await client.post(
+        "/v1/fleet/status",
+        body: FleetStatusRequest(jobID: jobID, sentAtMs: statusAt, nonce: statusNonce, signature: signature),
+        as: FleetJobStatus.self
+    )
+    guard status.jobID.lowercased() == jobID.lowercased() else {
+        throw OS1Error.message("Fleet result job identity mismatch")
+    }
+    return status.state
 }
 
 private func fleetValidatedResult(_ status: FleetJobStatus, jobID: String) throws -> String? {
@@ -1197,9 +1367,74 @@ func fleetSelfTest() throws {
         invalid.exoAPIURL = address
         try check((try? EXOConfiguration(runtimeConfig: invalid)) == nil, "non-loopback or credential URL accepted")
     }
+    // A job refused only adoption returns its backend's answer, labelled.
+    let refused = BackendFailureNotice(provider: "claude", sessionID: nil, blocker: .verificationRejected,
+        dispatchStage: .dispatched, permissionProfile: "workspace_write", publicProgress: "  응, 가능함.  ")
+    refused.emit()
+    let carried = fleetFailureResult(error: OS1Error.backendBlocked(.verificationRejected), jobID: "job",
+                                     notice: BackendFailureNotice.takeLastEmitted())
+    try check(carried["unadopted_answer"] == "응, 가능함." && carried["blocker"] == "verification_rejected"
+              && carried["unadopted_answer_note"]?.contains("not adopted") == true, "refused job lost its backend answer")
+    try check(BackendFailureNotice.takeLastEmitted() == nil, "an emitted notice is taken once")
+    let bare = fleetFailureResult(error: OS1Error.message("x"), jobID: "job", notice: nil)
+    try check(bare["unadopted_answer"] == nil && bare["error"] == "x" && bare["job_id"] == "job", "plain failure invented an answer")
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("os1-fleet-self-test-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(at: directory) }
+    // A job placed on this Mac wakes the local agent at once.
+    let wakeFile = directory.appendingPathComponent("wake")
+    try check(FleetLocalWake.stamp(at: wakeFile) == nil, "a missing wake file has no stamp")
+    FleetLocalWake.signal(at: wakeFile)
+    let firstStamp = FleetLocalWake.stamp(at: wakeFile)
+    Thread.sleep(forTimeInterval: 0.02)
+    FleetLocalWake.signal(at: wakeFile)
+    try check(firstStamp != nil && FleetLocalWake.stamp(at: wakeFile) != firstStamp, "each signal changes the wake stamp")
+    let woke = DispatchSemaphore(value: 0)
+    let seenStamp = FleetLocalWake.stamp(at: wakeFile)
+    let wakeStarted = Date()
+    Task.detached {
+        try? await FleetLocalWake.sleep(upTo: .seconds(10), since: seenStamp, at: wakeFile, step: .milliseconds(20))
+        woke.signal()
+    }
+    Thread.sleep(forTimeInterval: 0.1)
+    FleetLocalWake.signal(at: wakeFile)
+    try check(woke.wait(timeout: .now() + 5) == .success && Date().timeIntervalSince(wakeStarted) < 3,
+              "a wake signal must end the agent's cycle wait early")
+    try check(fleetStatusInterval(elapsed: .seconds(10)) == .seconds(1) && fleetStatusInterval(elapsed: .seconds(300)) == .seconds(5),
+              "status polling is quick only at first")
+    // The job checkout is a local clone of the exact revision from the mirror.
+    let git = try findExecutable("git")
+    let source = directory.appendingPathComponent("source", isDirectory: true)
+    func gitOK(_ arguments: [String]) throws -> String {
+        let result = try commandOutput(git, arguments, timeout: 30)
+        try check(result.0 == 0, "fixture git failed: \(arguments.prefix(3))")
+        return String(decoding: result.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    _ = try gitOK(["init", "--quiet", source.path])
+    var revisions: [String] = []
+    for version in ["one", "two"] {
+        try Data(version.utf8).write(to: source.appendingPathComponent("file.txt"))
+        _ = try gitOK(["-C", source.path, "add", "file.txt"])
+        _ = try gitOK(["-C", source.path, "-c", "user.name=OS-1", "-c", "user.email=os1@example.invalid",
+                       "commit", "--quiet", "-m", version])
+        revisions.append(try gitOK(["-C", source.path, "rev-parse", "HEAD"]))
+    }
+    let mirrors = directory.appendingPathComponent("mirrors", isDirectory: true)
+    for (index, revision) in [revisions[0], revisions[1]].enumerated() {
+        let job = directory.appendingPathComponent("job\(index)", isDirectory: true)
+        try check(fleetMirrorClone(repository: "owner/repo", revision: revision, into: job, mirrors: mirrors, remote: source.path),
+                  "mirror clone failed for revision \(index)")
+        _ = try gitOK(["-C", job.path, "checkout", "--quiet", "--detach", revision])
+        try check(try String(contentsOf: job.appendingPathComponent("file.txt"), encoding: .utf8) == ["one", "two"][index]
+                  && (try gitOK(["-C", job.path, "remote", "get-url", "origin"])) == source.path,
+                  "mirror clone must hold the exact revision and push to the real origin")
+    }
+    let missing = directory.appendingPathComponent("job-missing", isDirectory: true)
+    try check(!fleetMirrorClone(repository: "owner/repo", revision: String(repeating: "0", count: 40), into: missing,
+                                mirrors: mirrors, remote: source.path) && !FileManager.default.fileExists(atPath: missing.path),
+              "an unknown revision must fall back without leaving a partial checkout")
+    try check(!fleetMirrorClone(repository: "../escape", revision: revisions[0], into: missing, mirrors: mirrors, remote: source.path),
+              "a repository name outside owner/name is refused")
     let request = FleetSubmitRequest(profile: "codex", task: "fixture", workspaceRepository: "owner/repo",
         workspaceRevision: String(repeating: "a", count: 40), workspaceSubpath: "",
         requirements: FleetRequirements(minMemoryMiB: 2048, cpuWeight: 50, preferDeviceID: nil),
@@ -1259,5 +1494,32 @@ func fleetSelfTest() throws {
     try check(!deadFlags.codex && !deadFlags.claude, "dead backends advertised as fleet capacity")
     try check(aliveFlags.codex && !aliveFlags.claude, "usable backend not advertised, or missing binary advertised")
     try check(!unknownFlags.codex && !unknownFlags.claude, "unprobed node advertised capacity")
-    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling and truthful capacity flags")
+    // No capacity names what this Mac cannot run (2026-09-24: a logged-out
+    // Claude read as "no node online").
+    let loggedOutClaude = BackendHealth(claude: BackendHealth.Backend(state: .loggedOut), codex: BackendHealth.Backend(state: .usable))
+    try check(fleetLocalBackendNote(health: loggedOutClaude)?.contains("Claude is not signed in") == true
+              && fleetLocalBackendNote(health: loggedOutClaude)?.contains("Codex") == false, "logged-out Claude not named")
+    try check(fleetLocalBackendNote(health: alive) == nil && fleetLocalBackendNote(health: nil) == nil, "healthy node gained a note")
+    try check(fleetLocalBackendNote(health: dead)?.contains("Codex usage limit reached") == true, "exhausted Codex not named")
+    // Account status and sign-out see an account exactly as runs do: the
+    // default account injects nothing (naming ~/.claude selects another slot).
+    let claudeHome = URL(fileURLWithPath: "/Users/test/.claude", isDirectory: true)
+    try check(BackendAccountCommands.accountEnvironment(provider: "claude", home: claudeHome, isDefault: true).isEmpty,
+              "default Claude account status injected CLAUDE_CONFIG_DIR")
+    try check(BackendAccountCommands.accountEnvironment(provider: "claude", home: claudeHome, isDefault: false)
+              == ["CLAUDE_CONFIG_DIR": "/Users/test/.claude"], "second Claude account lost its own home")
+    try check(BackendAccountCommands.accountEnvironment(provider: "codex", home: claudeHome, isDefault: true).isEmpty,
+              "default Codex account status injected CODEX_HOME")
+    // Build 257: a fleet job splits when the owner asks, exactly like `os1 run`.
+    try check(fleetRunsStaged("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해. 작업을 쪼개서 각각 라우팅해."),
+              "explicit split request ran as one turn")
+    try check(!fleetRunsStaged("/tmp/os1-split/calc.py 파일에 add(a, b) 함수를 만들고 python3로 실행해서 결과를 확인해."),
+              "unsplit request was staged")
+    try check(!fleetRunsStaged("이 코드 구조를 설명해. 작업을 쪼개서 각각 라우팅해."), "read-only question was staged")
+    // Build 261: an automatic fleet job uses the app's default capacity mix.
+    try check(fleetCapacityMix(preference: "auto") == (CapacityMix.defaultCodex, CapacityMix.defaultClaude)
+              && fleetCapacityMix(preference: "auto") == (30, 100), "automatic fleet job ignored the capacity mix")
+    try check(fleetCapacityMix(preference: "codex") == (100, 100) && fleetCapacityMix(preference: "claude") == (100, 100),
+              "named-backend fleet job changed its capacity")
+    print("OS-1 Fleet self-test: \(checks) checks OK; config, EXO candidate, private read-only result validation, fair result polling, truthful capacity flags, local backend note, account environment, staged split and capacity mix")
 }

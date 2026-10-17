@@ -37,6 +37,10 @@ describe("private capability source-policy lock", () => {
     const binding = { fetch: async () => Response.json({ completion_feedback_schema: 1, policy_sha256: policy }) } as unknown as Fetcher;
     expect(await supportsCompletionFeedback(binding, policy)).toBe(true);
     expect(await supportsCompletionFeedback(binding, "b".repeat(64))).toBe(false);
+    const asked: string[] = [];
+    const naming = { fetch: async (url: string) => { asked.push(url); return Response.json({ completion_feedback_schema: 1, policy_sha256: policy }); } } as unknown as Fetcher;
+    expect(await supportsCompletionFeedback(naming, policy)).toBe(true);
+    expect(asked).toEqual([`https://internal/capabilities?policy=${policy}`]);
   });
   it("rejects old, unbounded, malformed and unavailable RCC bindings", async () => {
     for (const value of [{}, { completion_feedback_schema: 1 },
