@@ -431,7 +431,8 @@ func runRCCRuntimeContractFixture() throws {
         quota_remaining_fraction:0.7,quota_observed_at_ms:now-100,quota_valid_until_ms:now+30000,
         quality_state:'policy_admitted',estimated_cost_units:1};
       // A ladder fixture adds the reference row (same model at max); a fake
-      // verifier registry and fake ledger parity admit the cheaper low row.
+      // verifier registry and explicitly reference-bound fake ledger parity
+      // admit the cheaper low row. Unbound summaries are not parity evidence.
       const candidates=ladder?[candidate,{...candidate,id:'fake-codex-max',effort:'max',configuration_sha256:sha('fixture config max')}]:[candidate];
       // A tier fixture (build 378): the frontier reference and a fast model in
       // one pool; the first fast answer is empty, so REVAS escalates once.
@@ -444,7 +445,8 @@ func runRCCRuntimeContractFixture() throws {
         scope:'read_only',owned_paths:[],context_refs:[]}));
       const runtime=await createRCCRuntime({stateDir:join(root,ladder?'ladder':graded?'graded':verified?'verified':'unverified'),
         ...(ladder?{verifierRegistry:new Map([['standard:read_only:agent',async()=>({passed:true,reason:'fixture'})]]),
-          ledgerStats:()=>({verified_passes:20,verifier_failures:0})}:{}),
+          ledgerStats:(_family,model,_effort,referenceEffort)=>({verified_passes:20,verifier_failures:0,
+            reference_model:model,reference_effort:referenceEffort})}:{}),
         catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates,
           ...(tiered?{model_tiers:{'gpt-6-astra':'frontier','gpt-6-luna':'fast'}}:{})}),
         plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes}),

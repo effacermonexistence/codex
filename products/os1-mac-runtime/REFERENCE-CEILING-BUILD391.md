@@ -41,4 +41,12 @@ This391 change corrects the reference configuration contract; it does not manufa
 
 Current instruction/source inspection found no OhMyBug attestation merge mandate; historical assistant-authored handoffs are not such authority. OhMyBug remains uninstalled. Publication follows the existing dedicated-branch, checks and R2 contract. Main-branch integration is separate: the fetched main and this long-lived branch diverge, so a blind merge is not performed.
 
+The first full release run caught an outdated cross-language positive fixture:
+its fake ledger summary lacked the newly required reference binding. The
+runtime correctly refused that summary. Only the positive fixture's fake
+callback was updated to return the model and fourth-argument reference effort;
+the existing assertions and negative unbound-evidence tests remain. The failed
+release log is preserved separately; the repaired full Context suite passed
+before another complete release run.
+
 The repair method uses observed state, a bounded hypothesis, the smallest reversible change and external/deterministic feedback rather than generated agreement. Relevant sources inspected: [ReAct](https://arxiv.org/abs/2210.03629) and [intrinsic self-correction limitations](https://arxiv.org/abs/2310.01798). Neither paper is evidence that this implementation passes; actual test/install receipts establish that bounded claim.
