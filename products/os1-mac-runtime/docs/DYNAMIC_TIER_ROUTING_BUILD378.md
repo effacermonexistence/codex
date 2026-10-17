@@ -1,3 +1,11 @@
+# Historical build378 contract
+
+The `max` reference ceiling described in this earlier record is historical. Build391's
+`../REFERENCE-CEILING-BUILD391.md` supersedes that ceiling with the actual
+known native-supported, signed reference setting while preserving cheap-first
+tiers and explicit owner constraints. Keep this earlier record as history,
+not as authority to reintroduce the old ceiling.
+
 # Dynamic tier routing (build 378 change set)
 
 Owner objective (2026-10-13): the same result as the newest top model at its

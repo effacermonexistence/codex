@@ -21,17 +21,17 @@ import Foundation
 ///   with `explicit_constraint_unavailable`, never a substitute. The catalog
 ///   then carries that constraint as `routing_intent`, so the host names the
 ///   route explicit (and may bind an explicitly asked ultra effort).
-/// - Without an explicit effort word, ultra/ultracode are not offered. max is
-///   offered: it is the reference effort. Lower efforts and lower-tier models
-///   stay in the catalog: the host routes each graded node to the cheapest
-///   tier/effort expected to give the reference result (build 378).
+/// - Every signed, natively supported known effort stays available, including
+///   ultra/ultracode. The reference uses the native frontier's highest supported
+///   effort, not a fixed max ceiling. Lower efforts and lower-tier models stay:
+///   the host still routes each graded node to the cheapest adequate tier.
 /// - An explicit route test (`explicitRouteSurfaces` set) keeps its former
 ///   candidate set: the whole fan-out sentence is not read as one intent, and
 ///   no effort is withheld; only GPT, capacity and the chat gate apply. Each
 ///   route's OWN effort/model words travel separately
 ///   (`explicit_route_intents`): the host binds each named route's model and
-///   effort by its grade on that route's surface, and an above-max effort
-///   only when that route's own words asked for it.
+///   effort by its grade on that route's surface. An explicit effort word is
+///   exact; without one the same native reference ceiling applies.
 /// - `claude-chat` rows exist only when the narrow chat-lane predicate holds.
 /// - A `local` row (2026-10-14) exists only in an explicit route test that
 ///   names the local surface: the one tools-free, read-only, quota-free row of
@@ -46,23 +46,21 @@ import Foundation
 ///   the same way.
 /// - Every row's model carries its provider-stated tier (`ModelTiers`) in the
 ///   catalog's `model_tiers` (build 378). A pool's REFERENCE is its
-///   frontier-tier model at the highest offered effort up to max, never the
-///   first model in the native list (gpt-6.1-sol and opus are workhorses).
+///   frontier-tier model at its highest known native-supported effort, never
+///   the first model in the native list (gpt-6.1-sol and opus are workhorses).
 ///   Lower tiers are no longer withheld: they carry trivial and standard work.
 ///   A pool whose frontier model offers no row now (absent, quota_zero,
 ///   quota_backoff, or no profile at the owner's effort word) keeps its lower
 ///   rows and records `reference_unavailable`: the host then never binds that
 ///   pool for deep work or a REVAS escalation, and nothing lower stands in.
-///   An explicit model family or route test names its own route instead.
+///   This also holds when that model has a lower row but its native ceiling
+///   has no signed/admitted row. An explicit effort fixes its own ceiling;
+///   an explicit model family or route test names its own route instead.
 /// - Every excluded profile is counted per provider and reason, so an empty
 ///   catalog is an explained hold, not an opaque binding error.
 public enum RCCNativeCatalogBuilder {
     public static let maximumCandidates = 256
     public static let effortOrder = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
-    /// Above max: offered only when the owner explicitly asks. max itself is
-    /// the default reference effort and is never withheld.
-    public static let explicitOnlyEfforts: Set<String> = ["ultra", "ultracode"]
-    static let maximumReferenceEffort = "max"
     /// The local model OpenClaw runs (`LocalRouterBridge.model`, the planner's
     /// model) and the one local execution row's fixed identity.
     public static let localWorkerModel = "qwen3.5:4b"
@@ -193,6 +191,11 @@ public enum RCCNativeCatalogBuilder {
         /// both sides compare exact values, so the host can rank pools by the
         /// model a node actually binds (build 378), not by another model's quota.
         public var quotaScores: [String: Int] = [:]
+        /// The highest known native effort of each represented model, before
+        /// signed-profile/quota filtering. Metadata only, never a new row or
+        /// execution permission. Names of an evidenced native Claude alias row
+        /// share its ceiling; unrelated models do not.
+        public var nativeReferenceEfforts: [String: [String: String]] = [:]
         /// An explicit route test's per-route intents (see Input).
         public var explicitRouteIntents: [RoutingIntent]? = nil
     }
@@ -276,9 +279,10 @@ public enum RCCNativeCatalogBuilder {
            !named(profile.provider, preference: input.providerPreference, explicitSurfaces: input.explicitRouteSurfaces) {
             return .excluded("capacity_zero")
         }
-        if input.explicitRouteSurfaces == nil, intent.effort == nil, explicitOnlyEfforts.contains(profile.effort) {
-            return .excluded("effort_requires_explicit_request")
-        }
+        // Unknown effort names have no ordered/executable meaning in the
+        // current contract, even if a native inventory happens to echo them.
+        // They never become a fabricated higher or lower reference.
+        guard effortOrder.contains(profile.effort) else { return .excluded("model_unavailable") }
         let constraint = reference ? RoutingIntent(modelFamily: intent.modelFamily) : intent
         if !constraint.admits(model: profile.model, effort: profile.effort) { return .intentFiltered }
         if normalizedPreference(input.providerPreference) == "claude-chat", !(input.chatLaneEligible && !input.hasMaterialRefs) {
@@ -340,6 +344,24 @@ public enum RCCNativeCatalogBuilder {
             if provider == "codex" { return input.codexModels.first { $0.slug == model }?.priority ?? Int.max }
             guard let index = input.claudeModels.firstIndex(where: { $0.model == model }) else { return Int.max }
             return input.claudeModels[index].nativeRank ?? index
+        }
+        func nativeEfforts(_ provider: String, _ model: String) -> Set<String> {
+            let observed: [String]
+            if provider == "codex" {
+                observed = input.codexModels.first { $0.slug == model }?.supportedEfforts ?? []
+            } else if let native = input.claudeModels.first(where: { $0.model == model }) {
+                // Only an explicitly shared native-row identity proves alias
+                // equivalence. Equal ordinal fallback values are not evidence
+                // that unrelated model rows share capabilities.
+                if let rank = native.nativeRank {
+                    observed = input.claudeModels.filter { $0.nativeRank == rank }.flatMap(\.supportedEfforts)
+                } else { observed = native.supportedEfforts }
+            } else { observed = [] }
+            return Set(observed).intersection(effortOrder)
+        }
+        func nativeMaximum(_ provider: String, _ model: String) -> String? {
+            let supported = nativeEfforts(provider, model)
+            return effortOrder.last(where: supported.contains)
         }
         // Each pool's reference profiles (see the type comment): its
         // frontier-tier profiles this request may use at all, decided before
@@ -405,14 +427,41 @@ public enum RCCNativeCatalogBuilder {
             }
         }
 
-        // A pool whose frontier (reference) model offers no row now keeps its
-        // lower-tier rows for trivial and standard work, and says so: the host
-        // never binds it for deep work or a REVAS escalation, and no lower
-        // model stands in as its reference. An explicit model family names
-        // its own route; an explicit route test keeps its candidate set.
+        // Establish the reference ceiling from native capabilities BEFORE
+        // signed-profile, quota and cooldown filtering. A signed max row must
+        // not silently stand in when the same native frontier supports ultra
+        // but no admitted ultra row exists. Native-rank aliases describe one
+        // Claude model, so any observed name can supply that same ceiling.
+        // Explicit effort remains exact and is not raised to the Auto ceiling.
+        func referenceAvailable(_ provider: String) -> Bool {
+            let inventory: [(model: String, efforts: [String], rank: Int)] = provider == "codex"
+                ? input.codexModels.map { ($0.slug, $0.supportedEfforts, $0.priority) }
+                : input.claudeModels.enumerated().map { ($0.element.model, $0.element.supportedEfforts, $0.element.nativeRank ?? $0.offset) }
+            let frontiers = inventory.filter { ModelTiers.tier(of: $0.model) == .frontier }.sorted { a, b in
+                if a.rank != b.rank { return a.rank < b.rank }
+                let aCeiling = nativeMaximum(provider, a.model).flatMap { effortOrder.firstIndex(of: $0) } ?? -1
+                let bCeiling = nativeMaximum(provider, b.model).flatMap { effortOrder.firstIndex(of: $0) } ?? -1
+                return aCeiling != bCeiling ? aCeiling > bCeiling : a.model < b.model
+            }
+            guard let frontier = frontiers.first else { return false }
+            let supported = nativeEfforts(provider, frontier.model)
+            guard let ceiling = intent.effort ?? nativeMaximum(provider, frontier.model),
+                  supported.contains(ceiling) else { return false }
+            // Only aliases with an actual shared native row may satisfy this
+            // model's ceiling; equal Codex priority is not alias evidence.
+            let names: Set<String>
+            if provider == "claude", let native = input.claudeModels.first(where: { $0.model == frontier.model }),
+               let rank = native.nativeRank {
+                names = Set(input.claudeModels.filter { $0.nativeRank == rank }.map(\.model))
+            } else { names = [frontier.model] }
+            return rows.contains { $0.provider == provider && names.contains($0.model) && $0.effort == ceiling }
+        }
+        // Lower tiers remain usable for cheap work. Only automatic deep work
+        // and REVAS reference escalation are held by this existing exclusion.
+        // No model/effort is fabricated and candidate identities are unchanged.
         if input.explicitRouteSurfaces == nil, intent.modelFamily == nil {
             for provider in ["codex", "claude"] where rows.contains(where: { $0.provider == provider }) &&
-                !rows.contains(where: { $0.provider == provider && ModelTiers.tier(of: $0.model) == .frontier }) {
+                !referenceAvailable(provider) {
                 excluded[provider, default: [:]]["reference_unavailable", default: 0] += max(1, referenceProfiles[provider] ?? 0)
             }
         }
@@ -427,19 +476,22 @@ public enum RCCNativeCatalogBuilder {
         func modelRank(_ row: Row) -> Int { nativeRank(row.provider, row.model) }
         func tierRank(_ row: Row) -> Int { ModelTiers.rank(row.model) }
         func effortRank(_ effort: String) -> Int { effortOrder.firstIndex(of: effort) ?? Int.max }
-        // The host's reference effort of one model: its highest offered effort
-        // up to max; above max only when nothing else is offered (an explicit
-        // ultra request). Same rule as `referenceEffort` in rcc-runtime.mjs.
+        // The host's reference effort of one model: its highest offered known
+        // effort without a fixed max cap. Same ordered-ceiling rule as
+        // `referenceEffort` in rcc-runtime.mjs; a missing native ceiling is
+        // separately held by reference_unavailable above.
         var offeredEfforts: [String: [Int]] = [:]
         for row in rows { offeredEfforts[row.provider + "\0" + row.model, default: []].append(effortRank(row.effort)) }
-        let maximumReference = effortRank(maximumReferenceEffort)
         func referenceRank(_ row: Row) -> Int {
             let offered = offeredEfforts[row.provider + "\0" + row.model] ?? []
-            return offered.filter { $0 <= maximumReference }.max() ?? offered.max() ?? -1
+            return offered.max() ?? -1
         }
         func modelKeyLess(_ a: Row, _ b: Row) -> Bool {
             if tierRank(a) != tierRank(b) { return tierRank(a) < tierRank(b) }
             if modelRank(a) != modelRank(b) { return modelRank(a) < modelRank(b) }
+            let aCeiling = nativeMaximum(a.provider, a.model).flatMap { effortOrder.firstIndex(of: $0) } ?? -1
+            let bCeiling = nativeMaximum(b.provider, b.model).flatMap { effortOrder.firstIndex(of: $0) } ?? -1
+            if aCeiling != bCeiling { return aCeiling > bCeiling }
             if referenceRank(a) != referenceRank(b) { return referenceRank(a) > referenceRank(b) }
             return a.model < b.model
         }
@@ -508,9 +560,15 @@ public enum RCCNativeCatalogBuilder {
         guard rows.count + local.count <= maximumCandidates else { throw Failure.exceedsBound(rows.count + local.count) }
         guard !rows.isEmpty || !local.isEmpty || !exclusions.isEmpty else { throw Failure.unexplainedEmptyCatalog }
         var tiers: [String: String] = [:]
-        for row in rows { if let tier = ModelTiers.tier(of: row.model) { tiers[row.model] = tier.rawValue } }
+        var nativeReferenceEfforts: [String: [String: String]] = [:]
+        for row in rows {
+            if let tier = ModelTiers.tier(of: row.model) { tiers[row.model] = tier.rawValue }
+            if let ceiling = nativeMaximum(row.provider, row.model) {
+                nativeReferenceEfforts[row.provider, default: [:]][row.model] = ceiling
+            }
+        }
         return Output(candidates: rows.map(\.fields) + local, exclusions: exclusions, pools: rankings, intent: intent,
-                      modelTiers: tiers, quotaScores: quotaScores,
+                      modelTiers: tiers, quotaScores: quotaScores, nativeReferenceEfforts: nativeReferenceEfforts,
                       explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents)
     }
 
@@ -553,6 +611,10 @@ public enum RCCNativeCatalogBuilder {
                                         "model_family": output.intent.modelFamily.map { $0 as Any } ?? NSNull()]
         }
         if !output.candidates.isEmpty { object["model_tiers"] = output.modelTiers }
+        // Fresh catalogs attest the native ceiling separately from executable
+        // rows, including named-family and fan-out routes. Older stored
+        // catalogs remain valid without this optional field.
+        object["native_reference_efforts"] = output.nativeReferenceEfforts
         // Build 378, both optional: per-model pool scores (known quota only),
         // and an explicit route test's own per-route words (only when some
         // route carries one; aligned with the original route list).

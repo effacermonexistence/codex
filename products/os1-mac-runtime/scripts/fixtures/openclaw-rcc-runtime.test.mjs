@@ -1688,9 +1688,9 @@ test('resolver is deterministic: same input, same exact tuple and decision', () 
   assert.equal(mixed.decisions.a.resolved_candidate_id, 'codex-sol-xhigh');
 });
 
-test('every route_class binds the pool reference: top model at its highest effort up to max', () => {
-  // Owner objective (2026-10-13): reference quality = the newest top model at
-  // max reasoning. route_class never lowers the model or the effort.
+test('every legacy route_class binds the pool reference: top model at its highest admitted supported effort', () => {
+  // Owner objective: reference quality = the newest top model at its highest
+  // admitted supported reasoning. A legacy route_class never lowers it.
   const request = task('/tmp', 'Grade effort', 'auto');
   const rows = routingCatalog();
   rows.splice(4, 0, row('codex-sol-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
@@ -1699,11 +1699,11 @@ test('every route_class binds the pool reference: top model at its highest effor
   const now = Date.now();
   const resolve = (routeClass, value = rows, intent) => resolveRoutePlan(plan(request, [graded('n', routeClass)]), request,
     {...catalog(request, value), ...(intent ? {routing_intent: intent} : {})}, now).decisions.n;
-  // Codex reference: gpt-5.7-sol (first in catalog order) at max, whatever the class.
+  // Codex reference: gpt-5.7-sol (first in catalog order) at its admitted ultra, whatever the class.
   for (const routeClass of ['trivial', 'standard', 'deep']) {
     const decision = resolve(routeClass);
-    assert.equal(decision.resolved_candidate_id, 'codex-sol-max', routeClass);
-    assert.equal(decision.reason, 'resolver;route_reference;pool_rank_0;effort_max;agent_surface', routeClass);
+    assert.equal(decision.resolved_candidate_id, 'codex-sol-ultra', routeClass);
+    assert.equal(decision.reason, 'resolver;route_reference;pool_rank_0;effort_ultra;agent_surface', routeClass);
   }
   // Claude reference: claude-opus-5-5 at max, also for every class.
   const claude = rows.filter(value => value.quota_pool === 'anthropic_shared');
@@ -1712,10 +1712,9 @@ test('every route_class binds the pool reference: top model at its highest effor
   // Without a max row the reference is the highest offered effort, never a
   // lower model that happens to offer more.
   assert.equal(resolve('trivial', routingCatalog()).resolved_candidate_id, 'codex-sol-xhigh');
-  // ultra is never the default reference: an ultra-only model offers no
-  // reference without the owner's explicit ultra request.
+  // An admitted ultra-only model is a usable reference without an effort word.
   const ultraOnly = [row('codex-sol-ultra', 'openai_codex', 'gpt-5.7-sol', 'ultra')];
-  assert.throws(() => resolve('deep', ultraOnly), /no_dispatchable_candidate:read_only/);
+  assert.equal(resolve('deep', ultraOnly).resolved_candidate_id, 'codex-sol-ultra');
   const ultra = resolve('trivial', ultraOnly, {effort: 'ultra', model_family: null});
   assert.equal(ultra.resolved_candidate_id, 'codex-sol-ultra');
   assert.equal(ultra.reason, 'resolver;route_explicit;intent_effort_ultra;pool_rank_0;effort_ultra;agent_surface');
@@ -1737,7 +1736,9 @@ test('every route_class binds the pool reference: top model at its highest effor
 
 test('catalog routing_intent is optional and strictly shaped; a malformed one holds before planning', async t => {
   const dir = await fixture(t);
-  const cases = [[{effort: 'max', model_family: 'opus'}, 'completed'], [undefined, 'completed'],
+  // The well-shaped control names an effort routingCatalog actually offers;
+  // a structurally valid but missing explicit effort is a separate hold.
+  const cases = [[{effort: 'xhigh', model_family: 'opus'}, 'completed'], [undefined, 'completed'],
     [{effort: 'none', model_family: null}, 'held'], [{effort: null, model_family: null}, 'held'],
     [{effort: 'max', model_family: 'Opus!'}, 'held'], [{effort: 'max'}, 'held'],
     [{effort: 'max', model_family: null, extra: 1}, 'held']];
@@ -2621,8 +2622,43 @@ test('spreading still works after the bound rows outlive their validity window: 
 // A cheaper effort is admitted only with a registered task verifier for the
 // family and ledger parity. Production registers no verifier, so every node
 // runs its reference route; these fixtures use a fake registry and fake stats.
-const parity = (passes, failures = 0) => () => ({verified_passes: passes, verifier_failures: failures});
+const parity = (passes, failures = 0) => (_family, model, _effort, reference) =>
+  ({verified_passes: passes, verifier_failures: failures, reference_effort: reference, reference_model: model});
 const registry = (...families) => new Map(families.map(family => [family, async () => ({passed: true, reason: 'fake'})]));
+
+test('legacy ladder parity is bound to its exact reference model and effort, never promoted from max to ultra', async t => {
+  const dir = await fixture(t);
+  const family = 'standard:read_only:agent', model = 'gpt-6-astra';
+  const ledger = openRoutingLedger(dir);
+  const record = (reference, changes = {}) => ({schema: 1, task_id: 'task-x', node_id: 'n',
+    attempt_id: randomUUID(), family, model, effort: 'low', reference_effort: reference, route_kind: 'ladder',
+    ladder: {cheap_effort: 'low', reference_effort: reference}, verifier_outcome: 'pass', execution_verified: true, ...changes});
+  const admission = (reference, stats = ledger.stats) => cheaperRouteAdmission({family, scope: 'read_only', model,
+    referenceEffort: reference, cheaperEfforts: ['low'], verifierRegistry: registry(family), ledgerStats: stats});
+  for (let i = 0; i < 20; i++) ledger.append(record('max'));
+  assert.equal(admission('max').route, 'ladder');
+  assert.equal(admission('ultra').route, 'reference', 'max verifier samples cannot certify the new ultra ceiling');
+  assert.deepEqual(ledger.stats(family, model, 'low', 'ultra'),
+    {verified_passes: 0, verifier_failures: 0, reference_effort: 'ultra', reference_model: model});
+  for (let i = 0; i < 20; i++) ledger.append(record('ultra'));
+  assert.equal(admission('ultra').route, 'ladder', 'matching bound samples can admit the same-model cheaper effort');
+  assert.equal(admission('ultra', () => ({verified_passes: 99, verifier_failures: 0})).route, 'reference',
+    'a legacy unbound summary is unknown, not proof');
+  assert.equal(admission('ultra', () => ({verified_passes: 99, verifier_failures: 0,
+    reference_effort: 'max', reference_model: model})).route, 'reference');
+  assert.equal(admission('ultra', () => ({verified_passes: 99, verifier_failures: 0,
+    reference_effort: 'ultra', reference_model: 'another-model'})).route, 'reference');
+  // Unbound historical lines and another model's tier reference never count.
+  const unbound = openRoutingLedger(join(dir, 'unbound'));
+  for (let i = 0; i < 20; i++) {
+    const raw = record('ultra'); delete raw.reference_effort; unbound.append(raw);
+    unbound.append(record('ultra', {route_kind: 'tier', ladder: {cheap_effort: 'low', reference_effort: 'ultra',
+      reference_model: 'another-model'}}));
+    unbound.append(record('ultra', {route_kind: 'reference', ladder: null}));
+    unbound.append(record('ultra', {route_kind: 'tier', ladder: {cheap_effort: 'low', reference_effort: 'ultra'}}));
+  }
+  assert.equal(admission('ultra', unbound.stats).route, 'reference');
+});
 
 test('cheaperRouteAdmission never admits without a verifier, without 20 passes, or with any failure', () => {
   const family = routeFamily('standard', 'read_only', 'claude-chat');
@@ -2650,8 +2686,9 @@ test('cheaperRouteAdmission never admits without a verifier, without 20 passes, 
   for (const [change, reason] of refused)
     assert.deepEqual(cheaperRouteAdmission({...base, ...change}), {route: 'reference', reason}, JSON.stringify(change));
   // The cheapest effort with parity wins; one without parity is skipped.
-  const stats = (asked, model, effort) => asked === family && model === 'claude-opus-5-5' ?
-    {verified_passes: effort === 'medium' ? 25 : 3, verifier_failures: 0} : null;
+  const stats = (asked, model, effort, reference) => asked === family && model === 'claude-opus-5-5' ?
+    {verified_passes: effort === 'medium' ? 25 : 3, verifier_failures: 0,
+      reference_effort: reference, reference_model: model} : null;
   assert.equal(cheaperRouteAdmission({...base, ledgerStats: stats}).cheap_effort, 'medium');
 });
 
@@ -3531,7 +3568,7 @@ test('a parity failure whose ledger write fails closes every ladder in the proce
   const seed = openRoutingLedger(dir);
   for (let i = 0; i < 20; i++) seed.append({schema: 1, task_id: 'seed', node_id: 'n', attempt_id: randomUUID(),
     family: 'standard:read_only:agent', model: 'gpt-5.7-sol', effort: 'low', verifier_outcome: 'pass',
-    execution_verified: true});
+    route_kind: 'ladder', reference_effort: 'max', execution_verified: true});
   const dispatched = [], logged = [];
   const runtime = await createRCCRuntime({stateDir: dir, ledgerLog: code => logged.push(code),
     verifierRegistry: ladderVerifier(), catalog: async value => catalog(value, ladderRows),

@@ -335,18 +335,39 @@ public enum RCCRuntimeContract {
         /// remaining quota / hours to its own reset), in integer parts per
         /// billion (0 ... 1_000_000_000).
         public var quotaScores: [String: Int]?
+        /// Optional native capability evidence, separate from signed/executable
+        /// candidates. A missing highest profile must not lower a reference.
+        /// Exact candidate model names, grouped by codex/claude; never local.
+        public var nativeReferenceEfforts: [String: [String: String]]?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
                     exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil,
                     modelTiers: [String: String]? = nil, explicitRouteIntents: [RoutingIntentConstraint?]? = nil,
-                    quotaScores: [String: Int]? = nil) {
+                    quotaScores: [String: Int]? = nil, nativeReferenceEfforts: [String: [String: String]]? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
             self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
             self.explicitRouteIntents = explicitRouteIntents; self.quotaScores = quotaScores
+            self.nativeReferenceEfforts = nativeReferenceEfforts
         }
         enum CodingKeys: String, CodingKey {
             case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256"
             case routingIntent = "routing_intent", modelTiers = "model_tiers"
             case explicitRouteIntents = "explicit_route_intents", quotaScores = "quota_scores"
+            case nativeReferenceEfforts = "native_reference_efforts"
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            schema = try c.decode(Int.self, forKey: .schema)
+            taskID = try c.decode(String.self, forKey: .taskID)
+            requestSHA256 = try c.decode(String.self, forKey: .requestSHA256)
+            candidates = try c.decode([Candidate].self, forKey: .candidates)
+            exclusions = try c.decodeIfPresent([Exclusion].self, forKey: .exclusions)
+            routingIntent = try c.decodeIfPresent(RoutingIntentConstraint.self, forKey: .routingIntent)
+            modelTiers = try c.decodeIfPresent([String: String].self, forKey: .modelTiers)
+            explicitRouteIntents = try c.decodeIfPresent([RoutingIntentConstraint?].self, forKey: .explicitRouteIntents)
+            quotaScores = try c.decodeIfPresent([String: Int].self, forKey: .quotaScores)
+            // Absence is legacy; explicit null is not a native attestation.
+            nativeReferenceEfforts = c.contains(.nativeReferenceEfforts)
+                ? try c.decode([String: [String: String]].self, forKey: .nativeReferenceEfforts) : nil
         }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
@@ -961,6 +982,33 @@ public enum RCCRuntimeContract {
             guard scores.count <= 256, scores.allSatisfy({ text($0.key, max: 256) && models.contains($0.key) &&
                 (0...1_000_000_000).contains($0.value) }) else { throw Rejection.invalidObservation }
         }
+        if let native = value.nativeReferenceEfforts {
+            let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
+            func provider(_ candidate: Candidate) -> String? {
+                switch candidate.quotaPool {
+                case .openAICodex: return "codex"
+                case .anthropicShared: return "claude"
+                default: return nil
+                }
+            }
+            var represented: [String: Set<String>] = [:]
+            for candidate in value.candidates {
+                if let provider = provider(candidate) { represented[provider, default: []].insert(candidate.model) }
+            }
+            guard Set(native.keys).isSubset(of: ["codex", "claude"]),
+                  native.values.reduce(0, { $0 + $1.count }) <= 256,
+                  native.allSatisfy({ provider, models in
+                      represented[provider] != nil && models.allSatisfy { model, effort in
+                          text(model, max: 256) && represented[provider]?.contains(model) == true && efforts.contains(effort)
+                      }
+                  }), value.candidates.allSatisfy({ candidate in
+                      guard let provider = provider(candidate) else { return true }
+                      guard let ceiling = native[provider]?[candidate.model],
+                            let ceilingRank = efforts.firstIndex(of: ceiling),
+                            let offeredRank = efforts.firstIndex(of: candidate.effort.rawValue) else { return false }
+                      return ceilingRank >= offeredRank
+                  }) else { throw Rejection.invalidObservation }
+        }
         if let tiers = value.modelTiers {
             // Only provider-stated tiers of models this catalog actually offers.
             let models = Set(value.candidates.map(\.model))
@@ -1287,7 +1335,7 @@ public enum RCCRuntimeContract {
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape)])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])

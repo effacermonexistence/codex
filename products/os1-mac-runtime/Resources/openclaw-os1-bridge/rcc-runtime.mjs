@@ -49,7 +49,7 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // Deterministic host routing. The catalog's own row order already encodes
 // pool preference (capacity share, fresh quota, reset time) and, within a
 // pool, model strength. Owner objective: the SAME result as the newest top
-// model at its highest (max) reasoning, while spending less quota.
+// model at its highest supported reasoning, while spending less quota.
 //
 // Dynamic tier routing (build 378), on a catalog that carries `model_tiers`
 // (each model's provider-stated tier): REVAS at the front. The planner grades
@@ -57,8 +57,8 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // to give the same result (TIER_ROUTES), first dispatchable entry wins in the
 // first pool that can serve the class; when no pool can, trivial work runs
 // at standard (upwards only, never below the grade). A read-only node bound
-// below its pool's reference (the frontier model at its highest effort up to
-// max) is re-dispatched ONCE at the reference on any failure signal, and held
+// below its pool's reference (the frontier model at its highest admitted,
+// supported effort) is re-dispatched ONCE at the reference on any failure signal, and held
 // when no reference can run then; a write is never escalated. The tier
 // choice is the admission: no ledger parity is needed. One ledger-derived
 // check remains (tierCostGate): a guarded read-only tier route whose cost
@@ -69,14 +69,14 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 //
 // A catalog WITHOUT `model_tiers` (older hosts and persisted catalogs) keeps
 // the 2026-10-13 reference routing: every node binds a pool's REFERENCE route
-// (its first model at the highest offered effort up to max), and a cheaper
+// (its first model at the highest admitted supported effort), and a cheaper
 // effort of that model needs the REVAS ladder gate (cheaperRouteAdmission).
 const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
 export const ROUTE_CLASSES = Object.freeze(['trivial', 'standard', 'deep']);
 // Provider-stated model tiers, strongest first (Swift ModelTiers is the owner).
 export const MODEL_TIERS = Object.freeze(['frontier', 'workhorse', 'efficient', 'fast']);
 // A tier-list effort that means the model's reference effort: its highest
-// offered effort up to max (max on every production frontier profile).
+// admitted supported effort, not a hard-coded label such as "max".
 const REFERENCE_EFFORT = 'reference';
 // Ordered (tier, effort) preferences per graded class: the first entry with a
 // dispatchable row in a pool wins. Deep work only ever runs the reference. A
@@ -88,7 +88,6 @@ export const TIER_ROUTES = Object.freeze({
     ['workhorse', 'xhigh'], ['frontier', REFERENCE_EFFORT]]),
   deep: Object.freeze([['frontier', REFERENCE_EFFORT]]),
 });
-const MAX_REFERENCE_EFFORT = EFFORT_ORDER.indexOf('max');
 // Cost gate (tierCostGate): a guarded read-only tier route runs the cheaper
 // route and, with escalation probability p, the reference once more, so its
 // expected cost is mu_C + p*mu_R against mu_R for routing straight to the
@@ -110,8 +109,6 @@ export const COST_GATE_CONFIDENCE = 0.9;
 export const COST_GATE_DRAWS = 4000;
 // Below two cost samples per arm the sample spread is undefined: tier.
 export const COST_GATE_MIN_SAMPLES = 2;
-// Above max: chosen only when the owner explicitly asked (catalog routing_intent).
-const EXPLICIT_ONLY_EFFORTS = new Set(['ultra', 'ultracode']);
 const INTENT_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const INTENT_FAMILY = /^[a-z][a-z0-9]{1,31}$/;
 // REVAS ladder gate: a cheaper effort of the SAME model in the SAME pool needs
@@ -546,25 +543,47 @@ export function routeFamily(routeClass, scope, surface) {
   return `${routeClass ?? 'unclassified'}:${scope}:${surfaceKind(surface)}`;
 }
 function routingIntent(catalog) { return catalog?.routing_intent ?? null; }
-/** The reference effort of one model's rows. An explicit owner effort that
- * the model offers is a hard constraint. Otherwise the highest offered effort
- * up to max; ultra/ultracode only when the owner explicitly asked for one.
- * Null when the model offers nothing usable by default. */
-function referenceEffort(rows, intent) {
+/** The reference effort of one model's admitted rows. An explicit owner
+ * effort is exact, including when unavailable (never substitute another
+ * effort). Otherwise use the highest supported catalog row BEFORE testing
+ * dispatchability: an unavailable highest row cannot silently become max.
+ * The native builder also reports reference_unavailable when it knows a
+ * higher supported tuple is absent from its signed catalog. Preserve that
+ * boundary without fabricating the missing row. Concrete cheap-tier entries
+ * remain eligible; only the automatic reference is unavailable. */
+function referenceEffort(rows, intent, catalog) {
   const offered = rows.map(c => c.effort);
-  if (intent?.effort && offered.includes(intent.effort)) return intent.effort;
-  const capped = offered.filter(effort => EFFORT_ORDER.indexOf(effort) <= MAX_REFERENCE_EFFORT);
-  const pool = capped.length ? capped : EXPLICIT_ONLY_EFFORTS.has(intent?.effort) ? offered : [];
-  return pool.length ? EFFORT_ORDER[Math.max(...pool.map(effort => EFFORT_ORDER.indexOf(effort)))] : null;
+  if (intent?.effort) return offered.includes(intent.effort) ? intent.effort : null;
+  // Ordinary Auto must preserve the provider's missing-reference boundary
+  // even on a legacy catalog that also carries per-model metadata. That map
+  // describes represented models, not the absent frontier. A named family
+  // has its own ceiling and must not inherit another family's global hold.
+  if (!intent?.model_family && rows.some(row => (catalog?.exclusions ?? []).some(exclusion =>
+    exclusion.provider === providerOfPool(row.quota_pool) && exclusion.reason === 'reference_unavailable'))) return null;
+  // Fresh native catalogs report the ceiling of THIS exact model even when
+  // its signed executable tuple is absent. The map grants no execution
+  // authority: a matching admitted row must still exist and dispatch.
+  // Per-model evidence resolves a named family's broader provider exclusion so
+  // an unavailable Astra ceiling cannot poison an explicit Sol reference.
+  const first = rows[0];
+  const provider = first ? providerOfPool(first.quota_pool) : null;
+  if (catalog?.native_reference_efforts !== undefined && EXCLUSION_PROVIDERS.has(provider)) {
+    const ceiling = catalog.native_reference_efforts?.[provider]?.[first?.model];
+    return EFFORTS.has(ceiling) && offered.includes(ceiling) ? ceiling : null;
+  }
+  // Legacy/persisted catalogs lack model-specific native evidence. Retain
+  // their compatibility route; do not infer that the
+  // highest offered row proves the native host's true supported maximum.
+  return offered.length ? EFFORT_ORDER[Math.max(...offered.map(effort => EFFORT_ORDER.indexOf(effort)))] : null;
 }
 /** Per quota pool, in catalog order: the pool's reference model (its first,
  * i.e. most-preferred, model in catalog order among rows that can carry this
  * node) with that model's rows and reference effort. Dispatchability is NOT
  * used to pick the model: an undispatchable top model makes its pool unusable
  * for this node instead of silently substituting a lower model. The native
- * builder keeps that true for a top model that cannot run at all (quota_zero,
- * quota_backoff, an effort word it lacks): it withholds the whole pool
- * (reference_unavailable) rather than let its next model lead the pool. */
+ * builder's reference_unavailable boundary also covers a known higher
+ * supported effort whose signed row is missing. A tiered catalog may retain
+ * cheap rows in that pool, but they cannot stand in for its reference. */
 function poolReferences(node, catalog, options = {}) {
   const intent = routingIntent(catalog);
   const pools = new Map();
@@ -576,7 +595,7 @@ function poolReferences(node, catalog, options = {}) {
     if (candidate.model === entry.model) entry.rows.push({candidate, index});
   });
   return [...pools.values()].map(entry => ({...entry,
-    effort: referenceEffort(entry.rows.map(row => row.candidate), intent)}));
+    effort: referenceEffort(entry.rows.map(row => row.candidate), intent, catalog)}));
 }
 function referenceRows(reference) {
   return reference.effort === null ? [] :
@@ -669,7 +688,7 @@ function effortlessModels(matching) {
   return new Set([...efforts].filter(([, set]) => set.size === 1 && set.has('none')).map(([model]) => model));
 }
 /** The rows of one pool that match one (tier, effort) entry. A REFERENCE
- * effort is the highest effort up to max that the entry's tier (or, for an
+ * effort is the highest admitted supported effort that the entry's tier (or, for an
  * explicitly named family, the family) offers in this pool. An explicit
  * effort word is a hard constraint on every entry (tierEntries). A model with
  * no effort control (effortlessModels) satisfies any concrete effort of an
@@ -685,22 +704,27 @@ function entryRows(rows, entry, catalog, intent) {
   const matching = rows.filter(({candidate}) => tierRoutable(candidate, catalog, intent) &&
     (entry.tier === null || tierOf(catalog, candidate.model) === entry.tier));
   if (entry.effort === REFERENCE_EFFORT) {
-    const effort = referenceEffort(matching.map(row => row.candidate), intent);
-    return effort === null ? [] : matching.filter(({candidate}) => candidate.effort === effort);
+    // Model preference and effort are separate axes. Bind the preferred
+    // matching MODEL first, then only its own native ceiling. Another
+    // frontier/family member offering a larger label cannot replace it.
+    const model = matching[0]?.candidate.model;
+    const preferred = matching.filter(({candidate}) => candidate.model === model);
+    const effort = referenceEffort(preferred.map(row => row.candidate), intent, catalog);
+    return effort === null ? [] : preferred.filter(({candidate}) => candidate.effort === effort);
   }
   const effortless = intent?.effort ? new Set() : effortlessModels(matching);
   return matching.filter(({candidate}) => candidate.effort === entry.effort ||
     (candidate.effort === 'none' && effortless.has(candidate.model)));
 }
-/** A pool's REFERENCE rows: its frontier-tier model at the highest effort up
- * to max it offers. Empty when the pool offers no frontier model: nothing
+/** A pool's REFERENCE rows: its frontier-tier model at the highest supported
+ * effort it admits. Empty when the pool offers no frontier model: nothing
  * lower stands in for it. */
 function tierReferenceRows(rows, catalog, intent = null) {
   return entryRows(rows, {tier: 'frontier', effort: REFERENCE_EFFORT}, catalog, intent);
 }
 /** The reference an owner constraint leaves: the named family at its highest
- * effort up to max (or at the owner's effort word), else the frontier at the
- * owner's effort word (or its highest up to max). The host-chosen route below
+ * admitted supported effort (or at the owner's effort word), else the frontier at the
+ * owner's effort word (or its highest admitted supported effort). The host-chosen route below
  * it is guarded against exactly this one. */
 function intentReferenceRows(rows, catalog, intent) {
   return intent?.model_family ? entryRows(rows, {tier: null, effort: REFERENCE_EFFORT}, catalog, intent) :
@@ -1091,7 +1115,7 @@ function localRouteCandidate(node, routeClass, task, catalog, now, {avoidIDs = [
  * escalation and its re-resolution).
  *
  * The route is 'reference' when the bound row is its pool's reference (the
- * frontier at its highest effort up to max), 'explicit' when the owner's own
+ * frontier at its highest admitted supported effort), 'explicit' when the owner's own
  * words fix the route (an effort word AND a model family, or a bound row that
  * is the reference those words leave: intentReferenceRows), and 'tier'
  * otherwise. A read-only agent node on a 'tier' route carries `ladder`, its
@@ -1335,8 +1359,9 @@ function noDispatchableReason(task, catalog, now) {
 /** The REVAS ladder gate, front-loaded and pure. A cheaper effort of the SAME
  * model in the SAME pool may replace the reference only when the node is
  * read-only, a task verifier is registered for the family, and the ledger
- * shows parity at that cheaper route: at least LADDER_MIN_VERIFIED_PASSES
- * verified passes and no verifier failure for the family. The cheapest such
+ * shows parity at that cheaper route AGAINST THIS reference model/effort:
+ * at least LADDER_MIN_VERIFIED_PASSES verified passes and no verifier failure
+ * for the family. Unbound older summaries are not proof. The cheapest such
  * effort is admitted; anything else (unknown stats included) is reference. */
 export function cheaperRouteAdmission({family, scope, model = null, referenceEffort: reference = null,
                                        cheaperEfforts = [], verifierRegistry = null, ledgerStats = null} = {}) {
@@ -1351,9 +1376,10 @@ export function cheaperRouteAdmission({family, scope, model = null, referenceEff
   if (typeof ledgerStats !== 'function') return {route: 'reference', reason: 'ladder_no_ledger_evidence'};
   for (const effort of cheaper) {
     let stats = null;
-    try { stats = ledgerStats(family, model, effort); } catch { stats = null; }
+    try { stats = ledgerStats(family, model, effort, reference); } catch { stats = null; }
     if (plain(stats) && int(stats.verified_passes, 0, Number.MAX_SAFE_INTEGER) &&
         int(stats.verifier_failures, 0, Number.MAX_SAFE_INTEGER) &&
+        stats.reference_effort === reference && stats.reference_model === model &&
         stats.verified_passes >= LADDER_MIN_VERIFIED_PASSES &&
         stats.verifier_failures <= LADDER_MAX_VERIFIER_FAILURES)
       return {route: 'ladder', cheap_effort: effort, reference_effort: reference, reason: 'ladder_parity_evidence'};
@@ -1724,8 +1750,14 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
     } finally { if (fd !== null) closeSync(fd); }
     if (indexError) throw indexError;
   };
-  const stats = (family, model, effort) => {
-    const none = {verified_passes: 0, verifier_failures: 0};
+  const stats = (family, model, effort, referenceEffort) => {
+    // Three-argument reads retain the historical diagnostic aggregate only.
+    // The admission gate always supplies an exact reference and rejects an
+    // unbound summary. No old max passes silently certify an ultra ceiling.
+    const binding = EFFORTS.has(referenceEffort) ? {reference_effort: referenceEffort, reference_model: model} : {};
+    const none = {verified_passes: 0, verifier_failures: 0, ...binding};
+    const bound = referenceEffort !== undefined;
+    if (bound && !EFFORTS.has(referenceEffort)) return none;
     try {
       try { privateDirectory(false); } catch (error) { if (error.code === 'ENOENT') return none; throw error; }
       const failures = readIndex();
@@ -1740,12 +1772,26 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
           const record = JSON.parse(list[position]);
           if (!plain(record) || record.schema !== 1) return none;
           if (record.family !== family || record.model !== model || record.effort !== effort) continue;
-          if (record.verifier_outcome === 'pass' && record.execution_verified === true) passes++;
-          else if (LEDGER_FAILURE_OUTCOMES.has(record.verifier_outcome)) recorded++;
+          if (LEDGER_FAILURE_OUTCOMES.has(record.verifier_outcome)) recorded++;
+          if (record.verifier_outcome !== 'pass' || record.execution_verified !== true) continue;
+          if (bound) {
+            if (record.reference_effort !== referenceEffort || (plain(record.ladder) &&
+                Object.hasOwn(record.ladder, 'reference_effort') && record.ladder.reference_effort !== referenceEffort)) continue;
+            const models = [];
+            if (Object.hasOwn(record, 'reference_model')) models.push(record.reference_model);
+            if (plain(record.ladder) && Object.hasOwn(record.ladder, 'reference_model')) models.push(record.ladder.reference_model);
+            // Narrow compatibility bridge: legacy route_kind=ladder was
+            // contractually SAME MODEL, so its model supplies that relation.
+            // Generic/reference/tier records without a model binding do not.
+            // reference_effort is never inferred from the execution effort.
+            if (models.length === 0 && record.route_kind === 'ladder') models.push(record.model);
+            if (models.length === 0 || models.some(value => value !== model)) continue;
+          }
+          passes++;
         }
       }
       return {verified_passes: passes,
-        verifier_failures: Math.max(recorded, failures.failures[failureKey(family, model, effort)] ?? 0)};
+        verifier_failures: Math.max(recorded, failures.failures[failureKey(family, model, effort)] ?? 0), ...binding};
     } catch { return none; }
   };
   // Parsed cost-gate records per generation, reused while the file's
@@ -1810,8 +1856,8 @@ function validExclusions(exclusions) {
     new Set(exclusions.map(item => `${item.provider}\0${item.reason}`)).size === exclusions.length;
 }
 /** The owner's explicit routing constraint the native builder already
- * applied to the rows (optional, absent without one): it makes a route
- * explicit and is the only way above-max efforts become a reference. */
+ * applied to the rows (optional, absent without one): its exact effort
+ * overrides the automatic reference, never silently substitutes another. */
 function validRoutingIntent(intent) {
   return keys(intent, ['effort', 'model_family']) &&
     (intent.effort === null || INTENT_EFFORTS.has(intent.effort)) &&
@@ -1845,9 +1891,35 @@ function validQuotaScores(scores, candidates) {
   return entries.length <= 256 && entries.every(([model, score]) => boundedText(model, 256) && models.has(model) &&
     int(score, 0, 1_000_000_000));
 }
+/** Optional native inventory evidence: provider -> exact offered model ->
+ * highest known supported effort, BEFORE signed-profile/availability filters.
+ * It may explain a missing executable tuple but never creates one. Require
+ * every offered native model, reject orphan keys and ceilings below an
+ * admitted row. Local deterministic/model rows have no native provider map. */
+function validNativeReferenceEfforts(ceilings, candidates) {
+  if (!plain(ceilings)) return false;
+  const providers = Object.entries(ceilings);
+  if (providers.length > 2 || providers.some(([provider, models]) =>
+    !EXCLUSION_PROVIDERS.has(provider) || !plain(models) || Object.keys(models).length === 0)) return false;
+  const offered = new Map();
+  for (const candidate of candidates) {
+    const provider = providerOfPool(candidate?.quota_pool);
+    if (!EXCLUSION_PROVIDERS.has(provider)) continue;
+    offered.set(`${provider}\0${candidate.model}`, true);
+    if (!Object.hasOwn(ceilings, provider) || !Object.hasOwn(ceilings[provider], candidate.model) ||
+        !EFFORTS.has(ceilings[provider][candidate.model]) ||
+        EFFORT_ORDER.indexOf(ceilings[provider][candidate.model]) < EFFORT_ORDER.indexOf(candidate.effort)) return false;
+  }
+  let count = 0;
+  for (const [provider, models] of providers) for (const [model, effort] of Object.entries(models)) {
+    if (++count > 256 || !boundedText(model, 256) || !offered.has(`${provider}\0${model}`) || !EFFORTS.has(effort)) return false;
+  }
+  return true;
+}
 function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
-  const optional = ['exclusions', 'routing_intent', 'model_tiers', 'explicit_route_intents', 'quota_scores'];
+  const optional = ['exclusions', 'routing_intent', 'model_tiers', 'explicit_route_intents', 'quota_scores',
+    'native_reference_efforts'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
     Object.keys(catalog).every(key => required.includes(key) || optional.includes(key)) &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
@@ -1858,6 +1930,8 @@ function validateCatalog(catalog, task) {
     (catalog.model_tiers === undefined || validModelTiers(catalog.model_tiers, catalog.candidates)) &&
     (catalog.explicit_route_intents === undefined || validExplicitRouteIntents(catalog.explicit_route_intents, task)) &&
     (catalog.quota_scores === undefined || validQuotaScores(catalog.quota_scores, catalog.candidates)) &&
+    (catalog.native_reference_efforts === undefined ||
+      validNativeReferenceEfforts(catalog.native_reference_efforts, catalog.candidates)) &&
     (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
   // An empty catalog is an explicit, explained hold rather than an opaque
@@ -4231,10 +4305,10 @@ class RCCRuntime {
   /** Ladder parity evidence: none while a backlogged record (a parity
    * failure, or cost-gate evidence) waits to be written, so a lost failure
    * can never readmit a cheaper route. */
-  _ladderStats(family, model, effort) {
+  _ladderStats(family, model, effort, referenceEffort) {
     if (this.ledgerBacklog.size) this._flushLedgerBacklog();
     if (this.ledgerBacklog.size) return {verified_passes: 0, verifier_failures: 0};
-    return this.ledgerStats(family, model, effort);
+    return this.ledgerStats(family, model, effort, referenceEffort);
   }
   /** Cost-gate evidence (tierCostEvidence) from the routing ledger. Throws
    * (the gate then reads cost_gate_unavailable and the node keeps its tier

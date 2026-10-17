@@ -111,6 +111,223 @@ function resolve(request, catalog, routeClass, options = {}) {
   return resolveRoutePlan(plan(request, [graded('n', routeClass, options)]), request, catalog, Date.now());
 }
 
+// Source-derived regression: the installed inventory admits Astra/ultra, but
+// the old JS referenceEffort capped it at max even after native admission.
+// The quality reference is the admitted model's highest supported row; this
+// is not permission to send ordinary cheap-tier work straight to that row.
+const HIGHEST_CODEX = CODEX.map(([model, efforts]) => [model,
+  model === 'gpt-6-astra' ? [...efforts, 'ultra'] : efforts]);
+const NATIVE_EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
+function nativeCeilings(catalog, overrides = {}) {
+  const ceilings = {};
+  for (const candidate of catalog.candidates) {
+    const provider = {openai_codex: 'codex', anthropic_shared: 'claude'}[candidate.quota_pool];
+    if (!provider) continue;
+    ceilings[provider] ??= {};
+    const previous = ceilings[provider][candidate.model];
+    if (previous === undefined || NATIVE_EFFORT_ORDER.indexOf(candidate.effort) > NATIVE_EFFORT_ORDER.indexOf(previous))
+      ceilings[provider][candidate.model] = candidate.effort;
+  }
+  for (const [provider, models] of Object.entries(overrides)) Object.assign(ceilings[provider] ??= {}, models);
+  return {...catalog, native_reference_efforts: ceilings};
+}
+
+test('highest admitted reference does not raise cheap first dispatch: deep and guards use ultra, cheap tiers remain low/medium', () => {
+  const request = task('/tmp', 'Answer one bounded question');
+  const catalog = tierCatalog(request, {codex: HIGHEST_CODEX, claude: []});
+  const trivial = resolve(request, catalog, 'trivial');
+  assert.equal(route(trivial.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(trivial.routes.n.ladder.reference_candidate_id, key('gpt-6-astra', 'ultra', 'read_only', 'codex'));
+  assert.equal(trivial.routes.n.reference_effort, 'ultra');
+  const standard = resolve(request, catalog, 'standard');
+  assert.equal(route(standard.decisions.n), 'openai_codex/gpt-6.1-sol/medium');
+  assert.equal(standard.routes.n.ladder.reference_effort, 'ultra');
+  const deep = resolve(request, catalog, 'deep');
+  assert.equal(route(deep.decisions.n), 'openai_codex/gpt-6-astra/ultra');
+  assert.deepEqual(deep.routes.n, {kind: 'reference', reference_effort: 'ultra', ladder: null});
+  // Legacy persisted catalogs use the same ceiling without inventing tiers.
+  const legacy = {...catalog}; delete legacy.model_tiers;
+  assert.equal(route(resolve(request, legacy, 'deep').decisions.n), 'openai_codex/gpt-6-astra/ultra');
+});
+
+test('the highest reference preserves exact effort constraints and never invents an unsupported row', () => {
+  const request = task('/tmp', 'Use exactly the requested reasoning setting');
+  const max = tierCatalog(request, {codex: HIGHEST_CODEX, claude: [],
+    intent: {effort: 'max', model_family: 'astra'}});
+  assert.equal(route(resolve(request, max, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
+  const unsupported = tierCatalog(request, {claude: [], codex: [['gpt-6-astra', ['low', 'ultra']]],
+    intent: {effort: 'max', model_family: 'astra'}});
+  assert.throws(() => resolve(request, unsupported, 'deep'), /no_dispatchable_candidate/);
+  const legacy = {...unsupported}; delete legacy.model_tiers;
+  assert.throws(() => resolve(request, legacy, 'deep'), /no_dispatchable_candidate/,
+    'an older catalog must not substitute ultra or low for explicit max');
+  const ultraOnly = tierCatalog(request, {claude: [], codex: [['gpt-6-astra', ['ultra']]]});
+  assert.equal(resolve(request, ultraOnly, 'deep').decisions.n.effort, 'ultra');
+});
+
+test('an admitted but unavailable highest effort holds instead of quietly using max', async t => {
+  const dir = await fixture(t);
+  const options = {codex: HIGHEST_CODEX, claude: [], change: (model, effort) =>
+    model === 'gpt-6-astra' && effort === 'ultra' ? {availability: 'unavailable'} : {}};
+  const request = task(dir, 'Use the actual reference if needed');
+  const catalog = tierCatalog(request, options);
+  assert.throws(() => resolve(request, catalog, 'deep'), /no_dispatchable_candidate/);
+  const trivial = resolve(request, catalog, 'trivial');
+  assert.equal(trivial.decisions.n.effort, 'low');
+  assert.equal(trivial.routes.n.ladder.reference_effort, 'ultra');
+  const failed = await run(t, dir, 'highest unavailable', {catalog: options,
+    execute: ticket => execution(ticket, {output: ''})});
+  assert.deepEqual(failed.tuples, ['gpt-6-luna/low']);
+  assert.equal(failed.done.state, 'held');
+  assert.equal(failed.done.error, 'no_dispatchable_candidate:read_only:deep');
+  assert.equal(failed.done.result, null);
+});
+
+test('native reference_unavailable blocks a missing highest row without discarding cheap tiers or another provider', async t => {
+  const dir = await fixture(t);
+  const exclude = catalog => ({...catalog,
+    exclusions: [{provider: 'codex', reason: 'reference_unavailable', count: 1}]});
+  const request = task(dir, 'Use admitted scope and the real reference ceiling');
+  // Native knows ultra is supported but its signed tuple is missing. The
+  // catalog truthfully retains max/low rows plus this exclusion, not a
+  // caller-fabricated ultra candidate or an invented model-quality claim.
+  const unavailable = exclude(tierCatalog(request, {claude: []}));
+  const cheap = resolve(request, unavailable, 'trivial');
+  assert.equal(route(cheap.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(cheap.routes.n.ladder.reference_candidate_id, null);
+  assert.equal(cheap.routes.n.reference_effort, null);
+  assert.throws(() => resolve(request, unavailable, 'deep'), /no_dispatchable_candidate/);
+  const legacy = {...unavailable}; delete legacy.model_tiers;
+  assert.throws(() => resolve(request, legacy, 'deep'), /no_dispatchable_candidate/);
+  const anotherPool = resolve(request, exclude(tierCatalog(request)), 'deep');
+  assert.equal(route(anotherPool.decisions.n), 'anthropic_shared/claude-fable-5-1/max');
+  const explicitMax = {...unavailable, routing_intent: {effort: 'max', model_family: 'astra'}};
+  assert.equal(route(resolve(request, explicitMax, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max',
+    'an admitted exact owner tuple is not replaced by the automatic ceiling');
+  const failed = await run(t, dir, 'missing highest guard', {
+    refresh: value => exclude(tierCatalog(value, {claude: []})), execute: ticket => execution(ticket, {output: ''})});
+  assert.deepEqual(failed.tuples, ['gpt-6-luna/low']);
+  assert.equal(failed.done.state, 'held');
+  assert.equal(failed.done.error, 'ladder_reference_unavailable');
+  assert.equal(failed.done.result, null);
+});
+
+test('a failed cheap candidate reaches ultra once and a failed ultra verifier is held without fallback', async t => {
+  const dir = await fixture(t);
+  const catalog = {codex: HIGHEST_CODEX, claude: []};
+  const escalated = await run(t, dir, 'highest escalation', {catalog,
+    execute: (ticket, count) => execution(ticket, count === 1 ? {output: ''} : {})});
+  assert.deepEqual(escalated.tuples, ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
+  assert.equal(escalated.done.state, 'completed');
+  assert.equal(escalated.done.result.output, 'answer from gpt-6-astra/ultra');
+  const rejected = await run(t, dir, 'highest verifier rejected', {catalog,
+    verifierRegistry: new Map([['trivial:read_only:agent', async () => ({passed: false, reason: 'fixture rejected'})]]),
+    execute: ticket => execution(ticket)});
+  assert.deepEqual(rejected.tuples, ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
+  assert.equal(rejected.done.state, 'returned_unverified');
+  assert.equal(rejected.done.error, 'node_verifier_failed');
+  assert.equal(rejected.done.children[0].state, 'held');
+  assert.equal(rejected.done.result.task_verified, false);
+  assert.equal(rejected.done.result.parity_state, 'unverified');
+});
+
+test('native model ceilings are model-specific: a preferred frontier never borrows another frontier effort', () => {
+  const request = task('/tmp', 'Keep the reference model and its own native ceiling together');
+  // Synthetic same-tier inventory: the preferred model really tops out at
+  // max; a different, later frontier supports ultra. Effort magnitude is not
+  // a license to replace the preferred model.
+  const catalog = nativeCeilings(tierCatalog(request, {claude: [],
+    codex: [['gpt-6-astra', ['low', 'max']], ['gpt-6-sol', ['low', 'ultra']], ['gpt-6-luna', ['low']]],
+    tiers: {...TIERS, 'gpt-6-sol': 'frontier'}}));
+  assert.equal(route(resolve(request, catalog, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
+  const cheap = resolve(request, catalog, 'trivial');
+  assert.equal(route(cheap.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(cheap.routes.n.ladder.reference_model, 'gpt-6-astra');
+  assert.equal(cheap.routes.n.ladder.reference_effort, 'max');
+});
+
+test('native provider ceiling metadata never intercepts a deterministic local exact row', () => {
+  const request = task('/tmp', 'Use the exact local executor for one bounded node');
+  const exact = {...row('local-exact', 'none', 'local-deterministic', 'none', {surface: 'local'}),
+    transport: 'local', tools: [], quota_remaining_fraction: null, estimated_cost_units: 0};
+  for (const candidates of [[exact], [exact, ...tierCatalog(request).candidates]]) {
+    const models = new Set(candidates.map(candidate => candidate.model));
+    const catalog = nativeCeilings({...tierCatalog(request), candidates,
+      model_tiers: Object.fromEntries(Object.entries(TIERS).filter(([model]) => models.has(model)))});
+    const resolved = resolveRoutePlan(plan(request, [{...graded('n', 'trivial'),
+      kind: 'deterministic', instruction: '2+3'}]), request, catalog, Date.now());
+    assert.equal(resolved.decisions.n.resolved_candidate_id, 'local-exact');
+    assert.equal(resolved.decisions.n.effort, 'none');
+  }
+});
+
+test('a missing native ceiling holds only that model reference, not another explicit family or exact effort', async t => {
+  const dir = await fixture(t);
+  const options = {claude: [], codex: [['gpt-6-astra', ['low', 'max']], ['gpt-6-sol', ['low', 'max']],
+    ['gpt-6-luna', ['low']]], tiers: {...TIERS, 'gpt-6-sol': 'frontier'}};
+  const decorate = catalog => ({...nativeCeilings(catalog, {codex: {'gpt-6-astra': 'ultra'}}),
+    exclusions: [{provider: 'codex', reason: 'reference_unavailable', count: 1}]});
+  const request = task(dir, 'A native supported setting is not a signed executable row');
+  const catalog = decorate(tierCatalog(request, options));
+  assert.throws(() => resolve(request, catalog, 'deep'), /no_dispatchable_candidate/);
+  const cheap = resolve(request, catalog, 'trivial');
+  assert.equal(route(cheap.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(cheap.routes.n.ladder.reference_candidate_id, null);
+  assert.equal(catalog.candidates.some(candidate => candidate.effort === 'ultra'), false);
+  for (const effort of [null, 'low', 'max']) {
+    const family = {...catalog, routing_intent: {model_family: 'sol', effort}};
+    assert.equal(route(resolve(request, family, 'deep').decisions.n),
+      `openai_codex/gpt-6-sol/${effort ?? 'max'}`, 'another family does not inherit Astra\'s missing ultra');
+  }
+  for (const effort of ['low', 'max'])
+    assert.equal(resolve(request, {...catalog, routing_intent: {model_family: 'astra', effort}}, 'deep').decisions.n.effort,
+      effort, 'an exact signed owner effort overrides the automatic native ceiling');
+  const failed = await run(t, dir, 'model ceiling missing guard', {
+    refresh: value => decorate(tierCatalog(value, options)), execute: ticket => execution(ticket, {output: ''})});
+  assert.deepEqual(failed.tuples, ['gpt-6-luna/low']);
+  assert.equal(failed.done.state, 'held');
+  assert.equal(failed.done.error, 'ladder_reference_unavailable');
+});
+
+test('a legacy catalog with native metadata still honours the Auto provider reference boundary', () => {
+  const request = task('/tmp', 'Do not turn a remaining workhorse into the missing frontier');
+  const catalog = {...nativeCeilings(tierCatalog(request, {claude: [], codex: [['gpt-6.1-sol', ['low', 'max']]]})),
+    exclusions: [{provider: 'codex', reason: 'reference_unavailable', count: 1}]};
+  delete catalog.model_tiers;
+  assert.throws(() => resolve(request, catalog, 'deep'), /no_dispatchable_candidate/,
+    'the optional metadata map cannot erase an ordinary Auto reference_unavailable boundary');
+  const family = {...catalog, routing_intent: {model_family: 'sol', effort: null}};
+  assert.equal(route(resolve(request, family, 'deep').decisions.n), 'openai_codex/gpt-6.1-sol/max');
+  for (const effort of ['low', 'max']) {
+    assert.equal(resolve(request, {...catalog, routing_intent: {model_family: null, effort}}, 'deep').decisions.n.effort,
+      effort, 'exact owner effort still wins');
+  }
+});
+
+test('same-pool explicit fan-out keeps each family native ceiling and its own max or low word', () => {
+  const routes = [{surface: 'codex', instruction: 'Analyze A'}, {surface: 'codex', instruction: 'Analyze B'}];
+  const request = explicitTask('/tmp', routes);
+  const options = {claude: [], codex: [['gpt-6-astra', ['low', 'max']], ['gpt-6-sol', ['low', 'max']]],
+    tiers: {...TIERS, 'gpt-6-sol': 'frontier'}};
+  const catalog = nativeCeilings(tierCatalog(request, options), {codex: {'gpt-6-astra': 'ultra'}});
+  const bind = (value, intents, indices = [0, 1]) => Object.values(resolveRoutePlan(plan(request,
+    indices.map(index => routeNode(index, 'deep', routes))), request,
+  {...value, explicit_route_intents: intents}, Date.now()).decisions).map(d => `${d.model}/${d.effort}`);
+  const families = [{model_family: 'astra', effort: null}, {model_family: 'sol', effort: null}];
+  assert.throws(() => bind(catalog, families), /no_dispatchable_candidate/,
+    'Astra has no signed native-highest row; Sol/max is not its substitute');
+  assert.deepEqual(bind(catalog, families, [1]), ['gpt-6-sol/max']);
+  assert.deepEqual(bind(catalog, [{model_family: 'astra', effort: 'max'}, families[1]]),
+    ['gpt-6-astra/max', 'gpt-6-sol/max']);
+  assert.deepEqual(bind(catalog, [{model_family: 'astra', effort: 'low'}, {model_family: 'sol', effort: 'low'}]),
+    ['gpt-6-astra/low', 'gpt-6-sol/low']);
+  const absentSolMax = {...catalog, candidates: catalog.candidates.filter(candidate =>
+    !(candidate.model === 'gpt-6-sol' && candidate.effort === 'max'))};
+  assert.throws(() => bind(absentSolMax, [{model_family: 'astra', effort: 'max'}, families[1]]), /no_dispatchable_candidate/);
+  assert.deepEqual(bind(absentSolMax, [{model_family: 'astra', effort: 'max'}, {model_family: 'sol', effort: 'low'}]),
+    ['gpt-6-astra/max', 'gpt-6-sol/low']);
+});
+
 // ---- Pure resolver --------------------------------------------------------
 
 test('tier lists are the owner contract: ordered (tier, effort) per class, deep is the reference only', () => {
@@ -241,7 +458,7 @@ test('an explicit effort keeps the class tier at the owner effort; an explicit f
   assert.match(deepMax.decisions.n.reason, /^resolver;route_explicit;intent_effort_max;class_deep;/);
   assert.deepEqual(deepMax.routes.n, {kind: 'explicit', reference_effort: 'max', ladder: null});
   // An explicit family: rows are only that family; the class picks the effort
-  // (the host's choice), guarded by the family at its highest effort up to max.
+  // (the host's choice), guarded by the family at its highest admitted effort.
   const opus = tierCatalog(request, {codex: [], claude: CLAUDE.filter(([model]) => ['claude-opus-5-5', 'opus'].includes(model)),
     intent: {effort: null, model_family: 'opus'}});
   const opusTrivial = decide(opus, 'trivial');
@@ -988,8 +1205,8 @@ function explicitTask(dir, routes, extras = {}) {
   request.source_fingerprint = hostContextFingerprint(request.host_context);
   return request;
 }
-// The production profiles plus the above-max efforts an explicit route test
-// keeps in its catalog (the builder withholds nothing there).
+// The production profiles plus their admitted above-max efforts; the same
+// reference rule applies to an explicit route's own surface.
 const WITH_ULTRA = CODEX.map(([model, efforts]) => [model,
   ['gpt-6-astra', 'gpt-6.1-sol'].includes(model) ? [...efforts, 'ultra'] : efforts]);
 const routeNode = (index, routeClass, routes = FANOUT, extras = {}) => ({id: `requested-${index + 1}`,
@@ -1013,12 +1230,12 @@ test('an explicit fan-out binds model and effort by grade on each named surface:
     key('claude-fable-5-1', 'max', 'read_only', 'claude-chat'));
   assert.equal(resolved.routes['requested-2'].ladder.reference_candidate_id,
     key('claude-fable-5-1', 'max', 'read_only', 'claude'));
-  assert.equal(resolved.routes['requested-1'].ladder.reference_candidate_id, key('gpt-6-astra', 'max', 'read_only', 'codex'));
-  // Deep work on a named route runs that surface's frontier at max, never ultra.
+  assert.equal(resolved.routes['requested-1'].ladder.reference_candidate_id, key('gpt-6-astra', 'ultra', 'read_only', 'codex'));
+  // Deep work on a named route runs that surface's actual highest frontier row.
   const deep = resolveRoutePlan(plan(request, [routeNode(0, 'deep'), routeNode(1, 'standard'), routeNode(2, 'trivial')]),
     request, catalog, Date.now()).decisions;
   assert.deepEqual([deep['requested-1'], deep['requested-2']].map(d => `${d.surface}:${d.model}/${d.effort}`),
-    ['codex:gpt-6-astra/max', 'claude:claude-opus-5-5/medium']);
+    ['codex:gpt-6-astra/ultra', 'claude:claude-opus-5-5/medium']);
   // A planner that names no route, a changed payload or a dropped GPT route
   // never gets a surface from the host.
   for (const [name, node] of [['unknown ordinal', {...routeNode(0, 'trivial'), id: 'requested-7'}],
@@ -1069,7 +1286,7 @@ test('a failed cheap answer on an explicit route escalates once to the reference
   assert.equal(done.state, 'completed', done.error);
   const bySurface = surface => tickets.filter(ticket => ticket.selected_config.surface === surface)
     .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`);
-  assert.deepEqual(bySurface('codex'), ['gpt-6-luna/low', 'gpt-6-astra/max']);
+  assert.deepEqual(bySurface('codex'), ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
   assert.deepEqual(bySurface('claude-chat'), ['claude-haiku-4-5-20251001/none', 'claude-fable-5-1/max']);
   assert.deepEqual(bySurface('claude'), [], 'never another surface than the one the owner named');
   assert.deepEqual(done.children.map(child => child.selected_config.surface), ['codex', 'claude-chat']);
@@ -1086,7 +1303,7 @@ test('a failed cheap answer on an explicit route escalates once to the reference
   assert.equal(heldDone.error, 'ladder_reference_unavailable');
 });
 
-test("an explicit route's own effort or model words bind that route only; ultra only when that route asked", () => {
+test("an explicit route's own effort or model words bind that route only; automatic reference uses the highest admitted row", () => {
   const request = explicitTask('/tmp', [FANOUT[0], FANOUT[1]]);
   const base = tierCatalog(request, {codex: WITH_ULTRA});
   const routes = [FANOUT[0], FANOUT[1]];
@@ -1104,13 +1321,15 @@ test("an explicit route's own effort or model words bind that route only; ultra 
   // A route word naming astra ("astra로 돌려 1+1"; a bare "astra로 1+1" parses to
   // nothing): that family, effort by grade.
   assert.deepEqual(bind([{effort: null, model_family: 'astra'}, null]), ['gpt-6-astra/low', 'claude-haiku-4-5-20251001/none']);
-  // Ultra only on the route whose own words asked for it.
+  // An exact ultra request binds that route, while the other remains cheap.
   assert.deepEqual(bind([{effort: 'ultra', model_family: 'astra'}, null], ['deep', 'trivial']),
     ['gpt-6-astra/ultra', 'claude-haiku-4-5-20251001/none']);
-  assert.deepEqual(bind([null, null], ['deep', 'deep']), ['gpt-6-astra/max', 'claude-fable-5-1/max']);
-  // Without any route word an explicit test never binds ultra, at any grade.
-  assert.ok(['trivial', 'standard', 'deep'].every(routeClass =>
-    bind([null, null], [routeClass, routeClass]).every(tuple => !tuple.endsWith('/ultra'))));
+  assert.deepEqual(bind([null, null], ['deep', 'deep']), ['gpt-6-astra/ultra', 'claude-fable-5-1/max']);
+  // Automatic cheap grades remain cheap; only the reference grade uses ultra.
+  assert.deepEqual(bind([null, null], ['standard', 'standard']),
+    ['gpt-6.1-sol/medium', 'claude-opus-5-5/medium']);
+  assert.deepEqual(bind([{effort: 'max', model_family: 'astra'}, null], ['deep', 'deep']),
+    ['gpt-6-astra/max', 'claude-fable-5-1/max']);
   // A route whose family has no row on its surface holds: never a substitute.
   assert.throws(() => bind([{effort: null, model_family: 'fable'}, null]), /no_dispatchable_candidate:read_only:trivial/);
 });
@@ -1217,6 +1436,48 @@ test('quota_scores and explicit_route_intents are strictly shaped catalog fields
       execute: () => { throw Error('must not dispatch'); }});
     assert.equal(bad.done.state, 'held', name); assert.equal(bad.done.error, 'catalog_binding_invalid', name);
   }
+});
+
+test('native_reference_efforts is optional but present maps must be bounded, known, model-scoped and cover every native row', async t => {
+  const dir = await fixture(t);
+  const cases = [
+    ['null native ceilings', () => null],
+    ['array native ceilings', () => []],
+    ['unknown native provider', good => ({...good, openai: {'gpt-6-astra': 'ultra'}})],
+    ['null native provider map', good => ({...good, codex: null})],
+    ['array native provider map', good => ({...good, codex: []})],
+    ['empty provider with no represented models', () => ({codex: {}})],
+    ['unknown model entry', good => ({...good, codex: {...good.codex, 'unsigned-model': 'ultra'}})],
+    ['missing native provider', good => ({codex: good.codex})],
+    ['missing native model', good => ({...good, codex: Object.fromEntries(Object.entries(good.codex)
+      .filter(([model]) => model !== 'gpt-6-astra'))})],
+    ['unknown future native effort', good => ({...good, codex: {...good.codex, 'gpt-6-astra': 'future-max'}})],
+    ['non-string native effort', good => ({...good, codex: {...good.codex, 'gpt-6-astra': {effort: 'ultra'}}})],
+    ['ceiling below admitted row', good => ({...good, codex: {...good.codex, 'gpt-6-astra': 'low'}})],
+    ['model placed under wrong provider', good => ({...good, claude: {...good.claude, 'gpt-6-astra': 'ultra'}})],
+    ['oversized native model map', good => ({...good, codex: Object.fromEntries(Array.from({length: 257},
+      (_, i) => ['model-' + i, 'max']))})],
+  ];
+  for (const [name, mutate] of cases) {
+    let planned = 0;
+    const request = task(dir, 'Reject malformed native inventory metadata');
+    const runtime = await createRCCRuntime({stateDir: join(dir, name.replace(/\W+/g, '-')),
+      catalog: async value => {
+        const catalog = nativeCeilings(tierCatalog(value));
+        return {...catalog, native_reference_efforts: mutate(catalog.native_reference_efforts)};
+      }, plan: async () => { planned++; return plan(request, [graded('n', 'trivial')]); },
+      execute: async () => { throw Error('must not dispatch'); }, verifyTask: taskVerdict});
+    t.after(async () => { await runtime.close(); });
+    await runtime.submit(request);
+    const done = await wait(runtime, request);
+    assert.equal(done.state, 'held', name);
+    assert.equal(done.error, 'catalog_binding_invalid', name);
+    assert.equal(planned, 0, name + ': no model/planner spend on malformed metadata');
+  }
+  const valid = await run(t, dir, 'complete native inventory', {refresh: value => nativeCeilings(tierCatalog(value,
+    {codex: HIGHEST_CODEX})), execute: ticket => execution(ticket)});
+  assert.equal(valid.done.state, 'completed', valid.done.error);
+  assert.deepEqual(valid.tuples, ['gpt-6-luna/low']);
 });
 
 // ---- Cost gate: tier or reference, decided from the routing ledger --------
@@ -1482,6 +1743,26 @@ const ledgerRecord = changes => ({schema: 1, family: 'trivial:read_only:agent', 
   escalated: false, attempt_state: 'completed', usage: {input_tokens: 100, output_tokens: 10}, ...changes});
 const REFERENCE = {model: 'gpt-6-astra', effort: 'max', route_kind: 'reference'};
 const usage = (input, output = 100) => ({input_tokens: input, output_tokens: output});
+
+test('a higher native reference never reuses max-only reference cost samples as ultra evidence', () => {
+  const request = task('/tmp', 'The reference ceiling changed');
+  const records = [
+    ledgerRecord({attempt_state: 'ladder_not_returned', usage: usage(700)}),
+    ledgerRecord({attempt_state: 'ladder_not_returned', usage: usage(710)}),
+    ledgerRecord({...REFERENCE, usage: usage(900)}),
+    ledgerRecord({...REFERENCE, usage: usage(910)}),
+  ].map(costGateRecord);
+  assert.equal(tierCostEvidence(records, GATE_QUERY).reference.cost.n, 2);
+  const queries = [];
+  const catalog = nativeCeilings(tierCatalog(request, {codex: HIGHEST_CODEX, claude: []}));
+  const resolved = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request, catalog, Date.now(),
+    {costEvidence: query => { queries.push(query); return tierCostEvidence(records, query); }});
+  assert.equal(queries[0].reference_effort, 'ultra');
+  assert.equal(tierCostEvidence(records, queries[0]).reference.cost.n, 0);
+  assert.equal(resolved.routes.n.cost_gate.reason, 'cost_gate_insufficient');
+  assert.equal(route(resolved.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(resolved.routes.n.ladder.reference_effort, 'ultra');
+});
 
 test('cost gate evidence: trials, escalations and token costs from the ledger, family first then the pool', () => {
   const records = [

@@ -165,9 +165,11 @@ func runRCCNativeCatalogBuilderFixtures() throws {
 
     // ---- Ordering and id/byte stability against the former builder ------
     let base = try B.build(input())
+    try check(base.candidates.contains { $0["model"] as? String == "gpt-6-sol" && $0["effort"] as? String == "ultra" },
+              "ordinary Auto retains signed native-supported ultra for its reference without forcing cheap tiers")
     try check(tuples(base) == [
         // Anthropic first: 0.8 remaining with 4h to reset outscores Codex's 0.6 over 48h.
-        // max is offered by default: it is the reference effort. Within a pool
+        // All signed native-supported efforts, including ultra, are retained. Within a pool
         // the strongest provider-stated tier leads (build 378): frontier fable,
         // then workhorse opus, then efficient sonnet, whatever the native order.
         "claude-chat/fable/low/read_only", "claude-chat/fable/xhigh/read_only", "claude-chat/fable/max/read_only",
@@ -182,18 +184,17 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         // (gpt-6-sol before gpt-5.6-luna), not action name, orders them.
         "codex/gpt-6-sol/low/read_only", "codex/gpt-6-sol/low/workspace_write",
         "codex/gpt-6-sol/medium/read_only", "codex/gpt-6-sol/medium/workspace_write",
+        "codex/gpt-6-sol/ultra/read_only", "codex/gpt-6-sol/ultra/workspace_write",
         "codex/gpt-5.6-luna/low/read_only", "codex/gpt-5.6-luna/low/workspace_write",
         "codex/gpt-5.6-luna/max/read_only", "codex/gpt-5.6-luna/max/workspace_write",
     ], "pool, native model preference, surface, effort, scope order: \(tuples(base))")
     try check(base.pools.map(\.pool) == ["anthropic_shared", "openai_codex"] &&
               base.pools[0].score.map { abs($0 - 0.2) < 1e-9 } == true &&
               base.pools[1].score.map { abs($0 - 0.0125) < 1e-9 } == true, "pool score = share x remaining / hours")
-    try check(reasons(base) == ["claude:model_unavailable:1", "codex:effort_requires_explicit_request:1",
-                                "codex:reference_unavailable:1"],
-              "per-provider exclusions; only ultra waits for an explicit request; a pool with no frontier model says so: \(reasons(base))")
+    try check(reasons(base) == ["claude:model_unavailable:1", "codex:reference_unavailable:1"],
+              "per-provider exclusions; ultra is admitted; a pool with no frontier model says so: \(reasons(base))")
     let legacy = legacyRows(input(), chatRefused: false)
-    let legacyComparable = try Set(legacy.filter { $0["surface"] as? String != "gpt-chat" &&
-        !["ultra", "ultracode"].contains($0["effort"] as? String ?? "") }.map(rowBytes))
+    let legacyComparable = try Set(legacy.filter { $0["surface"] as? String != "gpt-chat" }.map(rowBytes))
     try check(try Set(base.candidates.map(rowBytes)) == legacyComparable && legacyComparable.count == base.candidates.count,
               "every row keeps the former id hash tuple and exact field bytes")
     try check(legacy.contains { $0["surface"] as? String == "gpt-chat" } &&
@@ -202,7 +203,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(try tuples(B.build(input())) == tuples(base), "same inputs, same order")
     let data = try B.catalogData(base, taskID: "task-fixture", requestSHA256: C.digest(Data(writeRequest.utf8)))
     let decoded = try C.decodeCatalog(data)
-    try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 3,
+    try check(decoded.candidates.map(\.id) == base.candidates.map { $0["id"] as! String } && decoded.exclusions?.count == 2,
               "builder bytes decode through the strict contract with exclusions")
     // Build 378: the provider-stated tier of every tiered model offered; a
     // model with no tier (gpt-6-sol, gpt-5.6-luna here) is left out.
@@ -327,11 +328,11 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     var exhausted = input(); exhausted.codexQuota = quota("acct-codex", used: 100, resetIn: 2)
     let exhaustedOut = try B.build(exhausted)
     try check(!exhaustedOut.candidates.contains { $0["quota_pool"] as? String == "openai_codex" } &&
-              reasons(exhaustedOut).contains("codex:quota_zero:4"), "a zero-remaining pool is excluded and counted")
+              reasons(exhaustedOut).contains("codex:quota_zero:5"), "a zero-remaining pool is excluded and counted")
 
     // ---- Tier reference per pool (build 378) ------------------------------
-    // A pool's REFERENCE is its frontier-tier model at the highest effort up
-    // to max, never the first model of the native list (Codex lists the
+    // A pool's REFERENCE is its frontier-tier model at the highest known
+    // native-supported effort, never the first model of the native list (Codex lists the
     // gpt-6.1-sol workhorse first, Claude its opus default). Lower tiers stay
     // for trivial and standard work; a pool whose frontier model cannot run
     // now keeps them, records reference_unavailable and serves no deep work.
@@ -390,6 +391,162 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(try routes(referenceBase) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>claude-fable-5-1",
         "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
               "trivial and standard take the cheapest tier, deep the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
+
+    // ---- Native reference ceiling: cheap-first routing remains cheap ------
+    // This is a deterministic regression fixture, not a new provider claim.
+    // Native capabilities and signed profiles must BOTH authorize execution.
+    var nativeCeiling = referenceInput(preference: "codex")
+    nativeCeiling.profiles.append(.init(action: "x_astra_ultra", provider: "codex", model: "gpt-6-astra", effort: "ultra"))
+    nativeCeiling.codexModels = nativeCeiling.codexModels.map { model in
+        model.slug == "gpt-6-astra" ? .init(slug: model.slug, supportedEfforts: model.supportedEfforts + ["ultra"], priority: model.priority) : model
+    }
+    let nativeCeilingOut = try B.build(nativeCeiling)
+    try check(nativeCeilingOut.exclusions.isEmpty &&
+              nativeCeilingOut.candidates.contains { $0["model"] as? String == "gpt-6-luna" && $0["effort"] as? String == "low" } &&
+              nativeCeilingOut.candidates.contains { $0["model"] as? String == "gpt-6.1-sol" && $0["effort"] as? String == "medium" } &&
+              nativeCeilingOut.candidates.contains { $0["model"] as? String == "gpt-6-astra" && $0["effort"] as? String == "ultra" },
+              "adding a real ultra reference keeps cheap tier rows and all execution constraints")
+    try check(try routes(nativeCeilingOut) == ["openai_codex/gpt-6-luna/low/route_tier>gpt-6-astra",
+        "openai_codex/gpt-6.1-sol/medium/route_tier>gpt-6-astra", "openai_codex/gpt-6-astra/ultra/route_reference"],
+              "Auto cheap tiers stay cheap; deep/reference uses native ultra, not fixed max")
+    let nativeCeilingData = try B.catalogData(nativeCeilingOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+    try check((try C.decodeCatalog(nativeCeilingData)).candidates.contains { $0.model == "gpt-6-astra" && $0.effort == .ultra },
+              "native ultra catalog roundtrips the unchanged strict wire contract")
+
+    var missingSignedCeiling = nativeCeiling
+    missingSignedCeiling.profiles.removeAll { $0.model == "gpt-6-astra" && $0.effort == "ultra" }
+    let missingSignedOut = try B.build(missingSignedCeiling)
+    try check(missingSignedOut.candidates.contains { $0["model"] as? String == "gpt-6-astra" && $0["effort"] as? String == "max" } &&
+              reasons(missingSignedOut) == ["codex:reference_unavailable:2"] &&
+              (try route(missingSignedOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(missingSignedOut, "trivial")) == "openai_codex/gpt-6-luna/low/route_tier",
+              "native ultra without signed ultra holds deep/escalation; max is not a silent weaker reference")
+    var explicitLow = nativeCeiling
+    explicitLow.request = "use low reasoning"
+    let explicitLowOut = try B.build(explicitLow)
+    try check(explicitLowOut.intent.effort == "low" && explicitLowOut.candidates.allSatisfy { $0["effort"] as? String == "low" } &&
+              reasons(explicitLowOut).contains { $0.contains("reference_unavailable") },
+              "an explicit low effort is never upgraded to native ultra; unsupported frontier low is held")
+    explicitLow.profiles.append(.init(action: "x_astra_low", provider: "codex", model: "gpt-6-astra", effort: "low"))
+    explicitLow.codexModels = explicitLow.codexModels.map { model in
+        model.slug == "gpt-6-astra" ? .init(slug: model.slug, supportedEfforts: model.supportedEfforts + ["low"], priority: model.priority) : model
+    }
+    let supportedLow = try B.build(explicitLow)
+    try check(supportedLow.exclusions.isEmpty && supportedLow.candidates.allSatisfy { $0["effort"] as? String == "low" } &&
+              (try route(supportedLow, "deep")) == "openai_codex/gpt-6-astra/low/route_explicit",
+              "native + signed explicit low remains low even with native ultra available")
+
+    var unsupportedUltra = nativeCeiling
+    unsupportedUltra.codexModels = unsupportedUltra.codexModels.map { model in
+        .init(slug: model.slug, supportedEfforts: model.supportedEfforts.filter { $0 != "ultra" }, priority: model.priority)
+    }
+    let unsupportedAuto = try B.build(unsupportedUltra)
+    try check(!unsupportedAuto.candidates.contains { $0["effort"] as? String == "ultra" } &&
+              reasons(unsupportedAuto) == ["codex:model_unavailable:1"] &&
+              (try route(unsupportedAuto, "deep")) == "openai_codex/gpt-6-astra/max/route_reference",
+              "a signed but native-unsupported ultra is not invented; the actual supported ceiling is max")
+    unsupportedUltra.request = "use ultra reasoning"
+    let unsupportedExact = try B.build(unsupportedUltra)
+    try check(unsupportedExact.candidates.isEmpty && reasons(unsupportedExact).contains("codex:model_unavailable:1") &&
+              reasons(unsupportedExact).contains { $0.contains("explicit_constraint_unavailable") },
+              "an explicit unavailable ultra holds instead of silently executing max")
+    var unknownEffort = nativeCeiling
+    unknownEffort.profiles.append(.init(action: "x_astra_future", provider: "codex", model: "gpt-6-astra", effort: "future"))
+    unknownEffort.codexModels = unknownEffort.codexModels.map { model in
+        .init(slug: model.slug, supportedEfforts: model.supportedEfforts + ["future"], priority: model.priority)
+    }
+    let unknownOut = try B.build(unknownEffort)
+    try check(!unknownOut.candidates.contains { $0["effort"] as? String == "future" } &&
+              reasons(unknownOut) == ["codex:model_unavailable:1"] &&
+              (try C.decodeCatalog(B.catalogData(unknownOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))))
+                .candidates.allSatisfy { $0.effort.rawValue != "future" } &&
+              (try route(unknownOut, "deep")) == "openai_codex/gpt-6-astra/ultra/route_reference",
+              "unknown native/signed effort names are held, never ranked or contract-poisoning")
+    var ultraExhausted = nativeCeiling
+    ultraExhausted.codexQuotaExhaustedModels = ["gpt-6-astra"]
+    let ultraExhaustedOut = try B.build(ultraExhausted)
+    try check(reasons(ultraExhaustedOut) == ["codex:quota_zero:3", "codex:reference_unavailable:3"] &&
+              (try route(ultraExhaustedOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(ultraExhaustedOut, "standard")) == "openai_codex/gpt-6.1-sol/medium/route_tier",
+              "quota-exhausted native maximum has no weaker reference substitute; cheap standard remains")
+
+    // Native ceiling metadata is exact, optional and non-authoritative for
+    // permissions: it can hold a missing tuple, never manufacture that tuple.
+    let ceilingCatalog = try C.decodeCatalog(nativeCeilingData)
+    try check(ceilingCatalog.nativeReferenceEfforts == nativeCeilingOut.nativeReferenceEfforts &&
+              ceilingCatalog.nativeReferenceEfforts?["codex"]?["gpt-6-astra"] == "ultra" &&
+              (try C.decodeCatalog(C.encode(ceilingCatalog))) == ceilingCatalog,
+              "fresh native ceiling metadata roundtrips without changing candidate identity")
+    var legacyCeiling = ceilingCatalog; legacyCeiling.nativeReferenceEfforts = nil
+    try check(!String(decoding: try C.encode(legacyCeiling), as: UTF8.self).contains("native_reference_efforts") &&
+              (try C.decodeCatalog(C.encode(legacyCeiling))).nativeReferenceEfforts == nil,
+              "older catalogs without native evidence remain decodable, not retrospectively attested")
+    func ceilingMutation(_ field: Any) throws -> Data {
+        var value = try JSONSerialization.jsonObject(with: nativeCeilingData) as! [String: Any]
+        value["native_reference_efforts"] = field
+        return try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+    }
+    for (name, field): (String, Any) in [
+        ("null", NSNull()), ("array", []), ("unknown provider", ["local": ["gpt-6-astra": "ultra"]]),
+        ("non-object provider", ["codex": []]), ("unknown model", ["codex": ["not-offered": "ultra"]]),
+        ("unknown effort", ["codex": ["gpt-6-astra": "future", "gpt-6.1-sol": "max", "gpt-6-luna": "max", "gpt-6-sol": "max"]]),
+        ("numeric effort", ["codex": ["gpt-6-astra": 9]]),
+        ("missing coverage", ["codex": ["gpt-6-astra": "ultra"]]),
+        ("forged lower ceiling", ["codex": ["gpt-6-astra": "max", "gpt-6.1-sol": "max", "gpt-6-luna": "max", "gpt-6-sol": "max"]]),
+        ("orphan provider", ["codex": nativeCeilingOut.nativeReferenceEfforts["codex"]!, "claude": [:]])
+    ] {
+        do { _ = try C.decodeCatalog(ceilingMutation(field)); try check(false, "invalid native ceiling accepted: \(name)") }
+        catch { checks += 1 }
+    }
+    var oversizedNative: [String: String] = [:]
+    for index in 0...256 { oversizedNative["model-\(index)"] = "max" }
+    do { _ = try C.decodeCatalog(ceilingMutation(["codex": oversizedNative])); try check(false, "oversize native map accepted") }
+    catch { checks += 1 }
+    var missingFamilyCeiling = missingSignedCeiling
+    missingFamilyCeiling.request = "astra로 돌려"
+    let missingFamilyOut = try B.build(missingFamilyCeiling)
+    try check(missingFamilyOut.intent.modelFamily == "astra" && missingFamilyOut.exclusions.isEmpty &&
+              missingFamilyOut.nativeReferenceEfforts["codex"]?["gpt-6-astra"] == "ultra" &&
+              (try route(missingFamilyOut, "deep")) == "error:no_dispatchable_candidate:read_only:deep",
+              "naming a family without an effort cannot silently lower its native ultra reference to signed max")
+
+    var aliasCeiling = referenceInput("fable로 돌려", preference: "claude")
+    aliasCeiling.claudeModels = [.init(model: "fable", supportedEfforts: ["low", "max"], nativeRank: 0),
+        .init(model: "claude-fable-5-1", supportedEfforts: ["low", "max", "ultra"], nativeRank: 0)]
+    aliasCeiling.profiles = [.init(action: "a_alias_max", provider: "claude", model: "fable", effort: "max"),
+        .init(action: "b_full_low", provider: "claude", model: "claude-fable-5-1", effort: "low"),
+        .init(action: "b_full_max", provider: "claude", model: "claude-fable-5-1", effort: "max")]
+    let aliasMissingOut = try B.build(aliasCeiling)
+    try check(aliasMissingOut.nativeReferenceEfforts == ["claude": ["fable": "ultra", "claude-fable-5-1": "ultra"]] &&
+              !aliasMissingOut.candidates.contains { $0["effort"] as? String == "ultra" } &&
+              (try route(aliasMissingOut, "deep")) == "error:no_dispatchable_candidate:read_only:deep",
+              "observed aliases share native ceiling; alias max never hides unsigned full-ID ultra")
+    aliasCeiling.profiles.append(.init(action: "b_full_ultra", provider: "claude", model: "claude-fable-5-1", effort: "ultra"))
+    let aliasAvailableOut = try B.build(aliasCeiling)
+    try check((try route(aliasAvailableOut, "deep")) == "anthropic_shared/claude-fable-5-1/ultra/route_explicit" &&
+              !aliasAvailableOut.candidates.contains { $0["model"] as? String == "fable" && $0["effort"] as? String == "ultra" },
+              "a real full-ID ultra executes; metadata does not fabricate alias ultra capability")
+
+    var mixedRoutes = aliasCeiling
+    mixedRoutes.request = "Route two tasks"
+    mixedRoutes.explicitRouteSurfaces = ["claude", "claude"]
+    mixedRoutes.explicitRouteIntents = [.init(modelFamily: "fable"), .init(effort: "max", modelFamily: "sonnet")]
+    mixedRoutes.profiles.removeAll { $0.effort == "ultra" }
+    mixedRoutes.profiles.append(.init(action: "s_sonnet_max", provider: "claude", model: "sonnet", effort: "max"))
+    mixedRoutes.claudeModels.append(.init(model: "sonnet", supportedEfforts: ["low", "max"], nativeRank: 1))
+    let mixedOut = try B.build(mixedRoutes)
+    let mixedData = try B.catalogData(mixedOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+    try check(mixedOut.exclusions.isEmpty &&
+              (try javascriptRoute(mixedData, routeClass: "deep", now: now, explicitRoutes: ["claude", "claude"], routeIndex: 0)) ==
+                "error:no_dispatchable_candidate:read_only:deep" &&
+              (try javascriptRoute(mixedData, routeClass: "deep", now: now, explicitRoutes: ["claude", "claude"], routeIndex: 1)) ==
+                "anthropic_shared/sonnet/max/route_explicit",
+              "mixed same-pool fan-out: missing family ceiling holds only that route; exact other-family max runs")
+    mixedRoutes.explicitRouteIntents = [.init(effort: "max", modelFamily: "fable"), .init(effort: "max", modelFamily: "sonnet")]
+    let exactMixedData = try B.catalogData(B.build(mixedRoutes), taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
+    try check((try javascriptRoute(exactMixedData, routeClass: "deep", now: now, explicitRoutes: ["claude", "claude"], routeIndex: 0)) ==
+                "anthropic_shared/claude-fable-5-1/max/route_explicit",
+              "an explicit lower max request remains exact even when native ceiling is ultra")
 
     // ---- Production-shaped Claude pool (2026-10-15) -----------------------
     // The 85-profile production set's Claude rows: build 383 added medium and high
@@ -549,11 +706,12 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let sonnetOut = try B.build(sonnetFamily)
     try check(B.intent(sonnetFamily) == RoutingIntent(modelFamily: "sonnet") && sonnetOut.exclusions.isEmpty &&
               tuples(sonnetOut) == ["claude/sonnet/medium/read_only", "claude/claude-sonnet-5-5/low/read_only"] &&
-              // The effort is the host's choice below the family's reference
-              // (sonnet at its highest offered effort): guarded, not explicit.
-              (try routes(sonnetOut)) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>sonnet",
-                "anthropic_shared/sonnet/medium/route_explicit", "anthropic_shared/sonnet/medium/route_explicit"],
-              "a named family runs that family at the class's effort: \(tuples(sonnetOut)) \((try? routes(sonnetOut)) ?? [])")
+              // This native Sonnet row supports max, but its signed profiles
+              // offer only low/medium. Cheap work stays available; neither
+              // medium nor an alias can stand in as its reference.
+              (try routes(sonnetOut)) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier",
+                "anthropic_shared/sonnet/medium/route_tier", "error:no_dispatchable_candidate:read_only:deep"],
+              "a named family keeps cheap tiers but holds its missing native reference ceiling: \(tuples(sonnetOut)) \((try? routes(sonnetOut)) ?? [])")
     // An explicit route test: each route's OWN words travel per route,
     // aligned with the original list (build 378 review); none means absent.
     var perRoute = referenceInput("1+1 Codex한테. 최대 리즈닝으로 3+3 Claude Code한테")
@@ -632,7 +790,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               reasons(zeroCodex).contains("codex:capacity_zero:5"), "a 0% pool is excluded under Auto")
     try check(B.providersToProbe(input(plan: .init(codex: 0, claude: 100))) == ["claude"], "a 0% pool is never probed")
     let namedCodex = try B.build(input(preference: "codex", plan: .init(codex: 0, claude: 100)))
-    try check(namedCodex.candidates.count == 8 && !reasons(namedCodex).contains { $0.contains("capacity_zero") },
+    try check(namedCodex.candidates.count == 10 && !reasons(namedCodex).contains { $0.contains("capacity_zero") },
               "an explicitly named provider overrides its 0% capacity")
     var shared = input(plan: .init(codex: 100, claude: 1))
     shared.codexQuota = quota("acct-codex", used: 50, resetIn: 10)
@@ -755,13 +913,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(!question.candidates.isEmpty && question.candidates.allSatisfy { $0["quota_pool"] as? String == "openai_codex" } &&
               !reasons(question).contains { $0.contains("explicit_constraint_unavailable") },
               "a model question is not a constraint: \(reasons(question))")
-    // Saying max is not needed sets no constraint: the catalog is the default
-    // one (max is the reference effort), and ultra still waits for a request.
+    // Saying max is not needed sets no constraint: all native-supported
+    // signed efforts stay available, without forcing an expensive selection.
     let notNeeded = try B.build(input("최대 리즈닝 필요 없어, 간단히 답해"))
     try check(!notNeeded.candidates.isEmpty && notNeeded.intent.isEmpty &&
               notNeeded.candidates.contains { $0["effort"] as? String == "max" } &&
-              !notNeeded.candidates.contains { ["ultra", "ultracode"].contains($0["effort"] as? String ?? "") },
-              "a negated effort is no constraint; ultra stays withheld: \(tuples(notNeeded))")
+              notNeeded.candidates.contains { $0["effort"] as? String == "ultra" },
+              "a negated effort is no constraint; native-supported ultra remains: \(tuples(notNeeded))")
     let opusMax = try B.build(input("opus max로 해줘"))
     try check(!opusMax.candidates.isEmpty && opusMax.candidates.allSatisfy { $0["model"] as? String == "claude-opus-5-5" &&
               $0["effort"] as? String == "max" }, "explicit model+effort keeps exactly that tuple: \(tuples(opusMax))")
@@ -835,14 +993,14 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(B.intent(explicitIntent).isEmpty && B.intent(input("opus max로 해줘")) == RoutingIntent(effort: "max", modelFamily: "opus"),
               "intent is read only outside explicit route tests")
 
-    // ---- ultra needs an explicit request; max is the default reference ----
-    try check(!base.candidates.contains { ["ultra", "ultracode"].contains($0["effort"] as? String ?? "") },
-              "ultra/ultracode are not offered without an explicit effort word")
+    // ---- Native-supported maximum is available without forcing every task ----
+    try check(base.candidates.contains { $0["effort"] as? String == "ultra" } &&
+              !base.candidates.contains { $0["effort"] as? String == "ultracode" },
+              "ordinary Auto offers signed native-supported ultra and never invents ultracode")
     try check(base.candidates.contains { $0["effort"] as? String == "max" && $0["quota_pool"] as? String == "openai_codex" } &&
               base.candidates.contains { $0["effort"] as? String == "max" && $0["quota_pool"] as? String == "anthropic_shared" },
               "max is offered in both pools without an explicit effort word")
-    try check(!B.explicitOnlyEfforts.contains("max") && B.explicitOnlyEfforts == ["ultra", "ultracode"],
-              "only above-max efforts are explicit-only")
+
 
     // ---- Empty with exclusions; unexplained empty is malformed ------------
     var signedOut = input(plan: .init(codex: 0, claude: 100)); signedOut.auth["claude"] = .signedOut
@@ -851,7 +1009,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               "signed-out Claude plus a 0% Codex is an explained empty catalog: \(reasons(blocked))")
     var nonSubscription = input(); nonSubscription.auth["codex"] = .nonSubscription; nonSubscription.auth["claude"] = nil
     let nonSub = try B.build(nonSubscription)
-    try check(reasons(nonSub).contains("codex:non_subscription:4") && reasons(nonSub).contains("claude:signed_out:7"),
+    try check(reasons(nonSub).contains("codex:non_subscription:5") && reasons(nonSub).contains("claude:signed_out:7"),
               "API-key/unknown billing and unobserved sign-in are distinct reasons: \(reasons(nonSub))")
     var hidden = input(preference: "codex"); hidden.showCodex = false
     try check(reasons(try B.build(hidden)) == ["codex:codex_hidden:5"], "hidden Codex is a recorded reason")
@@ -1050,26 +1208,29 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
 /// "pool/model/effort/route_kind", then ">model" of its REVAS escalation
 /// reference when it has one, or "error:<code>".
 private func javascriptRoute(_ catalog: Data, routeClass: String = "standard", now: Date,
-                             scope: String = "read_only") throws -> String {
+                             scope: String = "read_only", explicitRoutes: [String]? = nil, routeIndex: Int = 0) throws -> String {
     let script = """
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
     const catalog=JSON.parse(readFileSync(0,'utf8'));
     const write=process.argv[4]==='workspace_write';
-    const task={mode:'auto',task_id:catalog.task_id,request_sha256:catalog.request_sha256,budget:{max_cost_units:null},
-      host_context:{require_read_only:!write}};
-    const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id:'n',
-      instruction:write?'Fix the login bug in Sources/App.swift':'Explain the login function',dependencies:[],kind:'agent',
-      route_class:process.argv[3],scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
+    const explicit=JSON.parse(process.argv[5]), ordinal=Number(process.argv[6]);
+    const id=explicit?'requested-'+(ordinal+1):'n';
+    const instruction=explicit?'Explain the login function':write?'Fix the login bug in Sources/App.swift':'Explain the login function';
+    const task={mode:explicit?'explicit_routing_test':'auto',task_id:catalog.task_id,request_sha256:catalog.request_sha256,budget:{max_cost_units:null},
+      host_context:{require_read_only:!write,...(explicit?{explicit_routes:explicit.map(surface=>({surface,instruction}))}:{})}};
+    const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id,
+      instruction,dependencies:[],kind:'agent',route_class:process.argv[3],scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
     try {
-      const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2])).decisions.n;
+      const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2])).decisions[id];
       process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`+
         (d.ladder?.reference_model?'>'+d.ladder.reference_model:''));
     } catch (error) { process.stdout.write('error:'+(error.code??'unknown')); }
     """
-    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), routeClass, scope],
-                                input: catalog)
+    let surfaces = explicitRoutes.map { String(decoding: try! JSONSerialization.data(withJSONObject: $0), as: UTF8.self) } ?? "null"
+    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), routeClass, scope,
+                                                   surfaces, String(routeIndex)], input: catalog)
 }
 
 /// Runs one inline ES module against the sealed runtime module path (a real
