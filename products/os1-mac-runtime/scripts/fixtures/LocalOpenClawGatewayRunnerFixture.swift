@@ -24,6 +24,11 @@ struct LocalOpenClawGatewayRunnerFixture {
         args = sys.argv[2:]
         root = os.path.dirname(os.environ['OPENCLAW_CONFIG_PATH'])
         if args[:2] == ['gateway', 'run']:
+            # Deterministic cancellation BEFORE the child-created PID marker.
+            # The runner's own Process.run receipt is already sufficient to
+            # identify the launched child; never require Python startup speed.
+            if mode == 'cancelled-owned-before-marker':
+                while True: time.sleep(.01)
             port = int(args[args.index('--port') + 1])
             s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('127.0.0.1', port)); s.listen(3); s.settimeout(.2)
@@ -90,17 +95,36 @@ struct LocalOpenClawGatewayRunnerFixture {
                 return
             }
         }
+        func recordedPID(_ name: String) -> Int32? {
+            let url = root.appendingPathComponent(name)
+            if name.hasSuffix(".json") {
+                guard let data = try? Data(contentsOf: url),
+                      let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      value["schema"] as? Int == 1, let pid = (value["pid"] as? NSNumber)?.int32Value,
+                      pid > 0 else { return nil }
+                return pid
+            }
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return nil }
+            return pid
+        }
         let result: LocalOpenClawGatewayRunner.Terminal?
         do {
-            let start = Date()
             result = try LocalOpenClawGatewayRunner.runForOfflineFixture(
                 turn: turn, installed: identity,
-                cancelled: { mode == "cancelled" && Date().timeIntervalSince(start) > 0.25 },
+                cancelled: {
+                    switch mode {
+                    case "cancelled-prelaunch": return true
+                    case "cancelled-owned-before-marker": return recordedPID("gateway-owned-pid.json") != nil
+                    case "cancelled-after-marker": return recordedPID("gateway.pid") != nil
+                    default: return false
+                    }
+                },
                 clientTimeoutSeconds: mode == "client-timeout" ? 0.35 : 45)
         } catch {
             result = nil
             let expected: LocalOpenClawGatewayRunner.Failure = mode == "never-ready" ? .gatewayNotReady :
-                mode == "client-fail" ? .clientFailed : mode == "cancelled" ? .cancelled :
+                mode == "client-fail" ? .clientFailed : mode.hasPrefix("cancelled-") ? .cancelled :
                 mode == "client-timeout" ? .clientTimeout : mode == "client-flood" ? .unboundedOutput : .missingGate
             guard let failure = error as? LocalOpenClawGatewayRunner.Failure, failure == expected else {
                 throw NSError(domain: "GatewayFixture", code: 1,
@@ -115,9 +139,37 @@ struct LocalOpenClawGatewayRunnerFixture {
                 throw NSError(domain: "GatewayFixture", code: 2)
             }
         } else if result != nil { throw NSError(domain: "GatewayFixture", code: 3) }
-        guard !fm.fileExists(atPath: root.appendingPathComponent("config.json").path),
-              let pidText = try? String(contentsOf: root.appendingPathComponent("gateway.pid"), encoding: .utf8),
-              let pid = Int32(pidText), kill(pid, 0) != 0, errno == ESRCH else {
+        if mode == "cancelled-prelaunch" {
+            guard !fm.fileExists(atPath: root.path) else {
+                throw NSError(domain: "GatewayFixture", code: 4,
+                              userInfo: [NSLocalizedDescriptionKey: "Prelaunch cancellation created run state: \(runID)"])
+            }
+            print("PASS cancelled-prelaunch has no run directory, token config or owned child")
+            return
+        }
+        // A .25-second wall timer could cancel before Python wrote gateway.pid
+        // and then misreport its absence as a surviving process. Assert the
+        // exact runner-owned PID instead; after-marker cases still require the
+        // independent child's marker to agree. Do not relax dead-PID/config gates.
+        let configPresent = fm.fileExists(atPath: root.appendingPathComponent("config.json").path)
+        let ownedPID = recordedPID("gateway-owned-pid.json")
+        let fakePID = recordedPID("gateway.pid")
+        let fakeMarkerPresent = fm.fileExists(atPath: root.appendingPathComponent("gateway.pid").path)
+        var processProbe: Int32?, processErrno: Int32?
+        if let ownedPID { processProbe = kill(ownedPID, 0); processErrno = errno }
+        let ownedProcessAbsent = processProbe.map { $0 != 0 } == true && processErrno == ESRCH
+        let markerMatchesPhase = mode == "cancelled-owned-before-marker" ? !fakeMarkerPresent :
+            (fakePID != nil && fakePID == ownedPID)
+        guard !configPresent, ownedPID != nil, ownedProcessAbsent, markerMatchesPhase else {
+            let diagnostic: [String: Any] = ["schema": 1, "mode": mode, "run_id": runID,
+                "config_present": configPresent, "gateway_owned_pid": ownedPID as Any? ?? NSNull(),
+                "gateway_fake_pid": fakePID as Any? ?? NSNull(), "fake_marker_present": fakeMarkerPresent,
+                "owned_process_absent": ownedProcessAbsent, "marker_matches_phase": markerMatchesPhase,
+                "owned_kill0": processProbe as Any? ?? NSNull(), "owned_errno": processErrno as Any? ?? NSNull(),
+                "expected_absence_errno": ESRCH]
+            if let bytes = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]) {
+                FileHandle.standardError.write(bytes + Data([10]))
+            }
             throw NSError(domain: "GatewayFixture", code: 4,
                           userInfo: [NSLocalizedDescriptionKey: "Owned Gateway or token config survived \(mode)"])
         }
@@ -130,7 +182,9 @@ struct LocalOpenClawGatewayRunnerFixture {
         try runCase("identity-mismatch", fixtureRoot: root)
         try runCase("client-fail", fixtureRoot: root)
         try runCase("no-gate", fixtureRoot: root)
-        try runCase("cancelled", fixtureRoot: root)
+        try runCase("cancelled-prelaunch", fixtureRoot: root)
+        try runCase("cancelled-owned-before-marker", fixtureRoot: root)
+        try runCase("cancelled-after-marker", fixtureRoot: root)
         try runCase("client-timeout", fixtureRoot: root)
         try runCase("client-flood", fixtureRoot: root)
         try runCase("never-ready", fixtureRoot: root)
