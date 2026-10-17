@@ -75,6 +75,7 @@ python3 "$script_dir/test-local-controller-provisioning.py"
 python3 "$script_dir/test-client-scan-policy.py"
 python3 "$script_dir/test-os1-openclaw-sidecar-wiring.py"
 python3 "$script_dir/test-os1-rcc-runtime-wiring.py"
+node --test "$script_dir/fixtures/openclaw-rcc-planner-context.test.mjs"
 python3 "$script_dir/test-local-openclaw-gateway-runner.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity

@@ -324,6 +324,39 @@ const EXPLICIT_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original ob
 const EXPLICIT_GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. The owner named which surface runs each part (explicit_routes, each with an id). Return exactly one independent node per supplied route: id = that route\'s id, instruction = that route\'s instruction byte for byte, dependencies [], kind "agent"; never drop, merge, add, alias or rewrite a route. Grade each node with route_class: trivial = a short factual answer, lookup, arithmetic, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest model and reasoning effort on its named surface expected to give the same result as that surface\'s strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. read_only nodes never write and have no owned_paths; a workspace_write node lists the paths it owns. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}.';
 const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = a short factual answer, lookup, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user: a short request can be deep and a long one trivial; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest route (exact model, reasoning effort, surface and quota pool) expected to give the same result as the strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; a workspace_write node owns the whole workspace, owned_paths ["**"], unless the response schema allows narrower paths, and the host runs writers one at a time. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
 
+/** A session authorization allowlist is host enforcement state, not material
+ * the tools-free planner can retrieve. Project only the typed handoff field;
+ * keep the original task/context (and its fingerprint) for native dispatch.
+ * Unknown envelopes, literal text, invalid bindings and future formats remain
+ * unchanged. This is not a policy summary or permission grant. */
+export function plannerContextProjection(context) {
+  if (typeof context !== 'string') return context;
+  let envelope;
+  try { envelope = JSON.parse(context); } catch { return context; }
+  const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const uuid = value => typeof value === 'string' &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
+  if (!record(envelope) || envelope.format !== 'os1-session-handoff-v3' ||
+      typeof envelope.transcript !== 'string' || !record(envelope.taskContext) ||
+      !record(envelope.memoryPaging)) return context;
+  const paging = envelope.memoryPaging, snapshot = paging.snapshot, ids = paging.allowedSessionIDs;
+  if (!uuid(paging.conversationID) || !uuid(envelope.taskContext.conversationID) ||
+      envelope.taskContext.conversationID.toLowerCase() !== paging.conversationID.toLowerCase() ||
+      !record(snapshot) || snapshot.kind !== 'snapshot' || !uuid(snapshot.id) ||
+      typeof snapshot.sha256 !== 'string' || !HASH.test(snapshot.sha256) ||
+      typeof paging.projectID !== 'string' || !Number.isSafeInteger(paging.archivedMessages) ||
+      paging.archivedMessages < 0 || !Array.isArray(ids) || ids.length > 4_096 || !ids.every(uuid) ||
+      !ids.includes(paging.conversationID) ||
+      Object.hasOwn(paging, 'allowedSessionScope')) return context;
+  const binding = {kind: 'host_authorization_binding', count: ids.length,
+    sha256: sha(Buffer.from(JSON.stringify(ids))), planner_retrieval_authority: false};
+  // Avoid increasing small inputs. Order/case/duplicates stay bound by the hash;
+  // no sorting or set normalization may silently change authorization identity.
+  if (Buffer.byteLength(JSON.stringify(binding)) >= Buffer.byteLength(JSON.stringify(ids))) return context;
+  const {allowedSessionIDs: _hostOnly, ...rest} = paging;
+  return JSON.stringify({...envelope, memoryPaging: {...rest, allowedSessionScope: binding}});
+}
+
 export function buildBoundedPlannerInput({task, catalog, feedback, policyText, now = Date.now()}) {
   const explicit = task.mode === 'explicit_routing_test';
   const gradedExplicit = explicitTierRouting(task, catalog);
@@ -339,7 +372,7 @@ export function buildBoundedPlannerInput({task, catalog, feedback, policyText, n
     request: task.request, material_refs: task.material_refs,
     explicit_routes: original.map((route, index) => effectiveExplicitRoutes(task).includes(route) ?
       {id: explicitRouteNodeID(index), surface: route.surface, instruction: route.instruction} : null).filter(Boolean),
-    context: task.host_context.context} : explicit ? {task_id: task.task_id,
+    context: plannerContextProjection(task.host_context.context)} : explicit ? {task_id: task.task_id,
     request_sha256: task.request_sha256, original_objective: task.objective,
     request: task.request, material_refs: task.material_refs,
     explicit_routes: effectiveExplicitRoutes(task) ?? [],
@@ -347,7 +380,7 @@ export function buildBoundedPlannerInput({task, catalog, feedback, policyText, n
     candidate_catalog: compactCandidateCatalog(catalog), feedback} : {task_id: task.task_id,
     request_sha256: task.request_sha256, original_objective: task.objective,
     request: task.request, material_refs: task.material_refs,
-    context: task.host_context.context,
+    context: plannerContextProjection(task.host_context.context),
     availability: routingAvailability(task, catalog, now)});
   // Only our own visible prompt bytes are bounded here; OpenClaw's hidden
   // system overhead still requires an actual local-model context smoke.
