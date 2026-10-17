@@ -104,3 +104,27 @@ state before asking the user to sign in. Never ask the user to paste passwords,
 tokens, OAuth codes, or API keys. If the authenticated GitHub account cannot
 push upstream, use its fork and open a pull request without claiming that the
 upstream branch was merged.
+
+## SCV Instagram portable desktop recovery from approved Gold
+
+When the user asks to recover SCV Instagram on a replacement Mac from R2, inspect
+trusted main `products/scv-instagram/recovery/LATEST_GOLD.json` and the Gold guide
+first. Use the installed `os1-scv-restore-gold` entry point (source:
+`scripts/restore-scv-gold.sh`) to acquire the exact approved Gold plus its pinned
+local-native/viewer closure. Reuse existing device connections; if Railway CLI is
+missing, inspect and run the pinned `os1-scv-install-railway` prerequisite installer.
+Never copy authentication caches from the old Mac or request pasted credentials.
+
+Acquisition and `--prepare-local` do not activate the operating system. Continue
+through unavoidable device OAuth, the guide's source-grounded customer continuity
+rehydration, separately verified local/cloud binding phases, single-peer handoff
+and actual readiness/peer/viewer checks. Keep real customer conversation, booking,
+form, deposit, queue and delivery state; never replace them from a dated snapshot
+unless the user separately requests historical customer-data replacement.
+
+An original-Mac sandbox path/byte drill is not a physical replacement-Mac test.
+A backup does not provide Mac-off uptime. Existing dated Gold records, April Gold
+and behavioral GOLD-3 remain unchanged. Only a separately verified explicit
+owner-approved promotion may advance `LATEST_GOLD.json`. ManyChat configuration
+remains excluded. Follow the existing fresh debug-only reset rules after an
+actual production change, never as a substitute for Gold restoration.

@@ -79,8 +79,11 @@ node products/scv-instagram/scripts/recover-gold.mjs \
   --target /absolute/private/existing-parent/new-gold-restore
 ```
 
-All 60 referenced objects are fetched from private R2 and verified, including
-source, saved state, OS closure, environment manifest and reconstruction evidence.
+Every object referenced by the selected Gold is fetched from private R2 and
+verified. The prior guide recorded 60 referenced objects for its then-selected
+Gold, including source, saved state, OS closure, environment manifest and
+reconstruction evidence;
+newer Golds have their own exact component count in the acquisition receipt.
 `--offline-root /absolute/verified-mirror/objects` is available for offline drills.
 This command never deploys, executes restored source, reads secret values or
 applies historical customer state. Its receipt is **acquisition**, not activation.
@@ -98,12 +101,16 @@ applies historical customer state. Its receipt is **acquisition**, not activatio
    set for consistent state snapshots, arm resume cleanup before pausing, verify
    the snapshot by staged restore, and retain an escape path to that pre-rollback
    point. Never use a reset that deletes all customer state.
-3. Reconstruct the pinned runtime/OS in isolation and use a NEW ephemeral secret
-   recovery job for the frozen generation referenced by the Gold closure.
-   Compare all saved environment hashes; map actual host/platform identity and
-   validated target-only settings explicitly. Keep credentials private and
-   destroy only the new job's temporary decryption key after use. Historical
-   destroyed keys/capsules are not reusable credentials.
+3. Reconstruct the selected Gold's pinned runtime/OS in isolation. For a dated
+   closure that explicitly uses an encrypted environment capsule, use its NEW
+   ephemeral recovery-job procedure and destroy only that job's temporary key
+   after use; historical destroyed keys/capsules are not reusable credentials.
+   Do not invent a capsule requirement for a newer no-credential desktop closure.
+   For that closure, preserve existing authorized Railway secrets and complete
+   unavoidable per-device OAuth separately. Compare the selected closure's
+   available environment/configuration evidence and explicitly map real new
+   host/platform identity and validated target-only settings. Never copy auth
+   caches or fabricate old environment proof for a different closure.
 4. For the user's wording fallback, restore the Gold **code, prompts and settings**
    while preserving current customer messages, appointments, queues and delivery
    ledgers. Check compatibility before activation. Restoring customer data to the
@@ -133,3 +140,75 @@ to both agents; it is not a new production rollback, a promise of identical futu
 LLM output or a guarantee of external account/provider availability. The user
 can request restoration from either agent; neither should claim that a natural
 language instruction by itself has already activated the restored server.
+
+## Desktop closure extension for newly promoted portable Golds
+
+A later explicitly approved dated Gold may include a desktop closure extension.
+Its references use the existing `scv-instagram-automation/recovery-points/` prefix
+and existing manifest-chain validator. Existing v151/v167 Golds retain their
+original records; this section does not retrofit desktop artifacts into them.
+
+The shared bootstrap installs `os1-scv-restore-gold` and the separate pinned
+`os1-scv-install-railway` prerequisite helper. The latter uses official Railway
+v5.45.10 release asset hashes for arm64/x86_64, does not copy auth, and runs only
+when explicitly needed. Codex/ChatGPT and Railway authentication belongs to the
+new device; private R2 access uses its existing official connection.
+
+```sh
+os1-scv-restore-gold --resolve
+os1-scv-restore-gold --target /absolute/private/new-gold-recovery --acquire-only
+# Device OAuth and prerequisite checks must succeed before local preparation:
+os1-scv-restore-gold --target /absolute/private/another-new-recovery --prepare-local
+```
+
+The thin entry point calls the existing `recover-gold.mjs`, then uses ONLY the
+Gold-chain-pinned desktop archive, metadata and restore adapter. Native source
+retains its exact seven-file hash inventory. The viewer binds loopback only and
+resolves the target HOME, not the old Mac username. Native preparation reuses
+`install-local.cjs` without `--start`, preserves old plists/source and restores
+plist bytes if preparation fails. A loaded old service requires a safe checkpoint
+switch rather than automatic overwrite.
+
+Before single-peer activation, use the included `continuity-adapter.cjs` with
+the exact source release/config, a fresh full worker/native barrier and canonical
+current customer histories. Reuse `portable-history.restoreVisible` to seed NEW
+native threads without replaying old input or sending messages. Keep original
+native IDs as provenance; do not claim to have transferred authentication or
+provider-local hidden state. Per-customer/reset-epoch isolation, local/cloud
+CAS phases, pinned receipts and rollback are mandatory. The cloud must still
+match the current capture before changing its session associations; a stale
+R2 customer snapshot is not permission to overwrite current live state.
+
+The split phases are: `applyLocalPhase` on the target Mac, verified private plan
+transfer through existing authenticated SSH, `applyCloudPhase` on the paused
+Railway namespace, then `finalizeLocalPhase`. They do not automatically start
+a peer. On failure keep peers paused, preserve new diagnostics and use the
+verified rollback journal; never blindly replay a turn or restore old failure
+files after a new execution/adoption/send has occurred.
+
+Activate only one peer after old-host quiescence or independently verified lease
+expiry, then check actual release identity, native online state, production
+readiness and the relocated viewer. A same-Mac isolated HOME restore drill is
+not a physical new-Mac activation test. Neither source restoration nor backup
+means the executor runs while all authorized native hosts are off.
+
+
+### Supplemental manual-reply context on a replacement Mac
+
+A Gold may also reference a private `manual_context_custody` component. Its
+`NEW-MAC-MANUAL-SYNC-RECIPE.json`, verified raw sender corpus, extraction helpers
+and existing synchronization installer travel as separately hashed private
+artifacts, never in the public repository. The production-state snapshot contains
+`manual-ui-context/ACTIVE.json` and the immutable source snapshots it references.
+
+After the source/native continuity gates pass, inspect that recipe and regenerate
+the publisher configuration and LaunchAgent with the target device's actual HOME,
+Node/Python/Railway paths and verified current release. Reuse the included
+`railway-manual-context-publisher.py --probe` and
+`install-manual-context-sync.py` plan/apply gates; do not copy an old device plist
+or any authentication cache. Preserve original receipt/snapshot bytes and their
+historical source paths as provenance. A local watermark, source digest, actual
+cloud readback and running worker receipt must agree before claiming synchronization
+restored. Unbound source handles remain held; both code-locked debug identities
+remain excluded from supplemental history. No historical input replay, customer
+send or transactional-state import is authorized by this data-only restoration.

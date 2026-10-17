@@ -1,11 +1,11 @@
 {
   "schema": "scv-latest-approved-recovery-gold-pointer-v1",
-  "gold_id": "scv-instagram-recovery-gold-20260908T231500Z-v167",
+  "gold_id": "scv-instagram-recovery-gold-20261017T060932Z-v273",
   "record": {
-    "path": "gold/20260908T231500Z-v167.json",
-    "key": "scv-instagram-automation/recovery-gold/20260908T231500Z/GOLD.json",
-    "bytes": 2608,
-    "sha256": "41ec7dae8f527470f0c471e5425605ff692306c81eab6cf8d7e9c4f9b2605038"
+    "path": "gold/20261017T060932Z-v273.json",
+    "key": "scv-instagram-automation/recovery-gold/20261017T060932Z/GOLD.json",
+    "bytes": 2478,
+    "sha256": "8ce90a9e3f6e4a61b72f2fb50be92b3ddc81e098443bc286c36dce5f785ee35d"
   },
   "instructions": "products/scv-instagram/recovery/GOLD-RESTORE.md",
   "entry_point": "products/scv-instagram/scripts/recover-gold.mjs",
@@ -13,12 +13,12 @@
   "ordinary_edits_update_this_pointer": false,
   "manychat_configuration_in_scope": false,
   "previous_gold": {
-    "gold_id": "scv-instagram-recovery-gold-20260905T054647Z-v151",
+    "gold_id": "scv-instagram-recovery-gold-20260908T231500Z-v167",
     "record": {
-      "path": "gold/20260905T054647Z-v151.json",
-      "key": "scv-instagram-automation/recovery-gold/20260905T054647Z/GOLD.json",
-      "bytes": 2645,
-      "sha256": "df23980a283223bd37517a55753f23ea3c56568ec2c443eceab6822a0ade9a6a"
+      "path": "gold/20260908T231500Z-v167.json",
+      "key": "scv-instagram-automation/recovery-gold/20260908T231500Z/GOLD.json",
+      "bytes": 2608,
+      "sha256": "41ec7dae8f527470f0c471e5425605ff692306c81eab6cf8d7e9c4f9b2605038"
     }
   }
 }

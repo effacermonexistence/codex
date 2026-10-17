@@ -1,0 +1,50 @@
+{
+  "schema": "scv-approved-recovery-gold-v1",
+  "gold_id": "scv-instagram-recovery-gold-20261017T060932Z-v273",
+  "label": "Super Gold",
+  "approved_by_owner": true,
+  "owner_approval_source": "explicit_current_owner_request",
+  "promoted_at_utc": "2026-10-17T06:09:32Z",
+  "snapshot_at_utc": "2026-10-17T05:58:13Z",
+  "snapshot_at_america_los_angeles": "2026-10-16T22:58:13-07:00",
+  "meaning": "Explicitly approved dated recoverable source/config/state and local desktop closure; not a promise of identical future model output",
+  "bucket": "omar-private-archive",
+  "r2_record_key": "scv-instagram-automation/recovery-gold/20261017T060932Z/GOLD.json",
+  "recovery_point_id": "scv-instagram-20261017T055813Z-v273-super-gold",
+  "release_id": "scv-instagram-single-20261016-v273-protected-address-projection",
+  "descriptor_sha256": "b12c9191bc7fa5964a4d27bbfd44422cd1a5f16a5eed377410684a712721408c",
+  "content_fingerprint_sha256": "c6a82fe3d47b0d985334a8f702e59795d8fdc294720e2e8cdcad49aae21ef264",
+  "manifests": [
+    {
+      "key": "scv-instagram-automation/recovery-points/20261017T055813Z/SCV_RECOVERY_POINT.json",
+      "bytes": 1785,
+      "sha256": "d2d4688e756f622df81cf56e4c2a5d78b64fdf50fc9b594ff3dc7ab778660675"
+    },
+    {
+      "key": "scv-instagram-automation/recovery-points/20261017T055813Z/SCV_DESKTOP_RECOVERY_EXTENSION.json",
+      "bytes": 14463,
+      "sha256": "6410e908d93b1c36822b9f60250fa953c81f76542e391f70f8d5d8dbdd1eda75"
+    }
+  ],
+  "previous_gold": {
+    "gold_id": "scv-instagram-recovery-gold-20260908T231500Z-v167",
+    "record_path": "gold/20260908T231500Z-v167.json",
+    "sha256": "41ec7dae8f527470f0c471e5425605ff692306c81eab6cf8d7e9c4f9b2605038",
+    "untouched": true
+  },
+  "manychat_configuration_in_scope": false,
+  "default_restore_mode": "code-prompt-settings; preserve current customer state",
+  "timestamped_customer_state_restore_requires_explicit_request": true,
+  "ordinary_edit_or_deploy_promotes_gold": false,
+  "preserve_april_gold_and_behavioral_gold3": true,
+  "production_cutover_automatic": false,
+  "append_only_by_operator_policy": true,
+  "provider_immutable": false,
+  "contains_credentials": false,
+  "contains_customer_data": false,
+  "local_native_source_included": true,
+  "native_visible_continuity_included": true,
+  "physical_new_mac_activation_tested": false,
+  "proof_mode": "production_snapshot",
+  "promotion_evidence": "R2 readback and trusted-main publication require separate executed receipts"
+}

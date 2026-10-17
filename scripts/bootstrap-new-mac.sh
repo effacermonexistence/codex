@@ -284,6 +284,15 @@ install_executable_with_backup \
   "$install_root/scripts/install-os1-exo-monitor-from-r2.sh" \
   "$local_bin/os1-exo-monitor-sync"
 
+# SCV uses the existing approved-Gold resolver. Installation is non-secret;
+# recovery/device OAuth/activation remain explicit operations, not bootstrap side effects.
+install_executable_with_backup \
+  "$install_root/scripts/restore-scv-gold.sh" \
+  "$local_bin/os1-scv-restore-gold"
+install_executable_with_backup \
+  "$install_root/scripts/install-scv-railway-cli.sh" \
+  "$local_bin/os1-scv-install-railway"
+
 "$install_root/scripts/configure-new-mac.sh"
 
 # OS-1's current installer requires an administrator password and configures
