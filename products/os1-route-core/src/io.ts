@@ -55,7 +55,13 @@ export async function bindingJson(
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5_000),
+    // The identity Worker itself allows 5s for its GitHub lookup. Its caller
+    // needs room for service setup and response handling, not the same 5s
+    // deadline that can abort a still-valid nested response. With the existing
+    // one 5s-cooldown retry, two 8s bounds total at most 21s of HTTP/backoff,
+    // below the native client's 30s per-request ceiling. Other bindings retain
+    // their existing budget; no identity/permission/cache rule is relaxed.
+    signal: AbortSignal.timeout(identityVerification ? 8_000 : 5_000),
   }); } catch (error) {
     if (identityVerification) throw new IdentityServiceUnavailable(503, 5);
     if (resultDelivery) throw new ResultServiceUnavailable();
