@@ -63,6 +63,106 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     }
     func reasons(_ output: B.Output) -> [String] { output.exclusions.map { "\($0.provider):\($0.reason):\($0.count)" } }
 
+    // Source-derived regression: the initial frozen quality smoke requested
+    // an implementation, but named-file preservation and a future evaluator's
+    // sandbox were incorrectly promoted into a global worker no-write rule.
+    // This is development regression input, not held-out quality evidence.
+    let scopedImplementation = """
+    Implement exactly one file window_merge.py in the current workspace. Do not modify AGENTS.md or create other deliverables. Define exactly one top-level function merge_intervals(intervals), with no decorators, annotations, default arguments, imports, top-level executable statements, nested functions, classes, external dependencies, file/network/process operations, or I/O. A module/function docstring is allowed.
+
+    Requirements:
+    1. The outer argument must be a list or tuple. Each member must be a list or tuple of exactly two endpoints. Every endpoint must have exact type int; bool is invalid. Any invalid structure/type, or an interval with start > end, must raise ValueError. Validate every interval, including members after an empty interval. Empty outer input returns [].
+    2. Intervals represent half-open [start,end) integer ranges. Zero-length intervals are valid but omitted from output.
+    3. Return a list of two-integer tuples sorted by start, merging overlapping OR touching intervals. Example: [(5,7),(1,3),(3,5),(9,9)] -> [(1,7)]. Negative and arbitrarily large Python integers are valid. No floating conversion is allowed.
+    4. Never modify the outer input or any nested input member. Repeated calls must not retain state.
+    5. The output must be idempotent: merge_intervals(merge_intervals(x)) equals merge_intervals(x) for valid x.
+    6. Use only pure Python syntax and these builtins: isinstance, type, int, bool, list, tuple, len, sorted, range, enumerate, zip, all, any, min, max, ValueError. List .append() and .sort() are the only permitted attribute calls. Do not access attributes/names beginning with an underscore. Loops, comprehensions, conditionals, assignment, tuple unpacking, slicing, arithmetic, comparisons, and a lambda used as a sorting key are allowed.
+
+    The independent evaluator will parse the source and run the function in a read-only-filesystem, network-denied process sandbox. Its tests are not present in this workspace. Fulfill the requirements, not a guessed test. Reply briefly after writing the file. Do not run another agent or a model, change settings, or do unrelated work.
+    """
+    let scopedWrites = [
+        scopedImplementation,
+        "Implement exactly one file result.py. Do not modify instructions.md or create other deliverables.",
+        "Create output.txt. Do not modify config.json.",
+        "Write report.md. Never edit settings.yaml and credentials.txt.",
+        "Create /tmp/output.txt. Do not modify /tmp/settings.yaml.",
+        "Create .env. Do not modify config.yaml.",
+        "Create \"output.txt\". Do not modify \"settings.yaml\".",
+        "Implement exactly one file `result.py`. Do not modify `config.yaml`. The evaluator will run the function in a read-only sandbox.",
+        "Create result.py. The independent evaluator will run the function in a read-only filesystem sandbox.",
+        "Create report.json. The external checker will parse the output in a read-only process sandbox.",
+        "Create result.py. The test runner will execute the function within a read only sandbox.",
+        "Create result.py. Never modify the outer input or nested input members.",
+    ]
+    for request in scopedWrites {
+        try check(ScopeResolution.resolve(request).scope == .workspaceWrite,
+                  "named target/other actor restrictions must not revoke implementation: \(request.prefix(180))")
+        let output = try B.build(input(request))
+        try check(output.candidates.contains { $0["scope"] as? String == "workspace_write" },
+                  "implementation must retain writable catalog rows")
+        let forced = try B.build(input(request, readOnly: true))
+        try check(!forced.candidates.isEmpty && forced.candidates.allSatisfy { $0["scope"] as? String == "read_only" },
+                  "hard host read-only still wins")
+    }
+    let globalReadOnly = [
+        "Create result.py. Do not modify files.",
+        "Create result.py. Never modify files.",
+        "Create result.py. Never edit any files.",
+        "Create result.py. No file writes.",
+        "Create result.py. The worker must not modify files.",
+        "Create result.py. Read-only.",
+        "Create result.py. The evaluator will run the function in a read-only sandbox. Do not modify files.",
+        "Create result.py. Do not modify settings.yaml. Read only; no changes.",
+        "Create result.py. Do not modify result.py.",
+        "Create result.py. Do not modify ./result.py.",
+        "Create src/../result.py. Do not modify result.py.",
+        "Create /tmp/result.py. Do not modify /tmp/./result.py.",
+        "Create `result.py`. Do not modify 'result.py'.",
+        "Create out/result.py. Do not modify 'out/*.py'.",
+        "Create out/result.py. Do not modify 'out/?.py'.",
+        "Create out/result.py. Do not modify 'out/[a-z].py'.",
+        "Create out/result.py. Do not modify 'out/{result,other}.py'.",
+        "Create out/result.py. Never edit 'out/*.py'.",
+        "Create out/result.py. Don't edit out/*.py.",
+        "Create result.py. Do not modify /known/workspace/result.py.",
+        "Create /known/workspace/result.py. Do not modify result.py.",
+        "Create result.py. Do not modify /known/workspace.",
+        "Create src/result.py. Do not modify /known/workspace/src.",
+        "Rename other.txt to result.py. Do not modify result.py.",
+        "Move other.txt to result.py. Do not modify result.py.",
+        "Create result.py and edit config.yaml. Do not modify config.yaml.",
+        "Implement exactly one file result.py, then update config.yaml. Do not modify config.yaml.",
+        "Create result.py. Also edit config.yaml. Do not modify config.yaml.",
+        "Create /tmp/result.py. Do not modify /tmp/result.py.",
+        "Modify Sources/App.swift. Never edit Sources/App.swift.",
+        "Create result.py. The evaluator will run the function in a read-only sandbox, but you must make no changes.",
+        "Explain the evaluator's read-only sandbox.",
+        "Review this source only.\n```\nCreate unsafe.py. The evaluator will run read-only.\n```",
+        "Explain the quoted instruction: \"Implement unsafe.py\".",
+        "Explain the quoted instruction: 'Create unsafe.py'.",
+        "Explain the source fragment: `Create unsafe.py`.",
+        "Explain this quoted source:\n'\nCreate unsafe.py.\nThe evaluator will run in a read-only sandbox.\n'",
+        "Explain this quoted source:\n\"\nCreate unsafe.py.\nThe evaluator will run in a read-only sandbox.\n\"",
+        "Explain this quoted source:\n“\nCreate unsafe.py.\nThe evaluator will run in a read-only sandbox.\n”",
+        "Create result.py. Don't modify files; it isn't necessary.",
+        "Create result.py. The independent evaluator will run the function in a read-only sandbox. The worker must remain read-only.",
+        "Create result.py. The evaluator will run in a read-only sandbox and no changes are allowed.",
+        "Create result.py. The evaluator will run in a read-only sandbox and all file writes are prohibited.",
+        "Create result.py. The evaluator will run in a read-only sandbox. The worker may not modify files.",
+        "Create result.py. The evaluator will run in a read-only sandbox. You cannot edit files.",
+        "Create result.py. The evaluator will run in a read-only sandbox. The worker is forbidden to modify files.",
+        "The evaluator will run in a read-only sandbox.\n```\nImplement unsafe.py\n```",
+    ]
+    for request in globalReadOnly {
+        try check(ScopeResolution.resolve(request).scope == .readOnly,
+                  "real no-write, same-target contradiction and quoted source stay read-only: \(request)")
+        try check((try B.build(input(request))).candidates.allSatisfy { $0["scope"] as? String == "read_only" },
+                  "no write rows for real read-only request")
+    }
+    let preserved = ScopeResolution.resolve(scopedImplementation)
+    try check(preserved.prohibitions.contains { $0.contains("agents.md") }, "named prohibition is preserved")
+    try check(preserved.prohibitions.contains { $0.contains("independent evaluator") }, "actor-bound restriction is preserved")
+
     // ---- Ordering and id/byte stability against the former builder ------
     let base = try B.build(input())
     try check(tuples(base) == [

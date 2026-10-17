@@ -771,7 +771,16 @@ public enum OwnerIntentText {
         for pattern in [
             #"(?s)```.*?```"#,
             #"(?m)^\s*>[^\n]*"#,
-            #"[\"“][^\"”\n]*(?:delete |remove |fix |modify |수정해|고쳐|삭제해|빼)[^\"”\n]*[\"”]"#,
+            // A quote-delimited source block is data, not line-start worker
+            // authority. Delimiters must occupy their own lines; ordinary
+            // apostrophes and directly quoted filenames are unaffected.
+            #"(?ms)^[ \t]*[\"]\s*\n.*?\n[ \t]*[\"][ \t]*(?=\n|$)"#,
+            #"(?ms)^[ \t]*[']\s*\n.*?\n[ \t]*['][ \t]*(?=\n|$)"#,
+            #"(?ms)^[ \t]*[“]\s*\n.*?\n[ \t]*[”][ \t]*(?=\n|$)"#,
+            #"(?ms)^[ \t]*[‘]\s*\n.*?\n[ \t]*[’][ \t]*(?=\n|$)"#,
+            #"(?i)`[^`\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^`\n]*`"#,
+            #"(?i)[\"“][^\"”\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^\"”\n]*[\"”]"#,
+            #"(?i)(?<![A-Za-z0-9])['‘][^'’\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^'’\n]*['’](?![A-Za-z0-9])"#,
             #"(?im)\b(?:how\s+(?:do|can|should)\s+(?:i|we)|(?:can|could|should|may)\s+(?:i|we))\b[^.!?;\n]*[?]?"#,
             #"[^.!?;\n]*(?:해도\s*(?:돼|되|될)|고쳐졌는지|수정됐는지|삭제됐는지|방법\s*(?:알려|설명))[^.!?;\n]*[?]?"#,
         ] {
@@ -845,6 +854,52 @@ public struct ScopeResolution: Equatable, Sendable {
     // Relative Korean targets preserve unrelated resources; they never revoke
     // an independently authorized edit. Match whole clauses, not bare negation.
     static let koreanRelativeTargetFencePattern = #"(?:^|(?<=[.!?;\n]))\s*(?:새로운\s*기능(?:이나|과|및)\s*)?다른\s*(?:제품|프로젝트|파일|서비스)(?:\s*(?:수정|변경|삭제))(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오)?\s*(?=[.!?;\n]|$)"#
+
+    // A prohibition on a concrete path is not a prohibition on every write.
+    // Keep the complete clause for execution, and check a directly named edit
+    // against its target before removing the clause from the global classifier.
+    // Unknown targets/conditional or mixed clauses are not consumed.
+    static let concretePathPattern = #"(?:[\"“'‘`][^\"”'’`\n*?\[\]{}\\]+\.[A-Za-z0-9]{1,16}[\"”'’`]|/?(?:[A-Za-z0-9_.~-]+/)+[A-Za-z0-9_.~-]*[A-Za-z0-9_~-]|[A-Za-z0-9_][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,16}|\.[A-Za-z0-9_-]+)"#
+    static let namedTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+((?:(?:the\s+)?file\s+)?"# + concretePathPattern +
+        #"(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:(?:the\s+)?file\s+)?"# + concretePathPattern + #"){0,8})(?:\s+or\s+(?:create|write|save)\s+(?:any\s+)?other\s+(?:files?|deliverables?))?\s*(?=[.!?;\n]|$)"#
+    static let directFileEditPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:implement|create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
+    // Exempt a named preservation fence only for a completely parsed ONE-file
+    // directive. Rename/copy/move destinations and compound action operands
+    // cannot be inferred from the first path; such requests remain restricted.
+    static let singleFileEditPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:implement|create|write|save|delete|remove|edit|modify|update)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")(?:\s+(?:in|within)\s+(?:the\s+)?(?:current\s+)?workspace)?\s*(?=[.!?;\n]|$)"#
+    static let fileEditOccurrencePattern = #"(?i)\b(?:implement|create|write|save|rename|delete|remove|edit|modify|update|move|copy)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
+    static let separateRuntimeClausePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:the\s+)?(?:(?:independent|external|automated|downstream)\s+)?(?:evaluator|checker|validator|test runner|test harness|test runtime|ci runner)\s+(?:will|shall)\b[^.!?;\n]*(?=[.!?;\n]|$)"#
+    static let globalNoWriteClausePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:(?:do not|don't|never)\s+(?:modify|edit|change|create|delete|remove|write(?: to)?)\s+(?:(?:any|the)\s+)?(?:files?|workspace|anything)\b|no\s+file\s+(?:writes?|changes?)\b|(?:you|the worker|the agent)\s+(?:(?:must|shall|may|can|should|will)\s+not|cannot|can't|mustn't|shouldn't|(?:is|are)\s+(?:not\s+(?:allowed|permitted)\s+to|forbidden\s+to|prohibited\s+from))\s+(?:modify|edit|change|create|delete|remove|write)\s+(?:(?:any|the)\s+)?files?\b)"#
+    // Globs/escaped paths are not exact targets. Never turn failure to parse
+    // one into permission, even for negative verbs outside the legacy list.
+    static let ambiguousPathRestrictionPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:(?:the\s+)?file\s+)?(?:[\"“'‘`][^\"”'’`\n]*[*?\[\]{}\\][^\"”'’`\n]*[\"”'’`]|[^\s\"“'‘`;\n]*[*?\[\]{}\\][^\s\"“'‘`;\n]*)"#
+
+    private static func namedPaths(_ text: String) -> [String] {
+        guard let pattern = try? NSRegularExpression(pattern: concretePathPattern) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return pattern.matches(in: text, range: range).compactMap { match in
+            guard let captured = Range(match.range, in: text) else { return nil }
+            let path = String(text[captured]).trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'‘’`"))
+            let absolute = path.hasPrefix("/")
+            var components: [String] = []
+            for component in path.split(separator: "/").map(String.init) {
+                if component == "." { continue }
+                if component == "..", let last = components.last, last != ".." {
+                    components.removeLast()
+                } else if component != ".." || !absolute { components.append(component) }
+            }
+            let normalized = (absolute ? "/" : "") + components.joined(separator: "/")
+            return normalized.isEmpty ? "." : normalized
+        }
+    }
+
+    private static func directEditPaths(_ text: String) -> [String] {
+        guard let pattern = try? NSRegularExpression(pattern: directFileEditPattern) else { return [] }
+        return pattern.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)).flatMap { match in
+            guard let captured = Range(match.range(at: 1), in: text) else { return [String]() }
+            return namedPaths(String(text[captured]))
+        }
+    }
 
     static let positiveEdit = ["손봐", "손 봐", "수정해", "수정하고", "수정 해", "고쳐", "고치고", "고치라니까", "고치라고", "구현하라고", "고치지", "고치자", "바꿔", "바꾸고", "구현해", "추가해", "삭제해", "리팩터", "만들어",
                                "완료해", "완성해", "끝까지 해", "마저 해", "마저해",
@@ -959,6 +1014,41 @@ public struct ScopeResolution: Equatable, Sendable {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
         var prohibitions: [String] = []
         var remaining = value
+        var protectedPaths: [String] = []
+        var unresolvedTargetFence = false
+        if let pattern = try? NSRegularExpression(pattern: namedTargetFencePattern) {
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            for match in pattern.matches(in: remaining, range: range) {
+                guard let clause = Range(match.range, in: remaining),
+                      let targets = Range(match.range(at: 1), in: remaining) else { continue }
+                prohibitions.append(String(remaining[clause]).trimmingCharacters(in: .whitespacesAndNewlines))
+                protectedPaths.append(contentsOf: namedPaths(String(remaining[targets])))
+            }
+            remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
+            if !protectedPaths.isEmpty {
+                let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+                let single = try? NSRegularExpression(pattern: singleFileEditPattern)
+                let occurrences = try? NSRegularExpression(pattern: fileEditOccurrencePattern)
+                unresolvedTargetFence = single?.numberOfMatches(in: remaining, range: range) != 1 ||
+                    occurrences?.numberOfMatches(in: remaining, range: range) != 1
+            }
+        }
+        // A future checker describes its own sandbox, not the worker's scope.
+        // Only a closed actor-bound runtime clause beside a direct file-edit
+        // instruction is consumed. Contrasts, worker references and real
+        // prohibitions remain in the global classifier, including later ones.
+        if !directEditPaths(remaining).isEmpty,
+           let pattern = try? NSRegularExpression(pattern: separateRuntimeClausePattern) {
+            let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+            for match in pattern.matches(in: remaining, range: range).reversed() {
+                guard let captured = Range(match.range, in: remaining) else { continue }
+                let clause = String(remaining[captured])
+                guard clause.range(of: #"\b(?:in|inside|within|under)\s+(?:(?:a|an|the)\s+)?read(?:-| )only(?:-filesystem|\s+filesystem)?\b[^.!?;\n]*\b(?:sandbox|process|environment)\b"#, options: .regularExpression) != nil,
+                      clause.range(of: #"\b(?:you|your|worker|agent|implementer|but|however|instead|unless|do not|don't|never|must not|may not|prohibited|forbidden)\b|\b(?:no|without)\s+(?:(?:any|file|workspace)\s+)?(?:changes?|writes?|writing|modifications?|edits?)\b|\bnot\s+(?:allowed|permitted)\b"#, options: .regularExpression) == nil else { continue }
+                prohibitions.append(clause.trimmingCharacters(in: .whitespacesAndNewlines))
+                remaining.replaceSubrange(captured, with: " ")
+            }
+        }
         for fence in [relativeTargetFencePattern, existingResourceFencePattern, koreanRelativeTargetFencePattern] {
         if let pattern = try? NSRegularExpression(pattern: fence) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
@@ -1009,10 +1099,25 @@ public struct ScopeResolution: Equatable, Sendable {
             if !prohibitions.contains(target.prohibition) { prohibitions.append(target.prohibition) }
             remaining = remaining.replacingOccurrences(of: target.pattern, with: " ")
         }
-        let generallyProhibited = generalProhibitions.contains(where: remaining.contains)
+        let generallyProhibited = unresolvedTargetFence || generalProhibitions.contains(where: remaining.contains) ||
+            remaining.range(of: globalNoWriteClausePattern, options: .regularExpression) != nil ||
+            remaining.range(of: ambiguousPathRestrictionPattern, options: .regularExpression) != nil
         let editView = withoutCapabilityQuestions(remaining)
+        let editPaths = directEditPaths(editView)
         let asksEdit = positiveEdit.contains(where: editView.contains) ||
-            positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil }
+            positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil } ||
+            !editPaths.isEmpty
+        if protectedPaths.contains(where: { protected in editPaths.contains { edited in
+            edited == protected || edited.hasPrefix(protected + "/") ||
+                (protected == "." && !edited.hasPrefix("/")) || protected == "/" ||
+                // Scope text has no trusted cwd/home or file-vs-directory
+                // binding. Different anchors cannot prove target separation.
+                edited.hasPrefix("/") != protected.hasPrefix("/") ||
+                edited.hasPrefix("~/") != protected.hasPrefix("~/")
+        } }) {
+            if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
+            return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)
+        }
         if generallyProhibited && !asksEdit {
             if !prohibitions.contains("do not modify files") { prohibitions.append("do not modify files") }
             return ScopeResolution(scope: .readOnly, prohibitions: prohibitions)
