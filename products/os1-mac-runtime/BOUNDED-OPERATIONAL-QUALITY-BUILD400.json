@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "build": 400,
+  "version": "0.9.334",
+  "status": "scope-authority-implementation-candidate-not-quality-parity-proof",
+  "source_lineage": "verifiedinstalled399/098a59db; os1/quality-parity-20261017, notdivergentmain",
+  "changes": [
+    "Bind existing operational checker to native RCC artifact, preserve failure first",
+    "Same Core owns one same-config fresh-session correction, with private one-use claim, exact content custody and local-effects enforcement",
+    "Typed trusted local-effects declaration narrows only opted-in jobs, not default full-scope capabilities",
+    "Declared local-effects boundary is mandatory from first dispatch; unsupported paths are held and catalog eligibility closes over the same capability without changing supported model/effort choices",
+    "Task-wide native-parent dispatch admission cap optional1..64; old requests unchanged",
+    "Checker infrastructure and invalid/late decision HOLD; no blind replay or flagship escalation",
+    "Partial child checks cannot mint parent/reference parity; native settings stay requested/acknowledged/observed-separated",
+    "Shared source-bound file-action/target scope adapter preserves complete scoped negative constraints instead of upgrading them into blanket no-write; unknown filesystem authority remains restricted",
+    "Same ScopeResolution API feeds catalog and existing scope consumers; no forced provider/model/effort or separate planner",
+    "Mac CI outer build timeout60min after verified45min cancellation; all checks, scanners, mutation tests and quality-arm budgets unchanged"
+  ],
+  "regression_scope": "Fake/native-contract fixtures and source checks do not establish actual model quality; real pilot tracked privately",
+  "operational_vs_evaluation": "Public project tests may guide correction. Hidden evaluation/gold/reference scores never enter runtime adoption.",
+  "native_boundary": "Pinned native Codex permission profile and known hook/native maintenance TCB; no universal OS-escape claim; changed/unknown sources HOLD",
+  "resource_boundary": "max_native_dispatches counts native executor parent admissions, not internal backend/subagent provider calls or quota percentage",
+  "artifacts": {
+    "rcc-runtime.mjs": "4a40c9ec53749a53abec85cbed637c7cd71556ce297f918956f1997f04df065b",
+    "rcc-plugin.mjs": "e4423512254e540cc7a09baf2fba802ed1c57fd66a3989b22ac21e667b4dd35f"
+  },
+  "actual_model_comparison": "NOT_YET_EXECUTED; source/metadata controls are not modelquality proof",
+  "anthropic_reference": "normal weekly quota currently exhausted, no billing or account bypass",
+  "preserved": "Installed399,accepted398,all failed/historical artifacts and proposed-patch false-rejection counterexamples, sessions/queues/drafts",
+  "release_scan": "One exact public diagnostic source-path token with immutable source provenance added; scanner/entropy/regex/forbidden gates unchanged"
+}

@@ -779,7 +779,7 @@ public enum OwnerIntentText {
             }
             return count % 2 == 1
         }
-        let action = #"delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼"#
+        let action = #"delete |remove |fix |repair |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼"#
         while let start = source[cursor...].firstIndex(of: opening) {
             let prefix = source[cursor..<start]
             if opening != closing && prefix.contains(closing) { ambiguous = true }
@@ -825,7 +825,7 @@ public enum OwnerIntentText {
             text = view.text; ambiguousInlineQuote = ambiguousInlineQuote || view.ambiguous
         }
         for pattern in [
-            #"(?i)(?<![A-Za-z0-9])['‘][^'’\n]*(?:delete |remove |fix |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^'’\n]*['’](?![A-Za-z0-9])"#,
+            #"(?i)(?<![A-Za-z0-9])['‘][^'’\n]*(?:delete |remove |fix |repair |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^'’\n]*['’](?![A-Za-z0-9])"#,
             #"(?im)\b(?:how\s+(?:do|can|should)\s+(?:i|we)|(?:can|could|should|may)\s+(?:i|we))\b[^.!?;\n]*[?]?"#,
             #"[^.!?;\n]*(?:해도\s*(?:돼|되|될)|고쳐졌는지|수정됐는지|삭제됐는지|방법\s*(?:알려|설명))[^.!?;\n]*[?]?"#,
         ] {
@@ -905,7 +905,7 @@ public struct ScopeResolution: Equatable, Sendable {
     // against its target before removing the clause from the global classifier.
     // Unknown targets/conditional or mixed clauses are not consumed.
     static let concretePathPattern = #"(?:[\"“'‘`][^\"”'’`\n*?\[\]{}\\]+\.[A-Za-z0-9]{1,16}[\"”'’`]|/?(?:[A-Za-z0-9_.~-]+/)+[A-Za-z0-9_.~-]*[A-Za-z0-9_~-]|[A-Za-z0-9_][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,16}|\.[A-Za-z0-9_-]+)"#
-    static let namedTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+((?:(?:the\s+)?file\s+)?"# + concretePathPattern +
+    static let namedTargetFencePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|repair|fix|delete|remove|write(?: to)?)\s+((?:(?:the\s+)?file\s+)?"# + concretePathPattern +
         #"(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:(?:the\s+)?file\s+)?"# + concretePathPattern + #"){0,8})(?:(?:\s+or\s+|,\s*and\s+(?:do not|don't|never)\s+)(?:create|write|save)\s+(?:any\s+)?other\s+(?:files?|deliverables?))?\s*(?=[.!?;\n]|$)"#
     static let directFileEditPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:implement|create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
     // Exempt a named preservation fence only for a completely parsed ONE-file
@@ -914,10 +914,132 @@ public struct ScopeResolution: Equatable, Sendable {
     static let singleFileEditPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:implement|create|write|save|delete|remove|edit|modify|update)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")(?:\s+(?:in|within)\s+(?:the\s+)?(?:current\s+)?workspace)?\s*(?=[.!?;\n]|$)"#
     static let fileEditOccurrencePattern = #"(?i)\b(?:implement|create|write|save|rename|delete|remove|edit|modify|update|move|copy)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
     static let separateRuntimeClausePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:the\s+)?(?:(?:independent|external|automated|downstream)\s+)?(?:evaluator|checker|validator|test runner|test harness|test runtime|ci runner)\s+(?:will|shall)\b[^.!?;\n]*(?=[.!?;\n]|$)"#
-    static let globalNoWriteClausePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:(?:do not|don't|never)\s+(?:modify|edit|change|create|delete|remove|write(?: to)?)\s+(?:(?:any|the)\s+)?(?:files?|workspace|anything)\b|no\s+file\s+(?:writes?|changes?)\b|(?:you|the worker|the agent)\s+(?:(?:must|shall|may|can|should|will)\s+not|cannot|can't|mustn't|shouldn't|(?:is|are)\s+(?:not\s+(?:allowed|permitted)\s+to|forbidden\s+to|prohibited\s+from))\s+(?:modify|edit|change|create|delete|remove|write)\s+(?:(?:any|the)\s+)?files?\b)"#
+    static let globalNoWriteClausePattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:(?:do not|don't|never)\s+(?:modify|edit|change|repair|fix|create|delete|remove|write(?: to)?)\s+(?:(?:any|the)\s+)?(?:files?|workspace|anything)\b|no\s+file\s+(?:writes?|changes?)\b|(?:you|the worker|the agent)\s+(?:(?:must|shall|may|can|should|will)\s+not|cannot|can't|mustn't|shouldn't|(?:is|are)\s+(?:not\s+(?:allowed|permitted)\s+to|forbidden\s+to|prohibited\s+from))\s+(?:modify|edit|change|repair|fix|create|delete|remove|write)\s+(?:(?:any|the)\s+)?files?\b)"#
     // Globs/escaped paths are not exact targets. Never turn failure to parse
     // one into permission, even for negative verbs outside the legacy list.
-    static let ambiguousPathRestrictionPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|delete|remove|write(?: to)?)\s+(?:(?:the\s+)?file\s+)?(?:[\"“'‘`][^\"”'’`\n]*[*?\[\]{}\\][^\"”'’`\n]*[\"”'’`]|[^\s\"“'‘`;\n]*[*?\[\]{}\\][^\s\"“'‘`;\n]*)"#
+    static let ambiguousPathRestrictionPattern = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+(?:modify|edit|change|repair|fix|delete|remove|write(?: to)?)\s+(?:(?:the\s+)?file\s+)?(?:[\"“'‘`][^\"”'’`\n]*[*?\[\]{}\\][^\"”'’`\n]*[\"”'’`]|[^\s\"“'‘`;\n]*[*?\[\]{}\\][^\s\"“'‘`;\n]*)"#
+
+    /// One bounded file directive is source authority; a gerund purpose is
+    /// not a second instruction. This view is never sent to an executor.
+    private static func clauseEnd(_ text: String, from start: String.Index) -> String.Index {
+        var cursor = start
+        while cursor < text.endIndex {
+            let ch = text[cursor], next = text.index(after: cursor)
+            if ".!?;\n".contains(ch) {
+                // A period inside a filename/identifier/number is not the end
+                // of the owner's clause. Preserve it before testing operands.
+                if ch == ".", next < text.endIndex, text[next].isLetter || text[next].isNumber || "_./-".contains(text[next]) {
+                    cursor = next; continue
+                }
+                return cursor
+            }
+            cursor = next
+        }
+        return text.endIndex
+    }
+    private static func boundedFileDirectiveView(_ source: String) -> String {
+        let prefix = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:fix|repair|modify|edit|update|implement|create|write|save|delete|remove)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
+        guard let regex = try? NSRegularExpression(pattern: prefix) else { return source }
+        var result = source
+        for match in regex.matches(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)).reversed() {
+            guard let head = Range(match.range, in: source), let operand = Range(match.range(at: 1), in: source) else { continue }
+            let target = String(source[operand])
+            guard !target.hasPrefix("/"), !target.hasPrefix("~"), !"\"“'‘`".contains(target.first ?? "\""),
+                target.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { continue }
+            let end = clauseEnd(source, from: head.upperBound)
+            guard end == source.endIndex || source[end] != "?" else { continue }
+            let tail = String(source[head.upperBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let bare = tail.isEmpty || tail.range(of: #"(?i)^(?:in|within)\s+(?:(?:this|the|current)\s+)?(?:isolated\s+)?workspace$"#, options: .regularExpression) != nil
+            let purpose = tail.utf8.count <= 512 && tail.range(of: #"(?i)^,\s*(?:implementing|preserving|correcting|updating)\s+\S.+$"#, options: .regularExpression) != nil &&
+                tail.range(of: #"(?i)\b(?:if|unless|when|once|after|before|provided|assuming|except|but|however|then|and|or|not|no|never|without|must|shall|may|can|should|read-only|readonly|delete|remove|edit|modify|create|write|save|rename|move|copy|repair|fix|upload|send|install|deploy)\b|[\"“”'‘’`\\]"#, options: .regularExpression) == nil && namedPaths(tail).isEmpty
+            guard bare || purpose else { continue }
+            let leading = String(source[head].prefix(while: { $0.isWhitespace }))
+            result.replaceSubrange(head.lowerBound..<end, with: (leading.isEmpty ? " " : leading) + "modify " + target)
+        }
+        return result
+    }
+    private struct CoordinatedFenceView {
+        var text: String
+        var protectedPaths: [String] = []
+        var prohibitions: [String] = []
+        var unresolved = false
+        var requiresSingleEdit = false
+    }
+    /// Negation applies to every complete action item. Only an entirely
+    /// classified list is removed from the global classifier; the full
+    /// original clause remains a prohibition. Unknown fragments stay held.
+    private static func coordinatedFenceView(_ source: String) -> CoordinatedFenceView {
+        var view = CoordinatedFenceView(text: source)
+        let prefix = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:do not|don't|never)\s+"#
+        guard let regex = try? NSRegularExpression(pattern: prefix),
+            let split = try? NSRegularExpression(pattern: #"(?i)\s*(?:,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)(?=(?:(?:do not|don't|never)\s+)?(?:modify|edit|change|repair|fix|delete|remove|write|create|save|rename|move|copy|access|use|connect|inspect|read)\b)"#),
+            let named = try? NSRegularExpression(pattern: namedTargetFencePattern) else { return view }
+        // File capability and non-file restrictions are different axes. An
+        // unknown network/upload clause remains original source, but is not
+        // silently upgraded into a global filesystem no-write instruction.
+        func filesystemRestriction(_ raw: String) -> Bool {
+            let item = raw.replacingOccurrences(of: #"(?i)^\s*(?:do not|don't|never)\s+"#, with: "", options: .regularExpression)
+            guard item.range(of: #"(?i)^\s*(?:modify|edit|change|repair|fix|delete|remove|write|create|save|rename|move|copy)\b"#, options: .regularExpression) != nil else { return false }
+            return !namedPaths(item).isEmpty || item.range(of: #"(?i)\b(?:files?|folders?|directories|workspace|anything)\b"#, options: .regularExpression) != nil
+        }
+        let extraFiles = #"(?i)^(?:create|write|save)\s+(?:any\s+)?(?:extra|other|additional)\s+files?$"#
+        for match in regex.matches(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)).reversed() {
+            guard let opening = Range(match.range, in: source) else { continue }
+            let end = clauseEnd(source, from: opening.upperBound)
+            let body = String(source[opening.upperBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            // A fully recognized existing fence keeps its existing semantics.
+            // A broader action-list adapter must not reinterpret that clause.
+            let inherited = "do not " + body, inheritedRange = NSRange(location: 0, length: ("do not " + body).utf16.count)
+            if named.firstMatch(in: inherited, range: inheritedRange)?.range == inheritedRange { continue }
+            let separators = split.matches(in: body, range: NSRange(body.startIndex..<body.endIndex, in: body))
+            guard !separators.isEmpty else {
+                // Existing one-action grammar owns valid simple clauses. Do
+                // not let an unparsed suffix escape via a filename's period.
+                let clause = "do not " + body, whole = NSRange(location: 0, length: ("do not " + body).utf16.count)
+                let legacyRelative = [relativeTargetFencePattern, existingResourceFencePattern].contains {
+                    clause.range(of: $0, options: .regularExpression) == clause.startIndex..<clause.endIndex
+                } || negatedTargets.contains { $0.pattern == clause }
+                if filesystemRestriction(body), body.range(of: extraFiles, options: .regularExpression) == nil,
+                   !legacyRelative, named.firstMatch(in: clause, range: whole)?.range != whole { view.unresolved = true }
+                continue
+            }
+            var items: [String] = [], cursor = body.startIndex
+            for separator in separators {
+                guard let range = Range(separator.range, in: body) else { continue }
+                items.append(String(body[cursor..<range.lowerBound])); cursor = range.upperBound
+            }
+            items.append(String(body[cursor...]))
+            let hasFilesystemRestriction = items.contains(where: filesystemRestriction)
+            guard items.count <= 12 else {
+                view.unresolved = view.unresolved || hasFilesystemRestriction; continue
+            }
+            var paths: [String] = [], relative = false, allKnown = true
+            for raw in items {
+                let item = raw.replacingOccurrences(of: #"(?i)^\s*(?:do not|don't|never)\s+"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let clause = "do not " + item, range = NSRange(clause.startIndex..<clause.endIndex, in: clause)
+                if let parsed = named.firstMatch(in: clause, range: range), parsed.range == range,
+                    let targets = Range(parsed.range(at: 1), in: clause) {
+                    paths += namedPaths(String(clause[targets])); continue
+                }
+                if item.range(of: extraFiles, options: .regularExpression) != nil {
+                    relative = true; continue
+                }
+                if item.range(of: #"(?i)^(?:(?:access|use)\s+(?:the\s+)?network|connect\s+to\s+(?:the\s+)?network)$"#, options: .regularExpression) != nil { continue }
+                if item.range(of: #"(?i)^(?:inspect|read|access)\s+(?:anything|files?|data)\s+outside\s+(?:(?:this|the|current)\s+)?workspace$"#, options: .regularExpression) != nil { continue }
+                allKnown = false; break
+            }
+            guard allKnown else {
+                view.unresolved = view.unresolved || hasFilesystemRestriction; continue
+            }
+            view.protectedPaths += paths
+            view.requiresSingleEdit = view.requiresSingleEdit || relative || !paths.isEmpty
+            view.prohibitions.append(String(source[opening.lowerBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines))
+            let leading = String(source[opening].prefix(while: { $0.isWhitespace }))
+            view.text.replaceSubrange(opening.lowerBound..<end, with: leading + " ")
+        }
+        return view
+    }
 
     /// Scope-analysis view only; the original instruction is never rewritten.
     /// One closed first directive can name a supplied file, followed by one
@@ -1091,10 +1213,11 @@ public struct ScopeResolution: Equatable, Sendable {
 
     public static func resolve(_ prompt: String) -> ScopeResolution {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
-        var prohibitions: [String] = []
-        var remaining = suppliedFileEditView(value)
-        var protectedPaths: [String] = []
-        var unresolvedTargetFence = false
+        let coordinated = coordinatedFenceView(suppliedFileEditView(boundedFileDirectiveView(value)))
+        var prohibitions = coordinated.prohibitions
+        var remaining = coordinated.text
+        var protectedPaths = coordinated.protectedPaths
+        var unresolvedTargetFence = coordinated.unresolved
         if let pattern = try? NSRegularExpression(pattern: namedTargetFencePattern) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             for match in pattern.matches(in: remaining, range: range) {
@@ -1104,11 +1227,11 @@ public struct ScopeResolution: Equatable, Sendable {
                 protectedPaths.append(contentsOf: namedPaths(String(remaining[targets])))
             }
             remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
-            if !protectedPaths.isEmpty {
+            if !protectedPaths.isEmpty || coordinated.requiresSingleEdit {
                 let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
                 let single = try? NSRegularExpression(pattern: singleFileEditPattern)
                 let occurrences = try? NSRegularExpression(pattern: fileEditOccurrencePattern)
-                unresolvedTargetFence = single?.numberOfMatches(in: remaining, range: range) != 1 ||
+                unresolvedTargetFence = unresolvedTargetFence || single?.numberOfMatches(in: remaining, range: range) != 1 ||
                     occurrences?.numberOfMatches(in: remaining, range: range) != 1
             }
         }

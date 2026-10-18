@@ -81,6 +81,8 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     The independent evaluator will parse the source and run the function in a read-only-filesystem, network-denied process sandbox. Its tests are not present in this workspace. Fulfill the requirements, not a guessed test. Reply briefly after writing the file. Do not run another agent or a model, change settings, or do unrelated work.
     """
     let scopedWrites = [
+        "Repair report.csv, preserving its format. Do not modify paid.csv, create extra files, access the network or inspect anything outside this workspace.",
+        "Fix handbook.md, correcting indentation. Do not modify archive.md, create other files or use the network.",
         scopedImplementation,
         "Implement exactly one file result.py. Do not modify instructions.md or create other deliverables.",
         "Create output.txt. Do not modify config.json.",
