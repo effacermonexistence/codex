@@ -938,7 +938,7 @@ public struct ScopeResolution: Equatable, Sendable {
         return text.endIndex
     }
     private static func boundedFileDirectiveView(_ source: String) -> String {
-        let prefix = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:fix|repair|modify|edit|update|implement|create|write|save|delete|remove)\s+(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
+        let prefix = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:(?:fix|repair|modify|edit|update)\s+(?:only\s+)?|(?:implement|create|write|save|delete|remove)\s+)(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
         guard let regex = try? NSRegularExpression(pattern: prefix) else { return source }
         var result = source
         for match in regex.matches(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)).reversed() {
@@ -964,6 +964,7 @@ public struct ScopeResolution: Equatable, Sendable {
         var prohibitions: [String] = []
         var unresolved = false
         var requiresSingleEdit = false
+        var requiresExistingEdit = false
     }
     /// Negation applies to every complete action item. Only an entirely
     /// classified list is removed from the global classifier; the full
@@ -983,6 +984,9 @@ public struct ScopeResolution: Equatable, Sendable {
             return !namedPaths(item).isEmpty || item.range(of: #"(?i)\b(?:files?|folders?|directories|workspace|anything)\b"#, options: .regularExpression) != nil
         }
         let extraFiles = #"(?i)^(?:create|write|save)\s+(?:any\s+)?(?:extra|other|additional)\s+files?$"#
+        // Creating a file and modifying one are distinct operations. A bare
+        // no-creation fence is relative only beside one closed existing edit.
+        let noNewFiles = #"(?i)^create\s+(?:any\s+)?(?:new\s+)?files?$"#
         for match in regex.matches(in: source, range: NSRange(source.startIndex..<source.endIndex, in: source)).reversed() {
             guard let opening = Range(match.range, in: source) else { continue }
             let end = clauseEnd(source, from: opening.upperBound)
@@ -999,6 +1003,13 @@ public struct ScopeResolution: Equatable, Sendable {
                 let legacyRelative = [relativeTargetFencePattern, existingResourceFencePattern].contains {
                     clause.range(of: $0, options: .regularExpression) == clause.startIndex..<clause.endIndex
                 } || negatedTargets.contains { $0.pattern == clause }
+                if body.range(of: noNewFiles, options: .regularExpression) != nil {
+                    view.requiresSingleEdit = true; view.requiresExistingEdit = true
+                    view.prohibitions.append(String(source[opening.lowerBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines))
+                    let leading = String(source[opening].prefix(while: { $0.isWhitespace }))
+                    view.text.replaceSubrange(opening.lowerBound..<end, with: leading + " ")
+                    continue
+                }
                 if filesystemRestriction(body), body.range(of: extraFiles, options: .regularExpression) == nil,
                    !legacyRelative, named.firstMatch(in: clause, range: whole)?.range != whole { view.unresolved = true }
                 continue
@@ -1013,7 +1024,7 @@ public struct ScopeResolution: Equatable, Sendable {
             guard items.count <= 12 else {
                 view.unresolved = view.unresolved || hasFilesystemRestriction; continue
             }
-            var paths: [String] = [], relative = false, allKnown = true
+            var paths: [String] = [], relative = false, existingEdit = false, allKnown = true
             for raw in items {
                 let item = raw.replacingOccurrences(of: #"(?i)^\s*(?:do not|don't|never)\s+"#, with: "", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1025,8 +1036,11 @@ public struct ScopeResolution: Equatable, Sendable {
                 if item.range(of: extraFiles, options: .regularExpression) != nil {
                     relative = true; continue
                 }
-                if item.range(of: #"(?i)^(?:(?:access|use)\s+(?:the\s+)?network|connect\s+to\s+(?:the\s+)?network)$"#, options: .regularExpression) != nil { continue }
-                if item.range(of: #"(?i)^(?:inspect|read|access)\s+(?:anything|files?|data)\s+outside\s+(?:(?:this|the|current)\s+)?workspace$"#, options: .regularExpression) != nil { continue }
+                if item.range(of: noNewFiles, options: .regularExpression) != nil {
+                    relative = true; existingEdit = true; continue
+                }
+                if item.range(of: #"(?i)^(?:(?:access|use)\s+(?:the\s+)?network(?:\s+services?)?|connect\s+to\s+(?:the\s+)?network)$"#, options: .regularExpression) != nil { continue }
+                if item.range(of: #"(?i)^(?:inspect|read|access)\s+(?:(?:anything|files?|data)\s+)?outside\s+(?:(?:this|the|current|the\s+current)\s+)?workspace$"#, options: .regularExpression) != nil { continue }
                 allKnown = false; break
             }
             guard allKnown else {
@@ -1034,6 +1048,7 @@ public struct ScopeResolution: Equatable, Sendable {
             }
             view.protectedPaths += paths
             view.requiresSingleEdit = view.requiresSingleEdit || relative || !paths.isEmpty
+            view.requiresExistingEdit = view.requiresExistingEdit || existingEdit
             view.prohibitions.append(String(source[opening.lowerBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines))
             let leading = String(source[opening].prefix(while: { $0.isWhitespace }))
             view.text.replaceSubrange(opening.lowerBound..<end, with: leading + " ")
@@ -1218,6 +1233,16 @@ public struct ScopeResolution: Equatable, Sendable {
         var remaining = coordinated.text
         var protectedPaths = coordinated.protectedPaths
         var unresolvedTargetFence = coordinated.unresolved
+        if coordinated.requiresExistingEdit {
+            // The normalized view may canonicalize create/save into "modify".
+            // Consult ORIGINAL authority for the operation; never infer that
+            // a creation directive satisfies an existing-file edit constraint.
+            let existing = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:fix|repair|modify|edit|update)\s+(?:only\s+)?(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
+            let pattern = try? NSRegularExpression(pattern: existing)
+            unresolvedTargetFence = unresolvedTargetFence || pattern?.numberOfMatches(in: value,
+                range: NSRange(value.startIndex..<value.endIndex, in: value)) != 1
+        }
+
         if let pattern = try? NSRegularExpression(pattern: namedTargetFencePattern) {
             let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
             for match in pattern.matches(in: remaining, range: range) {
