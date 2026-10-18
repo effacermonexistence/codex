@@ -159,7 +159,7 @@ struct PreparedTaskQuality {
         var candidateSuite: URL?
         if let snapshot = partialRegression {
             let paths = try snapshot.candidatePaths(workspace: workspace)
-            candidate = try frozenCandidate(workspace: workspace, paths: paths.filter { !$0.hasPrefix("tests/") },
+            candidate = try frozenCandidate(workspace: workspace, paths: paths.filter { !snapshot.isTestSource($0) },
                 into: runRoot.appendingPathComponent("frozen-original-suite"))
             for (path, bytes) in snapshot.originalTests {
                 let target = candidate.appendingPathComponent(path)
@@ -259,14 +259,26 @@ struct PythonRegressionSnapshot: Codable {
     let allowedRoots: [String]
     let originalTests: [String: Data]
     let recipeSHA256: String
+    /// Nil decodes the exact historical package-only copy/discovery policy.
+    let discoveryVersion: Int?
+    init(allowedRoots: [String], originalTests: [String: Data], recipeSHA256: String, discoveryVersion: Int? = nil) {
+        self.allowedRoots = allowedRoots; self.originalTests = originalTests
+        self.recipeSHA256 = recipeSHA256; self.discoveryVersion = discoveryVersion
+    }
 
     static func acquire(workspace: String) throws -> Self? {
         let fm = FileManager.default, root = URL(fileURLWithPath: workspace).standardizedFileURL
         guard root.resolvingSymlinksInPath() != fm.homeDirectoryForCurrentUser.resolvingSymlinksInPath(),
               !root.path.lowercased().contains("handy"),
-              (try? fm.attributesOfItem(atPath: root.path)[.type] as? FileAttributeType) == .typeDirectory else { return nil }
+              let rootAttrs = try? fm.attributesOfItem(atPath: root.path),
+              rootAttrs[.type] as? FileAttributeType == .typeDirectory,
+              (rootAttrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+              ((rootAttrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0 else { return nil }
         let readme = root.appendingPathComponent("README.md")
         guard let attr = try? fm.attributesOfItem(atPath: readme.path), attr[.type] as? FileAttributeType == .typeRegular,
+              (attr[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+              ((attr[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
+              (attr[.referenceCount] as? NSNumber)?.intValue == 1,
               (attr[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000,
               let bytes = try? Data(contentsOf: readme), let text = String(data: bytes, encoding: .utf8),
               text.range(of: #"(?m)^\s*python3 -m unittest(?: -v)?\s*$"#, options: .regularExpression) != nil else { return nil }
@@ -276,6 +288,8 @@ struct PythonRegressionSnapshot: Codable {
             let name = child.lastPathComponent
             guard !name.lowercased().contains("handy"), !["venv", "node_modules", "auth", "oauth", "credentials", "keychain", "logs", "sessions"].contains(name.lowercased()) else { continue }
             let attrs = try fm.attributesOfItem(atPath: child.path)
+            if name.hasPrefix("test"), name.hasSuffix(".py"),
+               name.range(of: #"^test[A-Za-z0-9_]{0,60}\.py$"#, options: .regularExpression) == nil { return nil }
             if name.range(of: #"^[A-Za-z_][A-Za-z0-9_]{0,63}\.py$"#, options: .regularExpression) != nil {
                 guard attrs[.type] as? FileAttributeType == .typeRegular else { return nil }
                 roots.append(name)
@@ -285,21 +299,64 @@ struct PythonRegressionSnapshot: Codable {
                 roots.append(name)
             }
         }
-        guard roots.contains("tests"), roots.count <= 16 else { return nil }
-        let paths = try pythonPaths(workspace: workspace, allowedRoots: roots)
-        guard paths.contains("tests/__init__.py"),
-              paths.contains(where: { $0.hasPrefix("tests/test_") && $0.hasSuffix(".py") }) else { return nil }
+        guard !roots.isEmpty, roots.count <= 16 else { return nil }
+        let paths = try pythonPaths(workspace: workspace, allowedRoots: roots, strictCustody: true)
+        let sourcePaths = Set(paths), discovered = paths.filter(isDiscoveryTest)
+        guard !discovered.isEmpty,
+              discovered.allSatisfy({ !$0.contains("/") || $0.hasPrefix("tests/") }) else { return nil }
+        // Standard unittest discovery recurses importable packages, not an
+        // arbitrary directory tree. Do not silently ignore a mixed suite.
+        for path in discovered {
+            let components = path.split(separator: "/").dropLast()
+            var prefix: [Substring] = []
+            for part in components {
+                prefix.append(part)
+                guard sourcePaths.contains(prefix.joined(separator: "/") + "/__init__.py") else { return nil }
+            }
+        }
         var tests: [String: Data] = [:]
-        for path in paths where path.hasPrefix("tests/") { tests[path] = try Data(contentsOf: root.appendingPathComponent(path)) }
-        return Self(allowedRoots: roots.sorted(), originalTests: tests, recipeSHA256: TaskQualityEvidence.digest(bytes))
+        for path in paths where isTestSourcePath(path) { tests[path] = try Data(contentsOf: root.appendingPathComponent(path)) }
+        return Self(allowedRoots: roots.sorted(), originalTests: tests, recipeSHA256: TaskQualityEvidence.digest(bytes), discoveryVersion: 1)
+    }
+
+    private static func isDiscoveryTest(_ path: String) -> Bool {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.hasPrefix("test") && name.hasSuffix(".py")
+    }
+    private static func isTestSourcePath(_ path: String) -> Bool {
+        path.hasPrefix("tests/") || isDiscoveryTest(path)
+    }
+    func isTestSource(_ path: String) -> Bool {
+        discoveryVersion == nil ? path.hasPrefix("tests/") : Self.isTestSourcePath(path)
     }
 
     func candidatePaths(workspace: String) throws -> [String] {
-        try Self.pythonPaths(workspace: workspace, allowedRoots: allowedRoots)
+        if discoveryVersion == nil { return try Self.pythonPaths(workspace: workspace, allowedRoots: allowedRoots) }
+        guard discoveryVersion == 1 else { throw OS1Error.message("Unsupported partial unittest discovery policy") }
+        let root = URL(fileURLWithPath: workspace).standardizedFileURL
+        // The fixed standard-discovery pattern declares this candidate-only
+        // expansion before dispatch; candidate tests never become originals.
+        let addedTests = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).map(\.lastPathComponent).filter {
+            $0.hasPrefix("test") && $0.hasSuffix(".py")
+        }
+        guard addedTests.allSatisfy({ $0.range(of: #"^test[A-Za-z0-9_]{0,60}\.py$"#, options: .regularExpression) != nil }) else {
+            throw OS1Error.message("Partial unittest candidate has an unsupported test module name")
+        }
+        let roots = Set(allowedRoots + addedTests).sorted()
+        guard roots.count <= 16 else { throw OS1Error.message("Partial unittest candidate exceeds bounded project-root budget") }
+        return try Self.pythonPaths(workspace: workspace, allowedRoots: roots, strictCustody: true)
     }
 
-    private static func pythonPaths(workspace: String, allowedRoots: [String]) throws -> [String] {
+    private static func pythonPaths(workspace: String, allowedRoots: [String], strictCustody: Bool = false) throws -> [String] {
         let fm = FileManager.default, root = URL(fileURLWithPath: workspace).standardizedFileURL
+        if strictCustody {
+            let rootAttrs = try fm.attributesOfItem(atPath: root.path)
+            guard rootAttrs[.type] as? FileAttributeType == .typeDirectory,
+                  (rootAttrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+                  ((rootAttrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0 else {
+                throw OS1Error.message("Partial unittest project-root custody is unavailable")
+            }
+        }
         var paths: [String] = [], total = 0
         func visit(_ url: URL, depth: Int) throws {
             guard depth <= 4 else { throw OS1Error.message("Partial unittest source exceeds depth bound") }
@@ -309,6 +366,10 @@ struct PythonRegressionSnapshot: Codable {
                 throw OS1Error.message("Partial unittest source contains a symlink or non-project artifact")
             }
             if type == .typeDirectory {
+                guard !strictCustody || ((attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() &&
+                      ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0) else {
+                    throw OS1Error.message("Partial unittest source directory custody is unavailable")
+                }
                 for child in try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
                     let name = child.lastPathComponent
                     guard !name.hasPrefix("."), !name.lowercased().contains("handy"),
@@ -318,6 +379,11 @@ struct PythonRegressionSnapshot: Codable {
                     }
                 }
             } else if url.pathExtension == "py" {
+                guard !strictCustody || ((attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() &&
+                      ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0 &&
+                      (attrs[.referenceCount] as? NSNumber)?.intValue == 1) else {
+                    throw OS1Error.message("Partial unittest source ownership or link custody is unavailable")
+                }
                 let size = (attrs[.size] as? NSNumber)?.intValue ?? Int.max
                 guard size >= 0, size <= 256_000, total <= 2_000_000 - size, paths.count < 128 else {
                     throw OS1Error.message("Partial unittest source exceeds bounded Python-file budget")
@@ -336,6 +402,8 @@ struct PythonRegressionSnapshot: Codable {
     }
 
     func checkerBytes() throws -> Data {
+        guard discoveryVersion == nil || discoveryVersion == 1 else { throw OS1Error.message("Unsupported partial unittest discovery policy") }
+        let policy = discoveryVersion == 1 ? "FROZEN_DISCOVERY_POLICY = 'canonical-tests-package-and-flat-test-modules-v1'\n" : ""
         let hashes = originalTests.mapValues { TaskQualityEvidence.digest($0) }
         let encoded = try JSONSerialization.data(withJSONObject: hashes, options: [.sortedKeys, .withoutEscapingSlashes])
         let preamble = "FROZEN_TEST_SHA256 = " + String(decoding: encoded, as: UTF8.self) + "\nFROZEN_RECIPE_SHA256 = '" + recipeSHA256 + "'\n"
@@ -366,7 +434,7 @@ for check_id,workspace,original in [('partial.original_unittest',x['workspace'],
     except Exception as e: results.append({'checkID':check_id,'status':'unverified','score':None,'reason':'bounded_unittest_unavailable','error':str(e)[:2000]})
 print(json.dumps(results))
 """#
-        return Data((preamble + runner).utf8)
+        return Data((policy + preamble + runner).utf8)
     }
 }
 
@@ -506,6 +574,7 @@ func taskQualityReferencePolicySHA256(config: RuntimeConfig) -> String {
 /// Existing os1 self-test coverage. Local deterministic fixtures only: no model,
 /// network, live registry, account credential or user worktree is involved.
 func taskQualityRuntimeSelfTest() throws {
+    try pythonRegressionLayoutSelfTest()
     let fm = FileManager.default
     let versionedDeveloper = "/Applications/Xcode_16.4.app/Contents/Developer"
     let canonicalVersionedDeveloper = URL(fileURLWithPath: versionedDeveloper).resolvingSymlinksInPath().standardizedFileURL.path
@@ -775,6 +844,141 @@ func taskQualityRuntimeSelfTest() throws {
     print("OS-1 task-quality runtime: copied-artifact pass/fail, raw preservation, no fabricated parity, current/legacy summary roundtrip PASS; model calls 0")
     print("OS-1 partial unittest runtime: frozen-original + actual candidate suites, added-failure veto, weakened/deleted-test + retry-custody preservation, partial-pass/setup unverified PASS; model calls 0")
     print("OS-1 quality continuation: actual failed writer witness → one correction → frozen checker/context-tree rebind → real partial-suite pass; rejected artifact preserved, no reference parity; model calls 0")
+}
+
+/// Synthetic standard-discovery layouts only; no provider or evaluation gold.
+private func pythonRegressionLayoutSelfTest() throws {
+    let fm = FileManager.default
+    let base = fm.temporaryDirectory.appendingPathComponent("os1-unittest-layout-" + UUID().uuidString).resolvingSymlinksInPath()
+    try fm.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    var succeeded = false, checks = 0
+    defer { if succeeded { try? fm.removeItem(at: base) } else { print("Flat unittest fixture evidence retained: \(base.path)") } }
+    func check(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+        guard try value() else { throw OS1Error.message("Unittest layout fixture: " + label) }; checks += 1
+    }
+    func rejects(_ label: String, _ action: () throws -> Void) throws {
+        do { try action() } catch { checks += 1; return }; throw OS1Error.message("Unittest layout fixture: " + label)
+    }
+    func put(_ workspace: URL, _ path: String, _ text: String) throws {
+        let file = workspace.appendingPathComponent(path)
+        try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try Data(text.utf8).write(to: file)
+    }
+    let workspace = base.appendingPathComponent("flat"), contractRoot = base.appendingPathComponent("contracts-unregistered")
+    try put(workspace, "README.md", "Public fixture recipe:\npython3 -m unittest -v\n")
+    try put(workspace, "module.py", "VALUE = 2\n")
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) == nil, "README without tests cannot invent a suite")
+    let original = "import unittest, module\nclass T(unittest.TestCase):\n def test_value(self): self.assertEqual(module.VALUE, 2)\n"
+    try put(workspace, "test_public.py", original)
+    guard let flat = try PythonRegressionSnapshot.acquire(workspace: workspace.path) else { throw OS1Error.message("Unittest layout fixture: flat suite was not acquired") }
+    try check(Set(flat.originalTests.keys) == ["test_public.py"] && flat.discoveryVersion == 1, "flat original exact test bytes and discovery policy frozen")
+    let legacy = PythonRegressionSnapshot(allowedRoots: flat.allowedRoots, originalTests: flat.originalTests, recipeSHA256: flat.recipeSHA256)
+    let legacyBytes = try JSONEncoder().encode(legacy)
+    try check((try JSONSerialization.jsonObject(with: legacyBytes) as? [String: Any])?["discoveryVersion"] == nil && (try JSONDecoder().decode(PythonRegressionSnapshot.self, from: legacyBytes)).discoveryVersion == nil, "legacy nil version is omitted, not null, and decodes without upgrade")
+    try check(!legacy.isTestSource("test_added.py") && legacy.isTestSource("tests/test_old.py"), "legacy original-copy filter remains tests-only")
+    try check(!(try legacy.checkerBytes()).starts(with: Data("FROZEN_DISCOVERY_POLICY".utf8)) && (try flat.checkerBytes()).starts(with: Data("FROZEN_DISCOVERY_POLICY".utf8)), "new checker hash binds policy while old checker bytes have no marker")
+    let byteFixture = PythonRegressionSnapshot(allowedRoots: ["tests"], originalTests: ["tests/test_old.py": Data("import unittest\n".utf8)], recipeSHA256: String(repeating: "a", count: 64))
+    try check(TaskQualityEvidence.digest(try byteFixture.checkerBytes()) == "07f23156718be10aded21768ff66477367b5e94c63220acfc276fa6344877e59", "legacy checker bytes equal pre-change synthetic fixture, not merely equivalent Python")
+    let unknown = PythonRegressionSnapshot(allowedRoots: flat.allowedRoots, originalTests: flat.originalTests, recipeSHA256: flat.recipeSHA256, discoveryVersion: 2)
+    try rejects("unknown version rejected before copy") { _ = try unknown.candidatePaths(workspace: workspace.path) }
+    try rejects("unknown version rejected before checker execution") { _ = try unknown.checkerBytes() }
+    let h = TaskQualityEvidence.digest(Data("layout fixture".utf8)), objective = "Modify module.py and run the existing public regression tests."
+    func prepare(_ workspace: URL) throws -> PreparedTaskQuality {
+        guard let value = try PreparedTaskQuality.prepare(objective: objective, contextSHA256: h, sourceSHA256: nil,
+            startTreeSHA256: observedStateHash(workspace.path), scope: .workspaceWrite, referencePolicySHA256: h,
+            workspace: workspace.path, rootURL: contractRoot) else { throw OS1Error.message("Unittest layout fixture: public partial contract unavailable") }
+        try check(!value.envelope.contract.fullCoverage && value.envelope.contract.reference == nil, "public suite never becomes full/reference proof")
+        return value
+    }
+    let prepared = try prepare(workspace)
+    func observe(_ prepared: PreparedTaskQuality, _ workspace: URL, _ label: String) throws -> (PreparedTaskQuality.Witness, [[String: Any]]) {
+        let root = base.appendingPathComponent("observed-" + label)
+        let tree = observedStateHash(workspace.path)
+        let artifact = Artifact(provider: "codex", action: "synthetic-layout-fixture", permissionProfile: "workspace_write", model: "fixture",
+            effort: "low", executorContractVersion: "fixture", executorContractSHA256: h, exitCode: 0,
+            output: "Synthetic candidate only", stderr: "", durationMS: 1,
+            workspaceBeforeHash: prepared.envelope.contract.startTreeSHA256, workspaceAfterHash: tree,
+            nativeRecord: NativeRecordEvidence(turnID: "fixture", recordPath: nil, persistence: "verified", desktopVisibility: "fixture"))
+        let witness = try prepared.evaluateWithWitness(artifact: artifact, artifactSHA256: TaskQualityEvidence.digest(try JSONEncoder().encode(artifact)),
+            contextSHA256: h, workspace: workspace.path, executionID: UUID().uuidString, runsRoot: root)
+        let runs = try fm.contentsOfDirectory(at: root.appendingPathComponent("runs"), includingPropertiesForKeys: nil)
+        guard runs.count == 1 else { throw OS1Error.message("Unittest layout fixture: exact checker run identity unavailable") }
+        let bytes = try Data(contentsOf: runs[0].appendingPathComponent("stdout.json"))
+        return (witness, (try? JSONSerialization.jsonObject(with: bytes)) as? [[String: Any]] ?? [])
+    }
+    let baseline = try observe(prepared, workspace, "flat-baseline")
+    if baseline.0.assessment.reason.contains("infrastructure/receipt unavailable") {
+        try check(baseline.0.assessment.state == .unverified && baseline.0.assessment.failedCheckIDs.isEmpty, "infrastructure uncertainty is not known failure")
+        print("Unittest layouts: acquisition \(checks) checks PASS; copied checker infrastructure unavailable; actual flat failure veto NOT VERIFIED")
+        return
+    }
+    try check(baseline.0.assessment.state == .unverified && !baseline.0.assessment.referenceParityVerified, "flat pass stays partial/unverified")
+    try check(baseline.1.count == 2 && baseline.1.allSatisfy { $0["testsRun"] as? Int == 1 && $0["status"] as? String == "passed" }, "actual standard discovery ran one original and one candidate test")
+    try put(workspace, "test_added.py", "import unittest\nclass Added(unittest.TestCase):\n def test_added(self): self.assertTrue(False)\n")
+    try check(try flat.candidatePaths(workspace: workspace.path).contains("test_added.py"), "candidate-added flat test captured by fixed bounded pattern")
+    try check(flat.originalTests["test_added.py"] == nil, "candidate-added flat test never becomes original authority")
+    try check(!(try legacy.candidatePaths(workspace: workspace.path)).contains("test_added.py"), "legacy candidate-path enumeration does not auto-upgrade")
+    try check(prepared.reboundForContinuation(contextSHA256: h, startTreeSHA256: h).frozenRegressionSnapshot?.discoveryVersion == 1, "correction preserves frozen discovery policy")
+    let added = try observe(prepared, workspace, "flat-added-failure")
+    try check(added.0.assessment.state == .mismatch && added.0.assessment.failedCheckIDs == ["partial.candidate_unittest"], "candidate-added flat failure veto remains separate from original suite")
+    try check(added.1.first { $0["checkID"] as? String == "partial.original_unittest" }?["testsRun"] as? Int == 1 && added.1.first { $0["checkID"] as? String == "partial.candidate_unittest" }?["testsRun"] as? Int == 2, "original/candidate discovery counts preserved")
+    try fm.removeItem(at: workspace.appendingPathComponent("test_added.py"))
+    try put(workspace, "module.py", "VALUE = 3\n")
+    try put(workspace, "test_public.py", original.replacingOccurrences(of: "VALUE, 2", with: "VALUE, 3"))
+    let weakened = try observe(prepared, workspace, "flat-weakened")
+    try check(weakened.0.assessment.state == .mismatch && weakened.0.assessment.failedCheckIDs == ["partial.original_unittest"], "weakened flat tests cannot wash original failure")
+    try fm.removeItem(at: workspace.appendingPathComponent("test_public.py"))
+    let deleted = try observe(prepared, workspace, "flat-deleted")
+    try check(deleted.0.assessment.state == .mismatch && deleted.0.assessment.failedCheckIDs == ["partial.original_unittest"], "deleted flat tests cannot bypass frozen original suite")
+    try put(workspace, "module.py", "VALUE = 2\n"); try put(workspace, "test_public.py", original)
+    try put(workspace, "tests/__init__.py", "")
+    try put(workspace, "tests/test_nested.py", "import unittest\nclass Nested(unittest.TestCase):\n def test_nested(self): self.assertTrue(True)\n")
+    guard let mixed = try PythonRegressionSnapshot.acquire(workspace: workspace.path) else { throw OS1Error.message("Unittest layout fixture: mixed suite unavailable") }
+    try check(Set(mixed.originalTests.keys) == ["test_public.py", "tests/__init__.py", "tests/test_nested.py"], "flat and canonical original suites both frozen")
+    let mixedResult = try observe(prepare(workspace), workspace, "mixed")
+    try check(mixedResult.1.count == 2 && mixedResult.1.allSatisfy { $0["testsRun"] as? Int == 2 && $0["status"] as? String == "passed" }, "mixed suites both actually discovered")
+    try fm.removeItem(at: workspace.appendingPathComponent("tests/__init__.py"))
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) == nil, "unimportable mixed test package not silently ignored")
+    try put(workspace, "tests/__init__.py", "")
+    try put(workspace, "ordinary/__init__.py", "VALUE = 2\n")
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) != nil, "ordinary implementation package is allowed without freezing its init")
+    try put(workspace, "ordinary/test_other.py", "import unittest\nclass Other(unittest.TestCase):\n def test_other(self): self.assertTrue(True)\n")
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) == nil, "initial noncanonical nested test authority is unavailable")
+    try fm.removeItem(at: workspace.appendingPathComponent("ordinary/test_other.py"))
+    let beforeAddedNested = try prepare(workspace)
+    try put(workspace, "ordinary/test_added.py", "import unittest\nclass Added(unittest.TestCase):\n def test_added(self): self.assertTrue(False)\n")
+    let nestedAdded = try observe(beforeAddedNested, workspace, "candidate-nested-added")
+    try check(nestedAdded.0.assessment.failedCheckIDs == ["partial.candidate_unittest"] && beforeAddedNested.frozenRegressionSnapshot?.originalTests["ordinary/test_added.py"] == nil && beforeAddedNested.frozenRegressionSnapshot?.originalTests["ordinary/__init__.py"] == nil, "candidate-added package test is a candidate-only failure, not original loader authority")
+    try fm.removeItem(at: workspace.appendingPathComponent("ordinary/test_added.py"))
+    let empty = base.appendingPathComponent("empty")
+    try put(empty, "README.md", "python3 -m unittest\n"); try put(empty, "test_empty.py", "")
+    let emptyResult = try observe(prepare(empty), empty, "zero-tests")
+    try check(emptyResult.0.assessment.state == .unverified && emptyResult.0.assessment.failedCheckIDs.isEmpty && emptyResult.1.allSatisfy { $0["testsRun"] as? Int == 0 && $0["status"] as? String == "unverified" }, "zero tests remain unverified")
+    try put(empty, "test_empty.py", "import missing_os1_layout_fixture_dependency\n")
+    let setup = try observe(prepare(empty), empty, "setup-error")
+    try check(setup.0.assessment.state == .unverified && setup.0.assessment.failedCheckIDs.isEmpty, "import/setup error is not assertion failure")
+    let link = workspace.appendingPathComponent("test_link.py")
+    try fm.createSymbolicLink(at: link, withDestinationURL: workspace.appendingPathComponent("test_public.py"))
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) == nil, "symlink flat source rejected before freezing")
+    try rejects("candidate-added symlink rejected") { _ = try flat.candidatePaths(workspace: workspace.path) }
+    try fm.removeItem(at: link)
+    try fm.linkItem(at: workspace.appendingPathComponent("test_public.py"), to: link)
+    try rejects("hardlinked test source rejected") { _ = try PythonRegressionSnapshot.acquire(workspace: workspace.path) }
+    try fm.removeItem(at: link)
+    try fm.setAttributes([.posixPermissions: 0o666], ofItemAtPath: workspace.appendingPathComponent("test_public.py").path)
+    try rejects("others-writable source rejected") { _ = try PythonRegressionSnapshot.acquire(workspace: workspace.path) }
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: workspace.appendingPathComponent("test_public.py").path)
+    try fm.setAttributes([.posixPermissions: 0o777], ofItemAtPath: workspace.path)
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) == nil, "others-writable project root rejected")
+    try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: workspace.path)
+    try put(workspace, "test_oversize.py", String(repeating: "x", count: 256_001))
+    try rejects("Python-file byte bound retained") { _ = try flat.candidatePaths(workspace: workspace.path) }
+    try fm.removeItem(at: workspace.appendingPathComponent("test_oversize.py"))
+    for i in 0..<17 { try put(workspace, "test_bound_\(i).py", "") }
+    try check(PythonRegressionSnapshot.acquire(workspace: workspace.path) == nil, "sixteen-root acquisition bound retained")
+    try rejects("sixteen-root candidate bound retained") { _ = try flat.candidatePaths(workspace: workspace.path) }
+    succeeded = true
+    print("OS-1 flat/mixed unittest layouts: \(checks) checks PASS; actual counts, added-failure veto, frozen-original weak/delete, setup/zero/symlink/custody/bounds; model calls 0")
 }
 
 /// Existing operational checker execution in the CURRENT native adapter.
