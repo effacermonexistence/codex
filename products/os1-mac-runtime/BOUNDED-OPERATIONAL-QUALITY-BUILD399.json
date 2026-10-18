@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "build": 399,
+  "version": "0.9.333",
+  "status": "implementation_candidate_not_quality_parity_proof",
+  "source_lineage": "accepted installed398 7b97c031d1768c26bf2498d4132dbab76edd315e; os1/quality-parity-20261017, not divergent repository main",
+  "changes": [
+    "Bind existing operational checker to native RCC artifact, preserve failure first",
+    "Same Core owns one same-config fresh-session correction, with private one-use claim, exact content custody and local-effects enforcement",
+    "Typed trusted local-effects declaration narrows only opted-in jobs, not default full-scope capabilities",
+    "Task-wide native-parent dispatch admission cap optional1..64; old requests unchanged",
+    "Checker infrastructure and invalid/late decision HOLD; no blind replay or flagship escalation",
+    "Partial child checks cannot mint parent/reference parity; native settings stay requested/acknowledged/observed-separated"
+  ],
+  "regression_scope": "Fake/native-contract fixtures and source checks do not establish actual model quality; real pilot tracked privately",
+  "operational_vs_evaluation": "Public project tests may guide correction. Hidden evaluation/gold/reference scores never enter runtime adoption.",
+  "native_boundary": "Pinned native Codex permission profile and known hook/native maintenance TCB; no universal OS-escape claim; changed/unknown sources HOLD",
+  "resource_boundary": "max_native_dispatches counts native executor parent admissions, not internal backend/subagent provider calls or quota percentage",
+  "artifacts": {
+    "rcc-runtime.mjs": "4a40c9ec53749a53abec85cbed637c7cd71556ce297f918956f1997f04df065b",
+    "rcc-plugin.mjs": "e4423512254e540cc7a09baf2fba802ed1c57fd66a3989b22ac21e667b4dd35f"
+  },
+  "actual_model_comparison": "NOT_YET_EXECUTED",
+  "anthropic_reference": "normal weekly quota currently exhausted, no billing or account bypass",
+  "preserved": "Accepted398 source/install artifacts, sessions/queues/drafts, historical395-398 failed answers and graders"
+}

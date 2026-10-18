@@ -6314,7 +6314,7 @@ final class CodexAppServerClient: @unchecked Sendable {
 
     init(executable: String, workspace: String, onLaunch: (() -> Void)? = nil,
          steering: ExecutionSteering = ExecutionSteering(), submissionID: UUID? = nil,
-         configOverrides: [String] = []) throws {
+         configOverrides: [String] = [], environmentOverrides: [String: String] = [:]) throws {
         self.steering = steering
         self.steeringSubmission = submissionID
         let temporary = FileManager.default.temporaryDirectory
@@ -6332,6 +6332,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         process.environment = ProviderExecutionEnvironment
             .marked(ProcessInfo.processInfo.environment)
             .merging(backendAccountEnvironment("codex")) { _, new in new }
+            .merging(environmentOverrides) { _, new in new }
         process.currentDirectoryURL = URL(fileURLWithPath: workspace, isDirectory: true)
         process.standardInput = input
         process.standardOutput = output
@@ -6442,6 +6443,61 @@ final class CodexAppServerClient: @unchecked Sendable {
         return (account, effective)
     }
 
+    func localQualityConfiguration(workspace: String, deadline: Date) throws -> [String: Any] {
+        let result = try request("config/read", params: ["includeLayers": false, "cwd": workspace], deadline: deadline)
+        guard let config = result["config"] as? [String: Any] else { throw RCCOperationalQuality.Failure.unavailable }
+        return config
+    }
+    func localQualityHooks(workspace: String, deadline: Date) throws -> [String: Any] {
+        try request("hooks/list", params: ["cwds": [workspace]], deadline: deadline)
+    }
+    func localQualityMCP(threadID: String? = nil, deadline: Date) throws -> [[String: Any]] {
+        var rows: [[String: Any]] = [], cursor: String?, seen = Set<String>()
+        repeat {
+            var params: [String: Any] = ["limit": 100, "detail": "toolsAndAuthOnly"]
+            if let threadID { params["threadId"] = threadID }; if let cursor { params["cursor"] = cursor }
+            let page = try request("mcpServerStatus/list", params: params, deadline: deadline)
+            guard let values = page["data"] as? [[String: Any]], rows.count + values.count <= 256 else { throw RCCOperationalQuality.Failure.unavailable }
+            rows += values
+            if page["nextCursor"] is NSNull || page["nextCursor"] == nil { cursor = nil }
+            else if let next = page["nextCursor"] as? String, !next.isEmpty, seen.insert(next).inserted { cursor = next }
+            else { throw RCCOperationalQuality.Failure.unavailable }
+        } while cursor != nil
+        return rows
+    }
+    func localQualityPlugins(workspace: String, deadline: Date) throws -> [[String: Any]] {
+        let result = try request("plugin/installed", params: ["cwds": [workspace]], deadline: deadline)
+        guard let markets = result["marketplaces"] as? [[String: Any]], markets.count <= 64,
+            (result["marketplaceLoadErrors"] as? [Any])?.isEmpty == true else { throw RCCOperationalQuality.Failure.unavailable }
+        var plugins: [[String: Any]] = []
+        for market in markets {
+            guard let summaries = market["plugins"] as? [[String: Any]], summaries.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
+            for summary in summaries where summary["enabled"] as? Bool == true && summary["installed"] as? Bool == true {
+                guard let name = summary["name"] as? String else { throw RCCOperationalQuality.Failure.unavailable }
+                var params: [String: Any] = ["pluginName": name]
+                if let path = market["path"] as? String { params["marketplacePath"] = path }
+                else if let name = market["name"] as? String { params["remoteMarketplaceName"] = name }
+                else { throw RCCOperationalQuality.Failure.unavailable }
+                let response: [String: Any]
+                do { response = try request("plugin/read", params: params, deadline: deadline, permitRemoteDefinition404: true) }
+                catch is RemotePluginDefinition404 {
+                    guard !ExecutionCancellation.isCancelled, let source = summary["source"] as? [String: Any],
+                        source["type"] as? String == "remote", let id = summary["id"] as? String,
+                        RCCNativeLocalQualityProfile.key(id), (id.hasPrefix("app-") || id.hasPrefix("dev-")),
+                        params["remoteMarketplaceName"] != nil else { throw RCCOperationalQuality.Failure.unavailable }
+                    // NOT an empty definition: only the native, non-bypassed
+                    // trust gate may make an untrusted remote namespace inert.
+                    plugins.append(["summary": summary, "unavailable": true]); continue
+                }
+                guard let plugin = response["plugin"] as? [String: Any], let actual = plugin["summary"] as? [String: Any],
+                    actual["id"] as? String == summary["id"] as? String else { throw RCCOperationalQuality.Failure.unavailable }
+                plugins.append(plugin)
+                guard plugins.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
+            }
+        }
+        return plugins
+    }
+
     // Metadata only: never starts/resumes a turn or acquires its writer.
     func moveSidebarThread(id: String, pinned: Bool, before: String?, deadline: Date) throws {
         let sections = try request("threadSection/list", params: [:], deadline: deadline)
@@ -6491,7 +6547,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         instructions: String,
         permissionProfile: String,
         title: String,
-        deadline: Date
+        deadline: Date,
+        metadataOnly: Bool = false
     ) throws -> String {
         ownsThreadWriter = false
         let sandbox: String
@@ -6510,6 +6567,17 @@ final class CodexAppServerClient: @unchecked Sendable {
             "runtimeWorkspaceRoots": [workspace],
         ]
         if let model { params["model"] = model }
+        let localProfile = RCCNativeLocalQualityProfile.Context.current
+        guard !metadataOnly || localProfile != nil else { throw RCCOperationalQuality.Failure.binding }
+        if let localProfile {
+            guard existingSessionID == nil, permissionProfile == localProfile.ticket.selectedConfig.permissionProfile.rawValue, workspace == localProfile.workspace else { throw RCCOperationalQuality.Failure.binding }
+            params.removeValue(forKey: "sandbox")
+            params["permissions"] = RCCNativeLocalQualityProfile.profileID
+            params["approvalPolicy"] = "never"; params["dynamicTools"] = []
+            params["runtimeWorkspaceRoots"] = [workspace, localProfile.scratch]
+            params["allowProviderModelFallback"] = false
+            params["config"] = ["bypass_hook_trust": false]
+        }
 
         let result: [String: Any]
         let forkedFromDesktopOwnedThread = false
@@ -6530,13 +6598,22 @@ final class CodexAppServerClient: @unchecked Sendable {
                 return existingSessionID
             }
         } else {
-            params["ephemeral"] = false
+            params["ephemeral"] = metadataOnly
             params["historyMode"] = "paginated"
             params["threadSource"] = "os1"
             params["serviceName"] = "OS-1"
             result = try request("thread/start", params: params, deadline: deadline)
         }
 
+        if let localProfile {
+            guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else { throw RCCOperationalQuality.Failure.unavailable }
+            try localProfile.verifyThread(result, mcp: localQualityMCP(threadID: id, deadline: deadline))
+            try localProfile.validateHooks(localQualityHooks(workspace: workspace, deadline: deadline), environment: process.environment ?? [:])
+            try localProfile.verifyConfiguration(localQualityConfiguration(workspace: workspace, deadline: deadline))
+            guard let executable = process.executableURL?.path else { throw RCCOperationalQuality.Failure.unavailable }
+            try localProfile.verifyRunningNative(pid: process.processIdentifier)
+            try localProfile.recordVerified(executable: executable)
+        }
         AttemptLatencyTrace.mark(existingSessionID == nil ? "thread_started" : "thread_resumed")
         guard var thread = result["thread"] as? [String: Any],
               let rawID = thread["id"] as? String,
@@ -6575,6 +6652,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             threadID = migratedID
         }
 
+        if metadataOnly { return threadID }
         let existingName = (thread["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         // A fork is the new writable/visible continuation, so name it after
         // the request that created this handoff instead of inheriting a stale
@@ -6623,11 +6701,11 @@ final class CodexAppServerClient: @unchecked Sendable {
         permissionProfile: String,
         deadline: Date,
         idleTimeout: TimeInterval? = nil,
-        onDispatch: (() -> Void)? = nil,
+        onDispatch: (() throws -> Void)? = nil,
         onStarted: (() -> Void)? = nil
     ) throws -> CodexTurnOutput {
         approvalThread = threadID
-        approvalScopeAllowsTools = permissionProfile == "workspace_write"
+        approvalScopeAllowsTools = permissionProfile == "workspace_write" && RCCNativeLocalQualityProfile.Context.current == nil
         approvalDeadline = deadline
         nativeApprovedApps.removeAll()
         defer { approvalThread = nil; approvalScopeAllowsTools = false; nativeApprovedApps.removeAll() }
@@ -6665,9 +6743,15 @@ final class CodexAppServerClient: @unchecked Sendable {
             "turnTrigger": "os1",
         ]
         if let model { params["model"] = model }
+        if let localProfile = RCCNativeLocalQualityProfile.Context.current {
+            guard localProfile.workspace == workspace else { throw RCCOperationalQuality.Failure.binding }
+            params.removeValue(forKey: "sandboxPolicy"); params["permissions"] = RCCNativeLocalQualityProfile.profileID
+            params["approvalPolicy"] = "never"; params["runtimeWorkspaceRoots"] = [workspace, localProfile.scratch]
+            try localProfile.beforeDispatch()
+        }
         // Mark before writing the request: a closed transport does not prove
         // that the peer failed to receive or begin the turn.
-        onDispatch?()
+        try onDispatch?()
         let result = try request("turn/start", params: params, deadline: deadline)
         guard let turn = result["turn"] as? [String: Any], let turnID = turn["id"] as? String else {
             throw OS1Error.message("Codex did not start a persistent desktop turn")
@@ -6875,7 +6959,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         return thread
     }
 
-    private func request(_ method: String, params: [String: Any], deadline: Date) throws -> [String: Any] {
+    private struct RemotePluginDefinition404: Error {}
+    private func request(_ method: String, params: [String: Any], deadline: Date, permitRemoteDefinition404: Bool = false) throws -> [String: Any] {
         let requestID = nextRequestID
         nextRequestID += 1
         try send(["jsonrpc": "2.0", "id": requestID, "method": method, "params": params])
@@ -6890,6 +6975,12 @@ final class CodexAppServerClient: @unchecked Sendable {
                 continue
             }
             if let error = message["error"] {
+                if permitRemoteDefinition404, method == "plugin/read", let row = error as? [String: Any],
+                    row["code"] as? Int == -32600, let detail = row["message"] as? String,
+                    detail.hasPrefix("read remote plugin details: remote plugin catalog request to https://chatgpt.com/backend-api/ps/plugins/"),
+                    detail.hasSuffix("failed with status 404 Not Found: {\"detail\":\"Plugin not found\"}") {
+                    throw RemotePluginDefinition404()
+                }
                 if let blocker = BackendBlocker.reported(in: (error as? [String: Any])?["message"] as? String ?? "") {
                     throw OS1Error.backendBlocked(blocker)
                 }
@@ -7046,6 +7137,31 @@ final class CodexDesktopTurnObservation {
 
 /// Desktop executes and supplies live owner snapshots. No second writer
 /// and no CLI fallback after a possibly delivered start request.
+private func rccLocalQualityAppServer(executable codex: String, workspace codexWorkspace: String,
+    baseOverrides: [String], profile localQualityProfile: RCCNativeLocalQualityProfile?, submissionID codexSubmissionID: UUID?, deadline: Date) throws -> CodexAppServerClient {
+    var codexConfigOverrides = baseOverrides
+    if let localQualityProfile {
+        guard codexWorkspace == localQualityProfile.workspace else { throw RCCOperationalQuality.Failure.binding }
+            // Metadata discovery does not start a thread/turn/model. Scope
+            // actual root and plugin MCP connections off in the owned process,
+            // retaining all hook/package/security controls.
+            let discovery = try CodexAppServerClient(executable: codex, workspace: codexWorkspace, configOverrides: codexConfigOverrides)
+            defer { discovery.close() }
+            try localQualityProfile.bindNative(executable: codex)
+            try discovery.initialize(deadline: deadline)
+            let effective = try discovery.localQualityConfiguration(workspace: codexWorkspace, deadline: deadline)
+            try localQualityProfile.validateHooks(discovery.localQualityHooks(workspace: codexWorkspace, deadline: deadline),
+                environment: ProviderExecutionEnvironment.marked(ProcessInfo.processInfo.environment).merging(backendAccountEnvironment("codex")) { _, new in new })
+            let plugins = try discovery.localQualityPlugins(workspace: codexWorkspace, deadline: deadline)
+            codexConfigOverrides += try localQualityProfile.pluginOverrides(plugins, mcp: [], config: effective)
+            try localQualityProfile.bindTrustState(effective)
+            codexConfigOverrides += localQualityProfile.fixedOverrides
+            discovery.close()
+    }
+    return try CodexAppServerClient(executable: codex, workspace: codexWorkspace, submissionID: codexSubmissionID,
+        configOverrides: codexConfigOverrides, environmentOverrides: localQualityProfile?.environment ?? [:])
+}
+
 func runCodexDesktopTurn(executable: String, threadID: String, prompt: String, workspace: String,
                          model: String?, effort: String, permissionProfile: String, instructions: String, deadline: Date,
                          idleTimeout: TimeInterval? = nil,
@@ -7990,7 +8106,8 @@ private func execute(
                                   "Running a tool-free GPT model using Codex allowance · this is not the separate ordinary ChatGPT chat transport."))
         }
         let codexWorkspace = gptChat ? executionWorkspace : workspace
-        let previousID = try normalizedSessionID(providerSessionID)
+        let localQualityProfile = RCCNativeLocalQualityProfile.Context.current
+        let previousID = try normalizedSessionID(localQualityProfile == nil ? providerSessionID : nil)
         let previousMeasured = MemoryContextMeter.readNative(provider: "codex", id: previousID)
         let contextBudget = try memoryTurn.map { try pagingBudget(manifest: $0, provider: "codex", model: model,
             previousID: previousID, prompt: prompt, instructions: instructions,
@@ -8011,23 +8128,22 @@ private func execute(
         }
         codexConfigOverrides.append(contentsOf: codexLeanInstructionOverrides())
         codexConfigOverrides.append(contentsOf: chatOverrides)
-        if let memoryTurn {
+        if let memoryTurn, localQualityProfile == nil {
             codexConfigOverrides.append(contentsOf: MemoryPaging.codexOverrides(memoryTurn, executable: currentOS1Executable()))
         }
         if let contextBudget {
             codexConfigOverrides.append("model_auto_compact_token_limit=\(contextBudget.softLimitTokens)")
             codexConfigOverrides.append("model_auto_compact_token_limit_scope=\"total\"")
         }
-        if CheckoutTurn.enabled && !gptChat && ticket.permissionProfile == "workspace_write" {
+        if CheckoutTurn.enabled && !gptChat && ticket.permissionProfile == "workspace_write" && localQualityProfile == nil {
             codexConfigOverrides.append(contentsOf: CheckoutTurn.codexConfigOverrides(
                 os1Executable: currentOS1Executable(), executionID: ticket.executionID))
         }
         // Managed delegation only (ParallelAgentRuntime): this OS-1-owned app
         // server runs with Codex's own multi-agent features off per process.
         codexConfigOverrides = ParallelAgentRuntime.codexDelegationOverrides(codexConfigOverrides)
-        let appServer = try CodexAppServerClient(executable: codex, workspace: codexWorkspace,
-            submissionID: codexSubmissionID,
-            configOverrides: codexConfigOverrides)
+        let appServer = try rccLocalQualityAppServer(executable: codex, workspace: codexWorkspace,
+            baseOverrides: codexConfigOverrides, profile: localQualityProfile, submissionID: codexSubmissionID, deadline: deadline)
         defer { appServer.close() }
         try appServer.initialize(deadline: deadline)
         AttemptLatencyTrace.mark("codex_initialized")
@@ -8108,6 +8224,7 @@ private func execute(
                         onDispatch?(actualSessionID)
                     })
             } else {
+                guard localQualityProfile == nil else { throw RCCOperationalQuality.Failure.unavailable }
                 executedDesktopVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: false)
                 appServer.applyPendingThreadName(deadline: min(deadline, Date().addingTimeInterval(10)))
                 appServer.close()
@@ -17801,6 +17918,19 @@ struct OS1Main {
                 }
                 let output = try RCCCoreRoutingCompiler.compileEnvelope(rccPrivateInput(arguments[2]))
                 print(String(decoding: output, as: UTF8.self))
+            case "rcc-quality-public-draft":
+                guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOperationalQuality.Failure.binding }
+                let ticket = try RCCRuntimeContract.decodeTicket(rccPrivateInput(arguments[2]))
+                print(String(decoding: try RCCOperationalQuality.publicContractDraft(ticket: ticket), as: UTF8.self))
+            case "rcc-native-local-preflight":
+                guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOperationalQuality.Failure.binding }
+                print(String(decoding: try rccNativeLocalPreflight(rccPrivateInput(arguments[2])), as: UTF8.self))
+            case "rcc-quality-decision":
+                guard arguments.count == 3, arguments[1] == "--request-file" else {
+                    throw OS1Error.message("RCC quality decision accepts one private bound input")
+                }
+                let output = try RCCOperationalQuality.decision(rccPrivateInput(arguments[2]), cancelled: ExecutionCancellation.isCancelled)
+                print(String(decoding: output, as: UTF8.self))
             case "rcc-catalog", "rcc-adapter":
                 guard arguments.count == 3,
                       arguments[1] == (command == "rcc-catalog" ? "--request-file" : "--ticket-file") else {
@@ -17862,6 +17992,9 @@ struct OS1Main {
             case "self-test-task-quality":
                 LiveRunEnvironment.detachCurrentProcess()
                 try taskQualityRuntimeSelfTest()
+                try rccOperationalQualitySelfTest()
+                try rccOperationalQualityWitnessSelfTest()
+            try rccNativeLocalQualityProfileSelfTest()
             case "self-test":
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()
@@ -18674,6 +18807,33 @@ private func rccNativeExactAnswerInstructionsSelfTest() throws {
     print("RCC native exact-answer instructions: \(checks) checks PASS; model calls 0")
 }
 
+private func rccNativeLocalPreflight(_ bytes: Data) throws -> Data {
+    let ticket = try RCCRuntimeContract.decodeTicket(bytes)
+    guard let host = ticket.hostContext, ticket.selectedConfig.surface == .codex,
+        ticket.nativeResumeSessionID == nil, ticket.continuation == nil,
+        RCCRuntimeContract.digest(try RCCRuntimeContract.encode(host)) == ticket.sourceFingerprint,
+        let original = ticket.originalRequest, RCCRuntimeContract.digest(Data(original.utf8)) == ticket.requestSHA256,
+        let boundary = try RCCOperationalQuality.localEffectsBoundary(ticket: ticket) else { throw RCCOperationalQuality.Failure.binding }
+    try host.ownerPolicy?.verifyOriginal()
+    let profile = try RCCNativeLocalQualityProfile(ticket: ticket, workspace: host.workspace, boundary: boundary)
+    let deadline = Date().addingTimeInterval(90)
+    return try RCCNativeLocalQualityProfile.Context.$current.withValue(profile) {
+        let executable = try findExecutable("codex")
+        let client = try rccLocalQualityAppServer(executable: executable, workspace: host.workspace,
+            baseOverrides: [], profile: profile, submissionID: nil, deadline: deadline)
+        defer { client.close() }
+        try client.initialize(deadline: deadline)
+        _ = try client.startOrResumeThread(existingSessionID: nil, workspace: host.workspace, model: ticket.selectedConfig.model,
+            instructions: "OS-1 owned native permission metadata preflight. No model turn is sent.",
+            permissionProfile: ticket.selectedConfig.permissionProfile.rawValue, title: "OS-1 local permission metadata", deadline: deadline, metadataOnly: true)
+        profile.finishObservation()
+        return try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": ticket.taskID, "attempt_id": ticket.attemptID,
+            "status": profile.localOnlyVerified ? "native_profile_verified_no_generation" : "native_profile_unverified",
+            "profile_sha256": profile.receiptSHA256 ?? "", "model_calls": 0, "turn_starts": 0, "thread_starts": 1,
+            "receipt": RCCOperationalQuality.root.deletingLastPathComponent().appendingPathComponent("local-quality-profiles/" + ticket.attemptID + ".json").path], options: [.sortedKeys])
+    }
+}
+
 private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     let t = try RCCRuntimeContract.decodeTicket(bytes)
     guard let h = t.hostContext, let original = t.originalRequest, let objective = t.originalObjective,
@@ -18834,6 +18994,17 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let before = workspaceHash(workspace)
         timing.mark(.workspaceHashReady)
         executionWorkspace = workspace; executionWorkspaceBefore = before
+        // The trusted operational checker is frozen BEFORE any native model
+        // execution. No hidden evaluation/reference answer enters this path.
+        var operationalPreparation = try RCCOperationalQuality.prepare(ticket: t, workspace: workspace, currentTreeSHA256: before)
+        var operationalAssessment: TaskQualityEvidence.Evaluation?
+        let localQualityProfile: RCCNativeLocalQualityProfile?
+        let ownerLocalBoundary = try RCCOperationalQuality.localEffectsBoundary(ticket: t)
+        if provider == "codex", ownerLocalBoundary != nil, sourceRoot == nil,
+           t.continuation == nil, t.nativeResumeSessionID == nil {
+            localQualityProfile = try RCCNativeLocalQualityProfile(ticket: t, workspace: workspace, boundary: ownerLocalBoundary)
+        } else { localQualityProfile = nil }
+        if t.qualityContinuation != nil && localQualityProfile == nil { throw RCCOperationalQuality.Failure.unavailable }
         var measuredUsage: CompletionMeasuredUsage?
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
         \nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. Do not call os1 run/self-repair/self-update, install, restart, merge or push. When source changes are ready, preserve existing changes, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes. The original OpenClaw task performs separate mechanical staging and installation receipt checks; source/build alone is not installed or finished. If a checker/policy/installer needs changing, report it for separate stable review rather than weakening it to pass.
@@ -18848,7 +19019,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // background whose constraints still bind, ids last as audit
         // references (RCCDelegatedEnvelope).
         let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective,
-            continuation: isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") : nil,
+            continuation: isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") : operationalPreparation?.correctionPrompt,
             answerOnly: answerOnly, surface: t.selectedConfig.surface,
             scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion,
             taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)
@@ -18860,7 +19031,8 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             sourceBeforeClean = rccSourceIsVerifiedClean(protectedRoot)
         }
         timing.mark(.executeStarted)
-        let execution = try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
+        let execution = try await RCCNativeLocalQualityProfile.Context.$current.withValue(localQualityProfile) {
+        try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
         try await OS1FullAccessContinuation.$protectedPaths.withValue(isFullAccess ? protected : []) {
         try await OS1ChangeEscalation.$available.withValue(!h.requireReadOnly && t.selectedConfig.scope == .workspaceWrite && sourceRoot != nil) {
         try ParallelAgentRuntime.$managedDelegation.withValue(true) {
@@ -18884,6 +19056,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         }
         }
         }
+        }
+        localQualityProfile?.finishObservation()
+        operationalPreparation?.localOnlyVerified = localQualityProfile?.localOnlyVerified == true
+        operationalPreparation?.nativeProfileSHA256 = localQualityProfile?.receiptSHA256
         timing.mark(.executeReturned)
         let a = execution.artifact
         // execute returned: the native turn ended (a finished answer).
@@ -18923,11 +19099,40 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             scope: t.selectedConfig.scope, unrecoveredBreakdowns: execution.nativeToolBreakdowns) {
             record.error = toolError
         }
+        if verified, let prepared = operationalPreparation, record.handback == nil {
+            do {
+                let artifactSHA = sha256Hex(try RCCOperationalQuality.encoded(a))
+                let checked = try RCCOperationalQuality.finish(prepared, ticket: t, artifact: a,
+                    artifactSHA256: artifactSHA, workspace: workspace)
+                operationalAssessment = checked.assessment
+                record.taskVerified = false; record.taskQuality = .executionOnly; record.parityState = .unverified
+                record.operationalQuality = sourceConfined ? nil : checked.descriptor
+                if !checked.checkerReceiptAvailable {
+                    record.taskQuality = .unverified; record.error = "native_operational_quality_unverified"
+                } else if checked.assessment.state == .mismatch {
+                    record.taskVerified = false; record.taskQuality = .failed
+                    record.error = "native_operational_quality_mismatch"
+                } else if checked.assessment.taskCompletionVerified, checked.descriptor?.coverage == .full {
+                    // This is node operational coverage, not whole-parent or
+                    // latest-flagship parity. Core verifies parent binding.
+                    record.taskVerified = true; record.taskQuality = .taskVerified
+                    record.parityState = .unverified
+                }
+            } catch {
+                record.taskVerified = false; record.taskQuality = .unverified
+                record.error = "native_operational_quality_unverified"
+                operationalAssessment = .init(state: .unverified,
+                    reason: "Operational checker/custody unavailable; candidate preserved, no replay",
+                    contractSHA256: prepared.prepared.envelope.contract.sha256,
+                    artifactSHA256: sha256Hex(try RCCOperationalQuality.encoded(a)),
+                    requiredCheckIDs: prepared.prepared.envelope.contract.requiredCheckIDs, failedCheckIDs: [])
+            }
+        }
         var step = RunStepSummary(sequence: 1, provider: provider, action: signed.action, model: t.selectedConfig.model,
             effort: t.selectedConfig.effort.rawValue, revasDisposition: "execution_only", sessionID: execution.sessionID,
             permissionProfile: signed.permissionProfile, exitCode: a.exitCode, output: a.output, stderr: a.stderr,
             durationMS: a.durationMS, nativeRecord: execution.nativeRecord, surface: surface.rawValue,
-            preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt)
+            preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt, taskQuality: operationalAssessment)
         step.os1SourceConfined = sourceConfined
         step.os1ChangeRequired = step.os1SourceConfined && execution.os1ChangeRequired
         step.os1FullAccessRequired = step.os1SourceConfined && execution.os1FullAccessRequired
@@ -18947,7 +19152,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 sourceHead: head, protectedSourceSHA256: fingerprint,
                 sourceFingerprint: t.sourceFingerprint, requestSHA256: t.requestSHA256, parentAttemptID: t.attemptID)
         }
-        if verified, !ExecutionCancellation.isCancelled, record.handback == nil,
+        if verified, !ExecutionCancellation.isCancelled, record.handback == nil, record.taskQuality != .failed,
            t.selectedConfig.scope == .workspaceWrite, let boundRoot, let prior = protectedSourceAtDispatch,
            prior.changed(), let beforeHead = prior.head, let beforeSHA = prior.fingerprint,
            let head = gitHead(boundRoot), let sourceSHA = OS1SourceWatch.fingerprint(root: boundRoot),

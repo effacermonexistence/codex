@@ -37,6 +37,7 @@ final class SourceContextTests {
             return
         }
         if CommandLine.arguments.contains("--rcc-core-intent-only") { try runRCCCoreRoutingCompilerFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-operational-quality-wire-only") { try runRCCOperationalQualityContractFixtures(); return }
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--rcc-native-catalog-builder-only") { try runRCCNativeCatalogBuilderFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
@@ -65,6 +66,7 @@ final class SourceContextTests {
         try runTaskQualityCorrectionFixtures()
         try runLocalTaskInterpretationFixtures()
         try runRCCRuntimeContractFixture()
+        try runRCCOperationalQualityContractFixtures()
         try runRCCCoreRoutingCompilerFixtures()
         try runRCCNativeCatalogBuilderFixtures()
         try runRCCNativeAttemptOutcomeFixtures()

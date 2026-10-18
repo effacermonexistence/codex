@@ -141,8 +141,8 @@ const NODE_VERIFIER_TIMEOUT_MS = 60_000;
 const LADDER_FAILED_STATES = new Set(['ladder_verifier_failed', 'ladder_not_returned']);
 // Attempt states that are not settled yet (a ledger record names them
 // 'interrupted' when a stop or restart settles the attempt instead).
-const UNSETTLED_ATTEMPT_STATES = new Set(['dispatch_started', 'continuation_dispatch_started', 'node_verifier_pending']);
-const UNSETTLED_DISPATCH_STATES = new Set(['dispatch_started', 'continuation_dispatch_started']);
+const UNSETTLED_ATTEMPT_STATES = new Set(['dispatch_started', 'continuation_dispatch_started', 'quality_dispatch_started', 'node_verifier_pending']);
+const UNSETTLED_DISPATCH_STATES = new Set(['dispatch_started', 'continuation_dispatch_started', 'quality_dispatch_started']);
 // Separate from the attempt budget: how often one node's host-resolved row may
 // be replaced after a pre-dispatch failure, always within the same scope.
 const MAX_RE_RESOLUTIONS = 2;
@@ -423,7 +423,9 @@ function validateTask(task, {allowCoreRouting = false} = {}) {
     sha(Buffer.from(task.request)) === task.request_sha256 && HASH.test(task.policy_sha256) &&
     HASH.test(task.source_fingerprint) && ['auto', 'explicit_routing_test'].includes(task.mode),
   'task_identity_invalid');
-  assert(keys(task.budget, ['max_attempts', 'max_parallel', 'max_cost_units', 'max_duration_ms']) &&
+  assert(keys(task.budget, ['max_attempts', 'max_parallel', 'max_cost_units', 'max_duration_ms',
+      ...(Object.hasOwn(task.budget ?? {}, 'max_native_dispatches') ? ['max_native_dispatches'] : [])]) &&
+    (task.budget.max_native_dispatches == null || int(task.budget.max_native_dispatches, 1, 64)) &&
     int(task.budget.max_attempts, 1, 3) && int(task.budget.max_parallel, 1, 8) &&
     int(task.budget.max_duration_ms, 1_000, 86_400_000) &&
     (task.budget.max_cost_units === null ||
@@ -2397,7 +2399,7 @@ function alive(pid) {
  * registers none, so every graded node runs its reference route. `ledgerStats`
  * overrides the ledger reader the ladder gate uses (tests only); `ledgerLog`
  * receives a ledger write failure code, which never fails or holds a task. */
-export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
+export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, ledgerStats = null, ledgerLog = null} = {}) {
@@ -2411,6 +2413,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   assert(ledgerStats === null || typeof ledgerStats === 'function', 'ledger_stats_invalid');
   assert(ledgerLog === null || typeof ledgerLog === 'function', 'ledger_log_invalid');
   assert(resolveIntent === undefined || typeof resolveIntent === 'function', 'intent_resolver_invalid');
+  assert(decideOperationalQuality === undefined || typeof decideOperationalQuality === 'function', 'quality_decider_invalid');
   await mkdir(stateDir, {recursive: true, mode: 0o700});
   const directory = await lstat(stateDir);
   assert(directory.isDirectory() && !directory.isSymbolicLink() &&
@@ -2448,7 +2451,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   } catch (error) { db.close(); throw error; }
 
   const ledger = openRoutingLedger(stateDir);
-  const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
+  const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, ledger,
@@ -2460,12 +2463,13 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 }
 
 class RCCRuntime {
-  constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, resolveIntent,
+  constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, ledger, ledgerStats, ledgerLog}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
+    this.decideOperationalQuality = decideOperationalQuality;
     this.resolveIntent = resolveIntent;
     this.stageSelfUpdate = stageSelfUpdate;
     this.reconcileInstallation = reconcileInstallation;
@@ -2648,7 +2652,7 @@ class RCCRuntime {
       const now = Date.now();
       const snapshot = {schema: 1, task, fingerprint, state: 'queued', revision: 1,
         created_at_ms: now, cancel_requested: false, catalog: null, plan: null,
-        children: [], result: null, install_handoff: null, error: null, spent_cost_units: 0};
+        children: [], result: null, install_handoff: null, error: null, spent_cost_units: 0, native_dispatches: 0};
       this.db.prepare('INSERT INTO tasks(task_id,fingerprint,snapshot) VALUES(?,?,?)')
         .run(task.task_id, fingerprint, stable(snapshot));
       this.db.prepare('INSERT INTO events(task_id,revision,kind,at_ms,payload) VALUES(?,?,?,?,?)')
@@ -2756,7 +2760,8 @@ class RCCRuntime {
       if (!['planning', 'running', 'cancelling'].includes(state.state)) continue;
       const dispatched = state.children.some(child => child.state === 'running' && child.dispatched_at_ms !== null);
       const pendingContinuation = state.children.some(child =>
-        child.state === 'waiting' && child.continuation?.state === 'pending');
+        child.state === 'waiting' && (child.continuation?.state === 'pending' ||
+          ['decision_pending', 'pending'].includes(child.quality_continuation?.state)));
       const verifierPending = state.children.some(child => verifierPendingChild(child));
       this._update(row.task_id, 'restart_reconciled', snapshot => {
         snapshot.state = dispatched ? 'effects_uncertain' : 'held';
@@ -4039,7 +4044,7 @@ class RCCRuntime {
       'configuration_sha256', 'selected_config', 'status', 'dispatch_stage', 'side_effects',
       'execution_verified', 'task_verified', 'task_quality', 'parity_state'];
     const optional = ['acknowledged_config', 'observed_config', 'output', 'native_receipt',
-      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated'];
+      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality'];
     assert(plain(result) && required.every(key => Object.hasOwn(result, key)) &&
       Object.keys(result).every(key => required.includes(key) || optional.includes(key)) &&
       result.schema === 1 &&
@@ -4083,6 +4088,30 @@ class RCCRuntime {
       'task_quality_upgrade_invalid');
     if (['reference_equivalent', 'reference_above'].includes(result.parity_state))
       assert(result.task_verified, 'parity_upgrade_invalid');
+    if (result.operational_quality != null) {
+      const q = result.operational_quality;
+      assert(keys(q, ['schema', 'coverage', 'assessment_state', 'contract_sha256', 'witness_path',
+        'witness_sha256', 'artifact_sha256', 'workspace_after_sha256', 'failed_check_ids',
+        'corrective_attempts', 'local_only_verified']) && q.schema === 1 &&
+        ['partial', 'full'].includes(q.coverage) &&
+        ['execution_only', 'task_contract_verified', 'unverified', 'mismatch'].includes(q.assessment_state) &&
+        [q.contract_sha256, q.witness_sha256, q.artifact_sha256, q.workspace_after_sha256].every(x => HASH.test(x)) &&
+        boundedText(q.witness_path, 4096) && dirname(q.witness_path) === join(this.stateDir, 'quality-witnesses') &&
+        basename(q.witness_path) === ticket.attempt_id + '.json' &&
+        Array.isArray(q.failed_check_ids) && q.failed_check_ids.length <= 128 &&
+        q.failed_check_ids.every(x => boundedText(x, 256) && !/\p{Cc}/u.test(x)) && new Set(q.failed_check_ids).size === q.failed_check_ids.length &&
+        int(q.corrective_attempts, 0, 1) && typeof q.local_only_verified === 'boolean' &&
+        q.corrective_attempts === (ticket.quality_continuation ? 1 : 0) &&
+        result.execution_verified && result.native_turn_terminated === true &&
+        (q.assessment_state === 'mismatch' ? q.failed_check_ids.length > 0 && !result.task_verified && result.task_quality === 'failed' : q.failed_check_ids.length === 0) &&
+        (q.coverage !== 'partial' || q.assessment_state !== 'task_contract_verified') &&
+        (result.task_verified === (q.assessment_state === 'task_contract_verified')) &&
+        (result.task_quality === 'task_verified' ? q.assessment_state === 'task_contract_verified' : true) &&
+        result.parity_state === 'unverified' && !result.handback && !result.repair_source,
+      'operational_quality_invalid');
+      if (q.assessment_state === 'task_contract_verified')
+        assert(q.coverage === 'full' && result.task_verified, 'operational_quality_upgrade_invalid');
+    }
     if (result.handback != null) validateHandback(result.handback, ticket, result);
     if (result.repair_source != null) validateRepairSource(result.repair_source, ticket, result);
     return immutable(result);
@@ -4098,6 +4127,99 @@ class RCCRuntime {
       }
       state.state = 'held'; state.error = reason;
     });
+  }
+
+  /** The same task owner handles one known local writer correction. The
+   * native host revalidates the frozen contract, content custody and enforced
+   * task-effect boundary. Neither a model verdict nor an adapter retry owns it. */
+  async _prepareQualityCorrection(taskID, node, candidate, result, parentTicket) {
+    const q = result.operational_quality;
+    this._update(taskID, 'quality_candidate_preserved', state => {
+      const child = state.children.find(c => c.id === node.id);
+      child.output = result.output; child.native_receipt = result.native_receipt;
+      child.native_summary = result.native_summary ?? null; child.usage = result.usage ?? null;
+      child.execution_verified = result.execution_verified; child.task_quality = 'failed';
+      child.parity_state = 'unverified'; child.operational_quality = q;
+      child.state = 'waiting'; child.dispatched_at_ms = null;
+      Object.assign(child.attempt_history.at(-1), {state: 'quality_mismatch',
+        native_receipt: result.native_receipt, usage: result.usage ?? null, operational_quality: q});
+      recordTurnSettlement(child.attempt_history.at(-1), result);
+      child.quality_history ??= [];
+      child.quality_history.push({attempt_id: result.attempt_id, output: result.output,
+        native_receipt: result.native_receipt, operational_quality: q});
+      child.quality_continuation = {state: 'decision_pending', parent_attempt_id: result.attempt_id};
+    });
+    const hold = reason => {
+      if (this.closed) return null;
+      this._update(taskID, 'quality_continuation_held', state => {
+        if (TERMINAL.has(state.state)) return;
+        const child = state.children.find(c => c.id === node.id);
+        child.state = 'held'; child.hold_reason = reason; child.finished_at_ms = Date.now();
+        child.quality_continuation.state = 'held';
+      });
+      return null;
+    };
+    const snapshot = this._load(taskID), child = snapshot.children.find(c => c.id === node.id);
+    if (snapshot.cancel_requested || this.stopping) return hold('quality_correction_cancelled');
+    if (candidate.scope !== 'workspace_write' || !q.local_only_verified || !result.native_turn_terminated ||
+        !result.execution_verified || result.status !== 'succeeded' || result.handback || result.repair_source ||
+        q.corrective_attempts !== 0 || child.quality_corrective_attempts || parentTicket.quality_continuation)
+      return hold('quality_correction_boundary_unverified_or_spent');
+    if (child.attempts >= executionTask(snapshot).budget.max_attempts)
+      return hold('quality_correction_attempt_budget_exhausted');
+    if (typeof this.decideOperationalQuality !== 'function') return hold('quality_decider_unavailable');
+    let receiptSHA;
+    try { receiptSHA = await this._verifiedNativeReceiptDigest(result); }
+    catch { return hold('quality_parent_receipt_unavailable'); }
+    let decision;
+    const remaining = executionTask(snapshot).budget.max_duration_ms -
+      (Date.now() - snapshot.created_at_ms - ladderExemptMs(snapshot));
+    if (remaining <= 0) return hold('quality_decision_duration_budget_exhausted');
+    const controller = new AbortController(), controllerID = 'quality-decision-' + result.attempt_id;
+    // This is a bounded read-only host command, never a provider retry. The
+    // pinned nativeOperation aborts/kills its exact child and awaits close.
+    const decisionTimer = setTimeout(() => controller.abort(new RCCRuntimeError('quality_decision_timeout')),
+      Math.min(10_000, remaining));
+    decisionTimer.unref?.();
+    this.controllers.set(controllerID, {taskID, controller});
+    try {
+      decision = await this.decideOperationalQuality(immutable({schema: 1, parent_ticket: parentTicket,
+        parent_native_receipt: result.native_receipt, parent_native_receipt_sha256: receiptSHA}), controller.signal);
+      assert(!controller.signal.aborted, 'quality_decision_aborted');
+      assert(keys(decision, ['schema', 'task_id', 'node_id', 'parent_attempt_id', 'action', 'reason', 'quality_continuation']) &&
+        decision.schema === 1 && decision.task_id === taskID && decision.node_id === node.id &&
+        decision.parent_attempt_id === result.attempt_id && ['correct', 'hold', 'none'].includes(decision.action) &&
+        boundedText(decision.reason, 1024), 'quality_decision_invalid');
+      const c = decision.quality_continuation;
+      if (decision.action === 'correct') assert(keys(c, ['schema', 'parent_attempt_id', 'parent_native_receipt',
+        'parent_native_receipt_sha256', 'witness_path', 'witness_sha256', 'expected_workspace_after_sha256',
+        'original_instruction_sha256', 'corrective_attempts']) && c.schema === 1 && c.corrective_attempts === 1 &&
+        c.parent_attempt_id === result.attempt_id && c.parent_native_receipt === result.native_receipt &&
+        c.parent_native_receipt_sha256 === receiptSHA && c.witness_path === q.witness_path &&
+        c.witness_sha256 === q.witness_sha256 && c.expected_workspace_after_sha256 === q.workspace_after_sha256 &&
+        c.original_instruction_sha256 === sha(Buffer.from(node.instruction)), 'quality_continuation_binding_invalid');
+      else assert(c == null, 'quality_decision_invalid');
+    } catch { return hold(controller.signal.aborted ? 'quality_decision_aborted' : 'quality_decision_or_binding_unavailable'); }
+    finally { clearTimeout(decisionTimer); this.controllers.delete(controllerID); }
+    if (this.closed) return null;
+    const current = this._load(taskID);
+    if (current.cancel_requested || this.stopping || TERMINAL.has(current.state)) return hold('quality_correction_cancelled');
+    if (decision.action !== 'correct') return hold(decision.reason);
+    // Same exact row only; quota/source checks never authorize a different
+    // model, effort, account, scope or reference route for a written workspace.
+    try {
+      const fresh = await this._refreshCatalog(taskID, [candidate.id]);
+      const row = this._candidate(executionTask(current), fresh, node);
+      assert(row.id === candidate.id && stable(exactConfig(row)) === stable(exactConfig(candidate)), 'quality_candidate_changed');
+    } catch { return hold('quality_candidate_no_longer_available'); }
+    const latest = this._load(taskID);
+    if (latest.cancel_requested || this.stopping || TERMINAL.has(latest.state)) return hold('quality_correction_cancelled');
+    this._update(taskID, 'quality_continuation_intent_recorded', state => {
+      const target = state.children.find(c => c.id === node.id);
+      target.quality_continuation = {state: 'pending', ...decision.quality_continuation};
+      target.quality_corrective_attempts = 1;
+    });
+    return immutable(decision.quality_continuation);
   }
 
   async _continueHandback(taskID, node, candidate, initialResult) {
@@ -4187,7 +4309,7 @@ class RCCRuntime {
         source_fingerprint: executionTask(snapshot).source_fingerprint,
         request_sha256: executionTask(snapshot).request_sha256};
       let route = null;
-      this._update(taskID, 'continuation_dispatch_started', state => {
+      const dispatchAdmitted = this._admitNativeDispatch(taskID, node.id, candidate, 'continuation_dispatch_started', state => {
         const child = state.children.find(c => c.id === node.id);
         child.state = 'running'; child.attempt_id = continuationAttemptID;
         child.attempts += 1; child.dispatched_at_ms = Date.now();
@@ -4197,6 +4319,7 @@ class RCCRuntime {
           candidate_id: candidate.id, state: 'continuation_dispatch_started',
           native_receipt: null, usage: null, ledger: route});
       });
+      if (!dispatchAdmitted) return;
       this.ledgerInflight.set(continuationAttemptID, {taskID, nodeID: node.id, attemptID: continuationAttemptID, route});
       let settled = null;
       try {
@@ -4642,9 +4765,45 @@ class RCCRuntime {
     });
   }
 
+  /** Admission budget for native EXECUTOR submissions, not an estimate of
+   * backend API calls, automatic subagents or quota percentages. The count is
+   * committed with dispatch intent before execute is invoked; ambiguity,
+   * pre-execution failure and ladder exemptions never refund it. No await may
+   * separate this admission from its transactional intent update. */
+  _admitNativeDispatch(taskID, nodeID, candidate, event, update) {
+    const native = candidate.transport !== 'local';
+    const current = this._load(taskID), cap = executionTask(current).budget.max_native_dispatches;
+    const count = snapshot => snapshot.native_dispatches ?? snapshot.children.reduce((total, child) =>
+      total + (child.attempt_history ?? []).filter(entry => {
+        const row = snapshot.catalog?.candidates.find(c => c.id === entry.candidate_id) ??
+          snapshot.bound_rows?.[entry.candidate_id];
+        return row?.transport !== 'local'; // unknown old rows are conservative
+      }).length, 0);
+    if (native && cap != null && count(current) >= cap) {
+      this._update(taskID, 'native_dispatch_budget_exhausted', snapshot => {
+        const child = snapshot.children.find(c => c.id === nodeID);
+        child.state = 'held'; child.hold_reason = 'native_dispatch_budget_exhausted';
+        child.dispatched_at_ms = null; child.finished_at_ms = Date.now();
+        // Already-dispatched siblings retain their result/receipt custody.
+        if (siblingRunning(snapshot, nodeID)) return;
+        snapshot.state = 'held'; snapshot.error = 'native_dispatch_budget_exhausted';
+      });
+      return false;
+    }
+    this._update(taskID, event, snapshot => {
+      if (native) {
+        const observed = count(snapshot);
+        assert(cap == null || observed < cap, 'native_dispatch_budget_raced');
+        snapshot.native_dispatches = observed + 1;
+      }
+      update(snapshot);
+    });
+    return true;
+  }
+
   /** `releaseReservation` (idempotent) frees this node's worker slot and pool
    * reservation once no provider work runs for it, before a node verifier. */
-  async _executeNode(taskID, node, candidate, releaseReservation = null) {
+  async _executeNode(taskID, node, candidate, releaseReservation = null, qualityContinuation = null) {
     const task = executionTask(this._load(taskID));
     const start = this._load(taskID);
     const resolver = Boolean(this._resolverNode(start, node.id));
@@ -4670,20 +4829,29 @@ class RCCRuntime {
       }
       const attemptID = randomUUID();
       const ticket = this._ticket(before, node, candidate, attemptID);
+      if (qualityContinuation) {
+        const stored = before.children.find(c => c.id === node.id).quality_continuation;
+        assert(stored?.state === 'pending' && stored.parent_attempt_id === qualityContinuation.parent_attempt_id &&
+          stored.witness_sha256 === qualityContinuation.witness_sha256, 'quality_continuation_intent_missing');
+        ticket.native_resume_session_id = null;
+        ticket.quality_continuation = immutable(qualityContinuation);
+      }
       let route = null;
-      this._update(taskID, 'dispatch_started', snapshot => {
+      const dispatchAdmitted = this._admitNativeDispatch(taskID, node.id, candidate, qualityContinuation ? 'quality_dispatch_started' : 'dispatch_started', snapshot => {
         const child = snapshot.children.find(c => c.id === node.id);
         child.state = 'running'; child.attempt_id = attemptID; child.attempts += 1;
         child.dispatched_at_ms = Date.now();
         child.started_at_ms ??= child.dispatched_at_ms;
+        if (qualityContinuation) child.quality_continuation.state = 'dispatched';
         child.selected_config = exactConfig(candidate);
         // The route facts the routing ledger records for this attempt, fixed
         // at dispatch (a later escalation or re-resolution changes the child).
         route = this._pendLedger(snapshot, child, candidate, attemptID);
         child.attempt_history.push({attempt_id: attemptID, candidate_id: candidate.id,
-          state: 'dispatch_started', native_receipt: null, usage: null, ledger: route});
+          state: qualityContinuation ? 'quality_dispatch_started' : 'dispatch_started', native_receipt: null, usage: null, ledger: route});
         if (candidate.estimated_cost_units !== null) snapshot.spent_cost_units += candidate.estimated_cost_units;
       });
+      if (!dispatchAdmitted) return;
       this.ledgerInflight.set(attemptID, {taskID, nodeID: node.id, attemptID, route});
       // With a relevant verifier, an attempt that yields nothing to verify
       // counts against its route's parity; a stop or cancel interrupts it.
@@ -4752,6 +4920,31 @@ class RCCRuntime {
           });
           return;
         }
+        if (result.error === 'native_operational_quality_unverified' ||
+            (result.error === 'native_operational_quality_mismatch' && !result.operational_quality)) {
+          // Checker/custody infrastructure failure is neither a model-quality
+          // signal nor permission to escalate/replay a completed writer.
+          this._update(taskID, 'operational_checker_held', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            Object.assign(child, {state: 'held', hold_reason: result.error, output: result.output,
+              execution_verified: result.execution_verified, task_quality: result.task_quality,
+              parity_state: 'unverified', native_receipt: result.native_receipt,
+              native_summary: result.native_summary ?? null, usage: result.usage ?? null,
+              operational_quality: result.operational_quality ?? null, finished_at_ms: Date.now(), dispatched_at_ms: null});
+            Object.assign(child.attempt_history.at(-1), {state: 'operational_checker_held',
+              native_receipt: result.native_receipt, usage: result.usage ?? null});
+            recordTurnSettlement(child.attempt_history.at(-1), result);
+          });
+          return;
+        }
+        if (result.operational_quality?.assessment_state === 'mismatch') {
+          // Persist/settle the failed candidate before any correction. The
+          // existing ladder may not reinterpret this write as a read retry.
+          this._recordLedger(attemptID, result, 'not_registered', 'quality_mismatch');
+          const continuation = await this._prepareQualityCorrection(taskID, node, candidate, result, ticket);
+          if (continuation) await this._executeNode(taskID, node, candidate, releaseReservation, continuation);
+          return;
+        }
         // A handback or a source repair settles this attempt now; record it
         // before the continuation chain or the source stage, not after.
         if (result.handback) {
@@ -4785,6 +4978,7 @@ class RCCRuntime {
             child.execution_verified = discard ? false : result.execution_verified;
             child.task_quality = discard ? 'unverified' : result.task_quality;
             child.parity_state = discard ? 'unverified' : result.parity_state;
+            child.operational_quality = result.operational_quality ?? null;
             child.native_receipt = result.native_receipt;
             child.native_summary = discard ? null : result.native_summary ?? null;
             child.usage = result.usage ?? null;
@@ -4934,7 +5128,12 @@ class RCCRuntime {
     if (!boundedText(output, MAX_OUTPUT_BYTES)) {
       this._hold(taskID, 'combined_output_empty_or_oversize'); return;
     }
-    if (typeof this.verifyTask !== 'function') {
+    const only = ordered.length === 1 ? ordered[0] : null;
+    const originalContractVerified = only?.execution_verified && only?.task_quality === 'task_verified' &&
+      only?.operational_quality?.coverage === 'full' &&
+      only.operational_quality.assessment_state === 'task_contract_verified' &&
+      snapshot.plan.nodes[0].instruction === admittedTask(snapshot).request;
+    if (typeof this.verifyTask !== 'function' && !originalContractVerified) {
       let receipt;
       try { receipt = await this._aggregateReceipt(taskID, ordered, output); }
       catch { this._hold(taskID, 'aggregate_receipt_unavailable'); return; }
@@ -4948,8 +5147,10 @@ class RCCRuntime {
     }
     let verdict;
     try {
-      verdict = await this.verifyTask({task: immutable(admittedTask(snapshot)), plan: immutable(snapshot.plan),
-        children: immutable(snapshot.children)});
+      verdict = originalContractVerified ? {schema: 1, task_id: taskID, task_verified: true,
+        output, parity_state: 'unverified', reason: 'exact_original_operational_contract_verified'} :
+        await this.verifyTask({task: immutable(admittedTask(snapshot)), plan: immutable(snapshot.plan),
+          children: immutable(snapshot.children)});
       assert(keys(verdict, ['schema', 'task_id', 'task_verified', 'output', 'parity_state', 'reason']) &&
         verdict.schema === 1 && verdict.task_id === taskID &&
         typeof verdict.task_verified === 'boolean' &&

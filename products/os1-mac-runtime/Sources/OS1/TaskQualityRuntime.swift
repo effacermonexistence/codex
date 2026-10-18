@@ -20,6 +20,23 @@ struct PreparedTaskQuality {
         let timeoutSeconds: Int
         /// Exact owner-declared candidate paths; an empty list is output-only.
         let workspacePaths: [String]
+        /// Only a trusted pre-dispatch owner contract may narrow this job to
+        /// local model-controlled effects. Automatic test discovery never does.
+        let localEffectsOnly: Bool
+        let publicRegressionSnapshot: PythonRegressionSnapshot?
+        init(contract: TaskQualityEvidence.Contract, checkerSHA256: String, timeoutSeconds: Int, workspacePaths: [String], localEffectsOnly: Bool = false, publicRegressionSnapshot: PythonRegressionSnapshot? = nil) {
+            self.contract = contract; self.checkerSHA256 = checkerSHA256; self.timeoutSeconds = timeoutSeconds
+            self.workspacePaths = workspacePaths; self.localEffectsOnly = localEffectsOnly; self.publicRegressionSnapshot = publicRegressionSnapshot
+        }
+        enum CodingKeys: String, CodingKey { case contract, checkerSHA256, timeoutSeconds, workspacePaths, localEffectsOnly, publicRegressionSnapshot }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            contract = try c.decode(TaskQualityEvidence.Contract.self, forKey: .contract)
+            checkerSHA256 = try c.decode(String.self, forKey: .checkerSHA256); timeoutSeconds = try c.decode(Int.self, forKey: .timeoutSeconds)
+            workspacePaths = try c.decode([String].self, forKey: .workspacePaths)
+            localEffectsOnly = try c.decodeIfPresent(Bool.self, forKey: .localEffectsOnly) ?? false
+            publicRegressionSnapshot = try c.decodeIfPresent(PythonRegressionSnapshot.self, forKey: .publicRegressionSnapshot)
+        }
     }
     let envelope: Envelope
     let checkerBytes: Data
@@ -60,11 +77,13 @@ struct PreparedTaskQuality {
                 requiredCheckIDs: ["partial.original_unittest", "partial.candidate_unittest"], fullCoverage: false,
                 referenceProfiles: [], reference: nil, issuedAt: now, validUntil: now.addingTimeInterval(86_400))
             return Self(envelope: Envelope(contract: contract, checkerSHA256: checkerSHA, timeoutSeconds: 90,
-                workspacePaths: snapshot.allowedRoots), checkerBytes: checker,
+                workspacePaths: snapshot.allowedRoots, publicRegressionSnapshot: snapshot), checkerBytes: checker,
                 referencePolicySHA256: referencePolicySHA256, partialRegression: snapshot)
         }
+        guard path.resolvingSymlinksInPath().path == path.standardizedFileURL.path else { throw OS1Error.message("Task-quality contract source is not canonical") }
         let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
-        guard attrs[.type] as? FileAttributeType == .typeRegular,
+        guard (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(), ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
+              attrs[.type] as? FileAttributeType == .typeRegular,
               (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000 else { throw OS1Error.message("Task-quality contract is not a bounded regular file") }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
         let envelope = try decoder.decode(Envelope.self, from: Data(contentsOf: path))
@@ -77,12 +96,18 @@ struct PreparedTaskQuality {
             throw OS1Error.message("Task-quality contract does not match this exact request/source/reference scope")
         }
         let checker = rootURL.appendingPathComponent("checkers", isDirectory: true).appendingPathComponent(envelope.checkerSHA256 + ".py")
+        guard checker.resolvingSymlinksInPath().path == checker.standardizedFileURL.path else { throw OS1Error.message("Task-quality checker source is not canonical") }
         let checkerAttrs = try FileManager.default.attributesOfItem(atPath: checker.path)
-        guard checkerAttrs[.type] as? FileAttributeType == .typeRegular,
+        guard (checkerAttrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(), ((checkerAttrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
+              checkerAttrs[.type] as? FileAttributeType == .typeRegular,
               (checkerAttrs[.size] as? NSNumber)?.intValue ?? Int.max <= 256_000 else { throw OS1Error.message("Task-quality checker is not a bounded regular file") }
         let bytes = try Data(contentsOf: checker)
         guard TaskQualityEvidence.digest(bytes) == envelope.checkerSHA256 else { throw OS1Error.message("Frozen task-quality checker identity mismatch") }
-        return Self(envelope: envelope, checkerBytes: bytes, referencePolicySHA256: referencePolicySHA256)
+        if let snapshot = envelope.publicRegressionSnapshot {
+            guard snapshot.allowedRoots == envelope.workspacePaths, try snapshot.checkerBytes() == bytes,
+                !envelope.contract.fullCoverage, envelope.contract.reference == nil else { throw OS1Error.message("Public partial suite identity/coverage changed") }
+        }
+        return Self(envelope: envelope, checkerBytes: bytes, referencePolicySHA256: referencePolicySHA256, partialRegression: envelope.publicRegressionSnapshot)
     }
 
     func evaluate(artifact: Artifact, artifactSHA256: String, contextSHA256: String,
@@ -99,7 +124,7 @@ struct PreparedTaskQuality {
         contract.contextSHA256 = contextSHA256
         contract.startTreeSHA256 = startTreeSHA256
         return Self(envelope: Envelope(contract: contract, checkerSHA256: envelope.checkerSHA256,
-            timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths),
+            timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths, localEffectsOnly: envelope.localEffectsOnly, publicRegressionSnapshot: envelope.publicRegressionSnapshot),
             checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression)
     }
 
@@ -230,7 +255,7 @@ private struct TaskQualityCheckerInput: Codable {
 
 /// A narrow existing-recipe acquisition, not inferred full task coverage.
 /// Only Python source in already present package roots plus tests is copied.
-struct PythonRegressionSnapshot {
+struct PythonRegressionSnapshot: Codable {
     let allowedRoots: [String]
     let originalTests: [String: Data]
     let recipeSHA256: String
@@ -750,4 +775,896 @@ func taskQualityRuntimeSelfTest() throws {
     print("OS-1 task-quality runtime: copied-artifact pass/fail, raw preservation, no fabricated parity, current/legacy summary roundtrip PASS; model calls 0")
     print("OS-1 partial unittest runtime: frozen-original + actual candidate suites, added-failure veto, weakened/deleted-test + retry-custody preservation, partial-pass/setup unverified PASS; model calls 0")
     print("OS-1 quality continuation: actual failed writer witness → one correction → frozen checker/context-tree rebind → real partial-suite pass; rejected artifact preserved, no reference parity; model calls 0")
+}
+
+/// Existing operational checker execution in the CURRENT native adapter.
+/// It is not a hidden evaluation scorer, reference selector or retry owner.
+enum RCCOperationalQuality {
+    typealias C = RCCRuntimeContract
+    enum Failure: Error { case custody, binding, unavailable }
+    struct ContentManifest: Codable, Equatable {
+        struct Entry: Codable, Equatable { let path: String; let kind: String; let bytes: Int64; let sha256: String; let mode: UInt16 }
+        let entries: [Entry]
+        var sha256: String { (try? encoded(self)).map(TaskQualityEvidence.digest) ?? "" }
+        /// A bounded exact data-fork/content identity, not the old path/size/
+        /// integer-mtime observation hash. Refuse unknown/sensitive objects.
+        static func capture(workspace: String) throws -> Self {
+            let fm = FileManager.default, root = URL(fileURLWithPath: workspace).standardizedFileURL
+            guard root.path.hasPrefix("/"), root.resolvingSymlinksInPath().path == root.path,
+                  root.path != fm.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path else { throw Failure.custody }
+            var rows: [Entry] = [], total: Int64 = 0, directories: [(String, stat)] = []
+            func same(_ a: stat, _ b: stat) -> Bool {
+                a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode && a.st_uid == b.st_uid &&
+                a.st_gid == b.st_gid && a.st_size == b.st_size && a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec &&
+                a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec && a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec &&
+                a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
+            }
+            func visit(_ path: URL, relative: String, depth: Int) throws {
+                let component = path.lastPathComponent.lowercased()
+                guard depth <= 8, rows.count < 512, !component.contains("handy"),
+                      ![".ssh", ".gnupg", "keychains", "auth.json", "credentials.json", ".claude", ".codex"].contains(component),
+                      !component.hasPrefix(".env") else { throw Failure.custody }
+                var before = stat()
+                guard lstat(path.path, &before) == 0 else { throw Failure.custody }
+                let type = before.st_mode & S_IFMT
+                if type == S_IFDIR {
+                    directories.append((path.path, before))
+                    rows.append(.init(path: relative, kind: "directory", bytes: 0, sha256: "", mode: UInt16(before.st_mode & 0o777)))
+                    for name in try fm.contentsOfDirectory(atPath: path.path).sorted() {
+                        // Git's administrative object graph is not a source
+                        // artifact. Its identity is independently bound below.
+                        if relative.isEmpty && name == ".git" { continue }
+                        try visit(path.appendingPathComponent(name), relative: relative.isEmpty ? name : relative + "/" + name, depth: depth + 1)
+                    }
+                } else if type == S_IFREG {
+                    guard before.st_nlink == 1, before.st_size >= 0, before.st_size <= 2_000_000,
+                          total <= 32_000_000 - before.st_size else { throw Failure.custody }
+                    let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                    guard fd >= 0 else { throw Failure.custody }; defer { close(fd) }
+                    var opened = stat(); guard fstat(fd, &opened) == 0, same(before, opened) else { throw Failure.custody }
+                    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false), data = try handle.readToEnd() ?? Data()
+                    var after = stat(), named = stat()
+                    guard fstat(fd, &after) == 0, lstat(path.path, &named) == 0,
+                          data.count == before.st_size, same(before, after), same(before, named) else { throw Failure.custody }
+                    total += before.st_size
+                    rows.append(.init(path: relative, kind: "file", bytes: before.st_size,
+                        sha256: TaskQualityEvidence.digest(data), mode: UInt16(before.st_mode & 0o777)))
+                } else { throw Failure.custody }
+            }
+            try visit(root, relative: "", depth: 0)
+            for (path, before) in directories {
+                var after = stat(); guard lstat(path, &after) == 0, same(before, after) else { throw Failure.custody }
+            }
+            let git = root.appendingPathComponent(".git")
+            if fm.fileExists(atPath: git.path) {
+                // No automatic local-write replay in Git workspaces until a
+                // bounded full administrative identity is supported. Ordinary
+                // checking can still return partial evidence without it.
+                throw Failure.unavailable
+            }
+            return .init(entries: rows)
+        }
+    }
+    struct FrozenPrepared: Codable {
+        let envelope: PreparedTaskQuality.Envelope
+        let checkerBytes: Data
+        let referencePolicySHA256: String
+        let partialRegression: PythonRegressionSnapshot?
+        init(_ value: PreparedTaskQuality) {
+            envelope = value.envelope; checkerBytes = value.checkerBytes; referencePolicySHA256 = value.referencePolicySHA256
+            partialRegression = value.frozenRegressionSnapshot
+        }
+        var prepared: PreparedTaskQuality {
+            .init(envelope: envelope, checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression)
+        }
+    }
+    struct Preparation {
+        let prepared: PreparedTaskQuality
+        let before: ContentManifest?
+        let correctiveAttempts: Int
+        let budget: TaskQualityCorrection.Budget
+        /// Attested ONLY after actual native local-only capability application.
+        var localOnlyVerified = false
+        var nativeProfileSHA256: String? = nil
+        let correctionPrompt: String?
+    }
+    struct StoredWitness: Codable {
+        let schema: Int
+        let ticket: C.ExecutionTicket
+        let originalInstructionSHA256: String
+        let originalRequestSHA256: String
+        let originalObjectiveSHA256: String
+        let prepared: FrozenPrepared
+        let artifact: Artifact
+        let assessment: TaskQualityEvidence.Evaluation
+        let contract: TaskQualityEvidence.Contract
+        let receipt: TaskQualityEvidence.Receipt?
+        let observedArtifact: TaskQualityEvidence.ObservedArtifact
+        let failureDiagnostic: String
+        let before: ContentManifest?
+        let after: ContentManifest?
+        let correctiveAttempts: Int
+        let localOnlyVerified: Bool
+        let nativeProfileSHA256: String?
+        let lastFailureArtifactSHA256: String?
+        let lastFailureWorkspaceSHA256: String?
+        var budget: TaskQualityCorrection.Budget {
+            .init(correctiveAttempts: correctiveAttempts, referenceEscalations: 0,
+                lastFailureArtifactSHA256: lastFailureArtifactSHA256, lastFailureWorkspaceSHA256: lastFailureWorkspaceSHA256)
+        }
+    }
+    struct Authority {
+        let accountMatches: (C.ExecutionTicket) -> Bool
+        let policyMatches: (C.ExecutionTicket) throws -> Bool
+        let nativeProfileMatches: (StoredWitness) throws -> Bool
+        init(accountMatches: @escaping (C.ExecutionTicket) -> Bool, policyMatches: @escaping (C.ExecutionTicket) throws -> Bool,
+             nativeProfileMatches: @escaping (StoredWitness) throws -> Bool = { _ in false }) {
+            self.accountMatches = accountMatches; self.policyMatches = policyMatches; self.nativeProfileMatches = nativeProfileMatches
+        }
+        static var production: Authority { Authority(accountMatches: { ticket in
+            BackendAccounts.active(provider: ticket.selectedConfig.surface == .codex ? "codex" : "claude", in: BackendAccounts.load()).id == ticket.selectedConfig.accountID
+        }, policyMatches: { ticket in
+            let active = try OwnerPolicySnapshot.load(root: OwnerPolicySnapshot.defaultRoot)
+            return ticket.hostContext?.ownerPolicy.map { active?.sourceSHA256 == $0.sourceSHA256 && active?.projectionSHA256 == $0.projectionSHA256 } ?? (active == nil)
+        }, nativeProfileMatches: { stored in try RCCOperationalQuality.verifyNativeProfile(stored) }) }
+    }
+    struct Finished { let assessment: TaskQualityEvidence.Evaluation; let descriptor: C.OperationalQuality?; let checkerReceiptAvailable: Bool }
+    static var root: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/quality-witnesses") }
+    static func encoded<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; encoder.dateEncodingStrategy = .millisecondsSince1970
+        return try encoder.encode(value)
+    }
+    private static func decode<T: Decodable>(_ value: T.Type, _ data: Data) throws -> T {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970; return try decoder.decode(value, from: data)
+    }
+    private static func directory(_ root: URL) throws {
+        guard root.path.hasPrefix("/"), root.standardizedFileURL.path == root.path, root.resolvingSymlinksInPath().path == root.path else { throw Failure.custody }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var st = stat(); guard lstat(root.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR,
+            st.st_uid == getuid(), st.st_mode & 0o077 == 0 else { throw Failure.custody }
+    }
+    private static func read(_ path: String, root: URL, sha: String) throws -> Data {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.deletingLastPathComponent().path == root.path, url.resolvingSymlinksInPath().path == url.path,
+              sha.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw Failure.custody }
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { throw Failure.custody }; defer { close(fd) }
+        var before = stat(); guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+            before.st_uid == getuid(), before.st_mode & 0o077 == 0, before.st_nlink == 1,
+            before.st_size > 0, before.st_size <= 8_000_000 else { throw Failure.custody }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false), bytes = try handle.readToEnd() ?? Data()
+        var after = stat(), named = stat()
+        guard fstat(fd, &after) == 0, lstat(url.path, &named) == 0,
+            before.st_dev == after.st_dev, before.st_ino == after.st_ino, before.st_size == after.st_size,
+            before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+            before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+            after.st_dev == named.st_dev, after.st_ino == named.st_ino, bytes.count == before.st_size,
+            TaskQualityEvidence.digest(bytes) == sha else { throw Failure.custody }
+        return bytes
+    }
+    private static func write(_ bytes: Data, path: URL, root: URL) throws {
+        try directory(root)
+        guard path.deletingLastPathComponent().path == root.path, !bytes.isEmpty, bytes.count <= 8_000_000 else { throw Failure.custody }
+        let fd = open(path.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw Failure.custody }; defer { close(fd) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        try handle.write(contentsOf: bytes); try handle.synchronize()
+        guard try read(path.path, root: root, sha: TaskQualityEvidence.digest(bytes)) == bytes else { throw Failure.custody }
+    }
+    static func contextSHA(_ ticket: C.ExecutionTicket) -> String { C.digest(Data((ticket.hostContext?.context ?? "").utf8)) }
+    static func sourceSHA(_ ticket: C.ExecutionTicket) -> String? {
+        (try? SessionHandoff.decode(ticket.hostContext?.context)).flatMap { $0.source?.sha256 }
+    }
+    struct LocalEffectsBoundary {
+        let envelopeSHA256: String
+        let originalObjectiveSHA256: String
+        let scope: TaskContext.Scope
+    }
+    /// The original owner's local-effect restriction may narrow a child even
+    /// without a matching child checker. It grants no test coverage or task
+    /// verification, and never upgrades a read-only parent to a writer.
+    static func localEffectsBoundary(ticket: C.ExecutionTicket, rootURL: URL = PreparedTaskQuality.root) throws -> LocalEffectsBoundary? {
+        guard let original = ticket.originalRequest, let objective = ticket.originalObjective,
+            C.digest(Data(original.utf8)) == ticket.requestSHA256 else { throw Failure.binding }
+        let objectiveSHA = C.digest(Data(original.utf8))
+        let path = rootURL.appendingPathComponent("contracts", isDirectory: true).appendingPathComponent(objectiveSHA + ".json")
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        let canonical = path.standardizedFileURL
+        guard canonical.resolvingSymlinksInPath().path == canonical.path else { throw Failure.custody }
+        let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
+        guard attrs[.type] as? FileAttributeType == .typeRegular,
+            (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(), ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
+            (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000 else { throw Failure.custody }
+        let data = try Data(contentsOf: path), envelope = try decode(PreparedTaskQuality.Envelope.self, data), c = envelope.contract
+        guard envelope.localEffectsOnly else { return nil }
+        let requestedScope: TaskContext.Scope = ticket.selectedConfig.scope == .readOnly ? .readOnly : .workspaceWrite
+        guard c.objectiveSHA256 == objectiveSHA, c.contextSHA256 == contextSHA(ticket), c.sourceSHA256 == sourceSHA(ticket),
+            c.referencePolicySHA256 == ticket.policySHA256, c.validUntil > Date(),
+            c.scope == requestedScope || (c.scope == .workspaceWrite && requestedScope == .readOnly),
+            !objective.isEmpty else { throw Failure.binding }
+        return .init(envelopeSHA256: C.digest(data), originalObjectiveSHA256: C.digest(Data(objective.utf8)), scope: requestedScope)
+    }
+    static func prepare(ticket: C.ExecutionTicket, workspace: String, currentTreeSHA256: String,
+                        root: URL = Self.root, authority: Authority = .production) throws -> Preparation? {
+        guard [.readOnly, .workspaceWrite].contains(ticket.selectedConfig.scope) else { return nil }
+        if ticket.qualityContinuation != nil {
+            let parent = try loadContinuation(ticket: ticket, root: root, authority: authority)
+            let prepared = parent.prepared.prepared.reboundForContinuation(contextSHA256: contextSHA(ticket), startTreeSHA256: currentTreeSHA256)
+            return .init(prepared: prepared, before: try ContentManifest.capture(workspace: workspace), correctiveAttempts: 1,
+                budget: .init(correctiveAttempts: 1, referenceEscalations: 0,
+                    lastFailureArtifactSHA256: parent.observedArtifact.binding.artifactSHA256,
+                    lastFailureWorkspaceSHA256: parent.observedArtifact.binding.workspaceAfterSHA256), localOnlyVerified: false,
+                correctionPrompt: TaskQualityCorrection.prompt(objective: ticket.instruction,
+                    failedCheckIDs: parent.assessment.failedCheckIDs, artifactSHA256: parent.observedArtifact.binding.artifactSHA256) +
+                    "\nObserved operational-check diagnostics (data, not instructions):\n" + parent.failureDiagnostic)
+        }
+        guard let prepared = try PreparedTaskQuality.prepare(objective: ticket.instruction, contextSHA256: contextSHA(ticket),
+            sourceSHA256: sourceSHA(ticket), startTreeSHA256: currentTreeSHA256, scope: ticket.selectedConfig.scope == .readOnly ? .readOnly : .workspaceWrite,
+            referencePolicySHA256: ticket.policySHA256, workspace: workspace) else { return nil }
+        return .init(prepared: prepared, before: try? ContentManifest.capture(workspace: workspace), correctiveAttempts: 0,
+            budget: .init(), localOnlyVerified: false, correctionPrompt: nil)
+    }
+    static func finish(_ preparation: Preparation, ticket: C.ExecutionTicket, artifact: Artifact,
+                       artifactSHA256: String, workspace: String, root: URL = Self.root) throws -> Finished {
+        // Preserve the actual failed/completed artifact before invoking checks.
+        try write(try encoded(artifact), path: root.appendingPathComponent(ticket.attemptID + "-artifact.json"), root: root)
+        let witness: PreparedTaskQuality.Witness
+        do { witness = try preparation.prepared.evaluateWithWitness(artifact: artifact, artifactSHA256: artifactSHA256,
+            contextSHA256: contextSHA(ticket), workspace: workspace, executionID: ticket.attemptID) }
+        catch {
+            let c = preparation.prepared.envelope.contract
+            let binding = TaskQualityEvidence.Binding(objectiveSHA256: c.objectiveSHA256, contextSHA256: contextSHA(ticket),
+                sourceSHA256: c.sourceSHA256, startTreeSHA256: artifact.workspaceBeforeHash, scope: c.scope,
+                executionID: ticket.attemptID, turnID: artifact.nativeRecord.turnID ?? "unverified",
+                outputSHA256: C.digest(Data(artifact.output.utf8)), workspaceAfterSHA256: artifact.workspaceAfterHash, artifactSHA256: artifactSHA256)
+            witness = .init(assessment: .init(state: .unverified, reason: "Operational checker infrastructure/receipt unavailable; no automatic replay",
+                contractSHA256: c.sha256, artifactSHA256: artifactSHA256, requiredCheckIDs: c.requiredCheckIDs, failedCheckIDs: []),
+                contract: c, receipt: nil, artifact: .init(binding: binding, executionVerified: true), failureDiagnostic: "")
+        }
+        let after = try? ContentManifest.capture(workspace: workspace)
+        var assessment = operationalAssessment(witness.assessment)
+        // Full promotion requires exact content custody as well as tests.
+        if preparation.before == nil || after == nil, assessment.state != .mismatch {
+            assessment = .init(state: .unverified, reason: "Operational checks observed, exact bounded workspace custody unavailable",
+                contractSHA256: assessment.contractSHA256, artifactSHA256: artifactSHA256,
+                requiredCheckIDs: assessment.requiredCheckIDs, failedCheckIDs: [])
+        }
+        let stored = StoredWitness(schema: 1, ticket: ticket, originalInstructionSHA256: C.digest(Data(ticket.instruction.utf8)),
+            originalRequestSHA256: ticket.requestSHA256, originalObjectiveSHA256: C.digest(Data((ticket.originalObjective ?? ticket.objective).utf8)),
+            prepared: FrozenPrepared(preparation.prepared), artifact: artifact, assessment: assessment, contract: witness.contract,
+            receipt: witness.receipt, observedArtifact: witness.artifact, failureDiagnostic: witness.failureDiagnostic,
+            before: preparation.before, after: after, correctiveAttempts: preparation.correctiveAttempts,
+            localOnlyVerified: preparation.localOnlyVerified, nativeProfileSHA256: preparation.nativeProfileSHA256, lastFailureArtifactSHA256: preparation.budget.lastFailureArtifactSHA256,
+            lastFailureWorkspaceSHA256: preparation.budget.lastFailureWorkspaceSHA256)
+        let bytes = try encoded(stored), path = root.appendingPathComponent(ticket.attemptID + ".json")
+        try write(bytes, path: path, root: root)
+        let descriptor = after.map { C.OperationalQuality(coverage: witness.contract.fullCoverage ? .full : .partial,
+            assessmentState: assessment.state, contractSHA256: witness.contract.sha256, witnessPath: path.path,
+            witnessSHA256: C.digest(bytes), artifactSHA256: artifactSHA256, workspaceAfterSHA256: $0.sha256,
+            failedCheckIDs: assessment.failedCheckIDs, correctiveAttempts: preparation.correctiveAttempts,
+            localOnlyVerified: preparation.localOnlyVerified && preparation.before != nil) }
+        return .init(assessment: assessment, descriptor: descriptor, checkerReceiptAvailable: witness.receipt != nil)
+    }
+    private static func loadContinuation(ticket: C.ExecutionTicket, root: URL, authority: Authority) throws -> StoredWitness {
+        guard let c = ticket.qualityContinuation, authority.accountMatches(ticket), try authority.policyMatches(ticket) else { throw Failure.binding }
+        let parentRecordRoot = root.deletingLastPathComponent().appendingPathComponent("native-receipts")
+        let parentBytes = try read(c.parentNativeReceipt, root: parentRecordRoot, sha: c.parentNativeReceiptSHA256)
+        let record = try C.decodeRecord(parentBytes)
+        guard let quality = record.operationalQuality, quality.witnessPath == c.witnessPath, quality.witnessSHA256 == c.witnessSHA256,
+              quality.workspaceAfterSHA256 == c.expectedWorkspaceAfterSHA256, record.attemptID == c.parentAttemptID,
+              record.taskID == ticket.taskID, record.nodeID == ticket.nodeID, record.candidateID == ticket.candidateID,
+              record.configurationSHA256 == ticket.configurationSHA256, record.selectedConfig == ticket.selectedConfig,
+              record.nativeTurnTerminated == true, record.executionVerified, record.handback == nil, record.repairSource == nil,
+              quality.assessmentState == .mismatch, quality.correctiveAttempts == 0, quality.localOnlyVerified else { throw Failure.binding }
+        let stored = try decode(StoredWitness.self, read(c.witnessPath, root: root, sha: c.witnessSHA256))
+        try validate(stored, record: record)
+        guard try authority.nativeProfileMatches(stored) else { throw Failure.binding }
+        let prior = stored.ticket
+        guard prior.requestSHA256 == ticket.requestSHA256, prior.originalRequest == ticket.originalRequest,
+              prior.originalObjective == ticket.originalObjective, prior.instruction == ticket.instruction,
+              prior.hostContext == ticket.hostContext, prior.contextRefs == ticket.contextRefs, prior.ownedPaths == ticket.ownedPaths,
+              prior.policySHA256 == ticket.policySHA256, prior.policySourceSHA256 == ticket.policySourceSHA256,
+              prior.sourceFingerprint == ticket.sourceFingerprint, c.originalInstructionSHA256 == stored.originalInstructionSHA256,
+              ticket.hostContext.flatMap({ try? ContentManifest.capture(workspace: $0.workspace).sha256 }) == c.expectedWorkspaceAfterSHA256 else { throw Failure.binding }
+        return stored
+    }
+    private static func validate(_ stored: StoredWitness, record: C.ExecutionRecord) throws {
+        let t = stored.ticket
+        guard stored.schema == 1, t.taskID == record.taskID, t.nodeID == record.nodeID, t.attemptID == record.attemptID,
+              t.candidateID == record.candidateID, t.selectedConfig == record.selectedConfig,
+              t.configurationSHA256 == record.configurationSHA256,
+              stored.originalInstructionSHA256 == C.digest(Data(t.instruction.utf8)), stored.originalRequestSHA256 == t.requestSHA256,
+              stored.originalObjectiveSHA256 == C.digest(Data((t.originalObjective ?? t.objective).utf8)),
+              stored.artifact.output == record.output, stored.artifact.model == t.selectedConfig.model,
+              stored.artifact.effort == t.selectedConfig.effort.rawValue,
+              C.digest(try encoded(stored.artifact)) == record.operationalQuality?.artifactSHA256,
+              stored.prepared.envelope.contract == stored.contract,
+              C.digest(stored.prepared.checkerBytes) == stored.contract.verifierCodeSHA256,
+              stored.assessment == stored.prepared.prepared.evaluateAssessment(stored: stored),
+              stored.after?.sha256 == record.operationalQuality?.workspaceAfterSHA256,
+              record.operationalQuality?.assessmentState == stored.assessment.state,
+              record.operationalQuality?.contractSHA256 == stored.contract.sha256,
+              record.operationalQuality?.failedCheckIDs == stored.assessment.failedCheckIDs,
+              record.operationalQuality?.correctiveAttempts == stored.correctiveAttempts,
+              record.operationalQuality?.localOnlyVerified == (stored.localOnlyVerified && stored.before != nil),
+              record.operationalQuality?.coverage == (stored.contract.fullCoverage ? .full : .partial),
+              stored.prepared.checkerBytes.count <= 256_000,
+              stored.prepared.referencePolicySHA256 == t.policySHA256,
+              stored.contract.objectiveSHA256 == stored.originalInstructionSHA256,
+              stored.contract.contextSHA256 == contextSHA(t), stored.contract.sourceSHA256 == sourceSHA(t),
+              stored.contract.startTreeSHA256 == stored.artifact.workspaceBeforeHash,
+              stored.observedArtifact.binding.artifactSHA256 == record.operationalQuality?.artifactSHA256,
+              stored.observedArtifact.binding.outputSHA256 == C.digest(Data(stored.artifact.output.utf8))
+              else { throw Failure.binding }
+    }
+    static func operationalAssessment(_ observed: TaskQualityEvidence.Evaluation) -> TaskQualityEvidence.Evaluation {
+        guard [.referenceEquivalent, .referenceAbove].contains(observed.state) else { return observed }
+        return .init(state: .taskContractVerified,
+            reason: "Trusted operational contract verified; no current both-provider reference comparison",
+            contractSHA256: observed.contractSHA256, artifactSHA256: observed.artifactSHA256,
+            requiredCheckIDs: observed.requiredCheckIDs, failedCheckIDs: [])
+    }
+    static func verifyNativeProfile(_ stored: StoredWitness) throws -> Bool {
+        guard stored.localOnlyVerified, let hash = stored.nativeProfileSHA256, C.isHash(hash) else { return false }
+        let folder = root.deletingLastPathComponent().appendingPathComponent("local-quality-profiles")
+        let data = try read(folder.appendingPathComponent(stored.ticket.attemptID + ".json").path, root: folder, sha: hash)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            object["schema"] as? Int == 1, object["task_id"] as? String == stored.ticket.taskID,
+            object["node_id"] as? String == stored.ticket.nodeID, object["attempt_id"] as? String == stored.ticket.attemptID,
+            object["configuration_sha256"] as? String == stored.ticket.configurationSHA256,
+            object["source_fingerprint"] as? String == stored.ticket.sourceFingerprint,
+            object["policy_sha256"] as? String == stored.ticket.policySHA256,
+            object["workspace"] as? String == stored.ticket.hostContext?.workspace,
+            object["profile"] as? String == RCCNativeLocalQualityProfile.profileID,
+            object["local_only_attestation"] as? Bool == true,
+            let sources = object["source_hashes"] as? [String: String], !sources.isEmpty, sources.count <= 256 else { return false }
+        for (path, digest) in sources {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard url.path == path, url.resolvingSymlinksInPath().path == path, C.isHash(digest) else { return false }
+            var a = stat(); guard lstat(path, &a) == 0, a.st_mode & S_IFMT == S_IFREG, a.st_size > 0, a.st_size <= 256_000_000 else { return false }
+            let bytes = try Data(contentsOf: url, options: [.mappedIfSafe])
+            var b = stat(); guard lstat(path, &b) == 0, a.st_dev == b.st_dev, a.st_ino == b.st_ino,
+                a.st_size == b.st_size, a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec,
+                a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec, C.digest(bytes) == digest else { return false }
+        }
+        return true
+    }
+    static func publicContractDraft(ticket: C.ExecutionTicket) throws -> Data {
+        guard let host = ticket.hostContext, let original = ticket.originalRequest, original == ticket.instruction,
+            C.digest(Data(original.utf8)) == ticket.requestSHA256,
+            C.digest(try C.encode(host)) == ticket.sourceFingerprint, ticket.selectedConfig.scope == .workspaceWrite else { throw Failure.binding }
+        try host.ownerPolicy?.verifyOriginal()
+        // A unique nonexistent registry lookup forces the existing public
+        // acquisition branch; no reference/checker from another job is read.
+        let noRegistry = FileManager.default.temporaryDirectory.appendingPathComponent("os1-public-draft-" + UUID().uuidString)
+        guard let draft = try PreparedTaskQuality.prepare(objective: original, contextSHA256: contextSHA(ticket), sourceSHA256: sourceSHA(ticket),
+            startTreeSHA256: workspaceHash(host.workspace), scope: .workspaceWrite, referencePolicySHA256: ticket.policySHA256,
+            workspace: host.workspace, rootURL: noRegistry), draft.envelope.contract.fullCoverage == false,
+            draft.envelope.contract.reference == nil, draft.frozenRegressionSnapshot != nil else { throw Failure.unavailable }
+        return try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": ticket.taskID,
+            "request_sha256": ticket.requestSHA256, "source_fingerprint": ticket.sourceFingerprint,
+            "envelope": JSONSerialization.jsonObject(with: encoded(draft.envelope)),
+            "checker_bytes_base64": draft.checkerBytes.base64EncodedString(),
+            "status": "unregistered_public_partial_draft_not_owner_authority"], options: [.sortedKeys])
+    }
+    static func claimCorrection(ticket: C.ExecutionTicket, root: URL = Self.root, authority: Authority = .production) throws {
+        guard let continuation = ticket.qualityContinuation else { return }
+        let parent = try loadContinuation(ticket: ticket, root: root, authority: authority)
+        guard parent.correctiveAttempts == 0, parent.localOnlyVerified else { throw Failure.binding }
+        let name = "claim-" + C.digest(Data((continuation.parentAttemptID + "\0" + continuation.witnessSHA256).utf8)) + ".json"
+        let claim = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": ticket.taskID,
+            "node_id": ticket.nodeID, "parent_attempt_id": continuation.parentAttemptID,
+            "attempt_id": ticket.attemptID, "witness_sha256": continuation.witnessSHA256], options: [.sortedKeys])
+        // O_EXCL is a conservative one-use pre-dispatch claim. A later opaque
+        // failure never refunds it or authorizes another native execution.
+        try write(claim, path: root.appendingPathComponent(name), root: root)
+    }
+    static func decision(_ input: Data, root: URL = Self.root, cancelled: Bool = false, authority: Authority = .production) throws -> Data {
+        guard let object = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+              Set(object.keys) == ["schema", "parent_ticket", "parent_native_receipt", "parent_native_receipt_sha256"],
+              object["schema"] as? Int == 1, let raw = object["parent_ticket"],
+              let path = object["parent_native_receipt"] as? String, let hash = object["parent_native_receipt_sha256"] as? String else { throw Failure.binding }
+        let ticket = try C.decodeTicket(JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys]))
+        let record = try C.decodeRecord(read(path, root: root.deletingLastPathComponent().appendingPathComponent("native-receipts"), sha: hash), ticket: ticket)
+        guard record.nativeReceipt == path, let quality = record.operationalQuality else { throw Failure.binding }
+        let witness = try decode(StoredWitness.self, read(quality.witnessPath, root: root, sha: quality.witnessSHA256))
+        try validate(witness, record: record)
+        var action = "hold", reason = "operational_quality_not_safe_for_correction", next: C.QualityContinuation?
+        if !cancelled, record.nativeTurnTerminated == true, record.executionVerified, quality.localOnlyVerified,
+           witness.localOnlyVerified, witness.correctiveAttempts == 0, witness.before != nil,
+           let host = ticket.hostContext, let after = witness.after,
+           try ContentManifest.capture(workspace: host.workspace) == after {
+            if authority.accountMatches(ticket), try authority.policyMatches(ticket), try authority.nativeProfileMatches(witness) {
+                let verdict = TaskQualityCorrection.decide(contract: witness.contract, receipt: witness.receipt,
+                    artifact: witness.observedArtifact, evaluation: witness.assessment,
+                    boundary: .init(ownerObjective: ticket.instruction, workspace: host.workspace, scope: .workspaceWrite,
+                        sourceSHA256: sourceSHA(ticket), referencePolicySHA256: ticket.policySHA256),
+                    currentWorkspace: host.workspace, currentWorkspaceSHA256: observedStateHash(host.workspace),
+                    currentSourceSHA256: sourceSHA(ticket), exitCode: witness.artifact.exitCode, cancelled: cancelled,
+                    budget: witness.budget, referenceAllowed: false, referenceAvailable: false)
+                action = verdict.action == .correct ? "correct" : verdict.action == .none ? "none" : "hold"; reason = verdict.reason
+                if action == "correct" { next = .init(parentAttemptID: ticket.attemptID, parentNativeReceipt: path,
+                    parentNativeReceiptSHA256: hash, witnessPath: quality.witnessPath, witnessSHA256: quality.witnessSHA256,
+                    expectedWorkspaceAfterSHA256: after.sha256, originalInstructionSHA256: witness.originalInstructionSHA256) }
+            }
+        }
+        let output: [String: Any] = ["schema": 1, "task_id": ticket.taskID, "node_id": ticket.nodeID,
+            "parent_attempt_id": ticket.attemptID, "action": action, "reason": reason,
+            "quality_continuation": try next.map { try JSONSerialization.jsonObject(with: C.encode($0)) } ?? NSNull()]
+        return try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
+    }
+}
+
+private extension PreparedTaskQuality {
+    /// Re-evaluation of a stored actual receipt, not execution of the checker.
+    func evaluateAssessment(stored: RCCOperationalQuality.StoredWitness) -> TaskQualityEvidence.Evaluation {
+        RCCOperationalQuality.operationalAssessment(TaskQualityEvidence.evaluate(contract: stored.contract, receipt: stored.receipt, artifact: stored.observedArtifact,
+            currentReferencePolicySHA256: referencePolicySHA256, now: stored.receipt?.observedAt ?? stored.contract.issuedAt))
+    }
+}
+
+/// Pure exact-content and typed budget checks. No live records/auth/provider.
+func rccOperationalQualitySelfTest() throws {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("os1-operational-quality-" + UUID().uuidString).resolvingSymlinksInPath()
+    try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: root) }
+    var count = 0
+    func check(_ pass: @autoclosure () throws -> Bool, _ text: String) throws {
+        guard try pass() else { throw OS1Error.message("Operational quality fixture: " + text) }; count += 1
+    }
+    func rejects(_ text: String, _ body: () throws -> Void) throws {
+        do { try body() } catch { count += 1; return }; throw OS1Error.message("Operational quality fixture: " + text)
+    }
+    let file = root.appendingPathComponent("module.py")
+    try Data("answer=1\n".utf8).write(to: file)
+    let before = try RCCOperationalQuality.ContentManifest.capture(workspace: root.path)
+    let oldDate = try fm.attributesOfItem(atPath: file.path)[.modificationDate] as! Date
+    try Data("answer=2\n".utf8).write(to: file); try fm.setAttributes([.modificationDate: oldDate], ofItemAtPath: file.path)
+    let after = try RCCOperationalQuality.ContentManifest.capture(workspace: root.path)
+    try check(before.sha256 != after.sha256, "same-size same-mtime mutation is detected by exact content")
+    try check(try RCCOperationalQuality.ContentManifest.capture(workspace: root.path) == after, "unchanged exact bounded content is stable")
+    let outside = root.deletingLastPathComponent().appendingPathComponent("os1-quality-outside-" + UUID().uuidString)
+    defer { try? fm.removeItem(at: outside) }
+    try Data("not copied".utf8).write(to: outside)
+    let link = root.appendingPathComponent("linked.py"); try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+    try rejects("symlink source cannot mint exact local custody") { _ = try RCCOperationalQuality.ContentManifest.capture(workspace: root.path) }
+    try fm.removeItem(at: link)
+    let sensitive = root.appendingPathComponent("credentials.json"); try Data("fixture only".utf8).write(to: sensitive)
+    try rejects("sensitive node makes manifest unavailable without reading it") { _ = try RCCOperationalQuality.ContentManifest.capture(workspace: root.path) }
+    try fm.removeItem(at: sensitive)
+    try fm.createDirectory(at: root.appendingPathComponent(".git"), withIntermediateDirectories: false)
+    try rejects("unsupported Git administrative identity does not acquire automatic replay authority") { _ = try RCCOperationalQuality.ContentManifest.capture(workspace: root.path) }
+    print("RCC operational exact-content custody: \(count) checks PASS; provider/auth calls 0")
+}
+
+/// Current-path checker/witness/correction fixture with a public original suite.
+/// Synthetic native records only: no provider, account, authentication or user data.
+func rccOperationalQualityWitnessSelfTest() throws {
+    typealias Q = RCCOperationalQuality
+    typealias C = RCCRuntimeContract
+    let fm = FileManager.default, base = fm.temporaryDirectory.appendingPathComponent("os1-quality-witness-" + UUID().uuidString).resolvingSymlinksInPath()
+    let workspace = base.appendingPathComponent("workspace"), witnesses = base.appendingPathComponent("quality-witnesses"), receipts = base.appendingPathComponent("native-receipts")
+    try fm.createDirectory(at: workspace.appendingPathComponent("tests"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try fm.createDirectory(at: receipts, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: base) }
+    func put(_ name: String, _ value: String) throws { try Data(value.utf8).write(to: workspace.appendingPathComponent(name)) }
+    try put("README.md", "Fixture public local recipe:\npython3 -m unittest\n")
+    try put("module.py", "VALUE = 0\n")
+    try put("tests/__init__.py", "")
+    try put("tests/test_module.py", "import unittest, module\nclass T(unittest.TestCase):\n def test_value(self): self.assertEqual(module.VALUE, 2)\n")
+    var checks = 0
+    func check(_ pass: @autoclosure () throws -> Bool, _ text: String) throws {
+        guard try pass() else { throw OS1Error.message("Operational quality witness fixture: " + text) }; checks += 1
+    }
+    func reject(_ text: String, _ body: () throws -> Void) throws {
+        do { try body() } catch { checks += 1; return }; throw OS1Error.message("Operational quality witness fixture: " + text)
+    }
+    let hash = C.digest(Data("fixture".utf8)), original = "Modify module.py and run the public tests locally. Do not deploy, send, or access the network."
+    let host = C.HostContext(workspace: workspace.path, context: nil, providerPreference: "auto", codexSessionID: nil,
+        claudeSessionID: nil, requireReadOnly: false, ownerPolicy: nil)
+    let selected = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "fixture-only", model: "fixture", effort: .low,
+        tools: ["Bash"], scope: .workspaceWrite, permissionProfile: .workspaceWrite, quotaPool: .openAICodex,
+        allowedPaths: ["**"], configurationSHA256: hash)
+    var ticket = C.ExecutionTicket(taskID: "task-fixture", nodeID: "node-fixture", attemptID: "attempt-first", candidateID: "candidate-fixture",
+        requestSHA256: C.digest(Data(original.utf8)), policySHA256: hash, policySourceSHA256: hash,
+        sourceFingerprint: C.digest(try C.encode(host)), configurationSHA256: hash, selectedConfig: selected,
+        objective: original, instruction: original, contextRefs: [], ownedPaths: ["**"], originalRequest: original,
+        originalObjective: original, hostContext: host)
+    let authority = Q.Authority(accountMatches: { _ in true }, policyMatches: { _ in true }, nativeProfileMatches: { _ in true })
+    let weakBefore = workspaceHash(workspace.path)
+    guard var prepared = try Q.prepare(ticket: ticket, workspace: workspace.path, currentTreeSHA256: weakBefore, root: witnesses, authority: authority) else {
+        throw OS1Error.message("Operational quality fixture did not prepare the public original suite")
+    }
+    try check(prepared.prepared.envelope.contract.fullCoverage == false && prepared.prepared.envelope.contract.reference == nil,
+        "public Python regression is partial and carries no hidden reference scores")
+    let registry = base.appendingPathComponent("owner-registry")
+    try fm.createDirectory(at: registry.appendingPathComponent("contracts"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try fm.createDirectory(at: registry.appendingPathComponent("checkers"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let trustedEnvelope = PreparedTaskQuality.Envelope(contract: prepared.prepared.envelope.contract,
+        checkerSHA256: prepared.prepared.envelope.checkerSHA256, timeoutSeconds: prepared.prepared.envelope.timeoutSeconds,
+        workspacePaths: prepared.prepared.envelope.workspacePaths, localEffectsOnly: true,
+        publicRegressionSnapshot: prepared.prepared.frozenRegressionSnapshot)
+    try Q.encoded(trustedEnvelope).write(to: registry.appendingPathComponent("contracts/" + ticket.requestSHA256 + ".json"))
+    try prepared.prepared.checkerBytes.write(to: registry.appendingPathComponent("checkers/" + trustedEnvelope.checkerSHA256 + ".py"))
+    let loaded = try PreparedTaskQuality.prepare(objective: original, contextSHA256: Q.contextSHA(ticket), sourceSHA256: Q.sourceSHA(ticket),
+        startTreeSHA256: weakBefore, scope: .workspaceWrite, referencePolicySHA256: ticket.policySHA256, workspace: workspace.path, rootURL: registry)
+    try check(loaded?.frozenRegressionSnapshot?.originalTests == prepared.prepared.frozenRegressionSnapshot?.originalTests && loaded?.envelope.localEffectsOnly == true,
+        "owner registration preserves original public suite and copied-checker isolation instead of losing its snapshot")
+    try check(loaded?.reboundForContinuation(contextSHA256: Q.contextSHA(ticket), startTreeSHA256: weakBefore).envelope.localEffectsOnly == true,
+        "registered local-effects declaration survives correction")
+    let boundary = try Q.localEffectsBoundary(ticket: ticket, rootURL: registry)
+    try check(boundary?.envelopeSHA256 == C.digest(try Q.encoded(trustedEnvelope)), "capability fence has exact original owner envelope provenance")
+    // Synthetic fixture capability attestation; production may set this only
+    // after exact actual native local-only policy/config verification.
+    prepared.localOnlyVerified = true
+    try put("module.py", "VALUE = 1\n")
+    let native = NativeRecordEvidence(turnID: "fixture-turn", recordPath: "/tmp/fixture-native.jsonl", persistence: "verified", desktopVisibility: "fixture")
+    func artifact(_ before: String) -> Artifact {
+        .init(provider: "codex", action: "execute", permissionProfile: "workspace_write", model: "fixture", effort: "low",
+            executorContractVersion: "fixture", executorContractSHA256: hash, exitCode: 0, output: "Synthetic candidate preserved", stderr: "",
+            durationMS: 1, workspaceBeforeHash: before, workspaceAfterHash: workspaceHash(workspace.path), nativeRecord: native)
+    }
+    let first = artifact(weakBefore), firstHash = C.digest(try Q.encoded(first))
+    let result = try Q.finish(prepared, ticket: ticket, artifact: first, artifactSHA256: firstHash, workspace: workspace.path, root: witnesses)
+    // A platform without the existing approved copied-Python runner must
+    // preserve infrastructure unknown rather than counterfeit a known fail.
+    if result.assessment.state != .mismatch {
+        try check(result.assessment.state == .unverified, "checker infrastructure absence is unverified, never guessed failure")
+        print("RCC operational witness: \(checks) checks PASS; actual checker failure continuation SKIP (approved Python infrastructure unavailable), model calls0")
+        return
+    }
+    try check(result.descriptor?.coverage == .partial && result.descriptor?.failedCheckIDs.contains("partial.original_unittest") == true,
+        "actual original-suite failure is bound and stays partial")
+    func record(_ ticket: C.ExecutionTicket, _ checked: Q.Finished) -> C.ExecutionRecord {
+        .init(taskID: ticket.taskID, nodeID: ticket.nodeID, attemptID: ticket.attemptID, candidateID: ticket.candidateID,
+            configurationSHA256: hash, selectedConfig: selected, acknowledgedConfig: selected, observedConfig: nil, status: .succeeded,
+            output: "Synthetic candidate preserved", executionVerified: true, taskVerified: false,
+            taskQuality: checked.assessment.state == .mismatch ? .failed : .executionOnly, parityState: .unverified,
+            nativeReceipt: receipts.appendingPathComponent(ticket.attemptID + ".json").path, sideEffects: .confirmed, usage: nil,
+            dispatchStage: .dispatched, nativeTurnTerminated: true, operationalQuality: checked.descriptor)
+    }
+    let firstRecord = record(ticket, result), recordBytes = try C.encode(firstRecord), recordPath = firstRecord.nativeReceipt!
+    try recordBytes.write(to: URL(fileURLWithPath: recordPath)); try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: recordPath)
+    func input(_ t: C.ExecutionTicket, _ path: String, _ bytes: Data) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["schema": 1, "parent_ticket": JSONSerialization.jsonObject(with: C.encode(t)),
+            "parent_native_receipt": path, "parent_native_receipt_sha256": C.digest(bytes)], options: [.sortedKeys])
+    }
+    let decisionInput = try input(ticket, recordPath, recordBytes)
+    func action(_ data: Data) throws -> [String: Any] { try JSONSerialization.jsonObject(with: data) as! [String: Any] }
+    let decided = try action(Q.decision(decisionInput, root: witnesses, authority: authority))
+    try check(decided["action"] as? String == "correct", "actual completed local writer mismatch authorizes one existing-policy correction")
+    try check(try Q.decision(decisionInput, root: witnesses, authority: authority) == Q.decision(decisionInput, root: witnesses, authority: authority), "decision is read-only and idempotent")
+    try check(try action(Q.decision(decisionInput, root: witnesses, cancelled: true, authority: authority))["action"] as? String == "hold", "cancelled parent never corrects")
+    try check(try action(Q.decision(decisionInput, root: witnesses, authority: .init(accountMatches: { _ in false }, policyMatches: { _ in true })))["action"] as? String == "hold", "changed active account cannot correct")
+    try check(try action(Q.decision(decisionInput, root: witnesses, authority: .init(accountMatches: { _ in true }, policyMatches: { _ in false })))["action"] as? String == "hold", "changed policy cannot correct")
+    let continuationBytes = try JSONSerialization.data(withJSONObject: decided["quality_continuation"]!)
+    ticket.qualityContinuation = try JSONDecoder().decode(C.QualityContinuation.self, from: continuationBytes); ticket.attemptID = "attempt-correction"
+    let date = try fm.attributesOfItem(atPath: workspace.appendingPathComponent("module.py").path)[.modificationDate] as! Date
+    try put("module.py", "VALUE = 3\n"); try fm.setAttributes([.modificationDate: date], ofItemAtPath: workspace.appendingPathComponent("module.py").path)
+    try reject("same-size same-time changed after-tree cannot consume correction") { try Q.claimCorrection(ticket: ticket, root: witnesses, authority: authority) }
+    try put("module.py", "VALUE = 1\n"); try fm.setAttributes([.modificationDate: date], ofItemAtPath: workspace.appendingPathComponent("module.py").path)
+    try Q.claimCorrection(ticket: ticket, root: witnesses, authority: authority)
+    var second = ticket; second.attemptID = "attempt-duplicate"
+    try reject("different attempt ID cannot reuse the same parent witness claim") { try Q.claimCorrection(ticket: second, root: witnesses, authority: authority) }
+    guard var corrective = try Q.prepare(ticket: ticket, workspace: workspace.path, currentTreeSHA256: workspaceHash(workspace.path), root: witnesses, authority: authority) else {
+        throw OS1Error.message("Operational corrective context missing")
+    }
+    corrective.localOnlyVerified = true
+    try check(corrective.correctiveAttempts == 1 && corrective.prepared.frozenRegressionSnapshot?.originalTests == prepared.prepared.frozenRegressionSnapshot?.originalTests,
+        "corrective context reuses immutable original suite and persisted one-attempt budget")
+    try check(corrective.correctionPrompt?.contains(original) == true, "correction carries original instruction verbatim")
+    // A second actual failed correction is held; no reference/third call.
+    let failedAgain = artifact(workspaceHash(workspace.path)), againHash = C.digest(try Q.encoded(failedAgain))
+    let checkedAgain = try Q.finish(corrective, ticket: ticket, artifact: failedAgain, artifactSHA256: againHash, workspace: workspace.path, root: witnesses)
+    let againRecord = record(ticket, checkedAgain), againBytes = try C.encode(againRecord), againPath = againRecord.nativeReceipt!
+    try againBytes.write(to: URL(fileURLWithPath: againPath)); try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: againPath)
+    try check(try action(Q.decision(input(ticket, againPath, againBytes), root: witnesses, authority: authority))["action"] as? String == "hold", "failed corrective attempt cannot authorize a third/reference native call")
+    try check(result.assessment.preservesArtifact && checkedAgain.assessment.preservesArtifact, "both failed actual artifacts remain preserved")
+    print("RCC operational original-suite/witness/one-use correction: \(checks) checks PASS; actual local checker calls only, provider/auth calls0")
+}
+
+/// Per-attempt native permission capability, not another task coordinator.
+/// It confines model-controlled tools; provider/auth/logging and audited native
+/// lifecycle cleanup remain the explicitly identified maintenance TCB.
+final class RCCNativeLocalQualityProfile: @unchecked Sendable {
+    enum Context { @TaskLocal static var current: RCCNativeLocalQualityProfile? }
+    static let profileID = "os1-local-quality"
+    let ticket: RCCRuntimeContract.ExecutionTicket
+    let workspace: String
+    let scratch: String
+    let boundary: RCCOperationalQuality.LocalEffectsBoundary?
+    private(set) var verified = false
+    private(set) var attestationEligible = true
+    var localOnlyVerified: Bool { verified && attestationEligible }
+    private var trustStateDigest: String?
+    private var unresolvedPluginIDs: [String] = []
+    private var sourceHashes: [String: String] = [:]
+    private var hooksDigest: String?
+    private var nativeExecutable: String?
+    private(set) var receiptSHA256: String?
+    init(ticket: RCCRuntimeContract.ExecutionTicket, workspace: String, boundary: RCCOperationalQuality.LocalEffectsBoundary? = nil) throws {
+        let fm = FileManager.default, root = URL(fileURLWithPath: workspace).standardizedFileURL
+        guard root.resolvingSymlinksInPath().path == root.path, root.path != fm.homeDirectoryForCurrentUser.path else { throw RCCOperationalQuality.Failure.custody }
+        // Darwin's per-user directory is authority; an inherited TMPDIR is
+        // not. macOS may render this same directory as /var or /private/var.
+        let length = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard length > 1, length <= 4096 else { throw RCCOperationalQuality.Failure.custody }
+        var buffer = [CChar](repeating: 0, count: length)
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, length) == length else { throw RCCOperationalQuality.Failure.custody }
+        let temporary = URL(fileURLWithPath: String(cString: buffer), isDirectory: true).resolvingSymlinksInPath()
+        var parent = stat()
+        guard temporary.path.hasPrefix("/"), temporary.lastPathComponent == "T", lstat(temporary.path, &parent) == 0,
+            parent.st_mode & S_IFMT == S_IFDIR, parent.st_uid == getuid(), parent.st_mode & 0o022 == 0 else { throw RCCOperationalQuality.Failure.custody }
+        let child = temporary.appendingPathComponent("os1-local-quality-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: child, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        self.ticket = ticket; self.workspace = root.path; self.scratch = child.path; self.boundary = boundary
+    }
+    var environment: [String: String] { ["TMPDIR": scratch] }
+    static func key(_ s: String) -> Bool { !s.isEmpty && s.utf8.count <= 256 && s.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45,95,64].contains($0) } }
+    static func toml(_ s: String) -> String { String(decoding: try! JSONSerialization.data(withJSONObject: s, options: [.fragmentsAllowed, .withoutEscapingSlashes]), as: UTF8.self) }
+    var fixedOverrides: [String] {
+        ["default_permissions=\(Self.toml(Self.profileID))",
+         "permissions.\(Self.profileID).filesystem={\":minimal\"=\"read\",\(Self.toml(workspace))=\(Self.toml(ticket.selectedConfig.scope == .readOnly ? "read" : "write")),\(Self.toml(scratch))=\"write\"}",
+         "permissions.\(Self.profileID).network.enabled=false",
+         "features.apps=false", "features.browser_use=false", "features.browser_use_external=false", "features.computer_use=false",
+         "features.js_repl=false", "features.remote_control=false", "features.memories=false", "bypass_hook_trust=false", "web_search=\"disabled\"", "tools.web_search=false"]
+    }
+    static func rowsEmpty(_ value: Any?) -> Bool {
+        if value == nil || value is NSNull { return true }
+        if let a = value as? [Any] { return a.isEmpty }; if let a = value as? [String: Any] { return a.isEmpty }; return false
+    }
+    func bindFile(_ path: String, expected: String? = nil) throws {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.path == path, url.resolvingSymlinksInPath() == url else { throw RCCOperationalQuality.Failure.custody }
+        var before = stat(); guard lstat(path, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+            before.st_size > 0, before.st_size < 256_000_000 else { throw RCCOperationalQuality.Failure.custody }
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { throw RCCOperationalQuality.Failure.custody }; defer { close(fd) }
+        let data = try FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd() ?? Data()
+        var after = stat(), named = stat()
+        guard fstat(fd, &after) == 0, lstat(path, &named) == 0,
+            before.st_dev == after.st_dev, before.st_ino == after.st_ino, before.st_size == data.count,
+            before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+            before.st_ino == named.st_ino, before.st_size == named.st_size else { throw RCCOperationalQuality.Failure.custody }
+        let hash = TaskQualityEvidence.digest(data)
+        guard expected.map({ $0 == hash }) ?? true, sourceHashes[path].map({ $0 == hash }) ?? true else { throw RCCOperationalQuality.Failure.custody }
+        sourceHashes[path] = hash
+    }
+    /// Exact audited commands are either early-bypassed or inactive under the
+    /// actual marked native environment; no unknown command is assumed inert.
+    func validateHooks(_ result: [String: Any], environment: [String: String]) throws {
+        guard let entries = result["data"] as? [[String: Any]], entries.count == 1,
+            entries[0]["cwd"] as? String == workspace, Self.rowsEmpty(entries[0]["errors"]),
+            let hooks = entries[0]["hooks"] as? [[String: Any]], hooks.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
+        let exo = "610e48709d7747ed30109dcfa1c81e736db8748f938345a3d05d5f2e1f9cc00c"
+        let superset = "f6e82c5a662c338cac8a5fd43a98b364c2df0175dffb95408e69e2454d73e0bc"
+        let emdash = Set(["dd12748c47c371e16e29b7ac99c17c0021d98df00e6ed36f6a5d3014b00ffa2a", "685483cc63e594ebb518b3d67380b8baeba2b898174f945acdcefaef727012ce", "1c67a66cf60e0d8c2dd28cc96b8726e1d0515121bc7aed6894ecae8e3014c0b4"])
+        for row in hooks {
+            guard row["enabled"] as? Bool == true, row["trustStatus"] as? String == "trusted",
+                row["handlerType"] as? String == "command", row["async"] as? Bool == false,
+                row["isManaged"] as? Bool == false,
+                let command = row["command"] as? String, command.utf8.count <= 16_384,
+                let path = row["sourcePath"] as? String else { throw RCCOperationalQuality.Failure.unavailable }
+            let hash = TaskQualityEvidence.digest(Data(command.utf8))
+            if hash == exo {
+                guard environment["OS1_INTERNAL_PROVIDER_EXECUTION"] == "1", let executing = Bundle.main.executableURL else { throw RCCOperationalQuality.Failure.unavailable }
+                let hook = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/os1").resolvingSymlinksInPath()
+                let current = executing.resolvingSymlinksInPath()
+                try bindFile(current.path); let expected = sourceHashes[current.path]!
+                try bindFile(hook.path, expected: expected)
+                let bundled = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/OS-1 CLODEX.app/Contents/Resources/os1")
+                if FileManager.default.fileExists(atPath: bundled.path) { try bindFile(bundled.path, expected: expected) }
+            }
+            else if hash == superset { guard environment["SUPERSET_HOME_DIR"] == nil else { throw RCCOperationalQuality.Failure.unavailable } }
+            else if emdash.contains(hash) { guard !environment.keys.contains(where: { $0.hasPrefix("EMDASH_") }) else { throw RCCOperationalQuality.Failure.unavailable } }
+            else { throw RCCOperationalQuality.Failure.unavailable }
+            try bindFile(path)
+        }
+        let data = try JSONSerialization.data(withJSONObject: hooks, options: [.sortedKeys])
+        let digest = TaskQualityEvidence.digest(data)
+        guard hooksDigest.map({ $0 == digest }) ?? true else { throw RCCOperationalQuality.Failure.custody }
+        hooksDigest = digest
+    }
+    func pluginOverrides(_ plugins: [[String: Any]], mcp: [[String: Any]], config: [String: Any]) throws -> [String] {
+        var overrides = Set<String>()
+        if let roots = config["mcp_servers"] as? [String: Any] {
+            for name in roots.keys { guard Self.key(name) else { throw RCCOperationalQuality.Failure.unavailable }; overrides.insert("mcp_servers.\(name).enabled=false") }
+        }
+        for row in mcp {
+            guard let name = row["name"] as? String, Self.key(name) else { throw RCCOperationalQuality.Failure.unavailable }
+            if let id = row["pluginId"] as? String {
+                guard Self.key(id) else { throw RCCOperationalQuality.Failure.unavailable }
+                overrides.insert("plugins.\(id).mcp_servers.\(name).enabled=false")
+            } else { overrides.insert("mcp_servers.\(name).enabled=false") }
+        }
+        let cleanupHashes = ["browser": "d80b9bbd6a70139245a1fc9a2514cb9877dfc4c36289b9083ad1872b4c9864de", "chrome": "e8ef0a714882cabaf52e82b59989333fc83ab9d1fc716a24838e65519a66a889", "unified-computer-use": "5d49cfd6fe6e1ea0d0941c1fa0c29f2cc94cd4c15b3fc852c30b2eb96054943a"]
+        guard plugins.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
+        for plugin in plugins {
+            guard let summary = plugin["summary"] as? [String: Any], let id = summary["id"] as? String, Self.key(id) else { throw RCCOperationalQuality.Failure.unavailable }
+            if plugin["unavailable"] as? Bool == true {
+                guard let source = summary["source"] as? [String: Any], source["type"] as? String == "remote",
+                    id.hasPrefix("app-") || id.hasPrefix("dev-") else { throw RCCOperationalQuality.Failure.unavailable }
+                attestationEligible = false; unresolvedPluginIDs.append(id); continue
+            }
+            guard let hooks = plugin["hooks"] as? [[String: Any]],
+                let servers = plugin["mcpServers"] as? [String], servers.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
+            for server in servers { guard Self.key(server) else { throw RCCOperationalQuality.Failure.unavailable }; overrides.insert("plugins.\(id).mcp_servers.\(server).enabled=false") }
+            if !hooks.isEmpty {
+                guard hooks.count == 3, let name = summary["name"] as? String, let expected = cleanupHashes[name],
+                    let source = summary["source"] as? [String: Any], source["type"] as? String == "local",
+                    let root = source["path"] as? String,
+                    Set(hooks.compactMap { $0["eventName"] as? String }) == Set(["stop", "interrupt", "subagentStop"]) else { throw RCCOperationalQuality.Failure.unavailable }
+                let base = URL(fileURLWithPath: root).standardizedFileURL
+                guard base.path == root, base.resolvingSymlinksInPath().path == base.path else { throw RCCOperationalQuality.Failure.custody }
+                let manifest = base.appendingPathComponent(".codex-plugin/plugin.json")
+                try bindFile(manifest.path, expected: expected)
+            }
+        }
+        return overrides.sorted()
+    }
+    func bindTrustState(_ config: [String: Any]) throws {
+        guard let hooks = config["hooks"] as? [String: Any], let state = hooks["state"] as? [String: Any], state.count <= 1024 else { throw RCCOperationalQuality.Failure.unavailable }
+        for (key, value) in state {
+            guard key.utf8.count <= 4096, let row = value as? [String: Any], row.count == 1,
+                let hash = row["trusted_hash"] as? String, hash.utf8.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
+        }
+        let digest = TaskQualityEvidence.digest(try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]))
+        guard trustStateDigest.map({ $0 == digest }) ?? true else { throw RCCOperationalQuality.Failure.custody }; trustStateDigest = digest
+        // Official native plugin_hook_key_source + hook_key namespaces and
+        // actual native keys match pluginID + ':'. Unavailable definitions are
+        // not called empty; without a trust grant their executable hooks are
+        // held by the native trust gate. Managed/unknown active hooks above
+        // remain rejected; no bypass-hook-trust flag is ever supplied.
+        guard unresolvedPluginIDs.allSatisfy({ id in !id.contains(":") && !state.keys.contains(where: { $0.hasPrefix(id + ":") }) }) else { throw RCCOperationalQuality.Failure.unavailable }
+        if !unresolvedPluginIDs.isEmpty { attestationEligible = true }
+    }
+    func verifyConfiguration(_ config: [String: Any]) throws {
+        try bindTrustState(config)
+        try verifyMaintenanceNotify(config)
+        guard config["default_permissions"] as? String == Self.profileID,
+            config["bypass_hook_trust"] as? Bool != true,
+            config["web_search"] as? String == "disabled", let features = config["features"] as? [String: Any],
+            features["hooks"] as? Bool == true,
+            ["apps", "browser_use", "browser_use_external", "computer_use", "js_repl", "remote_control", "memories"].allSatisfy({ features[$0] as? Bool == false }),
+            let permissions = config["permissions"] as? [String: Any], let profile = permissions[Self.profileID] as? [String: Any],
+            Self.rowsEmpty(profile["extends"]), let network = profile["network"] as? [String: Any], network["enabled"] as? Bool == false,
+            network.allSatisfy({ $0.key == "enabled" || Self.rowsEmpty($0.value) }), Self.rowsEmpty(profile["workspace_roots"]),
+            let filesystem = profile["filesystem"] as? [String: Any], Set(filesystem.keys).isSubset(of: [":minimal", workspace, scratch, "glob_scan_max_depth"]),
+            Self.rowsEmpty(filesystem["glob_scan_max_depth"]), filesystem[":minimal"] as? String == "read",
+            filesystem[workspace] as? String == (ticket.selectedConfig.scope == .readOnly ? "read" : "write"),
+            filesystem[scratch] as? String == "write" else { throw RCCOperationalQuality.Failure.unavailable }
+    }
+    func verifyThread(_ result: [String: Any], mcp: [[String: Any]]) throws {
+        guard let permission = result["activePermissionProfile"] as? [String: Any], permission["id"] as? String == Self.profileID,
+            Self.rowsEmpty(permission["extends"]), result["approvalPolicy"] as? String == "never",
+            result["runtimeWorkspaceRoots"] as? [String] == [workspace, scratch],
+            mcp.count <= 256, mcp.allSatisfy({ row in
+                row["runtimeStatus"] as? String == "disabled" && Self.rowsEmpty(row["tools"]) && Self.rowsEmpty(row["resources"]) &&
+                Self.rowsEmpty(row["resourceTemplates"]) && Self.rowsEmpty(row["toolsError"])
+            }) else { throw RCCOperationalQuality.Failure.unavailable }
+    }
+    func finishObservation() {
+        do { for (path, hash) in sourceHashes { try bindFile(path, expected: hash) } }
+        catch { verified = false }
+    }
+    func beforeDispatch() throws {
+        guard !ExecutionCancellation.isCancelled, verified, ticket.qualityContinuation == nil || localOnlyVerified else { throw RCCOperationalQuality.Failure.unavailable }
+        for (path, hash) in sourceHashes { try bindFile(path, expected: hash) }
+        // Read-only decisions do not spend this capability. Claim only at the
+        // actual native turn boundary; a crash/opaque failure never refunds it.
+        if ticket.qualityContinuation != nil { try RCCOperationalQuality.claimCorrection(ticket: ticket) }
+    }
+    func bindNative(executable: String) throws {
+        let wrapper = URL(fileURLWithPath: executable).resolvingSymlinksInPath().standardizedFileURL
+        // The installed official launcher is itself a tiny pinned source
+        // whose exact bytes resolve this signed native binary. Future unknown
+        // binaries must be revalidated, not silently inherit this canary.
+        try bindFile(wrapper.path, expected: "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8")
+        let binary = wrapper.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("CodexCLI.app/Contents/MacOS/codex")
+        try bindFile(binary.path, expected: "0d5ac7aae20c4eda6242428d5e218c55ba96d8763fda2a271088ff37104b9d28")
+        nativeExecutable = binary.path
+    }
+    func verifyRunningNative(pid: Int32) throws {
+        var bytes = [CChar](repeating: 0, count: 4096)
+        guard pid > 0, pid != getpid(), proc_pidpath(pid, &bytes, UInt32(bytes.count)) > 0,
+            let expected = nativeExecutable,
+            URL(fileURLWithPath: String(cString: bytes)).resolvingSymlinksInPath().path == expected else { throw RCCOperationalQuality.Failure.custody }
+    }
+    func verifyMaintenanceNotify(_ config: [String: Any]) throws {
+        if Self.rowsEmpty(config["notify"]) { return }
+        guard let values = config["notify"] as? [String], values.count == 2, values[1] == "turn-ended",
+            values[0].hasSuffix("/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient") else { throw RCCOperationalQuality.Failure.unavailable }
+        try bindFile(values[0], expected: "1bc7716cf9e0437caff3de3a6fc8f8988a70f853865633c7a754b409f30149e9")
+    }
+    func recordVerified(executable: String) throws {
+        try bindNative(executable: executable)
+        guard let hooksDigest else { throw RCCOperationalQuality.Failure.unavailable }
+        let payload: [String: Any] = ["schema": 1, "task_id": ticket.taskID, "node_id": ticket.nodeID, "attempt_id": ticket.attemptID,
+            "configuration_sha256": ticket.configurationSHA256, "source_fingerprint": ticket.sourceFingerprint,
+            "policy_sha256": ticket.policySHA256, "workspace": workspace, "scratch": scratch,
+            "profile": Self.profileID, "native_version": "codex-cli 0.162.0-alpha.17.2", "source_hashes": sourceHashes, "hooks_sha256": hooksDigest,
+            "unresolved_plugin_ids": unresolvedPluginIDs, "local_only_attestation": attestationEligible,
+            "native_hook_trust_state_sha256": trustStateDigest ?? "",
+            "original_owner_boundary_envelope_sha256": boundary?.envelopeSHA256 ?? "",
+            "original_owner_boundary_objective_sha256": boundary?.originalObjectiveSHA256 ?? "",
+            "maintenance_tcb": "native provider/auth/rollout and audited fixed lifecycle cleanup; not zero OS IPC"]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        let folder = RCCOperationalQuality.root.deletingLastPathComponent().appendingPathComponent("local-quality-profiles")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = folder.appendingPathComponent(ticket.attemptID + ".json")
+        let fd = open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw RCCOperationalQuality.Failure.custody }; defer { close(fd) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false); try handle.write(contentsOf: data); try handle.synchronize()
+        receiptSHA256 = TaskQualityEvidence.digest(data); verified = true
+    }
+}
+
+func rccNativeLocalQualityProfileSelfTest() throws {
+    typealias C = RCCRuntimeContract
+    let fm = FileManager.default, workspace = fm.temporaryDirectory.appendingPathComponent("os1-profile-fixture-" + UUID().uuidString).resolvingSymlinksInPath()
+    try fm.createDirectory(at: workspace, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: workspace) }
+    let h = C.digest(Data("fixture".utf8)), instruction = "Run only the declared local public checks."
+    let host = C.HostContext(workspace: workspace.path, context: nil, providerPreference: "auto", codexSessionID: nil, claudeSessionID: nil, requireReadOnly: false, ownerPolicy: nil)
+    let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "fixture", model: "fixture", effort: .low,
+        tools: ["Bash"], scope: .workspaceWrite, permissionProfile: .workspaceWrite, quotaPool: .openAICodex, allowedPaths: ["**"], configurationSHA256: h)
+    var ticket = C.ExecutionTicket(taskID: "task", nodeID: "node", attemptID: "attempt", candidateID: "candidate", requestSHA256: C.digest(Data(instruction.utf8)),
+        policySHA256: h, policySourceSHA256: h, sourceFingerprint: C.digest(try C.encode(host)), configurationSHA256: h, selectedConfig: config,
+        objective: instruction, instruction: instruction, contextRefs: [], ownedPaths: ["**"], originalRequest: instruction, originalObjective: instruction, hostContext: host)
+    let profile: RCCNativeLocalQualityProfile
+    do { profile = try RCCNativeLocalQualityProfile(ticket: ticket, workspace: workspace.path) }
+    catch { throw OS1Error.message("Native local profile fixture initial canonical workspace/scratch: \(error)") }
+    defer { try? fm.removeItem(atPath: profile.scratch) }
+    var checks = 0
+    func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throws { guard try condition() else { throw OS1Error.message("Native local profile fixture: " + message) }; checks += 1 }
+    func reject(_ message: String, _ body: () throws -> Void) throws { do { try body() } catch { checks += 1; return }; throw OS1Error.message("Native local profile fixture: " + message) }
+    var effective: [String: Any] = ["default_permissions": RCCNativeLocalQualityProfile.profileID, "web_search": "disabled", "bypass_hook_trust": false,
+        "features": ["hooks": true, "apps": false, "browser_use": false, "browser_use_external": false, "computer_use": false, "js_repl": false, "remote_control": false, "memories": false],
+        "hooks": ["state": [:]], "permissions": [RCCNativeLocalQualityProfile.profileID: ["extends": NSNull(), "workspace_roots": NSNull(),
+            "filesystem": [":minimal": "read", workspace.path: "write", profile.scratch: "write", "glob_scan_max_depth": NSNull()],
+            "network": ["enabled": false, "unix_sockets": NSNull(), "allow_local_binding": NSNull()]]]]
+    do { try profile.verifyConfiguration(effective) }
+    catch { throw OS1Error.message("Native local profile fixture normalized effective config: \(error)") }
+    checks += 1
+    try check(!RCCNativeLocalQualityProfile.toml(workspace.path).contains("\\/"), "TOML path serialization must not emit JSON-only slash escapes")
+    try check(profile.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(workspace.path)) && $0.contains(RCCNativeLocalQualityProfile.toml(profile.scratch)) }), "exact roots, not dynamic cwd or broad tmp grant")
+    var profiles = effective["permissions"] as! [String: Any], row = profiles[RCCNativeLocalQualityProfile.profileID] as! [String: Any]
+    var files = row["filesystem"] as! [String: Any]; files["/tmp"] = "write"; row["filesystem"] = files; profiles[RCCNativeLocalQualityProfile.profileID] = row
+    var bad = effective; bad["permissions"] = profiles
+    try reject("merged extra filesystem grant") { try profile.verifyConfiguration(bad) }
+    profiles = effective["permissions"] as! [String: Any]; row = profiles[RCCNativeLocalQualityProfile.profileID] as! [String: Any]
+    row["network"] = ["enabled": false, "dangerously_allow_all_unix_sockets": true]; profiles[RCCNativeLocalQualityProfile.profileID] = row; bad = effective; bad["permissions"] = profiles
+    try reject("network false does not wash active unix-socket exception") { try profile.verifyConfiguration(bad) }
+    bad = effective; bad["bypass_hook_trust"] = true
+    try reject("exposed hook-trust bypass rejected") { try profile.verifyConfiguration(bad) }
+    bad = effective; bad.removeValue(forKey: "bypass_hook_trust")
+    try profile.verifyConfiguration(bad); checks += 1 // hidden field is not falsely called observed; owned thread request supplies false.
+    try reject("unknown active hook handler cannot be guessed safe") { try profile.validateHooks(["data": [["cwd": workspace.path, "errors": [], "hooks": [["enabled": true, "trustStatus": "trusted", "handlerType": "agent", "async": false, "isManaged": false, "command": "unknown", "sourcePath": workspace.path]]]]], environment: [:]) }
+    try profile.validateHooks(["data": [["cwd": workspace.path, "errors": [], "hooks": []]]], environment: [:]); checks += 1
+    let ack: [String: Any] = ["activePermissionProfile": ["id": RCCNativeLocalQualityProfile.profileID, "extends": NSNull()], "approvalPolicy": "never", "runtimeWorkspaceRoots": [workspace.path, profile.scratch]]
+    let mcp: [[String: Any]] = [["name": "fixture", "runtimeStatus": "disabled", "tools": [:], "resources": [], "resourceTemplates": [], "toolsError": NSNull()]]
+    try profile.verifyThread(ack, mcp: mcp); checks += 1
+    var live = mcp; live[0]["tools"] = ["danger": [:]]
+    try reject("disabled label cannot wash active MCP tools") { try profile.verifyThread(ack, mcp: live) }
+    var foreign = ack; foreign["runtimeWorkspaceRoots"] = [workspace.path, "/tmp"]
+    try reject("foreign scratch in actual ACK") { try profile.verifyThread(foreign, mcp: mcp) }
+    let remote = ["summary": ["id": "app-fixture@remote", "source": ["type": "remote"]], "unavailable": true] as [String: Any]
+    _ = try profile.pluginOverrides([remote], mcp: [], config: [:])
+    try check(!profile.attestationEligible, "remote404 is unresolved, not called an empty hook definition")
+    var granted = effective; granted["hooks"] = ["state": ["app-fixture@remote:plugin.json#hooks[0]:stop:0:0": ["trusted_hash": "sha256:" + h]]]
+    try reject("unknown remote trusted namespace cannot become inert") { try profile.bindTrustState(granted) }
+    let local = ["summary": ["id": "browser@openai-bundled", "source": ["type": "local", "path": workspace.path]], "unavailable": true] as [String: Any]
+    try reject("local/builtin failed definition cannot use remote exception") { _ = try profile.pluginOverrides([local], mcp: [], config: [:]) }
+    ticket.selectedConfig.scope = .readOnly; ticket.selectedConfig.permissionProfile = .readOnly
+    let read = try RCCNativeLocalQualityProfile(ticket: ticket, workspace: workspace.path)
+    defer { try? fm.removeItem(atPath: read.scratch) }
+    try check(read.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(workspace.path) + "=\"read\"") }), "read-only child cannot inherit write grant")
+    let c = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: h, contextSHA256: h, sourceSHA256: nil, startTreeSHA256: h,
+        scope: .workspaceWrite, verifierCodeSHA256: h, referencePolicySHA256: h, requiredCheckIDs: ["check"], fullCoverage: false,
+        referenceProfiles: [], reference: nil, issuedAt: Date(), validUntil: Date().addingTimeInterval(60))
+    let env = PreparedTaskQuality.Envelope(contract: c, checkerSHA256: h, timeoutSeconds: 1, workspacePaths: [], localEffectsOnly: true)
+    let prepared = PreparedTaskQuality(envelope: env, checkerBytes: Data(), referencePolicySHA256: h)
+    try check(prepared.reboundForContinuation(contextSHA256: h, startTreeSHA256: h).envelope.localEffectsOnly, "correction preserves trusted local restriction")
+    var legacy = try JSONSerialization.jsonObject(with: RCCOperationalQuality.encoded(env)) as! [String: Any]; legacy.removeValue(forKey: "localEffectsOnly")
+    let d = JSONDecoder(); d.dateDecodingStrategy = .millisecondsSince1970
+    try check(try d.decode(PreparedTaskQuality.Envelope.self, from: JSONSerialization.data(withJSONObject: legacy)).localEffectsOnly == false, "old contracts never acquire confinement declaration by default")
+    print("RCC native local permission profile: \(checks) checks PASS; synthetic metadata only, native/model calls0")
 }

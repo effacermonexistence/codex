@@ -345,7 +345,7 @@ async function verifyNative() {
 export async function nativeOperation(operation, payload, signal,
                                       {cancelGraceMs = 6_000, cancelKillMs = 2_000} = {}) {
   if (!['rcc-intent', 'rcc-catalog', 'rcc-adapter', 'rcc-stage', 'rcc-install-status',
-    'rcc-install-cancel'].includes(operation)) throw Error('native_operation_denied');
+    'rcc-install-cancel', 'rcc-quality-decision'].includes(operation)) throw Error('native_operation_denied');
   if (!Number.isSafeInteger(cancelGraceMs) || cancelGraceMs < 100 || cancelGraceMs > 30_000 ||
       !Number.isSafeInteger(cancelKillMs) || cancelKillMs < 100 || cancelKillMs > 10_000)
     throw Error('native_cancel_bounds_invalid');
@@ -1030,6 +1030,7 @@ export function registerRCCRuntime(api) {
         // the local surface has no continuation and refuses one.
         executeContinuation: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :
           nativeOperation('rcc-adapter', ticket, signal),
+        decideOperationalQuality: (request, signal) => nativeOperation('rcc-quality-decision', request, signal),
         stageSelfUpdate: (request, signal) => nativeOperation('rcc-stage', request, signal),
         reconcileInstallation: request => nativeOperation('rcc-install-status', request),
         cancelInstallation: request => nativeOperation('rcc-install-cancel', request),
