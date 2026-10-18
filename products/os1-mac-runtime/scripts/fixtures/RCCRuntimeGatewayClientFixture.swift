@@ -93,6 +93,34 @@ struct RCCRuntimeGatewayClientFixture {
             if name=='wrong_binding': obj['request_sha256']='0'*64; write(task,obj)
         else:
             obj=read(task)
+            name=params['task_id']
+            if name.startswith('observer_'):
+                countfile=root/'observer-reads.json'; counts=read(countfile) if countfile.exists() else {}
+                if method=='os1.rcc.status':
+                    counts[name]=counts.get(name,0)+1;write(countfile,counts)
+                    if name=='observer_rejected':
+                        print(json.dumps({'ok':False,'error':{'type':'gateway_request_error','code':'INVALID_REQUEST'}}));sys.exit(1)
+                    if counts[name]==1:
+                        if name not in ['observer_cancel_active','observer_permanent_timeout']:
+                            obj['state']='returned_unverified';obj['revision']=4
+                            obj['result']={'output':'2','execution_verified':True,'task_verified':False,'parity_state':'unverified','native_receipt':None}
+                            write(task,obj)
+                        (root/('status-started-'+name)).write_text('metadata only')
+                        if name=='observer_owner_mismatch': os.kill(read(root/'transport-owner.json')['pid'],15)
+                        time.sleep(4)
+                    elif name=='observer_permanent_timeout':time.sleep(4)
+                    elif name=='observer_wrong_revision':obj['revision']=2
+                    elif name=='observer_wrong_hash':obj['request_sha256']='0'*64
+                    elif name=='observer_wrong_source':obj['source_fingerprint']='0'*64
+                    print(json.dumps(obj));sys.exit(0)
+                if method=='os1.rcc.cancel':
+                    cancels=root/'observer-cancels.json';counts=read(cancels) if cancels.exists() else {};counts[name]=counts.get(name,0)+1;write(cancels,counts)
+                    if name=='observer_cancel_rejected':
+                        print(json.dumps({'ok':False,'error':{'type':'gateway_request_error','code':'INVALID_REQUEST'}}));sys.exit(1)
+                    # A terminal Core result wins over a later local Stop.
+                    if obj['state'] not in ['completed','returned_unverified','held','failed','cancelled','effects_uncertain']:
+                        obj['state']='cancelled';obj['revision']+=1;write(task,obj)
+                    print(json.dumps(obj));sys.exit(0)
             if method=='os1.rcc.cancel': obj['state']='cancelled'; obj['revision']+=1; write(task,obj)
             elif params['task_id']=='regression': obj['revision']=2
             elif params['task_id'] in ['cancel','awaiting_install']: pass
@@ -144,7 +172,8 @@ struct RCCRuntimeGatewayClientFixture {
         func request(_ id: String) throws -> Data {
             let raw = "SENSITIVE_FIXTURE_REQUEST_DO_NOT_EXPOSE"
             return try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": id, "request": raw,
-                "request_sha256": hash(Data(raw.utf8)), "budget": ["max_duration_ms": 5_000]], options: [.sortedKeys])
+                "request_sha256": hash(Data(raw.utf8)), "source_fingerprint": hash(Data("fixture source:".utf8)),
+                "policy_sha256": hash(Data("fixture policy".utf8)), "budget": ["max_duration_ms": 5_000]], options: [.sortedKeys])
         }
         func state(_ bytes: Data) throws -> String {
             (try JSONSerialization.jsonObject(with: bytes) as? [String: Any])?["state"] as? String ?? "missing"
@@ -267,6 +296,47 @@ struct RCCRuntimeGatewayClientFixture {
                 throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid snapshot accepted"])
             } catch RCCRuntimeGatewayClient.Failure.snapshotInvalid { }
         }
+        // Derived from actual396's saved Core terminal + lost GUI result.
+        // Fake transport only: A status observer times out AFTER Core saved
+        // the real answer, and a later read must recover that same task once.
+        let immutable = try request("observer_timeout")
+        let observedTerminal = try RCCRuntimeGatewayClient.runForOfflineFixture(request: immutable,
+            configuration: configuration, root: privateRoot)
+        try require(try state(observedTerminal) == "returned_unverified", "later terminal lost after one observer timeout")
+        try require(try request("observer_timeout") == immutable, "recovery rebuilt original source/policy request")
+        var reads = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
+        try require(reads["observer_timeout"] == 2, "status recovery was not one bounded same-task read")
+        for id in ["observer_wrong_revision", "observer_wrong_hash", "observer_wrong_source"] {
+            do {
+                _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request(id), configuration: configuration, root: privateRoot)
+                throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid recovery snapshot accepted: " + id])
+            } catch RCCRuntimeGatewayClient.Failure.snapshotInvalid { }
+        }
+        for id in ["observer_rejected", "observer_cancel_rejected"] {
+            var stop = false
+            do {
+                _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request(id), configuration: configuration, root: privateRoot,
+                    cancelled: { stop }, progress: { _ in if id == "observer_cancel_rejected" { stop = true } })
+                throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "authenticated refusal was retried: " + id])
+            } catch RCCRuntimeGatewayClient.Failure.rpcRejected { }
+        }
+        for (id, expected) in [("observer_cancel_active", "cancelled"), ("observer_cancel_terminal", "returned_unverified")] {
+            let answer = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request(id), configuration: configuration, root: privateRoot,
+                cancelled: { fm.fileExists(atPath: privateRoot.appendingPathComponent("status-started-" + id).path) })
+            try require(try state(answer) == expected, "Stop/terminal race lost original Core state: " + id)
+        }
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("observer_permanent_timeout"), configuration: configuration, root: privateRoot)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "unbounded unavailable observer fabricated a result"])
+        } catch RCCRuntimeGatewayClient.Failure.rpcTimeout { }
+        reads = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
+        try require(reads["observer_permanent_timeout"] == 2 && reads["observer_rejected"] == 1,
+                    "observer retry budget or authenticated-negative boundary changed")
+        let afterRecoverySubmits = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
+        try require(afterRecoverySubmits.filter { $0.key.hasPrefix("observer_") }.values.allSatisfy { $0 == 1 },
+                    "observer recovery submitted an existing task twice")
+        let cancelCounts = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-cancels.json"))) as! [String: Int]
+        try require(cancelCounts.values.allSatisfy { $0 == 1 }, "cancel intent sent more than once")
         let args = try String(contentsOf: privateRoot.appendingPathComponent("argv.json"), encoding: .utf8)
         try require(!args.contains("SENSITIVE_FIXTURE_REQUEST_DO_NOT_EXPOSE"), "request leaked in argv")
         let ownerDirectory = URL(fileURLWithPath: metadata["directory"] as! String)
@@ -309,6 +379,15 @@ struct RCCRuntimeGatewayClientFixture {
         try require(concurrentCounts["after_upgrade"] == 1, "concurrent warmup duplicated task submit")
         let oldTask = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("first.json"))) as! [String: Any]
         try require(oldTask["state"] as? String == "returned_unverified", "upgrade discarded durable task state")
+        // A dead/replaced original owner is not a reason to start another
+        // owner during recovery. This is the fixture's own isolated PID only.
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("observer_owner_mismatch"), configuration: configuration, root: privateRoot)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "lost owner was replaced during recovery"])
+        } catch RCCRuntimeGatewayClient.Failure.existingGatewayUnavailable { }
+        let ownerReads = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
+        try require(ownerReads["observer_owner_mismatch"] == 1, "recovery queried a different owner")
+        try require(try Data(contentsOf: privateRoot.appendingPathComponent("boots.json")) == Data("2".utf8), "recovery launched another owner")
         try Data("mutated".utf8).write(to: plugin.appendingPathComponent("rcc-runtime.mjs"))
         do {
             _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("mutated"), configuration: configuration, root: privateRoot)
@@ -316,6 +395,6 @@ struct RCCRuntimeGatewayClientFixture {
         } catch RCCRuntimeGatewayClient.Failure.identityMismatch { }
         try require(progress == ["running", "returned_unverified"], "progress not monotonic exact task snapshots")
         passed = true
-        print("RCC Runtime Gateway client: offline fake-transport checks PASS; delayed startup/slow CLI/deadline/unreachable/concurrent warmup PASS; hosted/model calls 0; live task state untouched")
+        print("RCC Runtime Gateway client: offline fake-transport checks PASS; same-task observer timeout/terminal/Stop/source/revision/rejection/owner/budget gates PASS; hosted/model calls 0; live task state untouched")
     }
 }

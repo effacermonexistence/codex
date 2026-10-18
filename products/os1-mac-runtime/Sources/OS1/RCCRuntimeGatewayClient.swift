@@ -371,17 +371,22 @@ enum RCCRuntimeGatewayClient {
                                       fixture: fixture, cancelled: cancellation)
         let query = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": binding.id], options: [.sortedKeys])
         var last: Snapshot?
+        var sourceAcknowledged = false
         // The one and only submit. A timeout/invalid reply does NOT authorize a replay.
         if !fixture { try checkInstallerMaintenance(root: root) }
         do {
             let raw = try rpc("os1.rcc.submit", parameters: request, owner: owner,
                               configuration: configuration, paths: paths, timeout: limits.rpc, fixture: fixture)
             last = try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: 0)
+            // Core's positive submit acknowledgement attests admission of the
+            // immutable WHOLE request (including source/policy fingerprint).
+            // Status has no public source fields: never invent that evidence.
+            sourceAcknowledged = binding.source != nil && binding.policy != nil
         } catch {
             // An authenticated negative acknowledgement is NOT ambiguous. In
             // particular an idempotency conflict must not return an older task
             // with the same request text but different source/policy context.
-            if let failure = error as? Failure, failure == .rpcRejected { throw failure }
+            guard recoverableObservation(error) else { throw error }
             // Submission may have been accepted before transport loss. Reconcile
             // the exact task; if this also fails, preserve all state and stop observing.
             let raw = try rpc("os1.rcc.status", parameters: query, owner: owner,
@@ -392,17 +397,53 @@ enum RCCRuntimeGatewayClient {
         let observationDeadline = Date().addingTimeInterval(min(limits.observe, binding.duration + 120))
         var cancellationSent = false
         var cancellationDeadline: Date?
+        var observerRecoveries = 1 // whole-run budget, not one retry per poll
+        func deadline() -> Date { min(observationDeadline, cancellationDeadline ?? observationDeadline) }
+        func cancelOriginal(minimumRevision: Int) throws -> Snapshot? {
+            guard !cancellationSent else { return nil }
+            cancellationSent = true
+            cancellationDeadline = Date().addingTimeInterval(min(15, limits.rpc + 2))
+            do {
+                let raw = try rpc("os1.rcc.cancel", parameters: query, owner: owner,
+                    configuration: configuration, paths: paths, timeout: limits.rpc, fixture: fixture,
+                    hardDeadline: deadline())
+                return try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: minimumRevision)
+            } catch {
+                guard recoverableObservation(error) else { throw error }
+                return nil // only a status read may reconcile this intent
+            }
+        }
+        func statusOnce(minimumRevision: Int, interruptible: Bool) throws -> Snapshot {
+            let raw = try rpc("os1.rcc.status", parameters: query, owner: owner,
+                configuration: configuration, paths: paths, timeout: limits.rpc, fixture: fixture,
+                hardDeadline: deadline(), cancelled: { interruptible && cancellation() && !cancellationSent })
+            return try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: minimumRevision)
+        }
+        func reconcileCancellation(minimumRevision: Int) throws -> Snapshot {
+            if let observed = try cancelOriginal(minimumRevision: minimumRevision) { return observed }
+            return try statusOnce(minimumRevision: minimumRevision, interruptible: false)
+        }
+        func observe(minimumRevision: Int) throws -> Snapshot {
+            do { return try statusOnce(minimumRevision: minimumRevision, interruptible: true) }
+            catch is CancellationError { return try reconcileCancellation(minimumRevision: minimumRevision) }
+            catch {
+                guard recoverableObservation(error), sourceAcknowledged, observerRecoveries > 0,
+                      sha256(request) == binding.originalSHA256, Date() < deadline() else { throw error }
+                observerRecoveries -= 1
+                // Same authenticated owner, exact original task/hash and a
+                // monotonic revision. No submit, new owner, route or model.
+                do { return try statusOnce(minimumRevision: minimumRevision, interruptible: true) }
+                catch is CancellationError { return try reconcileCancellation(minimumRevision: minimumRevision) }
+            }
+        }
         while let current = last {
             if current.revision > emittedRevision { progress(current.data); emittedRevision = current.revision }
             if current.deliverable { return current.data }
             if cancellation(), !cancellationSent {
-                cancellationSent = true
-                cancellationDeadline = Date().addingTimeInterval(min(15, limits.rpc + 2))
                 // Cancel is idempotent task intent; failure is followed by status,
                 // never process-wide termination or resetting the task store.
-                if let raw = try? rpc("os1.rcc.cancel", parameters: query, owner: owner,
-                    configuration: configuration, paths: paths, timeout: limits.rpc, fixture: fixture) {
-                    last = try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: current.revision)
+                if let observed = try cancelOriginal(minimumRevision: current.revision) {
+                    last = observed
                     continue
                 }
             }
@@ -411,14 +452,20 @@ enum RCCRuntimeGatewayClient {
             Thread.sleep(forTimeInterval: limits.poll)
             // A failed observer/status request is not a failed execution. Do not
             // start another owner, select another provider or rerun the request.
-            let raw = try rpc("os1.rcc.status", parameters: query, owner: owner,
-                              configuration: configuration, paths: paths, timeout: limits.rpc, fixture: fixture)
-            last = try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: current.revision)
+            last = try observe(minimumRevision: current.revision)
         }
         throw Failure.snapshotInvalid
     }
 
-    private static func requestBinding(_ bytes: Data) throws -> (id: String, hash: String, duration: TimeInterval) {
+    private static func recoverableObservation(_ error: Error) -> Bool {
+        guard let failure = error as? Failure else { return false }
+        // Authenticated refusals, identity/owner/custody/source/revision/schema
+        // failures are NOT ambiguous transport and never get another read.
+        return failure == .rpcTimeout || failure == .rpcFailed
+    }
+
+    private static func requestBinding(_ bytes: Data) throws -> (id: String, hash: String, duration: TimeInterval,
+        source: String?, policy: String?, originalSHA256: String) {
         guard bytes.count > 2, bytes.count <= maximumRequestBytes,
               let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               value["schema"] as? Int == 1, let id = value["task_id"] as? String,
@@ -428,12 +475,19 @@ enum RCCRuntimeGatewayClient {
               let budget = value["budget"] as? [String: Any],
               let milliseconds = budget["max_duration_ms"] as? Int,
               milliseconds > 0, milliseconds <= 86_400_000 else { throw Failure.invalidRequest }
-        return (id, hash, Double(milliseconds) / 1000)
+        let source = value["source_fingerprint"] as? String, policy = value["policy_sha256"] as? String
+        for key in ["source_fingerprint", "policy_sha256"] where value[key] != nil {
+            guard let digest = value[key] as? String,
+                  digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw Failure.invalidRequest }
+        }
+        return (id, hash, Double(milliseconds) / 1000, source, policy, sha256(bytes))
     }
 
     private static func snapshot(_ data: Data, id: String, requestSHA256: String, minimumRevision: Int) throws -> Snapshot {
         guard data.count > 2, data.count <= maximumResponseBytes,
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(value.keys).isSubset(of: ["schema", "task_id", "request_sha256", "state", "revision", "children",
+                  "result", "error", "install_handoff", "routing_intent", "skipped_routes"]),
               value["schema"] as? Int == 1, value["task_id"] as? String == id,
               value["request_sha256"] as? String == requestSHA256,
               let revision = value["revision"] as? Int, revision >= minimumRevision,

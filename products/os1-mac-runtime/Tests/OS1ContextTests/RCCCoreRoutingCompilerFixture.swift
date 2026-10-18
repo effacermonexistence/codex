@@ -39,6 +39,43 @@ func runRCCCoreRoutingCompilerFixtures() throws {
     try check(held.kind == .hold && held.routes.isEmpty, "pointed content held, not defaulted")
     let ordinary = try I.compile(task("이 파일 버그를 수정해"))
     try check(ordinary.kind == .ordinary && ordinary.routes.isEmpty, "ordinary work unchanged")
+    func responseTask(_ text: String) throws -> C.Request {
+        var value = try task(text); value.hostContext?.providerPreference = "auto"
+        value.sourceFingerprint = C.digest(try C.encode(value.hostContext!)); return value
+    }
+    for text in ["야 체크해 봅시다. 너 되냐?", "야 너 되냐?", "야 나 한번 체크해 볼게. 너 되냐?",
+                 "너 잘 되냐", "너 지금 작동하냐?", "Hey, let me check. Are you working?", "Are you alive?"] {
+        let original = try responseTask(text), response = try I.compile(original)
+        try check(StatusCheckIn.responsePathOnly(text) && response.kind == .localResponse,
+                  "existing structural recognizer produces a source-bound local response, including ASR spacing")
+        try check(response.taskID == original.taskID && response.requestSHA256 == original.requestSHA256 &&
+                  response.sourceFingerprint == original.sourceFingerprint && response.policySHA256 == original.policySHA256,
+                  "local response retains original task/source/policy identity")
+        try check(response.routes.isEmpty && !response.bestEffort && response.notices.isEmpty && response.reason == nil &&
+                  response.modelPrompt == nil && response.modelInput == nil, "local response has no model-authored body or route")
+        let envelope: [String: Any] = ["schema": 1, "task": try C.checkedObject(C.encode(original))]
+        let wire = try C.checkedObject(I.compileEnvelope(JSONSerialization.data(withJSONObject: envelope)))
+        try check(wire["kind"] as? String == "local_response" && wire["model_prompt"] == nil && wire["output"] == nil,
+                  "existing native compiler wire carries only the typed disposition")
+        try check(try I.compile(original, modelAnswer: #"{"kind":"local_response"}"#).kind != .localResponse,
+                  "a supplied model answer cannot mint local response authority")
+    }
+    for text in ["다 끝났어?", "설치됐어?", "아직 333이야?", "너 되냐? 다 했어?", "is it installed?",
+                 "야 너 R2 연결 돼있냐?", "너 되냐? 셸로 확인해", "Are you working? inspect the logs",
+                 "너 코드가 되냐?", "야 너 한번 체크해봐. 되냐?", "한번 체크해보자 되냐", "이 파일 고쳐"] {
+        try check(!StatusCheckIn.responsePathOnly(text) && (try I.compile(responseTask(text))).kind != .localResponse,
+                  "status/completion/external/action/ambiguous subject never becomes generic liveness")
+    }
+    var response = try responseTask("야 체크해 봅시다. 너 되냐?")
+    response.materialRefs = ["current-attachment"]
+    try check(try I.compile(response).kind != .localResponse, "current material keeps its own task")
+    response = try responseTask("너 되냐?"); response.hostContext?.providerPreference = "codex"
+    response.sourceFingerprint = C.digest(try C.encode(response.hostContext!))
+    try check(try I.compile(response).kind != .localResponse, "explicit UI provider is not silently bypassed")
+    response = try responseTask("너 되냐?"); response.providerPreference = "claude"
+    try check(try I.compile(response).kind != .localResponse, "top-level provider constraint is not bypassed")
+    response = try responseTask("너 되냐?"); response.objective = "Another task"
+    try check(try I.compile(response).kind != .localResponse, "neighboring objective cannot acquire local-response status")
     let negative = try I.compile(task("엄마 아빠한테 다 보내봐 1+1"))
     try check(negative.kind != .routes && negative.kind != .needsModel, "human recipients do not become AI routes")
     var attached = order; attached.materialRefs = ["fixture-attachment"]

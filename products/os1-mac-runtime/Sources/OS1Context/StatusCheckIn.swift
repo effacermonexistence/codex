@@ -87,6 +87,27 @@ public enum StatusCheckIn {
         matches(request) && request.lowercased().range(of: externalSubject, options: [.regularExpression, .caseInsensitive]) == nil
     }
 
+    /// Narrower than a status card: the owner asks whether this responder is
+    /// answering, not whether an installation, earlier task or external system
+    /// is ready. Reuse the existing source/order/external and opener grammar;
+    /// after its neutral framing there must be ONE self-directed liveness
+    /// question. No exact-utterance greeting table and no inference from old
+    /// conversation state authorizes a broader completion claim.
+    public static func responsePathOnly(_ request: String) -> Bool {
+        guard answersFromCard(request) else { return false }
+        let framing = #"^(?:(?:야|아니|그래서|근데|뭐야|아|음|도대체|진짜|그럼|지금)\s*)+"#
+        let responseQuestion = #"^(?:너(?:는)?|넌)\s*(?:(?:지금|잘)\s*)*(?:되(?:냐|나|니)|작동(?:해|하냐|하니|하나|되냐|되나)|돌아가(?:냐|나|니)|살아\s?있(?:냐|나|니))$|^are\s+you\s+(?:working|alive|there)$"#
+        let text = request.precomposedStringWithCanonicalMapping.lowercased()
+        let parts = text.components(separatedBy: CharacterSet(charactersIn: ".!?？。"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { $0.replacingOccurrences(of: selfCheckOpener, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0.range(of: neutral, options: .regularExpression) == nil }
+            .map { $0.replacingOccurrences(of: framing, with: "", options: .regularExpression) }
+        return parts.count == 1 && parts[0].range(of: responseQuestion, options: .regularExpression) != nil
+    }
+
     public struct Staged: Equatable, Sendable {
         public let intent: SelfUpdate.Intent
         /// Installed by the app itself when idle; otherwise only by an

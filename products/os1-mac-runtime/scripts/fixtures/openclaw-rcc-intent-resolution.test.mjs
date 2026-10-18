@@ -130,7 +130,7 @@ test('same persisted Core task: resolution precedes catalog, immutable original,
   assert.equal(resolverCalls, 1, 'idempotent original submission is not reinterpreted/replayed');
 });
 
-test('exact local arithmetic and check-in bypass compiler/catalog/planner/provider completely', async t => {
+test('exact arithmetic and preexisting literal greeting bypass compiler/catalog/planner/provider completely', async t => {
   const directory = await fixture(t);
   let calls = 0;
   const fail = () => { calls++; throw Error('unexpected model/provider operation'); };
@@ -144,6 +144,56 @@ test('exact local arithmetic and check-in bypass compiler/catalog/planner/provid
     assert.equal(stored(directory, request.task_id).intent_resolution, undefined);
   }
   assert.equal(calls, 0);
+});
+
+test('native typed response-path disposition completes ONE original Core child with no catalog/planner/provider', async t => {
+  const directory = await fixture(t), request = task(directory, '야 체크해 봅시다. 너 되냐?');
+  const original = structuredClone(request); let compilerCalls = 0, otherCalls = 0;
+  const fail = () => { otherCalls++; throw Error('response path must not spend model/provider quota'); };
+  const runtime = await createRCCRuntime({stateDir: directory,
+    resolveIntent: async ({task: q}) => { compilerCalls++; assert.deepEqual(q, original);
+      return resolution(q, 'local_response', {notices: []}); }, catalog: fail, plan: fail, execute: fail});
+  t.after(() => runtime.close()); await runtime.submit(request);
+  const done = await wait(runtime, request);
+  assert.equal(done.state, 'completed'); assert.equal(done.routing_intent.state, 'local_response');
+  assert.equal(done.children.length, 1); assert.equal(done.children[0].id, 'local-core');
+  assert.equal(done.children[0].instruction, request.request);
+  assert.equal(done.children[0].selected_config.model, 'none');
+  assert.equal(done.children[0].selected_config.effort, 'none');
+  assert.equal(done.result.parity_state, 'unverified'); assert.equal(done.result.native_receipt, null);
+  assert.ok(!/설치|완료|backend|quota|ready/i.test(done.result.output));
+  assert.deepEqual(stored(directory, request.task_id).task, original);
+  await runtime.submit(original); assert.equal(compilerCalls, 1); assert.equal(otherCalls, 0);
+});
+
+test('local response disposition cannot carry model output, extra authority or different source/provider/material', async t => {
+  const directory = await fixture(t); let index = 0;
+  const mutations = [
+    (r, q) => { r.source_fingerprint = sha('other'); }, (r, q) => { r.policy_sha256 = sha('other'); },
+    (r, q) => { r.request_sha256 = sha('other'); }, (r, q) => { r.task_id = 'foreign'; },
+    r => { r.model_answer = '{"kind":"local_response"}'; }, r => { r.reason = 'make this ready'; },
+    r => { r.notices = ['all tasks complete']; }, r => { r.output = 'Everything is ready'; },
+    r => { r.best_effort = true; }, r => { r.routes = [{surface: 'codex', instruction: 'Do work'}]; }
+  ];
+  for (const mutate of mutations) {
+    const path = join(directory, String(index++)), q = task(path, '너 되냐?'); let calls = 0;
+    const rt = await createRCCRuntime({stateDir: path,
+      resolveIntent: async () => { const value = resolution(q, 'local_response', {notices: []}); mutate(value, q); return value; },
+      catalog: () => { calls++; throw Error('must not run'); }});
+    await rt.submit(q); assert.equal((await wait(rt, q)).state, 'held'); assert.equal(calls, 0); await rt.close();
+  }
+  for (const mutate of [q => {q.host_context.provider_preference = 'codex';},
+    q => {q.provider_preference = 'claude';}, q => {q.material_refs = ['provided-material'];},
+    q => {q.objective = 'a different objective';}]) {
+    const path = join(directory, String(index++)), q = task(path, '너 되냐?'); mutate(q);
+    q.source_fingerprint = hostContextFingerprint(q.host_context); let calls = 0;
+    const rt = await createRCCRuntime({stateDir: path,
+      resolveIntent: async () => resolution(q, 'local_response', {notices: []}),
+      catalog: () => {calls++; throw Error('must not run');}});
+    await rt.submit(q); const done = await wait(rt, q);
+    assert.equal(done.state, 'held'); assert.equal(done.error, 'intent_local_response_scope_invalid');
+    assert.equal(calls, 0); await rt.close();
+  }
 });
 
 test('legitimate ordinary result leaves owner task/source and downstream planning unchanged', async t => {

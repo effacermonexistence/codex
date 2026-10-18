@@ -774,7 +774,7 @@ public enum RCCRuntimeContract {
     /// Public Core interpretation status: no raw prompt, model answer,
     /// private context or execution-observation upgrade crosses this boundary.
     public struct RoutingIntentSummary: Codable, Equatable, Sendable {
-        public enum Status: String, Codable, Sendable { case resolving, ordinary, routes, held }
+        public enum Status: String, Codable, Sendable { case resolving, ordinary, routes, held, localResponse = "local_response" }
         public var state: Status
         public var notices: [String]
         public var reason: String?
@@ -1469,7 +1469,7 @@ public enum RCCRuntimeContract {
 /// calls Ollama: a supplied model answer remains a deterministically checked
 /// candidate under the existing recipient/payload/negation/scope gates.
 public enum RCCCoreRoutingCompiler {
-    public enum Kind: String, Sendable { case ordinary, routes, hold, needsModel = "needs_model" }
+    public enum Kind: String, Sendable { case ordinary, routes, hold, needsModel = "needs_model", localResponse = "local_response" }
     public struct Result: Equatable, Sendable {
         public let taskID: String, requestSHA256: String, policySHA256: String, sourceFingerprint: String
         public let kind: Kind
@@ -1503,6 +1503,19 @@ public enum RCCCoreRoutingCompiler {
     public static func compile(_ task: RCCRuntimeContract.Request, modelAnswer: String? = nil) throws -> Result {
         try RCCRuntimeContract.validate(task)
         guard task.coreRouting == nil else { throw RCCRuntimeContract.Rejection.invalidInput }
+        // Source-owned response-path recognition runs inside the existing
+        // Core compiler, never in a second ingress controller or a model's
+        // answer. Explicit providers/materials/actions keep their own route.
+        if modelAnswer == nil, task.mode == .auto, task.hostContext?.providerPreference == "auto",
+           task.providerPreference == nil || task.providerPreference == "auto",
+           task.hostContext?.explicitRoutes == nil, task.materialRefs.isEmpty,
+           task.objective == task.request, PromptAttachments.paths(in: task.request).isEmpty,
+           !task.request.contains(PromptAttachments.marker), StatusCheckIn.responsePathOnly(task.request) {
+            return Result(taskID: task.taskID, requestSHA256: task.requestSHA256,
+                policySHA256: task.policySHA256, sourceFingerprint: task.sourceFingerprint,
+                kind: .localResponse, routes: [], bestEffort: false, notices: [], reason: nil,
+                modelPrompt: nil, modelInput: nil)
+        }
         return try compile(taskID: task.taskID, request: task.request, requestSHA256: task.requestSHA256,
             policySHA256: task.policySHA256, sourceFingerprint: task.sourceFingerprint,
             hasAttachments: !task.materialRefs.isEmpty, alreadyExplicit: task.mode == .explicitRoutingTest,

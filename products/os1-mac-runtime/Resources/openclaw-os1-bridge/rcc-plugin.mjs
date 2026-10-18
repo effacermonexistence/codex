@@ -5,7 +5,7 @@ import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 import { createRCCRuntime, dispatchable, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
-  localWorkerRow, RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
+  localWorkerRow, lockIndivisibleInstruction, RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -293,13 +293,21 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
     const count = value.nodes.length;
     nodes = value.nodes.map((entry, index) => {
       const copyOriginal = uniform && count === 1 && canCopyPlannerRequest(task);
+      // The same indivisible-agent source lock used by full plans applies
+      // here too. Its typed/bounded instruction is an annotation, not a new
+      // task. Deterministic nodes cannot borrow that normalization to change
+      // the operation they compute: those still need an exact copy spelling.
+      const agent = branches.find(b => b.properties.scope.const === entry?.scope)?.properties.kind.const === 'agent' ||
+        entry?.kind === 'agent';
+      const copySpelling = entry?.instruction === '' || entry?.instruction === task.request ||
+        (task.request.endsWith('\n') && entry?.instruction === task.request.slice(0, -1));
       if (!entryKeys(entry, ['instruction', 'deps'], entry?.scope) ||
           typeof entry.instruction !== 'string' ||
-          (copyOriginal ? entry.instruction !== '' : entry.instruction.length === 0) ||
+          (copyOriginal ? !(agent || copySpelling) : entry.instruction.length === 0) || entry.instruction.includes('\0') ||
           Buffer.byteLength(entry.instruction) > 12_000 ||
           !Array.isArray(entry.deps) || entry.deps.length > 8 || new Set(entry.deps).size !== entry.deps.length ||
           entry.deps.some(dep => !Number.isSafeInteger(dep) || dep < 0 || dep >= count || dep === index)) invalid();
-      return compile(entry, {id: `node_${index}`, instruction: copyOriginal ? task.request : entry.instruction,
+      return compile(entry, {id: `node_${index}`, instruction: copyOriginal && !agent ? task.request : entry.instruction,
         dependencies: entry.deps.map(dep => `node_${dep}`)});
     });
     const visited = new Set(), visiting = new Set();
@@ -313,8 +321,10 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
     }
   } else invalid();
   abort();
-  return assertPlannerRouteChoice(task, {schema: 1, task_id: binding.task_id,
-    request_sha256: binding.request_sha256, nodes, ...(final === undefined ? {} : {final_node_id: final})}, catalog);
+  const plan = {schema: 1, task_id: binding.task_id,
+    request_sha256: binding.request_sha256, nodes, ...(final === undefined ? {} : {final_node_id: final})};
+  return assertPlannerRouteChoice(task, protocol === COMPACT_PLANNER_PROTOCOL ?
+    lockIndivisibleInstruction(plan, task).plan : plan, catalog);
 }
 
 async function verifyNative() {

@@ -328,7 +328,7 @@ function validateIntentResolution(value, original) {
     value.schema === 1 && value.task_id === original.task_id &&
     value.request_sha256 === original.request_sha256 && value.policy_sha256 === original.policy_sha256 &&
     value.source_fingerprint === original.source_fingerprint &&
-    ['ordinary', 'routes', 'hold'].includes(value.kind) && typeof value.best_effort === 'boolean' &&
+    ['ordinary', 'routes', 'hold', 'local_response'].includes(value.kind) && typeof value.best_effort === 'boolean' &&
     Array.isArray(value.routes) && value.routes.length <= 8 &&
     value.routes.every(route => keys(route, ['surface', 'instruction']) &&
       INTENT_ROUTE_SURFACES.has(route.surface) && boundedText(route.instruction, 12_000)) &&
@@ -342,6 +342,12 @@ function validateIntentResolution(value, original) {
   assert(value.kind === 'routes' ? value.routes.length > 0 && original.material_refs.length === 0 :
     value.routes.length === 0 && value.best_effort === false, 'intent_resolution_scope_invalid');
   assert(value.kind !== 'hold' || value.reason !== null, 'intent_resolution_hold_reason_missing');
+  if (value.kind === 'local_response')
+    assert(original.mode === 'auto' && original.host_context.provider_preference === 'auto' &&
+      (original.provider_preference == null || original.provider_preference === 'auto') &&
+      original.host_context.explicit_routes == null && original.material_refs.length === 0 &&
+      original.objective === original.request && value.model_answer === null &&
+      value.notices.length === 0 && value.reason === null, 'intent_local_response_scope_invalid');
   return immutable(value);
 }
 
@@ -2063,15 +2069,16 @@ function withoutConversation(task) {
     h.codex_session_id === null && h.claude_session_id === null;
 }
 
-function exactLocalCheckIn(request) {
+// Preserve the old exact zero-call greeting only. Liveness classification is
+// owned by the existing native StatusCheckIn compiler, not a duplicate Set.
+function exactLocalGreeting(request) {
   const value = request.normalize('NFKC').trim().replace(/\s+/gu, ' ')
     .replace(/\s*([.!?])\s*/gu, '$1').toLowerCase();
-  const korean = new Set(['야 너 되냐?', '야 체크해봅시다 너 되냐?',
-    '야 체크해봅시다.너 되냐?', '너 되냐?']);
-  if (korean.has(value)) return '응, 지금 OS-1 로컬 요청·응답 경로는 살아 있어.';
-  if (value === 'are you working?' || value === 'hello')
-    return 'Yes. This local OS-1 request-and-response path is working.';
-  return null;
+  return value === 'hello' ? 'Yes. This local OS-1 request-and-response path is working.' : null;
+}
+function localResponsePathOutput(request) {
+  return /[가-힣]/u.test(request) ? '응, 지금 OS-1 로컬 요청·응답 경로는 살아 있어.' :
+    'Yes. This local OS-1 request-and-response path is working.';
 }
 
 function validatePlan(plan, task, catalog) {
@@ -3163,7 +3170,7 @@ class RCCRuntime {
         (task.provider_preference == null || task.provider_preference === 'auto') &&
         task.host_context.explicit_routes == null &&
         task.material_refs.length === 0) {
-      const checkin = exactLocalCheckIn(task.request);
+      const checkin = exactLocalGreeting(task.request);
       if (checkin !== null && task.objective.trim() === task.request.trim()) {
         this._completeLocalExact(taskID, 'local_checkin', checkin); return;
       }
@@ -3182,6 +3189,9 @@ class RCCRuntime {
     }
     task = await this._resolveTaskIntent(taskID);
     if (task === null || this.closed || this.stopping || this.quiescing) return;
+    if (this._load(taskID)?.intent_resolution?.kind === 'local_response') {
+      this._completeLocalExact(taskID, 'local_checkin', localResponsePathOutput(task.request)); return;
+    }
     state = this._update(taskID, 'planning', snapshot => {
       assert(!snapshot.cancel_requested && !TERMINAL.has(snapshot.state), 'planning_raced_cancel');
       snapshot.state = 'planning';

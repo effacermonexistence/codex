@@ -496,13 +496,19 @@ test('a wrapped arithmetic question with earlier conversation reaches the models
 });
 
 test('exact local liveness check-in records one child; delegated/provider/attachment variants route normally', async t => {
-  const dir = await fixture(t); let catalogCalls = 0, planCalls = 0, executeCalls = 0;
+  const dir = await fixture(t); let catalogCalls = 0, planCalls = 0, executeCalls = 0, localPhase = true;
   const runtime = await createRCCRuntime({stateDir: dir,
+    // Inject only the compiler's typed source-bound disposition. Semantic
+    // positive/negative recognition is exercised by the native fixtures.
+    resolveIntent: async ({task: q}) => ({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256,
+      policy_sha256: q.policy_sha256, source_fingerprint: q.source_fingerprint,
+      kind: localPhase ? 'local_response' : 'ordinary', routes: [], best_effort: false,
+      notices: [], reason: null, model_answer: null}),
     catalog: async () => { catalogCalls++; throw Error('no catalog fixture'); },
     plan: async () => { planCalls++; throw Error('must not plan check-in'); },
     execute: async () => { executeCalls++; throw Error('must not execute check-in'); }});
   t.after(async () => { await runtime.close(); });
-  for (const phrase of ['야 너 되냐?', '야 체크해봅시다 너 되냐?', '너 되냐?', 'are you working?', 'hello']) {
+  for (const phrase of ['야 너 되냐?', '야 체크해봅시다 너 되냐?', '야 체크해 봅시다. 너 되냐?', '너 되냐?', 'are you working?', 'hello']) {
     const input = task(dir, phrase);
     await runtime.submit(input);
     const answer = await wait(runtime, input);
@@ -515,6 +521,7 @@ test('exact local liveness check-in records one child; delegated/provider/attach
       .some(x => x.kind === 'local_checkin'));
   }
   assert.equal(catalogCalls, 0); assert.equal(planCalls, 0); assert.equal(executeCalls, 0);
+  localPhase = false;
   for (const input of [
     task(dir, 'ChatGPT에 너 되냐 보내'),
     task(dir, '너 되냐?', 'auto', {provider: 'codex'}),
