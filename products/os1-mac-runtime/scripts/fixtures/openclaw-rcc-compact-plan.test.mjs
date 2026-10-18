@@ -85,10 +85,13 @@ test('full policy, semantic inputs and exact catalog are unchanged by compact ou
   assert.equal(t.policy_sha256, sha(t.policy.text));
   assert.equal(compact.wireProtocol, COMPACT_PLANNER_PROTOCOL);
   assert.equal(compact.responseFormat.type, 'object');
-  assert.equal(JSON.stringify(compact.responseFormat).includes('"oneOf"'), false);
-  assert.deepEqual(Object.keys(compact.responseFormat.properties), ['nodes', 'final']);
-  assert.deepEqual(compact.responseFormat.required, ['nodes', 'final']);
-  assert.equal(compact.responseFormat.properties.nodes.items.properties.instruction.minLength, 0);
+  assert.equal(compact.responseFormat.oneOf.length, 2);
+  for (const branch of compact.responseFormat.oneOf) {
+    assert.deepEqual(Object.keys(branch.properties), ['nodes', 'final']);
+    assert.deepEqual(branch.required, ['nodes', 'final']);
+    assert.equal(branch.additionalProperties, false);
+  }
+  assert.equal(compact.responseFormat.oneOf[0].properties.nodes.items.properties.instruction.const, '');
   assert.equal(JSON.stringify(compact.responseFormat).includes(t.task_id), false);
   assert.equal(JSON.stringify(compact.responseFormat).includes(t.request_sha256), false);
   assert.deepEqual({t, rows}, before);
@@ -138,7 +141,7 @@ test('derived mixed-variant regression remains rejected; uniform atomic envelope
   assert.equal(decode(oldAtomic, t, rows, {protocol: 'os1-compact-plan-v1'}).nodes[0].instruction, t.request,
     'historical explicitly selected protocol stays inspectable, never a live response fallback');
   assert.equal(decode(atomicWith({grade: 'standard'}), t, rows).nodes[0].instruction, t.request);
-  const schema = buildCompactPlannerSchema(t, rows, NOW);
+  const schema = buildCompactPlannerSchema(t, rows, NOW).oneOf[0];
   assert.deepEqual(Object.keys(schema.properties), ['nodes', 'final']);
   assert.equal(schema.additionalProperties, false);
   assert.equal(Object.hasOwn(schema.properties.nodes.items.properties, 'source'), false);
@@ -227,13 +230,19 @@ test('indivisible source lock is domain-independent and cannot absorb material, 
 test('long atomic source never truncates; bounded real DAGs retain dependencies and explicit final ownership', () => {
   const t = task('/tmp/fixture', {request: 'long'.repeat(3_001)}), rows = catalog(t);
   assert.throws(() => decode(atomic, t, rows), /planner_compact_plan_invalid/);
-  const schema = buildCompactPlannerSchema(t, rows, NOW);
+  const fullLongSchema = buildCompactPlannerSchema(t, rows, NOW), schema = fullLongSchema.oneOf[0];
+  assert.equal(fullLongSchema.oneOf.length, 2);
   assert.equal(Object.hasOwn(schema.properties, 'source'), false);
-  assert.equal(schema.properties.nodes.items.properties.instruction.minLength, 1);
+  assert.deepEqual(schema.properties.nodes.items.properties.instruction, {type: 'string', minLength: 1, maxLength: 12_000});
   assert.equal(schema.properties.nodes.minItems, 1);
+  assert.equal(schema.properties.nodes.maxItems, 1);
+  assert.equal(schema.properties.nodes.items.properties.deps.maxItems, 0);
+  assert.deepEqual(schema.properties.final, {type: 'integer', const: 0});
   const boundedLong = decode({nodes: [{instruction: 'Process the full original supplied source under its original objective.',
-    grade: 'deep', scope: 'read_only', deps: []}]}, t, rows);
+    grade: 'deep', scope: 'read_only', deps: []}], final: 0}, t, rows);
   assert.equal(boundedLong.nodes.length, 1, 'long original must not be forced into invented multiple subtasks');
+  const fullInput = buildBoundedPlannerInput({task: t, catalog: rows, policyText: t.policy.text, wireProtocol: COMPACT_PLANNER_PROTOCOL, now: NOW});
+  assert.equal(JSON.parse(fullInput.message.slice('OS1_RCC_PLAN\n'.length)).request, t.request, 'bounded singleton never truncates original context');
   const wire = {nodes: [
     {instruction: 'Inspect first independent module.', grade: 'standard', scope: 'read_only', deps: []},
     {instruction: 'Inspect second independent module.', grade: 'deep', scope: 'read_only', deps: []},
@@ -264,7 +273,7 @@ test('DAG invalid dependencies, cycles, IDs, bounds and finals cannot be normali
     '{"source":"dag","nodes":[{"instruction":"one","instruction":"two","grade":"standard","scope":"read_only","deps":[]}]}'];
   for (const value of bad) assert.throws(() => decode(value), /planner_compact/);
   assert.throws(() => decode({nodes: [node, {...node, deps: [0]}], final: null}), /plan_collection_has_dependencies/);
-  const t = task(), schema = buildCompactPlannerSchema(t, catalog(t), NOW);
+  const t = task(), schema = buildCompactPlannerSchema(t, catalog(t), NOW).oneOf[0];
   assert.equal(schema.properties.nodes.minItems, 1);
   const input = buildBoundedPlannerInput({task: t, catalog: catalog(t), policyText: t.policy.text,
     wireProtocol: COMPACT_PLANNER_PROTOCOL, now: NOW});
@@ -298,7 +307,7 @@ test('writes require offered scope and explicit paths; compact output grants no 
 
 test('scope-discriminated compact generation requires writer paths even when readers are offered', () => {
   const t = task('/tmp/fixture', {write: true}), rows = catalog(t, {write: true});
-  const schema = buildCompactPlannerSchema(t, rows, NOW), branches = schema.properties.nodes.items.oneOf;
+  const schema = buildCompactPlannerSchema(t, rows, NOW).oneOf[0], branches = schema.properties.nodes.items.oneOf;
   assert.equal(branches.length, 2);
   const reader = branches.find(b => b.properties.scope.const === 'read_only');
   const writer = branches.find(b => b.properties.scope.const === 'workspace_write');
@@ -318,12 +327,12 @@ test('scope-discriminated compact generation requires writer paths even when rea
   assert.deepEqual(compiled.nodes[0].owned_paths, ['**']);
   assert.deepEqual(decode(atomicWith({paths: ['**']}), t, rows).nodes[0].owned_paths, []);
 
-  const readOnly = task(), readSchema = buildCompactPlannerSchema(readOnly, catalog(readOnly, {write: true}), NOW);
+  const readOnly = task(), readSchema = buildCompactPlannerSchema(readOnly, catalog(readOnly, {write: true}), NOW).oneOf[0];
   assert.equal(readSchema.properties.nodes.items.properties.scope.const, 'read_only');
   assert.equal(Object.hasOwn(readSchema.properties.nodes.items.properties, 'paths'), false);
   const writerOnly = structuredClone(rows);
   writerOnly.candidates = writerOnly.candidates.filter(c => c.scope === 'workspace_write');
-  const writeSchema = buildCompactPlannerSchema(t, writerOnly, NOW);
+  const writeSchema = buildCompactPlannerSchema(t, writerOnly, NOW).oneOf[0];
   assert.equal(writeSchema.properties.nodes.items.properties.scope.const, 'workspace_write');
   assert.ok(writeSchema.properties.nodes.items.required.includes('paths'));
   assert.equal(schema.properties.nodes.minItems, 1);
@@ -332,7 +341,7 @@ test('scope-discriminated compact generation requires writer paths even when rea
 
 test('scope-specific wire branches preserve material, kind, explicit-route and real-DAG contracts', () => {
   const t = task('/tmp/fixture', {write: true, refs: ['source-a', 'source-b']}), rows = catalog(t, {write: true});
-  const branches = buildCompactPlannerSchema(t, rows, NOW).properties.nodes.items.oneOf;
+  const branches = buildCompactPlannerSchema(t, rows, NOW).oneOf[0].properties.nodes.items.oneOf;
   for (const branch of branches) {
     assert.ok(branch.required.includes('refs'));
     assert.equal(branch.properties.refs.uniqueItems, true);
@@ -345,7 +354,7 @@ test('scope-specific wire branches preserve material, kind, explicit-route and r
   exactRows.candidates.push({...row('local-exact', 'codex', 'local-exact', 'none'),
     surface: 'local', transport: 'local', quota_pool: 'none', account_id: 'local',
     quota_remaining_fraction: null, quota_observed_at_ms: null, quota_valid_until_ms: null});
-  const exactItem = buildCompactPlannerSchema(exactTask, exactRows, NOW).properties.nodes.items;
+  const exactItem = buildCompactPlannerSchema(exactTask, exactRows, NOW).oneOf[0].properties.nodes.items;
   assert.ok(exactItem.required.includes('kind'));
   assert.deepEqual(exactItem.properties.kind.enum, ['agent', 'deterministic']);
 
@@ -609,4 +618,48 @@ test('returned length-truncated text is retained before receipt rejection and ca
   assert.equal(x.result.state, 'held'); assert.equal(x.result.error, 'planner_local_model_receipt_invalid');
   assert.equal(x.output.text, raw); assert.equal(x.output.stop_reason_observed, 'length');
   assert.equal(x.completions, 1); assert.equal(x.calls.some(call => call.command === 'rcc-adapter'), false);
+});
+
+
+test('generation grammar separates exact atomic copy from real DAG without weakening the decoder', () => {
+  const t = task(), rows = catalog(t), schema = buildCompactPlannerSchema(t, rows, NOW);
+  assert.deepEqual(Object.keys(schema), ['type', 'oneOf']);
+  assert.equal(schema.type, 'object'); assert.equal(schema.oneOf.length, 2);
+  const [atomicSchema, dagSchema] = schema.oneOf;
+  for (const branch of schema.oneOf) {
+    assert.equal(branch.type, 'object'); assert.equal(branch.additionalProperties, false);
+    assert.deepEqual(branch.required, ['nodes', 'final']);
+    assert.deepEqual(Object.keys(branch.properties), ['nodes', 'final']);
+  }
+  const a = atomicSchema.properties.nodes, d = dagSchema.properties.nodes;
+  assert.equal(a.minItems, 1); assert.equal(a.maxItems, 1);
+  assert.deepEqual(a.items.properties.instruction, {type: 'string', const: '', maxLength: 0});
+  assert.equal(a.items.properties.deps.maxItems, 0);
+  assert.deepEqual(atomicSchema.properties.final, {type: 'integer', const: 0});
+  assert.equal(d.minItems, 2); assert.equal(d.maxItems, 8);
+  assert.deepEqual(d.items.properties.instruction, {type: 'string', minLength: 1, maxLength: 12_000});
+  assert.equal(d.items.properties.deps.maxItems, 8); assert.equal(d.items.properties.deps.uniqueItems, true);
+  assert.deepEqual(d.items.properties.deps.items, {type: 'integer', minimum: 0, maximum: 7});
+  assert.deepEqual(dagSchema.properties.final, {type: ['integer', 'null'], minimum: 0, maximum: 7});
+  for (const deps of [[0], [1], [7], [0, 1, 2, 3, 4, 5, 6, 7]])
+    assert.throws(() => decode({nodes: [{...atomicNode, deps}], final: 0}, t, rows), /planner_compact_plan_invalid/);
+  for (const nodes of [[atomicNode, atomicNode], [atomicNode, {...atomicNode, instruction: 'Complete a part.'}]])
+    assert.throws(() => decode({nodes, final: 1}, t, rows), /planner_compact_plan_invalid/);
+  assert.equal(decode({nodes: [atomicNode], final: 0}, t, rows).nodes[0].instruction, t.request);
+  for (let count = 2; count <= 8; count++) {
+    const nodes = Array.from({length: count}, (_, i) => ({...atomicNode, instruction: 'Bounded task ' + i, deps: i ? [i - 1] : []}));
+    assert.equal(decode({nodes, final: count - 1}, t, rows).nodes.length, count);
+    assert.equal(decode({nodes: nodes.map(n => ({...n, deps: []})), final: null}, t, rows).final_node_id, null);
+  }
+  const writerTask = task('/tmp/fixture', {write: true, refs: ['source-a']}), mixed = catalog(writerTask, {write: true});
+  for (const branch of buildCompactPlannerSchema(writerTask, mixed, NOW).oneOf) {
+    for (const item of branch.properties.nodes.items.oneOf) {
+      assert.ok(item.required.includes('refs')); assert.equal(item.properties.refs.uniqueItems, true);
+      assert.deepEqual(item.properties.grade.enum, ['trivial', 'standard', 'deep']);
+      if (item.properties.scope.const === 'workspace_write') {
+        assert.ok(item.required.includes('paths'));
+        assert.deepEqual(item.properties.paths.items.enum, ['**']);
+      }
+    }
+  }
 });

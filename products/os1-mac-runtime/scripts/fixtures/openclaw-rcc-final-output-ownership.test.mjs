@@ -72,9 +72,11 @@ test('single original keeps legacy no-final compatibility and new final=0 withou
 
 test('compact schema/prompt require one output owner, full repair schema includes owner, explicit routes cannot select just one answer',()=>{
  const t=task(), c=catalog(t), compact=buildCompactPlannerSchema(t,c), full=buildRoutePlanSchema(t,c);
- assert.deepEqual(compact.required,['nodes','final']); assert.ok(full.required.includes('final_node_id'));
- assert.deepEqual(compact.properties.final.type,['integer','null']);
- assert.deepEqual(full.properties.final_node_id.type,['string','null']); assert.equal(compact.properties.final.minimum,0);
+ assert.equal(compact.oneOf.length,2);for(const branch of compact.oneOf)assert.deepEqual(branch.required,['nodes','final']);
+ assert.ok(full.required.includes('final_node_id'));
+ assert.deepEqual(compact.oneOf[0].properties.final,{type:'integer',const:0});
+ assert.deepEqual(compact.oneOf[1].properties.final.type,['integer','null']);
+ assert.deepEqual(full.properties.final_node_id.type,['string','null']);assert.equal(compact.oneOf[1].properties.final.minimum,0);
  assert.equal(JSON.stringify(compact).includes('if'),false);
  const input=buildBoundedPlannerInput({task:t,catalog:c,policyText:t.policy.text,wireProtocol:COMPACT_PLANNER_PROTOCOL});
  assert.ok(input.instructions.includes(t.policy.text)); assert.ok(input.instructions.includes('final:0'));

@@ -62,6 +62,7 @@ PY
   exit 1
 fi
 python3 "$script_dir/check-startup-isolation.py"
+python3 "$script_dir/test-composer-viewport.py"
 python3 "$script_dir/test-task-quality-wiring.py"
 python3 "$script_dir/test-memory-paging-wiring.py"
 python3 "$script_dir/test-codex-audio-tap-wiring.py"

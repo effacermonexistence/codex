@@ -107,7 +107,7 @@ test('internal JSON mode is locked before/after full policy and official direct 
   assert.equal(params.systemPrompt, input.instructions);
   assert.equal(params.responseFormat.type, 'object');
   assert.deepEqual(params.responseFormat.required,
-    ['schema', 'task_id', 'request_sha256', 'nodes']);
+    ['schema', 'task_id', 'request_sha256', 'nodes', 'final_node_id']);
   assert.equal(params.responseFormat.properties.nodes.maxItems, 8);
   assert.equal(params.responseFormat.properties.task_id.const, 'test-task');
   assert.equal(params.responseFormat.properties.request_sha256.const, 'a'.repeat(64));

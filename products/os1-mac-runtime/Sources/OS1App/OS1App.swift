@@ -22170,12 +22170,7 @@ private struct ComposerView: View {
     @State private var isFileDropTargeted: Bool = false
 
     private var editorHeight: CGFloat {
-        let text = store.composer + " "
-        let bounds = (text as NSString).boundingRect(
-            with: NSSize(width: max(40, editorWidth - 16), height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium)])
-        return min(160, max(48, ceil(bounds.height) + 24))
+        ComposerViewportMetrics.height(for: store.composer, editorWidth: editorWidth)
     }
 
     var body: some View {

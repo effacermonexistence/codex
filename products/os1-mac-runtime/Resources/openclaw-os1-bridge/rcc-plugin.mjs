@@ -160,18 +160,31 @@ export function buildCompactPlannerSchema(task, catalog, now = Date.now()) {
         maxItems: ordinals.length, items: compactNodeSchema(branches, task,
           ['route'], {route: {type: 'integer', enum: ordinals}})}}};
   }
-  const nodes = {type: 'array', minItems: 1, maxItems: 8,
-      items: compactNodeSchema(branches, task, ['instruction', 'deps'], {
-        instruction: {type: 'string', minLength: canCopyPlannerRequest(task) ? 0 : 1, maxLength: 12_000},
-        deps: {type: 'array', maxItems: 8, uniqueItems: true, items: {type: 'integer', minimum: 0, maximum: 7}}})};
-  const final = {type: ['integer', 'null'], minimum: 0, maximum: 7};
-  // One Auto envelope, not an optional union of request and DAG fields.
-  // A single empty instruction copies the immutable original; genuine DAG
-  // nodes carry their own nonempty instructions. No source discriminator or
-  // root grade/scope can coexist ambiguously with a second set of node fields.
-  // Require the owner in the flat generation schema, including final:0 for
-  // an atomic request; no conditional/root oneOf grammar is introduced.
-  return {type: 'object', additionalProperties: false, required: ['nodes', 'final'], properties: {nodes, final}};
+  // Singleton and genuine-decomposition are disjoint generation contracts.
+  // A flat item schema admitted empty copies with arbitrary/self dependencies:
+  // the strict decoder rejected those plans, but the generator was allowed to
+  // produce them. Keep the SAME wire envelope, with no branch/authority field.
+  const envelope = (nodes, final) => ({type: 'object', additionalProperties: false,
+    required: ['nodes', 'final'], properties: {nodes, final}});
+  const decomposition = envelope({type: 'array', minItems: 2, maxItems: 8,
+    items: compactNodeSchema(branches, task, ['instruction', 'deps'], {
+      instruction: {type: 'string', minLength: 1, maxLength: 12_000},
+      deps: {type: 'array', maxItems: 8, uniqueItems: true,
+        items: {type: 'integer', minimum: 0, maximum: 7}}})},
+    {type: ['integer', 'null'], minimum: 0, maximum: 7});
+  // Length does not authorize decomposition: a large original may still be
+  // one real task. Keep its full source in context and permit the existing
+  // bounded nonempty singleton instruction, with no dependencies or truncation.
+  const singletonInstruction = canCopyPlannerRequest(task) ?
+    {type: 'string', const: '', maxLength: 0} :
+    {type: 'string', minLength: 1, maxLength: 12_000};
+  const singleton = envelope({type: 'array', minItems: 1, maxItems: 1,
+    items: compactNodeSchema(branches, task, ['instruction', 'deps'], {
+      instruction: singletonInstruction,
+      deps: {type: 'array', maxItems: 0,
+        items: {type: 'integer', minimum: 0, maximum: 7}}})},
+    {type: 'integer', const: 0});
+  return {type: 'object', oneOf: [singleton, decomposition]};
 }
 
 /** JSON.parse alone accepts duplicate keys. Scan already-valid JSON to reject
