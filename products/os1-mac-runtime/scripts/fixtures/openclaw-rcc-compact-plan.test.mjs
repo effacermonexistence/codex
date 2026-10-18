@@ -87,7 +87,7 @@ test('full policy, semantic inputs and exact catalog are unchanged by compact ou
   assert.equal(compact.responseFormat.type, 'object');
   assert.equal(JSON.stringify(compact.responseFormat).includes('"oneOf"'), false);
   assert.deepEqual(Object.keys(compact.responseFormat.properties), ['nodes', 'final']);
-  assert.deepEqual(compact.responseFormat.required, ['nodes']);
+  assert.deepEqual(compact.responseFormat.required, ['nodes', 'final']);
   assert.equal(compact.responseFormat.properties.nodes.items.properties.instruction.minLength, 0);
   assert.equal(JSON.stringify(compact.responseFormat).includes(t.task_id), false);
   assert.equal(JSON.stringify(compact.responseFormat).includes(t.request_sha256), false);
@@ -220,10 +220,11 @@ test('indivisible source lock is domain-independent and cannot absorb material, 
   assert.throws(() => decode({...materialWire, nodes: [{...materialWire.nodes[0], refs: [1]}]}, t), /planner_compact/);
   const a = {instruction: 'First genuine task.', grade: 'standard', scope: 'read_only', deps: []};
   const b = {instruction: 'Second genuine task.', grade: 'standard', scope: 'read_only', deps: [0]};
-  assert.deepEqual(decode({nodes: [a, b]}).nodes.map(n => n.instruction), [a.instruction, b.instruction]);
+  assert.throws(() => decode({nodes: [a, b]}), /plan_final_node_required/);
+  assert.deepEqual(decode({nodes: [a, b], final: 1}).nodes.map(n => n.instruction), [a.instruction, b.instruction]);
 });
 
-test('long atomic source never truncates; bounded real DAGs retain dependencies and optional integration', () => {
+test('long atomic source never truncates; bounded real DAGs retain dependencies and explicit final ownership', () => {
   const t = task('/tmp/fixture', {request: 'long'.repeat(3_001)}), rows = catalog(t);
   assert.throws(() => decode(atomic, t, rows), /planner_compact_plan_invalid/);
   const schema = buildCompactPlannerSchema(t, rows, NOW);
@@ -258,10 +259,11 @@ test('DAG invalid dependencies, cycles, IDs, bounds and finals cannot be normali
     {nodes: [{...node, id: 'foreign'}]},
     {nodes: [{...node, source: 'request'}]},
     {nodes: [{...node, instruction: 'x'.repeat(12_001)}]},
-    {nodes: [node], final: 1}, {nodes: [node], final: null},
+    {nodes: [node], final: 1},
     {nodes: [node], final: false}, {nodes: [node], final: 'foreign'},
     '{"source":"dag","nodes":[{"instruction":"one","instruction":"two","grade":"standard","scope":"read_only","deps":[]}]}'];
   for (const value of bad) assert.throws(() => decode(value), /planner_compact/);
+  assert.throws(() => decode({nodes: [node, {...node, deps: [0]}], final: null}), /plan_collection_has_dependencies/);
   const t = task(), schema = buildCompactPlannerSchema(t, catalog(t), NOW);
   assert.equal(schema.properties.nodes.minItems, 1);
   const input = buildBoundedPlannerInput({task: t, catalog: catalog(t), policyText: t.policy.text,
@@ -388,7 +390,9 @@ test('derived mixed-scope annotation compiles with ZERO read-only ownership; his
     {instruction: 'Create the one declared synthetic artifact.', grade: 'standard', scope: 'workspace_write', deps: [], paths: ['**']},
     {instruction: 'Return the completion report.', grade: 'trivial', scope: 'read_only', deps: [0], paths: ['**']}
   ]};
-  const before = structuredClone(wire), compiled = decode(wire, t, rows);
+  const before = structuredClone(wire);
+  assert.throws(() => decode(wire, t, rows), /plan_final_node_required/);
+  const compiled = decode({...wire, final: 1}, t, rows); // derived current-contract plan, NOT historical adoption
   assert.deepEqual(compiled.nodes.map(n => [n.scope, n.owned_paths]), [['workspace_write', ['**']], ['read_only', []]]);
   assert.deepEqual(wire, before, 'raw annotation is preserved, never rewritten into authority');
   const resolved = resolveRoutePlan(compiled, t, rows, NOW);
@@ -514,8 +518,10 @@ test('captured invocation binding and cancellation hold before normalization; no
 
 test('existing Auto writer serialization remains intact after compact DAG compilation', () => {
   const request = task('/tmp/fixture', {write: true}), rows = catalog(request, {write: true});
-  const wire = {nodes: [0, 1].map(index => ({instruction: 'Write intended part ' + index,
-    grade: 'deep', scope: 'workspace_write', deps: [], paths: ['**']}))};
+  const wire = {nodes: [...[0, 1].map(index => ({instruction: 'Write intended part ' + index,
+    grade: 'deep', scope: 'workspace_write', deps: [], paths: ['**']})),
+    {instruction: 'Produce the complete requested result from both parts.', grade: 'standard',
+      scope: 'read_only', deps: [0, 1]}], final: 2};
   const resolved = resolveRoutePlan(decode(wire, request, rows), request, rows, NOW);
   assert.deepEqual(resolved.plan.nodes[0].dependencies, []);
   assert.deepEqual(resolved.plan.nodes[1].dependencies, ['node_0']);

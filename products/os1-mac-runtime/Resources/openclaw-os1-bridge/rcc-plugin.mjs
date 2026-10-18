@@ -5,7 +5,7 @@ import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 import { createRCCRuntime, dispatchable, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
-  localWorkerRow, lockIndivisibleInstruction, RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
+  localWorkerRow, lockIndivisibleInstruction, assertFinalOutputOwnership, RCCRuntimeError, ROUTE_CLASSES, routingAvailability } from './rcc-runtime.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -87,9 +87,10 @@ export function buildRoutePlanSchema(task, catalog, now = Date.now()) {
     task_id: {type: 'string', const: task.task_id},
     request_sha256: {type: 'string', const: task.request_sha256},
     nodes: {type: 'array', minItems: fixedCount ?? 1, maxItems: fixedCount ?? 8, items: item}};
-  if (task.mode !== 'explicit_routing_test') properties.final_node_id = {type: 'string'};
+  if (task.mode !== 'explicit_routing_test') properties.final_node_id = {type: ['string', 'null']};
   return {type: 'object', additionalProperties: false,
-    required: ['schema', 'task_id', 'request_sha256', 'nodes'], properties};
+    required: ['schema', 'task_id', 'request_sha256', 'nodes',
+      ...(task.mode === 'explicit_routing_test' ? [] : ['final_node_id'])], properties};
 }
 
 export const COMPACT_PLANNER_PROTOCOL = 'os1-compact-plan-v2';
@@ -163,12 +164,14 @@ export function buildCompactPlannerSchema(task, catalog, now = Date.now()) {
       items: compactNodeSchema(branches, task, ['instruction', 'deps'], {
         instruction: {type: 'string', minLength: canCopyPlannerRequest(task) ? 0 : 1, maxLength: 12_000},
         deps: {type: 'array', maxItems: 8, uniqueItems: true, items: {type: 'integer', minimum: 0, maximum: 7}}})};
-  const final = {type: 'integer', minimum: 0, maximum: 7};
+  const final = {type: ['integer', 'null'], minimum: 0, maximum: 7};
   // One Auto envelope, not an optional union of request and DAG fields.
   // A single empty instruction copies the immutable original; genuine DAG
   // nodes carry their own nonempty instructions. No source discriminator or
   // root grade/scope can coexist ambiguously with a second set of node fields.
-  return {type: 'object', additionalProperties: false, required: ['nodes'], properties: {nodes, final}};
+  // Require the owner in the flat generation schema, including final:0 for
+  // an atomic request; no conditional/root oneOf grammar is introduced.
+  return {type: 'object', additionalProperties: false, required: ['nodes', 'final'], properties: {nodes, final}};
 }
 
 /** JSON.parse alone accepts duplicate keys. Scan already-valid JSON to reject
@@ -228,7 +231,8 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
     throw new RCCRuntimeError('planner_response_binding_changed');
   if (protocol === fullPlannerProtocol) {
     const text = rawText.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
-    const parsed = JSON.parse(text); abort(); return assertPlannerRouteChoice(task, parsed, catalog);
+    const parsed = JSON.parse(text); abort();
+    return assertFinalOutputOwnership(assertPlannerRouteChoice(task, parsed, catalog), task);
   }
   if (![COMPACT_PLANNER_PROTOCOL, legacyCompactPlannerProtocol].includes(protocol))
     throw new RCCRuntimeError('planner_protocol_invalid');
@@ -329,15 +333,18 @@ export function decodePlannerResponse(rawText, {task, catalog, protocol = fullPl
       visiting.delete(index); visited.add(index); };
     for (let i = 0; i < count; i++) walk(i);
     if (Object.hasOwn(value, 'final')) {
-      if (!Number.isSafeInteger(value.final) || value.final < 0 || value.final >= count) invalid();
-      final = `node_${value.final}`;
+      if (value.final === null) final = null;
+      else {
+        if (!Number.isSafeInteger(value.final) || value.final < 0 || value.final >= count) invalid();
+        final = `node_${value.final}`;
+      }
     }
   } else invalid();
   abort();
   const plan = {schema: 1, task_id: binding.task_id,
     request_sha256: binding.request_sha256, nodes, ...(final === undefined ? {} : {final_node_id: final})};
-  return assertPlannerRouteChoice(task, protocol === COMPACT_PLANNER_PROTOCOL ?
-    lockIndivisibleInstruction(plan, task).plan : plan, catalog);
+  return assertFinalOutputOwnership(assertPlannerRouteChoice(task, protocol === COMPACT_PLANNER_PROTOCOL ?
+    lockIndivisibleInstruction(plan, task).plan : plan, catalog), task);
 }
 
 async function verifyNative() {
@@ -570,7 +577,7 @@ export function expandCandidateCatalog(compact) {
 
 const EXPLICIT_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Choose exact candidate IDs only; each ID already fixes model, effort, tools, quota and scope. Candidate catalog is lossless grouped data: each group.common uses common_keys, each group.variants row uses variant_keys (including the original index); do not omit, alias or invent an ID. Prefer the smallest total resources sufficient for this task, not a fixed strongest model. Unknown cost/quality stays unknown; policy_admitted means permission admission, NOT measured quality parity. Independent work may be parallel; dependent work must name dependencies. Explicit routes require exactly one independent node per supplied surface/instruction, without alias, substitution or payload rewrite. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",candidate_id,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
 const EXPLICIT_GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. The owner named which surface runs each part (explicit_routes, each with an id). Return exactly one independent node per supplied route: id = that route\'s id, instruction = that route\'s instruction byte for byte, dependencies [], kind "agent"; never drop, merge, add, alias or rewrite a route. Grade each node with route_class: trivial = a short factual answer, lookup, arithmetic, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest model and reasoning effort on its named surface expected to give the same result as that surface\'s strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. read_only nodes never write and have no owned_paths; a workspace_write node lists the paths it owns. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}.';
-const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = a short factual answer, lookup, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user: a short request can be deep and a long one trivial; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest route (exact model, reasoning effort, surface and quota pool) expected to give the same result as the strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; a workspace_write node owns the whole workspace, owned_paths ["**"], unless the response schema allows narrower paths, and the host runs writers one at a time. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}]}. For one indivisible task keep instruction equal to the original request. Integration, if actually needed, is an explicit dependent node, not a mandatory summarizer.';
+const GRADED_PLAN_INSTRUCTIONS = 'RCC EXECUTION PLAN: preserve the original objective and supplied source. Decompose only into genuinely separable parts and grade each node with route_class: trivial = a short factual answer, lookup, formatting or one step; standard = normal coding, analysis or multi-step but routine work; deep = hard design, debugging a non-obvious failure, a proof, long-horizon work, or anything the owner flags as important or hard. Grade the node, not the user: a short request can be deep and a long one trivial; between two grades choose the higher. route_class picks the reasoning tier: the host binds each node to the cheapest route (exact model, reasoning effort, surface and quota pool) expected to give the same result as the strongest model at max reasoning, and re-runs a failed read-only answer once on that strongest route; never name a model, provider, account, effort or candidate. availability lists only scopes that can run now. read_only nodes never write and have no owned_paths; a workspace_write node owns the whole workspace, owned_paths ["**"], unless the response schema allows narrower paths, and the host runs writers one at a time. Independent work may be parallel; dependent work must name dependencies. No command, account or permission invention. Return only JSON {schema:1,task_id,request_sha256,nodes:[{id,instruction,dependencies,kind:"agent",route_class,scope,owned_paths,context_refs}],final_node_id:"node_id"}. For one indivisible task keep instruction equal to the original request and set final_node_id to its id. Every ordinary multi-node plan MUST declare final_node_id: name the existing worker that owns the complete user-visible result, preserves the original output format, and transitively depends on every other node; OR use explicit null only when the original request asks for separately returned independent deliverables, all nodes are those deliverables, and every dependencies list is empty. Null means Core collects ALL raw outputs without another worker. Never use null for one artifact, one JSON value, an exact single response, or helper/intermediate reasoning stages. This output-layout choice remains a source-bound planner interpretation, not proof of user intent. Fold final assembly into an existing worker when possible; do not add a mandatory summarizer.';
 
 /** A session authorization allowlist is host enforcement state, not material
  * the tools-free planner can retrieve. Project only the typed handoff field;
@@ -614,13 +621,15 @@ export function plannerWireProtocol(task, catalog, feedback = {}) {
 }
 function compactPlannerInstructions(base, explicit, copyOriginal) {
   // Replace only our old wire-format footer, never any owner policy bytes.
-  const semantics = base.replace(/Return only JSON \{schema:1[^\n]*?\}\.[ ]*/, '');
+  const semantics = base.replace(/Return only JSON \{schema:1[^\n]*?\}\.[ ]*/, '')
+    .replace('and set final_node_id to its id.', '.')
+    .replaceAll('final_node_id', 'final');
   return semantics + '\nOS1 COMPACT PLAN v2. Return only the schema-constrained JSON, no fences. ' +
     'Task identity, original payloads and authority are bound by the host; never echo or override task_id, request_sha256, model or candidate_id. ' +
     (explicit ? 'Use source:"routes", nodes in exact original route order, each naming its original 1-based route ordinal, grade and scope. Do not repeat route instructions or add dependencies. ' :
-      (copyOriginal ? 'For ANY unsplit original task you MUST use exactly one node with instruction "", deps [], one grade and one scope, plus every field required by that scope in the response schema. Every workspace_write node MUST include paths; when the offered writer schema fixes paths to ["**"], supply exactly ["**"]. Read-only nodes normally omit paths and never acquire write ownership from a paths annotation. The empty instruction makes the host preserve the original request byte for byte. Do not repeat or rephrase the original. ' :
+      (copyOriginal ? 'For ANY unsplit original task you MUST use exactly one node with instruction "", deps [], final:0, one grade and one scope, plus every field required by that scope in the response schema. Every workspace_write node MUST include paths; when the offered writer schema fixes paths to ["**"], supply exactly ["**"]. Read-only nodes normally omit paths and never acquire write ownership from a paths annotation. The empty instruction makes the host preserve the original request byte for byte. Do not repeat or rephrase the original. ' :
         'This original request exceeds the node instruction byte bound, so an empty copy instruction is unavailable. Keep its full source in the input; use bounded actual subtask instructions, never truncate source to make an atomic node fit. ') +
-      'For genuine decomposition use the SAME nodes envelope with at least two genuinely separate nonempty subtask instructions and zero-based dependency indices; optional final is a node index. Never mix an empty copy instruction with a decomposition. Do not emit source or root-level grade/scope. Do not force an atomic task when decomposition is needed. ') +
+      'For genuine decomposition use the SAME nodes envelope with at least two genuinely separate nonempty subtask instructions and zero-based dependency indices. The root final field is REQUIRED: use the zero-based index of the existing worker responsible for the complete user-visible result, in the original requested format. Its dependency ancestors must cover EVERY other node. Alternatively final:null declares Core collection ONLY when the original request asks for separately returned independent deliverables: all nodes must be those requested outputs and every deps list must be empty. Core retains ALL raw outputs, adding zero workers. Never use null for one artifact, one JSON value, one exact response, or intermediate/helper reasoning stages. Do not leave independent sinks outside numeric final ownership or return intermediates as the final result. Fold assembly into an existing worker rather than adding a mandatory formatting/summarizer worker. Never mix an empty copy instruction with a decomposition. Do not emit source or root-level grade/scope. Do not force an atomic task when decomposition is needed. ') +
     'An execution unit is not a reasoning step: keep an implementation, its routine checks and its completion report in the SAME worker. Do not create a separate completion-note or formatting worker unless it requires genuinely independent verification or external work. ' +
     'Include kind only if the schema requires a choice. Writers must supply paths exactly within the offered ownership schema; no implicit write grant. When materials exist, supply refs as the chosen zero-based indices in material_refs, including [] for an intentionally empty selection. Otherwise omit empty fields.';
 }

@@ -40,7 +40,9 @@ function row(id = 'read', write = false, now = Date.now()) {
 }
 const node = (id, candidate, dependencies = []) => ({id, instruction: 'Read source for ' + id, dependencies,
   kind: 'agent', candidate_id: candidate.id, scope: candidate.scope, owned_paths: candidate.allowed_paths, context_refs: []});
-const plan = (q, nodes) => ({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, nodes});
+// Fixture contract: every planned node is a separately requested independent output.
+const plan = (q, nodes) => {assert(nodes.every(n => n.dependencies.length === 0));
+  return {schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, nodes, final_node_id: null};};
 const catalog = (q, candidates = [row(), row('write', true)]) => ({schema: 1, task_id: q.task_id,
   request_sha256: q.request_sha256, candidates});
 const result = (ticket, extra = {}) => ({schema: 1, task_id: ticket.task_id, node_id: ticket.node_id,

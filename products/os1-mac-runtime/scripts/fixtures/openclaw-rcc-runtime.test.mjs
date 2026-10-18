@@ -58,8 +58,8 @@ const catalog = (task, candidates) => ({schema: 1, task_id: task.task_id,
 const node = (id, candidateID, options = {}) => ({id, instruction: options.instruction ?? 'Do one bounded task',
   dependencies: options.dependencies ?? [], kind: options.kind ?? 'agent', candidate_id: candidateID,
   scope: options.scope ?? 'read_only', owned_paths: options.ownedPaths ?? [], context_refs: []});
-const plan = (task, nodes) => ({schema: 1, task_id: task.task_id,
-  request_sha256: task.request_sha256, nodes});
+const plan = (task, nodes, finalNodeID) => ({schema: 1, task_id: task.task_id,
+  request_sha256: task.request_sha256, nodes, ...(finalNodeID === undefined ? {} : {final_node_id: finalNodeID})});
 function execution(ticket, overrides = {}) {
   return {schema: 1, task_id: ticket.task_id, node_id: ticket.node_id,
     attempt_id: ticket.attempt_id, candidate_id: ticket.candidate_id,
@@ -758,7 +758,7 @@ test('dependent same-path writers are admitted but never overlap in the original
     catalog: async value => catalog(value, [row]),
     plan: async () => plan(request, [
       node('implement', row.id, {scope: 'workspace_write', ownedPaths: ['**']}),
-      node('validate', row.id, {scope: 'workspace_write', ownedPaths: ['**'], dependencies: ['implement']})]),
+      node('validate', row.id, {scope: 'workspace_write', ownedPaths: ['**'], dependencies: ['implement']})], 'validate'),
     execute: async ticket => {
       active++; calls++; peak = Math.max(peak, active);
       await new Promise(resolve => setTimeout(resolve, 35)); active--;
@@ -853,7 +853,7 @@ test('refreshes 120s-style catalog TTL before dependent dispatch and rejects cha
   let catalogReads = 0, executions = 0;
   const runtime = await createRCCRuntime({stateDir: join(dir, 'fresh'),
     catalog: async value => { catalogReads++; return catalog(value, [candidate('a')]); },
-    plan: async () => plan(request, [node('first', 'a'), node('second', 'a', {dependencies: ['first']})]),
+    plan: async () => plan(request, [node('first', 'a'), node('second', 'a', {dependencies: ['first']})], 'second'),
     execute: async ticket => { executions++; await new Promise(resolve => setTimeout(resolve, 55)); return execution(ticket); },
     verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
@@ -1011,7 +1011,7 @@ test('multi-node graph and malformed host session never resume an unapproved nat
     catalog: async value => catalog(value, [candidate('codex'),
       candidate('claude', 'claude', 'anthropic_shared')]),
     plan: async () => plan(multi, [node('first', 'codex'),
-      node('second', 'claude', {dependencies: ['first']})]),
+      node('second', 'claude', {dependencies: ['first']})], 'second'),
     execute: async ticket => { seen.push(ticket.native_resume_session_id); return execution(ticket); },
     verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
@@ -1157,7 +1157,7 @@ test('execution-only first child is deliverable to dependent stage without parit
   const runtime = await createRCCRuntime({stateDir: dir,
     catalog: async value => catalog(value, [row]),
     plan: async () => plan(request, [node('design', 'a'),
-      node('implement', 'a', {dependencies: ['design']})]),
+      node('implement', 'a', {dependencies: ['design']})], 'implement'),
     execute: async ticket => { visits.push(ticket.node_id); return execution(ticket,
       {task_verified: false, task_quality: 'execution_only'}); }});
   t.after(async () => { await runtime.close(); });
@@ -1321,7 +1321,7 @@ test('source marker prose, read-only, split task and foreign original workspace 
       catalog: async value => catalog(value, [row]),
       plan: async () => plan(request, [node('one', row.id, {instruction: mode === 'partial-instruction' ? 'Only one fragment' : request.request,
         scope: row.scope, ownedPaths: write ? ['**'] : []}), ...(mode === 'split' ?
-        [node('two', row.id, {dependencies: ['one'], scope: row.scope, ownedPaths: ['**']})] : [])]),
+        [node('two', row.id, {dependencies: ['one'], scope: row.scope, ownedPaths: ['**']})] : [])], mode === 'split' ? 'two' : undefined),
       execute: async ticket => mode === 'marker' ? execution(ticket, {output: 'OS1_CHANGE_REQUIRED repair_source fake',
         task_verified: false, task_quality: 'execution_only'}) : repairExecution(root, ticket,
         mode === 'foreign' ? {repair_source: {source_root: realpathSync(foreignRoot), source_head: 'c'.repeat(40),
@@ -2171,7 +2171,7 @@ test('graded nodes on one pool never overlap; waiting nodes do not re-probe the 
   const codexOnly = routingCatalog().filter(value => value.quota_pool === 'openai_codex');
   const runtime = await createRCCRuntime({stateDir: dir, maximumWorkers: 4,
     catalog: async value => { catalogCalls++; return catalog(value, codexOnly); },
-    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard'), graded('c', 'trivial')]),
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard'), graded('c', 'trivial')], null),
     execute: async ticket => {
       executed++; active++; peak = Math.max(peak, active);
       await new Promise(resolve => setTimeout(resolve, 150)); active--;
@@ -2193,7 +2193,7 @@ test('independent graded nodes spread to the idle second pool, one lease per poo
   const running = new Map(); let overlap = 0, peak = 0;
   const runtime = await createRCCRuntime({stateDir: dir, maximumWorkers: 4,
     catalog: async value => { catalogCalls++; return catalog(value, routingCatalog()); },
-    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard'), graded('c', 'trivial')]),
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard'), graded('c', 'trivial')], null),
     execute: async ticket => {
       executed++;
       const pool = ticket.selected_config.quota_pool;
@@ -2338,7 +2338,7 @@ test('a graded writer that names concrete paths binds the whole-workspace native
     catalog: async value => catalog(value, rows),
     plan: async () => plan(request, [
       graded('first', 'standard', {scope: 'workspace_write', ownedPaths: ['Sources/OS1/main.swift']}),
-      graded('second', 'standard', {scope: 'workspace_write', ownedPaths: ['Sources/OS1App/OS1App.swift']})]),
+      graded('second', 'standard', {scope: 'workspace_write', ownedPaths: ['Sources/OS1App/OS1App.swift']})], null),
     execute: async ticket => {
       tickets.push(ticket); active++; peak = Math.max(peak, active);
       await new Promise(resolve => setTimeout(resolve, 60)); active--;
@@ -2364,7 +2364,7 @@ test('a repaired node validates against fresh rows while siblings keep the rows 
   let codexSpent = false; const drainDispatched = [];
   const drain = await createRCCRuntime({stateDir: join(dir, 'drain'),
     catalog: async value => catalog(value, codexSpent ? drainRows.slice(1) : drainRows),
-    plan: async () => plan(drained, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})]),
+    plan: async () => plan(drained, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})], 'b'),
     execute: async ticket => { drainDispatched.push(ticket.candidate_id); codexSpent = true; return execution(ticket); },
     verifyTask: taskVerdict});
   t.after(async () => { await drain.close(); });
@@ -2381,7 +2381,7 @@ test('a repaired node validates against fresh rows while siblings keep the rows 
   const runtime = await createRCCRuntime({stateDir: join(dir, 'cooled'),
     catalog: async value => cooled ? {...catalog(value, rows.slice(1)),
       exclusions: [{provider: 'claude', reason: 'quota_backoff', count: 1}]} : catalog(value, rows),
-    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})]),
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})], 'b'),
     execute: async ticket => {
       dispatched.push(ticket.candidate_id);
       if (ticket.selected_config.quota_pool !== 'anthropic_shared') return execution(ticket);
@@ -2526,7 +2526,7 @@ test('a row that left the catalog re-resolves at once instead of waiting behind 
       return catalog(value, calls === 1 ? [claudeRead, codexRead, codexWrite] : [codexRead, codexWrite]);
     },
     plan: async ({task: value}) => value.task_id === holder.task_id ? plan(holder, [graded('h', 'standard')]) :
-      plan(request, [graded('w', 'standard', {scope: 'workspace_write', ownedPaths: ['**']}), graded('r', 'standard')]),
+      plan(request, [graded('w', 'standard', {scope: 'workspace_write', ownedPaths: ['**']}), graded('r', 'standard')], null),
     execute: async ticket => {
       if (ticket.task_id === holder.task_id) { holderRunning = true; await holderGate; return execution(ticket); }
       started[ticket.node_id] = {at: Date.now() - t0, pool: ticket.selected_config.quota_pool};
@@ -2565,7 +2565,7 @@ test('a node that spread moves on when another task takes its new pool, instead 
       return catalog(value, routingCatalog());
     },
     plan: async ({task: value}) => {
-      if (value.task_id !== other.task_id) return plan(request, [graded('a', 'standard'), graded('b', 'standard')]);
+      if (value.task_id !== other.task_id) return plan(request, [graded('a', 'standard'), graded('b', 'standard')], null);
       await sleep(750);
       return plan(other, [graded('z', 'standard')]);
     },
@@ -2598,16 +2598,23 @@ test('a node that spread moves on when another task takes its new pool, instead 
 test('spreading still works after the bound rows outlive their validity window: one refresh, not one per wait', async t => {
   const dir = await fixture(t);
   const request = task(dir, 'Inspect three files, one after another');
-  let calls = 0, t0 = Date.now();
-  const started = {};
+  let calls = 0, callsBeforeFinal = null, originalCatalogCalls = 0, finalCatalogCalls = 0, t0 = Date.now();
+  const returnedOriginal = new Set();
+  const started = {}, dispatches = [];
   const runtime = await createRCCRuntime({stateDir: dir, maximumWorkers: 4,
     // Every native read is valid for 400 ms only.
-    catalog: async value => { calls++; return catalog(value, routingCatalog().map(item => shortLived(item, 400))); },
+    catalog: async value => { calls++;
+      if (returnedOriginal.size === 3) finalCatalogCalls++; else originalCatalogCalls++;
+      return catalog(value, routingCatalog().map(item => shortLived(item, 400))); },
     plan: async () => plan(request, [graded('a', 'standard'), graded('x', 'standard'),
-      graded('c', 'standard', {dependencies: ['x']})]),
+      graded('c', 'standard', {dependencies: ['x']}),
+      graded('final', 'standard', {dependencies: ['a', 'c'], instruction: 'Return the complete requested findings.'})], 'final'),
     execute: async ticket => {
+      dispatches.push(ticket.node_id);
+      if (ticket.node_id === 'final') callsBeforeFinal = calls;
       started[ticket.node_id] = {at: Date.now() - t0, pool: ticket.selected_config.quota_pool};
       await sleep(ticket.node_id === 'a' ? 2_500 : 700);
+      if (ticket.node_id !== 'final') returnedOriginal.add(ticket.node_id);
       return execution(ticket);
     }, verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
@@ -2622,7 +2629,19 @@ test('spreading still works after the bound rows outlive their validity window: 
   assert.equal(started.c.pool, 'anthropic_shared');
   assert.ok(started.c.at < 2_000, `c started at ${started.c.at} ms, behind a`);
   // Bind, a, x, the one spread re-check for c, and c's dispatch.
-  assert.ok(calls <= 5, `catalog calls ${calls}`);
+  const assertCatalogCohorts = (original, final, total) => {
+    assert.ok(original <= 5, `original worker catalog calls ${original}`);
+    assert.equal(final, 1, 'one measured catalog refresh after all a/x/c returned');
+    assert.equal(total, original + final, 'total probe count includes both observed cohorts');
+  };
+  assert.throws(() => assertCatalogCohorts(6, 0, 6), 'six original plus zero final must never pass');
+  assert.throws(() => assertCatalogCohorts(5, 0, 5), 'missing final refresh cannot be hidden in the original ceiling');
+  assert.throws(() => assertCatalogCohorts(4, 1, 6), 'total must equal observed phase counts');
+  assertCatalogCohorts(originalCatalogCalls, finalCatalogCalls, calls);
+  assert.equal(callsBeforeFinal, calls, 'no hidden probes after final dispatch');
+  assert.deepEqual(Object.keys(started).sort(), ['a', 'c', 'final', 'x']);
+  assert.deepEqual(dispatches, ['a', 'x', 'c', 'final'], 'all original workers once plus exactly one declared final consumer');
+  assert.equal(dispatches.length, 4, 'total fake dispatches include the extra final worker');
 });
 
 // ---- REVAS ladder gate and routing ledger (2026-10-13) ---------------------
@@ -3014,7 +3033,7 @@ async function ladderPair(t, dir, name, {verify, execute, catalogRows, cancelGra
   const runtime = await createRCCRuntime({stateDir, cancelGraceMs,
     verifierRegistry: new Map([['standard:read_only:agent', verify]]), ledgerStats: parity(20),
     catalog: async value => catalog(value, catalogRows()),
-    plan: async () => plan(request, nodes.map(id => graded(id, 'standard'))),
+    plan: async () => plan(request, nodes.map(id => graded(id, 'standard')), null),
     execute, verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
   await runtime.submit(request);
@@ -3473,7 +3492,7 @@ test('the failed ladder time is exempt task-wide: a dependent node behind an esc
         await sleep(1_100); return {passed: false, reason: 'slow fail'}; }
       return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
     catalog: async value => catalog(value, ladderRows),
-    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})]),
+    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})], 'b'),
     execute: async ticket => { dispatched.push([ticket.node_id, ticket.selected_config.effort]);
       return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
@@ -3958,7 +3977,7 @@ test('a one-node plan dispatches the request; a decomposition keeps the planner 
   const splitTickets = [];
   const splitRuntime = await createRCCRuntime({stateDir: join(dir, 'split'), catalog: async value => catalog(value, rows),
     plan: async ({task: value}) => plan(value, [node('parser', 'a', {instruction: 'Explain the parser'}),
-      node('lexer', 'b', {instruction: 'Explain the lexer'})]),
+      node('lexer', 'b', {instruction: 'Explain the lexer'})], null),
     execute: async ticket => { splitTickets.push(ticket); return execution(ticket); }, verifyTask: taskVerdict});
   t.after(async () => { await splitRuntime.close(); });
   await splitRuntime.submit(split);

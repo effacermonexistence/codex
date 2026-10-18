@@ -2083,6 +2083,55 @@ function localResponsePathOutput(request) {
     'Yes. This local OS-1 request-and-response path is working.';
 }
 
+/** An ordinary plan declares either one final worker or Core collection.
+ * This is graph/source validation, never a content judge. A final worker
+ * consumes all work; explicit null collects all separately requested outputs.
+ * Authored collections must be independent. Core may subsequently add writer
+ * safety ordering, without changing ownership or discarding any output.
+ * Explicit route tests already collect every independent requested route.
+ * Legacy single-node omission remains readable; no multi-node owner is ever
+ * inferred from array order, a unique sink, or agreement between answers. */
+export function assertFinalOutputOwnership(plan, task, {collectionMayBeOrdered = false} = {}) {
+  assert(plain(plan) && Array.isArray(plan.nodes) && plan.nodes.length > 0 &&
+    plan.nodes.length <= 8, 'plan_final_ownership_invalid');
+  const final = plan.final_node_id;
+  if (task?.mode === 'explicit_routing_test') {
+    assert(final === undefined || final === null, 'explicit_route_final_forbidden');
+    return plan;
+  }
+  const byID = new Map();
+  for (const node of plan.nodes) {
+    assert(plain(node) && typeof node.id === 'string' && ID.test(node.id) && !byID.has(node.id) &&
+      Array.isArray(node.dependencies) && node.dependencies.length <= 8 &&
+      node.dependencies.every(id => typeof id === 'string' && ID.test(id)) &&
+      new Set(node.dependencies).size === node.dependencies.length, 'plan_final_ownership_invalid');
+    byID.set(node.id, node);
+  }
+  for (const node of byID.values())
+    assert(node.dependencies.every(id => byID.has(id) && id !== node.id), 'plan_dependency_invalid');
+  const visiting = new Set(), visited = new Set();
+  function walk(id, closure) {
+    if (closure.has(id)) return;
+    assert(!visiting.has(id), 'plan_cycle'); visiting.add(id);
+    for (const parent of byID.get(id).dependencies) walk(parent, closure);
+    visiting.delete(id); closure.add(id);
+  }
+  for (const id of byID.keys()) walk(id, visited);
+  if (final === undefined) {
+    assert(plan.nodes.length === 1, 'plan_final_node_required');
+    return plan;
+  }
+  if (final === null) {
+    assert(collectionMayBeOrdered || plan.nodes.every(node => node.dependencies.length === 0),
+      'plan_collection_has_dependencies');
+    return plan;
+  }
+  assert(typeof final === 'string' && ID.test(final) && byID.has(final), 'plan_final_node_unknown');
+  const covered = new Set(); walk(final, covered);
+  assert(covered.size === byID.size, 'plan_final_coverage_incomplete');
+  return plan;
+}
+
 function validatePlan(plan, task, catalog) {
   assert(plain(plan) && ['schema', 'task_id', 'request_sha256', 'nodes'].every(k => Object.hasOwn(plan, k)) &&
     Object.keys(plan).every(k => ['schema', 'task_id', 'request_sha256', 'nodes', 'final_node_id'].includes(k)) &&
@@ -2152,6 +2201,9 @@ function validatePlan(plan, task, catalog) {
     assert(!overlap || ancestor(writes[a], writes[b].id) || ancestor(writes[b], writes[a].id),
       'plan_write_conflict');
   }
+  // Planner independence was checked before host writer serialization.
+  // Candidate-only rebindings preserve the admitted graph/ownership.
+  assertFinalOutputOwnership(plan, task, {collectionMayBeOrdered: true});
   return immutable(plan);
 }
 
@@ -3280,6 +3332,9 @@ class RCCRuntime {
       // never a model-authored replacement for that state. Outside explicit
       // route tests it grades nodes; the host then binds exact rows.
       const proposed = await this.plan({task: immutable(admitted), catalog: immutable(catalog)});
+      // Writer serialization is a safety order, not authority to manufacture
+      // the planner's final-output dependency coverage.
+      assertFinalOutputOwnership(proposed, admitted);
       const resolved = resolveRoutePlan(proposed, admitted, catalog, boundAt,
         {verifierRegistry: this.verifierRegistry, ledgerStats: (...key) => this._ladderStats(...key),
          costEvidence: query => this._costEvidence(query)});
@@ -3767,6 +3822,10 @@ class RCCRuntime {
           allowed_change: 'candidate_id_only_same_scope_and_objective'}}), admitted).plan, admitted,
         repairCatalog(snapshot, snapshot.plan, fresh, [childID]));
       assert(proposed.nodes.length === snapshot.plan.nodes.length, 'repair_plan_shape_changed');
+      assert(proposed.nodes.every((next, index) => next.id === snapshot.plan.nodes[index].id),
+        'repair_plan_order_changed');
+      assert(Object.hasOwn(proposed, 'final_node_id') === Object.hasOwn(snapshot.plan, 'final_node_id') &&
+        proposed.final_node_id === snapshot.plan.final_node_id, 'repair_final_output_owner_changed');
       const currentByID = new Map(snapshot.plan.nodes.map(n => [n.id, n]));
       for (const next of proposed.nodes) {
         const prior = currentByID.get(next.id);
@@ -5115,12 +5174,16 @@ class RCCRuntime {
   async _settleTask(taskID) {
     const snapshot = this._load(taskID);
     if (!snapshot || snapshot.cancel_requested || snapshot.state !== 'running') return;
+    // Defense for legacy/in-memory plans: retain every child artifact but do
+    // not guess a final owner or relabel intermediate outputs as the answer.
+    try { assertFinalOutputOwnership(snapshot.plan, admittedTask(snapshot), {collectionMayBeOrdered: true}); }
+    catch (error) { this._hold(taskID, error.code ?? 'plan_final_ownership_invalid'); return; }
     const byID = new Map(snapshot.children.map(c => [c.id, c]));
     const ordered = snapshot.plan.nodes.map(n => byID.get(n.id));
     // A single native answer is already the user's result. Never add a node
     // label: exact-output tasks (including "Reply with hello only") must
-    // preserve the returned bytes. Multi-node output remains visibly labelled
-    // unless an explicit final integration node was planned and executed.
+    // preserve the returned bytes. Explicit routes or an admitted null Core
+    // collection emit every labelled result; other DAGs have one final owner.
     const candidateOutput = snapshot.plan.final_node_id ? byID.get(snapshot.plan.final_node_id)?.output :
       ordered.length === 1 ? ordered[0].output :
         ordered.map(c => `${c.id}: ${c.output}`).join('\n\n');

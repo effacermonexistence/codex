@@ -47,8 +47,9 @@ function row(id) {
 const node = (id, candidateID, dependencies = []) => ({id, candidate_id: candidateID,
   instruction: id === 'first' ? 'Return the first route arithmetic answer' : 'Return the second route arithmetic answer',
   dependencies, kind: 'agent', scope: 'read_only', owned_paths: [], context_refs: []});
-const plan = (request, nodes) => ({schema: 1, task_id: request.task_id,
-  request_sha256: request.request_sha256, nodes});
+// Named default fixture pipeline ends at second; independent sibling test opts into null below.
+const plan = (request, nodes, finalNodeID = 'second') => ({schema: 1, task_id: request.task_id,
+  request_sha256: request.request_sha256, nodes, final_node_id: finalNodeID});
 const result = (ticket, overrides = {}) => ({schema: 1, task_id: ticket.task_id, node_id: ticket.node_id,
   attempt_id: ticket.attempt_id, candidate_id: ticket.candidate_id,
   configuration_sha256: ticket.configuration_sha256, selected_config: ticket.selected_config,
@@ -84,7 +85,7 @@ async function fixture(t, request, execute, options = {}) {
     catalog: async q => { catalogCalls++; return {schema: 1, task_id: q.task_id,
       request_sha256: q.request_sha256, candidates}; },
     plan: async ({task: q, repair}) => { plans++;
-      return plan(q, options.nodes ?? [node('first', 'a'), node('second', repair ? 'alternative' : 'b', ['first'])]); },
+      return plan(q, options.nodes ?? [node('first', 'a'), node('second', repair ? 'alternative' : 'b', ['first'])], options.finalNodeID); },
     execute,
     verifyTask: () => { throw Error('a partial task must not request parent quality adoption'); }});
   t.after(() => runtime.close());
@@ -153,7 +154,7 @@ test('a failed pre-dispatch sibling waits for an already running completed answe
     if (ticket.node_id === 'first') { await release.promise; return result(ticket); }
     await until(() => started.includes('first'));
     return failure(ticket, 'synthetic_outage');
-  }, {nodes: [node('first', 'a'), node('second', 'b')]});
+  }, {nodes: [node('first', 'a'), node('second', 'b')], finalNodeID: null});
   t.after(release.resolve);
   await runtime.submit(request);
   await until(() => runtime._load(request.task_id).children[1]?.state === 'failed');

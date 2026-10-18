@@ -91,7 +91,8 @@ function tierCatalog(request, {first = 'codex', write = false, chat = false, cod
 const graded = (id, routeClass, options = {}) => ({id, instruction: options.instruction ?? 'Do one bounded task',
   dependencies: [], kind: 'agent', ...(routeClass === undefined ? {} : {route_class: routeClass}),
   scope: options.scope ?? 'read_only', owned_paths: options.scope === 'workspace_write' ? ['**'] : [], context_refs: []});
-const plan = (request, nodes) => ({schema: 1, task_id: request.task_id, request_sha256: request.request_sha256, nodes});
+const plan = (request, nodes, finalNodeID) => ({schema: 1, task_id: request.task_id, request_sha256: request.request_sha256, nodes,
+  ...(finalNodeID === undefined ? {} : {final_node_id: finalNodeID})});
 function execution(ticket, overrides = {}) {
   return {schema: 1, task_id: ticket.task_id, node_id: ticket.node_id, attempt_id: ticket.attempt_id,
     candidate_id: ticket.candidate_id, configuration_sha256: ticket.configuration_sha256,
@@ -724,7 +725,7 @@ test('a failed reference or explicit verifier holds its candidate and never rele
       verifierRegistry: new Map([[routeClass + ':read_only:agent', verify]]),
       catalog: async value => tierCatalog(value, {intent}),
       plan: async () => plan(request, [graded('candidate', routeClass),
-        {...graded('dependent', routeClass), dependencies: ['candidate']}]),
+        {...graded('dependent', routeClass), dependencies: ['candidate']}], 'dependent'),
       execute: async ticket => { tickets.push(ticket); return execution(ticket); },
       // Intentionally permissive: a failed child must not get this far.
       verifyTask: value => { parentVerifierCalls++; return taskVerdict(value); }});
@@ -766,7 +767,7 @@ test('a passing reference or explicit verifier releases dependent work exactly o
         verified.push(input.node_id); return {passed: true, reason: 'fixture accepted'}; }]]),
       catalog: async value => tierCatalog(value, {intent}),
       plan: async () => plan(request, [graded('candidate', 'deep'),
-        {...graded('dependent', 'deep'), dependencies: ['candidate']}]),
+        {...graded('dependent', 'deep'), dependencies: ['candidate']}], 'dependent'),
       execute: async ticket => { tickets.push(ticket.node_id); return execution(ticket); },
       verifyTask: taskVerdict});
     t.after(async () => { await runtime.close(); });
@@ -1076,7 +1077,7 @@ test('parallel escalations exempt the UNION of their cheap attempts: a dependent
   const runtime = await createRCCRuntime({stateDir: join(dir, 'union'),
     catalog: async value => tierCatalog(value),
     plan: async () => plan(request, [graded('a', 'trivial'), graded('b', 'trivial'),
-      {...graded('d', 'trivial'), dependencies: ['a', 'b']}]),
+      {...graded('d', 'trivial'), dependencies: ['a', 'b']}], 'd'),
     execute: async ticket => {
       tickets.push(ticket);
       if (ticket.node_id === 'd') return execution(ticket);
