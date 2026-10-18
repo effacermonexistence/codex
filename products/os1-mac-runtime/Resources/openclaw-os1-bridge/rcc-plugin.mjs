@@ -114,22 +114,35 @@ function compactRefsSchema(task) {
     items: {type: 'integer', minimum: 0, maximum: Math.max(0, count - 1)}};
 }
 function compactNodeSchema(branches, task, extraRequired, extraProperties) {
-  const properties = {grade: {type: 'string', enum: [...ROUTE_CLASSES]},
-    scope: {type: 'string', enum: branches.map(branch => branch.properties.scope.const)},
-    ...extraProperties};
-  const required = [...extraRequired, 'grade', 'scope'];
-  if (branches.some(branch => branch.properties.kind.const !== 'agent')) {
-    properties.kind = {type: 'string', enum: [...new Set(branches.flatMap(branch =>
-      branch.properties.kind.const ? [branch.properties.kind.const] : branch.properties.kind.enum))]};
-    if (branches.every(branch => branch.properties.kind.const !== 'agent')) required.push('kind');
-  }
   const writer = branches.find(branch => branch.properties.scope.const === 'workspace_write');
-  if (writer) {
-    properties.paths = writer.properties.owned_paths;
-    if (branches.every(branch => branch.properties.scope.const === 'workspace_write')) required.push('paths');
-  }
-  if ((task.material_refs?.length ?? 0) > 0) { properties.refs = compactRefsSchema(task); required.push('refs'); }
-  return {type: 'object', additionalProperties: false, required, properties};
+  // A flat enum of scopes makes paths optional for writers whenever a reader
+  // is also offered. Scope-discriminated generation must have the same
+  // mandatory fields as entryKeys/compile; it never supplies missing grants.
+  const variants = branches.map(branch => {
+    const scope = branch.properties.scope.const;
+    const properties = {grade: {type: 'string', enum: [...ROUTE_CLASSES]},
+      scope: {type: 'string', const: scope}, ...extraProperties};
+    const required = [...extraRequired, 'grade', 'scope'];
+    if (branch.properties.kind.const !== 'agent') {
+      properties.kind = branch.properties.kind;
+      required.push('kind');
+    }
+    if (scope === 'workspace_write') {
+      properties.paths = branch.properties.owned_paths;
+      required.push('paths');
+    } else if (writer) {
+      // Preserve the existing bounded read-only annotation grammar. The
+      // decoder validates one live covering writer then adopts ZERO paths
+      // for this reader; separate grants are never unioned into authority.
+      properties.paths = writer.properties.owned_paths;
+    }
+    if ((task.material_refs?.length ?? 0) > 0) {
+      properties.refs = compactRefsSchema(task);
+      required.push('refs');
+    }
+    return {type: 'object', additionalProperties: false, required, properties};
+  });
+  return variants.length === 1 ? variants[0] : {oneOf: variants};
 }
 /** The host selects the wire protocol before the call. The model never
  * supplies task identity or authorization, and this compiler does not adopt
@@ -605,7 +618,7 @@ function compactPlannerInstructions(base, explicit, copyOriginal) {
   return semantics + '\nOS1 COMPACT PLAN v2. Return only the schema-constrained JSON, no fences. ' +
     'Task identity, original payloads and authority are bound by the host; never echo or override task_id, request_sha256, model or candidate_id. ' +
     (explicit ? 'Use source:"routes", nodes in exact original route order, each naming its original 1-based route ordinal, grade and scope. Do not repeat route instructions or add dependencies. ' :
-      (copyOriginal ? 'For ANY unsplit original task you MUST use {"nodes":[{"instruction":"","grade":"trivial|standard|deep","scope":"read_only|workspace_write","deps":[]}]}; the empty instruction makes the host preserve the original request byte for byte. Do not repeat or rephrase the original. ' :
+      (copyOriginal ? 'For ANY unsplit original task you MUST use exactly one node with instruction "", deps [], one grade and one scope, plus every field required by that scope in the response schema. Every workspace_write node MUST include paths; when the offered writer schema fixes paths to ["**"], supply exactly ["**"]. Read-only nodes normally omit paths and never acquire write ownership from a paths annotation. The empty instruction makes the host preserve the original request byte for byte. Do not repeat or rephrase the original. ' :
         'This original request exceeds the node instruction byte bound, so an empty copy instruction is unavailable. Keep its full source in the input; use bounded actual subtask instructions, never truncate source to make an atomic node fit. ') +
       'For genuine decomposition use the SAME nodes envelope with at least two genuinely separate nonempty subtask instructions and zero-based dependency indices; optional final is a node index. Never mix an empty copy instruction with a decomposition. Do not emit source or root-level grade/scope. Do not force an atomic task when decomposition is needed. ') +
     'An execution unit is not a reasoning step: keep an implementation, its routine checks and its completion report in the SAME worker. Do not create a separate completion-note or formatting worker unless it requires genuinely independent verification or external work. ' +

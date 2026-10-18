@@ -294,6 +294,92 @@ test('writes require offered scope and explicit paths; compact output grants no 
   assert.throws(() => decode(atomicWith({scope: 'workspace_write', paths: []}), write, narrow), /planner_compact/);
 });
 
+test('scope-discriminated compact generation requires writer paths even when readers are offered', () => {
+  const t = task('/tmp/fixture', {write: true}), rows = catalog(t, {write: true});
+  const schema = buildCompactPlannerSchema(t, rows, NOW), branches = schema.properties.nodes.items.oneOf;
+  assert.equal(branches.length, 2);
+  const reader = branches.find(b => b.properties.scope.const === 'read_only');
+  const writer = branches.find(b => b.properties.scope.const === 'workspace_write');
+  assert.ok(reader && writer);
+  assert.deepEqual(reader.required, ['instruction', 'deps', 'grade', 'scope']);
+  assert.deepEqual(writer.required, ['instruction', 'deps', 'grade', 'scope', 'paths']);
+  assert.equal(reader.additionalProperties, false); assert.equal(writer.additionalProperties, false);
+  assert.deepEqual(writer.properties.paths.items.enum, ['**']);
+  assert.deepEqual(reader.properties.paths, writer.properties.paths,
+    'bounded optional reader annotation is preserved, not promoted into ownership');
+  const missing = atomicWith({grade: 'standard', scope: 'workspace_write'});
+  assert.throws(() => decode(missing, t, rows), /planner_compact_plan_invalid/);
+  assert.ok(writer.required.includes('paths'),
+    'generation must exclude this missing-field response rather than teaching the decoder to guess a grant');
+  const compiled = decode(atomicWith({grade: 'standard', scope: 'workspace_write', paths: ['**']}), t, rows);
+  assert.equal(compiled.nodes[0].instruction, t.request);
+  assert.deepEqual(compiled.nodes[0].owned_paths, ['**']);
+  assert.deepEqual(decode(atomicWith({paths: ['**']}), t, rows).nodes[0].owned_paths, []);
+
+  const readOnly = task(), readSchema = buildCompactPlannerSchema(readOnly, catalog(readOnly, {write: true}), NOW);
+  assert.equal(readSchema.properties.nodes.items.properties.scope.const, 'read_only');
+  assert.equal(Object.hasOwn(readSchema.properties.nodes.items.properties, 'paths'), false);
+  const writerOnly = structuredClone(rows);
+  writerOnly.candidates = writerOnly.candidates.filter(c => c.scope === 'workspace_write');
+  const writeSchema = buildCompactPlannerSchema(t, writerOnly, NOW);
+  assert.equal(writeSchema.properties.nodes.items.properties.scope.const, 'workspace_write');
+  assert.ok(writeSchema.properties.nodes.items.required.includes('paths'));
+  assert.equal(schema.properties.nodes.minItems, 1);
+  assert.throws(() => decode({nodes: []}, t, rows), /planner_compact/);
+});
+
+test('scope-specific wire branches preserve material, kind, explicit-route and real-DAG contracts', () => {
+  const t = task('/tmp/fixture', {write: true, refs: ['source-a', 'source-b']}), rows = catalog(t, {write: true});
+  const branches = buildCompactPlannerSchema(t, rows, NOW).properties.nodes.items.oneOf;
+  for (const branch of branches) {
+    assert.ok(branch.required.includes('refs'));
+    assert.equal(branch.properties.refs.uniqueItems, true);
+    assert.equal(Object.hasOwn(branch.properties, 'kind'), false);
+  }
+  const withMaterials = atomicWith({scope: 'workspace_write', paths: ['**'], refs: []});
+  assert.deepEqual(decode(withMaterials, t, rows).nodes[0].context_refs, []);
+  assert.throws(() => decode(atomicWith({scope: 'workspace_write', paths: ['**']}), t, rows), /planner_compact/);
+  const exactTask = task('/tmp/fixture', {request: '19+23'}), exactRows = catalog(exactTask);
+  exactRows.candidates.push({...row('local-exact', 'codex', 'local-exact', 'none'),
+    surface: 'local', transport: 'local', quota_pool: 'none', account_id: 'local',
+    quota_remaining_fraction: null, quota_observed_at_ms: null, quota_valid_until_ms: null});
+  const exactItem = buildCompactPlannerSchema(exactTask, exactRows, NOW).properties.nodes.items;
+  assert.ok(exactItem.required.includes('kind'));
+  assert.deepEqual(exactItem.properties.kind.enum, ['agent', 'deterministic']);
+
+  const explicit = task('/tmp/fixture', {write: true, routes: [
+    {surface: 'codex', instruction: 'Write the declared synthetic artifact.'},
+    {surface: 'codex', instruction: 'Read the supplied synthetic evidence.'}]});
+  const explicitRows = catalog(explicit, {write: true});
+  const explicitBranches = buildCompactPlannerSchema(explicit, explicitRows, NOW).properties.nodes.items.oneOf;
+  assert.ok(explicitBranches.every(branch => branch.required.includes('route')));
+  assert.ok(explicitBranches.find(b => b.properties.scope.const === 'workspace_write').required.includes('paths'));
+  assert.equal(Object.hasOwn(explicitBranches[0].properties, 'instruction'), false);
+  const explicitPlan = decode({source: 'routes', nodes: [
+    {route: 1, grade: 'standard', scope: 'workspace_write', paths: ['**']},
+    {route: 2, grade: 'standard', scope: 'read_only'}]}, explicit, explicitRows);
+  assert.deepEqual(explicitPlan.nodes.map(n => n.instruction), explicit.host_context.explicit_routes.map(r => r.instruction));
+  const dagTask = task('/tmp/fixture', {write: true}), dagRows = catalog(dagTask, {write: true});
+  const dag = {nodes: [
+    {instruction: 'Write the declared artifact.', grade: 'standard', scope: 'workspace_write', paths: ['**'], deps: []},
+    {instruction: 'Independently inspect its result.', grade: 'standard', scope: 'read_only', deps: [0]}], final: 1};
+  assert.deepEqual(decode(dag, dagTask, dagRows).nodes[1].dependencies, ['node_0']);
+  assert.throws(() => decode({...dag, nodes: [{...dag.nodes[0], paths: undefined}, dag.nodes[1]]}, dagTask, dagRows), /planner_compact/);
+});
+
+test('atomic compact prompt describes scope-required fields instead of an incomplete copyable writer object', () => {
+  const t = task('/tmp/fixture', {write: true}), rows = catalog(t, {write: true});
+  const before = structuredClone({t, rows});
+  const input = buildBoundedPlannerInput({task: t, catalog: rows, policyText: t.policy.text,
+    wireProtocol: COMPACT_PLANNER_PROTOCOL, now: NOW});
+  assert.ok(input.instructions.includes('plus every field required by that scope in the response schema'));
+  assert.ok(input.instructions.includes('Every workspace_write node MUST include paths'));
+  assert.ok(input.instructions.includes('Read-only nodes normally omit paths and never acquire write ownership'));
+  assert.equal(input.instructions.includes('"scope":"read_only|workspace_write","deps":[]'), false);
+  assert.ok(input.instructions.includes(t.policy.text));
+  assert.deepEqual({t, rows}, before);
+});
+
 test('derived mixed-scope annotation compiles with ZERO read-only ownership; historical failure is not a rerun', () => {
   // Derived from the one local 396 probe, whose raw/error remain private and
   // FAILED. This is a deterministic compiler regression, not model success.
