@@ -42,6 +42,30 @@ function machoCStringFixture(value: string) {
   return Buffer.concat([header, strings]);
 }
 
+// Each architecture stays independently subject to the same cstring scanner.
+function universalMachOCStringFixture(values: string[]) {
+  const header = Buffer.alloc(8 + 20 * values.length);
+  header.writeUInt32BE(0xcafebabe, 0);
+  header.writeUInt32BE(values.length, 4);
+  const pieces = [header];
+  let offset = header.length;
+  values.forEach((value, index) => {
+    const aligned = Math.ceil(offset / 4096) * 4096;
+    pieces.push(Buffer.alloc(aligned - offset));
+    const thin = machoCStringFixture(value);
+    const cpu = index === 0 ? 0x01000007 : 0x0100000c;
+    thin.writeUInt32LE(cpu, 4);
+    header.writeUInt32BE(cpu, 8 + 20 * index);
+    header.writeUInt32BE(3, 12 + 20 * index);
+    header.writeUInt32BE(aligned, 16 + 20 * index);
+    header.writeUInt32BE(thin.length, 20 + 20 * index);
+    header.writeUInt32BE(12, 24 + 20 * index);
+    pieces.push(thin);
+    offset = aligned + thin.length;
+  });
+  return Buffer.concat(pieces);
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })),
@@ -206,6 +230,96 @@ describe("client release artifact hygiene gate", () => {
       expect(rejected.has(createHash("sha256").update(token).digest("hex"))).toBe(true);
     }
     expect(JSON.stringify(result)).not.toContain(credentialLikeSuffix);
+  });
+
+  it("allows the build399 source-verified diagnostic token in each universal slice, never similar paths or added entropy", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-build399-diagnostic-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "client.bin");
+    const policy = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprint = "bab36416d7f32a22778d82ce3a81b860644a30e8b80180f69695429177225c23";
+    const entry = policy.publicTokenProvenance[fingerprint];
+    expect(entry.tokenKind).toBe("diagnostic_source_path");
+    expect(entry.source).toBe("products/os1-mac-runtime/Sources/OS1/ConsumerChatGPTTransport.swift");
+    expect(entry.sourceRevision).toBe("3f46fd6f62db9ee6394b4ac1c9d6c807602cebb8");
+    expect(entry.sourceSHA256).toBe("f69764eae620130769061139f46b4e90c42440373c75b59d15e03f5f8b583074");
+    expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
+    const source = await readFile(new URL("../../../" + entry.source, import.meta.url));
+    expect(createHash("sha256").update(source).digest("hex")).toBe(entry.sourceSHA256);
+    expect(source.toString("utf8")).toContain("URL(fileURLWithPath: #filePath)");
+    expect(createHash("sha256").update(entry.publicToken).digest("hex")).toBe(fingerprint);
+    expect(policy.entropy.allowedTokenSha256.filter((value: string) => value === fingerprint)).toHaveLength(1);
+    expect(policy.entropy.minimumLength).toBe(48);
+    expect(policy.entropy.minimumBitsPerCharacter).toBe(4.7);
+    const exact = entry.publicToken + ".swift";
+    await writeFile(file, universalMachOCStringFixture([exact, exact]));
+    expect((await scanClientArtifacts([file])).findings).toEqual([]);
+
+    const altered = entry.publicToken.slice(0, -1) + "X";
+    for (const values of [[altered + ".swift", exact], [exact, altered + ".swift"]]) {
+      await writeFile(file, universalMachOCStringFixture(values));
+      const findings = (await scanClientArtifacts([file])).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toEqual(expect.objectContaining({ kind: "high_entropy",
+        fingerprint: createHash("sha256").update(altered).digest("hex") }));
+    }
+    const canary = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/";
+    const mutants = [altered, entry.publicToken + "Extra", entry.publicToken + canary,
+      entry.publicToken.replace("/OS1-quality-parity-", "/OS1-unknown-audit-"), canary];
+    await writeFile(file, universalMachOCStringFixture([
+      exact, [...mutants.map(token => token + ".swift"), "private routing prompt"].join("\0"),
+    ]));
+    const result = await scanClientArtifacts([file]);
+    const rejected = new Set(result.findings.filter(item => item.kind === "high_entropy").map(item => item.fingerprint));
+    for (const token of mutants) expect(rejected.has(createHash("sha256").update(token).digest("hex"))).toBe(true);
+    expect(result.findings.some(item => item.kind === "forbidden_content")).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(canary);
+  });
+
+  it("classifies the exact build399 path without demangling or printing it and rejects mutated provenance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-build399-provenance-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "scripts"));
+    await mkdir(join(directory, "security"));
+    const helper = join(directory, "scripts", "explain-client-scan.mjs");
+    await writeFile(helper, await readFile(new URL("../scripts/explain-client-scan.mjs", import.meta.url)));
+    const original = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprint = "bab36416d7f32a22778d82ce3a81b860644a30e8b80180f69695429177225c23";
+    const entry = original.publicTokenProvenance[fingerprint];
+    const input = join(directory, "client.bin");
+    await writeFile(input, universalMachOCStringFixture([entry.publicToken + ".swift", entry.publicToken + ".swift"]));
+    const policyPath = join(directory, "security", "client-artifact-scan-policy.json");
+    await writeFile(policyPath, JSON.stringify(original));
+    const valid = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+    expect(valid.status).toBe(0);
+    expect(valid.stdout.trim().split("\n").map(line => JSON.parse(line))).toEqual([{
+      fingerprint, length: entry.publicToken.length, tokenKind: "diagnostic_source_path",
+      publicCompilerType: null, source: entry.source,
+    }]);
+    expect(valid.stdout).not.toContain(entry.publicToken);
+    for (const delta of [
+      { publicToken: entry.publicToken + "Extra" },
+      { tokenKind: "compiler_type" },
+      { sourceRevision: "not-an-immutable-revision" },
+      { sourceSHA256: "not-a-source-hash" },
+      { sourceURL: "https://example.invalid/not-the-audited-source" },
+      { source: "products/os1-mac-runtime/Sources/OS1/Different.swift" },
+    ]) {
+      const policy = structuredClone(original);
+      Object.assign(policy.publicTokenProvenance[fingerprint], delta);
+      await writeFile(policyPath, JSON.stringify(policy));
+      const diagnostic = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+      expect(diagnostic.status).not.toBe(0);
+      expect(diagnostic.stdout).toBe("");
+      expect(diagnostic.stderr).not.toContain(entry.publicToken);
+    }
+    await writeFile(policyPath, JSON.stringify(original));
+    const unreviewed = entry.publicToken + "Extra";
+    await writeFile(input, universalMachOCStringFixture([unreviewed + ".swift", unreviewed + ".swift"]));
+    const unknown = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+    expect(unknown.status).toBe(0);
+    expect(unknown.stdout).toBe("");
+    expect(unknown.stderr).not.toContain(unreviewed);
   });
 
   it("rejects incorrect diagnostic-path kind or provenance instead of treating every path as compiler evidence", async () => {

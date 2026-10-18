@@ -17995,6 +17995,7 @@ struct OS1Main {
                 try rccOperationalQualitySelfTest()
                 try rccOperationalQualityWitnessSelfTest()
             try rccNativeLocalQualityProfileSelfTest()
+                try rccLocalEffectsAdmissionSelfTest()
             case "self-test":
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()
@@ -18590,8 +18591,10 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
         throw OS1Error.message("RCC native catalog has no configured profile for the admitted providers")
     }
     let data = try RCCNativeCatalogBuilder.catalogData(output, taskID: request.taskID, requestSHA256: request.requestSHA256)
-    _ = try RCCRuntimeContract.decodeCatalog(data)
-    return data
+    let admitted = try RCCOperationalQuality.constrainCatalogData(data, request: request,
+        sourceBound: OS1SourceWatch.containedRoot(workspace: host.workspace) != nil)
+    _ = try RCCRuntimeContract.decodeCatalog(admitted)
+    return admitted
 }
 
 /// A continuation inherits the SAME task's private executed receipt, never a
@@ -19000,10 +19003,16 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         var operationalAssessment: TaskQualityEvidence.Evaluation?
         let localQualityProfile: RCCNativeLocalQualityProfile?
         let ownerLocalBoundary = try RCCOperationalQuality.localEffectsBoundary(ticket: t)
-        if provider == "codex", ownerLocalBoundary != nil, sourceRoot == nil,
-           t.continuation == nil, t.nativeResumeSessionID == nil {
+        if ownerLocalBoundary != nil, RCCOperationalQuality.supportsLocalEffects(config: t.selectedConfig,
+            sourceBound: sourceRoot != nil, nativeResume: t.nativeResumeSessionID != nil, permissionContinuation: t.continuation != nil) {
             localQualityProfile = try RCCNativeLocalQualityProfile(ticket: t, workspace: workspace, boundary: ownerLocalBoundary)
         } else { localQualityProfile = nil }
+        // A declared job boundary is mandatory from the FIRST dispatch,
+        // including unsupported providers/source custody/resumed sessions.
+        // Existing failure normalization holds native_pre_dispatch_failed;
+        // this is not a model/catalog/quota/auth incompatibility assertion.
+        try RCCOperationalQuality.enforceLocalEffectsAdmission(declared: ownerLocalBoundary != nil,
+            profileAvailable: localQualityProfile != nil)
         if t.qualityContinuation != nil && localQualityProfile == nil { throw RCCOperationalQuality.Failure.unavailable }
         var measuredUsage: CompletionMeasuredUsage?
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """

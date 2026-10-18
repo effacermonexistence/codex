@@ -74,7 +74,8 @@
       "1eb53f3566f89eed208e9e278c4fa00331f8ab51c7a134808275a3a499681efa",
       "c2c8a7293079209e730fee3cec9d9dfa737c70f16b11e34cd893148370760e66",
       "114a70e2f9a615ddc64b64b9bf14bea793b36dc63dde82edbea962b78d2b528f",
-      "a91c1be85c496305576c4c07e080f1d302bc081ba102714b24d17e1e4433a4bb"
+      "a91c1be85c496305576c4c07e080f1d302bc081ba102714b24d17e1e4433a4bb",
+      "bab36416d7f32a22778d82ce3a81b860644a30e8b80180f69695429177225c23"
     ]
   },
   "publicTokenProvenance": {
@@ -473,6 +474,15 @@
       "sourceURL": "https://github.com/effacermonexistence/codex/blob/27fe23154bb9d2188abce0504ae9aab3d885d2eb/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
       "sourceAnchor": "private func rccTerminalDeliverySelfTest",
       "tokenKind": "compiler_type"
+    },
+    "bab36416d7f32a22778d82ce3a81b860644a30e8b80180f69695429177225c23": {
+      "tokenKind": "diagnostic_source_path",
+      "description": "Exact compiler-emitted non-secret #filePath diagnostic source path prefix for the public source. The scanner excludes the trailing .swift suffix from its token. No path-prefix, Mach-O-region, filename, compiler-regex or arbitrary entropy exemption. Exact token, source bytes and immutable public source revision independently verified before this proposal.",
+      "publicToken": "/Users/LUA/Developer/OS1-quality-parity-20261017/products/os1-mac-runtime/Sources/OS1/ConsumerChatGPTTransport",
+      "source": "products/os1-mac-runtime/Sources/OS1/ConsumerChatGPTTransport.swift",
+      "sourceRevision": "3f46fd6f62db9ee6394b4ac1c9d6c807602cebb8",
+      "sourceSHA256": "f69764eae620130769061139f46b4e90c42440373c75b59d15e03f5f8b583074",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/3f46fd6f62db9ee6394b4ac1c9d6c807602cebb8/products/os1-mac-runtime/Sources/OS1/ConsumerChatGPTTransport.swift"
     }
   }
 }

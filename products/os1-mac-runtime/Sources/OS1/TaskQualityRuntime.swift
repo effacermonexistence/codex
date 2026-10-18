@@ -781,7 +781,7 @@ func taskQualityRuntimeSelfTest() throws {
 /// It is not a hidden evaluation scorer, reference selector or retry owner.
 enum RCCOperationalQuality {
     typealias C = RCCRuntimeContract
-    enum Failure: Error { case custody, binding, unavailable }
+    enum Failure: Error { case custody, binding, unavailable, localEffectsCapabilityUnavailable }
     struct ContentManifest: Codable, Equatable {
         struct Entry: Codable, Equatable { let path: String; let kind: String; let bytes: Int64; let sha256: String; let mode: UInt16 }
         let entries: [Entry]
@@ -962,9 +962,11 @@ enum RCCOperationalQuality {
     /// The original owner's local-effect restriction may narrow a child even
     /// without a matching child checker. It grants no test coverage or task
     /// verification, and never upgrades a read-only parent to a writer.
-    static func localEffectsBoundary(ticket: C.ExecutionTicket, rootURL: URL = PreparedTaskQuality.root) throws -> LocalEffectsBoundary? {
-        guard let original = ticket.originalRequest, let objective = ticket.originalObjective,
-            C.digest(Data(original.utf8)) == ticket.requestSHA256 else { throw Failure.binding }
+    private static func originalLocalEffectsBoundary(original: String, objective: String, host: C.HostContext,
+        requestSHA256: String, sourceFingerprint: String, policySHA256: String,
+        rootURL: URL) throws -> LocalEffectsBoundary? {
+        guard C.digest(Data(original.utf8)) == requestSHA256, !objective.isEmpty,
+            C.digest(try C.encode(host)) == sourceFingerprint else { throw Failure.binding }
         let objectiveSHA = C.digest(Data(original.utf8))
         let path = rootURL.appendingPathComponent("contracts", isDirectory: true).appendingPathComponent(objectiveSHA + ".json")
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }
@@ -976,12 +978,75 @@ enum RCCOperationalQuality {
             (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000 else { throw Failure.custody }
         let data = try Data(contentsOf: path), envelope = try decode(PreparedTaskQuality.Envelope.self, data), c = envelope.contract
         guard envelope.localEffectsOnly else { return nil }
-        let requestedScope: TaskContext.Scope = ticket.selectedConfig.scope == .readOnly ? .readOnly : .workspaceWrite
-        guard c.objectiveSHA256 == objectiveSHA, c.contextSHA256 == contextSHA(ticket), c.sourceSHA256 == sourceSHA(ticket),
-            c.referencePolicySHA256 == ticket.policySHA256, c.validUntil > Date(),
-            c.scope == requestedScope || (c.scope == .workspaceWrite && requestedScope == .readOnly),
-            !objective.isEmpty else { throw Failure.binding }
-        return .init(envelopeSHA256: C.digest(data), originalObjectiveSHA256: C.digest(Data(objective.utf8)), scope: requestedScope)
+        let source = (try? SessionHandoff.decode(host.context)).flatMap { $0.source?.sha256 }
+        guard c.objectiveSHA256 == objectiveSHA, c.contextSHA256 == C.digest(Data((host.context ?? "").utf8)),
+            c.sourceSHA256 == source, c.referencePolicySHA256 == policySHA256, c.validUntil > Date(),
+            [.readOnly, .workspaceWrite].contains(c.scope) else { throw Failure.binding }
+        return .init(envelopeSHA256: C.digest(data), originalObjectiveSHA256: C.digest(Data(objective.utf8)), scope: c.scope)
+    }
+    static func localEffectsBoundary(ticket: C.ExecutionTicket, rootURL: URL = PreparedTaskQuality.root) throws -> LocalEffectsBoundary? {
+        guard let original = ticket.originalRequest, let objective = ticket.originalObjective, let host = ticket.hostContext else { throw Failure.binding }
+        guard let boundary = try originalLocalEffectsBoundary(original: original, objective: objective, host: host,
+            requestSHA256: ticket.requestSHA256, sourceFingerprint: ticket.sourceFingerprint, policySHA256: ticket.policySHA256, rootURL: rootURL) else { return nil }
+        let scope: TaskContext.Scope = ticket.selectedConfig.scope == .readOnly ? .readOnly : .workspaceWrite
+        guard boundary.scope == scope || (boundary.scope == .workspaceWrite && scope == .readOnly) else { throw Failure.binding }
+        return boundary
+    }
+    static func localEffectsBoundary(request: C.Request, rootURL: URL = PreparedTaskQuality.root) throws -> LocalEffectsBoundary? {
+        guard let host = request.hostContext else { throw Failure.binding }
+        return try originalLocalEffectsBoundary(original: request.request, objective: request.objective, host: host,
+            requestSHA256: request.requestSHA256, sourceFingerprint: request.sourceFingerprint, policySHA256: request.policySHA256, rootURL: rootURL)
+    }
+    /// Capability predicate only: no model/tier/effort selection or new rights.
+    static func supportsLocalEffects(config: C.ExactConfig, sourceBound: Bool, nativeResume: Bool, permissionContinuation: Bool) -> Bool {
+        config.surface == .codex && config.transport == .codexAppServer && !sourceBound && !nativeResume && !permissionContinuation
+    }
+    static func enforceLocalEffectsAdmission(declared: Bool, profileAvailable: Bool) throws {
+        guard !declared || profileAvailable else { throw Failure.localEffectsCapabilityUnavailable }
+    }
+    /// Admission closure for the same owner boundary before the local planner.
+    /// Legacy/undeclared catalogs return byte-identically, not a new catalog.
+    static func constrainCatalogData(_ data: Data, request: C.Request, sourceBound: Bool,
+        rootURL: URL = PreparedTaskQuality.root) throws -> Data {
+        guard let boundary = try localEffectsBoundary(request: request, rootURL: rootURL) else { return data }
+        var catalog = try C.decodeCatalog(data)
+        var removed: [String: Int] = [:]
+        catalog.candidates = catalog.candidates.filter { row in
+            let scopeAllowed = (boundary.scope == .workspaceWrite && request.hostContext?.requireReadOnly != true) || row.scope == .readOnly
+            let keep = scopeAllowed && supportsLocalEffects(config: row.exactConfig, sourceBound: sourceBound,
+                nativeResume: false, permissionContinuation: false)
+            if !keep {
+                let provider = row.quotaPool == .anthropicShared ? "claude" : row.quotaPool == .openAICodex ? "codex" : nil
+                if let provider { removed[provider, default: 0] += 1 }
+            }
+            return keep
+        }
+        var exclusions = catalog.exclusions ?? []
+        for provider in removed.keys.sorted() {
+            if let index = exclusions.firstIndex(where: { $0.provider == provider && $0.reason == "explicit_constraint_unavailable" }) {
+                exclusions[index].count += removed[provider]!
+            } else { exclusions.append(.init(provider: provider, reason: "explicit_constraint_unavailable", count: removed[provider]!)) }
+        }
+        if catalog.candidates.isEmpty && removed.isEmpty && exclusions.isEmpty {
+            // An unsupported non-native row has no honest provider name in
+            // the existing exclusion enum. Hold rather than invent one.
+            throw Failure.localEffectsCapabilityUnavailable
+        }
+        catalog.exclusions = exclusions.isEmpty ? nil : exclusions
+        let models = Set(catalog.candidates.map(\.model))
+        catalog.modelTiers = catalog.modelTiers.map { $0.filter { models.contains($0.key) } }
+        catalog.quotaScores = catalog.quotaScores.map { $0.filter { models.contains($0.key) } }
+        if let native = catalog.nativeReferenceEfforts {
+            var filtered: [String: [String: String]] = [:]
+            for provider in ["codex", "claude"] {
+                let pool: C.QuotaPool = provider == "codex" ? .openAICodex : .anthropicShared
+                let represented = Set(catalog.candidates.filter { $0.quotaPool == pool }.map(\.model))
+                if !represented.isEmpty { filtered[provider] = (native[provider] ?? [:]).filter { represented.contains($0.key) } }
+            }
+            catalog.nativeReferenceEfforts = filtered
+        }
+        try C.validate(catalog, request: request)
+        return try C.encode(catalog)
     }
     static func prepare(ticket: C.ExecutionTicket, workspace: String, currentTreeSHA256: String,
                         root: URL = Self.root, authority: Authority = .production) throws -> Preparation? {
@@ -1667,4 +1732,83 @@ func rccNativeLocalQualityProfileSelfTest() throws {
     let d = JSONDecoder(); d.dateDecodingStrategy = .millisecondsSince1970
     try check(try d.decode(PreparedTaskQuality.Envelope.self, from: JSONSerialization.data(withJSONObject: legacy)).localEffectsOnly == false, "old contracts never acquire confinement declaration by default")
     print("RCC native local permission profile: \(checks) checks PASS; synthetic metadata only, native/model calls0")
+}
+
+func rccLocalEffectsAdmissionSelfTest() throws {
+    typealias Q = RCCOperationalQuality
+    typealias C = RCCRuntimeContract
+    let fm = FileManager.default, base = fm.temporaryDirectory.appendingPathComponent("os1-boundary-admission-" + UUID().uuidString).resolvingSymlinksInPath()
+    try fm.createDirectory(at: base.appendingPathComponent("contracts"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: base) }
+    let hash = C.digest(Data("boundary fixture".utf8)), original = "Complete only this public local fixture task."
+    let host = C.HostContext(workspace: base.path, context: nil, providerPreference: "auto", codexSessionID: nil, claudeSessionID: nil, requireReadOnly: false, ownerPolicy: nil)
+    let request = C.Request(taskID: "fixture-parent", request: original, requestSHA256: C.digest(Data(original.utf8)), objective: original,
+        policySHA256: hash, sourceFingerprint: C.digest(try C.encode(host)), mode: .auto, materialRefs: [],
+        budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 20000), hostContext: host)
+    let now = Int64(Date().timeIntervalSince1970 * 1000)
+    func row(_ id: String, _ surface: C.Surface, _ model: String, _ scope: C.Scope = .readOnly) -> C.Candidate {
+        let codex = surface == .codex
+        let config = C.ExactConfig(surface: surface, transport: codex ? .codexAppServer : .claudeCLI,
+            accountID: "fixture", model: model, effort: .low, tools: [], scope: scope, permissionProfile: scope,
+            quotaPool: codex ? .openAICodex : .anthropicShared, allowedPaths: scope == .readOnly ? [] : ["**"], configurationSHA256: C.digest(Data(id.utf8)))
+        return .init(id: id, config: config, quotaRemainingFraction: 0.8, quotaObservedAtMS: now-1, quotaValidUntilMS: now+60000,
+            qualityState: .policyAdmitted, estimatedCostUnits: nil, availability: .available, availabilityObservedAtMS: now-1, availabilityValidUntilMS: now+60000)
+    }
+    let cheap = row("cheap", .codex, "fixture-cheap"), frontier = row("frontier", .codex, "fixture-frontier"), claude = row("claude", .claude, "fixture-claude"), writer = row("writer", .codex, "fixture-cheap", .workspaceWrite)
+    let catalog = C.Catalog(taskID: request.taskID, requestSHA256: request.requestSHA256, candidates: [cheap, frontier, claude, writer],
+        modelTiers: [cheap.model: "fast", frontier.model: "frontier", claude.model: "frontier"],
+        quotaScores: [cheap.model: 2, frontier.model: 1, claude.model: 3],
+        nativeReferenceEfforts: ["codex": [cheap.model: "max", frontier.model: "ultra"], "claude": [claude.model: "max"]])
+    let bytes = try C.encode(catalog)
+    var count = 0
+    func check(_ condition: @autoclosure () throws -> Bool, _ label: String) throws {
+        guard try condition() else { throw OS1Error.message("Local boundary admission fixture: " + label) }; count += 1
+    }
+    func reject(_ label: String, _ body: () throws -> Void) throws {
+        do { try body() } catch { count += 1; return }; throw OS1Error.message("Local boundary admission fixture: " + label)
+    }
+    try check(try Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base) == bytes, "undeclared catalog remains byte-identical")
+    try Q.enforceLocalEffectsAdmission(declared: false, profileAvailable: false); count += 1
+    try Q.enforceLocalEffectsAdmission(declared: true, profileAvailable: true); count += 1
+    try reject("declared boundary never permits missing actual profile") { try Q.enforceLocalEffectsAdmission(declared: true, profileAvailable: false) }
+    try check(Q.supportsLocalEffects(config: cheap.exactConfig, sourceBound: false, nativeResume: false, permissionContinuation: false), "fresh supported Codex path")
+    try check(!Q.supportsLocalEffects(config: claude.exactConfig, sourceBound: false, nativeResume: false, permissionContinuation: false), "Claude has no invented local-effects capability")
+    for flags in [(true,false,false),(false,true,false),(false,false,true)] {
+        try check(!Q.supportsLocalEffects(config: cheap.exactConfig, sourceBound: flags.0, nativeResume: flags.1, permissionContinuation: flags.2), "source/resume/permission handback cannot bypass profile")
+    }
+    func envelope(scope: TaskContext.Scope, expires: Date = Date().addingTimeInterval(60), context: String? = nil) -> PreparedTaskQuality.Envelope {
+        let c = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: request.requestSHA256,
+            contextSHA256: context ?? C.digest(Data((host.context ?? "").utf8)), sourceSHA256: nil,
+            startTreeSHA256: hash, scope: scope, verifierCodeSHA256: hash, referencePolicySHA256: hash, requiredCheckIDs: ["public.shape"],
+            fullCoverage: false, referenceProfiles: [], reference: nil, issuedAt: Date(), validUntil: expires)
+        return .init(contract: c, checkerSHA256: hash, timeoutSeconds: 1, workspacePaths: [], localEffectsOnly: true)
+    }
+    let path = base.appendingPathComponent("contracts/" + request.requestSHA256 + ".json")
+    func save(_ env: PreparedTaskQuality.Envelope) throws { try Q.encoded(env).write(to: path) }
+    try save(envelope(scope: .workspaceWrite))
+    let readTicket = C.ExecutionTicket(taskID: request.taskID, nodeID: "read-child", attemptID: "read-attempt", candidateID: cheap.id,
+        requestSHA256: request.requestSHA256, policySHA256: hash, policySourceSHA256: hash, sourceFingerprint: request.sourceFingerprint,
+        configurationSHA256: cheap.configurationSHA256, selectedConfig: cheap.exactConfig, objective: original,
+        instruction: "Read one part of the original local task", contextRefs: [], ownedPaths: [], originalRequest: original, originalObjective: original, hostContext: host)
+    guard let inherited = try Q.localEffectsBoundary(ticket: readTicket, rootURL: base) else { throw OS1Error.message("Missing original owner writer ceiling") }
+    try check(inherited.scope == .workspaceWrite, "inherited boundary preserves original owner ceiling as provenance")
+    let childProfile = try RCCNativeLocalQualityProfile(ticket: readTicket, workspace: base.path, boundary: inherited)
+    defer { try? fm.removeItem(atPath: childProfile.scratch) }
+    try check(childProfile.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(base.path) + "=\"read\"") }) &&
+        !childProfile.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(base.path) + "=\"write\"") }),
+        "writer parent boundary cannot upgrade actual read-only child business permissions")
+    let constrained = try C.decodeCatalog(Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base))
+    try check(constrained.candidates == [cheap, frontier, writer], "only unsupported provider removed; cheap/frontier and efforts unchanged")
+    try check(constrained.exclusions?.contains(.init(provider: "claude", reason: "explicit_constraint_unavailable", count: 1)) == true, "capability constraint is not model/quota failure")
+    try check(constrained.modelTiers?[claude.model] == nil && constrained.quotaScores?[claude.model] == nil && constrained.nativeReferenceEfforts?["claude"] == nil, "metadata closes over surviving models")
+    let held = try C.decodeCatalog(Q.constrainCatalogData(bytes, request: request, sourceBound: true, rootURL: base))
+    try check(held.candidates.isEmpty && held.exclusions?.contains(where: { $0.reason == "explicit_constraint_unavailable" }) == true, "unsupported source-bound workspace yields explained empty hold")
+    try save(envelope(scope: .readOnly))
+    let read = try C.decodeCatalog(Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base))
+    try check(read.candidates == [cheap, frontier], "parent read ceiling never offers writer")
+    try save(envelope(scope: .workspaceWrite, expires: Date().addingTimeInterval(-1)))
+    try reject("expired declaration is not silently omitted") { _ = try Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base) }
+    try save(envelope(scope: .workspaceWrite, context: hash))
+    try reject("foreign context declaration is not applied") { _ = try Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base) }
+    print("RCC hard local-effects admission: \(count) checks PASS; provider/native/model calls0")
 }

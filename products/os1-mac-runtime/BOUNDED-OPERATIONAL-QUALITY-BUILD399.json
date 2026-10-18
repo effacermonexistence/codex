@@ -8,6 +8,7 @@
     "Bind existing operational checker to native RCC artifact, preserve failure first",
     "Same Core owns one same-config fresh-session correction, with private one-use claim, exact content custody and local-effects enforcement",
     "Typed trusted local-effects declaration narrows only opted-in jobs, not default full-scope capabilities",
+    "Declared local-effects boundary is mandatory from first dispatch; unsupported paths are held and catalog eligibility closes over the same capability without changing supported model/effort choices",
     "Task-wide native-parent dispatch admission cap optional1..64; old requests unchanged",
     "Checker infrastructure and invalid/late decision HOLD; no blind replay or flagship escalation",
     "Partial child checks cannot mint parent/reference parity; native settings stay requested/acknowledged/observed-separated"
@@ -22,5 +23,6 @@
   },
   "actual_model_comparison": "NOT_YET_EXECUTED",
   "anthropic_reference": "normal weekly quota currently exhausted, no billing or account bypass",
-  "preserved": "Accepted398 source/install artifacts, sessions/queues/drafts, historical395-398 failed answers and graders"
+  "preserved": "Accepted398 source/install artifacts, sessions/queues/drafts, historical395-398 failed answers and graders",
+  "release_scan": "One exact public diagnostic source-path token with immutable source provenance added; scanner/entropy/regex/forbidden gates unchanged"
 }
