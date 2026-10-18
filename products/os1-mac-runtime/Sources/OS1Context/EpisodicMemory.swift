@@ -152,7 +152,7 @@ public struct EpisodicMemoryRetrieval: Sendable {
 }
 
 public enum EpisodicMemoryError: Error, LocalizedError {
-    case invalidMetadata, invalidCorrection, invalidProvenance, unsafePath, corruptIndex, invalidReceipt
+    case invalidMetadata, invalidCorrection, invalidProvenance, unsafePath, corruptIndex, invalidReceipt, invalidWriteTransaction
     public var errorDescription: String? {
         switch self {
         case .invalidMetadata: return "OS-1 episodic memory metadata is incomplete or invalid."
@@ -161,6 +161,7 @@ public enum EpisodicMemoryError: Error, LocalizedError {
         case .unsafePath: return "OS-1 episodic memory path is not a private regular file."
         case .corruptIndex: return "OS-1 episodic memory ledger is corrupt; no guessed state was adopted."
         case .invalidReceipt: return "OS-1 episodic replay does not match the recorded exact evidence."
+        case .invalidWriteTransaction: return "OS-1 memory writer is outside its original synchronous transaction."
         }
     }
 }
@@ -195,7 +196,11 @@ public struct EpisodicMemoryStore: Sendable {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path.path)
         }
     }
+    private var writeLeaseKey: String { "os1.episodic-memory.active-write:" + root.path }
     private func locked<T>(_ body: () throws -> T) throws -> T {
+        // Public APIs must not reacquire this process's lexical write lock.
+        // Other threads/processes still wait on the original flock normally.
+        guard Thread.current.threadDictionary[writeLeaseKey] == nil else { throw EpisodicMemoryError.invalidWriteTransaction }
         try prepare()
         let fd = open(root.appendingPathComponent(".lock").path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw EpisodicMemoryError.unsafePath }
@@ -235,23 +240,73 @@ public struct EpisodicMemoryStore: Sendable {
         try recordBatch([(raw: raw, metadata: metadata)], now: now)[0]
     }
 
+    public struct WriteStatistics: Equatable, Sendable {
+        public fileprivate(set) var inventoryLoads: Int = 0
+        public fileprivate(set) var validatedInventoryItems: Int = 0
+    }
+
+    /// A lexical writer, not a cache or an independent transaction owner.
+    /// Never Sendable: use only on the callback's original thread. Copies of
+    /// this reference are revoked even when the callback throws or returns it.
+    public final class WriteTransaction {
+        private let store: EpisodicMemoryStore
+        private let ownerThread = pthread_self()
+        private let stateLock = NSLock()
+        private var active = true
+        private var byVersion: [String: EpisodicMemoryItem]
+        private var verified = Set<String>()
+        private let now: Date
+        public let statistics: WriteStatistics
+        fileprivate init(store: EpisodicMemoryStore, existing: [EpisodicMemoryItem], now: Date, statistics: WriteStatistics) {
+            self.store = store; self.now = now
+            self.byVersion = Dictionary(uniqueKeysWithValues: existing.map { ($0.versionID, $0) })
+            self.statistics = statistics
+        }
+        fileprivate func revoke() {
+            stateLock.lock(); defer { stateLock.unlock() }; active = false
+        }
+        @discardableResult public func record(text: String, metadata: EpisodicMemoryMetadata) throws -> EpisodicMemoryItem {
+            try record(raw: Data(text.utf8), metadata: metadata)
+        }
+        @discardableResult public func record(raw: Data, metadata: EpisodicMemoryMetadata) throws -> EpisodicMemoryItem {
+            guard pthread_equal(ownerThread, pthread_self()) != 0 else { throw EpisodicMemoryError.invalidWriteTransaction }
+            stateLock.lock(); defer { stateLock.unlock() }
+            guard active else { throw EpisodicMemoryError.invalidWriteTransaction }
+            return try store.appendUnlocked(raw: raw, metadata: metadata, now: now,
+                byVersion: &byVersion, verified: &verified)
+        }
+        @discardableResult public func recordBatch(_ inputs: [(raw: Data, metadata: EpisodicMemoryMetadata)]) throws -> [EpisodicMemoryItem] {
+            try inputs.map { try record(raw: $0.raw, metadata: $0.metadata) }
+        }
+    }
+
+    /// Validate the entire ledger exactly once, while holding the SAME existing
+    /// cross-process lock through every ordered append. No state crosses this
+    /// synchronous callback or a later handoff. Each item keeps its original
+    /// fsync/validation semantics: a later failure does not erase earlier writes.
+    public func withWriteTransaction<T>(now: Date = Date(), _ body: (WriteTransaction) throws -> T) throws -> T {
+        try locked {
+            var statistics = WriteStatistics()
+            let existing = try inventoryUnlocked { event in
+                switch event {
+                case .load: statistics.inventoryLoads += 1
+                case .verifiedMetadata: statistics.validatedInventoryItems += 1
+                }
+            }
+            let writer = WriteTransaction(store: self, existing: existing, now: now, statistics: statistics)
+            Thread.current.threadDictionary[writeLeaseKey] = true
+            defer { writer.revoke(); Thread.current.threadDictionary.removeObject(forKey: writeLeaseKey) }
+            return try body(writer)
+        }
+    }
+
     /// One inventory/metadata verification and one process lock for a capture
     /// batch. Identical items are idempotent, with dictionary version lookup.
     /// A later invalid item does not erase earlier durably recorded evidence.
     @discardableResult public func recordBatch(_ inputs: [(raw: Data, metadata: EpisodicMemoryMetadata)],
                                               now: Date = Date()) throws -> [EpisodicMemoryItem] {
         guard !inputs.isEmpty else { return [] }
-        return try locked {
-            let existing = try inventoryUnlocked()
-            var byVersion = Dictionary(uniqueKeysWithValues: existing.map { ($0.versionID, $0) })
-            var verified = Set<String>(), output: [EpisodicMemoryItem] = []
-            for input in inputs {
-                let item = try appendUnlocked(raw: input.raw, metadata: input.metadata, now: now,
-                                               byVersion: &byVersion, verified: &verified)
-                output.append(item)
-            }
-            return output
-        }
+        return try withWriteTransaction(now: now) { try $0.recordBatch(inputs) }
     }
     private func verifyOnce(_ item: EpisodicMemoryItem, verified: inout Set<String>) throws {
         if !verified.contains(item.versionID) { _ = try read(item); verified.insert(item.versionID) }
@@ -354,7 +409,9 @@ public struct EpisodicMemoryStore: Sendable {
         depths[item.versionID] = deepest
         return true
     }
-    private func inventoryUnlocked() throws -> [EpisodicMemoryItem] {
+    private enum InventoryEvent { case load, verifiedMetadata }
+    private func inventoryUnlocked(observe: ((InventoryEvent) -> Void)? = nil) throws -> [EpisodicMemoryItem] {
+        observe?(.load)
         guard FileManager.default.fileExists(atPath: indexURL.path) else { return [] }
         let index = try safeRead(indexURL, maximum: 128 * 1_024 * 1_024)
         guard index.last == 10 else { throw EpisodicMemoryError.corruptIndex }
@@ -369,6 +426,7 @@ public struct EpisodicMemoryStore: Sendable {
                   let item = try? JSONDecoder().decode(EpisodicMemoryItem.self, from: raw), item.versionID == entry.versionID else {
                 throw EpisodicMemoryError.corruptIndex
             }
+            observe?(.verifiedMetadata)
             if seen.insert(item.versionID).inserted { output.append(item) }
         }
         return output

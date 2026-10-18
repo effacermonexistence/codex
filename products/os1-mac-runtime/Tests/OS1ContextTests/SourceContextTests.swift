@@ -21,6 +21,9 @@ final class SourceContextTests {
     static func main() throws {
         codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
+        if try memoryWriteTransactionChildIfRequested() { return }
+        if CommandLine.arguments.contains("--memory-write-transaction-only") { try runMemoryWriteTransactionFixtures(); return }
+        if CommandLine.arguments.contains("--memory-write-transaction-benchmark") { try runMemoryWriteTransactionFixtures(largeBenchmark: true); return }
         if CommandLine.arguments.contains("--desktop-relay-checkpoint-only") { try runDesktopRelayCheckpointFixtures(); return }
         if CommandLine.arguments.contains("--installed-native-entry-only") { try runInstalledNativeEntryFixtures(); return }
         if CommandLine.arguments.contains("--installed-resource-seal-only") { try runInstalledResourceSealFixtures(); return }
@@ -216,6 +219,7 @@ final class SourceContextTests {
         try runContextBudgetFixtures()
         let memoryFixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("os1-memory-fixture-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: memoryFixtureRoot) }
+        try runMemoryWriteTransactionFixtures()
         try runEpisodicMemoryFixtures(root: memoryFixtureRoot)
         try runMemoryPagingIntegrationFixtures(root: memoryFixtureRoot.appendingPathComponent("integration"))
         try runOwnerTermDefinitionsFixtures()

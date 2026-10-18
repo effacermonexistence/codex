@@ -6094,18 +6094,13 @@ private func pagingSessionHandoff(_ session: ConversationSession, sessions: [Con
         captures.append(.init(sessionID: peer.id.uuidString.lowercased(), messageID: "envelope", speaker: "OS-1 store",
             raw: try encoder.encode(peer), timestamp: nil, envelope: true))
     }
-    try MemoryPaging.recordBatch(captures, workspace: session.workspace, root: root)
-    let reference = try MemoryPaging.archiveConversation(raw: JSONEncoder().encode(session), sessionID: session.id.uuidString.lowercased(),
-        workspace: session.workspace, messageCount: session.messages.count,
-        allowedSessionIDs: peers.map { $0.id.uuidString.lowercased() }, root: root)
-    for message in session.messages where message.role == .user {
-        try MemoryPaging.archiveAttachments(in: message.text, conversationID: session.id.uuidString.lowercased(),
-            messageID: message.id.uuidString.lowercased(), workspace: session.workspace, root: root)
-    }
     let context = migratedTaskContext(session, sourceContext: migratedSourceReference(session))
-    try MemoryPaging.archiveTaskState(context, workspace: session.workspace, ownerMessages: session.messages.filter { $0.role == .user }.map {
-        .init(id: $0.id.uuidString.lowercased(), text: $0.text, timestamp: $0.timestamp)
-    }, root: root)
+    let reference = try MemoryPaging.captureHandoff(captures, conversationRaw: JSONEncoder().encode(session),
+        sessionID: session.id.uuidString.lowercased(), workspace: session.workspace,
+        messageCount: session.messages.count, allowedSessionIDs: peers.map { $0.id.uuidString.lowercased() },
+        context: context, ownerMessages: session.messages.filter { $0.role == .user }.map {
+            .init(id: $0.id.uuidString.lowercased(), text: $0.text, timestamp: $0.timestamp)
+        }, root: root)
     // Original data stays in sessions.json and immutable memory. Only a bounded
     // recent window is working context; earlier dependencies are page faults.
     var working = session

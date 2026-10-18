@@ -73,8 +73,11 @@ public enum MemoryPaging {
         }
     }
     public static func recordBatch(_ captures: [Capture], workspace: String, root: URL = defaultRoot) throws {
+        _ = try store(root: root).recordBatch(captureInputs(captures, workspace: workspace))
+    }
+    private static func captureInputs(_ captures: [Capture], workspace: String) -> [(raw: Data, metadata: EpisodicMemoryMetadata)] {
         let project = projectID(workspace: workspace)
-        _ = try store(root: root).recordBatch(captures.filter { !$0.raw.isEmpty }.map { capture in
+        return captures.filter { !$0.raw.isEmpty }.map { capture in
             let meta = EpisodicMemoryMetadata(sourceSessionID: capture.sessionID,
                 sourceMessageID: capture.envelope ? nil : capture.messageID,
                 artifactID: capture.envelope ? "conversation-envelope:" + SourceContextStore.digest(capture.raw) : nil,
@@ -82,7 +85,33 @@ public enum MemoryPaging {
                 scope: .init(threadID: capture.sessionID, projectID: project),
                 kind: capture.envelope ? .opaqueArchive : capture.speaker == "user" ? .userMessage : .assistantMessage)
             return (raw: capture.raw, metadata: meta)
-        })
+        }
+    }
+    /// One current handoff, one lock and one fully verified ledger inventory.
+    /// This is not a persistent cache: a second handoff re-enters and verifies
+    /// fresh state, including any intervening native ingestion/external writer.
+    public static func captureHandoff(_ captures: [Capture], conversationRaw: Data,
+                                      sessionID: String, workspace: String, messageCount: Int,
+                                      allowedSessionIDs: [String], context: TaskContext,
+                                      ownerMessages: [MemoryPagingOwnerMessage], root: URL = defaultRoot,
+                                      observeTransaction: ((EpisodicMemoryStore.WriteStatistics) -> Void)? = nil) throws -> MemoryPagingReference {
+        var statistics: EpisodicMemoryStore.WriteStatistics?
+        let result = try store(root: root).withWriteTransaction { writer in
+            statistics = writer.statistics
+            _ = try writer.recordBatch(captureInputs(captures, workspace: workspace))
+            let reference = try archiveConversation(raw: conversationRaw, sessionID: sessionID,
+                workspace: workspace, messageCount: messageCount, allowedSessionIDs: allowedSessionIDs,
+                root: root, writer: writer)
+            for owner in ownerMessages {
+                try archiveAttachments(in: owner.text, conversationID: sessionID, messageID: owner.id,
+                    workspace: workspace, root: root, writer: writer)
+            }
+            try archiveTaskState(context, workspace: workspace, ownerMessages: ownerMessages,
+                root: root, boundProjectID: nil, writer: writer)
+            return reference
+        }
+        if let statistics { observeTransaction?(statistics) }
+        return result
     }
     /// Complete envelope bytes stay immutable, including messages not selected
     /// for working context. A snapshot cannot be retrieved as secret/hidden raw.
@@ -92,8 +121,16 @@ public enum MemoryPaging {
     public static func archiveConversation(raw: Data, sessionID: String, workspace: String,
                                            messageCount: Int, allowedSessionIDs: [String],
                                            root: URL = defaultRoot) throws -> MemoryPagingReference {
+        try store(root: root).withWriteTransaction { writer in
+            try archiveConversation(raw: raw, sessionID: sessionID, workspace: workspace,
+                messageCount: messageCount, allowedSessionIDs: allowedSessionIDs, root: root, writer: writer)
+        }
+    }
+    private static func archiveConversation(raw: Data, sessionID: String, workspace: String,
+                                           messageCount: Int, allowedSessionIDs: [String], root: URL,
+                                           writer: EpisodicMemoryStore.WriteTransaction) throws -> MemoryPagingReference {
         let project = projectID(workspace: workspace)
-        let item = try store(root: root).record(raw: raw, metadata: .init(sourceSessionID: sessionID,
+        let item = try writer.record(raw: raw, metadata: .init(sourceSessionID: sessionID,
             artifactID: "conversation-envelope:" + SourceContextStore.digest(raw), speaker: "OS-1 store",
             scope: .init(threadID: sessionID, projectID: project), kind: .opaqueArchive))
         // The reference is a private immutable receipt, not a summary source.
@@ -103,8 +140,16 @@ public enum MemoryPaging {
             snapshot: receipt, allowedSessionIDs: allowedSessionIDs)
     }
     public static func archiveTaskState(_ context: TaskContext, workspace: String, ownerMessages: [MemoryPagingOwnerMessage] = [], root: URL = defaultRoot, boundProjectID: String? = nil) throws {
+        try store(root: root).withWriteTransaction { writer in
+            try archiveTaskState(context, workspace: workspace, ownerMessages: ownerMessages,
+                root: root, boundProjectID: boundProjectID, writer: writer)
+        }
+    }
+    private static func archiveTaskState(_ context: TaskContext, workspace: String,
+                                        ownerMessages: [MemoryPagingOwnerMessage], root: URL,
+                                        boundProjectID: String?, writer: EpisodicMemoryStore.WriteTransaction) throws {
         let session = context.conversationID.uuidString.lowercased(), project = boundProjectID ?? projectID(workspace: workspace)
-        let memory = store(root: root)
+        let memory = writer
         // TaskContext is derived working state. Never certify it as historical
         // evidence; explicit decision records retain their independent sources.
         let rawState = try JSONEncoder().encode(context)
@@ -322,6 +367,15 @@ public enum MemoryPaging {
     }
     public static func archiveAttachments(in text: String, conversationID: String, messageID: String,
                                           workspace: String, root: URL = defaultRoot) throws {
+        guard !PromptAttachments.paths(in: text).isEmpty else { return }
+        try store(root: root).withWriteTransaction { writer in
+            try archiveAttachments(in: text, conversationID: conversationID, messageID: messageID,
+                workspace: workspace, root: root, writer: writer)
+        }
+    }
+    private static func archiveAttachments(in text: String, conversationID: String, messageID: String,
+                                           workspace: String, root: URL,
+                                           writer: EpisodicMemoryStore.WriteTransaction) throws {
         for path in PromptAttachments.paths(in: text) {
             let url = URL(fileURLWithPath: path), resolved = url.resolvingSymlinksInPath()
             let denied = resolved.pathComponents.contains { component in
@@ -333,12 +387,12 @@ public enum MemoryPaging {
                   attrs[.type] as? FileAttributeType == .typeRegular,
                   let size = attrs[.size] as? NSNumber, size.intValue > 0, size.intValue <= EpisodicMemoryStore.maximumOriginalBytes,
                   let bytes = try? Data(contentsOf: resolved) else {
-                _ = try store(root: root).record(text: "UNKNOWN: attachment bytes not captured (unavailable, sensitive, or outside capture bound). Original reference: " + path,
+                _ = try writer.record(text: "UNKNOWN: attachment bytes not captured (unavailable, sensitive, or outside capture bound). Original reference: " + path,
                     metadata: .init(sourceSessionID: conversationID, artifactID: "attachment-omission:" + messageID + ":" + SourceContextStore.digest(Data(path.utf8)),
                         speaker: "OS-1 capture receipt", scope: scope, kind: .openQuestion))
                 continue
             }
-            _ = try store(root: root).record(raw: bytes, metadata: .init(sourceSessionID: conversationID,
+            _ = try writer.record(raw: bytes, metadata: .init(sourceSessionID: conversationID,
                 artifactID: "attachment:" + messageID + ":" + SourceContextStore.digest(bytes),
                 timestamp: attrs[.modificationDate] as? Date, speaker: "owner-attached artifact",
                 scope: scope, kind: .artifact,
