@@ -11,9 +11,9 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createRCCRuntime, dispatchable, hostContextFingerprint, LOCAL_WORKER_MODEL, localWorkerRow,
-  resolveRoutePlan, routingAvailability } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import { buildRoutePlanSchema, LOCAL_WORKER_PURPOSE, localModelExecutor, localWorkerCompletionRequest,
+import { createRCCRuntime, dispatchable, hostContextFingerprint, hostPlan, LOCAL_WORKER_MODEL, localWorkerRow,
+  resolveRoutePlan } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import { LOCAL_WORKER_PURPOSE, localModelExecutor, localWorkerCompletionRequest,
   normalizeLocalOutput, registerRCCRuntime, verifyExactExplicitArithmetic } from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -97,10 +97,13 @@ test('an explicit local route binds the local model row; the named provider rout
   const request = explicitTask(dir);
   const resolved = resolveRoutePlan(plan(request, ROUTE_ALL.map((_, index) => routeNode(index))), request,
     catalog(request), Date.now());
+  // R0 'exact' (build 407): a named route whose payload is one exact sum
+  // runs its surface's cheapest tier under the exact check; the local route
+  // stays local.
   assert.deepEqual(Object.values(resolved.decisions).map(d => `${d.surface}:${d.model}/${d.effort}`),
     ['local:qwen3.5:4b/none', 'codex:gpt-6-luna/low', 'claude:claude-sonnet-5-5/low', 'claude-chat:claude-sonnet-5-5/low']);
   assert.equal(resolved.decisions['requested-1'].reason,
-    'resolver;route_explicit;explicit_route_surface_local;class_trivial;local_model');
+    'resolver;route_explicit;explicit_route_surface_local;admitted_reference_owner_words;local_model');
   assert.deepEqual(resolved.routes['requested-1'], {kind: 'explicit', reference_effort: 'none', ladder: null});
   // Whatever the planner's grade, the local route never escalates and never leaves its surface.
   const deep = resolveRoutePlan(plan(request, [routeNode(0, ROUTE_ALL, 'deep')]), request, catalog(request), Date.now());
@@ -125,11 +128,10 @@ test('Auto never routes work to the local model row, and it is never the determi
     kind: 'agent', route_class: 'trivial', scope: 'read_only', owned_paths: [], context_refs: []}]),
   request, rows, Date.now());
   assert.notEqual(graded.decisions.n.surface, 'local');
-  const availability = routingAvailability(request, rows);
-  assert.equal(availability.deterministic, false, 'the local model row is not a deterministic exact row');
-  assert.deepEqual(availability.providers, ['claude', 'codex']);
-  // The planner is not offered the deterministic kind because of it either.
-  assert.equal(buildRoutePlanSchema(request, rows).properties.nodes.items.properties.kind.const, 'agent');
+  // The host plan is one agent node; it binds a hosted reference, never the local row.
+  const host = hostPlan(request, rows);
+  assert.deepEqual(host.nodes.map(node => [node.kind, node.instruction]), [['agent', 'Summarize the plan']]);
+  assert.equal(resolveRoutePlan(host, request, rows, Date.now()).decisions.node_0.resolved_candidate_id, 'codex-astra-max');
   // An adapter-bound Auto plan that names the local model row is refused by Core.
   const runtime = await createRCCRuntime({stateDir: join(dir, 'auto-local'),
     catalog: async () => rows,
@@ -265,13 +267,15 @@ test('route-all: four surfaces each answer their own expression and the exact ve
   const done = await wait(runtime, request);
   assert.equal(done.state, 'completed', done.error);
   assert.equal(done.result.task_verified, true);
+  // R0 'exact' (build 407): each named route runs its surface's cheapest
+  // tier; every answer is the exact result, so nothing escalates.
   assert.deepEqual(done.children.map(child => `${child.requested_surface}:${child.selected_config.surface}:` +
     `${child.selected_config.model}`), ['local:local:qwen3.5:4b', 'codex:codex:gpt-6-luna',
     'claude:claude:claude-sonnet-5-5', 'claude-chat:claude-chat:claude-sonnet-5-5']);
   assert.equal(done.result.output, 'requested-1: 2\n\nrequested-2: 4\n\nrequested-3: 2\n\nrequested-4: 4');
-  assert.equal(tickets.length, 4, 'one attempt per route: nothing escalated, no astra/max, no fable/max');
-  assert.ok(tickets.every(ticket => !['gpt-6-astra', 'claude-fable-5-1'].includes(ticket.selected_config.model)));
-  assert.equal(done.children[0].routing_decision.reason, 'resolver;route_explicit;explicit_route_surface_local;class_trivial;local_model');
+  assert.equal(tickets.length, 4, 'one attempt per route: nothing escalated');
+  assert.equal(done.children[0].routing_decision.reason,
+    'resolver;route_explicit;explicit_route_surface_local;admitted_reference_owner_words;local_model');
 });
 
 test('route-all with the local model not ready is held visibly before any planner or provider call', async t => {

@@ -19,7 +19,7 @@ const POOLS = new Set(['none', 'unknown', 'openai_codex', 'openai_chat', 'anthro
 const SURFACES = new Set(['chatgpt', 'codex', 'claude', 'local', 'gpt-chat', 'claude-chat']);
 // GPT surfaces stay decodable for old receipts, but are no longer routed.
 const DROPPED_ROUTE_SURFACES = new Set(['chatgpt', 'gpt-chat']);
-// The local model OpenClaw already runs (the planner's model). A catalog row
+// The local model OpenClaw already runs (intent resolution's model). A catalog row
 // of it is an explicit route's local EXECUTION surface (route-all,
 // 2026-10-14): read-only, tools-free, quota-free, transport local. It is
 // bound only for an explicit route that names the local surface; Auto never
@@ -45,76 +45,59 @@ const UNCHARGED_PRE_EXECUTION_ERRORS = new Set([PROVIDER_QUOTA_REJECTED_BEFORE_E
   NATIVE_CONFIGURATION_UNAVAILABLE]);
 const TRANSPORTS = new Set(['local', 'codex_app_server', 'claude_cli', 'chatgpt_service', 'claude_service']);
 const SCOPES = new Set(['read_only', 'workspace_write']);
+// Build 407: the host's deterministic request classes (catalog request_class).
+// Only read-only classes may carry a class certificate (R0(c), R5).
+const REQUEST_CLASSES = new Set(['chat_explanatory', 'text_operation', 'readonly_lookup', 'readonly_material',
+  'writer', 'explicit_route']);
+const CERTIFIABLE_CLASSES = new Set(['chat_explanatory', 'text_operation', 'readonly_lookup', 'readonly_material']);
+const FORMAT_CHECK = /^[a-z][a-z0-9_]{0,63}$/;
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode']);
-// Deterministic host routing. The catalog's own row order already encodes
-// pool preference (capacity share, fresh quota, reset time) and, within a
-// pool, model strength. Owner objective: the SAME result as the newest top
-// model at its highest supported reasoning, while spending less quota.
+// Deterministic host routing (build 407, R0): ONE admission law, decided in
+// code at catalog bind before any model call (admittedRoute). Owner objective:
+// the SAME result as the newest top model at its provider's highest supported
+// reasoning, while spending less quota. Every node binds a REFERENCE (a pool's
+// frontier model at its highest admitted supported effort, or the tuple the
+// owner's own words leave) unless a certifying source exists before dispatch:
+//  (a) a full-coverage owner contract the host re-bound to this exact request;
+//  (b) a registered gold-blind node verifier for the certified class;
+//  (c) a signed class certificate (rcc-class-table.json, empty as shipped).
+// No model-authored grade lowers a tuple. A certified read-only node runs the
+// cheaper tier (TIER_ROUTES.trivial, or the certificate's own tuple) only
+// beside a reference that can dispatch now, fixed as its one escalation, and
+// is delivered only when the source that admitted it accepts THIS answer (R9).
+// Among equal-quality references the pool order is R11: the owner's provider
+// word (already applied by the native catalog), the class provider pin, the
+// pool holding this conversation's resumable native session, then quota.
 //
-// Dynamic tier routing (build 378), on a catalog that carries `model_tiers`
-// (each model's provider-stated tier): REVAS at the front. The planner grades
-// each node (route_class) and the host binds the cheapest tier/effort expected
-// to give the same result (TIER_ROUTES), first dispatchable entry wins in the
-// first pool that can serve the class; when no pool can, trivial work runs
-// at standard (upwards only, never below the grade). A read-only node bound
-// below its pool's reference (the frontier model at its highest admitted,
-// supported effort) is re-dispatched ONCE at the reference on any failure signal, and held
-// when no reference can run then; a write is never escalated. The tier
-// choice is the admission: no ledger parity is needed. One ledger-derived
-// check remains (tierCostGate): a guarded read-only tier route whose cost
-// evidence says, with COST_GATE_CONFIDENCE, that cheap-then-escalate costs
-// more tokens than the reference because of its escalations goes straight to
-// that reference (each task node still explores the tier with probability
-// 1 - P_more).
-//
-// A catalog WITHOUT `model_tiers` (older hosts and persisted catalogs) keeps
-// the 2026-10-13 reference routing: every node binds a pool's REFERENCE route
-// (its first model at the highest admitted supported effort), and a cheaper
-// effort of that model needs the REVAS ladder gate (cheaperRouteAdmission).
+// A catalog WITHOUT `model_tiers` (older hosts and persisted catalogs) binds
+// every node at a pool's REFERENCE route (its first model at the highest
+// admitted supported effort).
 const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
+// Recorded route classes. 'deep' names a node bound at a reference (or an
+// owner-chosen tuple), 'trivial' a certified descent; 'standard' survives
+// only in persisted decisions of older builds.
 export const ROUTE_CLASSES = Object.freeze(['trivial', 'standard', 'deep']);
+const CERTIFIED_CLASS = 'trivial';
 // Provider-stated model tiers, strongest first (Swift ModelTiers is the owner).
 export const MODEL_TIERS = Object.freeze(['frontier', 'workhorse', 'efficient', 'fast']);
 // A tier-list effort that means the model's reference effort: its highest
 // admitted supported effort, not a hard-coded label such as "max".
 const REFERENCE_EFFORT = 'reference';
-// Ordered (tier, effort) preferences per graded class: the first entry with a
-// dispatchable row in a pool wins. Deep work only ever runs the reference. A
-// model with no effort control (its only row is "none": Claude Haiku 4.5,
-// 2026-10-15) satisfies its tier's concrete effort (entryRows).
+// Ordered (tier, effort) entries: the first with a dispatchable row in a pool
+// wins. `trivial` is the certified descent of R0 (a) and (b); `deep` is the
+// reference only. A model with no effort control (its only row is "none":
+// Claude Haiku 4.5, 2026-10-15) satisfies its tier's concrete effort (entryRows).
 export const TIER_ROUTES = Object.freeze({
   trivial: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
-  standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high'],
-    ['workhorse', 'xhigh'], ['frontier', REFERENCE_EFFORT]]),
   deep: Object.freeze([['frontier', REFERENCE_EFFORT]]),
 });
-// Cost gate (tierCostGate): a guarded read-only tier route runs the cheaper
-// route and, with escalation probability p, the reference once more, so its
-// expected cost is mu_C + p*mu_R against mu_R for routing straight to the
-// reference: the tier is cheaper iff p < 1 - mu_C/mu_R (exact for this
-// structure). p, mu_C and mu_R are estimated from the routing ledger as a
-// TOKEN PROXY (input + output + reasoning tokens), not subscription quota.
-// Quota per token is not observable and is assumed no higher on the cheaper
-// model, so the token proxy can only show the tier costing more THROUGH its
-// escalations: P_more = Pr[mu_C < mu_R and mu_C + p*mu_R > mu_R], and the
-// gate never acts without an observed escalation or when the cheaper attempt
-// alone costs at least a reference attempt in tokens. The node goes straight
-// to its reference only when P_more reaches COST_GATE_CONFIDENCE, and even
-// then a task still tries the tier with probability 1 - P_more (posterior
-// probability matching, seeded per task and node) so the evidence keeps
-// moving. COST_GATE_CONFIDENCE is the one owner-tunable number: a confidence
-// level, not a cost threshold.
-export const COST_GATE_CONFIDENCE = 0.9;
-// Monte Carlo draws of the posterior (standard error <= 0.008 at any P).
-export const COST_GATE_DRAWS = 4000;
-// Below two cost samples per arm the sample spread is undefined: tier.
-export const COST_GATE_MIN_SAMPLES = 2;
+// A class certificate's own per-answer format check (R9 (c)), by name. A
+// certificate naming a check this Core does not know certifies nothing.
+const FORMAT_CHECKS = Object.freeze({nonempty_text: output => typeof output === 'string' && output.trim() !== ''});
+// Swift's QualityDisclosure carries at most this many failed check IDs.
+const MAX_DISCLOSED_CHECKS = 64;
 const INTENT_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const INTENT_FAMILY = /^[a-z][a-z0-9]{1,31}$/;
-// REVAS ladder gate: a cheaper effort of the SAME model in the SAME pool needs
-// a registered task verifier for the family and this much ledger parity.
-export const LADDER_MIN_VERIFIED_PASSES = 20;
-const LADDER_MAX_VERIFIER_FAILURES = 0;
 // Routing ledger: one bounded, private, append-only JSONL record per settled
 // attempt (ids and routing facts only; no request text, output or path).
 const LEDGER_DIRECTORY = 'routing-ledger';
@@ -156,7 +139,7 @@ const RE_RESOLVABLE_FAILURES = new Set(['candidate_unavailable', 'candidate_quot
 // A native catalog probe that failed (not a binding/configuration change) is
 // retried this many times before the task is held.
 const MAX_TRANSIENT_REFRESH_FAILURES = 3;
-// How often one not-yet-dispatched graded node may move between pools for
+// How often one not-yet-dispatched host-resolved node may move between pools for
 // parallelism (not a failure, so not a re-resolution). Bounded so two pools
 // whose leases keep flipping can never move a node forever.
 const MAX_POOL_SPREADS = 4;
@@ -619,9 +602,9 @@ function referenceRows(reference) {
 /** The catalog's provider-stated model tiers, or null for an older catalog
  * (which keeps the former reference routing). */
 function modelTiers(catalog) { return plain(catalog?.model_tiers) ? catalog.model_tiers : null; }
-/** An explicit route test on a tier-routed catalog: the planner grades each
- * named route and the host binds its model and effort on that route's own
- * surface (an older catalog keeps the planner's exact candidate choice). */
+/** An explicit route test on a tier-routed catalog: the host binds each named
+ * route's model and effort on that route's own surface (an older catalog keeps
+ * an injected plan's exact candidate choice). */
 export function explicitTierRouting(task, catalog) {
   return task?.mode === 'explicit_routing_test' && modelTiers(catalog) !== null;
 }
@@ -630,12 +613,12 @@ export function explicitTierRouting(task, catalog) {
 function modelInFamily(model, family) {
   return typeof model === 'string' && model.toLowerCase().split(/[^\p{L}\p{N}]+/u).includes(family);
 }
-// A graded explicit-route node names its route by its position in the owner's
+// An explicit-route node names its route by its position in the owner's
 // ORIGINAL route list (requested-1 ... requested-8), the same ordinal older
 // snapshots use for their display surface.
 const EXPLICIT_NODE_ID = /^requested-([1-8])$/;
 export function explicitRouteNodeID(index) { return `requested-${index + 1}`; }
-/** The explicit route a graded node binds, with that route's OWN effort or
+/** The explicit route a node binds, with that route's OWN effort or
  * model-family words (catalog explicit_route_intents, aligned with the
  * original list; one route's words never constrain another route). Null
  * outside an explicit route test. A node that names no remaining route
@@ -661,17 +644,11 @@ function tierRank(catalog, model) {
   const tier = tierOf(catalog, model);
   return tier === null ? MODEL_TIERS.length : MODEL_TIERS.indexOf(tier);
 }
-/** The class a graded node is routed at: a missing or invalid grade is
- * standard, and a writer never runs below standard. */
-function effectiveRouteClass(routeClass, scope) {
-  const graded = ROUTE_CLASSES.includes(routeClass) ? routeClass : 'standard';
-  return scope === 'workspace_write' && graded === 'trivial' ? 'standard' : graded;
-}
-/** A row tier routing may bind for a graded node: a tiered model, or a model
- * of the family the owner explicitly named. A model with no tier is never
- * chosen by tier alone. The catalog already holds only the named family's
- * rows for a whole-request intent; an explicit route's own family word
- * narrows the rows here (its catalog is not filtered per route). */
+/** A row tier routing may bind: a tiered model, or a model of the family the
+ * owner explicitly named. A model with no tier is never chosen by tier alone.
+ * The catalog already holds only the named family's rows for a whole-request
+ * intent; an explicit route's own family word narrows the rows here (its
+ * catalog is not filtered per route). */
 function tierRoutable(candidate, catalog, intent) {
   return intent?.model_family ? modelInFamily(candidate.model, intent.model_family) :
     tierOf(catalog, candidate.model) !== null;
@@ -701,18 +678,16 @@ function effortlessModels(matching) {
   return new Set([...efforts].filter(([, set]) => set.size === 1 && set.has('none')).map(([model]) => model));
 }
 /** The rows of one pool that match one (tier, effort) entry. A REFERENCE
- * effort is the highest admitted supported effort that the entry's tier (or, for an
- * explicitly named family, the family) offers in this pool. An explicit
- * effort word is a hard constraint on every entry (tierEntries). A model with
- * no effort control (effortlessModels) satisfies any concrete effort of an
- * entry its tier (or the named family) matches: the tier list's effort is the
- * cheapest reasoning expected to suffice and such a model has nothing to set.
- * Never under an owner effort word (that model cannot honour it), never for a
- * REFERENCE entry (referenceEffort already reads a none-only model as
- * "none"), and only where a class lists that tier: with today's TIER_ROUTES
- * auto routing binds a fast-tier model to trivial read-only nodes only
- * (scopeClasses keeps writers at standard and above). An explicit family word
- * naming it binds it at every grade, writes included: the owner's route. */
+ * effort is the highest admitted supported effort that the entry's tier (or,
+ * for an explicitly named family, the family) offers in this pool. An
+ * explicit effort word is a hard constraint. A model with no effort control
+ * (effortlessModels) satisfies any concrete effort of an entry its tier (or
+ * the named family) matches: the entry's effort is the cheapest reasoning
+ * expected to suffice and such a model has nothing to set. Never under an
+ * owner effort word (that model cannot honour it) and never for a REFERENCE
+ * entry (referenceEffort already reads a none-only model as "none"); with
+ * today's TIER_ROUTES only a certified read-only descent binds a fast-tier
+ * model. An explicit family word naming it binds it: the owner's route. */
 function entryRows(rows, entry, catalog, intent) {
   const matching = rows.filter(({candidate}) => tierRoutable(candidate, catalog, intent) &&
     (entry.tier === null || tierOf(catalog, candidate.model) === entry.tier));
@@ -737,46 +712,12 @@ function tierReferenceRows(rows, catalog, intent = null) {
 }
 /** The reference an owner constraint leaves: the named family at its highest
  * admitted supported effort (or at the owner's effort word), else the frontier at the
- * owner's effort word (or its highest admitted supported effort). The host-chosen route below
- * it is guarded against exactly this one. */
+ * owner's effort word (or its highest admitted supported effort). Without an
+ * owner constraint it is the pool's frontier reference. */
 function intentReferenceRows(rows, catalog, intent) {
   return intent?.model_family ? entryRows(rows, {tier: null, effort: REFERENCE_EFFORT}, catalog, intent) :
     tierReferenceRows(rows, catalog, intent);
 }
-/** The ordered entries of one class. An explicit owner effort replaces each
- * entry's effort (the class still picks the tier, deep stays frontier); an
- * explicit model family keeps only the efforts (the family is the model). */
-function tierEntries(routeClass, intent) {
-  const list = TIER_ROUTES[routeClass];
-  if (intent?.model_family) {
-    const efforts = intent.effort ? [intent.effort] : [...new Set(list.map(([, effort]) => effort))];
-    return efforts.map((effort, index) => ({index, tier: null, effort}));
-  }
-  if (intent?.effort)
-    return [...new Set(list.map(([tier]) => tier))].map((tier, index) => ({index, tier, effort: intent.effort}));
-  return list.map(([tier, effort], index) => ({index, tier, effort}));
-}
-
-/** The classes a node of this scope can be routed at: a writer runs at least
- * standard (a trivial write is promoted). */
-function scopeClasses(scope) { return scope === 'workspace_write' ? ['standard', 'deep'] : ROUTE_CLASSES; }
-/** The rows of one pool that tier routing could ever bind for a node of this
- * scope: the union of every entry of every class reachable in the scope (the
- * trivial class's upward fallback adds nothing beyond standard). A row whose
- * tier or effort is no entry of any reachable class (for example a fast-tier
- * writer) can never run, so availability must not count it. */
-function bindableRows(rows, scope, catalog, intent) {
-  const ids = new Set();
-  for (const routeClass of scopeClasses(scope))
-    for (const entry of tierEntries(routeClass, intent))
-      for (const row of entryRows(rows, entry, catalog, intent)) ids.add(row.candidate.id);
-  return rows.filter(row => ids.has(row.candidate.id)).map(row => row.candidate);
-}
-// When no pool can serve a graded class with its own entries, it runs at the
-// next stronger class instead of holding: never downwards (no stand-in below
-// the grade). Standard already ends at the frontier reference; deep is the
-// reference only.
-const CLASS_FALLBACK = Object.freeze({trivial: 'standard'});
 
 /** The builder's per-model pool score (share x the model's own remaining
  * quota / hours to its own reset), or null when the catalog has none for it
@@ -786,379 +727,136 @@ function quotaScore(catalog, model) {
   return int(score, 0, 1_000_000_000) ? score : null;
 }
 
-// ---- Cost gate: tier or reference, from the routing ledger ----
-// Derivation (doc: DYNAMIC_TIER_ROUTING_BUILD378.md, "Cost gate"). A guarded
-// read-only tier route pays one cheaper attempt (mean cost mu_C) and, with
-// probability p (a failure signal), one reference attempt (mu_R); routing
-// straight to the reference pays mu_R. Whatever a reference run does
-// (delivers, is held, fails after dispatch) it does the same in both arms, so
-// mu_R is the mean over EVERY reference run that ended on its own, failed
-// runs included, and the tier costs more iff mu_C + p*mu_R > mu_R, i.e.
-// p > 1 - mu_C/mu_R.
-// Posterior: p ~ Beta(1 + escalations, 1 + trials - escalations) (uniform
-// prior); each mean cost ~ Student-t(n-1) at the sample mean with scale sd/sqrt(n)
-// (the posterior of a mean under the usual noninformative prior; it tends to
-// Normal(mean, sd/sqrt(n)) as n grows and is wider for small n), truncated
-// to > 0. The SAMPLE MEAN is used, not the median: the decision is about
-// expected cost. Cost is a TOKEN PROXY: input + output + reasoning tokens as
-// the ledger recorded them (cache reads are already inside input_tokens and
-// are not added again). It is NOT subscription quota: quota per token can
-// differ by model and is not observable here, so no calibration is claimed.
-// The cheaper model is assumed to spend at most the frontier's quota per
-// token (w <= 1, the provider tier order), so in quota the rule is
-// w*mu_C + p*mu_R > mu_R and tokens OVERSTATE the cheaper attempt. The token
-// proxy may therefore only decide where the excess comes from escalations:
-// at least one observed escalation, a cheaper mean token cost below the
-// reference's, and P_more counting only posterior draws with mu_C < mu_R.
-
-// Ledger attempt states of a cheaper tier attempt: adopted (no escalation) or
-// failed with a failure signal (escalated or held). Anything else (interrupted,
-// cancelled, effects uncertain, never dispatched) is no evidence either way.
-const COST_GATE_CHEAP_STATES = new Set(['completed', 'ladder_verifier_failed', 'ladder_not_returned']);
-// A reference attempt that ended on its own: delivered ('completed') or
-// returned nothing deliverable ('held'). A reference that FAILED after
-// dispatch with no side effects reported is recorded 'effects_uncertain'
-// (never replayed) with dispatched_failure 'no_effects', and counts too
-// (costGateReferenceRun): its tokens were spent in either arm. A cancelled,
-// stopped, interrupted or never-dispatched run is no sample (cut short or
-// never run, like the same outcome of a cheaper attempt).
-const COST_GATE_REFERENCE_STATES = new Set(['completed', 'held']);
-const COST_GATE_MEMO_LIMIT = 256;
-const costGateMemo = new Map();
-
-/** The token proxy of one recorded attempt, or null when its usage is missing
- * (input and output tokens are both required; reasoning tokens, not reported
- * by every executor, count as 0 when absent). */
-function tokenCost(usage) {
-  if (!plain(usage) || !int(usage.input_tokens, 0, Number.MAX_SAFE_INTEGER) ||
-      !int(usage.output_tokens, 0, Number.MAX_SAFE_INTEGER) ||
-      !(usage.reasoning_tokens == null || int(usage.reasoning_tokens, 0, Number.MAX_SAFE_INTEGER))) return null;
-  const cost = usage.input_tokens + usage.output_tokens + (usage.reasoning_tokens ?? 0);
-  return Number.isSafeInteger(cost) ? cost : null;
+// ---- The admission law (build 407, R0) ----
+/** The surface kinds ('agent', 'chat') a registered gold-blind node verifier
+ * covers for the certified class (R0 (b)). Production registers none. */
+function verifiedSurfaceKinds(registry) {
+  return registry instanceof Map ? ['agent', 'chat'].filter(kind =>
+    typeof registry.get(`${CERTIFIED_CLASS}:read_only:${kind}`) === 'function') : [];
 }
-/** The route kind a ledger record counts as for the cost gate: its own
- * route_kind, or, on a named-route test (route_kind 'explicit_route'), the
- * host route kind the graded route ran as (host_route_kind; an older
- * explicit record without it is no evidence). */
-function costGateRouteKind(record) {
-  return record.route_kind === 'explicit_route' ? record.host_route_kind ?? null : record.route_kind;
+/** R0, the one admission law, decided in code at bind before any model call:
+ * the reference tuple unless one certifying source exists NOW. Pure: the
+ * result depends only on the node, the task, the catalog's host facts, `now`
+ * and the registered node verifiers. Returns {class: 'reference'|'certified',
+ * source, certificate_id}:
+ *  - 'exact': an explicit route test's node whose payload is one exact
+ *    arithmetic expression and whose route names no model or effort: its
+ *    surface stays fixed and only the exact result is ever delivered;
+ *  - owner words (an explicit route test, an effort or model-family word, or
+ *    a provider the owner chose: a host or task provider_preference other
+ *    than 'auto') fix the reference those words leave (R10): source
+ *    'owner_words'. A bare provider name binds that provider's reference
+ *    (the catalog already holds only its rows), never a certified descent;
+ *  - a writer or deterministic node is never certified (R5);
+ *  - (a) 'contract': a full-coverage read-only owner contract that the host
+ *    re-bound at catalog time to this exact request, still valid, and a node
+ *    running that request byte-exact;
+ *  - (b) 'verifier': a registered verifier for the certified class;
+ *  - (c) 'class': this request class's signed certificate, for a node running
+ *    the request byte-exact, whose per-answer format check this Core knows;
+ *  - anything else 'uncertified'. A model-authored grade never certifies. */
+export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRegistry = null} = {}) {
+  const reference = source => ({class: 'reference', source, certificate_id: null});
+  const providerChosen = value => value != null && value !== 'auto';
+  // An explicit route test's exact arithmetic payload is certified by its
+  // exact result (source 'exact'): the named surface stays fixed, its
+  // cheapest tier runs, and any other answer escalates once to that
+  // surface's reference. A model or effort word on the route still binds
+  // the owner's tuple.
+  const explicit = task?.mode === 'explicit_routing_test' ? explicitRouteOf(node, task, catalog) : null;
+  if (explicit && explicit.intent == null && node?.kind === 'agent' && node.scope === 'read_only' &&
+      pureArithmetic(node.instruction ?? '') !== null)
+    return {class: 'certified', source: 'exact', certificate_id: null};
+  if (task?.mode === 'explicit_routing_test' || routingIntent(catalog) !== null ||
+      providerChosen(task?.host_context?.provider_preference) || providerChosen(task?.provider_preference))
+    return reference('owner_words');
+  if (node?.kind !== 'agent' || node.scope !== 'read_only') return reference('uncertified');
+  const own = node.instruction === task.request;
+  const contract = catalog?.task_contract;
+  if (own && plain(contract) && contract.coverage === 'full' && contract.scope === 'read_only' &&
+      contract.bindings_checked === true && contract.objective_sha256 === task.request_sha256 &&
+      int(contract.valid_until_ms, 0, Number.MAX_SAFE_INTEGER) && contract.valid_until_ms > now)
+    return {class: 'certified', source: 'contract', certificate_id: null};
+  if (verifiedSurfaceKinds(verifierRegistry).length > 0)
+    return {class: 'certified', source: 'verifier', certificate_id: null};
+  const cls = catalog?.request_class;
+  const certificate = own && CERTIFIABLE_CLASSES.has(cls) && plain(catalog.class_certificates) ?
+    catalog.class_certificates[cls] : undefined;
+  if (plain(certificate) && Object.hasOwn(FORMAT_CHECKS, certificate.format_check))
+    return {class: 'certified', source: 'class', certificate_id: certificate.certificate_id};
+  return reference('uncertified');
 }
-/** The compact evidence the cost gate reads from one ledger record: only a
- * host tier or reference attempt (a graded named route included), else null. */
-export function costGateRecord(record) {
-  if (!plain(record) || record.schema !== 1 || typeof record.family !== 'string' ||
-      typeof record.quota_pool !== 'string' || typeof record.model !== 'string' ||
-      typeof record.effort !== 'string' || typeof record.attempt_state !== 'string') return null;
-  const kind = costGateRouteKind(record);
-  if (!['tier', 'reference'].includes(kind)) return null;
-  return {family: record.family, scope: record.scope ?? null, surface_kind: record.surface_kind ?? null,
-    quota_pool: record.quota_pool, model: record.model, effort: record.effort, route_kind: kind,
-    escalated: record.escalated === true, attempt_state: record.attempt_state,
-    dispatched_failure: record.dispatched_failure === 'no_effects' ? 'no_effects' : null,
-    cost: tokenCost(record.usage)};
+const ESCALATION_ADMISSION = Object.freeze({class: 'reference', source: 'escalation', certificate_id: null});
+/** The routing-reason token that names the admission. */
+function admissionToken(admission) {
+  return admission.class === 'reference' ? 'admitted_reference_' + admission.source :
+    admission.source === 'class' ? 'admitted_certified_class:' + admission.certificate_id :
+      'admitted_certified_' + admission.source;
 }
-/** Whether an attempt with these ledger route facts (fixed at dispatch)
- * becomes cost-gate evidence once it is recorded. */
-function costGateRoute(route) {
-  return plain(route) && ['tier', 'reference'].includes(costGateRouteKind(route));
-}
-/** Whether a compact reference record is a run that ended on its own. */
-function costGateReferenceRun(record) {
-  return COST_GATE_REFERENCE_STATES.has(record.attempt_state) ||
-    (record.attempt_state === 'effects_uncertain' && record.dispatched_failure === 'no_effects');
-}
-/** Count, mean and sample standard deviation (n - 1), Welford's method. */
-export function costSummary(costs) {
-  let n = 0, mean = 0, squares = 0;
-  for (const cost of costs) {
-    n++;
-    const delta = cost - mean;
-    mean += delta / n;
-    squares += delta * (cost - mean);
+/** The rows one pool offers a certified descent, as ordered entries: the
+ * certificate's own tuple (c), else the cheapest tier list (a, b). A contract
+ * binds an agent surface only (its start tree is the host workspace, which a
+ * tool-free chat lane does not run in); a verifier only the surface kinds it
+ * is registered for, so it judges every answer it admitted. */
+function certifiedEntries(pool, admission, catalog, verifierRegistry) {
+  if (admission.source === 'class') {
+    const certificate = catalog.class_certificates[catalog.request_class];
+    return [{index: 0, rows: pool.rows.filter(({candidate}) => providerOfPool(candidate.quota_pool) === certificate.provider &&
+      candidate.model === certificate.model && candidate.effort === certificate.effort)}];
   }
-  return {n, mean: n ? mean : 0, sd: n > 1 ? Math.sqrt(Math.max(0, squares / (n - 1))) : 0};
+  const kinds = admission.source === 'contract' ? ['agent'] : admission.source === 'exact' ? ['agent', 'chat'] :
+    verifiedSurfaceKinds(verifierRegistry);
+  const rows = pool.rows.filter(({candidate}) => kinds.includes(surfaceKind(candidate.surface)));
+  return TIER_ROUTES[CERTIFIED_CLASS].map(([tier, effort], index) =>
+    ({index, rows: entryRows(rows, {tier, effort}, catalog, null)}));
 }
-/** The gate's evidence for one cheaper route against one reference route,
- * from compact ledger records (costGateRecord). Pure.
- * Cheaper attempts: the same family, pool, model and effort, a 'tier' route
- * that was not itself an escalation; every settled one is an escalation trial
- * (failed with a signal = 1, adopted = 0), and the ones with usage are its
- * cost samples. Reference attempts: the reference's pool, model and effort on
- * a 'reference' route (bound directly or escalated to), that ended on its own
- * (costGateReferenceRun: delivered, held, or failed after dispatch with no
- * effects), with usage; first in the node's family, else (fewer than
- * COST_GATE_MIN_SAMPLES there) in the same pool at any class with the same
- * scope and surface kind. */
-export function tierCostEvidence(records, query) {
-  assert(Array.isArray(records) && plain(query), 'cost_gate_query_invalid');
-  let trials = 0, escalations = 0;
-  const cheapCosts = [], familyCosts = [], poolCosts = [];
-  for (const record of records) {
-    if (!plain(record)) continue;
-    if (record.route_kind === 'tier' && !record.escalated && record.family === query.family &&
-        record.quota_pool === query.cheap_pool && record.model === query.cheap_model &&
-        record.effort === query.cheap_effort && COST_GATE_CHEAP_STATES.has(record.attempt_state)) {
-      trials++;
-      if (record.attempt_state !== 'completed') escalations++;
-      if (record.cost !== null) cheapCosts.push(record.cost);
-    } else if (record.route_kind === 'reference' && record.quota_pool === query.reference_pool &&
-        record.model === query.reference_model && record.effort === query.reference_effort &&
-        costGateReferenceRun(record) && record.cost !== null &&
-        record.scope === query.scope && record.surface_kind === query.reference_surface_kind) {
-      poolCosts.push(record.cost);
-      if (record.family === query.reference_family) familyCosts.push(record.cost);
-    }
-  }
-  const family = familyCosts.length >= COST_GATE_MIN_SAMPLES;
-  return {cheap: {trials, escalations, cost: costSummary(cheapCosts)},
-    reference: {level: family ? 'family' : 'pool', cost: costSummary(family ? familyCosts : poolCosts)}};
-}
-
-/** A deterministic uniform generator on (0, 1): xoshiro128** seeded with the
- * first 128 bits of a hex digest (an all-zero state is replaced). */
-export function costGateRandom(seedHex) {
-  assert(typeof seedHex === 'string' && /^[0-9a-f]{32,}$/.test(seedHex), 'cost_gate_seed_invalid');
-  const s = new Uint32Array([0, 1, 2, 3].map(i => parseInt(seedHex.slice(i * 8, i * 8 + 8), 16)));
-  if (s.every(word => word === 0)) s[0] = 1;
-  const rotl = (x, k) => ((x << k) | (x >>> (32 - k))) >>> 0;
-  return () => {
-    const result = Math.imul(rotl(Math.imul(s[1], 5) >>> 0, 7), 9) >>> 0;
-    const t = (s[1] << 9) >>> 0;
-    s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3]; s[2] ^= t; s[3] = rotl(s[3], 11);
-    return (result + 0.5) / 4_294_967_296;
-  };
-}
-/** A standard normal draw (Box-Muller, one draw per two uniforms). */
-function sampleNormal(random) {
-  return Math.sqrt(-2 * Math.log(random())) * Math.cos(2 * Math.PI * random());
-}
-/** A Gamma(shape, 1) draw: Marsaglia and Tsang (2000) for shape >= 1; for
- * shape < 1, Gamma(shape + 1) * U^(1/shape). */
-export function sampleGamma(random, shape) {
-  assert(typeof shape === 'number' && Number.isFinite(shape) && shape > 0, 'cost_gate_gamma_shape_invalid');
-  if (shape < 1) return sampleGamma(random, shape + 1) * random() ** (1 / shape);
-  const d = shape - 1 / 3, c = 1 / Math.sqrt(9 * d);
-  for (;;) {
-    let x, v;
-    do { x = sampleNormal(random); v = 1 + c * x; } while (v <= 0);
-    v = v * v * v;
-    const u = random();
-    if (u < 1 - 0.0331 * x ** 4 || Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
-  }
-}
-/** A Beta(a, b) draw: X / (X + Y) with X ~ Gamma(a), Y ~ Gamma(b). */
-export function sampleBeta(random, a, b) {
-  const x = sampleGamma(random, a), y = sampleGamma(random, b);
-  return x / (x + y);
-}
-/** A Student-t(df) draw: Z / sqrt(V / df) with V ~ chi-square(df) = 2 Gamma(df/2). */
-function sampleStudentT(random, df) {
-  return sampleNormal(random) / Math.sqrt(2 * sampleGamma(random, df / 2) / df);
-}
-/** The posterior of one mean cost: Student-t(n - 1) located at the sample
- * mean with scale sd/sqrt(n), truncated to > 0 by rejection (the location is
- * > 0, so each try succeeds with probability > 1/2); the sample mean after 64
- * rejected tries. A zero spread is the sample mean itself. */
-function sampleMeanCost(random, {n, mean, sd}) {
-  const scale = sd / Math.sqrt(n);
-  if (scale === 0) return mean;
-  for (let tries = 0; tries < 64; tries++) {
-    const value = mean + scale * sampleStudentT(random, n - 1);
-    if (value > 0) return value;
-  }
-  return mean;
-}
-function validCostSummary(value) {
-  return keys(value, ['n', 'mean', 'sd']) && int(value.n, 0, Number.MAX_SAFE_INTEGER) &&
-    Number.isFinite(value.mean) && value.mean >= 0 && Number.isFinite(value.sd) && value.sd >= 0;
-}
-function validCostEvidence(value) {
-  return plain(value) && plain(value.cheap) && plain(value.reference) &&
-    int(value.cheap.trials, 0, Number.MAX_SAFE_INTEGER) &&
-    int(value.cheap.escalations, 0, value.cheap.trials) && validCostSummary(value.cheap.cost) &&
-    value.cheap.cost.n <= value.cheap.trials && ['family', 'pool'].includes(value.reference.level) &&
-    validCostSummary(value.reference.cost);
-}
-const round3 = value => Math.round(value * 1000) / 1000;
-/** The cost ratio mu_C/mu_R for display (3 decimals), rounded towards the
- * side the rule reads: below 1 exactly when the cheaper mean is below the
- * reference mean (the 1e-9 only absorbs floating-point noise in the means). */
-function displayRatio(cheapMean, referenceMean) {
-  const scaled = 1000 * cheapMean / referenceMean;
-  return (cheapMean < referenceMean ? Math.min(999, Math.floor(scaled + 1e-9)) :
-    Math.max(1000, Math.ceil(scaled - 1e-9))) / 1000;
-}
-function validExploreKey(value) { return typeof value === 'string' && value.length > 0 && value.length <= 512; }
-/** One task node's exploration draw: a deterministic integer in [0, draws)
- * from a SHA-256 of its key (the resolver's key is task id and node id), so
- * one node decides the same way at bind, re-resolution and pool spread, and
- * keys spread uniformly (to the generator's 2^-32 granularity). */
-export function costGateExploreDraw(exploreKey, draws = COST_GATE_DRAWS) {
-  assert(validExploreKey(exploreKey) && int(draws, 1, 1_000_000), 'cost_gate_explore_key_invalid');
-  const random = costGateRandom(sha(Buffer.from('os1-rcc-cost-gate-explore-v1\n' + exploreKey)));
-  return Math.min(draws - 1, Math.floor(random() * draws));
-}
-/** How many of `draws` posterior draws have the tier costing more because
- * of its escalations: mu_C < mu_R and mu_C + p*mu_R > mu_R. Seeded from the
- * exact evidence and the draw count ONLY (never a confidence or a task):
- * the same evidence has one P_more. Memoized per seed. */
-function costGateMoreDraws(cheap, reference, draws) {
-  const seed = sha(Buffer.from('os1-rcc-cost-gate-v2\n' + stable({draws, cheap, reference})));
-  const memo = costGateMemo.get(seed);
-  if (memo !== undefined) return memo;
-  const random = costGateRandom(seed);
-  const a = 1 + cheap.escalations, b = 1 + cheap.trials - cheap.escalations;
-  let more = 0;
-  for (let draw = 0; draw < draws; draw++) {
-    const p = sampleBeta(random, a, b);
-    const muC = sampleMeanCost(random, cheap.cost), muR = sampleMeanCost(random, reference.cost);
-    if (muC < muR && muC + p * muR > muR) more++;
-  }
-  if (costGateMemo.size >= COST_GATE_MEMO_LIMIT) costGateMemo.delete(costGateMemo.keys().next().value);
-  costGateMemo.set(seed, more);
-  return more;
-}
-/** A gate result with nothing decided yet (every field null, route tier). */
-function costGateBase() {
-  return {route: 'tier', reason: null, p_mean: null, cost_ratio: null, p_more: null, confidence: null, draws: null,
-    explore: null, trials: null, escalations: null, cheap_n: null, reference_n: null, reference_level: null};
-}
-
-/** Whether a guarded read-only tier route should run its cheaper route or go
- * straight to its reference, from tierCostEvidence. Pure and deterministic.
- * P_more = Pr[mu_C < mu_R and mu_C + p*mu_R > mu_R] (costGateMoreDraws) is
- * `p_more`, the exact fraction more/draws the decision compares (never
- * rounded), so a higher confidence can only keep more nodes on the tier and
- * a retuned confidence never changes a recorded P_more. With `exploreKey`
- * (the resolver passes task id and node id) a confident gate still keeps the
- * tier when that key's exploration draw (costGateExploreDraw, recorded as
- * `explore` = draw/draws) is >= more: the tier then runs with probability
- * 1 - P_more (posterior probability matching), so its evidence keeps growing
- * and an early failure streak cannot lock the family to the reference.
- * Returns {route: 'tier'|'reference', reason, p_mean, cost_ratio, p_more,
- * confidence, draws, explore, trials, escalations, cheap_n, reference_n,
- * reference_level}:
- *  - cost_gate_unavailable (tier): no readable evidence;
- *  - cost_gate_insufficient (tier): fewer than COST_GATE_MIN_SAMPLES cost
- *    samples in either arm, or a zero mean cost;
- *  - cost_gate_no_escalation (tier): no cheaper attempt has escalated, so
- *    nothing observed makes the tier cost more except the cheaper attempt's
- *    own token count, which overstates its quota;
- *  - cost_gate_unidentified (tier): the cheaper mean token cost is not below
- *    the reference's: tokens cannot rank the arms without a quota weight;
- *  - cost_gate_reference: P_more >= confidence (and, with a key, explore <
- *    P_more);
- *  - cost_gate_explore (tier): P_more >= confidence, explore >= P_more;
- *  - cost_gate_tier otherwise. */
-export function tierCostGate(evidence, {confidence = COST_GATE_CONFIDENCE, draws = COST_GATE_DRAWS,
-                                       exploreKey = null} = {}) {
-  assert(typeof confidence === 'number' && confidence > 0 && confidence <= 1 && int(draws, 1, 1_000_000) &&
-    (exploreKey === null || validExploreKey(exploreKey)), 'cost_gate_options_invalid');
-  const base = costGateBase();
-  if (!validCostEvidence(evidence)) return {...base, reason: 'cost_gate_unavailable'};
-  const {cheap, reference} = evidence;
-  const counts = {trials: cheap.trials, escalations: cheap.escalations, cheap_n: cheap.cost.n,
-    reference_n: reference.cost.n, reference_level: reference.level};
-  if (cheap.cost.n < COST_GATE_MIN_SAMPLES || reference.cost.n < COST_GATE_MIN_SAMPLES ||
-      !(cheap.cost.mean > 0) || !(reference.cost.mean > 0))
-    return {...base, ...counts, reason: 'cost_gate_insufficient'};
-  const a = 1 + cheap.escalations, b = 1 + cheap.trials - cheap.escalations;
-  const described = {...base, ...counts, p_mean: round3(a / (a + b)),
-    cost_ratio: displayRatio(cheap.cost.mean, reference.cost.mean)};
-  if (cheap.escalations === 0) return {...described, reason: 'cost_gate_no_escalation'};
-  if (!(cheap.cost.mean < reference.cost.mean)) return {...described, reason: 'cost_gate_unidentified'};
-  const more = costGateMoreDraws(cheap, reference, draws);
-  const decided = {...described, p_more: more / draws, confidence, draws};
-  if (!(more / draws >= confidence)) return {...decided, reason: 'cost_gate_tier'};
-  if (exploreKey === null) return {...decided, route: 'reference', reason: 'cost_gate_reference'};
-  const draw = costGateExploreDraw(exploreKey, draws);
-  return draw < more ? {...decided, route: 'reference', reason: 'cost_gate_reference', explore: draw / draws} :
-    {...decided, reason: 'cost_gate_explore', explore: draw / draws};
-}
-/** The auditable routing-reason token of one gate result. p_more and explore
- * are the exact fractions the rule compared (reference iff p_more >= conf
- * and, when explore is present, explore < p_more). */
-function costGateToken(gate) {
-  if (gate.reason === 'cost_gate_unavailable' || gate.reason === 'cost_gate_no_reference') return gate.reason;
-  const counts = `trials=${gate.trials}:escalations=${gate.escalations}:cheap_n=${gate.cheap_n}:` +
-    `ref_n=${gate.reference_n}:ref_${gate.reference_level}`;
-  if (gate.reason === 'cost_gate_insufficient') return `${gate.reason}:${counts}`;
-  const described = `${gate.reason}:p_mean=${gate.p_mean}:cost_ratio=${gate.cost_ratio}`;
-  if (gate.p_more === null) return `${described}:${counts}`;
-  return `${described}:p_more=${gate.p_more}:conf=${gate.confidence}` +
-    (gate.explore === null ? '' : `:explore=${gate.explore}`) + `:${counts}`;
-}
-/** The compact gate result a routing-ledger record keeps (optional field;
- * confidence, draws and explore are optional inside it as well). */
-function costGateLedger(gate) {
-  return gate ? {reason: gate.reason, p_mean: gate.p_mean, cost_ratio: gate.cost_ratio, p_more: gate.p_more,
-    confidence: gate.confidence ?? null, draws: gate.draws ?? null, explore: gate.explore ?? null} : null;
+function surfaceToken(candidate) {
+  return {chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(candidate.surface)] ?? 'agent_surface';
 }
 
 /** An explicit route that names the local surface (route-all, 2026-10-14)
  * binds the one dispatchable local model row: the model OpenClaw already runs,
- * read-only and tools-free, with no quota pool. No tier list, cost gate or
- * REVAS escalation applies: the owner named this surface and nothing else
- * stands in for it (a re-resolution that must avoid the row holds). */
-function localRouteCandidate(node, routeClass, task, catalog, now, {avoidIDs = []} = {}) {
+ * read-only and tools-free, with no quota pool. No tier list or REVAS
+ * escalation applies: the owner named this surface and nothing else stands in
+ * for it (a re-resolution that must avoid the row holds). */
+function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
   assert(node.kind === 'agent' && node.scope === 'read_only' && (node.owned_paths ?? []).length === 0,
     'explicit_local_route_scope_invalid');
   const rows = catalog.candidates.filter(c => hostRoutable(c) && localWorkerRow(c) && !avoidIDs.includes(c.id));
   const chosen = rows.find(c => dispatchable(c, task, now));
   if (!chosen)
     throw new RCCRuntimeError('no_dispatchable_candidate:read_only:local_' + (rows.length ? 'undispatchable' : 'unavailable'));
-  return {candidate: chosen, why: ['route_explicit', 'explicit_route_surface_local', 'class_' + routeClass,
-    'local_model'].join(';'), widened: false, kind: 'explicit', tier: null, referenceEffort: chosen.effort,
-    ladder: null, costGate: null};
+  return {candidate: chosen, why: ['route_explicit', 'explicit_route_surface_local', 'admitted_reference_owner_words',
+    'local_model'].join(';'), widened: false, kind: 'explicit', tier: null, routeClass: 'deep',
+    referenceEffort: chosen.effort, ladder: null};
 }
 
-/** Pick the exact row for one node on a tier-routed catalog.
- * In each pool the class's entries are tried in order and the first entry
- * with a dispatchable row is that pool's offer (a read-only node takes the
- * gated chat row of the same model and effort first). A pool that cannot
- * offer any entry of the class is skipped. Among the pools that can, the
- * pool is chosen by the quota of the row it would actually bind (catalog
- * quota_scores: the builder's capacity share x remaining / hours to reset of
- * THAT model; unknown last), never by another model's quota; an avoided pool
- * goes last and a preferred pool first; equal or unknown scores keep the
- * catalog's pool order (an older catalog without scores keeps it wholly).
- * When no pool can serve the class, it falls back upwards (trivial runs
- * standard, recorded as class_fallback_trivial_to_standard); deep is never
- * relaxed. `referenceOnly` routes as deep: the reference only (a REVAS
- * escalation and its re-resolution).
+/** Pick the exact row for one node on a tier-routed catalog, by the one
+ * admission law (admittedRoute). A reference node binds the reference (or the
+ * reference the owner's words leave) of the first pool, in R11 order, whose
+ * reference can dispatch; within a pool a read-only node takes the gated chat
+ * row of the same model and effort first. A certified read-only node binds its
+ * certified tuple only when some pool's reference can dispatch now: that
+ * reference (this pool's, else another's) is its one escalation, fixed here
+ * and admitted with the plan; otherwise it binds the reference itself.
+ * `referenceOnly` binds the reference (an escalation and its re-resolution).
+ * An explicit route test binds each node on its own named surface only, with
+ * that route's own words: never another surface or pool.
  *
- * The route is 'reference' when the bound row is its pool's reference (the
- * frontier at its highest admitted supported effort), 'explicit' when the owner's own
- * words fix the route (an effort word AND a model family, or a bound row that
- * is the reference those words leave: intentReferenceRows), and 'tier'
- * otherwise. A read-only agent node on a 'tier' route carries `ladder`, its
- * one escalation guard: this pool's (owner-constrained) reference, else
- * another pool's; when no pool offers one the guard has no target
- * (reference_candidate_id null) and a failure signal holds the node
- * (ladder_reference_unavailable) instead of adopting the cheaper answer.
+ * R11 among equal-quality offers: an avoided pool last and an escalation's own
+ * pool first (host-internal), then the class provider pin, then the pool whose
+ * surface resumes this conversation's native session, then the quota of the
+ * row that would actually bind (catalog quota_scores; unknown last), then the
+ * catalog's pool order. The owner's provider word already shaped the catalog.
  *
- * An explicit route test binds each graded node on its own named surface
- * only, with that route's own words (explicitRouteOf): never another surface
- * or pool, for the cheaper route or for its escalation.
- *
- * With `costEvidence(query)` (the runtime's routing-ledger reader; tests may
- * pass their own) a guarded read-only tier route with NO owner effort or
- * family word runs the cost gate (tierCostGate) against the escalation target
- * it would use; when that target can dispatch now and the gate is confident
- * the tier costs more (and this task node's exploration draw does not keep
- * the tier), the node binds that reference directly (route
- * 'reference', no guard). A write, an owner-constrained route and a route
- * already at its reference never consult the gate. Without `costEvidence`
- * (pure callers) nothing changes. `costGate` in the result is the gate's
- * decision, null when it did not apply. */
-function tierRouteCandidate(node, routeClass, task, catalog, now,
-                            {avoidPool = null, avoidIDs = [], widenWrites = false, referenceOnly = false,
-                             preferPool = null, classNote = null, costEvidence = null} = {}) {
+ * The route is 'reference' (no owner words), 'explicit' (the reference the
+ * owner's words leave) or 'tier' (a certified descent, carrying `ladder`). */
+function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false,
+                            referenceOnly = false, preferPool = null, verifierRegistry = null} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
-  if (explicitRoute?.surface === 'local')
-    return localRouteCandidate(node, effectiveRouteClass(routeClass, node.scope), task, catalog, now, {avoidIDs});
+  if (explicitRoute?.surface === 'local') return localRouteCandidate(node, task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
-  const routeClassUsed = referenceOnly ? 'deep' : effectiveRouteClass(routeClass, node.scope);
+  const admission = referenceOnly ? ESCALATION_ADMISSION : admittedRoute(node, task, catalog, now, {verifierRegistry});
   const ordinal = new Map();
   for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
   const usable = row => !avoidIDs.includes(row.candidate.id) && dispatchable(row.candidate, task, now);
@@ -1166,174 +864,104 @@ function tierRouteCandidate(node, routeClass, task, catalog, now,
   const order = (a, b) => (tierRank(catalog, a.candidate.model) - tierRank(catalog, b.candidate.model)) ||
     (chatFirst(a) - chatFirst(b)) || (a.index - b.index);
   const best = rows => rows.filter(usable).sort(order)[0] ?? null;
-  const avoided = entry => avoidPool !== null && entry.pool === avoidPool ? 1 : 0;
-  const preferred = entry => preferPool !== null && entry.pool === preferPool ? 0 : 1;
+  const pin = plain(catalog.class_provider_pins) ? catalog.class_provider_pins[catalog.request_class] ?? null : null;
+  const pinned = pool => pin !== null && providerOfPool(pool) === pin;
+  const affine = pool => (pool === 'openai_codex' && task.host_context?.codex_session_id != null) ||
+    (pool === 'anthropic_shared' && task.host_context?.claude_session_id != null);
+  const r11Keys = pool => [avoidPool !== null && pool === avoidPool ? 1 : 0, preferPool !== null && pool === preferPool ? 0 : 1,
+    pinned(pool) ? 0 : 1, affine(pool) ? 0 : 1];
+  const r11 = (a, b) => { const x = r11Keys(a), y = r11Keys(b); return x.map((v, i) => v - y[i]).find(d => d !== 0) ?? 0; };
   const pools = poolRows(node, catalog, {widenWrites, surface: explicitRoute?.surface ?? null})
-    .sort((a, b) => (avoided(a) - avoided(b)) || (preferred(a) - preferred(b)) ||
-      (ordinal.get(a.pool) - ordinal.get(b.pool)));
-  const deepGuard = routeClassUsed === 'deep' && !intent?.model_family;
-  // One pass of the pools at one class: every pool's offer (its first entry
-  // with a dispatchable row), then the pool whose offered row has the most
-  // quota for its own model.
-  const serve = classUsed => {
-    const entries = tierEntries(classUsed, intent);
+    .sort((a, b) => r11(a.pool, b.pool) || (ordinal.get(a.pool) - ordinal.get(b.pool)));
+  // One pass of the pools: each pool's offer is its first entry with a
+  // dispatchable row; the offers then rank by R11.
+  const serve = (entriesOf, label) => {
     const skipped = [], offers = [];
     let offered = false;
     for (const pool of pools) {
       const rank = 'pool_rank_' + ordinal.get(pool.pool);
       let hit = null, entry = null, poolOffered = false;
-      for (const candidateEntry of entries) {
-        const rows = entryRows(pool.rows, candidateEntry, catalog, intent);
-        if (rows.length) poolOffered = true;
-        hit = best(rows);
+      for (const candidateEntry of entriesOf(pool)) {
+        if (candidateEntry.rows.length) poolOffered = true;
+        hit = best(candidateEntry.rows);
         if (hit) { entry = candidateEntry; break; }
       }
       offered ||= poolOffered;
-      if (hit) { offers.push({hit, entry, pool, rank, score: quotaScore(catalog, hit.candidate.model)}); continue; }
-      skipped.push(`skipped_${rank}_` + (deepGuard ? poolOffered ? 'reference_undispatchable' : 'reference_unavailable' :
-        `${classUsed}_${poolOffered ? 'undispatchable' : 'unavailable'}`));
+      if (hit) offers.push({hit, entry, pool, rank, score: quotaScore(catalog, hit.candidate.model)});
+      else skipped.push(`skipped_${rank}_${label}_${poolOffered ? 'undispatchable' : 'unavailable'}`);
     }
     if (!offers.length) return {hit: null, offered};
     // Stable: equal or unknown scores keep the order above.
     const scored = offers.map((offer, position) => ({offer, position})).sort((a, b) =>
-      (avoided(a.offer.pool) - avoided(b.offer.pool)) || (preferred(a.offer.pool) - preferred(b.offer.pool)) ||
-      ((a.offer.score === null) - (b.offer.score === null)) ||
+      r11(a.offer.pool.pool, b.offer.pool.pool) || ((a.offer.score === null) - (b.offer.score === null)) ||
       (a.offer.score !== null && b.offer.score !== null ? b.offer.score - a.offer.score : 0) ||
       (a.position - b.position));
-    const chosen = scored[0].offer;
     const passed = scored.slice(1).filter(({position}) => position < scored[0].position)
       .map(({offer}) => `outscored_${offer.rank}`);
-    return {...chosen, skipped: [...skipped, ...passed], offered};
+    return {...scored[0].offer, skipped: [...skipped, ...passed], offered};
   };
-  let served = serve(routeClassUsed), fallbackNote = null;
-  const fallback = CLASS_FALLBACK[routeClassUsed];
-  if (!served.hit && fallback) {
-    const upward = serve(fallback);
-    if (upward.hit) { served = upward; fallbackNote = `class_fallback_${routeClassUsed}_to_${fallback}`; }
+  const referenceOf = pool => intentReferenceRows(pool.rows, catalog, intent);
+  const poolNotes = (pool, chosen) => [...(pinned(pool) ? ['pool_class_pin'] : []),
+    ...(affine(pool) ? ['pool_conversation_affinity'] : []),
+    ...(quotaScore(catalog, chosen.model) !== null ? ['pool_scored_by_bound_model'] : [])];
+  const notes = [];
+  if (admission.class === 'certified') {
+    const tier = serve(pool => certifiedEntries(pool, admission, catalog, verifierRegistry), 'tier');
+    const chosen = tier.hit?.candidate ?? null;
+    // The one escalation target, fixed now: this pool's reference when it can
+    // dispatch, else another pool's.
+    const target = chosen && [tier.pool, ...pools.filter(other => other !== tier.pool)
+      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
+    const isReference = chosen && referenceOf(tier.pool).some(row => row.candidate.id === chosen.id);
+    if (target && !isReference) {
+      const certificate = admission.source === 'class' ? catalog.class_certificates[catalog.request_class] : null;
+      const ladder = {source: 'tier', admitted_by: admission.source, certificate_id: admission.certificate_id,
+        format_check: certificate?.format_check ?? null,
+        ...(admission.source === 'exact' ? {exact_answer: pureArithmetic(node.instruction)} : {}),
+        cheap_model: chosen.model, cheap_effort: chosen.effort,
+        reference_model: target.candidate.model, reference_effort: target.candidate.effort,
+        reference_candidate_id: target.candidate.id};
+      const why = ['route_tier', admissionToken(admission)];
+      if (admission.source !== 'class') why.push('tier_list_' + tier.entry.index);
+      why.push('tier_' + (tierOf(catalog, chosen.model) ?? 'none'), tier.rank, ...tier.skipped, 'effort_' + chosen.effort,
+        ...poolNotes(tier.pool.pool, chosen),
+        'escalation_reference_' + (target.candidate.quota_pool === tier.pool.pool ? 'same_pool' : 'other_pool'),
+        surfaceToken(chosen));
+      if (avoidPool !== null) why.unshift(tier.pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+      return {candidate: chosen, why: why.join(';'), widened: false, kind: 'tier', tier: tierOf(catalog, chosen.model),
+        routeClass: CERTIFIED_CLASS, referenceEffort: referenceOf(tier.pool)[0]?.candidate.effort ?? null, ladder};
+    }
+    // R9: a descent needs a reference that can dispatch now. Without one, or
+    // without a dispatchable certified tuple below it, the node binds the
+    // reference itself (which holds when no reference can dispatch, R12).
+    notes.push(!chosen ? 'certified_tuple_undispatchable' : isReference ? 'certified_tuple_is_reference' :
+      'tier_requires_runnable_reference');
   }
+  const served = serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');
   if (!served.hit)
     throw new RCCRuntimeError(`no_dispatchable_candidate:${node.scope}:` +
-      (deepGuard && !served.offered ? 'reference_unavailable' : routeClassUsed));
-  const {hit, entry, pool, rank, skipped} = served;
+      (intent?.model_family || served.offered ? 'deep' : 'reference_unavailable'));
+  const {hit, pool, rank, skipped} = served;
   const chosen = hit.candidate;
-  const tier = tierOf(catalog, chosen.model);
-  // Without an owner constraint this is the frontier reference; with one it
-  // is the reference the owner's own words leave.
-  const reference = intentReferenceRows(pool.rows, catalog, intent);
-  const atReference = reference.some(row => row.candidate.id === chosen.id);
-  const ownerFixed = Boolean(intent?.model_family && intent?.effort);
-  const kind = intent && (ownerFixed || atReference) ? 'explicit' : atReference ? 'reference' : 'tier';
-  let ladder = null, costGate = null, gated = null;
-  if (kind === 'tier' && node.scope === 'read_only' && node.kind === 'agent') {
-    // The one REVAS escalation target, fixed now and admitted with the
-    // plan: this pool's reference when it can run, else another pool's (an
-    // explicit route has only its own surface's pool).
-    const targets = [pool, ...pools.filter(other => other !== pool)
-      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))]
-      .map(other => intentReferenceRows(other.rows, catalog, intent));
-    const runnable = targets.map(rows => best(rows)).find(Boolean) ?? null;
-    const target = runnable ?? targets.map(rows => [...rows].sort(order)[0]).find(Boolean);
-    // No reference in any pool: the guard still applies, with no target, so
-    // a failure signal holds the node instead of adopting the cheaper answer
-    // (the escalation re-resolves a reference at that time).
-    ladder = {source: 'tier', cheap_model: chosen.model, cheap_effort: chosen.effort,
-      reference_model: target?.candidate.model ?? null, reference_effort: target?.candidate.effort ?? null,
-      reference_candidate_id: target?.candidate.id ?? null};
-    // The cost gate compares this cheaper route with the escalation target
-    // it would actually use. Never under an owner effort or family word.
-    if (typeof costEvidence === 'function' && !intent?.effort && !intent?.model_family) {
-      if (!runnable) {
-        costGate = {...costGateBase(), reason: 'cost_gate_no_reference'};
-      } else {
-        const ref = runnable.candidate;
-        let evidence = null;
-        try {
-          evidence = costEvidence({family: routeFamily(routeClass, node.scope, chosen.surface), scope: node.scope,
-            cheap_pool: chosen.quota_pool, cheap_model: chosen.model, cheap_effort: chosen.effort,
-            reference_family: routeFamily(routeClass, node.scope, ref.surface),
-            reference_surface_kind: surfaceKind(ref.surface), reference_pool: ref.quota_pool,
-            reference_model: ref.model, reference_effort: ref.effort});
-        } catch { evidence = null; }
-        // The exploration key: this task's node, so it decides the same way
-        // at bind, re-resolution and pool spread.
-        costGate = tierCostGate(evidence,
-          {exploreKey: typeof task?.task_id === 'string' ? `${task.task_id}\n${node.id}` : null});
-        if (costGate.route === 'reference') gated = runnable;
-      }
-    }
-  }
-  if (gated) {
-    // The gate is confident the cheaper route plus its escalation spends more
-    // than the reference: bind that reference now (nothing to escalate).
-    const ref = gated.candidate;
-    const why = ['route_reference'];
-    if (explicitRoute) why.push('explicit_route_surface_' + explicitRoute.surface.replace(/[^a-z0-9]/g, '_'));
-    why.push('class_' + routeClassUsed);
-    if (classNote) why.push(classNote);
-    if (fallbackNote) why.push(fallbackNote);
-    why.push(costGateToken(costGate), ('cost_gate_cheap_' + chosen.model + '_' + chosen.effort).replace(/[^A-Za-z0-9_]/g, '_'),
-      'tier_' + (tierOf(catalog, ref.model) ?? 'none'), 'pool_rank_' + ordinal.get(ref.quota_pool), 'effort_' + ref.effort,
-      ref.quota_pool === pool.pool ? 'cost_gate_same_pool' : 'cost_gate_other_pool',
-      {chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(ref.surface)] ?? 'agent_surface');
-    if (avoidPool !== null) why.unshift(ref.quota_pool === avoidPool ? 'same_pool_only' : 'other_pool');
-    return {candidate: ref, why: why.join(';'), widened: false, kind: 'reference', tier: tierOf(catalog, ref.model),
-      referenceEffort: ref.effort, ladder: null, costGate};
-  }
+  const kind = intent ? 'explicit' : 'reference';
   const why = ['route_' + kind];
   if (explicitRoute) why.push('explicit_route_surface_' + explicitRoute.surface.replace(/[^a-z0-9]/g, '_'));
   if (intent?.effort) why.push('intent_effort_' + intent.effort);
   if (intent?.model_family) why.push('intent_family_' + intent.model_family);
-  why.push('class_' + routeClassUsed);
-  if (classNote) why.push(classNote);
-  if (fallbackNote) why.push(fallbackNote);
-  why.push('tier_list_' + entry.index, 'tier_' + (tier ?? 'none'), rank, ...skipped, 'effort_' + chosen.effort);
-  if (quotaScore(catalog, chosen.model) !== null) why.push('pool_scored_by_bound_model');
-  if (ladder) why.push('escalation_reference_' + (ladder.reference_candidate_id === null ? 'unavailable' :
-    catalog.candidates.find(c => c.id === ladder.reference_candidate_id)?.quota_pool === pool.pool ?
-      'same_pool' : 'other_pool'));
-  if (costGate) why.push(costGateToken(costGate));
-  why.push({chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(chosen.surface)] ?? 'agent_surface');
+  why.push(admissionToken(admission), ...notes, 'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), rank, ...skipped,
+    'effort_' + chosen.effort, ...poolNotes(pool.pool, chosen), surfaceToken(chosen));
   if (avoidPool !== null) why.unshift(pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
   const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
   if (widened) why.push('owned_paths_workspace');
-  return {candidate: chosen, why: why.join(';'), widened, kind, tier,
-    referenceEffort: reference[0]?.candidate.effort ?? null, ladder, costGate};
-}
-
-/** What can run now, without any candidate ID: the non-explicit planner sees
- * only this summary, never the catalog. On a tier-routed catalog agent work
- * counts only where some class reachable in the scope can bind a row
- * (bindableRows); on an older catalog only where a pool's reference route can
- * dispatch, because nothing lower is ever bound there. */
-export function routingAvailability(task, catalog, now = Date.now()) {
-  const scopes = [], providers = new Set();
-  let chatLane = false;
-  const tiered = modelTiers(catalog) !== null;
-  const intent = routingIntent(catalog);
-  for (const scope of ['read_only', 'workspace_write']) {
-    const probe = {scope, kind: 'agent', owned_paths: []};
-    // Tier routing: any row a graded node of this scope may bind; reference
-    // routing: only a pool's reference rows.
-    const pools = tiered ? poolRows(probe, catalog, {anyPaths: true}).map(entry => ({pool: entry.pool,
-      rows: bindableRows(entry.rows, scope, catalog, intent)})) :
-      poolReferences(probe, catalog, {anyPaths: true}).map(reference => ({pool: reference.pool,
-        rows: referenceRows(reference)}));
-    for (const entry of pools) {
-      const runnable = entry.rows.filter(c => dispatchable(c, task, now));
-      if (!runnable.length) continue;
-      if (!scopes.includes(scope)) scopes.push(scope);
-      providers.add(providerOfPool(entry.pool));
-      if (scope === 'read_only' && runnable.some(c => c.surface.endsWith('-chat'))) chatLane = true;
-    }
-  }
-  return {scopes, chat_lane: chatLane, providers: [...providers].sort(),
-    deterministic: catalog.candidates.some(c => hostRoutable(c) && dispatchable(c, task, now) &&
-      c.scope === 'read_only' && localExactRow(c))};
+  return {candidate: chosen, why: why.join(';'), widened, kind, tier: tierOf(catalog, chosen.model), routeClass: 'deep',
+    referenceEffort: chosen.effort, ladder: null};
 }
 
 /** Null when something in an allowed scope can run; otherwise the visible
- * hold reason with, per pool, the failure of the rows that could be bound in
- * scope (tier routing: bindableRows; reference routing: reference rows). */
+ * hold reason with, per pool, the failure of its reference rows (on a
+ * tier-routed catalog the reference the owner's words leave): a certified
+ * descent needs a dispatchable reference too (R9), so nothing below a
+ * reference ever counts. */
 function noDispatchableReason(task, catalog, now) {
   const scopes = scopesAllowed(task);
   // Only a host-computed exact row means "something can run": the local model
@@ -1346,88 +974,45 @@ function noDispatchableReason(task, catalog, now) {
   const tiered = modelTiers(catalog) !== null;
   const intent = routingIntent(catalog);
   for (const scope of scopes) {
-    if (tiered) {
-      for (const entry of poolRows({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
-        const rows = bindableRows(entry.rows, scope, catalog, intent);
-        if (rows.some(c => dispatchable(c, task, now))) return null;
-        // No tiered model at all, or only rows no class of this scope binds
-        // (for example a fast-tier writer).
-        if (!rows.length) note(entry.pool, entry.rows.some(row => tierRoutable(row.candidate, catalog, intent)) ?
-          'no_bindable_tier' : 'no_tiered_model');
-        for (const c of rows) note(entry.pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
-      }
-      continue;
-    }
-    for (const reference of poolReferences({scope, kind: 'agent', owned_paths: []}, catalog, {anyPaths: true})) {
-      const rows = referenceRows(reference);
-      if (rows.some(c => dispatchable(c, task, now))) return null;
-      if (!rows.length) note(reference.pool, 'no_reference');
-      for (const c of rows) note(reference.pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
+    const probe = {scope, kind: 'agent', owned_paths: []};
+    const pools = tiered ? poolRows(probe, catalog, {anyPaths: true}).map(entry => ({pool: entry.pool,
+      rows: intentReferenceRows(entry.rows, catalog, intent).map(row => row.candidate)})) :
+      poolReferences(probe, catalog, {anyPaths: true}).map(reference => ({pool: reference.pool,
+        rows: referenceRows(reference)}));
+    for (const entry of pools) {
+      if (entry.rows.some(c => dispatchable(c, task, now))) return null;
+      if (!entry.rows.length) note(entry.pool, 'no_reference');
+      for (const c of entry.rows) note(entry.pool, dispatchFailure(c, task, now).replace(/^candidate_/, ''));
     }
   }
   return 'no_dispatchable_candidate:' + (byPool.size === 0 ? 'no_candidate_in_scope' :
     [...byPool.keys()].sort().map(pool => `${pool}=${[...byPool.get(pool)].sort().join('+')}`).join(','));
 }
 
-/** The REVAS ladder gate, front-loaded and pure. A cheaper effort of the SAME
- * model in the SAME pool may replace the reference only when the node is
- * read-only, a task verifier is registered for the family, and the ledger
- * shows parity at that cheaper route AGAINST THIS reference model/effort:
- * at least LADDER_MIN_VERIFIED_PASSES verified passes and no verifier failure
- * for the family. Unbound older summaries are not proof. The cheapest such
- * effort is admitted; anything else (unknown stats included) is reference. */
-export function cheaperRouteAdmission({family, scope, model = null, referenceEffort: reference = null,
-                                       cheaperEfforts = [], verifierRegistry = null, ledgerStats = null} = {}) {
-  if (scope !== 'read_only') return {route: 'reference', reason: 'ladder_write_scope'};
-  if (!(verifierRegistry instanceof Map) || typeof family !== 'string' ||
-      typeof verifierRegistry.get(family) !== 'function')
-    return {route: 'reference', reason: 'ladder_no_registered_verifier'};
-  const ceiling = EFFORT_ORDER.indexOf(reference);
-  const cheaper = [...new Set(cheaperEfforts)].filter(effort => EFFORTS.has(effort) &&
-    EFFORT_ORDER.indexOf(effort) < ceiling).sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
-  if (ceiling < 0 || cheaper.length === 0) return {route: 'reference', reason: 'ladder_no_cheaper_route'};
-  if (typeof ledgerStats !== 'function') return {route: 'reference', reason: 'ladder_no_ledger_evidence'};
-  for (const effort of cheaper) {
-    let stats = null;
-    try { stats = ledgerStats(family, model, effort, reference); } catch { stats = null; }
-    if (plain(stats) && int(stats.verified_passes, 0, Number.MAX_SAFE_INTEGER) &&
-        int(stats.verifier_failures, 0, Number.MAX_SAFE_INTEGER) &&
-        stats.reference_effort === reference && stats.reference_model === model &&
-        stats.verified_passes >= LADDER_MIN_VERIFIED_PASSES &&
-        stats.verifier_failures <= LADDER_MAX_VERIFIER_FAILURES)
-      return {route: 'ladder', cheap_effort: effort, reference_effort: reference, reason: 'ladder_parity_evidence'};
-  }
-  return {route: 'reference', reason: 'ladder_insufficient_parity_evidence'};
-}
-
 function routingDecision(routeClass, candidate, reason, ladder = null, tier = undefined) {
   const decision = {route_class: routeClass, resolved_candidate_id: candidate.id, surface: candidate.surface,
     model: candidate.model, effort: candidate.effort, quota_pool: candidate.quota_pool, reason,
     quota_remaining_fraction: candidate.quota_remaining_fraction};
-  // Present only for a route with an escalation target, so every other
-  // decision keeps its shape (a tier guard with no frontier reference anywhere
-  // has none: its reason says escalation_reference_unavailable). A tier route
-  // names both models; the effort ladder does not.
-  if (ladder && (ladder.source !== 'tier' || ladder.reference_candidate_id != null)) {
-    decision.ladder = {cheap_effort: ladder.cheap_effort, reference_effort: ladder.reference_effort};
-    if (ladder.source === 'tier') Object.assign(decision.ladder,
-      {cheap_model: ladder.cheap_model, reference_model: ladder.reference_model});
-  }
+  // Present only for a certified descent with its escalation target, so every
+  // other decision keeps its shape. A tier route names both models.
+  if (ladder && ladder.reference_candidate_id != null)
+    decision.ladder = {cheap_effort: ladder.cheap_effort, reference_effort: ladder.reference_effort,
+      cheap_model: ladder.cheap_model, reference_model: ladder.reference_model};
   // Present only on a tier-routed catalog (null for a model with no tier).
   if (tier !== undefined) decision.tier = tier;
   return decision;
 }
 
-/** Pick the exact row for one node: tier routing on a catalog that carries
- * model_tiers, the reference route on an older catalog. `widenWrites` lets a
- * graded writer that named concrete paths bind a whole-workspace row; the
+/** Pick the exact row for one node: the admission law on a catalog that
+ * carries model_tiers, the reference route on an older catalog. `widenWrites`
+ * lets a writer that named concrete paths bind a whole-workspace row; the
  * caller then records owned_paths ["**"], because a native writer is not
  * confined to the paths a planner listed. */
-function selectRouteCandidate(node, routeClass, task, catalog, now, options = {}) {
+function selectRouteCandidate(node, task, catalog, now, options = {}) {
   // A deterministic node binds the local exact row on either catalog.
   return modelTiers(catalog) !== null && node.kind !== 'deterministic' ?
-    tierRouteCandidate(node, routeClass, task, catalog, now, options) :
-    referenceRouteCandidate(node, routeClass, task, catalog, now, options);
+    tierRouteCandidate(node, task, catalog, now, options) :
+    referenceRouteCandidate(node, task, catalog, now, options);
 }
 /** Reference routing (an older catalog without model_tiers).
  * Pools go in catalog order (capacity share x remaining / hours to reset,
@@ -1438,13 +1023,8 @@ function selectRouteCandidate(node, routeClass, task, catalog, now, options = {}
  * quality. Within the pool a read-only node takes the gated chat row of the
  * SAME model and effort when one can dispatch, else the agent row. An
  * explicit owner constraint (catalog routing_intent) is already applied to
- * the rows and names the route explicit. With `ladder` ({verifierRegistry,
- * ledgerStats}) a graded read-only node may take a cheaper effort of the same
- * model and surface, only through cheaperRouteAdmission. route_class never
- * moves the model or the effort. */
-function referenceRouteCandidate(node, routeClass, task, catalog, now,
-                                 {avoidPool = null, avoidIDs = [], widenWrites = false, ladder = null,
-                                  classNote = null} = {}) {
+ * the rows and names the route explicit. Nothing below the reference binds. */
+function referenceRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false} = {}) {
   const ordinal = new Map();
   for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
   const intent = routingIntent(catalog);
@@ -1464,41 +1044,23 @@ function referenceRouteCandidate(node, routeClass, task, catalog, now,
       skipped.push(`skipped_${rank}_${reference.effort === null ? 'no_reference' : 'reference_undispatchable'}`);
       continue;
     }
-    let chosen = atReference.candidate, kind = intent ? 'explicit' : 'reference', ladderRoute = null, note = null;
-    const family = routeFamily(routeClass, node.scope, chosen.surface);
-    if (ladder && !intent && node.kind === 'agent' && ROUTE_CLASSES.includes(routeClass)) {
-      const sameSurface = reference.rows.filter(row => row.candidate.surface === chosen.surface && usable(row));
-      const admission = cheaperRouteAdmission({family, scope: node.scope, model: reference.model,
-        referenceEffort: reference.effort, cheaperEfforts: sameSurface.map(row => row.candidate.effort),
-        verifierRegistry: ladder.verifierRegistry, ledgerStats: ladder.ledgerStats});
-      const cheap = admission.route === 'ladder' ?
-        best(sameSurface.filter(row => row.candidate.effort === admission.cheap_effort)) : null;
-      if (cheap) {
-        chosen = cheap.candidate; kind = 'ladder';
-        ladderRoute = {cheap_effort: admission.cheap_effort, reference_effort: reference.effort,
-          reference_candidate_id: atReference.candidate.id};
-      } else if (!['ladder_no_registered_verifier', 'ladder_write_scope'].includes(admission.reason)) note = admission.reason;
-    }
+    const chosen = atReference.candidate, kind = intent ? 'explicit' : 'reference';
     const why = ['route_' + kind];
     if (intent?.effort) why.push('intent_effort_' + intent.effort);
     if (intent?.model_family) why.push('intent_family_' + intent.model_family);
-    if (classNote) why.push(classNote);
-    why.push(rank, ...skipped, 'effort_' + chosen.effort);
-    if (ladderRoute) why.push('ladder_reference_effort_' + ladderRoute.reference_effort);
-    if (note) why.push(note);
-    why.push({chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(chosen.surface)] ?? 'agent_surface');
+    why.push(rank, ...skipped, 'effort_' + chosen.effort, surfaceToken(chosen));
     if (avoidPool !== null) why.unshift(reference.pool === avoidPool ? 'same_pool_only' : 'other_pool');
     const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
     if (widened) why.push('owned_paths_workspace');
-    return {candidate: chosen, why: why.join(';'), widened, kind, referenceEffort: reference.effort,
-      ladder: ladderRoute};
+    return {candidate: chosen, why: why.join(';'), widened, kind, routeClass: 'deep',
+      referenceEffort: reference.effort, ladder: null};
   }
   throw new RCCRuntimeError('no_dispatchable_candidate:' + node.scope);
 }
 
 /** Graded writers on overlapping paths run one after another, in plan order:
  * they would serialize on the workspace lease anyway, and validatePlan rejects
- * unordered overlapping writers. Only host-graded writers are ordered here;
+ * unordered overlapping writers. Only host-resolved writers are ordered here;
  * an existing dependency (either direction) is kept as it is. Pure. */
 function serializeGradedWriters(nodes, gradedIDs) {
   const byID = new Map(nodes.filter(plain).map(node => [node.id, node]));
@@ -1522,64 +1084,42 @@ function serializeGradedWriters(nodes, gradedIDs) {
 
 const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_class', 'scope',
   'owned_paths', 'context_refs'];
-/** Assign each graded node's exact candidate_id deterministically. A node that
- * already carries a candidate_id was bound by the trusted host adapter, not
- * by the local planner (the plugin rejects a planner-chosen ID), and is kept.
- * An explicit route test on an older catalog (no model_tiers) is never
- * resolved here: its planner chose exact rows. On a tier-routed catalog its
- * planner only grades each named route (node id requested-N, the route's
- * exact payload, no dependencies) and the host binds model and effort on
- * that route's own surface, like any graded node: same tier lists, same REVAS
- * guard, never another surface. Pure: same input, same output.
- * `now` is the catalog's bind time, not the time the planner returned: a slow
- * local planner must not change which pool is chosen. Freshness is enforced
- * again at dispatch, after the pre-dispatch catalog refresh. A planner node
- * with no (or an invalid) route_class and no bound row is graded standard.
- * `routes` is the host's internal record per graded node: route kind
- * (reference, explicit, tier or ladder), the reference effort and, for a
- * tier or ladder route, the reference row it escalates to. On a tier-routed
- * catalog the class picks the tier (TIER_ROUTES). On an older catalog every
- * class binds the reference, and an effort ladder needs a non-empty
- * verifierRegistry (Map of family to verifier) and ledgerStats(family,
- * model, effort); production registers none. `costEvidence(query)` (the
- * routing-ledger reader, tierCostEvidence) lets a guarded read-only tier route
- * consult the cost gate (tierRouteCandidate); without it nothing changes, and
- * with it the result is as deterministic as the evidence it returns. A route
- * the gate decided carries `cost_gate` ({reason, p_mean, cost_ratio, p_more,
- * confidence, draws, explore}). */
-export function resolveRoutePlan(plan, task, catalog, now = Date.now(),
-                                 {verifierRegistry = null, ledgerStats = null, costEvidence = null} = {}) {
+/** Assign each host-resolved node's exact candidate_id deterministically, by
+ * the one admission law. A node that already carries a candidate_id was bound
+ * by the trusted host adapter (an injected plan), not by a planner, and is
+ * kept. An explicit route test on an older catalog (no model_tiers) is never
+ * resolved here: its injected plan chose exact rows. On a tier-routed catalog
+ * each explicit node (id requested-N, the route's exact payload, no
+ * dependencies) binds on that route's own surface only. An injected node's
+ * route_class grade is accepted for its shape and ignored: no model-authored
+ * grade lowers a tuple (R0). Pure: same input, same output.
+ * `now` is the catalog's bind time: a slow planner never changes which pool
+ * is chosen. Freshness is enforced again at dispatch, after the pre-dispatch
+ * catalog refresh. `routes` is the host's internal record per resolved node:
+ * route kind (reference, explicit or tier), the reference effort and, for a
+ * certified descent, its ladder (admitting source and escalation row).
+ * `verifierRegistry` (Map of family to node verifier) is the R0 (b) source;
+ * production registers none. */
+export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null} = {}) {
   if ((task.mode === 'explicit_routing_test' && !explicitTierRouting(task, catalog)) ||
       !plain(plan) || !Array.isArray(plan.nodes))
     return {plan, decisions: {}, routes: {}};
-  const tiered = modelTiers(catalog) !== null;
-  // The effort ladder belongs to reference routing. A tier-routed catalog is
-  // admitted by the tier itself and escalates on failure signals instead.
-  const ladder = !tiered && verifierRegistry instanceof Map && verifierRegistry.size > 0 ?
-    {verifierRegistry, ledgerStats} : null;
   const decisions = {}, routes = {};
-  const gradedIDs = new Set();
-  const ungradedKeys = PLANNED_NODE_KEYS.filter(key => key !== 'route_class');
+  const resolvedIDs = new Set();
+  const unboundKeys = PLANNED_NODE_KEYS.filter(key => key !== 'route_class');
   const nodes = plan.nodes.map(node => {
-    const hasClass = plain(node) && Object.hasOwn(node, 'route_class');
-    const ungraded = plain(node) && !hasClass && !Object.hasOwn(node, 'candidate_id');
-    if (hasClass || ungraded) {
-      assert((hasClass ? keys(node, PLANNED_NODE_KEYS) : keys(node, ungradedKeys)) && ID.test(node.id) &&
+    const graded = plain(node) && Object.hasOwn(node, 'route_class');
+    const unbound = plain(node) && !graded && !Object.hasOwn(node, 'candidate_id');
+    if (graded || unbound) {
+      assert((graded ? keys(node, PLANNED_NODE_KEYS) : keys(node, unboundKeys)) && ID.test(node.id) &&
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
-      const {route_class: planned, ...rest} = node;
-      const valid = ROUTE_CLASSES.includes(planned);
-      // A missing or invalid grade is standard; on a tier-routed catalog a
-      // writer graded trivial runs at least standard.
-      const routeClass = tiered ? effectiveRouteClass(planned, node.scope) : valid ? planned : 'standard';
-      const classNote = !valid ? 'route_class_defaulted' : routeClass !== planned ? 'write_promoted_from_trivial' : null;
-      const choice = selectRouteCandidate(node, routeClass, task, catalog, now,
-        {widenWrites: true, ladder, classNote, costEvidence});
-      decisions[node.id] = routingDecision(routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
+      const {route_class: _grade, ...rest} = node;
+      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry});
+      decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
         choice.tier);
-      routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder,
-        ...(choice.costGate ? {cost_gate: costGateLedger(choice.costGate)} : {})};
-      gradedIDs.add(node.id);
+      routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
+      resolvedIDs.add(node.id);
       return {...rest, dependencies: [...rest.dependencies],
         owned_paths: choice.widened ? ['**'] : rest.owned_paths, candidate_id: choice.candidate.id};
     }
@@ -1594,9 +1134,39 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(),
   // Explicit routes stay independent (one node per named route, no
   // dependencies): overlapping explicit writers are refused by validatePlan.
   if (task.mode !== 'explicit_routing_test')
-    for (const id of serializeGradedWriters(nodes, gradedIDs))
+    for (const id of serializeGradedWriters(nodes, resolvedIDs))
       decisions[id] = {...decisions[id], reason: decisions[id].reason + ';workspace_writer_serialized'};
   return {plan: {...plan, nodes}, decisions, routes};
+}
+
+/** R2: the host scope of a host-built node, decided by code with no planner.
+ * Read-only when the host requires it, the owner request runs read-only, the
+ * chat lane takes it, or the host's request class is a read-only one (which
+ * also counts the request's own resolved read-only scope, so a writer class
+ * always has writer rows); otherwise a writer. When unsure, a writer: a
+ * wrongly read-only writer is the only scope error that lowers quality. */
+function hostScope(task, catalog) {
+  return task.host_context.require_read_only === true || catalog.owner_scope === 'read_only' ||
+    catalog.chat_lane_eligible === true ||
+    (REQUEST_CLASSES.has(catalog.request_class) && !['writer', 'explicit_route'].includes(catalog.request_class)) ?
+    'read_only' : 'workspace_write';
+}
+/** R7: the host-built plan (hostAutoPlan). Auto runs ONE agent node whose
+ * instruction is the owner's request byte-exact (a writer owns the whole
+ * workspace, a reader nothing; the materials are its context). An explicit
+ * route test runs one node per route that still runs, keyed by its original
+ * ordinal, with that route's own text; no model grades or rewrites either. A
+ * big request runs as one session, as the native reference does (R8). */
+export function hostPlan(task, catalog) {
+  const scope = hostScope(task, catalog);
+  const node = (id, instruction) => ({id, instruction, dependencies: [], kind: 'agent', scope,
+    owned_paths: scope === 'workspace_write' ? ['**'] : [], context_refs: [...task.material_refs]});
+  const base = {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256};
+  if (task.mode !== 'explicit_routing_test') return {...base, nodes: [node('node_0', task.request)], final_node_id: 'node_0'};
+  assert(modelTiers(catalog) !== null, 'explicit_route_catalog_untiered');
+  const effective = effectiveExplicitRoutes(task);
+  return {...base, nodes: task.host_context.explicit_routes.flatMap((route, index) =>
+    effective.includes(route) ? [node(explicitRouteNodeID(index), route.instruction)] : [])};
 }
 
 /** The private, bounded routing ledger in the Core state directory: one
@@ -1605,9 +1175,11 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(),
  * special file, rotated to one previous generation at MAX_LEDGER_BYTES. A
  * separate never-rotated failure index keeps every parity failure per
  * (family, model, effort). `stats` counts the verified passes and failures of
- * one family at one model/effort; it fails closed (no evidence) on anything it
- * cannot read safely: a torn or foreign line, a missing, invalid or overflowed
- * failure index. Synchronous: callers catch every error. */
+ * one family at one model/effort, a diagnostic read for the offline class
+ * measurement (no route reads it: admission is R0's certifying sources only);
+ * it fails closed (no evidence) on anything it cannot read safely: a torn or
+ * foreign line, a missing, invalid or overflowed failure index. Synchronous:
+ * callers catch every error. */
 export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) &&
     int(maxBytes, MAX_LEDGER_RECORD_BYTES, MAX_LEDGER_BYTES), 'routing_ledger_invalid');
@@ -1765,8 +1337,8 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
   };
   const stats = (family, model, effort, referenceEffort) => {
     // Three-argument reads retain the historical diagnostic aggregate only.
-    // The admission gate always supplies an exact reference and rejects an
-    // unbound summary. No old max passes silently certify an ultra ceiling.
+    // A bound read names an exact reference and rejects an unbound summary:
+    // no old max passes are ever read as ultra evidence.
     const binding = EFFORTS.has(referenceEffort) ? {reference_effort: referenceEffort, reference_model: model} : {};
     const none = {verified_passes: 0, verifier_failures: 0, ...binding};
     const bound = referenceEffort !== undefined;
@@ -1807,40 +1379,6 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
         verifier_failures: Math.max(recorded, failures.failures[failureKey(family, model, effort)] ?? 0), ...binding};
     } catch { return none; }
   };
-  // Parsed cost-gate records per generation, reused while the file's
-  // identity (device, inode, size, modification and change time) is unchanged.
-  const costCache = new Map();
-  function costGenerationRecords(path) {
-    let fd;
-    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-    catch (error) { if (error.code === 'ENOENT') { costCache.delete(path); return []; } throw error; }
-    try {
-      const st = privateFile(fd);
-      assert((st.mode & 0o077) === 0 && st.size <= maxBytes, 'routing_ledger_file_invalid');
-      const identity = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
-      const cached = costCache.get(path);
-      if (cached?.identity === identity) return cached.records;
-      const records = [];
-      for (const line of readFileSync(fd, 'utf8').split('\n')) {
-        if (!line) continue;
-        let record = null;
-        try { record = JSON.parse(line); } catch { continue; }
-        const compact = costGateRecord(record);
-        if (compact) records.push(compact);
-      }
-      costCache.set(path, {identity, records});
-      return records;
-    } finally { closeSync(fd); }
-  }
-  /** The compact tier/reference records the cost gate reads (costGateRecord),
-   * oldest first, from both retained generations. Unlike `stats`, a torn or
-   * foreign line is skipped: it is one missing cost sample, never evidence
-   * that a route is clean. A file that cannot be read safely (not private, a
-   * link, oversize, unreadable) throws: the caller reads no evidence. */
-  const costRecords = () => {
-    try { privateDirectory(false); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    return [...costGenerationRecords(rotated), ...costGenerationRecords(current)];
-  };
   /** Attempt ids in the retained generations (for restart reconciliation). */
   const attemptIDs = () => {
     const ids = new Set();
@@ -1853,7 +1391,7 @@ export function openRoutingLedger(stateDir, {maxBytes = MAX_LEDGER_BYTES} = {}) 
     return ids;
   };
   return Object.freeze({directory, path: current, rotatedPath: rotated, failureIndexPath: index,
-    append, stats, costRecords, attemptIDs});
+    append, stats, attemptIDs});
 }
 
 function exactConfig(candidate) {
@@ -1929,10 +1467,61 @@ function validNativeReferenceEfforts(ceilings, candidates) {
   }
   return true;
 }
+/** Optional (build 407, R0/R2/R11): host facts for the admission law.
+ * owner_scope, chat_lane_eligible and request_class travel together and
+ * agree; a task contract, class certificate or provider pin exists only
+ * beside them and keys this request (and its class) only. A catalog without
+ * them is older and binds the reference. */
+function validAdmissionFacts(catalog, task) {
+  const present = ['owner_scope', 'chat_lane_eligible', 'request_class'].map(key => catalog[key] !== undefined);
+  if (!present.some(Boolean))
+    return catalog.task_contract === undefined && catalog.class_certificates === undefined &&
+      catalog.class_provider_pins === undefined;
+  const cls = catalog.request_class, chat = catalog.chat_lane_eligible;
+  if (!present.every(Boolean) || !SCOPES.has(catalog.owner_scope) || typeof chat !== 'boolean' ||
+      !REQUEST_CLASSES.has(cls) || (cls === 'explicit_route') !== (task.mode === 'explicit_routing_test')) return false;
+  if (cls === 'writer' && (catalog.owner_scope !== 'workspace_write' || chat ||
+      task.host_context?.require_read_only === true)) return false;
+  if ((cls === 'chat_explanatory' || cls === 'text_operation') && !chat) return false;
+  if (cls === 'readonly_material' && !(Array.isArray(task.material_refs) && task.material_refs.length > 0)) return false;
+  return (catalog.task_contract === undefined || validTaskContract(catalog.task_contract, catalog, task)) &&
+    (catalog.class_certificates === undefined || validClassCertificates(catalog.class_certificates, cls)) &&
+    (catalog.class_provider_pins === undefined ||
+      (cls !== 'explicit_route' && keys(catalog.class_provider_pins, [cls]) &&
+       EXCLUSION_PROVIDERS.has(catalog.class_provider_pins[cls])));
+}
+/** An owner contract the host re-bound at catalog time to exactly this
+ * request, context and reference policy (R0(a)). */
+function validTaskContract(contract, catalog, task) {
+  const required = ['coverage', 'scope', 'objective_sha256', 'contract_sha256', 'context_sha256',
+    'start_tree_sha256', 'reference_policy_sha256', 'valid_until_ms', 'bindings_checked'];
+  return plain(contract) && required.every(key => Object.hasOwn(contract, key)) &&
+    Object.keys(contract).every(key => required.includes(key) || key === 'source_sha256') &&
+    ['partial', 'full'].includes(contract.coverage) && SCOPES.has(contract.scope) &&
+    contract.bindings_checked === true && contract.objective_sha256 === catalog.request_sha256 &&
+    [contract.contract_sha256, contract.context_sha256, contract.start_tree_sha256,
+      contract.reference_policy_sha256].every(value => typeof value === 'string' && HASH.test(value)) &&
+    (contract.source_sha256 == null || (typeof contract.source_sha256 === 'string' && HASH.test(contract.source_sha256))) &&
+    int(contract.valid_until_ms, 1, Number.MAX_SAFE_INTEGER) &&
+    contract.reference_policy_sha256 === task.policy_sha256 &&
+    contract.context_sha256 === sha(Buffer.from(task.host_context?.context ?? ''));
+}
+/** The signed class table's certificate for this request's class only (R0(c)). */
+function validClassCertificates(certificates, cls) {
+  const certificate = plain(certificates) ? certificates[cls] : undefined;
+  return CERTIFIABLE_CLASSES.has(cls) && keys(certificates, [cls]) &&
+    keys(certificate, ['certificate_id', 'provider', 'model', 'effort', 'format_check', 'measurement_sha256']) &&
+    typeof certificate.certificate_id === 'string' && ID.test(certificate.certificate_id) &&
+    EXCLUSION_PROVIDERS.has(certificate.provider) && boundedText(certificate.model, 256) &&
+    EFFORTS.has(certificate.effort) && certificate.effort !== 'none' &&
+    typeof certificate.format_check === 'string' && FORMAT_CHECK.test(certificate.format_check) &&
+    typeof certificate.measurement_sha256 === 'string' && HASH.test(certificate.measurement_sha256);
+}
 function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
   const optional = ['exclusions', 'routing_intent', 'model_tiers', 'explicit_route_intents', 'quota_scores',
-    'native_reference_efforts'];
+    'native_reference_efforts', 'owner_scope', 'chat_lane_eligible', 'request_class', 'task_contract',
+    'class_certificates', 'class_provider_pins'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
     Object.keys(catalog).every(key => required.includes(key) || optional.includes(key)) &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
@@ -1945,6 +1534,7 @@ function validateCatalog(catalog, task) {
     (catalog.quota_scores === undefined || validQuotaScores(catalog.quota_scores, catalog.candidates)) &&
     (catalog.native_reference_efforts === undefined ||
       validNativeReferenceEfforts(catalog.native_reference_efforts, catalog.candidates)) &&
+    validAdmissionFacts(catalog, task) &&
     (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
   // An empty catalog is an explicit, explained hold rather than an opaque
@@ -2062,9 +1652,10 @@ export function exactArithmeticQuestion(request) {
   return korean[2] !== undefined || question ? answer : null;
 }
 
-/** Whether a task carries no earlier conversation that could give a wrapped
- * "N+M" another meaning (a product label, a score, a promotion): no context
- * text on the task or the host, and no native session the host would resume. */
+/** Whether a task carries no earlier conversation that could give its words
+ * another meaning (a product label, a score, a promotion): no context text on
+ * the task or the host, and no native session the host would resume. Every
+ * zero-model path requires it (R1). */
 function withoutConversation(task) {
   const h = task.host_context;
   return (task.context ?? '').trim() === '' && (h.context ?? '').trim() === '' &&
@@ -2289,7 +1880,9 @@ function publicSnapshot(snapshot) {
         started_at_ms, finished_at_ms, native_receipt,
         output_summary: typeof output === 'string' ? output.slice(0, 600) : null,
         // Why the host chose this exact row. Older snapshots have none.
-        routing_decision: child.routing_decision ? immutable(child.routing_decision) : null};
+        routing_decision: child.routing_decision ? immutable(child.routing_decision) : null,
+        // R6: why a delivered output is not task-verified (present only then).
+        ...(child.quality_disclosure ? {quality_disclosure: immutable(child.quality_disclosure)} : {})};
     }),
     result: snapshot.result ? immutable(snapshot.result) : null,
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
@@ -2327,16 +1920,58 @@ function ladderExemptMs(snapshot) {
   if (end !== null) union += end - start;
   return legacy + union;
 }
-/** A node bound below its reference that still has its one escalation: a
- * tier route (build 378) or an effort-ladder route not yet escalated. */
+/** A certified descent bound below its reference that still has its one
+ * escalation (R9). */
 function pendingEscalation(child) {
-  return ['ladder', 'tier'].includes(child?.route_kind) && child.ladder != null && child.ladder.escalated !== true;
+  return child?.route_kind === 'tier' && child.ladder != null && child.ladder.escalated !== true;
 }
-/** A tier route's failure signals beyond the effort ladder's: an output that
- * is only whitespace, or a failure the native adapter recorded beside a
- * finished attempt (a failed task quality is already undeliverable). */
+/** A certified descent's structural failure signals: an output that is only
+ * whitespace, or a failure the native adapter recorded beside a finished
+ * attempt (a failed task quality is already undeliverable). */
 function tierFailureSignal(result) {
   return typeof result.output !== 'string' || result.output.trim() === '' || result.error != null;
+}
+/** R9: whether the source that admitted a certified descent accepts THIS
+ * answer. (a) the owner contract verified it with full coverage; (b) it is
+ * structurally sound, and the registered verifier then decides; (c) it is
+ * structurally sound and passes the certificate's own format check. Under
+ * any source an operational check that ran partially, could not verify or
+ * failed is no acceptance. A descent recorded without its admitting source
+ * (an older build) is never accepted: it escalates. */
+function certifiedAnswer(ladder, result) {
+  if (tierFailureSignal(result)) return false;
+  const q = result.operational_quality;
+  if (q && (q.coverage !== 'full' || ['unverified', 'mismatch'].includes(q.assessment_state))) return false;
+  switch (ladder?.admitted_by) {
+    case 'contract': return result.task_verified === true && q?.coverage === 'full' &&
+      q.assessment_state === 'task_contract_verified';
+    case 'verifier': return true;
+    case 'class': return Object.hasOwn(FORMAT_CHECKS, ladder.format_check) && FORMAT_CHECKS[ladder.format_check](result.output);
+    case 'exact': return typeof ladder.exact_answer === 'string' && result.output.trim() === ladder.exact_answer;
+    default: return false;
+  }
+}
+/** R6: a completed result of a node bound at its reference (or at an
+ * owner-chosen tuple) whose check failed or whose checker was unavailable is
+ * delivered, never held or nulled: the turn ended, it returned an output, and
+ * nothing beyond its own scope's effects was reported (a read-only answer
+ * reported none). Holds remain for reported or uncertain effects, unterminated
+ * turns and cancel. */
+function disclosable(result, scope) {
+  return result.status === 'succeeded' && result.dispatch_stage === 'dispatched' && result.execution_verified === true &&
+    result.native_turn_terminated === true && boundedText(result.output, MAX_OUTPUT_BYTES) &&
+    result.handback == null && result.repair_source == null &&
+    (scope === 'workspace_write' || result.side_effects === 'none');
+}
+/** The disclosure a delivered unverified output carries (Swift
+ * QualityDisclosure): the operational check's coverage, the checks that
+ * failed and its witness, or a checker that was unavailable. A failed node
+ * verifier names itself in failed_check_ids ('node_verifier'), which alone
+ * is a complete disclosure when no operational check ran. */
+function qualityDisclosure(result, checkerUnavailable) {
+  const q = result.operational_quality ?? null;
+  return {coverage: q?.coverage ?? null, failed_check_ids: (q?.failed_check_ids ?? []).slice(0, MAX_DISCLOSED_CHECKS),
+    witness_sha256: q?.witness_sha256 ?? null, ...(checkerUnavailable ? {checker: 'unavailable'} : {})};
 }
 /** A returned node whose registered family verifier had not answered. */
 function verifierPendingChild(child) {
@@ -2447,14 +2082,16 @@ function alive(pid) {
 
 /** `verifierRegistry`: Map of task family (routeFamily) to an async node
  * verifier ({schema, task_id, node_id, family, instruction, output,
- * native_receipt, selected_config} -> {passed: boolean, reason}). Production
- * registers none, so every graded node runs its reference route. `ledgerStats`
- * overrides the ledger reader the ladder gate uses (tests only); `ledgerLog`
- * receives a ledger write failure code, which never fails or holds a task. */
+ * native_receipt, selected_config} -> {passed: boolean, reason}): a
+ * registration for the certified class is R0's source (b). Production
+ * registers none, so every node runs its reference. `hostAutoPlan` (R7): the
+ * host builds every plan itself (hostPlan) and never calls `plan`; injected
+ * plans (`plan`) remain for fixtures. `ledgerLog` receives a ledger write
+ * failure code, which never fails or holds a task. */
 export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
-                                         verifierRegistry = null, ledgerStats = null, ledgerLog = null} = {}) {
+                                         verifierRegistry = null, hostAutoPlan = false, ledgerLog = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
@@ -2462,7 +2099,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   const registry = verifierRegistry ?? new Map();
   assert(registry instanceof Map && [...registry].every(([family, verify]) =>
     typeof family === 'string' && family.length <= 128 && typeof verify === 'function'), 'verifier_registry_invalid');
-  assert(ledgerStats === null || typeof ledgerStats === 'function', 'ledger_stats_invalid');
+  assert(typeof hostAutoPlan === 'boolean', 'host_auto_plan_invalid');
   assert(ledgerLog === null || typeof ledgerLog === 'function', 'ledger_log_invalid');
   assert(resolveIntent === undefined || typeof resolveIntent === 'function', 'intent_resolver_invalid');
   assert(decideOperationalQuality === undefined || typeof decideOperationalQuality === 'function', 'quality_decider_invalid');
@@ -2506,8 +2143,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
-                                 transaction, verifierRegistry: registry, ledger,
-                                 ledgerStats: ledgerStats ?? ledger.stats, ledgerLog});
+                                 transaction, verifierRegistry: registry, hostAutoPlan, ledger, ledgerLog});
   runtime.reconcileRestart();
   runtime.reconcileLedger();
   runtime.startQueued();
@@ -2517,7 +2153,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
-               maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, ledger, ledgerStats, ledgerLog}) {
+               maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, ledger,
+               ledgerLog}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -2527,15 +2164,14 @@ class RCCRuntime {
     this.reconcileInstallation = reconcileInstallation;
     this.cancelInstallation = cancelInstallation;
     this.verifyTask = verifyTask; this.emit = emit;
-    this.verifierRegistry = verifierRegistry; this.ledger = ledger;
-    this.ledgerStats = ledgerStats; this.ledgerLog = ledgerLog;
+    this.verifierRegistry = verifierRegistry; this.hostAutoPlan = hostAutoPlan;
+    this.ledger = ledger; this.ledgerLog = ledgerLog;
     // Dispatched attempts whose ledger record is not written yet, with the
     // route facts fixed at dispatch: an attempt that settles after stop is
     // still recorded once, without the closed DB.
     this.ledgerInflight = new Map();
-    // Parity failures whose ledger write failed (attempt id -> retry). While
-    // one waits, every ladder in this process reads no evidence; each later
-    // record, and each ladder admission, retries them first.
+    // Parity failures whose ledger write failed (attempt id -> retry): each
+    // later record retries them first, so the failure index stays complete.
     this.ledgerBacklog = new Map();
     this.maximumWorkers = maximumWorkers; this.cancelGraceMs = cancelGraceMs;
     this.transaction = transaction;
@@ -2852,10 +2488,9 @@ class RCCRuntime {
    * was; only an attempt without one is 'interrupted' when a verifier was
    * relevant. An attempt that did settle after the stop is already in the
    * ledger and is only cleared. A ledger failure is logged; the pending row is
-   * cleared, except for a parity failure or cost-gate evidence, which stays
-   * pending (and backlogged) so this process and the next restart retry it
-   * (a lost failure could readmit a cheaper route; a lost cost sample would
-   * let the cost gate decide from partial evidence). */
+   * cleared, except for a parity failure, which stays pending (and
+   * backlogged) so this process and the next restart retry it: the failure
+   * index must never lose one. */
   reconcileLedger() {
     const rows = this.transaction(() => this.db.prepare(
       'SELECT attempt_id,task_id,node_id,route FROM ledger_pending ORDER BY rowid').all());
@@ -3223,22 +2858,21 @@ class RCCRuntime {
         [...new Set(droppedExplicitRoutes(task).map(route => route.surface))].sort().join(','));
       return;
     }
+    // R1: the zero-model paths finish in Core with no provider call, and only
+    // with no prior conversation: after "1+1 상품은 3,500원" the follow-up
+    // "1+1은 얼마야?" asks a price, and "3-4" after a score is no sum; a model
+    // must see that context (review 2026-10-15). A wrapped question
+    // ("1+1이 뭐야?") is the same exact sum: the child keeps the whole request
+    // as its instruction (_completeLocalExact).
     if (task.mode === 'auto' && task.host_context.provider_preference === 'auto' &&
         (task.provider_preference == null || task.provider_preference === 'auto') &&
         task.host_context.explicit_routes == null &&
-        task.material_refs.length === 0) {
+        task.material_refs.length === 0 && withoutConversation(task)) {
       const checkin = exactLocalGreeting(task.request);
       if (checkin !== null && task.objective.trim() === task.request.trim()) {
         this._completeLocalExact(taskID, 'local_checkin', checkin); return;
       }
-      // A wrapped question ("1+1이 뭐야?") is the same exact sum: the child
-      // keeps the whole request as its instruction (_completeLocalExact). Only
-      // with no prior conversation: after "1+1 상품은 3,500원" the follow-up
-      // "1+1은 얼마야?" asks a price, and a sum would be adopted as verified
-      // with no model seeing the context (review 2026-10-15). The bare
-      // expression keeps its earlier reading.
-      const answer = pureArithmetic(task.request) ??
-        (withoutConversation(task) ? exactArithmeticQuestion(task.request) : null);
+      const answer = pureArithmetic(task.request) ?? exactArithmeticQuestion(task.request);
       if (answer !== null) {
         this._completeLocalExact(taskID, 'deterministic_arithmetic', answer);
         return;
@@ -3246,7 +2880,7 @@ class RCCRuntime {
     }
     task = await this._resolveTaskIntent(taskID);
     if (task === null || this.closed || this.stopping || this.quiescing) return;
-    if (this._load(taskID)?.intent_resolution?.kind === 'local_response') {
+    if (this._load(taskID)?.intent_resolution?.kind === 'local_response' && withoutConversation(task)) {
       this._completeLocalExact(taskID, 'local_checkin', localResponsePathOutput(task.request)); return;
     }
     state = this._update(taskID, 'planning', snapshot => {
@@ -3320,24 +2954,23 @@ class RCCRuntime {
       const blocked = noDispatchableReason(task, catalog, boundAt);
       if (blocked) { this._hold(taskID, blocked); return; }
     }
-    if (typeof this.plan !== 'function') {
+    if (!this.hostAutoPlan && typeof this.plan !== 'function') {
       if (task.mode === 'explicit_routing_test') this._holdExplicitRoutes(taskID, 'planner_unavailable');
       else this._hold(taskID, 'planner_unavailable');
       return;
     }
     let plan, decisions, routes, lockedID = null;
     try {
-      // The injected planner adapter selects only task-relevant policy and
-      // context for the local model. It receives the immutable host state,
-      // never a model-authored replacement for that state. Outside explicit
-      // route tests it grades nodes; the host then binds exact rows.
-      const proposed = await this.plan({task: immutable(admitted), catalog: immutable(catalog)});
+      // R7: the host builds the plan itself (hostPlan); no model plans or
+      // grades it. An injected plan (fixtures) receives the immutable host
+      // state, never a model-authored replacement for that state, and the
+      // host then binds exact rows by the same admission law.
+      const proposed = this.hostAutoPlan ? hostPlan(admitted, catalog) :
+        await this.plan({task: immutable(admitted), catalog: immutable(catalog)});
       // Writer serialization is a safety order, not authority to manufacture
       // the planner's final-output dependency coverage.
       assertFinalOutputOwnership(proposed, admitted);
-      const resolved = resolveRoutePlan(proposed, admitted, catalog, boundAt,
-        {verifierRegistry: this.verifierRegistry, ledgerStats: (...key) => this._ladderStats(...key),
-         costEvidence: query => this._costEvidence(query)});
+      const resolved = resolveRoutePlan(proposed, admitted, catalog, boundAt, {verifierRegistry: this.verifierRegistry});
       // One indivisible task runs the owner's own words, never a planner
       // paraphrase (lockIndivisibleInstruction); the decision says so.
       const locked = lockIndivisibleInstruction(resolved.plan, admitted);
@@ -3356,9 +2989,9 @@ class RCCRuntime {
     state = this._update(taskID, 'plan_admitted', snapshot => {
       snapshot.plan = plan; snapshot.state = 'running';
       snapshot.bound_rows = boundRows(plan, catalog);
-      // A ladder node is admitted with its reference row too: a sibling's
-      // later catalog refresh may drop that row, and the escalation must
-      // still rebind it (dispatch then refreshes and re-resolves as usual).
+      // A certified descent is admitted with its reference row too: a
+      // sibling's later catalog refresh may drop that row, and the escalation
+      // must still rebind it (dispatch then refreshes and re-resolves).
       for (const route of Object.values(routes)) {
         const reference = route?.ladder && catalog.candidates.find(c => c.id === route.ladder.reference_candidate_id);
         if (reference) snapshot.bound_rows[reference.id] = immutable(reference);
@@ -3376,11 +3009,9 @@ class RCCRuntime {
               route.surface === catalog.candidates.find(candidate => candidate.id === node.candidate_id).surface &&
               route.instruction === node.instruction).surface : null,
         routing_decision: decisions[node.id] ?? null, re_resolutions: 0, avoided_candidate_ids: [],
-        // Host-internal route record (never public): reference/explicit/ladder.
+        // Host-internal route record (never public): reference/explicit/tier.
         route_kind: routes[node.id]?.kind ?? null, reference_effort: routes[node.id]?.reference_effort ?? null,
         ladder: routes[node.id]?.ladder ? {...routes[node.id].ladder, escalated: false} : null,
-        // The cost gate's decision at bind time (null when it did not apply).
-        cost_gate: routes[node.id]?.cost_gate ?? null,
         // The host replaced the planner's text with the owner's request: every
         // later decision of this child keeps naming that (withInstructionLock).
         ...(node.id === lockedID ? {instruction_host_locked: true} : {}),
@@ -3454,8 +3085,8 @@ class RCCRuntime {
     };
     return !foreign('quota_leases', 'pool_key', poolKey) && !foreign('write_leases', 'workspace', workspaceKey);
   }
-  /** A node the host graded and bound (its routing decision has a class):
-   * any graded node, and a graded explicit route on a tier-routed catalog,
+  /** A node the host resolved and bound (its routing decision has a class):
+   * any resolved node, and an explicit route on a tier-routed catalog,
    * whose re-resolution stays on its own named surface. A planner-chosen
    * explicit row (older catalog) or an adapter-bound node has no class. */
   _resolverNode(snapshot, nodeID) {
@@ -3464,7 +3095,7 @@ class RCCRuntime {
   }
   /** Replace one queued node's host-resolved row, against the supplied fresh
    * catalog, same scope and route_class, preferring a different quota pool
-   * (a graded explicit route stays on its own named surface). Never used for
+   * (an explicit route stays on its own named surface). Never used for
    * a planner-chosen explicit row, an adapter-bound node, or a child that
    * already dispatched successfully or is in a continuation. */
   _reResolve(taskID, nodeID, fresh, failure) {
@@ -3483,11 +3114,12 @@ class RCCRuntime {
     const decided = child.routing_decision.resolved_candidate_id === node.candidate_id ?
       child.routing_decision.quota_pool : null;
     const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
-    // An escalated tier route stays at the reference wherever it moves.
+    // An escalated tier route stays at the reference wherever it moves; any
+    // other node is admitted again by the same law (R0) against the fresh rows.
     const escalated = child.ladder?.source === 'tier' && child.ladder.escalated === true;
-    const choice = selectRouteCandidate(node, child.routing_decision.route_class, executionTask(snapshot), fresh,
-      Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs, referenceOnly: escalated,
-        costEvidence: query => this._costEvidence(query)});
+    const choice = selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
+      {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs, referenceOnly: escalated,
+        verifierRegistry: this.verifierRegistry});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, fresh, [nodeID]));
@@ -3508,20 +3140,19 @@ class RCCRuntime {
         target.ladder = {...target.ladder, reference_candidate_id: choice.candidate.id,
           reference_model: choice.candidate.model, reference_effort: choice.candidate.effort};
       } else {
-        // A re-resolved effort-ladder node runs its reference; a tier node
-        // keeps its class and the escalation target of its new pool, and the
-        // cost gate decides again against that target.
+        // A certified descent keeps its source and takes the escalation
+        // target of its new pool; anything else runs the reference.
         target.route_kind = choice.kind;
         target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
-        target.cost_gate = costGateLedger(choice.costGate);
       }
-      target.routing_decision = withInstructionLock(target, routingDecision(target.routing_decision.route_class,
+      target.routing_decision = withInstructionLock(target, routingDecision(
+        escalated ? target.routing_decision.route_class : choice.routeClass,
         choice.candidate, `re_resolved_after:${reason};${choice.why}`, target.ladder, choice.tier));
     });
   }
-  /** Deterministic resolution binds independent nodes of one route_class to
+  /** Deterministic resolution binds independent nodes of one admission to
    * the same row, and one pool takes one lease at a time. When THIS task's own
-   * running node holds that pool, move a not-yet-dispatched graded node to
+   * running node holds that pool, move a not-yet-dispatched resolved node to
    * the best dispatchable row of another admitted pool whose lease is free.
    * A node that already moved this way is re-evaluated on every wait: the
    * move is advisory (only the dispatch reservation is authoritative), so
@@ -3551,9 +3182,8 @@ class RCCRuntime {
     }
     const pick = (catalog, now) => {
       try {
-        const choice = selectRouteCandidate(node, child.routing_decision.route_class, executionTask(snapshot), catalog,
-          now, {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id],
-            costEvidence: query => this._costEvidence(query)});
+        const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
+          {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry});
         return choice.candidate.quota_pool !== planned.quota_pool &&
           this._leasePossible(choice.candidate, executionTask(snapshot)) ? choice : null;
       } catch { return null; }
@@ -3589,12 +3219,11 @@ class RCCRuntime {
         // A snapshot from before the counter has moved once if it has moved.
         target.spreads = (target.spreads ?? (target.spread === true ? 1 : 0)) + 1;
         target.candidate_id = choice.candidate.id; target.spread = true;
-        // The other pool's route: a spread never keeps an effort ladder; a
-        // tier node takes the escalation target of its new pool.
+        // The other pool's route, admitted by the same law (R0): a certified
+        // descent takes the escalation target of its new pool.
         target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort;
         target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
-        target.cost_gate = costGateLedger(choice.costGate);
-        target.routing_decision = withInstructionLock(target, routingDecision(target.routing_decision.route_class,
+        target.routing_decision = withInstructionLock(target, routingDecision(choice.routeClass,
           choice.candidate, `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier));
       });
     } catch { return false; }
@@ -3967,7 +3596,7 @@ class RCCRuntime {
         // validation only.
         const planned = current.catalog.candidates.find(c => c.id === node.candidate_id);
         if (planned && !this._leasePossible(planned, executionTask(current))) {
-          // Independent graded work waits for the busy pool only when the
+          // Independent resolved work waits for the busy pool only when the
           // other admitted pool cannot take it now either.
           if (await this._spreadAcrossPools(taskID, current, node, planned)) { reResolved = true; break; }
           current = this._load(taskID);
@@ -4070,17 +3699,14 @@ class RCCRuntime {
     const isSingleFullAgent = snapshot.plan?.nodes.length === 1 &&
       snapshot.plan.nodes[0]?.id === node.id && node.kind === 'agent';
     // An attempt whose answer may still be discarded runs in a fresh native
-    // session, never in the owner's own thread: a cheaper effort-ladder
-    // attempt (older catalogs) and a REVAS tier attempt below its reference
-    // (build 378, escalation not yet spent). A discarded answer then never
+    // session, never in the owner's own thread: a certified descent below its
+    // reference (escalation not yet spent). A discarded answer then never
     // sits in the owner's thread, and the escalated reference resumes that
     // thread untouched (it never builds on the failed turn). OS-1 records the
     // delivered attempt's session as the conversation's and still hands the
     // recent conversation over in host_context.context.
     const child = snapshot.children?.find(c => c.id === node.id);
-    const cheapLadder = child?.route_kind === 'ladder' && child.ladder != null && child.ladder.escalated !== true;
-    const pendingTier = child?.route_kind === 'tier' && pendingEscalation(child);
-    const resumeSession = cheapLadder || pendingTier ? null : isSingleFullAgent && candidate.surface === 'codex' ?
+    const resumeSession = pendingEscalation(child) ? null : isSingleFullAgent && candidate.surface === 'codex' ?
       executionTask(snapshot).host_context.codex_session_id :
       isSingleFullAgent && candidate.surface === 'claude' ?
         executionTask(snapshot).host_context.claude_session_id : null;
@@ -4188,9 +3814,32 @@ class RCCRuntime {
     });
   }
 
+  /** R6: deliver one node's completed output with its quality disclosure: the
+   * child completes (its dependents may use the output) and the task settles
+   * returned_unverified. `attemptState` settles its attempt entry. */
+  _deliverDisclosed(taskID, nodeID, result, disclosure, attemptState) {
+    this._update(taskID, 'child_delivered_with_disclosure', snapshot => {
+      const child = snapshot.children.find(c => c.id === nodeID);
+      if (TERMINAL.has(snapshot.state) || !child) return;
+      Object.assign(child, {state: 'completed', output: result.output, execution_verified: result.execution_verified,
+        task_quality: result.task_quality, parity_state: 'unverified', native_receipt: result.native_receipt,
+        native_summary: result.native_summary ?? null, usage: result.usage ?? null,
+        operational_quality: result.operational_quality ?? null, quality_disclosure: disclosure,
+        finished_at_ms: Date.now(), dispatched_at_ms: null});
+      const attempt = child.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+      if (attempt) {
+        Object.assign(attempt, {state: attemptState, native_receipt: result.native_receipt, usage: result.usage ?? null});
+        recordTurnSettlement(attempt, result);
+      }
+    });
+  }
+
   /** The same task owner handles one known local writer correction. The
    * native host revalidates the frozen contract, content custody and enforced
-   * task-effect boundary. Neither a model verdict nor an adapter retry owns it. */
+   * task-effect boundary. Neither a model verdict nor an adapter retry owns it.
+   * R6: when the correction is spent, refused, out of budget or unavailable,
+   * the last completed output is delivered with its failed checks disclosed;
+   * only a cancel or stop (or an output that cannot be delivered) holds it. */
   async _prepareQualityCorrection(taskID, node, candidate, result, parentTicket) {
     const q = result.operational_quality;
     this._update(taskID, 'quality_candidate_preserved', state => {
@@ -4210,11 +3859,17 @@ class RCCRuntime {
     });
     const hold = reason => {
       if (this.closed) return null;
-      this._update(taskID, 'quality_continuation_held', state => {
+      const before = this._load(taskID);
+      const deliver = !before?.cancel_requested && !this.stopping && disclosable(result, candidate.scope);
+      this._update(taskID, deliver ? 'quality_correction_disclosed' : 'quality_continuation_held', state => {
         if (TERMINAL.has(state.state)) return;
         const child = state.children.find(c => c.id === node.id);
-        child.state = 'held'; child.hold_reason = reason; child.finished_at_ms = Date.now();
         child.quality_continuation.state = 'held';
+        child.finished_at_ms = Date.now();
+        if (deliver && !state.cancel_requested) {
+          child.state = 'completed'; child.quality_disclosure = qualityDisclosure(result, false);
+          child.quality_correction_outcome = reason;
+        } else { child.state = 'held'; child.hold_reason = reason; }
       });
       return null;
     };
@@ -4498,30 +4153,25 @@ class RCCRuntime {
    * `verifier` (internal) says a family verifier was relevant to it. */
   _ledgerRoute(snapshot, child, candidate) {
     const explicitRoute = executionTask(snapshot).mode === 'explicit_routing_test';
-    // An explicit route the host graded and bound (tier-routed catalog) keeps
-    // its class, tier and REVAS guard as evidence; a planner-chosen explicit
-    // row (older catalog) has none.
+    // A node the host resolved (any tier-routed explicit route included)
+    // keeps its class, tier and escalation guard as evidence; a planner-chosen
+    // explicit row (older catalog) has none.
     const routeClass = ROUTE_CLASSES.includes(child.routing_decision?.route_class) ?
       child.routing_decision.route_class : null;
     const kind = explicitRoute ? 'explicit_route' : routeClass === null ? 'adapter_bound' : child.route_kind ?? 'unrecorded';
-    // A named route the host graded keeps the route kind it ran as (tier,
-    // reference, explicit), so the cost gate can learn from it; null
-    // otherwise (and absent in older records).
+    // A named route the host resolved keeps the route kind it ran as (tier,
+    // reference, explicit); null otherwise (and absent in older records).
     const hostKind = explicitRoute && routeClass !== null && typeof child.route_kind === 'string' ? child.route_kind : null;
-    const ladder = routeClass !== null && ['ladder', 'tier'].includes(child.route_kind) && child.ladder ?
-      {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort} : null;
-    if (ladder && child.ladder.source === 'tier')
-      Object.assign(ladder, {cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model});
+    const ladder = routeClass !== null && child.route_kind === 'tier' && child.ladder ?
+      {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort,
+        cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model} : null;
     return {route_class: routeClass, route_kind: kind, host_route_kind: hostKind, surface: candidate.surface,
       quota_pool: candidate.quota_pool, model: candidate.model, effort: candidate.effort, scope: candidate.scope,
       reference_effort: routeClass === null ? null : child.reference_effort ?? null, ladder,
-      // Build 378: the bound model's tier (null without one or on an older
-      // catalog) and whether this attempt is a REVAS escalation.
+      // The bound model's tier (null without one or on an older catalog) and
+      // whether this attempt is the reference escalation of a descent.
       tier: routeClass === null ? null : child.routing_decision?.tier ?? null,
       escalated: routeClass !== null && child.ladder?.escalated === true,
-      // The cost gate's decision for the route this attempt runs as bound
-      // (null for an escalated attempt, an ungraded route, or no gate).
-      cost_gate: routeClass === null || child.ladder?.escalated === true ? null : child.cost_gate ?? null,
       quota_remaining_fraction: candidate.quota_remaining_fraction, dispatched_at_ms: child.dispatched_at_ms ?? null,
       verifier: Boolean(this._nodeVerifier(snapshot, child.id, candidate))};
   }
@@ -4542,8 +4192,8 @@ class RCCRuntime {
       else process.stderr.write(`os1-rcc: routing ledger write failed (${code}); the task continues\n`);
     } catch { /* Logging is best effort as well. */ }
   }
-  /** One routing-ledger record. `escalationOutcome`: on a cheaper ladder/tier
-   * attempt that failed, what its one escalation did ('escalated', or the
+  /** One routing-ledger record. `escalationOutcome`: on a certified descent
+   * that failed, what its one escalation did ('escalated', or the
    * typed hold reason when the node was held instead); null on every other
    * attempt. `dispatchedFailure` 'no_effects': the executor reported that the
    * attempt failed after dispatch with no side effects (the node is still
@@ -4557,7 +4207,7 @@ class RCCRuntime {
       quota_pool: route.quota_pool, model: route.model, effort: route.effort, route_kind: route.route_kind,
       host_route_kind: typeof route.host_route_kind === 'string' ? route.host_route_kind : null,
       reference_effort: route.reference_effort, ladder: route.ladder, tier: route.tier ?? null,
-      escalated: route.escalated === true, cost_gate: route.cost_gate ?? null, usage: outcome.usage ?? null,
+      escalated: route.escalated === true, usage: outcome.usage ?? null,
       quota_remaining_fraction: route.quota_remaining_fraction,
       execution_verified: outcome.execution_verified === true, task_quality: outcome.task_quality ?? null,
       verifier_outcome: verifierOutcome, attempt_state: attemptState,
@@ -4567,11 +4217,10 @@ class RCCRuntime {
       dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now()};
   }
   /** Whether a ledger record that could not be written must wait in the
-   * backlog: a parity failure (it could readmit a cheaper route) or cost-gate
-   * evidence (a lost record would let the gate decide from partial evidence,
-   * in either direction). */
+   * backlog: a parity failure, so the never-rotated failure index stays
+   * complete for the offline class measurement. */
   _backlogged(record) {
-    return LEDGER_FAILURE_OUTCOMES.has(record?.verifier_outcome) || costGateRecord(record) !== null;
+    return LEDGER_FAILURE_OUTCOMES.has(record?.verifier_outcome);
   }
   /** Append one routing-ledger record for a settled attempt: ids, route,
    * usage, quota at dispatch, execution/quality flags and verifier outcome.
@@ -4601,9 +4250,8 @@ class RCCRuntime {
       write();
     } catch (error) {
       this._logLedger(error);
-      // The pending row stays for the restart; a parity failure also closes
-      // every ladder in this process until it is written, and cost-gate
-      // evidence closes the gate (cost_gate_unavailable) until it is written.
+      // The pending row stays for the restart; a parity failure is also
+      // retried by this process before every later record.
       if (write && !this.closed && this._backlogged(record)) this.ledgerBacklog.set(attemptID, write);
       return;
     }
@@ -4614,8 +4262,8 @@ class RCCRuntime {
     try { this.transaction(() => this.db.prepare('DELETE FROM ledger_pending WHERE attempt_id=?').run(attemptID)); }
     catch (error) { this._logLedger(error); }
   }
-  /** Retry backlogged records (parity failures and cost-gate evidence whose
-   * ledger write failed), oldest first; stop at the first that still fails. */
+  /** Retry backlogged records (parity failures whose ledger write failed),
+   * oldest first; stop at the first that still fails. */
   _flushLedgerBacklog() {
     for (const [attemptID, write] of this.ledgerBacklog) {
       try { write(); } catch (error) { this._logLedger(error); return; }
@@ -4623,30 +4271,7 @@ class RCCRuntime {
       this._clearLedgerPending(attemptID);
     }
   }
-  /** Ladder parity evidence: none while a backlogged record (a parity
-   * failure, or cost-gate evidence) waits to be written, so a lost failure
-   * can never readmit a cheaper route. */
-  _ladderStats(family, model, effort, referenceEffort) {
-    if (this.ledgerBacklog.size) this._flushLedgerBacklog();
-    if (this.ledgerBacklog.size) return {verified_passes: 0, verifier_failures: 0};
-    return this.ledgerStats(family, model, effort, referenceEffort);
-  }
-  /** Cost-gate evidence (tierCostEvidence) from the routing ledger. Throws
-   * (the gate then reads cost_gate_unavailable and the node keeps its tier
-   * route) when the gate would otherwise decide from partial evidence: while
-   * a backlogged record waits to be written (a lost cheaper failure would
-   * make the tier look cheaper, a lost cheaper success or reference cost the
-   * reference), while a tier or reference attempt of this process has
-   * returned but is not recorded yet (its escalation or verifier is still
-   * running), and when the ledger cannot be read safely. */
-  _costEvidence(query) {
-    if (this.ledgerBacklog.size) this._flushLedgerBacklog();
-    assert(this.ledgerBacklog.size === 0, 'cost_gate_ledger_backlog');
-    for (const pending of this.ledgerInflight.values())
-      assert(!(pending.returned && costGateRoute(pending.route)), 'cost_gate_ledger_pending');
-    return tierCostEvidence(this.ledger.costRecords(), query);
-  }
-  /** The registered verifier for a graded read-only node's family, if any. */
+  /** The registered verifier for a resolved read-only node's family, if any. */
   _nodeVerifier(snapshot, nodeID, candidate) {
     const child = this._resolverNode(snapshot, nodeID);
     if (!child || candidate.scope !== 'read_only' || this.verifierRegistry.size === 0) return null;
@@ -4655,10 +4280,10 @@ class RCCRuntime {
     return typeof verify === 'function' ? {verify, family} : null;
   }
   /** Run the family verifier on a returned read-only node. Pass adopts it;
-   * a ladder route that fails goes to _ladderFailed. A rejected reference
-   * or explicit route is retained as evidence but held, never released to
-   * dependents or laundered through a parent verifier. Returns the ledger
-   * outcome; a reference is never replayed merely because it was rejected. */
+   * a certified descent that fails goes to _ladderFailed (R9). A rejected
+   * reference or explicit route is delivered with its disclosure (R6), never
+   * replayed; only an undisclosable record (an unterminated turn, reported
+   * effects) is held. Returns the ledger outcome. */
   async _verifyNode(taskID, node, candidate, result, {verify, family}) {
     let passed = false, timer;
     try {
@@ -4680,6 +4305,19 @@ class RCCRuntime {
       await this._ladderFailed(taskID, node, candidate, result, outcome);
       return outcome;
     }
+    if (!passed && disclosable(result, candidate.scope)) {
+      const disclosure = qualityDisclosure(result, false);
+      disclosure.failed_check_ids = ['node_verifier', ...disclosure.failed_check_ids].slice(0, MAX_DISCLOSED_CHECKS);
+      this._update(taskID, 'node_verifier_failed_disclosed', snapshot => {
+        const target = snapshot.children.find(c => c.id === node.id);
+        if (target?.state !== 'waiting' || target.attempt_id !== result.attempt_id) return;
+        Object.assign(target, {state: 'completed', node_verifier: outcome, quality_disclosure: disclosure,
+          parity_state: 'unverified'});
+        const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+        if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; }
+      });
+      return outcome;
+    }
     this._update(taskID, passed ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
       const target = snapshot.children.find(c => c.id === node.id);
       if (target?.state !== 'waiting' || target.attempt_id !== result.attempt_id) return;
@@ -4693,14 +4331,14 @@ class RCCRuntime {
     });
     return outcome;
   }
-  /** The cheaper ladder attempt failed: its verifier failed ('fail') or it
-   * returned nothing deliverable ('not_returned'). Its output is never
-   * adopted. Once, read-only, not stopping or cancelled, and only when the
-   * attempt dispatched and reported no side effects, the node returns to the
-   * queue bound to its reference row. A tier guard that finds no reference in
-   * its bound catalog (its rows may have outlived their validity window while
-   * the cheaper attempt ran) refreshes the catalog once and looks again
-   * before it gives up. Otherwise ONLY this child is held (cancelled under a
+  /** A certified descent failed (R9): its verifier failed ('fail') or its
+   * admitting source did not accept the answer ('not_returned'). Its output
+   * is never adopted. Once, read-only, not stopping or cancelled, and only
+   * when the attempt dispatched and reported no side effects, the node
+   * returns to the queue bound to its reference row. A descent that finds no
+   * reference in its bound catalog (its rows may have outlived their validity
+   * window while the cheaper attempt ran) refreshes the catalog once and
+   * looks again before it gives up. Otherwise ONLY this child is held (cancelled under a
    * cancel request) with a typed reason: the scheduler settles the task after
    * every running sibling reconciles. Either way the cheaper attempt's
    * history entry records its escalation outcome ('escalated', or the hold
@@ -4723,8 +4361,8 @@ class RCCRuntime {
     for (let pass = 0; reason === null; pass++) {
       try { this._escalateLadder(taskID, node.id, result.attempt_id, outcome); return; }
       catch (error) { reason = error instanceof RCCRuntimeError ? error.code : 'ladder_reference_unavailable'; }
-      if (pass > 0 || reason !== 'ladder_reference_unavailable' || found.child.ladder?.source !== 'tier' ||
-          this.closed || typeof this.catalog !== 'function') break;
+      if (pass > 0 || reason !== 'ladder_reference_unavailable' || this.closed ||
+          typeof this.catalog !== 'function') break;
       try { await this._refreshCatalog(taskID); } catch { /* The hold below names the reference. */ break; }
       found = current();
       if (!found) return;
@@ -4742,12 +4380,10 @@ class RCCRuntime {
         attempt.verifier = outcome; attempt.escalation_outcome = reason; }
     });
   }
-  /** Once, read-only only: the cheaper attempt failed, so the node returns to
-   * the queue bound to its reference row, admitted with the plan so a
-   * sibling's refresh cannot lose it. An effort ladder escalates to the same
-   * model in the same pool at the reference effort. A tier route (build 378)
-   * escalates to its pool's frontier reference, or to another pool's when
-   * that one cannot dispatch now. The returned output is never adopted,
+  /** Once, read-only only: the certified descent failed, so the node returns
+   * to the queue bound to its reference row, admitted with the plan so a
+   * sibling's refresh cannot lose it: its pool's reference, or another pool's
+   * when that one cannot dispatch now. The returned output is never adopted,
    * nothing with uncertain effects is replayed, and the failed attempt's time
    * and estimated cost are not charged to the owner's budgets (like its
    * attempt). Dispatch then refreshes the catalog and, if the reference row
@@ -4759,10 +4395,9 @@ class RCCRuntime {
     const find = id => typeof id !== 'string' ? undefined :
       snapshot.catalog.candidates.find(c => c.id === id) ?? snapshot.bound_rows?.[id];
     const cheap = node && find(node.candidate_id);
-    const tier = child.ladder?.source === 'tier';
     const explicitRoute = executionTask(snapshot).mode === 'explicit_routing_test';
     let reference = find(child.ladder?.reference_candidate_id);
-    if (tier && node && cheap) {
+    if (child.ladder?.source === 'tier' && node && cheap) {
       const now = Date.now();
       const offered = reference && snapshot.catalog.candidates.find(c => c.id === reference.id);
       if (!(offered && dispatchable(offered, executionTask(snapshot), now))) {
@@ -4773,18 +4408,16 @@ class RCCRuntime {
         for (const at of [now, snapshot.catalog_bound_at_ms]) {
           if (!Number.isSafeInteger(at)) continue;
           try {
-            reference = selectRouteCandidate(node, child.routing_decision?.route_class, executionTask(snapshot),
-              snapshot.catalog, at, {referenceOnly: true, preferPool: cheap.quota_pool, avoidIDs: [cheap.id]}).candidate;
+            reference = selectRouteCandidate(node, executionTask(snapshot), snapshot.catalog, at,
+              {referenceOnly: true, preferPool: cheap.quota_pool, avoidIDs: [cheap.id]}).candidate;
             break;
           } catch { /* Keep the admitted reference row, if any: dispatch re-resolves it. */ }
         }
       }
     }
-    assert(node && cheap && reference && node.scope === 'read_only' && reference.scope === 'read_only' &&
-      reference.id !== cheap.id && (tier ? reference.surface !== 'local' &&
-        (!explicitRoute || reference.surface === cheap.surface) :
-        reference.model === cheap.model && reference.quota_pool === cheap.quota_pool &&
-        reference.effort === child.ladder.reference_effort), 'ladder_reference_unavailable');
+    assert(child.ladder?.source === 'tier' && node && cheap && reference && node.scope === 'read_only' &&
+      reference.scope === 'read_only' && reference.id !== cheap.id && reference.surface !== 'local' &&
+      (!explicitRoute || reference.surface === cheap.surface), 'ladder_reference_unavailable');
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: reference.id} : n)};
     const rows = snapshot.catalog.candidates.some(c => c.id === reference.id) ? snapshot.catalog :
@@ -4809,18 +4442,14 @@ class RCCRuntime {
         dispatched_at_ms: null, finished_at_ms: null, output: null, execution_verified: false,
         task_quality: 'unverified', parity_state: 'unverified', native_receipt: null, native_summary: null,
         usage: null, repair_needed: false, route_kind: 'reference', node_verifier: outcome});
-      target.ladder = tier ? {...target.ladder, escalated: true, reference_candidate_id: reference.id,
-        reference_model: reference.model, reference_effort: reference.effort} : {...target.ladder, escalated: true};
-      const why = tier ?
-        (outcome === 'fail' ? 'tier_escalated_after_verifier_failure' : 'tier_escalated_after_failure_signal') +
-          ';route_reference;tier_' + (tierOf(state.catalog, reference.model) ?? 'frontier') +
-          (reference.quota_pool === cheap.quota_pool ? ';same_pool' : ';other_pool') :
-        (outcome === 'fail' ? 'ladder_escalated_after_verifier_failure' : 'ladder_escalated_after_undeliverable_result') +
-          ';route_reference';
+      target.ladder = {...target.ladder, escalated: true, reference_candidate_id: reference.id,
+        reference_model: reference.model, reference_effort: reference.effort};
+      const why = (outcome === 'fail' ? 'tier_escalated_after_verifier_failure' : 'tier_escalated_after_failure_signal') +
+        ';route_reference;' + admissionToken(ESCALATION_ADMISSION) + ';tier_' + (tierOf(state.catalog, reference.model) ?? 'frontier') +
+        (reference.quota_pool === cheap.quota_pool ? ';same_pool' : ';other_pool');
       target.routing_decision = withInstructionLock(target, routingDecision(target.routing_decision.route_class, reference,
-        why + ';effort_' + reference.effort + ';' +
-        (reference.surface.endsWith('-chat') ? 'chat_lane_same_route' : 'agent_surface'), target.ladder,
-        tier ? tierOf(state.catalog, reference.model) ?? 'frontier' : undefined));
+        why + ';effort_' + reference.effort + ';' + surfaceToken(reference), target.ladder,
+        tierOf(state.catalog, reference.model) ?? 'frontier'));
     });
   }
 
@@ -4935,11 +4564,6 @@ class RCCRuntime {
           return;
         }
         this.controllers.delete(attemptID);
-        // Returned but not recorded until this call settles it (an escalation,
-        // a verifier or a catalog refresh may still run): the cost gate reads
-        // no evidence meanwhile (_costEvidence).
-        const inflight = this.ledgerInflight.get(attemptID);
-        if (inflight) inflight.returned = true;
         if (this.closed) { verifierOutcome = interrupted; return; }
         const current = this._load(taskID);
         if (TERMINAL.has(current.state)) { verifierOutcome = interrupted; return; }
@@ -4979,10 +4603,33 @@ class RCCRuntime {
           });
           return;
         }
-        if (result.error === 'native_operational_quality_unverified' ||
-            (result.error === 'native_operational_quality_mismatch' && !result.operational_quality)) {
-          // Checker/custody infrastructure failure is neither a model-quality
-          // signal nor permission to escalate/replay a completed writer.
+        const recorded = current.children.find(c => c.id === node.id);
+        const descent = pendingEscalation(recorded);
+        const mismatch = result.operational_quality?.assessment_state === 'mismatch';
+        if (!descent && (mismatch || result.error === 'native_operational_quality_unverified' ||
+            result.error === 'native_operational_quality_mismatch')) {
+          // R6: a reference (or owner-chosen) node's completed output is the
+          // floor. Only an owner-declared local-only contract runs the one
+          // same-row writer correction; any other failed check, and a checker
+          // (or custody) that was unavailable, delivers the output with a
+          // disclosure. Neither is a model-quality signal or permission to
+          // escalate or replay a completed writer. A certified descent's
+          // failed or unverified check falls to R9 below (one escalation).
+          if (mismatch) {
+            // Persist/settle the failed candidate before any correction.
+            this._recordLedger(attemptID, result, 'not_registered', 'quality_mismatch');
+            if (candidate.scope === 'workspace_write' && result.operational_quality.local_only_verified) {
+              const continuation = await this._prepareQualityCorrection(taskID, node, candidate, result, ticket);
+              if (continuation) await this._executeNode(taskID, node, candidate, releaseReservation, continuation);
+              return;
+            }
+          }
+          if (disclosable(result, candidate.scope)) {
+            this._deliverDisclosed(taskID, node.id, result, qualityDisclosure(result, !mismatch),
+              mismatch ? 'quality_mismatch' : 'completed');
+            return;
+          }
+          // Reported or unsettled effects, or nothing returned: held.
           this._update(taskID, 'operational_checker_held', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             Object.assign(child, {state: 'held', hold_reason: result.error, output: result.output,
@@ -4990,18 +4637,13 @@ class RCCRuntime {
               parity_state: 'unverified', native_receipt: result.native_receipt,
               native_summary: result.native_summary ?? null, usage: result.usage ?? null,
               operational_quality: result.operational_quality ?? null, finished_at_ms: Date.now(), dispatched_at_ms: null});
-            Object.assign(child.attempt_history.at(-1), {state: 'operational_checker_held',
-              native_receipt: result.native_receipt, usage: result.usage ?? null});
-            recordTurnSettlement(child.attempt_history.at(-1), result);
+            const attempt = child.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
+            if (attempt) {
+              attempt.state = mismatch ? 'quality_mismatch' : 'operational_checker_held';
+              Object.assign(attempt, {native_receipt: result.native_receipt, usage: result.usage ?? null});
+              recordTurnSettlement(attempt, result);
+            }
           });
-          return;
-        }
-        if (result.operational_quality?.assessment_state === 'mismatch') {
-          // Persist/settle the failed candidate before any correction. The
-          // existing ladder may not reinterpret this write as a read retry.
-          this._recordLedger(attemptID, result, 'not_registered', 'quality_mismatch');
-          const continuation = await this._prepareQualityCorrection(taskID, node, candidate, result, ticket);
-          if (continuation) await this._executeNode(taskID, node, candidate, releaseReservation, continuation);
           return;
         }
         // A handback or a source repair settles this attempt now; record it
@@ -5019,18 +4661,16 @@ class RCCRuntime {
         if (result.status === 'succeeded') {
           // A registered family verifier runs before the child is deliverable:
           // the child waits (not completed) so the task cannot settle on an
-          // output a ladder may still have to replace.
+          // output an escalation may still have to replace.
           const verifier = this._nodeVerifier(current, node.id, candidate);
-          const recorded = current.children.find(c => c.id === node.id);
-          // A tier route below its reference also fails on a whitespace-only
-          // output or a failure recorded beside the finished attempt.
+          // R9: a certified descent is deliverable only when the source that
+          // admitted it accepts THIS answer (certifiedAnswer); anything else
+          // (empty, error, partial, mismatch, unverified) is discarded, never
+          // held for return, and the node runs once at its reference.
           const deliverable = result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
-            boundedText(result.output, MAX_OUTPUT_BYTES) &&
-            !(pendingEscalation(recorded) && recorded.ladder.source === 'tier' && tierFailureSignal(result));
-          // A cheaper ladder or tier attempt that returned nothing deliverable
-          // is a failure signal: its output is discarded, never held for return.
-          const discard = !deliverable && pendingEscalation(recorded);
+            boundedText(result.output, MAX_OUTPUT_BYTES) && (!descent || certifiedAnswer(recorded.ladder, result));
+          const discard = !deliverable && descent;
           this._update(taskID, 'child_returned', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             child.output = discard ? null : result.output;
@@ -5192,6 +4832,9 @@ class RCCRuntime {
       this._hold(taskID, 'combined_output_empty_or_oversize'); return;
     }
     const only = ordered.length === 1 ? ordered[0] : null;
+    // R6: a delivered child that carries a quality disclosure keeps the whole
+    // task returned_unverified, whatever a parent verifier says.
+    const disclosed = ordered.some(c => c.quality_disclosure != null);
     const originalContractVerified = only?.execution_verified && only?.task_quality === 'task_verified' &&
       only?.operational_quality?.coverage === 'full' &&
       only.operational_quality.assessment_state === 'task_contract_verified' &&
@@ -5200,7 +4843,7 @@ class RCCRuntime {
       let receipt;
       try { receipt = await this._aggregateReceipt(taskID, ordered, output); }
       catch { this._hold(taskID, 'aggregate_receipt_unavailable'); return; }
-      this._hold(taskID, 'parent_task_verifier_unavailable', {
+      this._hold(taskID, disclosed ? 'child_quality_disclosed' : 'parent_task_verifier_unavailable', {
         output, execution_verified: true, task_verified: false,
         task_quality: 'execution_only', parity_state: 'unverified', native_receipt: receipt,
         native_summary: ordered.length === 1 ? ordered[0].native_summary : null,
@@ -5224,7 +4867,7 @@ class RCCRuntime {
       if (['reference_equivalent', 'reference_above'].includes(verdict.parity_state))
         assert(verdict.task_verified === true && verdict.output !== null, 'task_parity_upgrade_invalid');
     } catch { verdict = {task_verified: false, output: null, parity_state: 'unverified', reason: 'task_verifier_unavailable'}; }
-    const verified = verdict.task_verified === true && verdict.output !== null;
+    const verified = !disclosed && verdict.task_verified === true && verdict.output !== null;
     const finalOutput = verdict.output ?? output;
     if (!boundedText(finalOutput, MAX_OUTPUT_BYTES)) {
       this._hold(taskID, 'task_output_empty_or_oversize'); return;
@@ -5237,11 +4880,11 @@ class RCCRuntime {
       state.state = verified ? 'completed' : 'returned_unverified';
       state.result = {output: finalOutput, execution_verified: true,
         task_verified: verified, task_quality: verified ? 'task_verified' : 'execution_only',
-        parity_state: verdict.parity_state, native_receipt: receipt,
+        parity_state: disclosed ? 'unverified' : verdict.parity_state, native_receipt: receipt,
         native_summary: ordered.length === 1 ? ordered[0].native_summary : null,
         native_summaries: ordered.flatMap(c => c.native_summaries ??
           (c.native_summary ? [c.native_summary] : []))};
-      state.error = verified ? null : verdict.reason;
+      state.error = verified ? null : disclosed ? 'child_quality_disclosed' : verdict.reason;
     });
   }
 

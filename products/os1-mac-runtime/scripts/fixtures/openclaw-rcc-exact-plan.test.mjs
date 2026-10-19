@@ -1,5 +1,5 @@
-// Exact explicit diagnostics keep real requested worker executions but do not
-// ask a model to re-plan their already-bound recipients, payloads and scope.
+// Exact explicit diagnostics keep real requested worker executions; the host
+// builds one node per named route (build 407) and no model re-plans them.
 // Real Core/plugin/SQLite + fake native/LLM receipts only; no provider/network.
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
@@ -151,16 +151,22 @@ fs.writeFileSync(path,JSON.stringify(r),{flag:'wx',mode:0o600});console.log(JSON
       await pause(10);
     }
     if (policyMismatch) {
-      assert.equal(result.state, 'held'); assert.equal(result.error, 'planner_failed');
+      assert.equal(result.state, 'held'); assert.equal(result.error, 'rcc_policy_binding_failed');
       assert.equal(plannerCalls, 0); assert.equal(localWorkerCalls, 0);
       assert.ok(result.children.every(child => child.attempt_id === null));
-      const calls = (await readFile(join(root, 'native-calls.log'), 'utf8')).trim().split('\n');
-      assert.ok(calls.every(operation => operation === 'rcc-catalog'), 'mismatched policy never reaches any adapter');
+      const calls = await readFile(join(root, 'native-calls.log'), 'utf8').catch(() => '');
+      assert.equal(calls, '', 'mismatched policy never reaches any native catalog probe or adapter');
       return;
     }
     assert.equal(result.state, 'completed', result.error); assert.equal(result.result.task_verified, true);
     assert.equal(result.children.length, count); assert.equal(plannerCalls, 0); assert.equal(localWorkerCalls, 1);
     assert.deepEqual(result.children.map(child => child.selected_config.surface), ROUTES.slice(0, count).map(route => route.surface));
+    // R0 'exact' (build 407): a named route whose payload is one exact sum
+    // runs its surface's cheapest tier; only the exact result is delivered,
+    // anything else escalates once to that surface's reference.
+    assert.deepEqual(result.children.map(child => `${child.selected_config.model}/${child.selected_config.effort}`),
+      [`${LOCAL_WORKER_MODEL}/none`, 'gpt-6-luna/low', 'claude-haiku-4-5-20251001/none',
+        'claude-haiku-4-5-20251001/none'].slice(0, count));
     assert.deepEqual(result.children.map(child => child.output_summary), ['2', '4', '6', '8'].slice(0, count));
     const calls = (await readFile(join(root, 'native-calls.log'), 'utf8')).trim().split('\n');
     assert.equal(calls.filter(operation => operation === 'rcc-adapter').length, count - 1,

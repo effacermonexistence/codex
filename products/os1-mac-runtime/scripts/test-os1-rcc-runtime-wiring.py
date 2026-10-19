@@ -298,8 +298,9 @@ check("input.now = Date()" in catalog_fn and
       catalog_fn.index("observeNativeSurfaceAuth(") < catalog_fn.index("input.now = Date()"),
       "catalog freshness instant is taken after the Codex/Claude/auth probes, before the builder")
 
-# Build 378: dynamic tier routing. Provider-stated tiers travel in the
-# catalog; the one core picks model and effort per graded node.
+# Build 378: provider-stated tiers travel in the catalog. Build 407 (R0): the
+# one core binds every node by one admission law, at the reference unless a
+# certifying source admits a cheaper read-only tuple.
 TIERS = (ROOT / "Sources/OS1Context/ModelTiers.swift").read_text()
 BUILDER = (ROOT / "Sources/OS1Context/RCCNativeCatalogBuilder.swift").read_text()
 table = section(TIERS, "public static let table: [String: ModelTier] = [", "]")
@@ -311,10 +312,28 @@ check('"gpt-6-astra": .frontier' in table and '"gpt-6.1-sol": .workhorse' in tab
 check('object["model_tiers"] = output.modelTiers' in BUILDER and "ModelTiers.tier(of: $0.model) == .frontier" in BUILDER,
       "catalog builder emits model_tiers and the frontier reference explanation")
 check("export const TIER_ROUTES" in RUNTIME and "'model_tiers'" in RUNTIME and "function tierRouteCandidate(" in RUNTIME and
-      "referenceOnly: escalated" in RUNTIME and "pendingEscalation(" in RUNTIME,
-      "core routes graded nodes by tier and escalates a failed read-only answer to the reference")
-check("route_class picks the reasoning tier" in PLUGIN and "never name a model, provider, account, effort or candidate" in PLUGIN,
-      "planner prompt states tier semantics and still never sees candidates")
+      "referenceOnly: escalated" in RUNTIME and "pendingEscalation(" in RUNTIME and
+      "export function admittedRoute(" in RUNTIME and "function certifiedAnswer(" in RUNTIME,
+      "core binds every node by the admission law and escalates a rejected certified descent once to the reference")
+check("hostAutoPlan: true" in PLUGIN and "export function hostPlan(" in RUNTIME and
+      "plan: async" not in section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.") and
+      not re.search(r"GRADED_PLAN|buildBoundedPlannerInput|decodePlannerResponse|route_class picks", PLUGIN) and
+      not re.search(r"tierCostGate|cheaperRouteAdmission|LADDER_MIN_VERIFIED_PASSES|costGate", RUNTIME),
+      "Auto plans are host-built: no planner model call, no graded planner path, no cost gate or ledger ladder")
+# Build 407-g: the local model is reached only through intent resolution and
+# the explicit local route, never to plan Auto; the fixtures that guard the
+# host plan, the admission law and the reference floor run in every release
+# (hostAutoPlan defaults to false for injected-plan fixtures).
+registration = section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.")
+check(registration.count("api.runtime.llm.complete(") == 2 and
+      re.search(r"localModelExecutor\(\{stateDir,\s*complete: request => plannerScope\.runInAsyncScope\(\(\) => api\.runtime\.llm\.complete\(request\)\)", registration) and
+      re.search(r"resolveIntent: routingIntentResolver\(\{stateDir,\s*complete: request => plannerScope\.runInAsyncScope\(\(\) => api\.runtime\.llm\.complete\(request\)\)", registration) and
+      "purpose: 'os1.rcc.internal-routing-intent'" in PLUGIN,
+      "the local model completes only intent resolution and the explicit local route; Auto never asks it for a plan")
+for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rcc-reference-floor"):
+    check(f'node --test "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
+          (ROOT / f"scripts/fixtures/{fixture}.test.mjs").is_file(),
+          "release runs the build-407 fixture " + fixture)
 
 # Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
 # sign-in looked signed out on every live catalog.

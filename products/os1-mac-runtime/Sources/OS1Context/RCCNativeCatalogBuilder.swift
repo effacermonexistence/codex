@@ -157,6 +157,13 @@ public enum RCCNativeCatalogBuilder {
         /// The local model's readiness, probed only when an explicit route
         /// names the local surface; nil otherwise (no local row).
         public var localModel: LocalModelObservation? = nil
+        /// Build 407 (R2): the host's `ownerRequestRunsReadOnly` verdict for
+        /// the request. Nil (callers before 407) emits no admission facts.
+        public var ownerScope: RCCRuntimeContract.Scope? = nil
+        /// Build 407 (R0(a)): an owner contract the host re-bound at catalog time.
+        public var taskContract: RCCRuntimeContract.TaskContractFact? = nil
+        /// Build 407 (R0(c), R11): the signed class table (empty as shipped).
+        public var classTable: RCCClassTable = .frozen
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -198,6 +205,18 @@ public enum RCCNativeCatalogBuilder {
         public var nativeReferenceEfforts: [String: [String: String]] = [:]
         /// An explicit route test's per-route intents (see Input).
         public var explicitRouteIntents: [RoutingIntent]? = nil
+        /// Build 407 admission facts (see `admissionFacts`); nil before 407.
+        public var admission: AdmissionFacts? = nil
+    }
+    /// Build 407: what the Core admission law reads besides the rows. Facts
+    /// only: no row is added, removed or reordered by them.
+    public struct AdmissionFacts: Equatable, Sendable {
+        public var ownerScope: RCCRuntimeContract.Scope
+        public var chatLaneEligible: Bool
+        public var requestClass: RCCRuntimeContract.RequestClass
+        public var taskContract: RCCRuntimeContract.TaskContractFact?
+        public var classCertificate: RCCRuntimeContract.ClassCertificate?
+        public var classProviderPin: String?
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -310,6 +329,40 @@ public enum RCCNativeCatalogBuilder {
         let present = Set(available.map(\.slug))
         let kept = quotaExcluded.filter { !present.contains($0.slug) }
         return (available + kept, Set(kept.map(\.slug)))
+    }
+
+    // MARK: Admission facts (build 407)
+
+    /// The deterministic request class (R0/R2), from host predicates only:
+    /// an explicit route test first; then the R2 scope (read-only when the
+    /// catalog offers no writer row (the host requires read-only, or the
+    /// request's own resolved scope is read-only), the owner request runs
+    /// read-only, or the chat lane takes it); read-only work splits into a
+    /// self-contained text operation, a chat-lane question, work over
+    /// attached material, or a lookup. A writer class therefore always has
+    /// writer rows to bind. Build 408 narrows `chat_explanatory` to
+    /// explanatory interrogatives.
+    public static func requestClass(explicitRoute: Bool, catalogReadOnly: Bool, ownerScope: RCCRuntimeContract.Scope,
+                                    chatLaneEligible: Bool, textOperation: Bool, hasMaterial: Bool)
+        -> RCCRuntimeContract.RequestClass {
+        if explicitRoute { return .explicitRoute }
+        guard catalogReadOnly || ownerScope == .readOnly || chatLaneEligible else { return .writer }
+        if chatLaneEligible { return textOperation ? .textOperation : .chatExplanatory }
+        return hasMaterial ? .readonlyMaterial : .readonlyLookup
+    }
+
+    /// The admission facts for `input`, or nil when the host gave no owner
+    /// scope. A contract or certificate is carried only as found; the table's
+    /// entries for other classes never reach the catalog.
+    public static func admissionFacts(_ input: Input) -> AdmissionFacts? {
+        guard let ownerScope = input.ownerScope else { return nil }
+        let requestClass = requestClass(explicitRoute: input.explicitRouteSurfaces != nil,
+            catalogReadOnly: input.requireReadOnly || ScopeResolution.resolve(input.request).scope == .readOnly,
+            ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible,
+            textOperation: ClaudeChatLane.selfContainedTextOperation(input.request), hasMaterial: input.hasMaterialRefs)
+        return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,
+                         taskContract: input.taskContract, classCertificate: input.classTable.certificate(for: requestClass),
+                         classProviderPin: input.classTable.providerPin(for: requestClass))
     }
 
     /// Providers worth a native probe under the current preference, capacity,
@@ -573,7 +626,8 @@ public enum RCCNativeCatalogBuilder {
         }
         return Output(candidates: rows.map(\.fields) + local, exclusions: exclusions, pools: rankings, intent: intent,
                       modelTiers: tiers, quotaScores: quotaScores, nativeReferenceEfforts: nativeReferenceEfforts,
-                      explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents)
+                      explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents,
+                      admission: admissionFacts(input))
     }
 
     /// The local execution row of an explicit route test that names the local
@@ -628,6 +682,21 @@ public enum RCCNativeCatalogBuilder {
                 intent.isEmpty ? NSNull() : ["effort": intent.effort.map { $0 as Any } ?? NSNull(),
                                              "model_family": intent.modelFamily.map { $0 as Any } ?? NSNull()]
             }
+        }
+        // Build 407, all optional: the admission facts always together, a
+        // contract/certificate/pin only when one exists for this request.
+        if let facts = output.admission {
+            object["owner_scope"] = facts.ownerScope.rawValue
+            object["chat_lane_eligible"] = facts.chatLaneEligible
+            object["request_class"] = facts.requestClass.rawValue
+            if let contract = facts.taskContract {
+                object["task_contract"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(contract))
+            }
+            if let certificate = facts.classCertificate {
+                object["class_certificates"] = [facts.requestClass.rawValue:
+                    try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(certificate))]
+            }
+            if let pin = facts.classProviderPin { object["class_provider_pins"] = [facts.requestClass.rawValue: pin] }
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }

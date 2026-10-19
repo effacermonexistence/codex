@@ -1,17 +1,18 @@
-// Dynamic tier routing (build 378): the planner grades, the host binds the
-// cheapest tier/effort for the grade, REVAS escalates a failed read-only
-// answer once to the reference. Pure resolver checks plus real durable-runtime
-// fixtures with a fake executor: no provider, model, network or HOME state.
+// Tier routing under the one admission law (build 407, R0): every node binds
+// the reference (the frontier model at its highest admitted effort, or the
+// reference the owner's words leave) unless a certifying source admits a
+// cheaper read-only tuple; a certified descent whose source does not accept
+// its answer escalates once to the reference (R9). No model grade lowers a
+// tuple. Pure resolver checks plus real durable-runtime fixtures with a fake
+// executor: no provider, model, network or HOME state.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { COST_GATE_CONFIDENCE, COST_GATE_DRAWS, COST_GATE_MIN_SAMPLES, costGateExploreDraw, costGateRandom,
-  costGateRecord, costSummary,
-  createRCCRuntime, hostContextFingerprint, MODEL_TIERS, openRoutingLedger, resolveRoutePlan, routingAvailability,
-  sampleBeta, sampleGamma, TIER_ROUTES, tierCostEvidence, tierCostGate } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import { createRCCRuntime, hostContextFingerprint, MODEL_TIERS, resolveRoutePlan,
+  TIER_ROUTES } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
 async function fixture(t) {
@@ -25,9 +26,7 @@ function task(dir, request, extras = {}) {
   const host = {workspace: dir, context: null, provider_preference: 'auto',
     codex_session_id: extras.codexSession ?? null, claude_session_id: extras.claudeSession ?? null,
     require_read_only: extras.write !== true, owner_policy: null};
-  // A fixed task id (extras.taskID) makes a cost-gate exploration draw,
-  // which is seeded per task and node, reproducible in a fixture.
-  return {schema: 1, task_id: extras.taskID ?? 'task-' + randomUUID(), request, request_sha256: sha(request), objective: request,
+  return {schema: 1, task_id: 'task-' + randomUUID(), request, request_sha256: sha(request), objective: request,
     policy_sha256: sha(policyText), source_fingerprint: hostContextFingerprint(host), mode: 'auto', material_refs: [],
     budget: {max_attempts: extras.attempts ?? 2, max_parallel: 4, max_cost_units: null, max_duration_ms: 60_000},
     host_context: host,
@@ -88,9 +87,17 @@ function tierCatalog(request, {first = 'codex', write = false, chat = false, cod
     model_tiers: Object.fromEntries(Object.entries(tiers).filter(([model]) => models.has(model))),
     ...(intent ? {routing_intent: intent} : {})};
 }
-const graded = (id, routeClass, options = {}) => ({id, instruction: options.instruction ?? 'Do one bounded task',
-  dependencies: [], kind: 'agent', ...(routeClass === undefined ? {} : {route_class: routeClass}),
-  scope: options.scope ?? 'read_only', owned_paths: options.scope === 'workspace_write' ? ['**'] : [], context_refs: []});
+// A host node (what hostPlan builds); `graded` adds a planner-style grade,
+// which the resolver accepts for its shape and ignores.
+const unbound = (id, options = {}) => ({id, instruction: options.instruction ?? 'Do one bounded task',
+  dependencies: [], kind: 'agent', scope: options.scope ?? 'read_only',
+  owned_paths: options.scope === 'workspace_write' ? ['**'] : [], context_refs: []});
+const graded = (id, routeClass, options = {}) => ({...unbound(id, options), route_class: routeClass});
+// R0 (b): a registered gold-blind verifier for the certified class is the
+// fixtures' certifying source. Production registers none and ships an empty
+// class table, so production binds every Auto node at its reference.
+const passes = async () => ({passed: true, reason: 'fixture'});
+const CERTIFY = new Map([['trivial:read_only:agent', passes], ['trivial:read_only:chat', passes]]);
 const plan = (request, nodes, finalNodeID) => ({schema: 1, task_id: request.task_id, request_sha256: request.request_sha256, nodes,
   ...(finalNodeID === undefined ? {} : {final_node_id: finalNodeID})});
 function execution(ticket, overrides = {}) {
@@ -101,16 +108,21 @@ function execution(ticket, overrides = {}) {
     output: `answer from ${ticket.selected_config.model}/${ticket.selected_config.effort}`,
     execution_verified: true, task_verified: false, task_quality: 'execution_only', parity_state: 'unverified',
     native_receipt: '/private/fixture/receipt-' + ticket.attempt_id, usage: {input_tokens: 4, output_tokens: 2},
-    native_summary: JSON.stringify({node: ticket.node_id}), ...overrides};
+    native_summary: JSON.stringify({node: ticket.node_id}), native_turn_terminated: true, ...overrides};
 }
 const taskVerdict = ({task: value, children}) => ({schema: 1, task_id: value.task_id,
   task_verified: children.every(c => c.state === 'completed'), output: children.map(c => c.output).join('\n'),
   parity_state: 'unverified', reason: 'fixture_deterministic_coverage'});
 const wait = (runtime, request) => runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 10_000});
 const route = (decision) => `${decision.quota_pool}/${decision.model}/${decision.effort}`;
-function resolve(request, catalog, routeClass, options = {}) {
-  return resolveRoutePlan(plan(request, [graded('n', routeClass, options)]), request, catalog, Date.now());
+// 'reference': no certifying source; 'certified': the fixture verifier certifies.
+function resolve(request, catalog, admission = 'reference', options = {}) {
+  return resolveRoutePlan(plan(request, [unbound('n', options)]), request, catalog, Date.now(),
+    admission === 'certified' ? {verifierRegistry: CERTIFY} : {});
 }
+const certifiedLadder = (cheap, reference) => ({source: 'tier', admitted_by: 'verifier', certificate_id: null,
+  format_check: null, cheap_model: cheap.model, cheap_effort: cheap.effort, reference_model: reference?.model ?? null,
+  reference_effort: reference?.effort ?? null, reference_candidate_id: reference?.id ?? null});
 
 // Source-derived regression: the installed inventory admits Astra/ultra, but
 // the old JS referenceEffort capped it at max even after native admission.
@@ -133,58 +145,56 @@ function nativeCeilings(catalog, overrides = {}) {
   return {...catalog, native_reference_efforts: ceilings};
 }
 
-test('highest admitted reference does not raise cheap first dispatch: deep and guards use ultra, cheap tiers remain low/medium', () => {
+test('the reference is the highest admitted row; a certified descent keeps its cheap tuple and escalates to that row', () => {
   const request = task('/tmp', 'Answer one bounded question');
   const catalog = tierCatalog(request, {codex: HIGHEST_CODEX, claude: []});
-  const trivial = resolve(request, catalog, 'trivial');
-  assert.equal(route(trivial.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.equal(trivial.routes.n.ladder.reference_candidate_id, key('gpt-6-astra', 'ultra', 'read_only', 'codex'));
-  assert.equal(trivial.routes.n.reference_effort, 'ultra');
-  const standard = resolve(request, catalog, 'standard');
-  assert.equal(route(standard.decisions.n), 'openai_codex/gpt-6.1-sol/medium');
-  assert.equal(standard.routes.n.ladder.reference_effort, 'ultra');
-  const deep = resolve(request, catalog, 'deep');
-  assert.equal(route(deep.decisions.n), 'openai_codex/gpt-6-astra/ultra');
-  assert.deepEqual(deep.routes.n, {kind: 'reference', reference_effort: 'ultra', ladder: null});
+  const reference = resolve(request, catalog);
+  assert.equal(route(reference.decisions.n), 'openai_codex/gpt-6-astra/ultra');
+  assert.deepEqual(reference.routes.n, {kind: 'reference', reference_effort: 'ultra', ladder: null});
+  const certified = resolve(request, catalog, 'certified');
+  assert.equal(route(certified.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(certified.routes.n.ladder.reference_candidate_id, key('gpt-6-astra', 'ultra', 'read_only', 'codex'));
+  assert.equal(certified.routes.n.reference_effort, 'ultra');
   // Legacy persisted catalogs use the same ceiling without inventing tiers.
   const legacy = {...catalog}; delete legacy.model_tiers;
-  assert.equal(route(resolve(request, legacy, 'deep').decisions.n), 'openai_codex/gpt-6-astra/ultra');
+  assert.equal(route(resolve(request, legacy).decisions.n), 'openai_codex/gpt-6-astra/ultra');
+  assert.equal(route(resolve(request, legacy, 'certified').decisions.n), 'openai_codex/gpt-6-astra/ultra',
+    'an older catalog has no tiers to descend');
 });
 
 test('the highest reference preserves exact effort constraints and never invents an unsupported row', () => {
   const request = task('/tmp', 'Use exactly the requested reasoning setting');
   const max = tierCatalog(request, {codex: HIGHEST_CODEX, claude: [],
     intent: {effort: 'max', model_family: 'astra'}});
-  assert.equal(route(resolve(request, max, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
+  assert.equal(route(resolve(request, max).decisions.n), 'openai_codex/gpt-6-astra/max');
   const unsupported = tierCatalog(request, {claude: [], codex: [['gpt-6-astra', ['low', 'ultra']]],
     intent: {effort: 'max', model_family: 'astra'}});
-  assert.throws(() => resolve(request, unsupported, 'deep'), /no_dispatchable_candidate/);
+  assert.throws(() => resolve(request, unsupported), /no_dispatchable_candidate/);
   const legacy = {...unsupported}; delete legacy.model_tiers;
-  assert.throws(() => resolve(request, legacy, 'deep'), /no_dispatchable_candidate/,
+  assert.throws(() => resolve(request, legacy), /no_dispatchable_candidate/,
     'an older catalog must not substitute ultra or low for explicit max');
   const ultraOnly = tierCatalog(request, {claude: [], codex: [['gpt-6-astra', ['ultra']]]});
-  assert.equal(resolve(request, ultraOnly, 'deep').decisions.n.effort, 'ultra');
+  assert.equal(resolve(request, ultraOnly).decisions.n.effort, 'ultra');
 });
 
-test('an admitted but unavailable highest effort holds instead of quietly using max', async t => {
+test('an admitted but unavailable highest effort holds: no lower effort stands in, and no descent runs without it', async t => {
   const dir = await fixture(t);
   const options = {codex: HIGHEST_CODEX, claude: [], change: (model, effort) =>
     model === 'gpt-6-astra' && effort === 'ultra' ? {availability: 'unavailable'} : {}};
   const request = task(dir, 'Use the actual reference if needed');
   const catalog = tierCatalog(request, options);
-  assert.throws(() => resolve(request, catalog, 'deep'), /no_dispatchable_candidate/);
-  const trivial = resolve(request, catalog, 'trivial');
-  assert.equal(trivial.decisions.n.effort, 'low');
-  assert.equal(trivial.routes.n.ladder.reference_effort, 'ultra');
-  const failed = await run(t, dir, 'highest unavailable', {catalog: options,
-    execute: ticket => execution(ticket, {output: ''})});
-  assert.deepEqual(failed.tuples, ['gpt-6-luna/low']);
-  assert.equal(failed.done.state, 'held');
-  assert.equal(failed.done.error, 'no_dispatchable_candidate:read_only:deep');
-  assert.equal(failed.done.result, null);
+  assert.throws(() => resolve(request, catalog), /no_dispatchable_candidate:read_only:deep/);
+  // R9: a descent needs a reference that can dispatch now.
+  assert.throws(() => resolve(request, catalog, 'certified'), /no_dispatchable_candidate:read_only:deep/);
+  const held = await run(t, dir, 'highest unavailable', {catalog: options,
+    execute: () => { throw Error('must not dispatch'); }});
+  assert.deepEqual(held.tuples, []);
+  assert.equal(held.done.state, 'held');
+  assert.equal(held.done.error, 'no_dispatchable_candidate:openai_codex=unavailable');
+  assert.equal(held.done.result, null);
 });
 
-test('native reference_unavailable blocks a missing highest row without discarding cheap tiers or another provider', async t => {
+test('native reference_unavailable blocks that pool reference and its descents; another pool reference serves both', async t => {
   const dir = await fixture(t);
   const exclude = catalog => ({...catalog,
     exclusions: [{provider: 'codex', reason: 'reference_unavailable', count: 1}]});
@@ -193,41 +203,46 @@ test('native reference_unavailable blocks a missing highest row without discardi
   // catalog truthfully retains max/low rows plus this exclusion, not a
   // caller-fabricated ultra candidate or an invented model-quality claim.
   const unavailable = exclude(tierCatalog(request, {claude: []}));
-  const cheap = resolve(request, unavailable, 'trivial');
-  assert.equal(route(cheap.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.equal(cheap.routes.n.ladder.reference_candidate_id, null);
-  assert.equal(cheap.routes.n.reference_effort, null);
-  assert.throws(() => resolve(request, unavailable, 'deep'), /no_dispatchable_candidate/);
+  assert.throws(() => resolve(request, unavailable), /no_dispatchable_candidate/);
+  assert.throws(() => resolve(request, unavailable, 'certified'), /no_dispatchable_candidate/,
+    'no cheap tuple runs without a runnable reference above it');
   const legacy = {...unavailable}; delete legacy.model_tiers;
-  assert.throws(() => resolve(request, legacy, 'deep'), /no_dispatchable_candidate/);
-  const anotherPool = resolve(request, exclude(tierCatalog(request)), 'deep');
-  assert.equal(route(anotherPool.decisions.n), 'anthropic_shared/claude-fable-5-1/max');
+  assert.throws(() => resolve(request, legacy), /no_dispatchable_candidate/);
+  const anotherPool = exclude(tierCatalog(request));
+  assert.equal(route(resolve(request, anotherPool).decisions.n), 'anthropic_shared/claude-fable-5-1/max');
+  const descent = resolve(request, anotherPool, 'certified');
+  assert.equal(route(descent.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(descent.routes.n.ladder.reference_candidate_id, key('claude-fable-5-1', 'max', 'read_only', 'claude'));
+  assert.match(descent.decisions.n.reason, /;escalation_reference_other_pool;/);
   const explicitMax = {...unavailable, routing_intent: {effort: 'max', model_family: 'astra'}};
-  assert.equal(route(resolve(request, explicitMax, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max',
+  assert.equal(route(resolve(request, explicitMax).decisions.n), 'openai_codex/gpt-6-astra/max',
     'an admitted exact owner tuple is not replaced by the automatic ceiling');
-  const failed = await run(t, dir, 'missing highest guard', {
-    refresh: value => exclude(tierCatalog(value, {claude: []})), execute: ticket => execution(ticket, {output: ''})});
-  assert.deepEqual(failed.tuples, ['gpt-6-luna/low']);
-  assert.equal(failed.done.state, 'held');
-  assert.equal(failed.done.error, 'ladder_reference_unavailable');
-  assert.equal(failed.done.result, null);
+  const held = await run(t, dir, 'missing highest guard', {
+    refresh: value => exclude(tierCatalog(value, {claude: []})), execute: () => { throw Error('must not dispatch'); }});
+  assert.deepEqual(held.tuples, []);
+  assert.equal(held.done.state, 'held');
+  assert.equal(held.done.error, 'no_dispatchable_candidate:openai_codex=no_reference');
 });
 
-test('a failed cheap candidate reaches ultra once and a failed ultra verifier is held without fallback', async t => {
+test('a failed descent reaches ultra once; a failed ultra verifier is delivered with its disclosure, never replayed', async t => {
   const dir = await fixture(t);
   const catalog = {codex: HIGHEST_CODEX, claude: []};
   const escalated = await run(t, dir, 'highest escalation', {catalog,
     execute: (ticket, count) => execution(ticket, count === 1 ? {output: ''} : {})});
   assert.deepEqual(escalated.tuples, ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
-  assert.equal(escalated.done.state, 'completed');
+  assert.equal(escalated.done.state, 'completed', escalated.done.error);
   assert.equal(escalated.done.result.output, 'answer from gpt-6-astra/ultra');
   const rejected = await run(t, dir, 'highest verifier rejected', {catalog,
     verifierRegistry: new Map([['trivial:read_only:agent', async () => ({passed: false, reason: 'fixture rejected'})]]),
     execute: ticket => execution(ticket)});
   assert.deepEqual(rejected.tuples, ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
+  // R6: the reference's completed answer is delivered, never held or nulled.
   assert.equal(rejected.done.state, 'returned_unverified');
-  assert.equal(rejected.done.error, 'node_verifier_failed');
-  assert.equal(rejected.done.children[0].state, 'held');
+  assert.equal(rejected.done.error, 'child_quality_disclosed');
+  assert.equal(rejected.done.children[0].state, 'completed');
+  assert.deepEqual(rejected.done.children[0].quality_disclosure,
+    {coverage: null, failed_check_ids: ['node_verifier'], witness_sha256: null});
+  assert.equal(rejected.done.result.output, 'answer from gpt-6-astra/ultra');
   assert.equal(rejected.done.result.task_verified, false);
   assert.equal(rejected.done.result.parity_state, 'unverified');
 });
@@ -240,8 +255,8 @@ test('native model ceilings are model-specific: a preferred frontier never borro
   const catalog = nativeCeilings(tierCatalog(request, {claude: [],
     codex: [['gpt-6-astra', ['low', 'max']], ['gpt-6-sol', ['low', 'ultra']], ['gpt-6-luna', ['low']]],
     tiers: {...TIERS, 'gpt-6-sol': 'frontier'}}));
-  assert.equal(route(resolve(request, catalog, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
-  const cheap = resolve(request, catalog, 'trivial');
+  assert.equal(route(resolve(request, catalog).decisions.n), 'openai_codex/gpt-6-astra/max');
+  const cheap = resolve(request, catalog, 'certified');
   assert.equal(route(cheap.decisions.n), 'openai_codex/gpt-6-luna/low');
   assert.equal(cheap.routes.n.ladder.reference_model, 'gpt-6-astra');
   assert.equal(cheap.routes.n.ladder.reference_effort, 'max');
@@ -255,7 +270,7 @@ test('native provider ceiling metadata never intercepts a deterministic local ex
     const models = new Set(candidates.map(candidate => candidate.model));
     const catalog = nativeCeilings({...tierCatalog(request), candidates,
       model_tiers: Object.fromEntries(Object.entries(TIERS).filter(([model]) => models.has(model)))});
-    const resolved = resolveRoutePlan(plan(request, [{...graded('n', 'trivial'),
+    const resolved = resolveRoutePlan(plan(request, [{...unbound('n'),
       kind: 'deterministic', instruction: '2+3'}]), request, catalog, Date.now());
     assert.equal(resolved.decisions.n.resolved_candidate_id, 'local-exact');
     assert.equal(resolved.decisions.n.effort, 'none');
@@ -270,24 +285,22 @@ test('a missing native ceiling holds only that model reference, not another expl
     exclusions: [{provider: 'codex', reason: 'reference_unavailable', count: 1}]});
   const request = task(dir, 'A native supported setting is not a signed executable row');
   const catalog = decorate(tierCatalog(request, options));
-  assert.throws(() => resolve(request, catalog, 'deep'), /no_dispatchable_candidate/);
-  const cheap = resolve(request, catalog, 'trivial');
-  assert.equal(route(cheap.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.equal(cheap.routes.n.ladder.reference_candidate_id, null);
+  assert.throws(() => resolve(request, catalog), /no_dispatchable_candidate/);
+  assert.throws(() => resolve(request, catalog, 'certified'), /no_dispatchable_candidate/);
   assert.equal(catalog.candidates.some(candidate => candidate.effort === 'ultra'), false);
   for (const effort of [null, 'low', 'max']) {
     const family = {...catalog, routing_intent: {model_family: 'sol', effort}};
-    assert.equal(route(resolve(request, family, 'deep').decisions.n),
+    assert.equal(route(resolve(request, family).decisions.n),
       `openai_codex/gpt-6-sol/${effort ?? 'max'}`, 'another family does not inherit Astra\'s missing ultra');
   }
   for (const effort of ['low', 'max'])
-    assert.equal(resolve(request, {...catalog, routing_intent: {model_family: 'astra', effort}}, 'deep').decisions.n.effort,
+    assert.equal(resolve(request, {...catalog, routing_intent: {model_family: 'astra', effort}}).decisions.n.effort,
       effort, 'an exact signed owner effort overrides the automatic native ceiling');
-  const failed = await run(t, dir, 'model ceiling missing guard', {
-    refresh: value => decorate(tierCatalog(value, options)), execute: ticket => execution(ticket, {output: ''})});
-  assert.deepEqual(failed.tuples, ['gpt-6-luna/low']);
-  assert.equal(failed.done.state, 'held');
-  assert.equal(failed.done.error, 'ladder_reference_unavailable');
+  const held = await run(t, dir, 'model ceiling missing guard', {
+    refresh: value => decorate(tierCatalog(value, options)), execute: () => { throw Error('must not dispatch'); }});
+  assert.deepEqual(held.tuples, []);
+  assert.equal(held.done.state, 'held');
+  assert.match(held.done.error, /^no_dispatchable_candidate:openai_codex=/);
 });
 
 test('a legacy catalog with native metadata still honours the Auto provider reference boundary', () => {
@@ -295,12 +308,12 @@ test('a legacy catalog with native metadata still honours the Auto provider refe
   const catalog = {...nativeCeilings(tierCatalog(request, {claude: [], codex: [['gpt-6.1-sol', ['low', 'max']]]})),
     exclusions: [{provider: 'codex', reason: 'reference_unavailable', count: 1}]};
   delete catalog.model_tiers;
-  assert.throws(() => resolve(request, catalog, 'deep'), /no_dispatchable_candidate/,
+  assert.throws(() => resolve(request, catalog), /no_dispatchable_candidate/,
     'the optional metadata map cannot erase an ordinary Auto reference_unavailable boundary');
   const family = {...catalog, routing_intent: {model_family: 'sol', effort: null}};
-  assert.equal(route(resolve(request, family, 'deep').decisions.n), 'openai_codex/gpt-6.1-sol/max');
+  assert.equal(route(resolve(request, family).decisions.n), 'openai_codex/gpt-6.1-sol/max');
   for (const effort of ['low', 'max']) {
-    assert.equal(resolve(request, {...catalog, routing_intent: {model_family: null, effort}}, 'deep').decisions.n.effort,
+    assert.equal(resolve(request, {...catalog, routing_intent: {model_family: null, effort}}).decisions.n.effort,
       effort, 'exact owner effort still wins');
   }
 });
@@ -312,7 +325,7 @@ test('same-pool explicit fan-out keeps each family native ceiling and its own ma
     tiers: {...TIERS, 'gpt-6-sol': 'frontier'}};
   const catalog = nativeCeilings(tierCatalog(request, options), {codex: {'gpt-6-astra': 'ultra'}});
   const bind = (value, intents, indices = [0, 1]) => Object.values(resolveRoutePlan(plan(request,
-    indices.map(index => routeNode(index, 'deep', routes))), request,
+    indices.map(index => routeNode(index, routes))), request,
   {...value, explicit_route_intents: intents}, Date.now()).decisions).map(d => `${d.model}/${d.effort}`);
   const families = [{model_family: 'astra', effort: null}, {model_family: 'sol', effort: null}];
   assert.throws(() => bind(catalog, families), /no_dispatchable_candidate/,
@@ -331,104 +344,76 @@ test('same-pool explicit fan-out keeps each family native ceiling and its own ma
 
 // ---- Pure resolver --------------------------------------------------------
 
-test('tier lists are the owner contract: ordered (tier, effort) per class, deep is the reference only', () => {
+test('tier lists are the owner contract: the certified descent list and the reference', () => {
   assert.deepEqual(MODEL_TIERS, ['frontier', 'workhorse', 'efficient', 'fast']);
   assert.deepEqual(TIER_ROUTES, {
     trivial: [['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']],
-    standard: [['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high'], ['workhorse', 'xhigh'],
-      ['frontier', 'reference']],
     deep: [['frontier', 'reference']]});
-  assert.ok(Object.isFrozen(TIER_ROUTES) && Object.isFrozen(TIER_ROUTES.standard));
+  assert.ok(Object.isFrozen(TIER_ROUTES) && Object.isFrozen(TIER_ROUTES.trivial));
 });
 
-test('trivial, standard and deep bind the cheapest tier for the grade in the first pool that can serve it', () => {
+test('R0: an uncertified node binds the reference whatever its grade; a certified one the cheapest certified tier', () => {
   const request = task('/tmp', 'Answer one question');
   const codexFirst = tierCatalog(request), claudeFirst = tierCatalog(request, {first: 'claude'});
-  // Trivial: fast/low (Codex luna). Claude's fast model, Haiku 4.5, has no
-  // effort control (its one profile is "none"): it satisfies fast/low.
-  const trivial = resolve(request, codexFirst, 'trivial').decisions.n;
-  assert.equal(route(trivial), 'openai_codex/gpt-6-luna/low');
-  assert.equal(trivial.tier, 'fast');
-  assert.equal(trivial.reason, 'resolver;route_tier;class_trivial;tier_list_0;tier_fast;pool_rank_0;effort_low;' +
-    'escalation_reference_same_pool;agent_surface');
-  assert.deepEqual(trivial.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
-    reference_model: 'gpt-6-astra'});
-  const claudeTrivial = resolve(request, claudeFirst, 'trivial').decisions.n;
-  assert.equal(route(claudeTrivial), 'anthropic_shared/claude-haiku-4-5-20251001/none');
-  assert.equal(claudeTrivial.tier, 'fast');
-  assert.equal(claudeTrivial.reason, 'resolver;route_tier;class_trivial;tier_list_0;tier_fast;pool_rank_0;' +
-    'effort_none;escalation_reference_same_pool;agent_surface');
-  assert.deepEqual(claudeTrivial.ladder, {cheap_effort: 'none', reference_effort: 'max',
-    cheap_model: 'claude-haiku-4-5-20251001', reference_model: 'claude-fable-5-1'});
-  // Standard: workhorse/medium (Codex 6.1-sol, Claude opus by its resolved
-  // ID: the opus alias has no medium profile).
-  const standard = resolve(request, codexFirst, 'standard').decisions.n;
-  assert.equal(route(standard), 'openai_codex/gpt-6.1-sol/medium');
-  assert.equal(standard.tier, 'workhorse');
-  assert.match(standard.reason, /^resolver;route_tier;class_standard;tier_list_0;tier_workhorse;/);
-  const claudeStandard = resolve(request, claudeFirst, 'standard').decisions.n;
-  assert.equal(route(claudeStandard), 'anthropic_shared/claude-opus-5-5/medium');
-  assert.match(claudeStandard.reason, /^resolver;route_tier;class_standard;tier_list_0;tier_workhorse;/);
-  assert.deepEqual(claudeStandard.ladder, {cheap_effort: 'medium', reference_effort: 'max',
-    cheap_model: 'claude-opus-5-5', reference_model: 'claude-fable-5-1'});
-  // Haiku (fast) is no standard entry: it never runs standard or deep work.
-  for (const routeClass of ['standard', 'deep'])
-    assert.notEqual(resolve(request, claudeFirst, routeClass).decisions.n.model, 'claude-haiku-4-5-20251001');
-  // Deep: the frontier reference at max, never the workhorse.
-  const deep = resolve(request, codexFirst, 'deep');
+  // Uncertified: the frontier reference at its highest admitted effort.
+  const deep = resolve(request, codexFirst);
   assert.equal(route(deep.decisions.n), 'openai_codex/gpt-6-astra/max');
   assert.equal(deep.decisions.n.tier, 'frontier');
-  assert.equal(deep.decisions.n.reason, 'resolver;route_reference;class_deep;tier_list_0;tier_frontier;pool_rank_0;' +
-    'effort_max;agent_surface');
+  assert.equal(deep.decisions.n.route_class, 'deep');
+  assert.equal(deep.decisions.n.reason, 'resolver;route_reference;admitted_reference_uncertified;tier_frontier;' +
+    'pool_rank_0;effort_max;agent_surface');
   assert.equal(Object.hasOwn(deep.decisions.n, 'ladder'), false, 'the reference itself has nothing to escalate to');
   assert.deepEqual(deep.routes.n, {kind: 'reference', reference_effort: 'max', ladder: null});
-  const claudeDeep = resolve(request, claudeFirst, 'deep').decisions.n;
-  assert.equal(route(claudeDeep), 'anthropic_shared/claude-fable-5-1/max');
-  for (const decision of [deep.decisions.n, claudeDeep])
-    assert.ok(!['gpt-6.1-sol', 'claude-opus-5-5', 'opus'].includes(decision.model));
-  // A model with no tier is never chosen by tier: gpt-6-sol and daybreak
-  // never run, whatever the class.
-  for (const routeClass of ['trivial', 'standard', 'deep'])
-    assert.ok(!['gpt-6-sol', 'gpt-daybreak-blue-latest'].includes(resolve(request, codexFirst, routeClass).decisions.n.model));
+  assert.equal(route(resolve(request, claudeFirst).decisions.n), 'anthropic_shared/claude-fable-5-1/max');
+  // A model-authored grade certifies nothing: every grade binds the reference.
+  for (const routeClass of ['trivial', 'standard', 'deep', 'flagship', null, 7]) {
+    const graded = resolveRoutePlan(plan(request, [{...unbound('n'), route_class: routeClass}]), request,
+      codexFirst, Date.now()).decisions.n;
+    assert.equal(route(graded), 'openai_codex/gpt-6-astra/max', String(routeClass));
+    assert.equal(graded.route_class, 'deep');
+  }
+  // Certified: fast/low (Codex luna). Claude's fast model, Haiku 4.5, has no
+  // effort control (its one profile is "none"): it satisfies fast/low.
+  const trivial = resolve(request, codexFirst, 'certified');
+  assert.equal(route(trivial.decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(trivial.decisions.n.tier, 'fast');
+  assert.equal(trivial.decisions.n.route_class, 'trivial');
+  assert.equal(trivial.decisions.n.reason, 'resolver;route_tier;admitted_certified_verifier;tier_list_0;tier_fast;' +
+    'pool_rank_0;effort_low;escalation_reference_same_pool;agent_surface');
+  assert.deepEqual(trivial.decisions.n.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
+    reference_model: 'gpt-6-astra'});
+  assert.deepEqual(trivial.routes.n, {kind: 'tier', reference_effort: 'max', ladder: certifiedLadder(
+    {model: 'gpt-6-luna', effort: 'low'}, {model: 'gpt-6-astra', effort: 'max', id: key('gpt-6-astra', 'max', 'read_only', 'codex')})});
+  const claudeTrivial = resolve(request, claudeFirst, 'certified').decisions.n;
+  assert.equal(route(claudeTrivial), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.equal(claudeTrivial.reason, 'resolver;route_tier;admitted_certified_verifier;tier_list_0;tier_fast;' +
+    'pool_rank_0;effort_none;escalation_reference_same_pool;agent_surface');
+  assert.deepEqual(claudeTrivial.ladder, {cheap_effort: 'none', reference_effort: 'max',
+    cheap_model: 'claude-haiku-4-5-20251001', reference_model: 'claude-fable-5-1'});
+  // A model with no tier is never chosen: gpt-6-sol and daybreak never run.
+  for (const admission of ['reference', 'certified'])
+    assert.ok(!['gpt-6-sol', 'gpt-daybreak-blue-latest'].includes(resolve(request, codexFirst, admission).decisions.n.model));
 });
 
-test('deterministic resolution and a graded writer: trivial writes run standard and never carry an escalation', () => {
+test('a writer or deterministic node is never certified: a writer binds the reference writer row, deterministically', () => {
   const request = task('/tmp', 'Change one file', {write: true});
   const catalog = tierCatalog(request, {write: true});
-  const proposed = plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]);
-  const first = resolveRoutePlan(structuredClone(proposed), request, catalog, 1_000_000);
-  assert.deepEqual(first, resolveRoutePlan(structuredClone(proposed), request, catalog, 1_000_000));
+  const proposed = plan(request, [unbound('w', {scope: 'workspace_write'})]);
+  const first = resolveRoutePlan(structuredClone(proposed), request, catalog, 1_000_000, {verifierRegistry: CERTIFY});
+  assert.deepEqual(first, resolveRoutePlan(structuredClone(proposed), request, catalog, 1_000_000, {verifierRegistry: CERTIFY}));
   const write = first.decisions.w;
-  assert.equal(route(write), 'openai_codex/gpt-6.1-sol/medium');
-  assert.equal(write.route_class, 'standard', 'the decision records the class it was routed at');
-  assert.match(write.reason, /^resolver;route_tier;class_standard;write_promoted_from_trivial;tier_list_0;/);
+  assert.equal(route(write), 'openai_codex/gpt-6-astra/max');
+  assert.equal(write.route_class, 'deep');
+  assert.match(write.reason, /^resolver;route_reference;admitted_reference_uncertified;tier_frontier;/);
   assert.equal(Object.hasOwn(write, 'ladder'), false);
-  assert.deepEqual(first.routes.w, {kind: 'tier', reference_effort: 'max', ladder: null});
-  assert.equal(first.plan.nodes[0].candidate_id, key('gpt-6.1-sol', 'medium', 'workspace_write', 'codex'));
-});
-
-test('a missing or invalid route_class routes as standard', () => {
-  const request = task('/tmp', 'Answer one question');
-  const catalog = tierCatalog(request);
-  for (const value of [undefined, 'flagship', null, 7]) {
-    const proposed = plan(request, [value === undefined ? graded('n') : {...graded('n', 'trivial'), route_class: value}]);
-    const decision = resolveRoutePlan(proposed, request, catalog, Date.now()).decisions.n;
-    assert.equal(route(decision), 'openai_codex/gpt-6.1-sol/medium', String(value));
-    assert.equal(decision.route_class, 'standard');
-    assert.match(decision.reason, /^resolver;route_tier;class_standard;route_class_defaulted;/);
-  }
-  // Older catalogs (no model_tiers) default too, then bind their reference.
-  const legacy = {...catalog}; delete legacy.model_tiers;
-  const decision = resolveRoutePlan(plan(request, [graded('n')]), request, legacy, Date.now()).decisions.n;
-  assert.equal(decision.route_class, 'standard');
-  assert.equal(route(decision), 'openai_codex/gpt-6-astra/max');
-  assert.equal(decision.reason, 'resolver;route_reference;route_class_defaulted;pool_rank_0;effort_max;agent_surface');
-  // A node with other unknown keys is still refused.
-  assert.throws(() => resolveRoutePlan(plan(request, [{...graded('n'), guess: 1}]), request, catalog, Date.now()),
+  assert.deepEqual(first.routes.w, {kind: 'reference', reference_effort: 'max', ladder: null});
+  assert.equal(first.plan.nodes[0].candidate_id, key('gpt-6-astra', 'max', 'workspace_write', 'codex'));
+  // A node with unknown keys is still refused.
+  assert.throws(() => resolveRoutePlan(plan(request, [{...unbound('n'), guess: 1}]), request, catalog, Date.now()),
     /plan_node_invalid/);
 });
 
-test('an explicit effort keeps the class tier at the owner effort; an explicit family is the model; a host-chosen dimension below the owner reference is guarded', () => {
+test('owner words fix the reference those words leave (R10): never a host-chosen lower model or effort', () => {
   const request = task('/tmp', '최대 리즈닝으로 해줘');
   // The native builder already kept only the max rows for "최대 리즈닝".
   const maxOnly = (model, effort) => effort === 'max';
@@ -436,203 +421,157 @@ test('an explicit effort keeps the class tier at the owner effort; an explicit f
     .filter(([, efforts]) => efforts.length);
   const maxCatalog = tierCatalog(request, {codex: filtered(CODEX, maxOnly), claude: filtered(CLAUDE, maxOnly),
     intent: {effort: 'max', model_family: null}});
-  const decide = (catalog, routeClass) => resolve(request, catalog, routeClass);
-  // The rule (build 378): the owner's effort replaces the effort; the class
-  // still picks the tier. So max on the class's own model, frontier for deep.
-  assert.equal(route(decide(maxCatalog, 'trivial').decisions.n), 'openai_codex/gpt-6-luna/max');
-  assert.equal(route(decide(maxCatalog, 'standard').decisions.n), 'openai_codex/gpt-6.1-sol/max');
-  assert.equal(route(decide(maxCatalog, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
-  // The owner fixed only the effort: the MODEL (luna, sol) is the host's
-  // choice, below the reference the owner's words leave (the frontier at
-  // max). It is a tier route guarded by that reference, not an explicit one.
-  const effortOnly = decide(maxCatalog, 'standard');
-  assert.match(effortOnly.decisions.n.reason, /^resolver;route_tier;intent_effort_max;class_standard;tier_list_0;tier_workhorse;/);
-  assert.deepEqual(effortOnly.decisions.n.ladder, {cheap_effort: 'max', reference_effort: 'max',
-    cheap_model: 'gpt-6.1-sol', reference_model: 'gpt-6-astra'});
-  assert.equal(effortOnly.routes.n.kind, 'tier');
-  assert.equal(effortOnly.routes.n.ladder.reference_candidate_id, 'codex-gpt-6-astra-max');
-  const trivialMax = decide(maxCatalog, 'trivial');
-  assert.equal(trivialMax.routes.n.kind, 'tier');
-  assert.equal(trivialMax.routes.n.ladder.reference_model, 'gpt-6-astra');
-  // The owner's effort on the frontier IS the owner's reference: explicit.
-  const deepMax = decide(maxCatalog, 'deep');
-  assert.match(deepMax.decisions.n.reason, /^resolver;route_explicit;intent_effort_max;class_deep;/);
-  assert.deepEqual(deepMax.routes.n, {kind: 'explicit', reference_effort: 'max', ladder: null});
-  // An explicit family: rows are only that family; the class picks the effort
-  // (the host's choice), guarded by the family at its highest admitted effort.
+  // An effort word: the frontier at that effort, certified or not.
+  for (const admission of ['reference', 'certified']) {
+    const decided = resolve(request, maxCatalog, admission);
+    assert.equal(route(decided.decisions.n), 'openai_codex/gpt-6-astra/max', admission);
+    assert.match(decided.decisions.n.reason, /^resolver;route_explicit;intent_effort_max;admitted_reference_owner_words;/);
+    assert.deepEqual(decided.routes.n, {kind: 'explicit', reference_effort: 'max', ladder: null});
+  }
+  // A family word: that family at its highest admitted effort.
   const opus = tierCatalog(request, {codex: [], claude: CLAUDE.filter(([model]) => ['claude-opus-5-5', 'opus'].includes(model)),
     intent: {effort: null, model_family: 'opus'}});
-  const opusTrivial = decide(opus, 'trivial');
-  assert.equal(route(opusTrivial.decisions.n), 'anthropic_shared/claude-opus-5-5/low');
-  assert.match(opusTrivial.decisions.n.reason, /^resolver;route_tier;intent_family_opus;class_trivial;/);
-  assert.equal(opusTrivial.routes.n.kind, 'tier');
-  assert.equal(opusTrivial.routes.n.ladder.reference_effort, 'max');
-  assert.ok(['opus', 'claude-opus-5-5'].includes(opusTrivial.routes.n.ladder.reference_model));
-  // Standard's first effort the family offers: medium (the resolved ID's).
-  assert.equal(route(decide(opus, 'standard').decisions.n), 'anthropic_shared/claude-opus-5-5/medium');
-  assert.equal(decide(opus, 'standard').routes.n.kind, 'tier');
-  const opusDeep = decide(opus, 'deep');
-  assert.equal(opusDeep.decisions.n.effort, 'max');
-  assert.equal(opusDeep.routes.n.kind, 'explicit', 'the named family at its reference effort is the owner route');
+  const opusRoute = resolve(request, opus, 'certified');
+  assert.equal(route(opusRoute.decisions.n), 'anthropic_shared/claude-opus-5-5/max');
+  assert.match(opusRoute.decisions.n.reason, /^resolver;route_explicit;intent_family_opus;admitted_reference_owner_words;/);
+  assert.deepEqual(opusRoute.routes.n, {kind: 'explicit', reference_effort: 'max', ladder: null});
   // A named family with no tier (daybreak) is usable only because the owner named it.
   const daybreak = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model === 'gpt-daybreak-blue-latest'),
     intent: {effort: null, model_family: 'daybreak'}});
-  const named = decide(daybreak, 'deep').decisions.n;
+  const named = resolve(request, daybreak).decisions.n;
   assert.equal(route(named), 'openai_codex/gpt-daybreak-blue-latest/max');
   assert.equal(named.tier, null);
   // Both an effort and a family: exactly that tuple, explicit, never escalated.
   const exact = tierCatalog(request, {codex: [], claude: [['claude-opus-5-5', ['xhigh']], ['opus', ['xhigh']]],
     intent: {effort: 'xhigh', model_family: 'opus'}});
-  assert.equal(decide(exact, 'trivial').decisions.n.effort, 'xhigh');
-  assert.deepEqual(decide(exact, 'trivial').routes.n, {kind: 'explicit', reference_effort: 'xhigh', ladder: null});
+  assert.equal(resolve(request, exact, 'certified').decisions.n.effort, 'xhigh');
+  assert.deepEqual(resolve(request, exact, 'certified').routes.n, {kind: 'explicit', reference_effort: 'xhigh', ladder: null});
 });
 
-test('a pool that cannot serve the class is skipped; inside a pool the first dispatchable entry wins', () => {
+test('a pool that cannot serve the certified tier is skipped; inside a pool the first dispatchable entry wins', () => {
   const request = task('/tmp', 'Answer one question');
-  // Codex offers only its frontier model: no trivial entry there, so Claude serves it.
+  // Codex offers only its frontier model: no certified tier there, so Claude serves it.
   const astraOnly = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
-  const skipped = resolve(request, astraOnly, 'trivial').decisions.n;
+  const skipped = resolve(request, astraOnly, 'certified').decisions.n;
   assert.equal(route(skipped), 'anthropic_shared/claude-haiku-4-5-20251001/none');
-  assert.match(skipped.reason, /;tier_list_0;tier_fast;pool_rank_1;skipped_pool_rank_0_trivial_unavailable;effort_none;/);
+  assert.match(skipped.reason, /;tier_list_0;tier_fast;pool_rank_1;skipped_pool_rank_0_tier_unavailable;effort_none;/);
   // Inside Claude an exhausted Haiku falls to the next entry of the same
   // pool (efficient/low): sonnet by its resolved ID.
   const haikuOut = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra'),
     change: model => model === 'claude-haiku-4-5-20251001' ? {quota: 0} : {}});
-  const sonnet = resolve(request, haikuOut, 'trivial').decisions.n;
+  const sonnet = resolve(request, haikuOut, 'certified').decisions.n;
   assert.equal(route(sonnet), 'anthropic_shared/claude-sonnet-5-5/low');
   assert.match(sonnet.reason, /;tier_list_1;tier_efficient;pool_rank_1;/);
   // Inside Codex an exhausted luna falls to the next entry of the same pool
   // (workhorse/low), not to the other pool.
   const lunaOut = tierCatalog(request, {change: model => model === 'gpt-6-luna' ? {quota: 0} : {}});
-  const next = resolve(request, lunaOut, 'trivial').decisions.n;
+  const next = resolve(request, lunaOut, 'certified').decisions.n;
   assert.equal(route(next), 'openai_codex/gpt-6.1-sol/low');
   assert.match(next.reason, /;tier_list_2;tier_workhorse;pool_rank_0;/);
-  // Deep with no dispatchable Codex frontier: the Claude reference, never sol.
+  // The reference with no dispatchable Codex frontier: the Claude reference, never sol.
   const astraOut = tierCatalog(request, {change: model => model === 'gpt-6-astra' ? {availability: 'unavailable'} : {}});
-  const deep = resolve(request, astraOut, 'deep').decisions.n;
-  assert.equal(route(deep), 'anthropic_shared/claude-fable-5-1/max');
-  assert.match(deep.reason, /;pool_rank_1;skipped_pool_rank_0_reference_undispatchable;/);
-  // Deep with no frontier model in Codex at all: reference_unavailable there.
+  const reference = resolve(request, astraOut).decisions.n;
+  assert.equal(route(reference), 'anthropic_shared/claude-fable-5-1/max');
+  assert.match(reference.reason, /;pool_rank_1;skipped_pool_rank_0_reference_undispatchable;/);
+  // No frontier model in Codex at all: reference_unavailable there.
   const noAstra = tierCatalog(request, {codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')});
-  assert.match(resolve(request, noAstra, 'deep').decisions.n.reason, /;skipped_pool_rank_0_reference_unavailable;/);
-  // A trivial node whose own pool has no frontier escalates to the other pool's.
-  assert.deepEqual(resolve(request, noAstra, 'trivial').decisions.n.ladder, {cheap_effort: 'low',
-    reference_effort: 'max', cheap_model: 'gpt-6-luna', reference_model: 'claude-fable-5-1'});
-  assert.match(resolve(request, noAstra, 'trivial').decisions.n.reason, /;escalation_reference_other_pool;/);
+  assert.match(resolve(request, noAstra).decisions.n.reason, /;skipped_pool_rank_0_reference_unavailable;/);
+  // A descent whose own pool has no frontier escalates to the other pool's.
+  const other = resolve(request, noAstra, 'certified').decisions.n;
+  assert.deepEqual(other.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
+    reference_model: 'claude-fable-5-1'});
+  assert.match(other.reason, /;escalation_reference_other_pool;/);
 });
 
-test('deep work holds as reference_unavailable when no pool offers a frontier model; untiered models never run by tier', () => {
+test('with no frontier model nothing runs: no reference, and no descent without one (R9, R12)', () => {
   const request = task('/tmp', 'Prove one hard property');
   const noFrontier = tierCatalog(request, {codex: CODEX.filter(([model]) => model !== 'gpt-6-astra'),
     claude: CLAUDE.filter(([model]) => !['claude-fable-5-1', 'fable'].includes(model))});
-  assert.throws(() => resolve(request, noFrontier, 'deep'), /no_dispatchable_candidate:read_only:reference_unavailable/);
-  // Trivial and standard still run: lower tiers are not withheld.
-  assert.equal(route(resolve(request, noFrontier, 'standard').decisions.n), 'openai_codex/gpt-6.1-sol/medium');
-  assert.equal(Object.hasOwn(resolve(request, noFrontier, 'trivial').decisions.n, 'ladder'), false,
-    'no reference anywhere: nothing to escalate to');
-  // Only untiered models: nothing can run by tier; availability says so.
+  for (const admission of ['reference', 'certified'])
+    assert.throws(() => resolve(request, noFrontier, admission),
+      /no_dispatchable_candidate:read_only:reference_unavailable/, admission);
+  // Only untiered models: nothing can run by tier.
   const untiered = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) =>
     ['gpt-6-sol', 'gpt-daybreak-blue-latest'].includes(model))});
   assert.deepEqual(untiered.model_tiers, {});
-  assert.throws(() => resolve(request, untiered, 'trivial'), /no_dispatchable_candidate:read_only:trivial/);
-  assert.deepEqual(routingAvailability(request, untiered).scopes, []);
-  assert.deepEqual(routingAvailability(request, tierCatalog(request)).providers, ['claude', 'codex']);
+  assert.throws(() => resolve(request, untiered, 'certified'), /no_dispatchable_candidate:read_only:reference_unavailable/);
 });
 
 test('read-only work takes the chat row of the same model and effort, and escalates to the chat reference', () => {
   const request = task('/tmp', 'Answer briefly');
   const catalog = tierCatalog(request, {first: 'claude', chat: true});
-  const resolved = resolve(request, catalog, 'trivial');
+  const resolved = resolve(request, catalog, 'certified');
   assert.equal(resolved.decisions.n.surface, 'claude-chat');
   assert.equal(route(resolved.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
   assert.equal(resolved.plan.nodes[0].candidate_id, key('claude-haiku-4-5-20251001', 'none', 'read_only', 'claude-chat'));
   assert.match(resolved.decisions.n.reason, /;chat_lane_same_route$/);
   assert.equal(resolved.routes.n.ladder.reference_candidate_id, key('claude-fable-5-1', 'max', 'read_only', 'claude-chat'));
+  const reference = resolve(request, catalog);
+  assert.equal(reference.plan.nodes[0].candidate_id, key('claude-fable-5-1', 'max', 'read_only', 'claude-chat'));
+  // A verifier registered for the agent surface only never admits a chat row it would not judge.
+  const agentOnly = resolveRoutePlan(plan(request, [unbound('n')]), request, catalog, Date.now(),
+    {verifierRegistry: new Map([['trivial:read_only:agent', passes]])});
+  assert.equal(agentOnly.decisions.n.surface, 'claude');
+  assert.equal(route(agentOnly.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
 });
 
 // 2026-10-15: Haiku 4.5's CLI row has no effort control, so its one signed
-// profile is "none". Auto routing binds it for the fast tier's concrete effort
-// only: never under an owner effort word, never as a reference, never for a
-// writer. An explicit haiku family word is the owner's route at every grade,
-// writes included.
-test('a model with no effort control binds its tier\'s concrete effort: trivial read-only only, guarded, never an owner effort, never a reference', () => {
+// profile is "none". A certified descent binds it for the fast tier's
+// concrete effort only: never under an owner effort word, never as a
+// reference, never for a writer. An explicit haiku family word is the owner's
+// route, writes included.
+test('a model with no effort control binds the fast tier only as a certified read-only descent; a family word names it', () => {
   const request = task('/tmp', 'Answer one question', {write: true});
   const claudeOnly = (claude, options = {}) => tierCatalog(request, {first: 'claude', codex: [], claude, ...options});
-  // Trivial read-only: Haiku at "none", guarded by fable/max in its pool.
-  const trivial = resolve(request, claudeOnly(CLAUDE), 'trivial');
+  // Certified read-only: Haiku at "none", guarded by fable/max in its pool.
+  const trivial = resolve(request, claudeOnly(CLAUDE), 'certified');
   assert.equal(route(trivial.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
-  assert.deepEqual(trivial.routes.n.ladder, {source: 'tier', cheap_model: 'claude-haiku-4-5-20251001',
-    cheap_effort: 'none', reference_model: 'claude-fable-5-1', reference_effort: 'max',
-    reference_candidate_id: key('claude-fable-5-1', 'max', 'read_only', 'claude')});
-  // A trivial writer runs standard (opus/medium), never Haiku, even with Haiku
-  // writer rows in the catalog; standard and deep never bind Haiku either.
-  const writes = claudeOnly(CLAUDE, {write: true});
-  const writer = resolveRoutePlan(plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]), request,
-    writes, Date.now()).decisions.w;
-  assert.equal(route(writer), 'anthropic_shared/claude-opus-5-5/medium');
-  assert.match(writer.reason, /;write_promoted_from_trivial;tier_list_0;tier_workhorse;/);
-  // Availability: a pool with only Haiku can serve read-only work, never a writer.
+  assert.deepEqual(trivial.routes.n.ladder, certifiedLadder({model: 'claude-haiku-4-5-20251001', effort: 'none'},
+    {model: 'claude-fable-5-1', effort: 'max', id: key('claude-fable-5-1', 'max', 'read_only', 'claude')}));
+  // A writer binds the reference writer row, never Haiku, even with Haiku
+  // writer rows in the catalog.
+  const writer = resolveRoutePlan(plan(request, [unbound('w', {scope: 'workspace_write'})]), request,
+    claudeOnly(CLAUDE, {write: true}), Date.now(), {verifierRegistry: CERTIFY}).decisions.w;
+  assert.equal(route(writer), 'anthropic_shared/claude-fable-5-1/max');
+  // Never a reference: with only Haiku nothing runs, certified or not.
   const haikuOnly = claudeOnly([['claude-haiku-4-5-20251001', ['none']]], {write: true});
-  assert.deepEqual(routingAvailability(request, haikuOnly).scopes, ['read_only']);
-  assert.throws(() => resolveRoutePlan(plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]), request,
-    haikuOnly, Date.now()), /no_dispatchable_candidate:workspace_write:standard/);
-  // Never a reference: deep holds, standard has no Haiku entry, and a trivial
-  // Haiku answer with no frontier anywhere carries no escalation target.
-  assert.throws(() => resolve(request, haikuOnly, 'deep'), /no_dispatchable_candidate:read_only:reference_unavailable/);
-  assert.throws(() => resolve(request, haikuOnly, 'standard'), /no_dispatchable_candidate:read_only:standard/);
-  const alone = resolve(request, haikuOnly, 'trivial');
-  assert.equal(route(alone.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
-  assert.equal(Object.hasOwn(alone.decisions.n, 'ladder'), false);
-  assert.equal(alone.routes.n.ladder.reference_candidate_id, null, 'a failure signal holds instead of adopting it');
-  // An owner effort word is a constraint Haiku cannot honour: fast/low has no
-  // row, efficient/low (sonnet) runs, guarded by fable at the owner's effort.
+  for (const admission of ['reference', 'certified'])
+    assert.throws(() => resolve(request, haikuOnly, admission), /no_dispatchable_candidate:read_only:reference_unavailable/);
+  // An owner effort word is the owner's route: the frontier at that effort.
   const low = claudeOnly(CLAUDE, {intent: {effort: 'low', model_family: null}});
-  const owned = resolve(request, low, 'trivial');
-  assert.equal(route(owned.decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
-  assert.match(owned.decisions.n.reason, /^resolver;route_tier;intent_effort_low;class_trivial;tier_list_1;tier_efficient;/);
-  assert.equal(owned.routes.n.ladder.reference_candidate_id, key('claude-fable-5-1', 'low', 'read_only', 'claude'));
-  // A family word naming Haiku binds it at every grade: the owner's route.
-  const family = claudeOnly([['claude-haiku-4-5-20251001', ['none']]], {intent: {effort: null, model_family: 'haiku'}});
-  for (const routeClass of ['trivial', 'standard', 'deep']) {
-    const named = resolve(request, family, routeClass);
-    assert.equal(route(named.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none', routeClass);
-    assert.match(named.decisions.n.reason, new RegExp(`^resolver;route_explicit;intent_family_haiku;class_${routeClass};`));
-    assert.deepEqual(named.routes.n, {kind: 'explicit', reference_effort: 'none', ladder: null});
-  }
-  // The family word binds a writer too (review 2026-10-15): the owner named
-  // the model, so a write runs on it with no host-chosen escalation.
-  const familyWrites = claudeOnly(CLAUDE, {write: true, intent: {effort: null, model_family: 'haiku'}});
-  for (const routeClass of ['trivial', 'standard', 'deep']) {
-    const named = resolveRoutePlan(plan(request, [graded('w', routeClass, {scope: 'workspace_write'})]), request,
-      familyWrites, Date.now());
-    assert.equal(route(named.decisions.w), 'anthropic_shared/claude-haiku-4-5-20251001/none', routeClass);
-    assert.equal(named.plan.nodes[0].candidate_id, key('claude-haiku-4-5-20251001', 'none', 'workspace_write', 'claude'));
-    assert.deepEqual(named.routes.w, {kind: 'explicit', reference_effort: 'none', ladder: null});
-  }
+  const owned = resolve(request, low, 'certified');
+  assert.equal(route(owned.decisions.n), 'anthropic_shared/claude-fable-5-1/low');
+  assert.match(owned.decisions.n.reason, /^resolver;route_explicit;intent_effort_low;admitted_reference_owner_words;/);
+  // A family word naming Haiku binds it: the owner's route, read or write.
+  const family = claudeOnly(CLAUDE, {write: true, intent: {effort: null, model_family: 'haiku'}});
+  const named = resolve(request, family);
+  assert.equal(route(named.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.match(named.decisions.n.reason, /^resolver;route_explicit;intent_family_haiku;admitted_reference_owner_words;/);
+  assert.deepEqual(named.routes.n, {kind: 'explicit', reference_effort: 'none', ladder: null});
+  const namedWrite = resolveRoutePlan(plan(request, [unbound('w', {scope: 'workspace_write'})]), request,
+    family, Date.now());
+  assert.equal(route(namedWrite.decisions.w), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.equal(namedWrite.plan.nodes[0].candidate_id, key('claude-haiku-4-5-20251001', 'none', 'workspace_write', 'claude'));
+  assert.deepEqual(namedWrite.routes.w, {kind: 'explicit', reference_effort: 'none', ladder: null});
   // Only a model whose rows are ALL "none" has no effort control: a "none"
   // row beside a real effort satisfies nothing but "none".
   const mixed = claudeOnly([['claude-fable-5-1', ['max']], ['claude-sonnet-5-5', ['low']],
     ['claude-haiku-4-5-20251001', ['none', 'medium']]]);
-  assert.equal(route(resolve(request, mixed, 'trivial').decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
-  // The cost gate still compares the effortless route with its reference.
-  const queries = [];
-  resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request, claudeOnly(CLAUDE), Date.now(),
-    {costEvidence: query => { queries.push(query); return null; }});
-  assert.deepEqual(queries.map(query => [query.cheap_model, query.cheap_effort, query.reference_model,
-    query.reference_effort]), [['claude-haiku-4-5-20251001', 'none', 'claude-fable-5-1', 'max']]);
+  assert.equal(route(resolve(request, mixed, 'certified').decisions.n), 'anthropic_shared/claude-sonnet-5-5/low');
 });
 
 // ---- Durable runtime: REVAS escalation --------------------------------------
 
-async function run(t, dir, name, {routeClass = 'trivial', execute, extras = {}, catalog = {}, verifierRegistry,
+async function run(t, dir, name, {certified = true, execute, extras = {}, catalog = {}, verifierRegistry,
                                   refresh = null} = {}) {
   const request = task(dir, 'Answer one question: ' + name, extras);
   const tickets = [];
   let refreshes = 0;
+  const registry = verifierRegistry ?? (certified ? CERTIFY : null);
   const runtime = await createRCCRuntime({stateDir: join(dir, name.replace(/\W+/g, '-')),
-    ...(verifierRegistry ? {verifierRegistry} : {}),
+    ...(registry ? {verifierRegistry: registry} : {}),
     catalog: async value => { refreshes++; return refresh ? refresh(value, refreshes) : tierCatalog(value, catalog); },
-    plan: async () => plan(request, [graded('n', routeClass, extras.write ? {scope: 'workspace_write'} : {})]),
+    plan: async () => plan(request, [unbound('n', extras.write ? {scope: 'workspace_write'} : {})]),
     execute: async ticket => { tickets.push(ticket); return execute(ticket, tickets.length); },
     verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
@@ -644,20 +583,24 @@ async function run(t, dir, name, {routeClass = 'trivial', execute, extras = {}, 
 const ledger = async (dir, name) => (await readFile(join(dir, name.replace(/\W+/g, '-'), 'routing-ledger',
   'routing-ledger.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
 
-test('a cheap read-only answer that passes is adopted; nothing escalates', async t => {
+test('a certified answer its source accepts is adopted; nothing escalates', async t => {
   const dir = await fixture(t);
   const ok = await run(t, dir, 'adopted', {execute: ticket => execution(ticket)});
   assert.equal(ok.done.state, 'completed', ok.done.error);
   assert.deepEqual(ok.tuples, ['gpt-6-luna/low']);
   assert.equal(ok.done.result.output, 'answer from gpt-6-luna/low');
   const records = await ledger(dir, 'adopted');
-  assert.deepEqual(records.map(record => [record.tier, record.effort, record.route_kind, record.escalated]),
-    [['fast', 'low', 'tier', false]]);
+  assert.deepEqual(records.map(record => [record.tier, record.effort, record.route_kind, record.escalated,
+    record.verifier_outcome]), [['fast', 'low', 'tier', false, 'pass']]);
   assert.deepEqual(records[0].ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
     reference_model: 'gpt-6-astra'});
+  // Uncertified, the same task runs once at the reference.
+  const reference = await run(t, dir, 'reference', {certified: false, execute: ticket => execution(ticket)});
+  assert.deepEqual(reference.tuples, ['gpt-6-astra/max']);
+  assert.equal((await ledger(dir, 'reference'))[0].route_kind, 'reference');
 });
 
-test('every failure signal escalates a read-only tier answer exactly once to the reference, uncharged', async t => {
+test('every failure signal escalates a certified read-only answer exactly once to the reference, uncharged', async t => {
   const dir = await fixture(t);
   const signals = [
     ['failed after dispatch, no effects', {status: 'failed', execution_verified: false, task_quality: 'failed',
@@ -679,7 +622,7 @@ test('every failure signal escalates a read-only tier answer exactly once to the
     const decision = result.done.children[0].routing_decision;
     assert.equal(route(decision), 'openai_codex/gpt-6-astra/max', name);
     assert.equal(decision.tier, 'frontier', name);
-    assert.match(decision.reason, /^tier_escalated_after_failure_signal;route_reference;tier_frontier;same_pool;effort_max;/, name);
+    assert.match(decision.reason, /^tier_escalated_after_failure_signal;route_reference;admitted_reference_escalation;tier_frontier;same_pool;effort_max;/, name);
     assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
       reference_model: 'gpt-6-astra'}, name);
     assert.equal(result.runtime.events({schema: 1, task_id: result.request.task_id})
@@ -708,7 +651,7 @@ test('a registered verifier failing escalates once; a failing reference is never
     .filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
 });
 
-test('a failed reference or explicit verifier holds its candidate and never releases dependent work', async t => {
+test('a failed reference or explicit verifier delivers its answer with a disclosure; no parent verifier washes it', async t => {
   const dir = await fixture(t);
   const verdicts = [
     ['false', async () => ({passed: false, reason: 'fixture rejection'})],
@@ -720,37 +663,35 @@ test('a failed reference or explicit verifier holds its candidate and never rele
     const tickets = [];
     let parentVerifierCalls = 0;
     const intent = routeKind === 'explicit' ? {model_family: 'astra', effort: 'max'} : null;
-    const routeClass = routeKind === 'escalated' ? 'standard' : 'deep';
-    const runtime = await createRCCRuntime({stateDir: join(dir, routeKind + '-' + name),
-      verifierRegistry: new Map([[routeClass + ':read_only:agent', verify]]),
+    // An escalated node keeps its certified family, so its verifier judges
+    // the reference answer too; the others carry the reference family.
+    const verifierRegistry = routeKind === 'escalated' ? new Map([['trivial:read_only:agent', async input =>
+      input.selected_config.model === 'gpt-6-astra' ? verify() : {passed: false, reason: 'cheap rejected'}]]) :
+      new Map([['deep:read_only:agent', verify]]);
+    const runtime = await createRCCRuntime({stateDir: join(dir, routeKind + '-' + name), verifierRegistry,
       catalog: async value => tierCatalog(value, {intent}),
-      plan: async () => plan(request, [graded('candidate', routeClass),
-        {...graded('dependent', routeClass), dependencies: ['candidate']}], 'dependent'),
+      plan: async () => plan(request, [unbound('candidate'),
+        {...unbound('dependent'), dependencies: ['candidate']}], 'dependent'),
       execute: async ticket => { tickets.push(ticket); return execution(ticket); },
-      // Intentionally permissive: a failed child must not get this far.
-      verifyTask: value => { parentVerifierCalls++; return taskVerdict(value); }});
+      verifyTask: value => { parentVerifierCalls++; return {...taskVerdict(value), task_verified: true}; }});
     t.after(async () => { await runtime.close(); });
     await runtime.submit(request);
     const done = await wait(runtime, request);
-    assert.equal(done.state, 'returned_unverified', `${routeKind}/${name}: failed candidate is retained, not adopted`);
-    assert.equal(done.error, 'node_verifier_failed');
-    assert.equal(parentVerifierCalls, 0, 'parent verifier cannot wash a rejected child');
-    const attempts = routeKind === 'escalated' ? 2 : 1;
-    assert.deepEqual(tickets.map(ticket => ticket.node_id), Array(attempts).fill('candidate'),
-      'no descendant dispatch or replay beyond the one existing escalation');
+    assert.equal(done.state, 'returned_unverified', `${routeKind}/${name}`);
+    assert.equal(done.error, 'child_quality_disclosed', `${routeKind}/${name}`);
+    assert.equal(done.result.task_verified, false, 'a parent verifier cannot wash a disclosed child');
+    assert.equal(done.result.parity_state, 'unverified');
+    const candidateTickets = tickets.filter(ticket => ticket.node_id === 'candidate');
+    assert.equal(candidateTickets.length, routeKind === 'escalated' ? 2 : 1,
+      'no replay beyond the one existing escalation');
     const child = runtime._load(request.task_id).children.find(value => value.id === 'candidate');
     assert.equal(child.route_kind, routeKind === 'escalated' ? 'reference' : routeKind);
-    assert.equal(child.state, 'held');
+    assert.equal(child.state, 'completed');
     assert.equal(child.node_verifier, 'fail');
-    assert.equal(child.task_quality, 'failed');
-    assert.equal(child.output, 'answer from gpt-6-astra/max', 'failed candidate remains private evidence');
-    assert.equal(child.attempt_history.length, attempts);
-    assert.equal(child.attempt_history.at(-1).state, 'held');
-    assert.equal(child.attempt_history.at(-1).verifier, 'fail');
-    assert.equal(done.children.find(value => value.id === 'dependent').state, 'queued');
-    assert.equal(done.result.task_verified, false);
-    assert.equal(done.result.parity_state, 'unverified');
-    assert.match(done.result.output, /answer from gpt-6-astra\/max/);
+    assert.deepEqual(child.quality_disclosure.failed_check_ids, ['node_verifier']);
+    assert.equal(child.output, 'answer from gpt-6-astra/max', 'the reference answer is delivered');
+    assert.equal(done.children.find(value => value.id === 'candidate').quality_disclosure.failed_check_ids[0],
+      'node_verifier');
     await runtime.close();
   }
 });
@@ -766,8 +707,8 @@ test('a passing reference or explicit verifier releases dependent work exactly o
       verifierRegistry: new Map([['deep:read_only:agent', async input => {
         verified.push(input.node_id); return {passed: true, reason: 'fixture accepted'}; }]]),
       catalog: async value => tierCatalog(value, {intent}),
-      plan: async () => plan(request, [graded('candidate', 'deep'),
-        {...graded('dependent', 'deep'), dependencies: ['candidate']}], 'dependent'),
+      plan: async () => plan(request, [unbound('candidate'),
+        {...unbound('dependent'), dependencies: ['candidate']}], 'dependent'),
       execute: async ticket => { tickets.push(ticket.node_id); return execution(ticket); },
       verifyTask: taskVerdict});
     t.after(async () => { await runtime.close(); });
@@ -781,21 +722,14 @@ test('a passing reference or explicit verifier releases dependent work exactly o
   }
 });
 
-test('a write is never escalated: its failure keeps the existing no-replay semantics', async t => {
+test('a write is never certified or escalated: it runs at the reference with the existing no-replay semantics', async t => {
   const dir = await fixture(t);
   const write = await run(t, dir, 'write', {extras: {write: true}, catalog: {write: true},
     execute: ticket => execution(ticket, {status: 'failed', execution_verified: false, task_quality: 'failed',
       output: null, side_effects: 'possible', error: 'native_outcome_uncertain_preserved'})});
-  assert.deepEqual(write.tuples, ['gpt-6.1-sol/medium'], 'trivial write runs standard and once');
+  assert.deepEqual(write.tuples, ['gpt-6-astra/max'], 'a write runs at the reference, once');
   assert.equal(write.done.state, 'effects_uncertain');
   assert.equal(write.runtime.events({schema: 1, task_id: write.request.task_id})
-    .some(event => event.kind === 'ladder_escalated_to_reference'), false);
-  // An empty answer from a writer is held, not escalated either.
-  const empty = await run(t, dir, 'write empty', {extras: {write: true}, catalog: {write: true},
-    execute: ticket => execution(ticket, {output: '', side_effects: 'confirmed'})});
-  assert.deepEqual(empty.tuples, ['gpt-6.1-sol/medium']);
-  assert.ok(['held', 'returned_unverified'].includes(empty.done.state), empty.done.state);
-  assert.equal(empty.runtime.events({schema: 1, task_id: empty.request.task_id})
     .some(event => event.kind === 'ladder_escalated_to_reference'), false);
 });
 
@@ -818,13 +752,13 @@ test('a discardable cheap attempt never runs in the owner thread; the escalated 
   assert.deepEqual(other.tickets.map(ticket => [ticket.selected_config.model, ticket.native_resume_session_id]),
     [['gpt-6-luna', null], ['claude-fable-5-1', 'owner-claude-thread']]);
   // A passing cheap answer is delivered from its fresh session; the
-  // reference, an explicit route and a write (never escalated) keep resuming.
+  // reference and a write keep resuming.
   const passed = await run(t, dir, 'session pass', {extras: {codexSession: 'owner-codex-thread'},
     execute: ticket => execution(ticket)});
   assert.deepEqual(passed.tickets.map(ticket => ticket.native_resume_session_id), [null]);
-  const deep = await run(t, dir, 'session deep', {routeClass: 'deep', extras: {codexSession: 'owner-codex-thread'},
+  const reference = await run(t, dir, 'session reference', {certified: false, extras: {codexSession: 'owner-codex-thread'},
     execute: ticket => execution(ticket)});
-  assert.deepEqual(deep.tickets.map(ticket => ticket.native_resume_session_id), ['owner-codex-thread']);
+  assert.deepEqual(reference.tickets.map(ticket => ticket.native_resume_session_id), ['owner-codex-thread']);
   const write = await run(t, dir, 'session write', {extras: {write: true, codexSession: 'owner-codex-thread'},
     catalog: {write: true}, execute: ticket => execution(ticket, {side_effects: 'confirmed'})});
   assert.deepEqual(write.tickets.map(ticket => ticket.native_resume_session_id), ['owner-codex-thread']);
@@ -843,7 +777,7 @@ test("when this pool's reference cannot dispatch, the escalation runs the other 
   assert.equal(decision.quota_pool, 'anthropic_shared');
   assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
     reference_model: 'claude-fable-5-1'});
-  assert.match(decision.reason, /^tier_escalated_after_failure_signal;route_reference;tier_frontier;other_pool;effort_max;/);
+  assert.match(decision.reason, /^tier_escalated_after_failure_signal;route_reference;admitted_reference_escalation;tier_frontier;other_pool;effort_max;/);
   assert.equal(result.runtime.events({schema: 1, task_id: result.request.task_id})
     .some(event => event.kind === 'candidate_re_resolved'), false);
 });
@@ -859,13 +793,13 @@ test('an escalated node whose reference vanished re-resolves to a reference only
   assert.equal(result.done.state, 'completed', result.done.error);
   assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'claude-fable-5-1/max']);
   const decision = result.done.children[0].routing_decision;
-  assert.match(decision.reason, /^re_resolved_after:candidate_missing;other_pool;route_reference;class_deep;/);
+  assert.match(decision.reason, /^re_resolved_after:candidate_missing;other_pool;route_reference;admitted_reference_escalation;/);
   assert.equal(decision.tier, 'frontier');
   assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max', cheap_model: 'gpt-6-luna',
     reference_model: 'claude-fable-5-1'});
 });
 
-test('a pre-execution quota rejection re-resolves a tier node at its own class in the other pool', async t => {
+test('a pre-execution quota rejection re-admits a certified node and binds its descent in the other pool', async t => {
   const dir = await fixture(t);
   const result = await run(t, dir, 'quota rejected', {
     execute: (ticket, count) => count === 1 ? execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
@@ -874,8 +808,15 @@ test('a pre-execution quota rejection re-resolves a tier node at its own class i
   assert.equal(result.done.state, 'completed', result.done.error);
   assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'claude-haiku-4-5-20251001/none']);
   const child = result.done.children[0];
-  assert.match(child.routing_decision.reason, /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;route_tier;/);
+  assert.match(child.routing_decision.reason,
+    /^re_resolved_after:provider_quota_rejected_before_execution;other_pool;route_tier;admitted_certified_verifier;/);
   assert.equal(child.routing_decision.ladder.reference_model, 'claude-fable-5-1');
+  // Uncertified, the rejected reference moves to the other pool's reference.
+  const reference = await run(t, dir, 'quota rejected reference', {certified: false,
+    execute: (ticket, count) => count === 1 ? execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
+      output: null, execution_verified: false, task_quality: 'failed',
+      error: 'provider_quota_rejected_before_execution'}) : execution(ticket)});
+  assert.deepEqual(reference.tuples, ['gpt-6-astra/max', 'claude-fable-5-1/max']);
 });
 
 // Contract repair 2026-10-17: an opaque routing HTTP 400 never established
@@ -892,29 +833,22 @@ const olderServer = ticket => ADDED_IN_383.has(`${ticket.selected_config.model}/
   refused(ticket) : execution(ticket);
 test('verified native catalog unsupported tuples cost no budget: bounded same-scope configuration repair remains possible', async t => {
   const dir = await fixture(t);
-  for (const [name, routeClass, write] of [['skew standard', 'standard', false], ['skew standard write', 'standard', true],
-    ['skew trivial write', 'trivial', true], ['skew trivial', 'trivial', false]]) {
-    const result = await run(t, dir, name, {routeClass, execute: olderServer,
-      catalog: {codex: [], write}, extras: write ? {write: true} : {}});
-    assert.equal(result.done.state, 'completed', `${name}: ${result.done.error}`);
-    assert.deepEqual(result.tuples, routeClass === 'trivial' && !write ?
-      ['claude-haiku-4-5-20251001/none', 'claude-sonnet-5-5/low'] :
-      ['claude-opus-5-5/medium', 'claude-sonnet-5-5/medium', 'sonnet/medium'], name);
-    const child = result.done.children[0];
-    assert.match(child.routing_decision.reason, /^re_resolved_after:native_configuration_unavailable;/, name);
-    const history = result.runtime._load(result.request.task_id).children[0].attempt_history;
-    assert.deepEqual(history.map(entry => [entry.state, entry.error ?? null]),
-      [...Array(result.tuples.length - 1).fill(['verified_not_dispatched', 'native_configuration_unavailable']),
-        ['completed', null]], name);
-  }
+  const result = await run(t, dir, 'skew certified', {execute: olderServer, catalog: {codex: []}});
+  assert.equal(result.done.state, 'completed', result.done.error);
+  assert.deepEqual(result.tuples, ['claude-haiku-4-5-20251001/none', 'claude-sonnet-5-5/low']);
+  const child = result.done.children[0];
+  assert.match(child.routing_decision.reason, /^re_resolved_after:native_configuration_unavailable;/);
+  const history = result.runtime._load(result.request.task_id).children[0].attempt_history;
+  assert.deepEqual(history.map(entry => [entry.state, entry.error ?? null]),
+    [['verified_not_dispatched', 'native_configuration_unavailable'], ['completed', null]]);
   // Still bounded: a catalog that reports every tuple unsupported stops after
   // MAX_RE_RESOLUTIONS moves, never an unbounded walk of the catalog.
-  const all = await run(t, dir, 'skew refuses all', {routeClass: 'standard', execute: refused, catalog: {codex: []}});
+  const all = await run(t, dir, 'skew refuses all', {execute: refused, catalog: {codex: []}});
   assert.equal(all.done.state, 'failed');
   assert.equal(all.done.error, 'verified_not_dispatched_re_resolution_exhausted');
   assert.equal(all.tickets.length, 3);
   // A refusal is valid only on a not-dispatched, no-effect report.
-  const laundered = await run(t, dir, 'skew dispatched refusal', {routeClass: 'standard', catalog: {codex: []},
+  const laundered = await run(t, dir, 'skew dispatched refusal', {certified: false, catalog: {codex: []},
     execute: ticket => execution(ticket, {status: 'failed', dispatch_stage: 'dispatched', side_effects: 'none',
       output: null, execution_verified: false, task_quality: 'failed', error: 'native_configuration_unavailable'})});
   assert.equal(laundered.tickets.length, 1);
@@ -929,6 +863,8 @@ test('verified native catalog unsupported tuples cost no budget: bounded same-sc
 // rejection and cools astra (the next catalog: quota_backoff, Codex
 // reference_unavailable). Core re-resolves the escalation to the other
 // pool's reference, frees the Codex pool, and nothing is effects_uncertain.
+// (Build 407 binds that node at its reference unless certified; this replay
+// keeps the certified descent to cover the escalation path.)
 const INCIDENT_REQUEST = '야 원플러스원 해봐.';
 const INCIDENT_REWRITE = "Execute '원플러스원' (OnePlus One) command.";
 const codexLimitRejected = ticket => execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
@@ -940,9 +876,9 @@ async function incident(t, dir, name, {claude = CLAUDE} = {}) {
   const request = task(dir, INCIDENT_REQUEST);
   const tickets = [];
   let cooled = false;
-  const runtime = await createRCCRuntime({stateDir: join(dir, name),
+  const runtime = await createRCCRuntime({stateDir: join(dir, name), verifierRegistry: CERTIFY,
     catalog: async value => cooled ? astraCooled(value, claude) : tierCatalog(value),
-    plan: async ({task: value}) => plan(value, [graded('node-1', 'trivial', {instruction: INCIDENT_REWRITE})]),
+    plan: async ({task: value}) => plan(value, [unbound('node-1', {instruction: INCIDENT_REWRITE})]),
     execute: async ticket => {
       tickets.push(ticket);
       if (tickets.length === 1) return execution(ticket, {error: 'native_tool_failed',
@@ -971,7 +907,7 @@ test('incident replay: a 429 no-output escalation re-resolves to the other refer
     Array(3).fill([INCIDENT_REQUEST, INCIDENT_REQUEST]));
   const admitted = result.runtime.events({schema: 1, task_id: result.request.task_id})
     .find(event => event.kind === 'plan_admitted').snapshot.children[0].routing_decision;
-  assert.match(admitted.reason, /^resolver;route_tier;class_trivial;.*;instruction_host_locked$/);
+  assert.match(admitted.reason, /^resolver;route_tier;admitted_certified_verifier;.*;instruction_host_locked$/);
   const decision = result.done.children[0].routing_decision;
   // The escalation and the re-resolution rebuilt the decision; it still says
   // the owner's words replaced the planner's rewrite.
@@ -988,7 +924,8 @@ test('incident replay: a 429 no-output escalation re-resolves to the other refer
   assert.ok(!result.kinds.some(kind => kind.includes('effects_uncertain')), result.kinds.join(','));
   assert.deepEqual(result.leases, [], 'no pool lease outlives the settled attempts');
   // The owner's next question on Codex runs now (build 378 held it with
-  // quota_pool_effects_uncertain); astra is cooled, so trivial work binds luna.
+  // quota_pool_effects_uncertain); astra is cooled, so the certified descent
+  // binds luna, guarded by the Claude reference.
   const next = task(dir, '너 라우팅 할 수 있는 쪽으로 최대한 다 라우팅 해봐. 엄청 간단한 알제브라 계산 있잖아.');
   await result.runtime.submit(next);
   const second = await wait(result.runtime, next);
@@ -1008,15 +945,17 @@ test('incident replay with no other reference: held with the typed reason, never
   assert.deepEqual(result.leases, []);
 });
 
-test('deep work with no frontier model holds before any dispatch; model_tiers is strictly shaped', async t => {
+test('with no frontier model nothing dispatches; model_tiers is strictly shaped', async t => {
   const dir = await fixture(t);
   const noFrontier = {codex: CODEX.filter(([model]) => model !== 'gpt-6-astra'),
     claude: CLAUDE.filter(([model]) => !['claude-fable-5-1', 'fable'].includes(model))};
-  const held = await run(t, dir, 'deep held', {routeClass: 'deep', catalog: noFrontier,
-    execute: () => { throw Error('must not dispatch'); }});
-  assert.equal(held.done.state, 'held');
-  assert.equal(held.done.error, 'no_dispatchable_candidate:read_only:reference_unavailable');
-  assert.equal(held.tickets.length, 0);
+  for (const certified of [false, true]) {
+    const held = await run(t, dir, 'no frontier held ' + certified, {certified, catalog: noFrontier,
+      execute: () => { throw Error('must not dispatch'); }});
+    assert.equal(held.done.state, 'held');
+    assert.equal(held.done.error, 'no_dispatchable_candidate:anthropic_shared=no_reference,openai_codex=no_reference');
+    assert.equal(held.tickets.length, 0);
+  }
   for (const [name, tiers] of [['unknown tier', {'gpt-6-luna': 'flagship'}], ['absent model', {'gpt-9': 'fast'}],
     ['not an object', ['fast']]]) {
     const bad = await run(t, dir, name, {refresh: value => ({...tierCatalog(value), model_tiers: tiers}),
@@ -1026,42 +965,39 @@ test('deep work with no frontier model holds before any dispatch; model_tiers is
   // Nothing tiered: held before planning with the per-pool reason.
   const untiered = await run(t, dir, 'untiered', {catalog: {claude: [],
     codex: CODEX.filter(([model]) => model === 'gpt-6-sol')}, execute: () => { throw Error('must not dispatch'); }});
-  assert.equal(untiered.done.error, 'no_dispatchable_candidate:openai_codex=no_tiered_model');
+  assert.equal(untiered.done.error, 'no_dispatchable_candidate:openai_codex=no_reference');
 });
 
-// ---- Review round: guards, budgets, availability and upward fallback ---------
+// ---- Review round: guards, budgets and the runnable reference ----------------
 
-test('no frontier reference in any pool: a cheap read-only answer is still guarded and a failure signal holds it', async t => {
+test('a certified descent whose reference vanished before its failure is held, never adopted or shown', async t => {
   const dir = await fixture(t);
-  // gpt-6-astra exhausted (the builder dropped its rows) and no Claude pool.
   const codexOnly = {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')};
-  const request = task('/tmp', 'Answer one question');
-  const resolved = resolve(request, tierCatalog(request, codexOnly), 'trivial');
-  assert.equal(route(resolved.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.match(resolved.decisions.n.reason, /;escalation_reference_unavailable;agent_surface$/);
-  assert.equal(Object.hasOwn(resolved.decisions.n, 'ladder'), false, 'no target, so the public decision has no ladder');
-  assert.deepEqual(resolved.routes.n.ladder, {source: 'tier', cheap_model: 'gpt-6-luna', cheap_effort: 'low',
-    reference_model: null, reference_effort: null, reference_candidate_id: null});
+  // Bind time: astra can dispatch (the descent's escalation target). It is
+  // gone from every later catalog, so the failed answer has nowhere to go:
+  // the escalation is admitted on the bound row, and its dispatch-time
+  // re-resolution finds no reference anywhere and holds.
+  const vanishing = (value, count) => tierCatalog(value, count === 1 ? {claude: []} : codexOnly);
   const failures = [['whitespace answer', {output: '  \n '}],
     ['failed after dispatch, no effects', {status: 'failed', dispatch_stage: 'dispatched', side_effects: 'none',
       execution_verified: false, task_quality: 'failed', output: null, error: 'native_outcome_uncertain_preserved'}],
     ['native tool failure', {error: 'native_tool_failed'}]];
   for (const [name, failure] of failures) {
-    const held = await run(t, dir, 'no frontier ' + name, {catalog: codexOnly, execute: ticket => execution(ticket, failure)});
+    const held = await run(t, dir, 'vanished ' + name, {refresh: vanishing, execute: ticket => execution(ticket, failure)});
     assert.deepEqual(held.tuples, ['gpt-6-luna/low'], name);
     assert.equal(held.done.state, 'held', `${name}: never adopted, never effects_uncertain`);
-    assert.equal(held.done.error, 'ladder_reference_unavailable', name);
+    assert.equal(held.done.error, 'no_dispatchable_candidate:read_only:reference_unavailable', name);
     assert.equal(held.done.result, null, name);
     assert.equal(held.done.children[0].output_summary, null, `${name}: the cheaper output is never shown`);
   }
-  // A passing cheap answer is adopted as before.
-  const ok = await run(t, dir, 'no frontier pass', {catalog: codexOnly, execute: ticket => execution(ticket)});
+  // A passing descent is adopted as before.
+  const ok = await run(t, dir, 'vanished pass', {refresh: vanishing, execute: ticket => execution(ticket)});
   assert.equal(ok.done.state, 'completed', ok.done.error);
   assert.equal(ok.done.result.output, 'answer from gpt-6-luna/low');
-  // When a frontier row is back by the time the cheap attempt fails, the
-  // guard escalates to it (re-resolved at that time).
-  const back = await run(t, dir, 'no frontier then back', {
-    refresh: (value, count) => tierCatalog(value, count >= 2 ? {claude: []} : codexOnly),
+  // When a frontier row is back by the time the descent fails, the guard
+  // escalates to it (re-resolved at that time).
+  const back = await run(t, dir, 'vanished then back', {
+    refresh: (value, count) => tierCatalog(value, count === 2 ? codexOnly : {claude: []}),
     execute: (ticket, count) => count === 1 ? execution(ticket, {output: ' '}) : execution(ticket)});
   assert.equal(back.done.state, 'completed', back.done.error);
   assert.deepEqual(back.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
@@ -1074,10 +1010,9 @@ test('parallel escalations exempt the UNION of their cheap attempts: a dependent
   const tickets = [];
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const cheap = new Set(['gpt-6-luna', 'claude-haiku-4-5-20251001']);
-  const runtime = await createRCCRuntime({stateDir: join(dir, 'union'),
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'union'), verifierRegistry: CERTIFY,
     catalog: async value => tierCatalog(value),
-    plan: async () => plan(request, [graded('a', 'trivial'), graded('b', 'trivial'),
-      {...graded('d', 'trivial'), dependencies: ['a', 'b']}], 'd'),
+    plan: async () => plan(request, [unbound('a'), unbound('b'), {...unbound('d'), dependencies: ['a', 'b']}], 'd'),
     execute: async ticket => {
       tickets.push(ticket);
       if (ticket.node_id === 'd') return execution(ticket);
@@ -1101,104 +1036,73 @@ test('parallel escalations exempt the UNION of their cheap attempts: a dependent
   assert.equal(done.error, 'task_duration_budget_exhausted');
 });
 
-test('a reference or explicit answer with a recorded tool failure is delivered unchanged (only a cheaper tier escalates)', async t => {
+test('a reference or explicit answer with a recorded tool failure is delivered unchanged (only a descent escalates)', async t => {
   const dir = await fixture(t);
-  const deep = await run(t, dir, 'deep tool failed', {routeClass: 'deep',
+  const reference = await run(t, dir, 'reference tool failed', {certified: false,
     execute: ticket => execution(ticket, {error: 'native_tool_failed'})});
-  assert.equal(deep.done.state, 'completed', deep.done.error);
-  assert.deepEqual(deep.tuples, ['gpt-6-astra/max']);
-  assert.equal(deep.done.result.output, 'answer from gpt-6-astra/max');
+  assert.equal(reference.done.state, 'completed', reference.done.error);
+  assert.deepEqual(reference.tuples, ['gpt-6-astra/max']);
+  assert.equal(reference.done.result.output, 'answer from gpt-6-astra/max');
 });
 
-test('availability counts only rows some reachable class can bind: a fast-tier writer is never offered', () => {
-  const request = task('/tmp', 'Change one file', {write: true});
-  // Only gpt-6-luna remains (astra and 6.1-sol quota_zero, dropped by the builder).
-  const lunaOnly = tierCatalog(request, {write: true, claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
-  assert.deepEqual(routingAvailability(request, lunaOnly).scopes, ['read_only'],
-    'a writer is at least standard and no standard/deep entry is fast');
-  assert.throws(() => resolve(request, lunaOnly, 'trivial', {scope: 'workspace_write'}),
-    /no_dispatchable_candidate:workspace_write:standard/);
-  // Read-only work still runs there (trivial binds the fast tier).
-  assert.equal(route(resolve(request, lunaOnly, 'trivial').decisions.n), 'openai_codex/gpt-6-luna/low');
-  // The full production catalog still offers both scopes.
-  assert.deepEqual(routingAvailability(request, tierCatalog(request, {write: true})).scopes, ['read_only', 'workspace_write']);
-  // Under an explicit effort word the same mapping applies (writer at max
-  // binds standard's tiers at max, never the fast tier).
-  const intentLuna = tierCatalog(request, {write: true, claude: [], codex: [['gpt-6-luna', ['max']]],
-    intent: {effort: 'max', model_family: null}});
-  assert.deepEqual(routingAvailability(request, intentLuna).scopes, ['read_only']);
-});
-
-test('a task whose only runnable rows no class can bind is held before planning, with the per-pool cause', async t => {
+test('a task whose only runnable rows bind no reference is held before planning, with the per-pool cause', async t => {
   const dir = await fixture(t);
   const request = task(dir, 'Change one file', {write: true});
   let planned = 0;
-  // Writer rows of the fast tier only: nothing read-only, nothing a writer binds.
+  // Writer rows of the fast tier only: no reference anywhere.
   const runtime = await createRCCRuntime({stateDir: join(dir, 'fast-writer'),
     catalog: async value => {
       const catalog = tierCatalog(value, {write: true, claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
       return {...catalog, candidates: catalog.candidates.filter(c => c.scope === 'workspace_write')};
     },
-    plan: async () => { planned++; return plan(request, [graded('w', 'trivial', {scope: 'workspace_write'})]); },
+    plan: async () => { planned++; return plan(request, [unbound('w', {scope: 'workspace_write'})]); },
     execute: async () => { throw Error('must not dispatch'); }, verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
   await runtime.submit(request);
   const done = await wait(runtime, request);
   assert.equal(done.state, 'held');
-  assert.equal(done.error, 'no_dispatchable_candidate:openai_codex=no_bindable_tier');
+  assert.equal(done.error, 'no_dispatchable_candidate:openai_codex=no_reference');
   assert.equal(planned, 0, 'no wasted planner call');
 });
 
-test('trivial work falls back upwards when no pool offers a trivial entry: the stronger tier runs, never a hold', () => {
+test('a certified node with no dispatchable certified tuple binds the reference itself, never a hold', async t => {
   const request = task('/tmp', 'what is 1+1');
   // Haiku, Sonnet and Opus on quota_backoff: only the Claude frontier rows remain.
   const fableOnly = tierCatalog(request, {first: 'claude', chat: true, codex: [],
     claude: CLAUDE.filter(([model]) => ['claude-fable-5-1', 'fable'].includes(model))});
-  assert.deepEqual(routingAvailability(request, fableOnly).scopes, ['read_only']);
-  const trivial = resolve(request, fableOnly, 'trivial');
-  assert.equal(route(trivial.decisions.n), 'anthropic_shared/claude-fable-5-1/max');
-  assert.equal(trivial.decisions.n.surface, 'claude-chat');
-  assert.equal(trivial.decisions.n.route_class, 'trivial', 'the grade is kept; the fallback is in the reason');
-  assert.equal(trivial.decisions.n.reason, 'resolver;route_reference;class_trivial;class_fallback_trivial_to_standard;' +
-    'tier_list_4;tier_frontier;pool_rank_0;effort_max;chat_lane_same_route');
-  assert.equal(Object.hasOwn(trivial.decisions.n, 'ladder'), false, 'the reference itself never escalates');
-  assert.deepEqual(trivial.routes.n, {kind: 'reference', reference_effort: 'max', ladder: null});
-  // Codex with only its frontier model: the same.
-  const astraOnly = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
-  assert.equal(route(resolve(request, astraOnly, 'trivial').decisions.n), 'openai_codex/gpt-6-astra/max');
-  // A fallback that lands below the reference keeps its escalation guard.
+  const certified = resolve(request, fableOnly, 'certified');
+  assert.equal(route(certified.decisions.n), 'anthropic_shared/claude-fable-5-1/max');
+  assert.equal(certified.decisions.n.surface, 'claude-chat');
+  assert.equal(certified.decisions.n.route_class, 'deep');
+  assert.equal(certified.decisions.n.reason, 'resolver;route_reference;admitted_certified_verifier;' +
+    'certified_tuple_undispatchable;tier_frontier;pool_rank_0;effort_max;chat_lane_same_route');
+  assert.equal(Object.hasOwn(certified.decisions.n, 'ladder'), false, 'the reference itself never escalates');
+  assert.deepEqual(certified.routes.n, {kind: 'reference', reference_effort: 'max', ladder: null});
+  // A workhorse below the reference at a non-certified effort is never bound.
   const solMedium = tierCatalog(request, {claude: [], codex: [['gpt-6-astra', ['max']], ['gpt-6.1-sol', ['medium']]]});
-  const lower = resolve(request, solMedium, 'trivial').decisions.n;
-  assert.equal(route(lower), 'openai_codex/gpt-6.1-sol/medium');
-  assert.match(lower.reason, /^resolver;route_tier;class_trivial;class_fallback_trivial_to_standard;tier_list_0;tier_workhorse;/);
-  assert.deepEqual(lower.ladder, {cheap_effort: 'medium', reference_effort: 'max', cheap_model: 'gpt-6.1-sol',
-    reference_model: 'gpt-6-astra'});
-  // A trivial entry in ANY pool wins over the fallback in the first pool.
+  assert.equal(route(resolve(request, solMedium, 'certified').decisions.n), 'openai_codex/gpt-6-astra/max');
+  // A certified entry in ANY pool wins over the reference in the first pool.
   const mixed = tierCatalog(request, {codex: CODEX.filter(([model]) => model === 'gpt-6-astra')});
-  assert.equal(route(resolve(request, mixed, 'trivial').decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
-  // Deep is never relaxed and nothing falls back downwards.
-  const noFrontier = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model === 'gpt-6-luna')});
-  assert.throws(() => resolve(request, noFrontier, 'deep'), /no_dispatchable_candidate:read_only:reference_unavailable/);
-  assert.throws(() => resolve(request, noFrontier, 'standard'), /no_dispatchable_candidate:read_only:standard/);
-});
-
-test('a trivial question on a frontier-only pool completes on the frontier model', async t => {
+  assert.equal(route(resolve(request, mixed, 'certified').decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
   const dir = await fixture(t);
-  const fableOnly = {first: 'claude', codex: [], claude: CLAUDE.filter(([model]) => ['claude-fable-5-1', 'fable'].includes(model))};
-  const result = await run(t, dir, 'frontier only trivial', {catalog: fableOnly, execute: ticket => execution(ticket)});
+  const result = await run(t, dir, 'frontier only certified', {catalog: {first: 'claude', codex: [],
+    claude: CLAUDE.filter(([model]) => ['claude-fable-5-1', 'fable'].includes(model))}, execute: ticket => execution(ticket)});
   assert.equal(result.done.state, 'completed', result.done.error);
   assert.deepEqual(result.tuples, ['claude-fable-5-1/max']);
-  assert.match(result.done.children[0].routing_decision.reason, /;class_fallback_trivial_to_standard;/);
+  assert.match(result.done.children[0].routing_decision.reason, /;certified_tuple_undispatchable;/);
 });
 
 // ---- Review round 2: explicit fan-outs, owner words, stale guards, ledger, quota -
 
 // The owner's own fan-out test: "1+1 Codex chat한테. 3+3 Claude Code한테.
 // 4+4 Claude한테." (RouteFanout: Codex chat -> codex, Claude Code -> claude,
-// Claude -> claude-chat). The planner only grades each named route; the host
-// binds model AND effort by that grade, on that route's own surface.
-const FANOUT = [{surface: 'codex', instruction: '1+1'}, {surface: 'claude', instruction: '3+3'},
-  {surface: 'claude-chat', instruction: '4+4'}];
+// Claude -> claude-chat). Each named route runs that surface's reference,
+// with that route's own words; the host builds the nodes, no model grades.
+// Text payloads with no exact answer: a named route binds its surface's
+// reference (an exact arithmetic payload descends under its exact check;
+// see openclaw-rcc-admission.test.mjs).
+const FANOUT = [{surface: 'codex', instruction: 'Explain the interval rule.'},
+  {surface: 'claude', instruction: 'Explain the merge rule.'}, {surface: 'claude-chat', instruction: 'What does co mean?'}];
 function explicitTask(dir, routes, extras = {}) {
   const request = task(dir, '1+1 Codex chat한테. 3+3 Claude Code한테. 4+4 Claude한테.', extras);
   request.mode = 'explicit_routing_test';
@@ -1210,46 +1114,34 @@ function explicitTask(dir, routes, extras = {}) {
 // reference rule applies to an explicit route's own surface.
 const WITH_ULTRA = CODEX.map(([model, efforts]) => [model,
   ['gpt-6-astra', 'gpt-6.1-sol'].includes(model) ? [...efforts, 'ultra'] : efforts]);
-const routeNode = (index, routeClass, routes = FANOUT, extras = {}) => ({id: `requested-${index + 1}`,
-  instruction: routes[index].instruction, dependencies: [], kind: 'agent', route_class: routeClass,
+const routeNode = (index, routes = FANOUT, extras = {}) => ({id: `requested-${index + 1}`,
+  instruction: routes[index].instruction, dependencies: [], kind: 'agent',
   scope: 'read_only', owned_paths: [], context_refs: [], ...extras});
 
-test('an explicit fan-out binds model and effort by grade on each named surface: "1+1" never runs on astra, fable, opus or max', async t => {
+test('an explicit fan-out binds each named surface\'s reference tuple; no grade or certificate lowers it', async t => {
   const dir = await fixture(t);
   const request = explicitTask(dir, FANOUT);
   const catalog = tierCatalog(request, {codex: WITH_ULTRA, chat: true});
-  // Pure: every route trivial.
-  const resolved = resolveRoutePlan(plan(request, FANOUT.map((_, index) => routeNode(index, 'trivial'))), request,
-    catalog, Date.now());
+  const resolved = resolveRoutePlan(plan(request, FANOUT.map((_, index) => routeNode(index, FANOUT,
+    {route_class: 'trivial'}))), request, catalog, Date.now(), {verifierRegistry: CERTIFY});
   assert.deepEqual(Object.values(resolved.decisions).map(d => `${d.surface}:${d.model}/${d.effort}`),
-    ['codex:gpt-6-luna/low', 'claude:claude-haiku-4-5-20251001/none', 'claude-chat:claude-haiku-4-5-20251001/none']);
+    ['codex:gpt-6-astra/ultra', 'claude:claude-fable-5-1/max', 'claude-chat:claude-fable-5-1/max']);
   assert.match(resolved.decisions['requested-1'].reason,
-    /^resolver;route_tier;explicit_route_surface_codex;class_trivial;tier_list_0;tier_fast;/);
-  // The escalation guard stays on the named surface (claude-chat's own
-  // reference, never the agent surface or another pool).
-  assert.equal(resolved.routes['requested-3'].ladder.reference_candidate_id,
-    key('claude-fable-5-1', 'max', 'read_only', 'claude-chat'));
-  assert.equal(resolved.routes['requested-2'].ladder.reference_candidate_id,
-    key('claude-fable-5-1', 'max', 'read_only', 'claude'));
-  assert.equal(resolved.routes['requested-1'].ladder.reference_candidate_id, key('gpt-6-astra', 'ultra', 'read_only', 'codex'));
-  // Deep work on a named route runs that surface's actual highest frontier row.
-  const deep = resolveRoutePlan(plan(request, [routeNode(0, 'deep'), routeNode(1, 'standard'), routeNode(2, 'trivial')]),
-    request, catalog, Date.now()).decisions;
-  assert.deepEqual([deep['requested-1'], deep['requested-2']].map(d => `${d.surface}:${d.model}/${d.effort}`),
-    ['codex:gpt-6-astra/ultra', 'claude:claude-opus-5-5/medium']);
-  // A planner that names no route, a changed payload or a dropped GPT route
+    /^resolver;route_reference;explicit_route_surface_codex;admitted_reference_owner_words;tier_frontier;/);
+  assert.ok(Object.values(resolved.routes).every(value => value.ladder === null));
+  // A node that names no route, a changed payload or a dropped GPT route
   // never gets a surface from the host.
-  for (const [name, node] of [['unknown ordinal', {...routeNode(0, 'trivial'), id: 'requested-7'}],
-    ['changed payload', {...routeNode(0, 'trivial'), instruction: '9+9'}],
-    ['free id', {...routeNode(0, 'trivial'), id: 'route-1'}]])
+  for (const [name, node] of [['unknown ordinal', {...routeNode(0), id: 'requested-7'}],
+    ['changed payload', {...routeNode(0), instruction: 'Explain another rule.'}],
+    ['free id', {...routeNode(0), id: 'route-1'}]])
     assert.throws(() => resolveRoutePlan(plan(request, [node]), request, catalog, Date.now()),
       /explicit_route_binding_mismatch/, name);
 
-  // Durable runtime: three tickets, each on its named surface, all cheap.
+  // Durable runtime with the host-built plan: three tickets, each on its
+  // named surface at its reference.
   const tickets = [];
-  const runtime = await createRCCRuntime({stateDir: join(dir, 'fanout'),
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'fanout'), hostAutoPlan: true,
     catalog: async value => tierCatalog(value, {codex: WITH_ULTRA, chat: true}),
-    plan: async () => plan(request, FANOUT.map((_, index) => routeNode(index, 'trivial'))),
     execute: async ticket => { tickets.push(ticket); return execution(ticket); }, verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
   await runtime.submit(request);
@@ -1257,98 +1149,67 @@ test('an explicit fan-out binds model and effort by grade on each named surface:
   assert.equal(done.state, 'completed', done.error);
   assert.deepEqual(tickets.map(ticket => `${ticket.selected_config.surface}:${ticket.selected_config.model}/` +
     ticket.selected_config.effort).sort(),
-  ['claude-chat:claude-haiku-4-5-20251001/none', 'claude:claude-haiku-4-5-20251001/none', 'codex:gpt-6-luna/low']);
-  assert.ok(tickets.every(ticket => !['gpt-6-astra', 'claude-fable-5-1', 'fable', 'opus', 'claude-opus-5-5']
-    .includes(ticket.selected_config.model) && !['max', 'ultra'].includes(ticket.selected_config.effort)));
+  ['claude-chat:claude-fable-5-1/max', 'claude:claude-fable-5-1/max', 'codex:gpt-6-astra/ultra']);
   assert.deepEqual(done.children.map(child => child.requested_surface), FANOUT.map(route => route.surface));
-  assert.ok(done.children.every(child => child.routing_decision.route_class === 'trivial'));
-  // The ledger keeps the class, tier and guard of an explicit route as evidence.
+  assert.ok(done.children.every(child => child.routing_decision.route_class === 'deep'));
   const records = (await readFile(join(dir, 'fanout', 'routing-ledger', 'routing-ledger.jsonl'), 'utf8')).trim()
     .split('\n').map(line => JSON.parse(line));
-  assert.ok(records.every(record => record.route_kind === 'explicit_route' && record.route_class === 'trivial' &&
-    record.ladder !== null && record.escalation_outcome === null));
+  assert.ok(records.every(record => record.route_kind === 'explicit_route' && record.route_class === 'deep' &&
+    record.ladder === null && record.escalation_outcome === null));
 });
 
-test('a failed cheap answer on an explicit route escalates once to the reference of THAT surface only', async t => {
+test('an explicit route never descends or moves: a failed answer stays on the surface the owner named', async t => {
   const dir = await fixture(t);
-  const request = explicitTask(dir, [FANOUT[0], FANOUT[2]]);
+  const routes = [FANOUT[0], FANOUT[2]];
+  const request = explicitTask(dir, routes);
   const tickets = [];
-  const runtime = await createRCCRuntime({stateDir: join(dir, 'explicit-escalation'),
-    catalog: async value => tierCatalog(value, {codex: WITH_ULTRA, chat: true}),
-    plan: async () => plan(request, [routeNode(0, 'trivial', [FANOUT[0], FANOUT[2]]),
-      routeNode(1, 'trivial', [FANOUT[0], FANOUT[2]])]),
-    execute: async ticket => { tickets.push(ticket);
-      const cheap = ['gpt-6-luna', 'claude-haiku-4-5-20251001'].includes(ticket.selected_config.model);
-      return execution(ticket, cheap ? {output: ' '} : {}); },
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'explicit-failed'), hostAutoPlan: true,
+    verifierRegistry: CERTIFY, catalog: async value => tierCatalog(value, {codex: WITH_ULTRA, chat: true}),
+    execute: async ticket => { tickets.push(ticket); return execution(ticket, {output: ''}); },
     verifyTask: taskVerdict});
   t.after(async () => { await runtime.close(); });
   await runtime.submit(request);
   const done = await wait(runtime, request);
-  assert.equal(done.state, 'completed', done.error);
-  const bySurface = surface => tickets.filter(ticket => ticket.selected_config.surface === surface)
-    .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`);
-  assert.deepEqual(bySurface('codex'), ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
-  assert.deepEqual(bySurface('claude-chat'), ['claude-haiku-4-5-20251001/none', 'claude-fable-5-1/max']);
-  assert.deepEqual(bySurface('claude'), [], 'never another surface than the one the owner named');
-  assert.deepEqual(done.children.map(child => child.selected_config.surface), ['codex', 'claude-chat']);
-  // With no reference on the named surface the guard holds, never another surface.
-  const noAstra = explicitTask(dir, [FANOUT[0]]);
-  const held = await createRCCRuntime({stateDir: join(dir, 'explicit-held'),
-    catalog: async value => tierCatalog(value, {codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')}),
-    plan: async () => plan(noAstra, [routeNode(0, 'trivial', [FANOUT[0]])]),
-    execute: async ticket => execution(ticket, {output: ''}), verifyTask: taskVerdict});
-  t.after(async () => { await held.close(); });
-  await held.submit(noAstra);
-  const heldDone = await wait(held, noAstra);
-  assert.equal(heldDone.state, 'held');
-  assert.equal(heldDone.error, 'ladder_reference_unavailable');
+  assert.notEqual(done.state, 'completed');
+  assert.deepEqual(tickets.map(ticket => `${ticket.selected_config.surface}:${ticket.selected_config.model}`).sort(),
+    ['claude-chat:claude-fable-5-1', 'codex:gpt-6-astra'], 'one attempt per named surface, at its reference');
+  assert.equal(runtime.events({schema: 1, task_id: request.task_id})
+    .some(event => event.kind === 'ladder_escalated_to_reference'), false);
 });
 
-test("an explicit route's own effort or model words bind that route only; automatic reference uses the highest admitted row", () => {
+test("an explicit route's own effort or model words bind that route only; the automatic reference is the highest admitted row", () => {
   const request = explicitTask('/tmp', [FANOUT[0], FANOUT[1]]);
   const base = tierCatalog(request, {codex: WITH_ULTRA});
   const routes = [FANOUT[0], FANOUT[1]];
-  const bind = (intents, classes = ['trivial', 'trivial']) => Object.values(resolveRoutePlan(plan(request,
-    classes.map((routeClass, index) => routeNode(index, routeClass, routes))), request,
+  const bind = intents => Object.values(resolveRoutePlan(plan(request,
+    routes.map((_, index) => routeNode(index, routes))), request,
   {...base, explicit_route_intents: intents}, Date.now()).decisions).map(d => `${d.model}/${d.effort}`);
-  assert.deepEqual(bind([null, null]), ['gpt-6-luna/low', 'claude-haiku-4-5-20251001/none']);
-  // "최대 리즈닝으로 1+1": that route runs max on its graded tier; the other is untouched.
-  assert.deepEqual(bind([{effort: 'max', model_family: null}, null]), ['gpt-6-luna/max', 'claude-haiku-4-5-20251001/none']);
-  // That route's own effort word is a constraint Haiku cannot honour (no
-  // effort control): its trivial entry falls to sonnet at that effort.
-  assert.deepEqual(bind([null, {effort: 'low', model_family: null}]), ['gpt-6-luna/low', 'claude-sonnet-5-5/low']);
+  assert.deepEqual(bind([null, null]), ['gpt-6-astra/ultra', 'claude-fable-5-1/max']);
+  // "최대 리즈닝으로 1+1": that route runs the frontier at max; the other is untouched.
+  assert.deepEqual(bind([{effort: 'max', model_family: null}, null]), ['gpt-6-astra/max', 'claude-fable-5-1/max']);
+  assert.deepEqual(bind([null, {effort: 'low', model_family: null}]), ['gpt-6-astra/ultra', 'claude-fable-5-1/low']);
   // A route word naming Haiku binds it (the named family's one route).
-  assert.deepEqual(bind([null, {effort: null, model_family: 'haiku'}]), ['gpt-6-luna/low', 'claude-haiku-4-5-20251001/none']);
-  // A route word naming astra ("astra로 돌려 1+1"; a bare "astra로 1+1" parses to
-  // nothing): that family, effort by grade.
-  assert.deepEqual(bind([{effort: null, model_family: 'astra'}, null]), ['gpt-6-astra/low', 'claude-haiku-4-5-20251001/none']);
-  // An exact ultra request binds that route, while the other remains cheap.
-  assert.deepEqual(bind([{effort: 'ultra', model_family: 'astra'}, null], ['deep', 'trivial']),
-    ['gpt-6-astra/ultra', 'claude-haiku-4-5-20251001/none']);
-  assert.deepEqual(bind([null, null], ['deep', 'deep']), ['gpt-6-astra/ultra', 'claude-fable-5-1/max']);
-  // Automatic cheap grades remain cheap; only the reference grade uses ultra.
-  assert.deepEqual(bind([null, null], ['standard', 'standard']),
-    ['gpt-6.1-sol/medium', 'claude-opus-5-5/medium']);
-  assert.deepEqual(bind([{effort: 'max', model_family: 'astra'}, null], ['deep', 'deep']),
-    ['gpt-6-astra/max', 'claude-fable-5-1/max']);
+  assert.deepEqual(bind([null, {effort: null, model_family: 'haiku'}]), ['gpt-6-astra/ultra', 'claude-haiku-4-5-20251001/none']);
+  // A route word naming astra: that family at its highest admitted effort.
+  assert.deepEqual(bind([{effort: null, model_family: 'astra'}, null]), ['gpt-6-astra/ultra', 'claude-fable-5-1/max']);
+  assert.deepEqual(bind([{effort: 'max', model_family: 'astra'}, null]), ['gpt-6-astra/max', 'claude-fable-5-1/max']);
   // A route whose family has no row on its surface holds: never a substitute.
-  assert.throws(() => bind([{effort: null, model_family: 'fable'}, null]), /no_dispatchable_candidate:read_only:trivial/);
+  assert.throws(() => bind([{effort: null, model_family: 'fable'}, null]), /no_dispatchable_candidate:read_only:deep/);
 });
 
-test('an effort-only owner word on a cheaper tier is guarded: a failed luna/max answer escalates to astra/max in a fresh session', async t => {
+test('an effort-only owner word binds the frontier at that effort and resumes the owner thread; nothing escalates', async t => {
   const dir = await fixture(t);
   const maxOnly = models => models.map(([model, efforts]) => [model, efforts.filter(effort => effort === 'max')])
     .filter(([, efforts]) => efforts.length);
-  const result = await run(t, dir, 'effort only guarded', {extras: {codexSession: 'owner-codex-thread'},
+  const result = await run(t, dir, 'effort only', {extras: {codexSession: 'owner-codex-thread'},
     refresh: value => tierCatalog(value, {codex: maxOnly(CODEX), claude: maxOnly(CLAUDE),
       intent: {effort: 'max', model_family: null}}),
-    execute: (ticket, count) => count === 1 ? execution(ticket, {output: '  '}) : execution(ticket)});
+    execute: ticket => execution(ticket)});
   assert.equal(result.done.state, 'completed', result.done.error);
   assert.deepEqual(result.tickets.map(ticket => [`${ticket.selected_config.model}/${ticket.selected_config.effort}`,
-    ticket.native_resume_session_id]), [['gpt-6-luna/max', null], ['gpt-6-astra/max', 'owner-codex-thread']]);
-  assert.equal(result.done.result.output, 'answer from gpt-6-astra/max');
+    ticket.native_resume_session_id]), [['gpt-6-astra/max', 'owner-codex-thread']]);
   // A route the owner's words fix exactly (family AND effort) stays explicit:
-  // it resumes the owner's thread and is never escalated.
+  // it resumes the owner's thread and is never escalated, even when it fails.
   const exact = await run(t, dir, 'effort and family', {extras: {codexSession: 'owner-codex-thread'},
     refresh: value => tierCatalog(value, {claude: [], codex: [['gpt-6-luna', ['max']]],
       intent: {effort: 'max', model_family: 'luna'}}),
@@ -1364,19 +1225,19 @@ test('a guard whose catalog rows expired during a long cheap attempt still escal
   const shortLived = (catalog, ms) => ({...catalog, candidates: catalog.candidates.map(c => ({...c,
     availability_valid_until_ms: c.availability_observed_at_ms + ms, quota_valid_until_ms: c.quota_observed_at_ms + ms}))});
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-  // Plan time: no frontier anywhere (null target). The refresh before the
-  // cheap dispatch has astra back, valid for ~400 ms; the cheap attempt runs
-  // 700 ms and fails. The reference observed then still runs.
+  // The refresh before the cheap dispatch observes astra valid for ~400 ms;
+  // the cheap attempt runs 700 ms and fails. The reference observed then still runs.
   const stale = await run(t, dir, 'stale bound catalog', {
-    refresh: (value, count) => count === 1 ? tierCatalog(value, codexOnly) : shortLived(tierCatalog(value, {claude: []}), 400),
+    refresh: (value, count) => count === 1 ? tierCatalog(value, {claude: []}) :
+      shortLived(tierCatalog(value, {claude: []}), 400),
     execute: async (ticket, count) => { if (count === 1) { await sleep(700); return execution(ticket, {output: ' '}); }
       return execution(ticket); }});
   assert.equal(stale.done.state, 'completed', stale.done.error);
   assert.deepEqual(stale.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  // The bound catalog never had a frontier row, but one is back when the
+  // The pre-dispatch refresh lost the frontier row, but it is back when the
   // cheap attempt fails: the guard refreshes once and escalates to it.
   const back = await run(t, dir, 'refreshed at failure', {
-    refresh: (value, count) => tierCatalog(value, count <= 2 ? codexOnly : {claude: []}),
+    refresh: (value, count) => tierCatalog(value, count === 2 ? codexOnly : {claude: []}),
     execute: (ticket, count) => count === 1 ? execution(ticket, {output: ''}) : execution(ticket)});
   assert.equal(back.done.state, 'completed', back.done.error);
   assert.deepEqual(back.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
@@ -1384,46 +1245,56 @@ test('a guard whose catalog rows expired during a long cheap attempt still escal
     .some(event => event.kind === 'catalog_refreshed_before_dispatch'));
 });
 
-test('the routing ledger records what each cheaper attempt escalation did: escalated, or why it was held', async t => {
+test('the routing ledger records what each descent escalation did: escalated, or why it was held', async t => {
   const dir = await fixture(t);
   await run(t, dir, 'ledger escalated', {execute: (ticket, count) => count === 1 ? execution(ticket, {output: ''}) :
     execution(ticket)});
   const escalated = await ledger(dir, 'ledger escalated');
   assert.deepEqual(escalated.map(record => [record.model, record.attempt_state, record.escalation_outcome]),
     [['gpt-6-luna', 'ladder_not_returned', 'escalated'], ['gpt-6-astra', 'completed', null]]);
-  await run(t, dir, 'ledger held', {catalog: {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')},
+  const codexOnly = {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')};
+  await run(t, dir, 'ledger held', {refresh: (value, count) => tierCatalog(value, count === 1 ? {claude: []} : codexOnly),
     execute: ticket => execution(ticket, {output: ''})});
+  // The reference vanished after bind: the escalation is recorded, and its
+  // dispatch-time re-resolution holds before any reference attempt exists.
   const held = await ledger(dir, 'ledger held');
   assert.deepEqual(held.map(record => [record.model, record.attempt_state, record.escalation_outcome]),
-    [['gpt-6-luna', 'ladder_not_returned', 'ladder_reference_unavailable']]);
+    [['gpt-6-luna', 'ladder_not_returned', 'escalated']]);
   await run(t, dir, 'ledger adopted', {execute: ticket => execution(ticket)});
   assert.deepEqual((await ledger(dir, 'ledger adopted')).map(record => record.escalation_outcome), [null]);
 });
 
-test('pools are ranked by the quota of the model a node actually binds, not by the frontier model', () => {
+test('R11: pools rank by the quota of the model a node actually binds, after pin and conversation affinity', () => {
   const request = task('/tmp', 'Answer one question');
-  // Codex leads the catalog (its frontier has more room), but its workhorse
-  // and fast models are nearly exhausted; Claude's lower tiers have room.
+  // Codex leads the catalog (its frontier has more room), but its fast model
+  // is nearly exhausted; Claude's lower tiers have room.
   const scores = {'gpt-6-astra': 300_000_000, 'gpt-6.1-sol': 2_000_000, 'gpt-6-luna': 2_000_000,
     'claude-fable-5-1': 100_000_000, fable: 100_000_000, 'claude-opus-5-5': 900_000_000, opus: 900_000_000,
     'claude-sonnet-5-5': 900_000_000, sonnet: 900_000_000, 'claude-haiku-4-5-20251001': 900_000_000};
   const catalog = {...tierCatalog(request), quota_scores: scores};
-  const standard = resolve(request, catalog, 'standard').decisions.n;
-  assert.equal(route(standard), 'anthropic_shared/claude-opus-5-5/medium');
-  assert.match(standard.reason, /;pool_rank_1;outscored_pool_rank_0;effort_medium;pool_scored_by_bound_model;/);
-  assert.equal(route(resolve(request, catalog, 'trivial').decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
-  // Deep work binds the frontier: Codex's astra has more room than fable.
-  assert.equal(route(resolve(request, catalog, 'deep').decisions.n), 'openai_codex/gpt-6-astra/max');
-  // Unknown scores keep the catalog order; an older catalog has none.
-  assert.equal(route(resolve(request, tierCatalog(request), 'standard').decisions.n), 'openai_codex/gpt-6.1-sol/medium');
-  assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {'gpt-6.1-sol': 5}}, 'standard')
-    .decisions.n), 'openai_codex/gpt-6.1-sol/medium', 'a model with a score outranks one with none');
-  assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {'claude-opus-5-5': 5}}, 'standard')
-    .decisions.n), 'anthropic_shared/claude-opus-5-5/medium');
+  const certified = resolve(request, catalog, 'certified').decisions.n;
+  assert.equal(route(certified), 'anthropic_shared/claude-haiku-4-5-20251001/none');
+  assert.match(certified.reason, /;pool_rank_1;outscored_pool_rank_0;effort_none;pool_scored_by_bound_model;/);
+  // The reference binds the frontier: Codex's astra has more room than fable.
+  assert.equal(route(resolve(request, catalog).decisions.n), 'openai_codex/gpt-6-astra/max');
+  // Unknown scores keep the catalog order; a model with a score outranks one with none.
+  assert.equal(route(resolve(request, tierCatalog(request), 'certified').decisions.n), 'openai_codex/gpt-6-luna/low');
+  assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {'claude-haiku-4-5-20251001': 5}},
+    'certified').decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
   // Only the bound model's score counts: a score for another Claude model
-  // (sonnet, which standard does not bind there) leaves the catalog order.
-  assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {sonnet: 5}}, 'standard')
-    .decisions.n), 'openai_codex/gpt-6.1-sol/medium');
+  // (sonnet, which this descent does not bind there) leaves the catalog order.
+  assert.equal(route(resolve(request, {...tierCatalog(request), quota_scores: {sonnet: 5}}, 'certified')
+    .decisions.n), 'openai_codex/gpt-6-luna/low');
+  // A class pin outranks the score; conversation affinity outranks the score too.
+  const pinned = {...catalog, request_class: 'chat_explanatory', class_provider_pins: {chat_explanatory: 'codex'}};
+  const pin = resolve(request, pinned, 'certified').decisions.n;
+  assert.equal(route(pin), 'openai_codex/gpt-6-luna/low');
+  assert.match(pin.reason, /;pool_class_pin;/);
+  const resumed = task('/tmp', 'Answer one question', {codexSession: 'owner-codex-thread'});
+  const affine = resolveRoutePlan(plan(resumed, [unbound('n')]), resumed, {...tierCatalog(resumed),
+    quota_scores: scores}, Date.now(), {verifierRegistry: CERTIFY}).decisions.n;
+  assert.equal(route(affine), 'openai_codex/gpt-6-luna/low');
+  assert.match(affine.reason, /;pool_conversation_affinity;/);
 });
 
 test('quota_scores and explicit_route_intents are strictly shaped catalog fields', async t => {
@@ -1466,7 +1337,7 @@ test('native_reference_efforts is optional but present maps must be bounded, kno
       catalog: async value => {
         const catalog = nativeCeilings(tierCatalog(value));
         return {...catalog, native_reference_efforts: mutate(catalog.native_reference_efforts)};
-      }, plan: async () => { planned++; return plan(request, [graded('n', 'trivial')]); },
+      }, plan: async () => { planned++; return plan(request, [unbound('n')]); },
       execute: async () => { throw Error('must not dispatch'); }, verifyTask: taskVerdict});
     t.after(async () => { await runtime.close(); });
     await runtime.submit(request);
@@ -1479,726 +1350,4 @@ test('native_reference_efforts is optional but present maps must be bounded, kno
     {codex: HIGHEST_CODEX})), execute: ticket => execution(ticket)});
   assert.equal(valid.done.state, 'completed', valid.done.error);
   assert.deepEqual(valid.tuples, ['gpt-6-luna/low']);
-});
-
-// ---- Cost gate: tier or reference, decided from the routing ledger --------
-// The derivation: a guarded read-only tier route costs mu_C + p*mu_R, the
-// reference mu_R, so the tier costs more iff p > 1 - mu_C/mu_R. In tokens the
-// gate may only act on escalation spend: P_more = Pr[mu_C < mu_R and
-// mu_C + p*mu_R > mu_R]; reference only when P_more >= 0.9, and then a task
-// still tries the tier with probability 1 - P_more.
-
-const evidence = (trials, escalations, cheapCosts, referenceCosts, level = 'family') =>
-  ({cheap: {trials, escalations, cost: costSummary(cheapCosts)}, reference: {level, cost: costSummary(referenceCosts)}});
-// n costs around a centre, deterministic and spread (no randomness in tests).
-// A whole number of cycles of five (n = 5, 10, 20) has its mean at the centre.
-const around = (centre, spread, n) => Array.from({length: n}, (_, i) => centre + spread * ((i % 5) - 2) / 2);
-// Regularized incomplete beta for integer a, b: Pr[Beta(a, b) <= x].
-function betaCDF(x, a, b) {
-  const n = a + b - 1;
-  let total = 0, choose = 1;
-  for (let j = 0; j <= n; j++) {
-    if (j >= a) total += choose * x ** j * (1 - x) ** (n - j);
-    choose = choose * (n - j) / (j + 1);
-  }
-  return total;
-}
-// The numbers a routing reason's gate token wrote (null when it has none).
-function writtenGate(reason) {
-  const match = /;cost_gate_[a-z_]+:p_mean=[0-9.]+:cost_ratio=[0-9.]+:p_more=([0-9.]+):conf=([0-9.]+)(?::explore=([0-9.]+))?:/
-    .exec(reason);
-  return match && {p_more: Number(match[1]), conf: Number(match[2]), explore: match[3] === undefined ? null : Number(match[3])};
-}
-// The count of posterior draws behind an exact p_more.
-const moreOf = gate => Math.round(gate.p_more * gate.draws);
-// A task label whose node's exploration draw keeps the tier (explore) or not,
-// for a gate decision at this P_more. Deterministic: the draw is a hash.
-function exploreLabel(prefix, taskID, nodeID, gate, explore) {
-  for (let i = 0; i < 10_000; i++) {
-    const label = `${prefix}-${i}`;
-    if ((costGateExploreDraw(`${taskID(label)}\n${nodeID}`) >= moreOf(gate)) === explore) return label;
-  }
-  throw new Error('no label');
-}
-
-test('cost gate: the confidence is the one tunable; no or too little evidence keeps the tier', () => {
-  assert.equal(COST_GATE_CONFIDENCE, 0.9);
-  assert.equal(COST_GATE_DRAWS, 4000);
-  assert.equal(COST_GATE_MIN_SAMPLES, 2);
-  const none = tierCostGate(tierCostEvidence([], {}));
-  assert.equal(none.route, 'tier');
-  assert.equal(none.reason, 'cost_gate_insufficient');
-  assert.deepEqual([none.trials, none.escalations, none.cheap_n, none.reference_n, none.p_more], [0, 0, 0, 0, null]);
-  // One cost sample in either arm: its spread is undefined, so no decision.
-  for (const [cheap, reference] of [[[500], [1000, 1100]], [[500, 520], [1000]]])
-    assert.equal(tierCostGate(evidence(10, 10, cheap, reference)).reason, 'cost_gate_insufficient');
-  // A zero mean cost is no usable evidence either.
-  assert.equal(tierCostGate(evidence(4, 4, [0, 0], [1000, 1000])).reason, 'cost_gate_insufficient');
-  // Malformed evidence or options are unavailable / refused, never a decision.
-  for (const bad of [null, {}, {cheap: {trials: 2, escalations: 3, cost: costSummary([1, 2])},
-    reference: {level: 'family', cost: costSummary([1, 2])}},
-    {...evidence(2, 1, [1, 2], [3, 4]), reference: {level: 'everywhere', cost: costSummary([3, 4])}}])
-    assert.deepEqual([tierCostGate(bad).route, tierCostGate(bad).reason], ['tier', 'cost_gate_unavailable']);
-  for (const options of [{confidence: 0}, {confidence: 1.5}, {draws: 0}, {exploreKey: ''}, {exploreKey: 7}])
-    assert.throws(() => tierCostGate(evidence(4, 2, [1, 2], [3, 4]), options), /cost_gate_options_invalid/);
-});
-
-test('cost gate: a clear escalation rate goes to the reference; a rare one on a far cheaper route stays tier', () => {
-  // Every cheap attempt failed and the cheap route costs a fifth of the
-  // reference: break-even p is 0.8, the posterior is Beta(21, 1).
-  const failing = tierCostGate(evidence(20, 20, around(200, 20, 20), around(1000, 100, 10)));
-  assert.equal(failing.route, 'reference');
-  assert.equal(failing.reason, 'cost_gate_reference');
-  assert.equal(failing.p_mean, round(21 / 22));
-  assert.equal(failing.cost_ratio, 0.2);
-  assert.ok(failing.p_more >= COST_GATE_CONFIDENCE, String(failing.p_more));
-  // Close to the closed form 1 - 0.8^21 (the costs barely spread).
-  assert.ok(Math.abs(failing.p_more - (1 - 0.8 ** 21)) < 0.01, String(failing.p_more));
-  // One escalation in 20 on a route at a twentieth of the cost: never more.
-  const cheap = tierCostGate(evidence(20, 1, around(50, 5, 20), around(1000, 100, 10)));
-  assert.equal(cheap.route, 'tier');
-  assert.equal(cheap.reason, 'cost_gate_tier');
-  assert.equal(cheap.p_mean, round(2 / 22));
-  assert.equal(cheap.p_more, 0);
-  // A cheap route costing 90% of the reference with 4 escalations in 10:
-  // break-even p is only 0.1, so the reference is cheaper with confidence.
-  const close = tierCostGate(evidence(10, 4, around(900, 30, 10), around(1000, 30, 10)));
-  assert.equal(close.route, 'reference');
-  assert.equal(close.cost_ratio, 0.9);
-  assert.ok(close.p_more >= COST_GATE_CONFIDENCE, String(close.p_more));
-});
-function round(value) { return Math.round(value * 1000) / 1000; }
-
-test('cost gate: tokens overstate the cheaper attempt, so only escalation spend can move a node to the reference', () => {
-  // Twenty cheaper attempts, none failed, each spending ~1.6% MORE tokens
-  // than a reference attempt (an agentic cheaper model re-reading context).
-  // In tokens mu_C + p*mu_R > mu_R even at p = 0, but a cheaper model's token
-  // does not spend more quota: nothing observed says the tier costs more.
-  const neverFailed = tierCostGate(evidence(20, 0, around(32500, 3000, 20), around(32000, 3000, 10)));
-  assert.deepEqual([neverFailed.route, neverFailed.reason, neverFailed.cost_ratio, neverFailed.p_more],
-    ['tier', 'cost_gate_no_escalation', 1.016, null]);
-  // Escalations, but the cheaper attempts' mean token cost is not below the
-  // reference's: tokens cannot rank the arms, at any confidence.
-  for (const confidence of [0.9, 0.01]) {
-    const unidentified = tierCostGate(evidence(20, 2, around(32500, 3000, 20), around(32000, 3000, 10)), {confidence});
-    assert.deepEqual([unidentified.route, unidentified.reason, unidentified.p_more], ['tier', 'cost_gate_unidentified', null]);
-  }
-  // A cheaper mean 0.4% below the reference's with wide spread: only the
-  // posterior draws where the cheaper attempt is cheaper can count, so even
-  // twenty escalations in twenty are not confident.
-  for (const escalations of [2, 20]) {
-    const barely = tierCostGate(evidence(20, escalations, around(31900, 3000, 20), around(32000, 3000, 10)));
-    assert.equal(barely.reason, 'cost_gate_tier', String(escalations));
-    assert.equal(barely.cost_ratio, 0.996);
-    assert.ok(barely.p_more > 0.3 && barely.p_more < 0.75, `${escalations}: ${barely.p_more}`);
-  }
-  // The same gap, measured precisely: the cheaper attempt is credibly
-  // cheaper, and the escalations make the tier cost more.
-  const precise = tierCostGate(evidence(20, 2, around(31900, 30, 20), around(32000, 30, 10)));
-  assert.equal(precise.route, 'reference');
-});
-
-test('cost gate: P_more never depends on the confidence, so the decision is monotone in it', () => {
-  // The reported reproduction: when the confidence was part of the seed,
-  // 0.9 sent this to the reference and 0.89 kept the tier.
-  const reported = evidence(10, 9, [290, 330, 310], [980, 1020, 1000]);
-  const at = (confidence, exploreKey = null) => tierCostGate(reported, {confidence, exploreKey});
-  const pMore = at(0.9).p_more;
-  assert.equal(at(0.89).p_more, pMore);
-  assert.ok(pMore > 0.85 && pMore < 0.95, String(pMore));
-  for (const exploreKey of [null, 'task-a\nn', 'task-b\nn', 'task-c\nn']) {
-    let tier = false;
-    for (let step = 1; step <= 200; step++) {
-      const confidence = step / 200, gate = at(confidence, exploreKey);
-      assert.equal(gate.p_more, pMore, String(confidence));
-      assert.equal(gate.confidence, confidence);
-      if (gate.p_more < confidence) assert.equal(gate.reason, 'cost_gate_tier');
-      if (exploreKey === null) assert.equal(gate.route === 'reference', gate.p_more >= confidence);
-      if (gate.route === 'tier') tier = true;
-      else assert.equal(tier, false, `a higher confidence (${confidence}) went back to the reference`);
-    }
-    assert.equal(tier, true);
-  }
-});
-
-test('cost gate: the recorded p_more is the exact fraction the rule compared, never rounded across it', () => {
-  // Evidence whose rounded P_more read 0.9 beside a tier decision.
-  const request = task('/tmp', 'Answer one question', {taskID: 'task-gate-exact-fraction'});
-  const catalog = tierCatalog(request);
-  for (const value of [evidence(3, 3, [435, 445, 440], [980, 1020, 1000]), evidence(7, 2, [890, 910], [1000, 1040]),
-    evidence(13, 6, [720, 740], [1000, 1040]), evidence(4, 3, [611, 651, 581], [1000, 1100, 950]),
-    evidence(8, 8, [240, 280, 210], [1000, 1100, 950]), evidence(10, 9, [290, 330, 310], [980, 1020, 1000])]) {
-    const gate = tierCostGate(value);
-    assert.equal(gate.draws, COST_GATE_DRAWS);
-    assert.equal(gate.p_more, moreOf(gate) / gate.draws, 'an exact count over the draws');
-    assert.equal(gate.route === 'reference', gate.p_more >= COST_GATE_CONFIDENCE);
-    // The routing reason and the route's ledger field carry the same exact
-    // numbers, and the documented rule reproduces the bound route.
-    const resolved = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request, catalog, Date.now(),
-      {costEvidence: () => value});
-    const written = writtenGate(resolved.decisions.n.reason);
-    assert.deepEqual([written.p_more, written.conf], [gate.p_more, COST_GATE_CONFIDENCE]);
-    assert.deepEqual([resolved.routes.n.cost_gate.p_more, resolved.routes.n.cost_gate.confidence,
-      resolved.routes.n.cost_gate.draws, resolved.routes.n.cost_gate.explore],
-    [written.p_more, written.conf, COST_GATE_DRAWS, written.explore]);
-    const rule = written.p_more >= written.conf && (written.explore === null || written.explore < written.p_more);
-    assert.equal(resolved.decisions.n.model === 'gpt-6-astra', rule, resolved.decisions.n.reason);
-    assert.equal(written.explore !== null, gate.route === 'reference', 'the exploration draw is shown when it decided');
-  }
-});
-
-test('cost gate: identical evidence gives the identical decision and P_more', () => {
-  const make = () => evidence(7, 3, [400, 420, 390, 450, 410, 430, 405], [900, 1100, 1000, 950]);
-  const first = tierCostGate(make()), second = tierCostGate(make());
-  assert.deepEqual(first, second);
-  first.p_more = -1; // a caller mutating its copy never changes the next answer
-  assert.deepEqual(tierCostGate(make()), second);
-  // The same evidence with more draws converges on the same probability.
-  const precise = tierCostGate(make(), {draws: 40_000});
-  assert.ok(Math.abs(precise.p_more - second.p_more) < 0.03, `${precise.p_more} ${second.p_more}`);
-  // Another confidence: the same P_more, the same rule.
-  for (const confidence of [0.01, 0.5, 1]) {
-    const gate = tierCostGate(make(), {confidence});
-    assert.equal(gate.p_more, second.p_more);
-    assert.equal(gate.route, second.p_more >= confidence ? 'reference' : 'tier');
-  }
-  // The same task node explores the same way every time.
-  const keyed = evidence(2, 2, [801, 803], [1002, 1004]);
-  for (const exploreKey of ['task-x\nn', 'task-y\nrequested-1'])
-    assert.deepEqual(tierCostGate(keyed, {exploreKey}), tierCostGate(keyed, {exploreKey}));
-});
-
-test('cost gate: Monte Carlo agrees with the closed form when costs are exact', () => {
-  // Zero spread: P_more = Pr[p > 1 - mu_C/mu_R] = 1 - I_{1-ratio}(a, b).
-  for (const [trials, escalations, cheapCost, referenceCost] of [[20, 19, 200, 1000], [2, 2, 800, 1000],
-    [2, 1, 500, 1000], [12, 3, 700, 1000]]) {
-    const gate = tierCostGate(evidence(trials, escalations, [cheapCost, cheapCost], [referenceCost, referenceCost]));
-    const exact = 1 - betaCDF(1 - cheapCost / referenceCost, 1 + escalations, 1 + trials - escalations);
-    // Monte Carlo standard error is at most 0.008 at 4000 draws: 3 SE.
-    assert.ok(Math.abs(gate.p_more - exact) < 0.025, `${trials}/${escalations}: ${gate.p_more} vs ${exact}`);
-  }
-});
-
-test('cost gate: the Beta, Gamma and exploration draws have the right distributions', () => {
-  const random = costGateRandom('5'.repeat(64));
-  const n = 40_000;
-  const moments = draw => { let sum = 0, squares = 0;
-    for (let i = 0; i < n; i++) { const x = draw(); sum += x; squares += x * x; }
-    return [sum / n, squares / n - (sum / n) ** 2]; };
-  const [betaMean, betaVar] = moments(() => sampleBeta(random, 3, 7));
-  assert.ok(Math.abs(betaMean - 0.3) < 0.005, String(betaMean));
-  assert.ok(Math.abs(betaVar - 21 / 1100) < 0.002, String(betaVar));
-  for (const shape of [0.5, 1, 4.5]) {
-    const [mean, variance] = moments(() => sampleGamma(random, shape));
-    assert.ok(Math.abs(mean - shape) < 0.03 * Math.max(1, shape), `${shape}: ${mean}`);
-    assert.ok(Math.abs(variance - shape) < 0.08 * Math.max(1, shape), `${shape}: ${variance}`);
-  }
-  const uniform = costGateRandom('0'.repeat(64)); // an all-zero seed still runs
-  for (let i = 0; i < 1000; i++) { const u = uniform(); assert.ok(u > 0 && u < 1); }
-  assert.throws(() => costGateRandom('not hex'), /cost_gate_seed_invalid/);
-  assert.throws(() => sampleGamma(random, 0), /cost_gate_gamma_shape_invalid/);
-  // Exploration draws: integers in [0, draws), deterministic per key, uniform
-  // over keys (mean (draws - 1) / 2, variance (draws^2 - 1) / 12).
-  let index = 0;
-  const [drawMean, drawVar] = moments(() => costGateExploreDraw(`task-${index++}\nn`));
-  assert.ok(Math.abs(drawMean - 1999.5) < 30, String(drawMean));
-  assert.ok(Math.abs(drawVar - (4000 ** 2 - 1) / 12) < 0.03 * (4000 ** 2 - 1) / 12, String(drawVar));
-  assert.equal(costGateExploreDraw('task-a\nn'), costGateExploreDraw('task-a\nn'));
-  for (let i = 0; i < 1000; i++) assert.ok(Number.isInteger(costGateExploreDraw(`k${i}`, 10)) &&
-    costGateExploreDraw(`k${i}`, 10) >= 0 && costGateExploreDraw(`k${i}`, 10) < 10);
-  assert.throws(() => costGateExploreDraw(''), /cost_gate_explore_key_invalid/);
-});
-
-test('cost gate: a confident gate still tries the tier with probability 1 - P_more (posterior probability matching)', () => {
-  // Two early failures, nothing since: confident, not certain.
-  const value = evidence(2, 2, [801, 803], [1002, 1004]);
-  const gate = tierCostGate(value);
-  assert.equal(gate.route, 'reference');
-  assert.ok(gate.p_more >= COST_GATE_CONFIDENCE && gate.p_more < 1, String(gate.p_more));
-  let explored = 0;
-  const keys = 4000;
-  for (let i = 0; i < keys; i++) {
-    const exploreKey = `task-${i}\nn`;
-    const keyed = tierCostGate(value, {exploreKey});
-    const draw = costGateExploreDraw(exploreKey);
-    assert.equal(keyed.p_more, gate.p_more);
-    assert.equal(keyed.explore, draw / COST_GATE_DRAWS);
-    assert.equal(keyed.reason, draw >= moreOf(gate) ? 'cost_gate_explore' : 'cost_gate_reference');
-    assert.equal(keyed.route, draw >= moreOf(gate) ? 'tier' : 'reference');
-    if (keyed.route === 'tier') explored++;
-  }
-  // The share of explored task nodes is 1 - P_more (binomial: 4.5 SE).
-  const expected = 1 - gate.p_more, se = Math.sqrt(expected * (1 - expected) / keys);
-  assert.ok(Math.abs(explored / keys - expected) < 4.5 * se, `${explored / keys} vs ${expected}`);
-  // Below the confidence there is nothing to explore: the tier runs.
-  const tier = tierCostGate(evidence(7, 3, [400, 420, 390, 450, 410, 430, 405], [900, 1100, 1000, 950]),
-    {exploreKey: 'task-0\nn'});
-  assert.deepEqual([tier.route, tier.reason, tier.explore], ['tier', 'cost_gate_tier', null]);
-});
-
-const GATE_QUERY = {family: 'trivial:read_only:agent', scope: 'read_only', cheap_pool: 'openai_codex',
-  cheap_model: 'gpt-6-luna', cheap_effort: 'low', reference_family: 'trivial:read_only:agent',
-  reference_surface_kind: 'agent', reference_pool: 'openai_codex', reference_model: 'gpt-6-astra', reference_effort: 'max'};
-const ledgerRecord = changes => ({schema: 1, family: 'trivial:read_only:agent', scope: 'read_only', surface_kind: 'agent',
-  surface: 'codex', quota_pool: 'openai_codex', model: 'gpt-6-luna', effort: 'low', route_kind: 'tier',
-  escalated: false, attempt_state: 'completed', usage: {input_tokens: 100, output_tokens: 10}, ...changes});
-const REFERENCE = {model: 'gpt-6-astra', effort: 'max', route_kind: 'reference'};
-const usage = (input, output = 100) => ({input_tokens: input, output_tokens: output});
-
-test('a higher native reference never reuses max-only reference cost samples as ultra evidence', () => {
-  const request = task('/tmp', 'The reference ceiling changed');
-  const records = [
-    ledgerRecord({attempt_state: 'ladder_not_returned', usage: usage(700)}),
-    ledgerRecord({attempt_state: 'ladder_not_returned', usage: usage(710)}),
-    ledgerRecord({...REFERENCE, usage: usage(900)}),
-    ledgerRecord({...REFERENCE, usage: usage(910)}),
-  ].map(costGateRecord);
-  assert.equal(tierCostEvidence(records, GATE_QUERY).reference.cost.n, 2);
-  const queries = [];
-  const catalog = nativeCeilings(tierCatalog(request, {codex: HIGHEST_CODEX, claude: []}));
-  const resolved = resolveRoutePlan(plan(request, [graded('n', 'trivial')]), request, catalog, Date.now(),
-    {costEvidence: query => { queries.push(query); return tierCostEvidence(records, query); }});
-  assert.equal(queries[0].reference_effort, 'ultra');
-  assert.equal(tierCostEvidence(records, queries[0]).reference.cost.n, 0);
-  assert.equal(resolved.routes.n.cost_gate.reason, 'cost_gate_insufficient');
-  assert.equal(route(resolved.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.equal(resolved.routes.n.ladder.reference_effort, 'ultra');
-});
-
-test('cost gate evidence: trials, escalations and token costs from the ledger, family first then the pool', () => {
-  const records = [
-    ledgerRecord({}), // adopted: trial, no escalation, cost 110
-    // escalated with a signal: cache reads already sit inside input_tokens and
-    // are not added again; reasoning tokens are added
-    ledgerRecord({attempt_state: 'ladder_not_returned', usage: {input_tokens: 200, output_tokens: 20,
-      reasoning_tokens: 5, cache_read_tokens: 150}}),
-    ledgerRecord({attempt_state: 'ladder_verifier_failed', usage: null}), // a trial, but no cost sample
-    ledgerRecord({attempt_state: 'interrupted'}), ledgerRecord({attempt_state: 'effects_uncertain'}), // no evidence
-    // A named route the host graded counts as the route kind it ran as; an
-    // older named-route record without host_route_kind is no evidence.
-    ledgerRecord({route_kind: 'explicit_route', host_route_kind: 'tier', attempt_state: 'ladder_not_returned',
-      usage: usage(300, 30)}), // trial, escalation, cost 330
-    ledgerRecord({route_kind: 'explicit_route'}),
-    ledgerRecord({effort: 'medium'}), ledgerRecord({family: 'standard:read_only:agent'}),
-    ledgerRecord({quota_pool: 'anthropic_shared'}),
-    ledgerRecord({...REFERENCE, escalated: true, usage: usage(1000)}), // 1100, family
-    ledgerRecord({...REFERENCE, attempt_state: 'held', usage: usage(800)}), // 900, family
-    // A reference that ran and failed after dispatch with no side effects:
-    // the reference arm pays it too (3000, family).
-    ledgerRecord({...REFERENCE, attempt_state: 'effects_uncertain', dispatched_failure: 'no_effects', usage: usage(2900)}),
-    ledgerRecord({...REFERENCE, route_kind: 'explicit_route', host_route_kind: 'reference', usage: usage(1200)}), // 1300
-    ledgerRecord({...REFERENCE, family: 'deep:read_only:agent', usage: {input_tokens: 4000, output_tokens: 1000}}),
-    // Cancelled or unknown (no executor failure report): cut short, no sample.
-    ledgerRecord({...REFERENCE, attempt_state: 'effects_uncertain'}),
-    ledgerRecord({...REFERENCE, route_kind: 'explicit_route', host_route_kind: 'explicit'}), // owner-fixed
-    ledgerRecord({...REFERENCE, scope: 'workspace_write', family: 'trivial:workspace_write:agent'}),
-    ledgerRecord({...REFERENCE, surface_kind: 'chat', family: 'trivial:read_only:chat'}),
-    ledgerRecord({...REFERENCE, route_kind: 'explicit'}), ledgerRecord({...REFERENCE, schema: 2}),
-  ].map(costGateRecord).filter(Boolean);
-  assert.equal(records.length, 17, 'only schema-1 tier and reference attempts are kept, named routes by host kind');
-  const family = tierCostEvidence(records, GATE_QUERY);
-  assert.deepEqual(family, {cheap: {trials: 4, escalations: 3, cost: costSummary([110, 225, 330])},
-    reference: {level: 'family', cost: costSummary([1100, 900, 3000, 1300])}});
-  // Fewer than two family reference samples: the pool at any class, same
-  // scope and surface kind (never a write or another surface kind).
-  const pool = tierCostEvidence(records.filter(record => !(record.route_kind === 'reference' &&
-    [900, 3000, 1300].includes(record.cost))), GATE_QUERY);
-  assert.deepEqual(pool.reference, {level: 'pool', cost: costSummary([1100, 5000])});
-  assert.deepEqual(costSummary([110, 225]), {n: 2, mean: 167.5, sd: Math.sqrt(2 * 57.5 ** 2)});
-});
-
-test('cost gate: a reference run that failed after dispatch counts in mu_R, so failing references are not hidden', () => {
-  // Ten cheaper attempts (four escalated) at ~920 tokens; six delivered
-  // references at ~1000 and three that failed after dispatch at ~5000.
-  const cheap = Array.from({length: 10}, (_, i) =>
-    ledgerRecord({attempt_state: i < 4 ? 'ladder_not_returned' : 'completed', usage: usage(800 + 5 * i)}));
-  const delivered = Array.from({length: 6}, (_, i) => ledgerRecord({...REFERENCE, usage: usage(900 + 4 * i)}));
-  const failed = Array.from({length: 3}, (_, i) => ledgerRecord({...REFERENCE, attempt_state: 'effects_uncertain',
-    dispatched_failure: 'no_effects', usage: usage(4900 + 10 * i)}));
-  const counted = tierCostEvidence([...cheap, ...delivered, ...failed].map(costGateRecord), GATE_QUERY);
-  assert.equal(counted.reference.cost.n, 9);
-  const gate = tierCostGate(counted);
-  assert.deepEqual([gate.route, gate.reason, gate.cost_ratio], ['tier', 'cost_gate_tier', 0.393]);
-  // Leaving the failed runs out (the old reading) would have made the
-  // reference look cheap enough to drop the tier.
-  const hidden = tierCostGate(tierCostEvidence([...cheap, ...delivered].map(costGateRecord), GATE_QUERY));
-  assert.deepEqual([hidden.route, hidden.cost_ratio], ['reference', 0.913]);
-});
-
-test('the routing ledger serves cost-gate records: torn lines are skipped, a public file is unreadable', async t => {
-  const dir = await fixture(t);
-  const ledger = openRoutingLedger(dir);
-  assert.deepEqual(ledger.costRecords(), [], 'no ledger yet: no evidence, no error');
-  ledger.append(ledgerRecord({task_id: 't1', attempt_id: 'a1'}));
-  ledger.append(ledgerRecord({task_id: 't2', attempt_id: 'a2', ...REFERENCE}));
-  assert.deepEqual(ledger.costRecords().map(record => [record.model, record.cost]), [['gpt-6-luna', 110], ['gpt-6-astra', 110]]);
-  // A torn earlier write is one missing sample, not a disabled gate.
-  await writeFile(ledger.path, '{"schema":1,"route_kind":"ti', {flag: 'a'});
-  ledger.append(ledgerRecord({task_id: 't3', attempt_id: 'a3', attempt_state: 'ladder_not_returned'}));
-  assert.deepEqual(ledger.costRecords().map(record => record.attempt_state), ['completed', 'completed', 'ladder_not_returned']);
-  await chmod(ledger.path, 0o644);
-  assert.throws(() => ledger.costRecords(), /routing_ledger_file_invalid/);
-});
-
-test('cost gate in the resolver: a confident gate binds the guard target directly; errors keep the tier', () => {
-  const strong = evidence(20, 20, around(200, 20, 20), around(1000, 100, 10));
-  const strongGate = tierCostGate(strong);
-  const taskID = label => `task-gate-resolver-${label}`;
-  const request = task('/tmp', 'Answer one question', {taskID: taskID(exploreLabel('bind', taskID, 'n', strongGate, false))});
-  const catalog = tierCatalog(request);
-  let calls = 0, queries = [];
-  const bind = (gateEvidence, routeClass = 'trivial', value = request, values = catalog, options = {}) =>
-    resolveRoutePlan(plan(value, [graded('n', routeClass, options)]), value, values, Date.now(),
-      {costEvidence: query => { calls++; queries.push(query); if (gateEvidence instanceof Error) throw gateEvidence;
-        return gateEvidence; }});
-  const gated = bind(strong);
-  assert.equal(calls, 1);
-  assert.deepEqual(queries[0], GATE_QUERY, 'the cheaper route against the escalation target it would use');
-  assert.equal(route(gated.decisions.n), 'openai_codex/gpt-6-astra/max');
-  assert.equal(gated.decisions.n.tier, 'frontier');
-  assert.match(gated.decisions.n.reason, new RegExp('^resolver;route_reference;class_trivial;cost_gate_reference:' +
-    `p_mean=0\\.955:cost_ratio=0\\.2:p_more=${strongGate.p_more}:conf=0\\.9:explore=0\\.\\d+:trials=20:escalations=20:` +
-    'cheap_n=20:ref_n=10:ref_family;cost_gate_cheap_gpt_6_luna_low;tier_frontier;pool_rank_0;effort_max;' +
-    'cost_gate_same_pool;agent_surface$'));
-  assert.equal(Object.hasOwn(gated.decisions.n, 'ladder'), false, 'the reference has nothing to escalate to');
-  assert.equal(gated.routes.n.kind, 'reference');
-  assert.equal(gated.routes.n.ladder, null);
-  assert.equal(gated.routes.n.cost_gate.reason, 'cost_gate_reference');
-  assert.equal(gated.plan.nodes[0].candidate_id, key('gpt-6-astra', 'max', 'read_only', 'codex'));
-  // The same evidence for a task node whose exploration draw keeps the tier.
-  const exploring = task('/tmp', 'Answer one question', {taskID: taskID(exploreLabel('explore', taskID, 'n', strongGate, true))});
-  const explored = bind(strong, 'trivial', exploring, tierCatalog(exploring));
-  assert.equal(route(explored.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.match(explored.decisions.n.reason, /;escalation_reference_same_pool;cost_gate_explore:p_mean=0\.955:/);
-  assert.equal(explored.routes.n.kind, 'tier');
-  assert.equal(explored.routes.n.ladder.reference_model, 'gpt-6-astra', 'an explored tier keeps its guard');
-  // Not confident, too little evidence, no observed escalation, or no
-  // readable evidence: the tier route and its guard, with the gate's reason.
-  for (const [gateEvidence, token] of [[evidence(20, 1, around(50, 5, 20), around(1000, 100, 10)),
-    /;cost_gate_tier:p_mean=0\.091:cost_ratio=0\.05:p_more=0:conf=0\.9:trials=20:/],
-    [evidence(20, 0, around(50, 5, 20), around(1000, 100, 10)),
-      /;cost_gate_no_escalation:p_mean=0\.045:cost_ratio=0\.05:trials=20:escalations=0:/],
-    [evidence(1, 1, [300], [1000]), /;cost_gate_insufficient:trials=1:escalations=1:cheap_n=1:ref_n=1:ref_family;/],
-    [new Error('ledger unreadable'), /;escalation_reference_same_pool;cost_gate_unavailable;agent_surface$/],
-    [null, /;cost_gate_unavailable;/]]) {
-    const kept = bind(gateEvidence);
-    assert.equal(route(kept.decisions.n), 'openai_codex/gpt-6-luna/low', String(token));
-    assert.match(kept.decisions.n.reason, token);
-    assert.equal(kept.routes.n.kind, 'tier');
-    assert.equal(kept.routes.n.ladder.reference_model, 'gpt-6-astra');
-  }
-  // No reference can run now: the gate has nothing to compare and says so.
-  calls = 0;
-  const noFrontier = tierCatalog(request, {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-astra')});
-  const blind = bind(strong, 'trivial', request, noFrontier);
-  assert.equal(calls, 0);
-  assert.equal(route(blind.decisions.n), 'openai_codex/gpt-6-luna/low');
-  assert.match(blind.decisions.n.reason, /;escalation_reference_unavailable;cost_gate_no_reference;agent_surface$/);
-  // A pure caller without a reader is unchanged (no token at all).
-  assert.doesNotMatch(resolve(request, catalog, 'trivial').decisions.n.reason, /cost_gate/);
-});
-
-test('cost gate: writes, owner effort or family words, deep work and named routes with their own words never consult it', async t => {
-  let calls = 0;
-  const strong = evidence(20, 20, around(200, 20, 20), around(1000, 100, 10));
-  const strongGate = tierCostGate(strong);
-  const costEvidence = () => { calls++; return strong; };
-  const bind = (request, catalog, node) => resolveRoutePlan(plan(request, [node]), request, catalog, Date.now(),
-    {costEvidence}).decisions[node.id];
-  // A write: guarded by nothing, so never gated.
-  const writeTask = task('/tmp', 'Change one file', {write: true});
-  const write = bind(writeTask, tierCatalog(writeTask, {write: true}), graded('w', 'trivial', {scope: 'workspace_write'}));
-  assert.equal(route(write), 'openai_codex/gpt-6.1-sol/medium');
-  // An owner effort word ("최대 리즈닝") or family word: the gate never moves it.
-  const request = task('/tmp', '최대 리즈닝으로 해줘');
-  const maxOnly = models => models.map(([model, efforts]) => [model, efforts.filter(effort => effort === 'max')])
-    .filter(([, efforts]) => efforts.length);
-  const effortWord = bind(request, tierCatalog(request, {codex: maxOnly(CODEX), claude: maxOnly(CLAUDE),
-    intent: {effort: 'max', model_family: null}}), graded('n', 'trivial'));
-  assert.equal(route(effortWord), 'openai_codex/gpt-6-luna/max');
-  const familyWord = bind(request, tierCatalog(request, {codex: [], claude: CLAUDE.filter(([model]) =>
-    ['claude-opus-5-5', 'opus'].includes(model)), intent: {effort: null, model_family: 'opus'}}), graded('n', 'trivial'));
-  assert.equal(route(familyWord), 'anthropic_shared/claude-opus-5-5/low');
-  // Deep work already runs the reference.
-  const deep = bind(request, tierCatalog(request), graded('n', 'deep'));
-  assert.equal(route(deep), 'openai_codex/gpt-6-astra/max');
-  // A named route with its own effort word.
-  const explicit = explicitTask('/tmp', [FANOUT[0], FANOUT[1]]);
-  const worded = resolveRoutePlan(plan(explicit, [routeNode(0, 'trivial', [FANOUT[0], FANOUT[1]])]), explicit,
-    {...tierCatalog(explicit), explicit_route_intents: [{effort: 'max', model_family: null}, null]}, Date.now(),
-    {costEvidence}).decisions['requested-1'];
-  assert.equal(`${worded.surface}:${worded.model}/${worded.effort}`, 'codex:gpt-6-luna/max');
-  for (const decision of [write, effortWord, familyWord, deep, worded])
-    assert.doesNotMatch(decision.reason, /cost_gate/);
-  assert.equal(calls, 0, 'the gate was never consulted');
-  // A named route WITHOUT its own words is a host-graded tier route: the gate
-  // applies and keeps that route on its own surface (the chat lane's own
-  // frontier reference, never the agent surface or another pool). A fixed
-  // task id whose three route nodes do not explore at this P_more.
-  let label = 0;
-  const fanoutID = () => `task-gate-named-${label}`;
-  while (FANOUT.some((_, index) => costGateExploreDraw(`${fanoutID()}\nrequested-${index + 1}`) >= moreOf(strongGate))) label++;
-  const fanout = explicitTask('/tmp', FANOUT, {taskID: fanoutID()});
-  const named = resolveRoutePlan(plan(fanout, FANOUT.map((_, index) => routeNode(index, 'trivial'))), fanout,
-    tierCatalog(fanout, {chat: true}), Date.now(), {costEvidence}).decisions;
-  assert.equal(calls, 3);
-  assert.deepEqual(Object.values(named).map(d => `${d.surface}:${d.model}/${d.effort}`),
-    ['codex:gpt-6-astra/max', 'claude:claude-fable-5-1/max', 'claude-chat:claude-fable-5-1/max']);
-  assert.match(named['requested-3'].reason, /^resolver;route_reference;explicit_route_surface_claude_chat;class_trivial;cost_gate_reference:/);
-});
-
-// One durable runtime for several sequential tasks (the gate reads the
-// ledger the earlier tasks wrote). Each task has a fixed id (its exploration
-// draw is then reproducible), its catalog options, its route class and, for
-// a named-route test, its routes.
-async function gateRuntime(t, dir, name, execute) {
-  const options = new Map(), tickets = [];
-  const stateDir = join(dir, name);
-  const runtime = await createRCCRuntime({stateDir,
-    catalog: async value => tierCatalog(value, options.get(value.task_id)?.catalog ?? {}),
-    plan: async ({task: value}) => plan(value, [options.get(value.task_id)?.node ?? graded('n', 'trivial')]),
-    execute: async ticket => { tickets.push(ticket); return execute(ticket, tickets.length); },
-    verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  const taskID = label => `task-gate-${name}-${label}`.replace(/[^A-Za-z0-9_-]/g, '-');
-  const submit = async (label, catalog = {}, {routeClass = 'trivial', routes = null} = {}) => {
-    const request = routes ? explicitTask(dir, routes, {taskID: taskID(label)}) :
-      task(dir, 'Answer one question: ' + label, {taskID: taskID(label)});
-    options.set(request.task_id, {catalog, node: routes ? routeNode(0, routeClass, routes) : graded('n', routeClass)});
-    await runtime.submit(request);
-    const done = await wait(runtime, request);
-    return {request, done, tuples: tickets.filter(ticket => ticket.task_id === request.task_id)
-      .map(ticket => `${ticket.selected_config.model}/${ticket.selected_config.effort}`)};
-  };
-  // The gate's decision for the next task from what the ledger holds now.
-  const next = (query = GATE_QUERY) => tierCostGate(tierCostEvidence(openRoutingLedger(stateDir).costRecords(), query));
-  // A label for the next task whose node does (true) or does not (false)
-  // explore at that decision's P_more.
-  const label = (prefix, gate, explore, nodeID = 'n') => exploreLabel(prefix, taskID, nodeID, gate, explore);
-  return {runtime, submit, next, label, ledger: async () => (await readFile(join(stateDir, 'routing-ledger',
-    'routing-ledger.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))};
-}
-const tokens = (input, output = 100) => ({input_tokens: input, output_tokens: output});
-const GATE_KEYS = ['confidence', 'cost_ratio', 'draws', 'explore', 'p_mean', 'p_more', 'reason'];
-
-test('runtime: once the ledger shows the cheaper route failing, the next task binds the reference directly', async t => {
-  const dir = await fixture(t);
-  // luna answers empty (a failure signal) at ~800 tokens; astra answers at ~1000.
-  const gate = await gateRuntime(t, dir, 'bind', (ticket, count) => ticket.selected_config.model === 'gpt-6-astra' ?
-    execution(ticket, {usage: tokens(900 + count)}) : execution(ticket, {output: '', usage: tokens(700 + count)}));
-  for (const label of ['first', 'second']) {
-    const result = await gate.submit(label);
-    assert.equal(result.done.state, 'completed', result.done.error);
-    assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max'], label);
-  }
-  const expected = gate.next();
-  assert.equal(expected.route, 'reference');
-  const third = await gate.submit(gate.label('third', expected, false));
-  assert.equal(third.done.state, 'completed', third.done.error);
-  assert.deepEqual(third.tuples, ['gpt-6-astra/max'], 'no cheaper attempt is paid for any more');
-  const decision = third.done.children[0].routing_decision;
-  assert.match(decision.reason, new RegExp('^resolver;route_reference;class_trivial;cost_gate_reference:p_mean=0\\.75:' +
-    `cost_ratio=0\\.799:p_more=${expected.p_more}:conf=0\\.9:explore=0\\.\\d+:trials=2:escalations=2:cheap_n=2:` +
-    'ref_n=2:ref_family;cost_gate_cheap_gpt_6_luna_low;tier_frontier;pool_rank_0;effort_max;cost_gate_same_pool;' +
-    // The planner's paraphrase of this one-node task is replaced by the owner's words.
-    'agent_surface;instruction_host_locked$'));
-  assert.equal(Object.hasOwn(decision, 'ladder'), false);
-  const records = await gate.ledger();
-  assert.deepEqual(records.map(record => [record.model, record.route_kind, record.escalated, record.cost_gate?.reason ?? null]), [
-    ['gpt-6-luna', 'tier', false, 'cost_gate_insufficient'], ['gpt-6-astra', 'reference', true, null],
-    ['gpt-6-luna', 'tier', false, 'cost_gate_insufficient'], ['gpt-6-astra', 'reference', true, null],
-    ['gpt-6-astra', 'reference', false, 'cost_gate_reference']]);
-  assert.deepEqual(Object.keys(records[4].cost_gate).sort(), GATE_KEYS);
-  assert.deepEqual([records[4].cost_gate.p_mean, records[4].cost_gate.p_more, records[4].cost_gate.confidence,
-    records[4].cost_gate.draws], [0.75, expected.p_more, 0.9, 4000]);
-  // Older ledger records without the field still read as evidence.
-  assert.equal(tierCostEvidence(records.map(({cost_gate: _, ...rest}) => costGateRecord(rest)).filter(Boolean),
-    GATE_QUERY).cheap.trials, 2);
-});
-
-test('runtime: an early failure streak cannot lock the family to the reference: an explored task updates the evidence', async t => {
-  const dir = await fixture(t);
-  // luna fails twice (a transient blip), then answers; astra always answers.
-  let lunaRuns = 0;
-  const gate = await gateRuntime(t, dir, 'transient', (ticket, count) => {
-    if (ticket.selected_config.model === 'gpt-6-astra') return execution(ticket, {usage: tokens(900 + count)});
-    lunaRuns++;
-    return execution(ticket, lunaRuns <= 2 ? {output: '', usage: tokens(700 + count)} : {usage: tokens(700 + count)});
-  });
-  for (const label of ['blip-1', 'blip-2'])
-    assert.deepEqual((await gate.submit(label)).tuples, ['gpt-6-luna/low', 'gpt-6-astra/max'], label);
-  const locked = gate.next();
-  assert.equal(locked.route, 'reference');
-  assert.deepEqual((await gate.submit(gate.label('gated', locked, false))).tuples, ['gpt-6-astra/max']);
-  // A task whose exploration draw keeps the tier (probability 1 - P_more):
-  // luna runs again, answers, and the posterior moves.
-  const explored = await gate.submit(gate.label('explored', gate.next(), true));
-  assert.equal(explored.done.state, 'completed', explored.done.error);
-  assert.deepEqual(explored.tuples, ['gpt-6-luna/low']);
-  assert.match(explored.done.children[0].routing_decision.reason, /;cost_gate_explore:p_mean=0\.75:/);
-  const after = gate.next();
-  assert.deepEqual([after.trials, after.escalations], [3, 2]);
-  assert.ok(after.p_more < locked.p_more, `${after.p_more} < ${locked.p_more}`);
-  const records = await gate.ledger();
-  assert.deepEqual(records.at(-1).cost_gate.reason, 'cost_gate_explore');
-  assert.equal(records.at(-1).route_kind, 'tier', 'an explored attempt is an ordinary cheaper trial');
-});
-
-test('runtime: a cheaper route that never failed keeps the tier even when its attempts spend more tokens', async t => {
-  const dir = await fixture(t);
-  // An agentic cheaper model that re-reads as much context as the frontier:
-  // luna 33100 tokens per attempt, astra 32100, and luna never fails.
-  const gate = await gateRuntime(t, dir, 'token-proxy', ticket =>
-    execution(ticket, {usage: tokens(ticket.selected_config.model === 'gpt-6-astra' ? 32_000 : 33_000)}));
-  for (const label of ['deep-1', 'deep-2'])
-    assert.deepEqual((await gate.submit(label, {}, {routeClass: 'deep'})).tuples, ['gpt-6-astra/max'], label);
-  for (const label of ['trivial-1', 'trivial-2', 'trivial-3'])
-    assert.deepEqual((await gate.submit(label)).tuples, ['gpt-6-luna/low'], label);
-  const records = await gate.ledger();
-  assert.deepEqual(records.slice(2).map(record => record.cost_gate.reason),
-    ['cost_gate_insufficient', 'cost_gate_insufficient', 'cost_gate_no_escalation']);
-  // The third trivial task's gate: no escalation observed, so the token
-  // count of the cheaper attempt alone can never drop it.
-  assert.deepEqual([records[4].cost_gate.cost_ratio, records[4].cost_gate.p_more], [1.032, null]);
-});
-
-test('runtime: a named route learns from its own attempts, so the gate can act on it', async t => {
-  const dir = await fixture(t);
-  const routes = [FANOUT[0]];
-  const gate = await gateRuntime(t, dir, 'named', (ticket, count) => ticket.selected_config.model === 'gpt-6-astra' ?
-    execution(ticket, {usage: tokens(900 + count)}) : execution(ticket, {output: '', usage: tokens(700 + count)}));
-  for (const label of ['first', 'second']) {
-    const result = await gate.submit(label, {}, {routes});
-    assert.equal(result.done.state, 'completed', result.done.error);
-    assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max'], label);
-  }
-  const records = await gate.ledger();
-  assert.deepEqual(records.map(record => [record.route_kind, record.host_route_kind, record.attempt_state]), [
-    ['explicit_route', 'tier', 'ladder_not_returned'], ['explicit_route', 'reference', 'completed'],
-    ['explicit_route', 'tier', 'ladder_not_returned'], ['explicit_route', 'reference', 'completed']]);
-  const expected = gate.next();
-  assert.deepEqual([expected.route, expected.trials, expected.escalations], ['reference', 2, 2]);
-  const third = await gate.submit(gate.label('third', expected, false, 'requested-1'), {}, {routes});
-  assert.equal(third.done.state, 'completed', third.done.error);
-  assert.deepEqual(third.tuples, ['gpt-6-astra/max'], 'the named route stops paying for a failing cheaper attempt');
-  assert.match(third.done.children[0].routing_decision.reason,
-    /^resolver;route_reference;explicit_route_surface_codex;class_trivial;cost_gate_reference:/);
-  const last = (await gate.ledger()).at(-1);
-  assert.deepEqual([last.route_kind, last.host_route_kind, last.cost_gate.reason],
-    ['explicit_route', 'reference', 'cost_gate_reference']);
-});
-
-test('runtime: a lost cost record closes the gate until it is written, so it never decides from partial evidence', async t => {
-  const dir = await fixture(t);
-  const gate = await gateRuntime(t, dir, 'lost-record', (ticket, count) => ticket.selected_config.model === 'gpt-6-astra' ?
-    execution(ticket, {usage: tokens(900 + count)}) : execution(ticket, {output: '', usage: tokens(700 + count)}));
-  assert.deepEqual((await gate.submit('first')).tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  // The cheaper attempts' records cannot be written for a while. They are no
-  // parity failures (no verifier is registered: not_registered) but they are
-  // cost evidence, so they wait in the backlog.
-  const real = gate.runtime.ledger;
-  let blocked = true;
-  gate.runtime.ledger = {...real, append: record => {
-    if (blocked && record.model === 'gpt-6-luna') throw Object.assign(new Error('disk full'), {code: 'ENOSPC'});
-    return real.append(record);
-  }};
-  assert.deepEqual((await gate.submit('second')).tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  assert.equal(gate.runtime.ledgerBacklog.size, 1);
-  const third = await gate.submit('third');
-  assert.deepEqual(third.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  // Its bind decision (the child's decision now names the escalation).
-  assert.match(gate.runtime._load(third.request.task_id).children[0].attempt_history[0].ledger.cost_gate.reason,
-    /^cost_gate_unavailable$/, 'not cost_gate_insufficient from a ledger missing a failure');
-  assert.equal(gate.runtime.ledgerBacklog.size, 2);
-  // Writable again: the backlog is written first, each record once.
-  blocked = false;
-  gate.runtime._flushLedgerBacklog();
-  assert.equal(gate.runtime.ledgerBacklog.size, 0);
-  const records = await gate.ledger();
-  assert.deepEqual(records.filter(record => record.model === 'gpt-6-luna').map(record => record.cost_gate.reason),
-    ['cost_gate_insufficient', 'cost_gate_insufficient', 'cost_gate_unavailable']);
-  assert.equal(new Set(records.map(record => record.attempt_id)).size, records.length, 'each record once');
-  const expected = gate.next();
-  assert.deepEqual([expected.route, expected.trials, expected.escalations], ['reference', 3, 3]);
-  assert.deepEqual((await gate.submit(gate.label('fourth', expected, false))).tuples, ['gpt-6-astra/max']);
-  // An attempt that has returned but is not recorded yet (its escalation or
-  // verifier still runs) closes the gate as well; one still running does not.
-  gate.runtime.ledgerInflight.set('probe', {route: {route_kind: 'tier'}, returned: true});
-  assert.throws(() => gate.runtime._costEvidence(GATE_QUERY), /cost_gate_ledger_pending/);
-  gate.runtime.ledgerInflight.set('probe', {route: {route_kind: 'explicit_route', host_route_kind: 'reference'}, returned: true});
-  assert.throws(() => gate.runtime._costEvidence(GATE_QUERY), /cost_gate_ledger_pending/);
-  gate.runtime.ledgerInflight.set('probe', {route: {route_kind: 'tier'}});
-  assert.equal(gate.runtime._costEvidence(GATE_QUERY).cheap.trials, 3);
-  gate.runtime.ledgerInflight.set('probe', {route: {route_kind: 'adapter_bound'}, returned: true});
-  assert.equal(gate.runtime._costEvidence(GATE_QUERY).cheap.trials, 3, 'a non-evidence attempt never closes it');
-  gate.runtime.ledgerInflight.delete('probe');
-});
-
-test('runtime: a reference that fails after dispatch with no effects is recorded as spent; a reported effect is not', async t => {
-  const dir = await fixture(t);
-  const failure = {status: 'failed', execution_verified: false, task_quality: 'failed', output: null,
-    error: 'native_outcome_uncertain_preserved', usage: tokens(4_900)};
-  for (const [name, sideEffects, marker] of [['reference failed', 'none', 'no_effects'],
-    ['reference failed with effects', 'possible', null]]) {
-    const result = await run(t, dir, name, {execute: (ticket, count) => count === 1 ?
-      execution(ticket, {output: '', usage: tokens(700)}) : execution(ticket, {...failure, side_effects: sideEffects})});
-    assert.deepEqual(result.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max'], name);
-    assert.equal(result.done.state, 'effects_uncertain', name);
-    const records = await ledger(dir, name);
-    assert.deepEqual(records.map(record => [record.model, record.attempt_state, record.dispatched_failure]),
-      [['gpt-6-luna', 'ladder_not_returned', null], ['gpt-6-astra', 'effects_uncertain', marker]], name);
-    // Only the run that the executor says ended in a failure is a reference
-    // cost sample (it is never replayed either way).
-    const evidence = tierCostEvidence(records.map(costGateRecord).filter(Boolean), GATE_QUERY);
-    assert.deepEqual(evidence.reference.cost, costSummary(marker ? [5000] : []), name);
-  }
-});
-
-test('runtime: a re-resolution consults the same gate for the route it moves to', async t => {
-  const dir = await fixture(t);
-  // History: with luna unavailable, trivial work bound gpt-6.1-sol low, which
-  // failed twice and escalated to astra. Codex only, so a re-resolution stays
-  // in the one pool.
-  const noLuna = {claude: [], codex: CODEX.filter(([model]) => model !== 'gpt-6-luna')};
-  const gate = await gateRuntime(t, dir, 're-resolution', (ticket, count) => {
-    const model = ticket.selected_config.model;
-    if (model === 'gpt-6-luna') return execution(ticket, {status: 'failed', dispatch_stage: 'not_dispatched',
-      output: "You've hit your weekly limit", execution_verified: false, task_quality: 'failed',
-      error: 'provider_quota_rejected_before_execution', usage: null});
-    return model === 'gpt-6-astra' ? execution(ticket, {usage: tokens(900 + count)}) :
-      execution(ticket, {output: '', usage: tokens(600 + count)});
-  });
-  for (const label of ['history one', 'history two'])
-    assert.deepEqual((await gate.submit(label, noLuna)).tuples, ['gpt-6.1-sol/low', 'gpt-6-astra/max'], label);
-  // Now luna is offered and binds (no luna evidence: insufficient); its
-  // provider rejects before execution, and the re-resolution's next row in
-  // the pool (6.1-sol low) is exactly the route the ledger shows failing.
-  const expected = gate.next({...GATE_QUERY, cheap_model: 'gpt-6.1-sol'});
-  assert.equal(expected.route, 'reference');
-  const moved = await gate.submit(gate.label('moved', expected, false), {claude: []});
-  assert.equal(moved.done.state, 'completed', moved.done.error);
-  assert.deepEqual(moved.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
-  assert.match(moved.done.children[0].routing_decision.reason, new RegExp(
-    '^re_resolved_after:provider_quota_rejected_before_execution;same_pool_only;route_reference;class_trivial;' +
-    `cost_gate_reference:p_mean=0\\.75:cost_ratio=0\\.699:p_more=${expected.p_more}:conf=0\\.9:explore=0\\.\\d+:` +
-    'trials=2:escalations=2:cheap_n=2:ref_n=2:ref_family;cost_gate_cheap_gpt_6_1_sol_low;tier_frontier;pool_rank_0;' +
-    'effort_max;cost_gate_same_pool;agent_surface;instruction_host_locked$'));
-  const records = await gate.ledger();
-  assert.deepEqual(records.slice(-2).map(record => [record.model, record.attempt_state, record.cost_gate?.reason ?? null]),
-    [['gpt-6-luna', 'verified_not_dispatched', 'cost_gate_insufficient'], ['gpt-6-astra', 'completed', 'cost_gate_reference']]);
-});
-
-test('runtime: a ledger file that cannot be read safely keeps the tier route (cost_gate_unavailable)', async t => {
-  const dir = await fixture(t);
-  const stateDir = join(dir, 'public-ledger');
-  await mkdir(join(stateDir, 'routing-ledger'), {recursive: true, mode: 0o700});
-  await chmod(stateDir, 0o700);
-  await writeFile(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), '', {mode: 0o644});
-  await chmod(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), 0o644);
-  const gate = await gateRuntime(t, dir, 'public-ledger', ticket => execution(ticket, {usage: tokens(500)}));
-  const result = await gate.submit('unreadable');
-  assert.equal(result.done.state, 'completed', result.done.error);
-  assert.deepEqual(result.tuples, ['gpt-6-luna/low']);
-  assert.match(result.done.children[0].routing_decision.reason,
-    /;escalation_reference_same_pool;cost_gate_unavailable;agent_surface;instruction_host_locked$/);
 });

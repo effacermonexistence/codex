@@ -5,11 +5,8 @@ import {mkdtemp, chmod, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {assertFinalOutputOwnership, createRCCRuntime, hostContextFingerprint}
+import {assertFinalOutputOwnership, createRCCRuntime, hostContextFingerprint, hostPlan}
   from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import {buildBoundedPlannerInput, buildCompactPlannerSchema, buildRoutePlanSchema,
-  COMPACT_PLANNER_PROTOCOL, decodePlannerResponse, plannerResponseBinding}
-  from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 const sha = value => createHash('sha256').update(value).digest('hex');
 const terminal = new Set(['returned_unverified', 'completed', 'held', 'cancelled', 'effects_uncertain']);
 function task(dir='/tmp/final-ownership-fixture', {explicit=false, write=false, refs=[]}={}) {
@@ -36,8 +33,6 @@ function node(id,deps=[],write=false) {return {id,instruction:`Execute bounded t
   kind:'agent',candidate_id:write?'writer':'reader',scope:write?'workspace_write':'read_only',owned_paths:write?['**']:[],context_refs:[]};}
 const plan=(t,nodes,final)=>({schema:1,task_id:t.task_id,request_sha256:t.request_sha256,nodes,
   ...(final===undefined?{}:{final_node_id:final})});
-const wireNode=(instruction,deps=[])=>({instruction,deps,grade:'standard',scope:'read_only'});
-const decode=(wire,t=task(),options={})=>decodePlannerResponse(JSON.stringify(wire),{task:t,catalog:catalog(t),protocol:COMPACT_PLANNER_PROTOCOL,...options});
 
 test('one shared owner gate: explicit chain and diamond coverage, no order or identical-answer guessing',()=>{
  const t=task();
@@ -62,58 +57,22 @@ test('invalid or incomplete ownership is rejected: disconnected sink, early node
  ]) assert.throws(()=>assertFinalOutputOwnership(p,t),error);
 });
 
-test('single original keeps legacy no-final compatibility and new final=0 without changing raw payloads or authority',()=>{
- const t=task(), a=decode({nodes:[wireNode('')]},t), b=decode({nodes:[wireNode('')],final:0},t);
- assert.equal(a.nodes[0].instruction,t.request); assert.equal(Object.hasOwn(a,'final_node_id'),false);
- assert.equal(b.final_node_id,'node_0'); assert.equal(b.nodes[0].instruction,t.request);
- assert.deepEqual({...b,final_node_id:undefined},{...a,final_node_id:undefined});
+test('single original keeps legacy no-final compatibility; the host plan declares its one owner without changing raw payloads or authority',()=>{
+ const t=task(), host=hostPlan(t,catalog(t));
+ assert.equal(host.final_node_id,'node_0'); assert.deepEqual(host.nodes.map(n=>n.instruction),[t.request]);
+ assert.deepEqual(host.nodes[0].owned_paths,[]); assert.equal(host.nodes[0].scope,'read_only');
+ assert.equal(assertFinalOutputOwnership(host,t),host);
  assert.equal(assertFinalOutputOwnership(plan(t,[node('one')]),t).nodes.length,1);
 });
 
-test('compact schema/prompt require one output owner, full repair schema includes owner, explicit routes cannot select just one answer',()=>{
- const t=task(), c=catalog(t), compact=buildCompactPlannerSchema(t,c), full=buildRoutePlanSchema(t,c);
- assert.equal(compact.oneOf.length,2);for(const branch of compact.oneOf)assert.deepEqual(branch.required,['nodes','final']);
- assert.ok(full.required.includes('final_node_id'));
- assert.deepEqual(compact.oneOf[0].properties.final,{type:'integer',const:0});
- assert.deepEqual(compact.oneOf[1].properties.final.type,['integer','null']);
- assert.deepEqual(full.properties.final_node_id.type,['string','null']);assert.equal(compact.oneOf[1].properties.final.minimum,0);
- assert.equal(JSON.stringify(compact).includes('if'),false);
- const input=buildBoundedPlannerInput({task:t,catalog:c,policyText:t.policy.text,wireProtocol:COMPACT_PLANNER_PROTOCOL});
- assert.ok(input.instructions.includes(t.policy.text)); assert.ok(input.instructions.includes('final:0'));
- assert.ok(input.instructions.includes('root final field is REQUIRED'));
- assert.ok(input.instructions.includes('EVERY other node')); assert.equal(input.instructions.includes('optional final'),false);
- assert.equal(input.instructions.includes('final_node_id'),false,'compact footer uses only compact name');
+test('explicit routes cannot select just one answer; the host explicit plan declares no owner',()=>{
  const explicit=task(undefined,{explicit:true}), ec=catalog(explicit);
- assert.equal(Object.hasOwn(buildCompactPlannerSchema(explicit,ec).properties,'final'),false);
- assert.equal(Object.hasOwn(buildRoutePlanSchema(explicit,ec).properties,'final_node_id'),false);
+ const host=hostPlan(explicit,ec); assert.equal(Object.hasOwn(host,'final_node_id'),false);
+ assert.deepEqual(host.nodes.map(n=>[n.id,n.instruction,n.dependencies.length]),
+   explicit.host_context.explicit_routes.map((route,i)=>[`requested-${i+1}`,route.instruction,0]));
+ assert.equal(assertFinalOutputOwnership(host,explicit),host);
  const ep=plan(explicit,[node('a'),node('b')]); assert.equal(assertFinalOutputOwnership(ep,explicit),ep);
  assert.throws(()=>assertFinalOutputOwnership({...ep,final_node_id:'b'},explicit),/explicit_route_final_forbidden/);
-});
-
-test('compact and full decoders enforce the same final coverage before Core admission',()=>{
- const t=task(), w={nodes:[wireNode('Read source A.'),wireNode('Produce original requested final artifact.',[0])],final:1};
- assert.equal(decode(w,t).final_node_id,'node_1');
- for(const bad of [{nodes:w.nodes},{...w,final:0},{...w,nodes:[w.nodes[0],{...w.nodes[1],deps:[]}]}])
-   assert.throws(()=>decode(bad,t),/plan_final_(?:node_required|coverage_incomplete)/);
- const f=plan(t,[node('a'),node('b',['a'])],'b');
- for(const n of f.nodes){delete n.candidate_id;n.route_class='standard';}
- assert.equal(decodePlannerResponse(JSON.stringify(f),{task:t,catalog:catalog(t)}).final_node_id,'b');
- const missing={...f};delete missing.final_node_id;
- assert.throws(()=>decodePlannerResponse(JSON.stringify(missing),{task:t,catalog:catalog(t)}),/plan_final_node_required/);
- // Full repair wire is selected by the host separately; no old-format retry or repaired final guessing.
- assert.throws(()=>decodePlannerResponse(JSON.stringify({...f,final_node_id:'a'}),{task:t,catalog:catalog(t)}),/plan_final_coverage_incomplete/);
-});
-
-test('source/permission/material checks survive final ownership: no keys stripped or grants invented',()=>{
- const t=task(), wire={nodes:[wireNode('Read source.'),wireNode('Produce artifact.',[0])],final:1};
- for(const bad of [{...wire,candidate_id:'admin'},{...wire,permissions:['all']},
-   {...wire,nodes:[wire.nodes[0],{...wire.nodes[1],scope:'workspace_write',paths:['**']}]},
-   {...wire,nodes:[wire.nodes[0],{...wire.nodes[1],refs:[0]}]},
-   {...wire,nodes:[wire.nodes[0],{...wire.nodes[1],instruction:'x'.repeat(12001)}]}])
-   assert.throws(()=>decode(bad,t),/planner_compact/);
- assert.throws(()=>decode(wire,t,{binding:{...plannerResponseBinding(t),source_fingerprint:sha('foreign')}}),/planner_response_binding_changed/);
- const ac=new AbortController();ac.abort();assert.throws(()=>decode(wire,t,{signal:ac.signal}),/planner_cancelled/);
- assert.throws(()=>decodePlannerResponse('{"nodes":[],"final":0,"final":1}',{task:t,catalog:catalog(t),protocol:COMPACT_PLANNER_PROTOCOL}),/planner_compact_duplicate_key/);
 });
 
 async function run(t,{nodes,final,explicit=false,write=false,outputs={},mutateAtLast=false,graded=false,failOnceNode=null}={}) {
@@ -180,15 +139,9 @@ test('legacy in-memory omitted final holds without relabelling or discarding com
 test('explicit null owns independent Core collection but cannot collect a dependent/helper workflow',()=>{
  const t=task(), c=plan(t,[node('a'),node('b')],null);
  assert.equal(assertFinalOutputOwnership(c,t),c);
- const wire={nodes:[wireNode('Return separately requested deliverable A.'),wireNode('Return separately requested deliverable B.')],final:null};
- assert.equal(decode(wire,t).final_node_id,null);
  for(const p of [plan(t,[node('a'),node('b',['a'])],null),
    plan(t,[node('a'),node('b'),node('c',['a','b'])],null)])
    assert.throws(()=>assertFinalOutputOwnership(p,t),/plan_collection_has_dependencies/);
- assert.throws(()=>decode({...wire,nodes:[wire.nodes[0],{...wire.nodes[1],deps:[0]}]},t),/plan_collection_has_dependencies/);
- const text=buildBoundedPlannerInput({task:t,catalog:catalog(t),policyText:t.policy.text,wireProtocol:COMPACT_PLANNER_PROTOCOL}).instructions;
- for(const required of ['separately returned independent deliverables','Never use null for one artifact, one JSON value',
-   'adding zero workers','source-bound planner interpretation, not proof of user intent']) assert.ok(text.includes(required),required);
 });
 
 test('declared independent collection preserves every raw answer and uses no integration worker',async t=>{

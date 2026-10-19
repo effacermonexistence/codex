@@ -313,6 +313,67 @@ public enum RCCRuntimeContract {
             try container.encode(modelFamily, forKey: .modelFamily)
         }
     }
+    /// Build 407 (R0/R2/R11): the host's deterministic class of a request,
+    /// computed from host predicates only (`RCCNativeCatalogBuilder.requestClass`),
+    /// never from a model. It keys the signed class table.
+    public enum RequestClass: String, Codable, Sendable, CaseIterable {
+        case chatExplanatory = "chat_explanatory", textOperation = "text_operation"
+        case readonlyLookup = "readonly_lookup", readonlyMaterial = "readonly_material"
+        case writer, explicitRoute = "explicit_route"
+        /// A class certificate may lower only read-only work (R0(c); writers
+        /// never go below the reference in v1, R5). Owner words own explicit routes.
+        public var certifiable: Bool { ![.writer, .explicitRoute].contains(self) }
+    }
+    /// Build 407 (R0(c)): one signed class certificate from a frozen offline
+    /// measurement. The tuple is the certified (provider, model, effort);
+    /// `format_check` names the per-answer check Core runs before adoption.
+    public struct ClassCertificate: Codable, Equatable, Sendable {
+        public var certificateID: String
+        public var provider: String
+        public var model: String
+        public var effort: Effort
+        public var formatCheck: String
+        public var measurementSHA256: String
+        public init(certificateID: String, provider: String, model: String, effort: Effort, formatCheck: String,
+                    measurementSHA256: String) {
+            self.certificateID = certificateID; self.provider = provider; self.model = model; self.effort = effort
+            self.formatCheck = formatCheck; self.measurementSHA256 = measurementSHA256
+        }
+        enum CodingKeys: String, CodingKey {
+            case provider, model, effort, certificateID = "certificate_id", formatCheck = "format_check"
+            case measurementSHA256 = "measurement_sha256"
+        }
+    }
+    /// Build 407 (R0(a)): an owner task contract the host found for exactly
+    /// this request text and re-checked at catalog time with the predicate
+    /// `PreparedTaskQuality.prepare` enforces (objective, context, source,
+    /// start tree, reference policy) plus validity. Absent = no contract.
+    public struct TaskContractFact: Codable, Equatable, Sendable {
+        public var coverage: OperationalQuality.Coverage
+        public var scope: Scope
+        public var objectiveSHA256: String
+        public var contractSHA256: String
+        public var contextSHA256: String
+        public var sourceSHA256: String?
+        public var startTreeSHA256: String
+        public var referencePolicySHA256: String
+        public var validUntilMS: Int64
+        public var bindingsChecked: Bool
+        public init(coverage: OperationalQuality.Coverage, scope: Scope, objectiveSHA256: String, contractSHA256: String,
+                    contextSHA256: String, sourceSHA256: String?, startTreeSHA256: String, referencePolicySHA256: String,
+                    validUntilMS: Int64, bindingsChecked: Bool = true) {
+            self.coverage = coverage; self.scope = scope; self.objectiveSHA256 = objectiveSHA256
+            self.contractSHA256 = contractSHA256; self.contextSHA256 = contextSHA256; self.sourceSHA256 = sourceSHA256
+            self.startTreeSHA256 = startTreeSHA256; self.referencePolicySHA256 = referencePolicySHA256
+            self.validUntilMS = validUntilMS; self.bindingsChecked = bindingsChecked
+        }
+        enum CodingKeys: String, CodingKey {
+            case coverage, scope, objectiveSHA256 = "objective_sha256", contractSHA256 = "contract_sha256"
+            case contextSHA256 = "context_sha256", sourceSHA256 = "source_sha256", startTreeSHA256 = "start_tree_sha256"
+            case referencePolicySHA256 = "reference_policy_sha256", validUntilMS = "valid_until_ms"
+            case bindingsChecked = "bindings_checked"
+        }
+    }
     public struct Catalog: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -340,20 +401,43 @@ public enum RCCRuntimeContract {
         /// candidates. A missing highest profile must not lower a reference.
         /// Exact candidate model names, grouped by codex/claude; never local.
         public var nativeReferenceEfforts: [String: [String: String]]?
+        /// Optional (build 407), host facts for the Core admission law. The
+        /// first three travel together; the rest exist only beside them.
+        /// A catalog without them binds the reference.
+        /// `ownerRequestRunsReadOnly` of the request (R2), affirmative only.
+        public var ownerScope: Scope?
+        /// The narrow chat-lane predicate the host already computes (R2/R3).
+        public var chatLaneEligible: Bool?
+        public var requestClass: RequestClass?
+        /// An owner contract re-bound at catalog time (R0(a)); absent otherwise.
+        public var taskContract: TaskContractFact?
+        /// The signed class table's certificate for `request_class` only (R0(c)).
+        public var classCertificates: [String: ClassCertificate]?
+        /// The signed class table's reference-pool pin for `request_class` only (R11).
+        public var classProviderPins: [String: String]?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
                     exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil,
                     modelTiers: [String: String]? = nil, explicitRouteIntents: [RoutingIntentConstraint?]? = nil,
-                    quotaScores: [String: Int]? = nil, nativeReferenceEfforts: [String: [String: String]]? = nil) {
+                    quotaScores: [String: Int]? = nil, nativeReferenceEfforts: [String: [String: String]]? = nil,
+                    ownerScope: Scope? = nil, chatLaneEligible: Bool? = nil, requestClass: RequestClass? = nil,
+                    taskContract: TaskContractFact? = nil, classCertificates: [String: ClassCertificate]? = nil,
+                    classProviderPins: [String: String]? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
             self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
             self.explicitRouteIntents = explicitRouteIntents; self.quotaScores = quotaScores
             self.nativeReferenceEfforts = nativeReferenceEfforts
+            self.ownerScope = ownerScope; self.chatLaneEligible = chatLaneEligible; self.requestClass = requestClass
+            self.taskContract = taskContract; self.classCertificates = classCertificates
+            self.classProviderPins = classProviderPins
         }
         enum CodingKeys: String, CodingKey {
             case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256"
             case routingIntent = "routing_intent", modelTiers = "model_tiers"
             case explicitRouteIntents = "explicit_route_intents", quotaScores = "quota_scores"
             case nativeReferenceEfforts = "native_reference_efforts"
+            case ownerScope = "owner_scope", chatLaneEligible = "chat_lane_eligible", requestClass = "request_class"
+            case taskContract = "task_contract", classCertificates = "class_certificates"
+            case classProviderPins = "class_provider_pins"
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -369,6 +453,12 @@ public enum RCCRuntimeContract {
             // Absence is legacy; explicit null is not a native attestation.
             nativeReferenceEfforts = c.contains(.nativeReferenceEfforts)
                 ? try c.decode([String: [String: String]].self, forKey: .nativeReferenceEfforts) : nil
+            ownerScope = try c.decodeIfPresent(Scope.self, forKey: .ownerScope)
+            chatLaneEligible = try c.decodeIfPresent(Bool.self, forKey: .chatLaneEligible)
+            requestClass = try c.decodeIfPresent(RequestClass.self, forKey: .requestClass)
+            taskContract = try c.decodeIfPresent(TaskContractFact.self, forKey: .taskContract)
+            classCertificates = try c.decodeIfPresent([String: ClassCertificate].self, forKey: .classCertificates)
+            classProviderPins = try c.decodeIfPresent([String: String].self, forKey: .classProviderPins)
         }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
@@ -543,12 +633,18 @@ public enum RCCRuntimeContract {
         public var instruction: String
         public var contextRefs: [String]
         public var ownedPaths: [String]
+        /// Optional (build 407, R5): Core sets it on a reference or explicit
+        /// final-owner node, whose native CLI may then run its own sub-agents
+        /// (Codex ultra's automatic delegation). Absent/false keeps OS-1's
+        /// managed delegation (sub-agent tools off). Not part of authorization.
+        public var allowNativeSubagents: Bool?
         public init(schema: Int = 1, taskID: String, nodeID: String, attemptID: String, candidateID: String,
                     requestSHA256: String, policySHA256: String, policySourceSHA256: String, sourceFingerprint: String,
                     configurationSHA256: String, selectedConfig: ExactConfig, objective: String, instruction: String,
                     contextRefs: [String], ownedPaths: [String], originalRequest: String? = nil,
                     originalObjective: String? = nil, hostContext: HostContext? = nil,
-                    nativeResumeSessionID: String? = nil, continuation: Continuation? = nil, coreRouting: CoreRouting? = nil, qualityContinuation: QualityContinuation? = nil) {
+                    nativeResumeSessionID: String? = nil, continuation: Continuation? = nil, coreRouting: CoreRouting? = nil, qualityContinuation: QualityContinuation? = nil,
+                    allowNativeSubagents: Bool? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.requestSHA256 = requestSHA256; self.policySHA256 = policySHA256
             self.policySourceSHA256 = policySourceSHA256; self.sourceFingerprint = sourceFingerprint
@@ -557,6 +653,7 @@ public enum RCCRuntimeContract {
             self.originalRequest = originalRequest; self.originalObjective = originalObjective; self.hostContext = hostContext
             self.nativeResumeSessionID = nativeResumeSessionID
             self.continuation = continuation; self.coreRouting = coreRouting; self.qualityContinuation = qualityContinuation
+            self.allowNativeSubagents = allowNativeSubagents
         }
         enum CodingKeys: String, CodingKey {
             case schema, objective, instruction
@@ -567,6 +664,7 @@ public enum RCCRuntimeContract {
             case originalRequest = "original_request", originalObjective = "original_objective", hostContext = "host_context"
             case nativeResumeSessionID = "native_resume_session_id"
             case continuation, coreRouting = "core_routing", qualityContinuation = "quality_continuation"
+            case allowNativeSubagents = "allow_native_subagents"
         }
     }
     public struct Usage: Codable, Equatable, Sendable {
@@ -760,6 +858,27 @@ public enum RCCRuntimeContract {
             case quotaPool = "quota_pool", quotaRemainingFraction = "quota_remaining_fraction"
         }
     }
+    /// Build 407 (R6): why a delivered child's completed output is not task
+    /// verified. A partial operational check that failed (or a checker that
+    /// was unavailable, or a registered node verifier that failed:
+    /// failedCheckIDs names "node_verifier", with no coverage when no
+    /// operational check ran) is disclosed beside the delivered output instead
+    /// of holding it. Never a quality claim; the task settles returned_unverified.
+    public struct QualityDisclosure: Codable, Equatable, Sendable {
+        public enum Checker: String, Codable, Sendable { case unavailable }
+        public var coverage: OperationalQuality.Coverage?
+        public var failedCheckIDs: [String]
+        public var witnessSHA256: String?
+        public var checker: Checker?
+        public init(coverage: OperationalQuality.Coverage?, failedCheckIDs: [String], witnessSHA256: String? = nil,
+                    checker: Checker? = nil) {
+            self.coverage = coverage; self.failedCheckIDs = failedCheckIDs; self.witnessSHA256 = witnessSHA256
+            self.checker = checker
+        }
+        enum CodingKeys: String, CodingKey {
+            case coverage, checker, failedCheckIDs = "failed_check_ids", witnessSHA256 = "witness_sha256"
+        }
+    }
     public struct ChildSnapshot: Codable, Equatable, Sendable {
         public var id: String
         public var state: ChildState
@@ -776,16 +895,20 @@ public enum RCCRuntimeContract {
         public var requestedSurface: Surface?
         /// Optional; absent in snapshots written before 2026-10-13.
         public var routingDecision: RoutingDecision?
+        /// Optional (build 407); present only on a delivered unverified output.
+        public var qualityDisclosure: QualityDisclosure?
         public init(id: String, state: ChildState, attemptID: String?, candidateID: String?, selectedConfig: ExactConfig? = nil,
                     instruction: String? = nil, dependencies: [String]? = nil, startedAtMS: Int64? = nil,
                     finishedAtMS: Int64? = nil, nativeReceipt: String? = nil, outputSummary: String? = nil,
-                    requestedSurface: Surface? = nil, routingDecision: RoutingDecision? = nil) {
+                    requestedSurface: Surface? = nil, routingDecision: RoutingDecision? = nil,
+                    qualityDisclosure: QualityDisclosure? = nil) {
             self.id = id; self.state = state; self.attemptID = attemptID; self.candidateID = candidateID
             self.selectedConfig = selectedConfig; self.instruction = instruction; self.dependencies = dependencies
             self.startedAtMS = startedAtMS; self.finishedAtMS = finishedAtMS; self.nativeReceipt = nativeReceipt
             self.outputSummary = outputSummary
             self.requestedSurface = requestedSurface
             self.routingDecision = routingDecision
+            self.qualityDisclosure = qualityDisclosure
         }
         enum CodingKeys: String, CodingKey {
             case id, state, dependencies, instruction, attemptID = "attempt_id", candidateID = "candidate_id"
@@ -793,6 +916,7 @@ public enum RCCRuntimeContract {
             case outputSummary = "output_summary"
             case requestedSurface = "requested_surface"
             case routingDecision = "routing_decision"
+            case qualityDisclosure = "quality_disclosure"
         }
     }
     public struct Result: Codable, Equatable, Sendable {
@@ -1075,9 +1199,62 @@ public enum RCCRuntimeContract {
             guard tiers.count <= 256, tiers.allSatisfy({ text($0.key, max: 256) && models.contains($0.key) &&
                 ModelTier(rawValue: $0.value) != nil }) else { throw Rejection.invalidObservation }
         }
+        try validateAdmissionFacts(value, request: request)
         // An empty catalog must say why; otherwise it is a malformed binding.
         guard !value.candidates.isEmpty || value.exclusions != nil else { throw Rejection.invalidIdentity }
         for candidate in value.candidates { try validate(candidate) }
+    }
+    /// Build 407: the admission facts travel together (owner_scope,
+    /// chat_lane_eligible, request_class) and agree with each other and the
+    /// request; a contract, certificate or pin exists only beside them and
+    /// keys this request (and its class) only.
+    static func validateAdmissionFacts(_ value: Catalog, request: Request?) throws {
+        let facts = [value.ownerScope != nil, value.chatLaneEligible != nil, value.requestClass != nil]
+        guard facts.allSatisfy({ $0 }) || !facts.contains(true) else { throw Rejection.invalidObservation }
+        guard let requestClass = value.requestClass, let ownerScope = value.ownerScope, let chat = value.chatLaneEligible else {
+            guard value.taskContract == nil, value.classCertificates == nil, value.classProviderPins == nil else {
+                throw Rejection.invalidObservation
+            }
+            return
+        }
+        switch requestClass {
+        case .writer: guard ownerScope == .workspaceWrite, !chat else { throw Rejection.invalidObservation }
+        case .chatExplanatory, .textOperation: guard chat else { throw Rejection.invalidObservation }
+        case .readonlyLookup, .readonlyMaterial, .explicitRoute: break
+        }
+        if let request {
+            guard (requestClass == .explicitRoute) == (request.mode == .explicitRoutingTest),
+                  requestClass != .writer || request.hostContext?.requireReadOnly != true,
+                  requestClass != .readonlyMaterial || !request.materialRefs.isEmpty else { throw Rejection.invalidObservation }
+        }
+        if let contract = value.taskContract {
+            guard contract.bindingsChecked, contract.objectiveSHA256 == value.requestSHA256,
+                  [contract.contractSHA256, contract.contextSHA256, contract.startTreeSHA256,
+                   contract.referencePolicySHA256].allSatisfy(isHash),
+                  contract.sourceSHA256.map(isHash) ?? true, contract.validUntilMS > 0 else { throw Rejection.invalidObservation }
+            if let request {
+                guard contract.referencePolicySHA256 == request.policySHA256,
+                      contract.contextSHA256 == digest(Data((request.hostContext?.context ?? "").utf8)) else {
+                    throw Rejection.invalidObservation
+                }
+            }
+        }
+        if let certificates = value.classCertificates {
+            guard certificates.count == 1, requestClass.certifiable,
+                  let certificate = certificates[requestClass.rawValue], validClassCertificate(certificate) else {
+                throw Rejection.invalidObservation
+            }
+        }
+        if let pins = value.classProviderPins {
+            guard pins.count == 1, requestClass != .explicitRoute, let pin = pins[requestClass.rawValue],
+                  Exclusion.providers.contains(pin) else { throw Rejection.invalidObservation }
+        }
+    }
+    /// One class certificate's own shape (the signed table and the catalog share it).
+    public static func validClassCertificate(_ value: ClassCertificate) -> Bool {
+        id(value.certificateID) && Exclusion.providers.contains(value.provider) && text(value.model, max: 256) &&
+            value.effort != .none && isHash(value.measurementSHA256) &&
+            value.formatCheck.range(of: "^[a-z][a-z0-9_]{0,63}$", options: .regularExpression) != nil
     }
     public static func validate(_ value: Plan, catalog: Catalog? = nil) throws {
         guard value.schema == schema else { throw Rejection.invalidSchema }
@@ -1134,6 +1311,10 @@ public enum RCCRuntimeContract {
         guard value.configurationSHA256 == value.selectedConfig.configurationSHA256,
               text(value.objective), text(value.instruction), unique(value.contextRefs), paths(value.ownedPaths) else { throw Rejection.invalidInput }
         if value.selectedConfig.scope == .readOnly && !value.ownedPaths.isEmpty { throw Rejection.invalidConfiguration }
+        // Only a native agent surface has sub-agents to allow (R5).
+        if value.allowNativeSubagents == true, ![.codex, .claude].contains(value.selectedConfig.surface) {
+            throw Rejection.invalidConfiguration
+        }
         if let host = value.hostContext {
             try validate(host)
             guard digest(try encode(host)) == value.sourceFingerprint,
@@ -1345,6 +1526,16 @@ public enum RCCRuntimeContract {
                     }
                 }
             }
+            if let disclosure = child.qualityDisclosure {
+                // Disclosed beside a delivered output, never on a held/failed one,
+                // and never on a task-verified (completed) task (R6). It names
+                // at least one reason: a coverage, a checker state or a failed
+                // check (a node verifier's failure has no coverage).
+                guard [.completed, .succeeded].contains(child.state), value.state != .completed,
+                      disclosure.coverage != nil || disclosure.checker != nil || !disclosure.failedCheckIDs.isEmpty,
+                      unique(disclosure.failedCheckIDs, max: 64), disclosure.failedCheckIDs.allSatisfy({ $0.utf8.count <= 256 }),
+                      disclosure.witnessSHA256.map(isHash) ?? true else { throw Rejection.invalidSnapshot }
+            }
             guard child.instruction.map({ text($0) }) ?? true, child.dependencies.map({ unique($0, max: maximumNodes) }) ?? true,
                   child.startedAtMS.map({ $0 >= 0 }) ?? true, child.finishedAtMS.map({ $0 >= (child.startedAtMS ?? 0) }) ?? true,
                   child.nativeReceipt.map({ text($0, max: 4_096) }) ?? true,
@@ -1402,9 +1593,12 @@ public enum RCCRuntimeContract {
         var keys: Set<String>?
         var children: [String: Shape] = [:]
         var element: (@Sendable () -> Shape)? = nil
+        /// A map whose keys are data (e.g. a request class) and whose every value has this shape.
+        var values: (@Sendable () -> Shape)? = nil
         static let leaf = Shape(keys: nil)
         static func object(_ keys: [String], _ children: [String: Shape] = [:]) -> Shape { .init(keys: Set(keys), children: children) }
         static func array(_ shape: Shape) -> Shape { .init(keys: nil, element: { shape }) }
+        static func map(_ shape: Shape) -> Shape { .init(keys: nil, values: { shape }) }
     }
     private static let configKeys = ["surface", "transport", "account_id", "model", "effort", "tools", "scope", "permission_profile", "quota_pool", "allowed_paths", "configuration_sha256"]
     private static let configShape = Shape.object(configKeys)
@@ -1419,7 +1613,9 @@ public enum RCCRuntimeContract {
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape)])
+    private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked"])
+    private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])
@@ -1428,13 +1624,14 @@ public enum RCCRuntimeContract {
     private static let continuationShape = Shape.object(["kind", "parent_attempt_id", "parent_native_receipt", "parent_native_receipt_sha256", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256"])
     private static let qualityContinuationShape = Shape.object(["schema", "parent_attempt_id", "parent_native_receipt", "parent_native_receipt_sha256", "witness_path", "witness_sha256", "expected_workspace_after_sha256", "original_instruction_sha256", "corrective_attempts"])
     private static let operationalQualityShape = Shape.object(["schema", "coverage", "assessment_state", "contract_sha256", "witness_path", "witness_sha256", "artifact_sha256", "workspace_after_sha256", "failed_check_ids", "corrective_attempts", "local_only_verified"])
-    private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation", "core_routing", "quality_continuation"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape, "core_routing": coreRoutingShape, "quality_continuation": qualityContinuationShape])
+    private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation", "core_routing", "quality_continuation", "allow_native_subagents"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape, "core_routing": coreRoutingShape, "quality_continuation": qualityContinuationShape])
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
     private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated", "operational_quality"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape, "operational_quality": operationalQualityShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
     private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
     private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])
-    private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision"], ["selected_config": configShape, "routing_decision": routingDecisionShape])
+    private static let qualityDisclosureShape = Shape.object(["coverage", "failed_check_ids", "witness_sha256", "checker"])
+    private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision", "quality_disclosure"], ["selected_config": configShape, "routing_decision": routingDecisionShape, "quality_disclosure": qualityDisclosureShape])
     private static let skippedRouteShape = Shape.object(["surface", "instruction", "reason"])
     private static let routingIntentSummaryShape = Shape.object(["state", "notices", "reason", "resolution_sha256"])
     private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff", "skipped_routes", "routing_intent"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape, "skipped_routes": .array(skippedRouteShape), "routing_intent": routingIntentSummaryShape])
@@ -1448,6 +1645,9 @@ public enum RCCRuntimeContract {
         } else if let element = shape.element {
             guard let values = object as? [Any], values.count <= 256 else { throw Rejection.invalidInput }
             for child in values { try checkShape(child, element(), depth: depth + 1) }
+        } else if let valueShape = shape.values {
+            guard let map = object as? [String: Any], map.count <= 256 else { throw Rejection.unsupportedField }
+            for child in map.values { try checkShape(child, valueShape(), depth: depth + 1) }
         }
     }
     private static func decode<T: Decodable>(_ type: T.Type, data: Data, shape: Shape) throws -> T {

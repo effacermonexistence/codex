@@ -13,7 +13,9 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 // SDK admission analogue: a background completion in a released request scope
 // is refused. The actual pinned Gateway is independently smoke-tested; this
 // fixture catches the service/RPC lifetime regression without any model call.
-test('durable local planner does not inherit a released submit RPC root', async () => {
+// Build 407 (R7): Auto plans are host-built, so the one local-model completion
+// left on this path is intent resolution; it must run in the service scope.
+test('durable local intent completion does not inherit a released submit RPC root; Auto makes no planning call', async () => {
   const root = await mkdtemp(join(tmpdir(), 'os1-rcc-plugin-lifecycle-'));
   await chmod(root, 0o700);
   const keys = ['OS1_RCC_STATE_ROOT', 'OS1_RCC_NATIVE_PATH', 'OS1_RCC_NATIVE_SHA256',
@@ -22,7 +24,7 @@ test('durable local planner does not inherit a released submit RPC root', async 
   const native = join(root, 'native.mjs');
   const body = `#!${process.execPath}\nimport{readFileSync}from'node:fs';import{createHash}from'node:crypto';
 const p=JSON.parse(readFileSync(process.argv[4],'utf8'));const sha=s=>createHash('sha256').update(s).digest('hex');
-if(process.argv[2]==='rcc-intent'){const t=p.task;console.log(JSON.stringify({schema:1,task_id:t.task_id,request_sha256:t.request_sha256,policy_sha256:t.policy_sha256,source_fingerprint:t.source_fingerprint,kind:'ordinary',routes:[],best_effort:false,notices:[],reason:null}));process.exit(0);}
+if(process.argv[2]==='rcc-intent'){const t=p.task,b={schema:1,task_id:t.task_id,request_sha256:t.request_sha256,policy_sha256:t.policy_sha256,source_fingerprint:t.source_fingerprint};console.log(JSON.stringify(p.answer===undefined?{...b,kind:'needs_model',model_prompt:'Classify the routing intent.',model_input:t.request,model_schema:{type:'object'},model_schema_json:'{"type":"object"}'}:{...b,kind:'ordinary',routes:[],best_effort:false,notices:[],reason:null}));process.exit(0);}
 if(process.argv[1]&&process.argv[2]==='rcc-catalog') {await new Promise(r=>setTimeout(r,35));const n=Date.now();console.log(JSON.stringify({schema:1,task_id:p.task_id,request_sha256:p.request_sha256,candidates:[{id:'fixture',surface:'codex',transport:'codex_app_server',account_id:'fixture',model:'fixture',effort:'low',tools:[],scope:'read_only',permission_profile:'read_only',quota_pool:'openai_codex',allowed_paths:[],configuration_sha256:sha('fixture'),availability:'available',availability_observed_at_ms:n,availability_valid_until_ms:n+300000,quota_remaining_fraction:1,quota_observed_at_ms:n,quota_valid_until_ms:n+300000,quality_state:'policy_admitted',estimated_cost_units:1}]}));}
 else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,task_id:p.task_id,node_id:p.node_id,attempt_id:p.attempt_id,candidate_id:p.candidate_id,configuration_sha256:p.configuration_sha256,selected_config:p.selected_config,acknowledged_config:p.selected_config,observed_config:null,status:'succeeded',dispatch_stage:'dispatched',side_effects:'none',output:'hello',execution_verified:true,task_verified:false,task_quality:'execution_only',parity_state:'unverified',native_receipt:'private-fixture-receipt',usage:{provider_calls:0},error:null,native_summary:null}));else process.exit(91);`;
   await writeFile(native, body, { mode: 0o700 });
@@ -40,18 +42,14 @@ else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,tas
       assert.equal(params.model, 'ollama/qwen3.5:4b');
       assert(params.signal instanceof AbortSignal);
       modelCalls++;
+      assert.equal(params.purpose, 'os1.rcc.internal-routing-intent', 'the local model never plans Auto');
       assert.equal(params.responseFormat.type, 'object');
       assert.equal(params.messages.length, 1);
-      const value = JSON.parse(params.messages[0].content.split('\n').slice(1).join('\n'));
-      // The planner grades; the candidate ID never reaches the local model.
+      // The candidate ID never reaches the local model.
       assert.equal(JSON.stringify([params.systemPrompt, params.messages, params.responseFormat]).includes('"fixture"'), false);
-      assert.deepEqual(value.availability.providers, ['codex']);
       return { provider: 'ollama', model: 'qwen3.5:4b',
         execution: { mode: 'direct-provider', owner: { kind: 'provider', id: 'ollama' } },
-        stopReason: 'stop', text: JSON.stringify({ schema: 1, task_id: value.task_id,
-        request_sha256: value.request_sha256, nodes: [{ id: 'n1', instruction: value.request,
-          dependencies: [], kind: 'agent', route_class: 'trivial', scope: 'read_only',
-          owned_paths: [], context_refs: [] }] }) };
+        stopReason: 'stop', text: '{}' };
     } } } };
   registerRCCRuntime(api);
   const call = (name, params) => new Promise((resolve, reject) => {
@@ -78,12 +76,16 @@ else if(process.argv[2]==='rcc-adapter')console.log(JSON.stringify({schema:1,tas
     assert.equal(snapshot.children.length, 1);
     assert.equal(snapshot.children[0].output_summary, 'hello');
     assert.equal(snapshot.children[0].candidate_id, 'fixture');
-    assert.equal(snapshot.children[0].routing_decision.route_class, 'trivial');
+    assert.equal(snapshot.children[0].id, 'node_0');
+    assert.equal(snapshot.children[0].instruction, request);
+    assert.equal(snapshot.children[0].routing_decision.route_class, 'deep');
     assert.equal(snapshot.children[0].routing_decision.resolved_candidate_id, 'fixture');
     assert.equal(snapshot.result.task_verified, false);
     assert.equal(snapshot.result.parity_state, 'unverified');
-    assert.equal(modelCalls, 1);
-    assert((await readdir(root)).some(name => name.startsWith('planner-output-')));
+    assert.equal(modelCalls, 1, 'one intent completion; no planning completion');
+    const files = await readdir(root);
+    assert(files.some(name => name.startsWith('intent-output-')));
+    assert.equal(files.some(name => name.startsWith('planner-output-') || name.startsWith('planner-error-')), false);
     const duplicate = await call('submit', task);
     assert.equal(duplicate.revision, snapshot.revision);
     assert.equal(modelCalls, 1);
@@ -173,20 +175,14 @@ if(command==='rcc-catalog') {
   Object.assign(process.env, {OS1_RCC_STATE_ROOT: root, OS1_RCC_NATIVE_PATH: native,
     OS1_RCC_NATIVE_SHA256: sha(body), OS1_RCC_NATIVE_HOME: root, OS1_RCC_PUBLIC_POLICY: policy});
   const scope = new AsyncLocalStorage(), methods = new Map();
-  let service, started = false, localPlannerInvocations = 0;
+  // Build 407 (R7): the host builds the one writer node itself; any local
+  // model completion on this path is a regression.
+  let service, started = false, localModelInvocations = 0;
   registerRCCRuntime({on() {}, registerService(value) {service = value;},
     registerGatewayMethod(name, handler) {methods.set(name, handler);},
-    runtime: {llm: {async complete(params) {
-      await new Promise(resolve => setImmediate(resolve));
-      assert.equal(scope.getStore(), undefined, 'durable staging task inherited released submit request');
-      assert.equal(params.model, 'ollama/qwen3.5:4b');
-      localPlannerInvocations++;
-      const input = JSON.parse(params.messages[0].content.split('\n').slice(1).join('\n'));
-      return {provider: 'ollama', model: 'qwen3.5:4b', stopReason: 'stop',
-        execution: {mode: 'direct-provider', owner: {kind: 'provider', id: 'ollama'}},
-        text: JSON.stringify({schema: 1, task_id: input.task_id, request_sha256: input.request_sha256,
-          nodes: [{id: 'repair', instruction: input.request, dependencies: [], kind: 'agent',
-            route_class: 'standard', scope: 'workspace_write', owned_paths: ['**'], context_refs: []}]})};
+    runtime: {llm: {async complete() {
+      localModelInvocations++;
+      throw Error('a host-built plan never calls the local model');
     }}}});
   const call = (name, params) => new Promise((resolve, reject) => {
     assert(methods.has('os1.rcc.' + name));
@@ -229,7 +225,7 @@ if(command==='rcc-catalog') {
   const calls = async () => (await readFile(join(root, 'native-calls.jsonl'), 'utf8'))
     .trim().split('\n').map(line => JSON.parse(line));
   return {root, task, call, calls, submitAndStage, start, stop,
-    plannerCount: () => localPlannerInvocations};
+    modelCount: () => localModelInvocations};
 }
 
 test('stage/status/cancel RPCs retain one durable owner; awaiting installation is not completion or quality proof',
@@ -264,7 +260,7 @@ test('stage/status/cancel RPCs retain one durable owner; awaiting installation i
 
     const duplicate = await x.call('submit', installedTask);
     assert.equal(duplicate.revision, waiting.revision);
-    assert.equal(x.plannerCount(), 1, 'duplicate submission cannot start another planner');
+    assert.equal(x.modelCount(), 0, 'the host-built plan and a duplicate submission call no model');
 
     // An unrelated installed receipt must not promote the current handoff.
     await writeFile(join(x.root, installedTask.task_id + '.install-control'), 'mismatch', {mode: 0o600});
@@ -295,7 +291,7 @@ test('stage/status/cancel RPCs retain one durable owner; awaiting installation i
     assert.equal(cancelled.install_handoff.installed_receipt, null);
     assert.equal(cancelled.result.task_verified, false);
     assert.equal(cancelled.result.parity_state, 'unverified');
-    assert.equal(x.plannerCount(), 2, 'installation reconciliation and restart never invoke another planner');
+    assert.equal(x.modelCount(), 0, 'installation reconciliation and restart never invoke a model');
 
     const allCalls = await x.calls();
     assert.equal(allCalls.filter(item => item.command === 'rcc-catalog').length,

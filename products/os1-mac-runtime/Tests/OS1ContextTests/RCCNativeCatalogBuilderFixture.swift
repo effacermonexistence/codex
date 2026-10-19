@@ -466,11 +466,12 @@ func runRCCNativeCatalogBuilderFixtures() throws {
                 (fableUsed.map { [.init(bucket: "weekly_model", usedPercent: $0, resetsAt: now.addingTimeInterval(4 * 3600),
                                        model: "claude-fable-5-1")] } ?? []))
     }
-    func route(_ output: B.Output, _ routeClass: String = "standard") throws -> String {
+    func route(_ output: B.Output, _ admission: String = "reference") throws -> String {
         try javascriptRoute(B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))),
-                            routeClass: routeClass, now: now)
+                            admission: admission, now: now)
     }
-    func routes(_ output: B.Output) throws -> [String] { try ["trivial", "standard", "deep"].map { try route(output, $0) } }
+    // [a certified read-only descent, the uncertified reference] (R0).
+    func routes(_ output: B.Output) throws -> [String] { try ["certified", "reference"].map { try route(output, $0) } }
     let referenceBase = try B.build(referenceInput())
     try check(tuples(referenceBase).first == "claude/claude-fable-5-1/low/read_only" && referenceBase.exclusions.isEmpty &&
               tuples(referenceBase).first(where: { $0.hasPrefix("codex") }) == "codex/gpt-6-astra/medium/read_only" &&
@@ -478,12 +479,43 @@ func runRCCNativeCatalogBuilderFixtures() throws {
                   "claude-sonnet-5-5": "efficient", "sonnet": "efficient", "gpt-6-astra": "frontier",
                   "gpt-6.1-sol": "workhorse", "gpt-6-luna": "fast"],
               "the frontier model leads each pool and the previous-generation sol has no tier: \(tuples(referenceBase))")
-    // This synthetic pool has no workhorse medium profile (opus only at low
-    // and max), so standard falls to its second entry, efficient/medium. The
-    // production pool below has one since 2026-10-15 (build 383) and binds opus there.
     try check(try routes(referenceBase) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>claude-fable-5-1",
-        "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
-              "trivial and standard take the cheapest tier, deep the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
+        "anthropic_shared/claude-fable-5-1/max/route_reference"],
+              "a certified descent takes the cheapest certified tier, every other node the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
+
+    // ---- Build 407-g: the per-kind table end to end -----------------------
+    // The host facts this builder emits (owner_scope, chat_lane_eligible,
+    // request_class) drive the real JS host plan (R7) and admission law (R0):
+    // with the shipped empty class table and no contract, every kind binds its
+    // pool's frontier reference at the native ceiling, before any dispatch.
+    func kind(_ request: String, owner: C.Scope, chat: Bool = false, material: Bool = false, write: Bool = false,
+              explicit: [String]? = nil) throws -> String {
+        var value = referenceInput(request)
+        value.ownerScope = owner; value.chatLaneEligible = chat; value.hasMaterialRefs = material
+        value.requireReadOnly = !write; value.explicitRouteSurfaces = explicit
+        let output = try B.build(value)
+        return try javascriptHostRoute(B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data(request.utf8))),
+                                       request: request, now: now, write: write, material: material, explicit: explicit)
+    }
+    let perKind: [(String, String, String)] = [
+        ("chat_explanatory", try kind("co가 무슨 뜻이야?", owner: .readOnly, chat: true),
+         "chat_explanatory|node_0=claude-chat/claude-fable-5-1/max/read_only/admitted_reference_uncertified"),
+        ("text_operation", try kind("Translate into English: 오늘 회의는 3시에 시작합니다.", owner: .workspaceWrite, chat: true),
+         "text_operation|node_0=claude-chat/claude-fable-5-1/max/read_only/admitted_reference_uncertified"),
+        ("readonly_lookup", try kind("What does the interval rule in this workspace mean?", owner: .readOnly),
+         "readonly_lookup|node_0=claude/claude-fable-5-1/max/read_only/admitted_reference_uncertified"),
+        ("readonly_material", try kind("Summarize the attached notes.", owner: .readOnly, material: true),
+         "readonly_material|node_0=claude/claude-fable-5-1/max/read_only/admitted_reference_uncertified"),
+        ("writer", try kind("Fix the login bug in Sources/App.swift", owner: .workspaceWrite, write: true),
+         "writer|node_0=claude/claude-fable-5-1/max/workspace_write/admitted_reference_uncertified"),
+        ("explicit_route", try kind("Codex한테 interval 규칙, Claude Code한테 merge 규칙.", owner: .readOnly,
+                                    explicit: ["codex", "claude"]),
+         "explicit_route|requested-1=codex/gpt-6-astra/max/read_only/admitted_reference_owner_words," +
+            "requested-2=claude/claude-fable-5-1/max/read_only/admitted_reference_owner_words"),
+    ]
+    for (name, actual, expected) in perKind {
+        try check(actual == expected, "per-kind table (407-g): \(name) binds its reference from the builder's own facts: \(actual)")
+    }
 
     // ---- Source incident 2026-10-19 (build 405): one refused refresh ------
     // Claude was last observed 4 minutes ago (session 9% used, weekly 3%);
@@ -508,7 +540,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               "a retained Claude observation is a discounted, dated, valid estimate with a pool score: \(String(describing: refusedRow))")
     _ = try C.decodeCatalog(B.catalogData(refusedOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))
     try check((try routes(refusedOut))[1].hasPrefix("anthropic_shared/"),
-              "standard work binds the Claude pool (83% est.) over Codex at 10%: \((try? routes(refusedOut)) ?? [])")
+              "the reference binds the Claude pool (83% est.) over Codex at 10%: \((try? routes(refusedOut)) ?? [])")
     var unknownClaudeInput = refusedRefresh; unknownClaudeInput.claudeQuota = nil
     try check((try routes(try B.build(unknownClaudeInput)))[1].hasPrefix("openai_codex/"),
               "the build-405 failure reproduced: unknown Claude quota spends the scarce pool: \((try? routes(try B.build(unknownClaudeInput))) ?? [])")
@@ -532,8 +564,8 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               nativeCeilingOut.candidates.contains { $0["model"] as? String == "gpt-6-astra" && $0["effort"] as? String == "ultra" },
               "adding a real ultra reference keeps cheap tier rows and all execution constraints")
     try check(try routes(nativeCeilingOut) == ["openai_codex/gpt-6-luna/low/route_tier>gpt-6-astra",
-        "openai_codex/gpt-6.1-sol/medium/route_tier>gpt-6-astra", "openai_codex/gpt-6-astra/ultra/route_reference"],
-              "Auto cheap tiers stay cheap; deep/reference uses native ultra, not fixed max")
+        "openai_codex/gpt-6-astra/ultra/route_reference"],
+              "a certified descent stays cheap, guarded by native ultra; the reference uses native ultra, not fixed max")
     let nativeCeilingData = try B.catalogData(nativeCeilingOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
     try check((try C.decodeCatalog(nativeCeilingData)).candidates.contains { $0.model == "gpt-6-astra" && $0.effort == .ultra },
               "native ultra catalog roundtrips the unchanged strict wire contract")
@@ -543,9 +575,9 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let missingSignedOut = try B.build(missingSignedCeiling)
     try check(missingSignedOut.candidates.contains { $0["model"] as? String == "gpt-6-astra" && $0["effort"] as? String == "max" } &&
               reasons(missingSignedOut) == ["codex:reference_unavailable:2"] &&
-              (try route(missingSignedOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
-              (try route(missingSignedOut, "trivial")) == "openai_codex/gpt-6-luna/low/route_tier",
-              "native ultra without signed ultra holds deep/escalation; max is not a silent weaker reference")
+              (try route(missingSignedOut)) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(missingSignedOut, "certified")) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
+              "native ultra without signed ultra holds the reference and every descent below it (R9); max is not a silent weaker reference")
     var explicitLow = nativeCeiling
     explicitLow.request = "use low reasoning"
     let explicitLowOut = try B.build(explicitLow)
@@ -558,7 +590,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     }
     let supportedLow = try B.build(explicitLow)
     try check(supportedLow.exclusions.isEmpty && supportedLow.candidates.allSatisfy { $0["effort"] as? String == "low" } &&
-              (try route(supportedLow, "deep")) == "openai_codex/gpt-6-astra/low/route_explicit",
+              (try route(supportedLow)) == "openai_codex/gpt-6-astra/low/route_explicit",
               "native + signed explicit low remains low even with native ultra available")
 
     var unsupportedUltra = nativeCeiling
@@ -568,7 +600,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let unsupportedAuto = try B.build(unsupportedUltra)
     try check(!unsupportedAuto.candidates.contains { $0["effort"] as? String == "ultra" } &&
               reasons(unsupportedAuto) == ["codex:model_unavailable:1"] &&
-              (try route(unsupportedAuto, "deep")) == "openai_codex/gpt-6-astra/max/route_reference",
+              (try route(unsupportedAuto)) == "openai_codex/gpt-6-astra/max/route_reference",
               "a signed but native-unsupported ultra is not invented; the actual supported ceiling is max")
     unsupportedUltra.request = "use ultra reasoning"
     let unsupportedExact = try B.build(unsupportedUltra)
@@ -585,15 +617,15 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               reasons(unknownOut) == ["codex:model_unavailable:1"] &&
               (try C.decodeCatalog(B.catalogData(unknownOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))))
                 .candidates.allSatisfy { $0.effort.rawValue != "future" } &&
-              (try route(unknownOut, "deep")) == "openai_codex/gpt-6-astra/ultra/route_reference",
+              (try route(unknownOut)) == "openai_codex/gpt-6-astra/ultra/route_reference",
               "unknown native/signed effort names are held, never ranked or contract-poisoning")
     var ultraExhausted = nativeCeiling
     ultraExhausted.codexQuotaExhaustedModels = ["gpt-6-astra"]
     let ultraExhaustedOut = try B.build(ultraExhausted)
     try check(reasons(ultraExhaustedOut) == ["codex:quota_zero:3", "codex:reference_unavailable:3"] &&
-              (try route(ultraExhaustedOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
-              (try route(ultraExhaustedOut, "standard")) == "openai_codex/gpt-6.1-sol/medium/route_tier",
-              "quota-exhausted native maximum has no weaker reference substitute; cheap standard remains")
+              (try route(ultraExhaustedOut)) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(ultraExhaustedOut, "certified")) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
+              "quota-exhausted native maximum has no weaker reference substitute, and no descent runs without it")
 
     // Native ceiling metadata is exact, optional and non-authoritative for
     // permissions: it can hold a missing tuple, never manufacture that tuple.
@@ -632,7 +664,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let missingFamilyOut = try B.build(missingFamilyCeiling)
     try check(missingFamilyOut.intent.modelFamily == "astra" && missingFamilyOut.exclusions.isEmpty &&
               missingFamilyOut.nativeReferenceEfforts["codex"]?["gpt-6-astra"] == "ultra" &&
-              (try route(missingFamilyOut, "deep")) == "error:no_dispatchable_candidate:read_only:deep",
+              (try route(missingFamilyOut)) == "error:no_dispatchable_candidate:read_only:deep",
               "naming a family without an effort cannot silently lower its native ultra reference to signed max")
 
     var aliasCeiling = referenceInput("fable로 돌려", preference: "claude")
@@ -644,11 +676,11 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let aliasMissingOut = try B.build(aliasCeiling)
     try check(aliasMissingOut.nativeReferenceEfforts == ["claude": ["fable": "ultra", "claude-fable-5-1": "ultra"]] &&
               !aliasMissingOut.candidates.contains { $0["effort"] as? String == "ultra" } &&
-              (try route(aliasMissingOut, "deep")) == "error:no_dispatchable_candidate:read_only:deep",
+              (try route(aliasMissingOut)) == "error:no_dispatchable_candidate:read_only:deep",
               "observed aliases share native ceiling; alias max never hides unsigned full-ID ultra")
     aliasCeiling.profiles.append(.init(action: "b_full_ultra", provider: "claude", model: "claude-fable-5-1", effort: "ultra"))
     let aliasAvailableOut = try B.build(aliasCeiling)
-    try check((try route(aliasAvailableOut, "deep")) == "anthropic_shared/claude-fable-5-1/ultra/route_explicit" &&
+    try check((try route(aliasAvailableOut)) == "anthropic_shared/claude-fable-5-1/ultra/route_explicit" &&
               !aliasAvailableOut.candidates.contains { $0["model"] as? String == "fable" && $0["effort"] as? String == "ultra" },
               "a real full-ID ultra executes; metadata does not fabricate alias ultra capability")
 
@@ -662,14 +694,14 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let mixedOut = try B.build(mixedRoutes)
     let mixedData = try B.catalogData(mixedOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
     try check(mixedOut.exclusions.isEmpty &&
-              (try javascriptRoute(mixedData, routeClass: "deep", now: now, explicitRoutes: ["claude", "claude"], routeIndex: 0)) ==
+              (try javascriptRoute(mixedData, now: now, explicitRoutes: ["claude", "claude"], routeIndex: 0)) ==
                 "error:no_dispatchable_candidate:read_only:deep" &&
-              (try javascriptRoute(mixedData, routeClass: "deep", now: now, explicitRoutes: ["claude", "claude"], routeIndex: 1)) ==
+              (try javascriptRoute(mixedData, now: now, explicitRoutes: ["claude", "claude"], routeIndex: 1)) ==
                 "anthropic_shared/sonnet/max/route_explicit",
               "mixed same-pool fan-out: missing family ceiling holds only that route; exact other-family max runs")
     mixedRoutes.explicitRouteIntents = [.init(effort: "max", modelFamily: "fable"), .init(effort: "max", modelFamily: "sonnet")]
     let exactMixedData = try B.catalogData(B.build(mixedRoutes), taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
-    try check((try javascriptRoute(exactMixedData, routeClass: "deep", now: now, explicitRoutes: ["claude", "claude"], routeIndex: 0)) ==
+    try check((try javascriptRoute(exactMixedData, now: now, explicitRoutes: ["claude", "claude"], routeIndex: 0)) ==
                 "anthropic_shared/claude-fable-5-1/max/route_explicit",
               "an explicit lower max request remains exact even when native ceiling is ultra")
 
@@ -706,7 +738,7 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     }
     func writeRoutes(_ output: B.Output) throws -> [String] {
         let data = try B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
-        return try ["trivial", "standard", "deep"].map { try javascriptRoute(data, routeClass: $0, now: now, scope: "workspace_write") }
+        return try ["certified", "reference"].map { try javascriptRoute(data, admission: $0, now: now, scope: "workspace_write") }
     }
     let production = try B.build(productionClaude())
     let haikuRows = production.candidates.filter { $0["model"] as? String == "claude-haiku-4-5-20251001" }
@@ -718,14 +750,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
                 .candidates.contains { $0.model == "claude-haiku-4-5-20251001" && $0.exactConfig.effort == .none },
               "a Claude row at effort none passes the strict Swift catalog contract")
     try check(try routes(production) == ["anthropic_shared/claude-haiku-4-5-20251001/none/route_tier>claude-fable-5-1",
-        "anthropic_shared/claude-opus-5-5/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
-              "trivial read-only runs haiku at none, standard opus at medium, both escalating once to fable 5.1 at max; deep is the reference: \((try? routes(production)) ?? [])")
+        "anthropic_shared/claude-fable-5-1/max/route_reference"],
+              "a certified read-only descent runs haiku at none, escalating once to fable 5.1 at max; every other node is the reference: \((try? routes(production)) ?? [])")
     let productionWrite = try B.build(productionClaude(writeRequest, readOnly: false))
     let writes = try writeRoutes(productionWrite)
     try check(writes.allSatisfy { !$0.contains("haiku") && !$0.hasPrefix("error") } &&
-              writes == ["anthropic_shared/claude-opus-5-5/medium/route_tier", "anthropic_shared/claude-opus-5-5/medium/route_tier",
-                         "anthropic_shared/claude-fable-5-1/max/route_reference"],
-              "auto routing never binds haiku for a writer: a trivial write is promoted to standard (opus medium, never escalated): \(writes)")
+              writes == ["anthropic_shared/claude-fable-5-1/max/route_reference", "anthropic_shared/claude-fable-5-1/max/route_reference"],
+              "a writer is never certified: it binds the reference writer row, never haiku (R5): \(writes)")
     let productionMedium = try B.build(productionClaude("use medium reasoning"))
     try check(B.intent(productionClaude("use medium reasoning")) == RoutingIntent(effort: "medium") &&
               !productionMedium.candidates.contains { $0["model"] as? String == "claude-haiku-4-5-20251001" } &&
@@ -738,14 +769,14 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               "the family word 'haiku' admits the effortless row and runs it: \(tuples(productionHaiku)) \((try? routes(productionHaiku)) ?? [])")
     var nearlyInput = referenceInput(); nearlyInput.claudeQuota = claudeWindows(fableUsed: 97)
     let nearly = try B.build(nearlyInput)
-    // The catalog's pool order (deep work, escalations) follows the frontier
-    // model's own quota; trivial and standard work bind a lower tier and rank
-    // pools by THAT model's quota (quota_scores, build 378 review): Claude's
-    // sonnet has 85% left with 4h to reset, Codex's luna/sol 60% over 48h.
+    // The reference ranks pools by the frontier model's own quota; a certified
+    // descent binds a lower tier and ranks pools by THAT model's quota
+    // (quota_scores, R11): Claude's sonnet has 85% left with 4h to reset,
+    // Codex's luna 60% over 48h.
     try check(tuples(nearly).first == "codex/gpt-6-astra/medium/read_only" &&
               (try routes(nearly)) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier>claude-fable-5-1",
-                "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "openai_codex/gpt-6-astra/max/route_reference"],
-              "a nearly exhausted frontier model ranks its pool by that model for deep work only: \(tuples(nearly)) \((try? routes(nearly)) ?? [])")
+                "openai_codex/gpt-6-astra/max/route_reference"],
+              "a nearly exhausted frontier model ranks its pool by that model for the reference only: \(tuples(nearly)) \((try? routes(nearly)) ?? [])")
     let nearlyScores = try C.decodeCatalog(B.catalogData(nearly, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))).quotaScores
     try check(nearlyScores?["claude-fable-5-1"] == 7_500_000 && nearlyScores?["claude-sonnet-5-5"] == 212_500_000 &&
               nearlyScores?["gpt-6-luna"] == 12_500_000 && nearlyScores?["gpt-6-astra"] == 12_500_000,
@@ -755,13 +786,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(!fableZero.candidates.contains { $0["model"] as? String == "claude-fable-5-1" } &&
               fableZero.candidates.contains { $0["model"] as? String == "claude-opus-5-5" } &&
               reasons(fableZero) == ["claude:quota_zero:3", "claude:reference_unavailable:3"] &&
-              (try route(fableZero, "deep")) == "openai_codex/gpt-6-astra/max/route_reference" &&
-              (try route(fableZero, "trivial")) == "anthropic_shared/claude-sonnet-5-5/low/route_tier>gpt-6-astra",
-              "a quota_zero frontier model keeps the lower tiers but no deep work; escalation goes to the other pool: \(reasons(fableZero)) \((try? routes(fableZero)) ?? [])")
+              (try route(fableZero)) == "openai_codex/gpt-6-astra/max/route_reference" &&
+              (try route(fableZero, "certified")) == "anthropic_shared/claude-sonnet-5-5/low/route_tier>gpt-6-astra",
+              "a quota_zero frontier model is no reference; a descent in its pool escalates to the other pool's: \(reasons(fableZero)) \((try? routes(fableZero)) ?? [])")
     var cooledInput = referenceInput(); cooledInput.claudeQuotaBackoffFamilies = ["fable"]
     let cooled = try B.build(cooledInput)
     try check(reasons(cooled) == ["claude:quota_backoff:3", "claude:reference_unavailable:3"] &&
-              (try route(cooled, "deep")) == "openai_codex/gpt-6-astra/max/route_reference" &&
+              (try route(cooled)) == "openai_codex/gpt-6-astra/max/route_reference" &&
               B.providersToProbe(cooledInput) == ["claude", "codex"],
               "a cooled frontier family serves no deep work: \(tuples(cooled)) \(reasons(cooled))")
     // Host-shaped input: the general Codex catalog drops a slug whose own
@@ -779,13 +810,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let hostCodexOut = try B.build(hostCodex)
     try check(reasons(hostCodexOut) == ["claude:quota_zero:3", "claude:reference_unavailable:3",
                                         "codex:quota_zero:2", "codex:reference_unavailable:2"] &&
-              (try route(hostCodexOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
-              (try route(hostCodexOut, "trivial")) == "anthropic_shared/claude-sonnet-5-5/low/route_tier",
-              "no frontier anywhere: deep work holds, lighter work runs with nothing to escalate to: \(reasons(hostCodexOut)) \((try? routes(hostCodexOut)) ?? [])")
+              (try route(hostCodexOut)) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(hostCodexOut, "certified")) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
+              "no frontier anywhere: nothing runs, not even a certified descent (R9, R12): \(reasons(hostCodexOut)) \((try? routes(hostCodexOut)) ?? [])")
     var hostCodexOnly = hostCodex; hostCodexOnly.claudeQuota = claudeWindows(fableUsed: nil)
     let hostCodexOnlyOut = try B.build(hostCodexOnly)
     try check(!hostCodexOnlyOut.candidates.contains { $0["model"] as? String == "gpt-6-astra" } &&
-              (try route(hostCodexOnlyOut, "deep")) == "anthropic_shared/claude-fable-5-1/max/route_reference",
+              (try route(hostCodexOnlyOut)) == "anthropic_shared/claude-fable-5-1/max/route_reference",
               "the other pool's frontier runs deep work, never gpt-6.1-sol: \(tuples(hostCodexOnlyOut))")
     // Host-shaped Claude input: the host passes the configured inventory
     // (cooled family included). Under a Claude preference a cooled frontier
@@ -795,36 +826,34 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let hostClaudeData = try B.catalogData(hostClaudeOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)))
     try check(reasons(hostClaudeOut) == ["claude:quota_backoff:3", "claude:reference_unavailable:3"] &&
               (try C.decodeCatalog(hostClaudeData)).exclusions?.map(\.reason) == ["quota_backoff", "reference_unavailable"] &&
-              (try route(hostClaudeOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
-              (try route(hostClaudeOut, "standard")) == "anthropic_shared/sonnet/medium/route_tier",
-              "a cooled frontier family under a Claude preference holds deep work, explained: \(reasons(hostClaudeOut))")
+              (try route(hostClaudeOut)) == "error:no_dispatchable_candidate:read_only:reference_unavailable" &&
+              (try route(hostClaudeOut, "certified")) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
+              "a cooled frontier family under a Claude preference holds every node, explained: \(reasons(hostClaudeOut))")
     try check(B.build(referenceInput(preference: "claude")).candidates.first?["model"] as? String == "claude-fable-5-1",
               "before the rejection the Claude preference's first row is its frontier reference")
-    // An effort-only owner word replaces the effort; the class still picks
-    // the tier, and deep stays frontier (at the owner's effort).
+    // An effort-only owner word fixes the reference those words leave: the
+    // frontier at that effort, certified or not (R10).
     let medium = try B.build(referenceInput("use medium reasoning"))
     try check(B.intent(referenceInput("use medium reasoning")) == RoutingIntent(effort: "medium") &&
               tuples(medium) == ["claude/sonnet/medium/read_only", "codex/gpt-6-astra/medium/read_only",
                                  "codex/gpt-6.1-sol/medium/read_only"] &&
               reasons(medium) == ["claude:reference_unavailable:3"] &&
-              // The owner fixed only the effort: sonnet is the host's choice,
-              // guarded by the frontier at that effort (Claude's fable has no
-              // medium profile, so Codex's astra medium).
-              (try route(medium, "standard")) == "anthropic_shared/sonnet/medium/route_tier>gpt-6-astra" &&
-              (try route(medium, "deep")) == "openai_codex/gpt-6-astra/medium/route_explicit",
-              "an effort word keeps the class tier at that effort; deep runs a frontier model at it: \(tuples(medium)) \(reasons(medium))")
-    // "최대 리즈닝" (max): every class runs max, on its own tier; deep stays
-    // frontier. The previous-generation gpt-6-sol max row never runs.
+              // Claude's fable has no medium profile, so Codex's astra medium.
+              (try routes(medium)) == ["openai_codex/gpt-6-astra/medium/route_explicit",
+                "openai_codex/gpt-6-astra/medium/route_explicit"],
+              "an effort word runs a frontier model at it, never a host-chosen lower model: \(tuples(medium)) \(reasons(medium))")
+    // "최대 리즈닝" (max): the frontier at max. The previous-generation
+    // gpt-6-sol max row never runs.
     let koreanMax = try B.build(referenceInput("최대 리즈닝으로 해줘"))
     try check(B.intent(referenceInput("최대 리즈닝으로 해줘")) == RoutingIntent(effort: "max") &&
               koreanMax.candidates.allSatisfy { $0["effort"] as? String == "max" } &&
-              (try routes(koreanMax)) == ["anthropic_shared/claude-opus-5-5/max/route_tier>claude-fable-5-1",
-                "anthropic_shared/claude-opus-5-5/max/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_explicit"],
-              "max reasoning keeps each class's tier at max and deep on the frontier: \((try? routes(koreanMax)) ?? [])")
+              (try routes(koreanMax)) == ["anthropic_shared/claude-fable-5-1/max/route_explicit",
+                "anthropic_shared/claude-fable-5-1/max/route_explicit"],
+              "max reasoning runs the frontier at max, certified or not: \((try? routes(koreanMax)) ?? [])")
     let mediumClaudeOut = try B.build(referenceInput("use medium reasoning", preference: "claude"))
     try check(tuples(mediumClaudeOut) == ["claude/sonnet/medium/read_only"] &&
               reasons(mediumClaudeOut) == ["claude:reference_unavailable:3"] &&
-              (try route(mediumClaudeOut, "deep")) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
+              (try route(mediumClaudeOut)) == "error:no_dispatchable_candidate:read_only:reference_unavailable",
               "under a Claude preference the frontier model lacking the effort holds deep work: \(reasons(mediumClaudeOut))")
     // An explicit model family is its own route: no reference rule applies.
     var sonnetFamily = referenceInput("소네트로 돌려"); sonnetFamily.profiles.removeAll { $0.provider == "codex" }
@@ -832,11 +861,11 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(B.intent(sonnetFamily) == RoutingIntent(modelFamily: "sonnet") && sonnetOut.exclusions.isEmpty &&
               tuples(sonnetOut) == ["claude/sonnet/medium/read_only", "claude/claude-sonnet-5-5/low/read_only"] &&
               // This native Sonnet row supports max, but its signed profiles
-              // offer only low/medium. Cheap work stays available; neither
-              // medium nor an alias can stand in as its reference.
-              (try routes(sonnetOut)) == ["anthropic_shared/claude-sonnet-5-5/low/route_tier",
-                "anthropic_shared/sonnet/medium/route_tier", "error:no_dispatchable_candidate:read_only:deep"],
-              "a named family keeps cheap tiers but holds its missing native reference ceiling: \(tuples(sonnetOut)) \((try? routes(sonnetOut)) ?? [])")
+              // offer only low/medium. Neither medium nor an alias can stand
+              // in as the family's reference, certified or not (R10).
+              (try routes(sonnetOut)) == ["error:no_dispatchable_candidate:read_only:deep",
+                "error:no_dispatchable_candidate:read_only:deep"],
+              "a named family holds its missing native reference ceiling: \(tuples(sonnetOut)) \((try? routes(sonnetOut)) ?? [])")
     // An explicit route test: each route's OWN words travel per route,
     // aligned with the original list (build 378 review); none means absent.
     var perRoute = referenceInput("1+1 Codex한테. 최대 리즈닝으로 3+3 Claude Code한테")
@@ -1328,11 +1357,13 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
     return candidates
 }
 
-/// What the real JS resolver binds for one graded node (read-only unless
-/// `scope` says workspace_write) on exactly these catalog bytes:
-/// "pool/model/effort/route_kind", then ">model" of its REVAS escalation
-/// reference when it has one, or "error:<code>".
-private func javascriptRoute(_ catalog: Data, routeClass: String = "standard", now: Date,
+/// What the real JS resolver binds for one host node (read-only unless
+/// `scope` says workspace_write) on exactly these catalog bytes, by the one
+/// admission law (build 407): "reference" with no certifying source,
+/// "certified" with a registered gold-blind verifier for the certified class
+/// (R0 (b)). Returns "pool/model/effort/route_kind", then ">model" of its
+/// escalation reference when it has one, or "error:<code>".
+private func javascriptRoute(_ catalog: Data, admission: String = "reference", now: Date,
                              scope: String = "read_only", explicitRoutes: [String]? = nil, routeIndex: Int = 0) throws -> String {
     let script = """
     import {pathToFileURL} from 'node:url';
@@ -1346,16 +1377,48 @@ private func javascriptRoute(_ catalog: Data, routeClass: String = "standard", n
     const task={mode:explicit?'explicit_routing_test':'auto',task_id:catalog.task_id,request_sha256:catalog.request_sha256,budget:{max_cost_units:null},
       host_context:{require_read_only:!write,...(explicit?{explicit_routes:explicit.map(surface=>({surface,instruction}))}:{})}};
     const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id,
-      instruction,dependencies:[],kind:'agent',route_class:process.argv[3],scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
+      instruction,dependencies:[],kind:'agent',scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
+    const passes=async()=>({passed:true,reason:'fixture'});
+    const verifierRegistry=process.argv[3]==='certified'?
+      new Map([['trivial:read_only:agent',passes],['trivial:read_only:chat',passes]]):null;
     try {
-      const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2])).decisions[id];
+      const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2]),{verifierRegistry}).decisions[id];
       process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`+
         (d.ladder?.reference_model?'>'+d.ladder.reference_model:''));
     } catch (error) { process.stdout.write('error:'+(error.code??'unknown')); }
     """
     let surfaces = explicitRoutes.map { String(decoding: try! JSONSerialization.data(withJSONObject: $0), as: UTF8.self) } ?? "null"
-    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), routeClass, scope,
+    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), admission, scope,
                                                    surfaces, String(routeIndex)], input: catalog)
+}
+
+/// What the real JS host plan and admission law bind for every node of one
+/// request on exactly these catalog bytes (build 407: hostPlan, then
+/// resolveRoutePlan with no certifying source): "<request_class>|<node>=
+/// <surface>/<model>/<effort>/<scope>/<admission token>,...", or "error:<code>".
+private func javascriptHostRoute(_ catalog: Data, request: String, now: Date, write: Bool, material: Bool,
+                                 explicit: [String]?) throws -> String {
+    let script = """
+    import {pathToFileURL} from 'node:url';
+    import {readFileSync} from 'node:fs';
+    const {hostPlan,resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
+    const catalog=JSON.parse(readFileSync(0,'utf8'));
+    const [now,request,write,material,explicit]=[Number(process.argv[2]),process.argv[3],process.argv[4]==='1',
+      process.argv[5]==='1',JSON.parse(process.argv[6])];
+    const routes=explicit?explicit.map((surface,index)=>({surface,instruction:'route '+(index+1)+': '+request})):null;
+    const task={mode:routes?'explicit_routing_test':'auto',task_id:catalog.task_id,request,request_sha256:catalog.request_sha256,
+      material_refs:material?['material-1']:[],budget:{max_cost_units:null},
+      host_context:{require_read_only:!write,...(routes?{explicit_routes:routes}:{})}};
+    try {
+      const plan=hostPlan(task,catalog);
+      const resolved=resolveRoutePlan(plan,task,catalog,now);
+      process.stdout.write(catalog.request_class+'|'+resolved.plan.nodes.map(node=>{const d=resolved.decisions[node.id];
+        return `${node.id}=${d.surface}/${d.model}/${d.effort}/${node.scope}/`+d.reason.split(';').find(x=>x.startsWith('admitted_'));}).join(','));
+    } catch (error) { process.stdout.write('error:'+(error.code??'unknown')); }
+    """
+    let routes = explicit.map { String(decoding: try! JSONSerialization.data(withJSONObject: $0), as: UTF8.self) } ?? "null"
+    return try javascriptModule(script, arguments: [String(Int64(now.timeIntervalSince1970 * 1000)), request,
+                                                   write ? "1" : "0", material ? "1" : "0", routes], input: catalog)
 }
 
 /// Runs one inline ES module against the sealed runtime module path (a real

@@ -67,10 +67,15 @@ func runRouteAllIntentFixtures() throws {
           snapshot.children.map(\.requestedSurface) == [.local, .codex, .claude, .claudeChat],
           "each route ran on the surface it was routed to")
     check(snapshot.children.first?.selectedConfig?.model == B.localWorkerModel &&
-          snapshot.children.first?.routingDecision?.reason == "resolver;route_explicit;explicit_route_surface_local;class_trivial;local_model",
+          snapshot.children.first?.routingDecision?.reason ==
+            "resolver;route_explicit;explicit_route_surface_local;admitted_reference_owner_words;local_model",
           "the local route ran on the local model, bound explicitly")
-    check(snapshot.children.dropFirst().allSatisfy { !["gpt-6-astra", "claude-fable-5-1"].contains($0.selectedConfig?.model ?? "") },
-          "no route ran on a frontier max reference: the trivial answers stayed cheap")
+    // Build 407 (R0 'exact'): a named surface whose payload is one exact sum
+    // runs its cheapest tier; only the exact result is delivered, anything
+    // else escalates once to that surface's reference.
+    check(snapshot.children.dropFirst().map { "\($0.selectedConfig?.model ?? "")/\($0.selectedConfig?.effort.rawValue ?? "")" } ==
+            ["gpt-6-luna/low", "claude-sonnet-5-5/low", "claude-sonnet-5-5/low"],
+          "every named surface ran its cheapest tier under the exact check")
     check(snapshot.result?.output == "requested-1: 2\n\nrequested-2: 4\n\nrequested-3: 2\n\nrequested-4: 4",
           "each route's own answer is returned")
     let graph = try RCCRuntimeProjection.project(snapshot, conversationID: UUID(), submissionID: UUID(), objective: incident,
@@ -158,11 +163,8 @@ private func routeAllNodeRun(_ input: Data) throws -> Data {
         await writeFile(path, JSON.stringify(record), {flag: 'wx', mode: 0o600});
         return record;
       };
-      const runtime = await createRCCRuntime({stateDir: root, catalog: async () => input.catalog,
-        plan: async ({task: admitted}) => ({schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
-          nodes: admitted.host_context.explicit_routes.map((route, index) => route.skipped ? null : ({id: `requested-${index + 1}`,
-            instruction: route.instruction, dependencies: [], kind: 'agent', route_class: 'trivial', scope: 'read_only',
-            owned_paths: [], context_refs: []})).filter(Boolean)}),
+      // The host builds the explicit route plan itself (R7), as in production.
+      const runtime = await createRCCRuntime({stateDir: root, catalog: async () => input.catalog, hostAutoPlan: true,
         execute: (ticket, signal) => ticket.selected_config.surface === 'local' ? local(ticket, signal) : native(ticket),
         verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir: root})});
       try {

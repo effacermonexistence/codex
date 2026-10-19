@@ -41,6 +41,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-runtime-contract-only") { try runRCCRuntimeContractFixture(); return }
         if CommandLine.arguments.contains("--owner-action-scope-only") { try runOwnerActionScopeFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-catalog-builder-only") { try runRCCNativeCatalogBuilderFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-admission-facts-only") { try runRCCAdmissionFactsFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-preparation-only") { try runRCCNativePreparationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-delegated-envelope-only") { try runRCCDelegatedEnvelopeFixtures(); return }
@@ -71,6 +72,7 @@ final class SourceContextTests {
         try runRCCCoreRoutingCompilerFixtures()
         try runOwnerActionScopeFixtures()
         try runRCCNativeCatalogBuilderFixtures()
+        try runRCCAdmissionFactsFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
         try runRCCNativePreparationFixtures()
         try runRCCDelegatedEnvelopeFixtures()

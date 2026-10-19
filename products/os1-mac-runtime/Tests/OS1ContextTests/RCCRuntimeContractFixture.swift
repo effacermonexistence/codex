@@ -414,11 +414,11 @@ func runRCCRuntimeContractFixture() throws {
     const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-wire-'));
     const sha=s=>createHash('sha256').update(s).digest('hex');
     const emittedTickets=[];
-    async function produce(verified,count,graded=false,ladder=false,tiered=false){
+    async function produce(verified,count,graded=false,ladder=false,tiered=false,disclosed=false){
       const host={workspace:root,context:null,provider_preference:'auto',codex_session_id:'native-codex-fixture',
         claude_session_id:null,require_read_only:true,owner_policy:null,explicit_routes:null};
       const request='Exercise the fixture adapter through the real durable runtime.';
-      const task={schema:1,task_id:tiered?'task-node-tiered':ladder?'task-node-ladder':graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
+      const task={schema:1,task_id:disclosed?'task-node-disclosed':tiered?'task-node-tiered':ladder?'task-node-ladder':graded?'task-node-graded':verified?'task-node-verified':'task-node-unverified',request,
         request_sha256:sha(request),objective:request,policy_sha256:sha('fixture policy'),
         source_fingerprint:hostContextFingerprint(host),mode:'auto',material_refs:[],
         budget:{max_attempts:2,max_parallel:4,max_cost_units:null,max_duration_ms:60000},host_context:host,
@@ -430,23 +430,24 @@ func runRCCRuntimeContractFixture() throws {
         availability:'available',availability_observed_at_ms:now-100,availability_valid_until_ms:now+30000,
         quota_remaining_fraction:0.7,quota_observed_at_ms:now-100,quota_valid_until_ms:now+30000,
         quality_state:'policy_admitted',estimated_cost_units:1};
-      // A ladder fixture adds the reference row (same model at max); a fake
-      // verifier registry and explicitly reference-bound fake ledger parity
-      // admit the cheaper low row. Unbound summaries are not parity evidence.
+      // A two-effort fixture adds the reference row (same model at max): build
+      // 407 binds it; no ledger history or same-model ladder lowers it.
       const candidates=ladder?[candidate,{...candidate,id:'fake-codex-max',effort:'max',configuration_sha256:sha('fixture config max')}]:[candidate];
-      // A tier fixture (build 378): the frontier reference and a fast model in
-      // one pool; the first fast answer is empty, so REVAS escalates once.
+      // A tier fixture: the frontier reference and a fast model in one pool; a
+      // registered verifier certifies the fast descent (R0 (b)); its first
+      // answer is empty, so it escalates once to the reference (R9).
       if(tiered)candidates.splice(0,candidates.length,
         {...candidate,id:'fake-astra-max',model:'gpt-6-astra',effort:'max',configuration_sha256:sha('fixture astra max')},
         {...candidate,id:'fake-luna-low',model:'gpt-6-luna',effort:'low',configuration_sha256:sha('fixture luna low')});
-      // A graded node carries route_class; the real core binds the row.
+      // A graded node carries route_class (ignored by R0); the real core binds the row.
       const nodes=Array.from({length:count},(_,i)=>({id:'n'+(i+1),instruction:'Return '+(2*(i+1)),
         dependencies:[],kind:'agent',...(tiered?{route_class:'trivial'}:graded?{route_class:'standard'}:{candidate_id:candidate.id}),
         scope:'read_only',owned_paths:[],context_refs:[]}));
-      const runtime=await createRCCRuntime({stateDir:join(root,ladder?'ladder':graded?'graded':verified?'verified':'unverified'),
-        ...(ladder?{verifierRegistry:new Map([['standard:read_only:agent',async()=>({passed:true,reason:'fixture'})]]),
-          ledgerStats:(_family,model,_effort,referenceEffort)=>({verified_passes:20,verifier_failures:0,
-            reference_model:model,reference_effort:referenceEffort})}:{}),
+      // A disclosed fixture (R6): the registered verifier fails every answer,
+      // so the descent escalates once and the reference's own answer, which
+      // the verifier also rejects, is delivered with its disclosure.
+      const runtime=await createRCCRuntime({stateDir:join(root,disclosed?'disclosed':ladder?'ladder':graded?'graded':verified?'verified':'unverified'),
+        ...(tiered?{verifierRegistry:new Map([['trivial:read_only:agent',async()=>({passed:!disclosed,reason:'fixture'})]])}:{}),
         catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates,
           ...(tiered?{model_tiers:{'gpt-6-astra':'frontier','gpt-6-luna':'fast'}}:{})}),
         plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes,
@@ -455,7 +456,8 @@ func runRCCRuntimeContractFixture() throws {
           candidate_id:ticket.candidate_id,configuration_sha256:ticket.configuration_sha256,
           selected_config:ticket.selected_config,acknowledged_config:ticket.selected_config,observed_config:null,
           status:'succeeded',dispatch_stage:'dispatched',side_effects:'none',
-          output:tiered&&ticket.selected_config.model==='gpt-6-luna'?' ':String(2*Number(ticket.node_id.slice(1))),
+          output:tiered&&!disclosed&&ticket.selected_config.model==='gpt-6-luna'?' ':String(2*Number(ticket.node_id.slice(1))),
+          ...(disclosed?{native_turn_terminated:true}:{}),
           execution_verified:true,task_verified:verified,task_quality:verified?'task_verified':'execution_only',
           parity_state:'unverified',native_receipt:join(root,'synthetic-native-'+ticket.attempt_id),
           usage:{input_tokens:4,output_tokens:2},native_summary:verified?JSON.stringify({node:ticket.node_id}):'x'.repeat(20000)});},
@@ -473,7 +475,8 @@ func runRCCRuntimeContractFixture() throws {
     }
     try{process.stdout.write(JSON.stringify({completed:await produce(true,4),unverified:await produce(false,1),
       graded:await produce(false,1,true),laddered:await produce(false,1,true,true),
-      tiered:await produce(false,1,true,false,true),tickets:emittedTickets}));}
+      tiered:await produce(false,1,true,false,true),disclosed:await produce(false,1,true,false,true,true),
+      tickets:emittedTickets}));}
     finally{await rm(root,{recursive:true,force:true});}
     """
     let wireProcess = Process(), wireOutput = Pipe(), wireErrors = Pipe()
@@ -496,12 +499,12 @@ func runRCCRuntimeContractFixture() throws {
     let actualTickets = try (nativeSnapshots["tickets"] as! [[String: Any]]).map {
         try C.decodeTicket(JSONSerialization.data(withJSONObject: $0))
     }
-    try check(actualTickets.count == 9, "REAL Node execution tickets all pass the strict Swift schema")
+    try check(actualTickets.count == 11, "REAL Node execution tickets all pass the strict Swift schema")
     // Host routing receipts (2026-10-13): the real core's graded and
     // adapter-bound decisions decode under the strict child shape.
     let nativeGraded = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["graded"]!))
     let gradedDecision = nativeGraded.children.first?.routingDecision
-    try check(nativeGraded.state == .returnedUnverified && gradedDecision?.routeClass == "standard" &&
+    try check(nativeGraded.state == .returnedUnverified && gradedDecision?.routeClass == "deep" &&
               gradedDecision?.resolvedCandidateID == "fake-codex" && gradedDecision?.effort == .low &&
               gradedDecision?.reason.hasPrefix("resolver;") == true && gradedDecision?.quotaRemainingFraction == 0.7,
               "REAL Node graded node is bound by the host and its routing decision is public")
@@ -520,22 +523,24 @@ func runRCCRuntimeContractFixture() throws {
     try check(actualTickets.filter { $0.taskID == "task-node-verified" }.map(\.instruction).sorted() ==
               ["Return 2", "Return 4", "Return 6", "Return 8"],
               "REAL Node four-node decomposition keeps the planner's instructions")
+    // Build 407: a model's two efforts never form a same-model ladder; the
+    // node binds the reference effort.
     let nativeLaddered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["laddered"]!))
     let nativeLadderDecision = nativeLaddered.children.first?.routingDecision
-    try check(nativeLaddered.state == .returnedUnverified && nativeLadderDecision?.effort == .low &&
-              nativeLadderDecision?.ladder == C.RoutingDecision.Ladder(cheapEffort: .low, referenceEffort: .max) &&
-              nativeLadderDecision?.reason.hasPrefix("resolver;route_ladder;") == true &&
-              nativeLaddered.children.first?.selectedConfig?.effort == .low,
-              "REAL Node ladder decision (fake registry and parity) decodes under the strict child shape")
-    // Build 378: the real core's tier route, its failure signal and its one
-    // REVAS escalation decode under the strict Swift shapes.
+    try check(nativeLaddered.state == .returnedUnverified && nativeLadderDecision?.effort == .max &&
+              nativeLadderDecision?.ladder == nil && nativeLadderDecision?.routeClass == "deep" &&
+              nativeLadderDecision?.reason.hasPrefix("resolver;route_reference;") == true &&
+              nativeLaddered.children.first?.selectedConfig?.effort == .max,
+              "REAL Node two-effort catalog binds the reference effort, never a ledger ladder")
+    // Build 378/407: the real core's certified tier route, its failure signal
+    // and its one escalation (R9) decode under the strict Swift shapes.
     let nativeTiered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["tiered"]!))
     let tierDecision = nativeTiered.children.first?.routingDecision
     try check(nativeTiered.state == .returnedUnverified && tierDecision?.routeClass == "trivial" &&
               tierDecision?.model == "gpt-6-astra" && tierDecision?.effort == .max && tierDecision?.tier == "frontier" &&
               tierDecision?.ladder == C.RoutingDecision.Ladder(cheapEffort: .low, referenceEffort: .max,
                   cheapModel: "gpt-6-luna", referenceModel: "gpt-6-astra") &&
-              tierDecision?.reason.hasPrefix("tier_escalated_after_failure_signal;route_reference;tier_frontier;") == true &&
+              tierDecision?.reason.hasPrefix("tier_escalated_after_failure_signal;route_reference;admitted_reference_escalation;tier_frontier;") == true &&
               nativeTiered.result?.output == "2",
               "REAL Node tier route escalated once to its reference decodes under the strict child shape")
     let tierTickets = actualTickets.filter { $0.taskID == "task-node-tiered" }
@@ -544,6 +549,21 @@ func runRCCRuntimeContractFixture() throws {
               tierTickets[1].nativeResumeSessionID == "native-codex-fixture",
               "REAL Node tier tickets: the discardable fast attempt in a fresh native session, then the reference resuming the untouched owner thread")
     try check(try C.decodeSnapshot(C.encode(nativeTiered)) == nativeTiered, "a tier routing decision roundtrips through Swift")
+    // Build 407 (R6) across the boundary: a registered node verifier that
+    // rejects the escalated reference's own answer delivers it with the
+    // Core's disclosure, and that snapshot decodes under the strict Swift shape.
+    let nativeDisclosed = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: nativeSnapshots["disclosed"]!))
+    try check(nativeDisclosed.state == .returnedUnverified && nativeDisclosed.result?.output == "2" &&
+              nativeDisclosed.result?.taskVerified == false &&
+              nativeDisclosed.children.first?.state == .completed &&
+              nativeDisclosed.children.first?.selectedConfig?.model == "gpt-6-astra" &&
+              nativeDisclosed.children.first?.qualityDisclosure == C.QualityDisclosure(coverage: nil,
+                  failedCheckIDs: ["node_verifier"], witnessSHA256: nil, checker: nil),
+              "REAL Node node-verifier failure on the reference decodes with its disclosure and delivers the reference answer")
+    try check(actualTickets.filter { $0.taskID == "task-node-disclosed" }
+                .map { "\($0.selectedConfig.model)/\($0.selectedConfig.effort.rawValue)" } == ["gpt-6-luna/low", "gpt-6-astra/max"],
+              "REAL Node disclosed fixture: the failed descent escalates exactly once to the reference")
+    try check(try C.decodeSnapshot(C.encode(nativeDisclosed)) == nativeDisclosed, "a node-verifier disclosure roundtrips through Swift")
     let soloTickets = actualTickets.filter { $0.taskID == "task-node-unverified" }
     try check(soloTickets.count == 1 && soloTickets[0].nativeResumeSessionID == "native-codex-fixture",
               "REAL core-issued single full-agent ticket retains its exact host session")

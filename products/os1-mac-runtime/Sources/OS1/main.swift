@@ -18331,6 +18331,7 @@ struct OS1Main {
                 try rccNativeContinuationSelfTest()
                 try rccNativeDirectorySelfTest()
                 try rccNativeExactAnswerInstructionsSelfTest()
+                try rccCatalogFactsSelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
                 try await concurrentRouteFanoutSelfTest()
@@ -18844,6 +18845,10 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         chatLaneEligible: chatEligible,
         profiles: (config.executionProfiles ?? [:]).map { .init(action: $0.key, provider: $0.value.provider,
             model: $0.value.model, effort: $0.value.effort) })
+    // Build 407 admission facts (R0, R2): the owner scope, and an owner
+    // contract re-bound now; the signed class table is compiled in (empty).
+    input.ownerScope = RCCCatalogFacts.ownerScope(request)
+    input.taskContract = RCCCatalogFacts.taskContract(request)
     // An explicit route test keeps its candidate set: a route naming a
     // provider overrides its 0% capacity, and the fan-out sentence is not one
     // effort/model intent for every route.
@@ -19351,7 +19356,15 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         executionWorkspace = workspace; executionWorkspaceBefore = before
         // The trusted operational checker is frozen BEFORE any native model
         // execution. No hidden evaluation/reference answer enters this path.
-        var operationalPreparation = try RCCOperationalQuality.prepare(ticket: t, workspace: workspace, currentTreeSHA256: before)
+        // An owner contract whose bindings no longer hold (the tree moved
+        // since the catalog, another surface's workspace) is no contract here
+        // (407-f): the attempt runs without a checker and Core never adopts an
+        // uncertified cheaper answer from it. Custody failures still stop it.
+        var operationalPreparation: RCCOperationalQuality.Preparation?
+        do { operationalPreparation = try RCCOperationalQuality.prepare(ticket: t, workspace: workspace, currentTreeSHA256: before) }
+        catch let error where t.qualityContinuation == nil && RCCCatalogFacts.contractBindingMismatch(error) {
+            operationalPreparation = nil
+        }
         var operationalAssessment: TaskQualityEvidence.Evaluation?
         let localQualityProfile: RCCNativeLocalQualityProfile?
         let ownerLocalBoundary = try RCCOperationalQuality.localEffectsBoundary(ticket: t)
@@ -19395,7 +19408,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
         try await OS1FullAccessContinuation.$protectedPaths.withValue(isFullAccess ? protected : []) {
         try await OS1ChangeEscalation.$available.withValue(!h.requireReadOnly && t.selectedConfig.scope == .workspaceWrite && sourceRoot != nil) {
-        try ParallelAgentRuntime.$managedDelegation.withValue(true) {
+        // R5: a reference/explicit final-owner node may run its native
+        // sub-agents (Core sets the flag); every other node stays managed.
+        try ParallelAgentRuntime.$managedDelegation.withValue(t.allowNativeSubagents != true) {
         try OwnerPolicyContext.$snapshot.withValue(policy) {
             try execute(ticket: signed, prompt: try providerPrompt(current: delegated, context: h.context, r2Evidence: nil),
                 workspace: workspace, timeout: config.executionTimeoutSeconds, idleTimeout: config.providerIdleTimeoutSeconds,

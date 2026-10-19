@@ -9,8 +9,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { canonicalHostContext, cheaperRouteAdmission, createRCCRuntime, dispatchable, effectiveExplicitRoutes,
-  exactArithmeticQuestion, hostContextFingerprint, LADDER_MIN_VERIFIED_PASSES, lockIndivisibleInstruction, openRoutingLedger, resolveRoutePlan,
+import { canonicalHostContext, createRCCRuntime, dispatchable, effectiveExplicitRoutes,
+  exactArithmeticQuestion, hostContextFingerprint, lockIndivisibleInstruction, openRoutingLedger, resolveRoutePlan,
   routeFamily } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -462,10 +462,11 @@ test('a wrapped exact arithmetic question is answered by Core with no model; res
 });
 
 // Review 2026-10-15: after "1+1 상품은 3,500원" the follow-up "1+1은 얼마야?"
-// asks a price. A wrapped question with any earlier conversation (context
-// text or a native session to resume) goes to the models with that context;
-// the bare expression keeps its earlier zero-model reading.
-test('a wrapped arithmetic question with earlier conversation reaches the models; a bare expression stays exact', async t => {
+// asks a price. R1 (build 407): with any earlier conversation (context text or
+// a native session to resume) every zero-model path is off, the bare
+// expression too: it goes to the models with that context. Without earlier
+// conversation the bare expression stays exact.
+test('arithmetic with earlier conversation reaches the models, a bare expression too; without it, exact', async t => {
   const dir = await fixture(t);
   let calls = 0;
   const runtime = await createRCCRuntime({stateDir: dir,
@@ -483,7 +484,13 @@ test('a wrapped arithmetic question with earlier conversation reaches the models
     assert.equal(done.error, 'catalog_failed', input.request);
   }
   assert.equal(calls, followUps.length, 'every follow-up probes the catalog for a model');
-  const bare = task(dir, '1+1', 'auto', {context});
+  for (const input of [task(dir, '1+1', 'auto', {context}), task(dir, '3-4', 'auto', {codexSession: randomUUID()})]) {
+    await runtime.submit(input);
+    const routed = await wait(runtime, input);
+    assert.equal(routed.error, 'catalog_failed', input.request);
+  }
+  assert.equal(calls, followUps.length + 2, 'a bare expression after a prior turn reaches a model too');
+  const bare = task(dir, '1+1', 'auto');
   await runtime.submit(bare);
   const exact = await wait(runtime, bare);
   assert.equal(exact.state, 'completed');
@@ -492,7 +499,7 @@ test('a wrapped arithmetic question with earlier conversation reaches the models
   const blank = task(dir, '1+1이 뭐야?', 'auto', {context: ' \n '});
   await runtime.submit(blank);
   assert.equal((await wait(runtime, blank)).result.output, '2');
-  assert.equal(calls, followUps.length);
+  assert.equal(calls, followUps.length + 2);
 });
 
 test('exact local liveness check-in records one child; delegated/provider/attachment variants route normally', async t => {
@@ -1676,7 +1683,8 @@ test('resolver is deterministic: same input, same exact tuple and decision', () 
   // route_class is a family label only: both classes get the pool reference.
   assert.deepEqual(first.plan.nodes.map(n => n.candidate_id), ['codex-sol-xhigh', 'codex-sol-xhigh']);
   assert.ok(first.plan.nodes.every(n => !Object.hasOwn(n, 'route_class')));
-  assert.deepEqual(first.decisions.a, {route_class: 'standard', resolved_candidate_id: 'codex-sol-xhigh',
+  // An injected grade is ignored (R0): the decision records the reference class.
+  assert.deepEqual(first.decisions.a, {route_class: 'deep', resolved_candidate_id: 'codex-sol-xhigh',
     surface: 'codex', model: 'gpt-5.7-sol', effort: 'xhigh', quota_pool: 'openai_codex',
     reason: 'resolver;route_reference;pool_rank_0;effort_xhigh;agent_surface', quota_remaining_fraction: 0.7});
   assert.deepEqual(first.routes.a, {kind: 'reference', reference_effort: 'xhigh', ladder: null});
@@ -1688,8 +1696,7 @@ test('resolver is deterministic: same input, same exact tuple and decision', () 
   const local = candidate('local-exact', 'local', 'none', {model: 'local-deterministic', effort: 'none'});
   const mixed = resolveRoutePlan(plan(request, [graded('d', 'trivial', {kind: 'deterministic', instruction: '2+3'}),
     graded('a', 'trivial')]), request, catalog(request, [local, ...routingCatalog()]), now,
-  {verifierRegistry: new Map([['trivial:read_only:local', async () => ({passed: true})]]),
-    ledgerStats: () => ({verified_passes: 99, verifier_failures: 0})});
+  {verifierRegistry: new Map([['trivial:read_only:local', async () => ({passed: true})]])});
   assert.equal(mixed.decisions.d.resolved_candidate_id, 'local-exact');
   assert.equal(mixed.decisions.d.reason, 'resolver;route_reference;pool_rank_0;effort_none;local_exact');
   assert.equal(mixed.decisions.a.resolved_candidate_id, 'codex-sol-xhigh');
@@ -2644,139 +2651,9 @@ test('spreading still works after the bound rows outlive their validity window: 
   assert.equal(dispatches.length, 4, 'total fake dispatches include the extra final worker');
 });
 
-// ---- REVAS ladder gate and routing ledger (2026-10-13) ---------------------
-// A cheaper effort is admitted only with a registered task verifier for the
-// family and ledger parity. Production registers no verifier, so every node
-// runs its reference route; these fixtures use a fake registry and fake stats.
-const parity = (passes, failures = 0) => (_family, model, _effort, reference) =>
-  ({verified_passes: passes, verifier_failures: failures, reference_effort: reference, reference_model: model});
-const registry = (...families) => new Map(families.map(family => [family, async () => ({passed: true, reason: 'fake'})]));
-
-test('legacy ladder parity is bound to its exact reference model and effort, never promoted from max to ultra', async t => {
-  const dir = await fixture(t);
-  const family = 'standard:read_only:agent', model = 'gpt-6-astra';
-  const ledger = openRoutingLedger(dir);
-  const record = (reference, changes = {}) => ({schema: 1, task_id: 'task-x', node_id: 'n',
-    attempt_id: randomUUID(), family, model, effort: 'low', reference_effort: reference, route_kind: 'ladder',
-    ladder: {cheap_effort: 'low', reference_effort: reference}, verifier_outcome: 'pass', execution_verified: true, ...changes});
-  const admission = (reference, stats = ledger.stats) => cheaperRouteAdmission({family, scope: 'read_only', model,
-    referenceEffort: reference, cheaperEfforts: ['low'], verifierRegistry: registry(family), ledgerStats: stats});
-  for (let i = 0; i < 20; i++) ledger.append(record('max'));
-  assert.equal(admission('max').route, 'ladder');
-  assert.equal(admission('ultra').route, 'reference', 'max verifier samples cannot certify the new ultra ceiling');
-  assert.deepEqual(ledger.stats(family, model, 'low', 'ultra'),
-    {verified_passes: 0, verifier_failures: 0, reference_effort: 'ultra', reference_model: model});
-  for (let i = 0; i < 20; i++) ledger.append(record('ultra'));
-  assert.equal(admission('ultra').route, 'ladder', 'matching bound samples can admit the same-model cheaper effort');
-  assert.equal(admission('ultra', () => ({verified_passes: 99, verifier_failures: 0})).route, 'reference',
-    'a legacy unbound summary is unknown, not proof');
-  assert.equal(admission('ultra', () => ({verified_passes: 99, verifier_failures: 0,
-    reference_effort: 'max', reference_model: model})).route, 'reference');
-  assert.equal(admission('ultra', () => ({verified_passes: 99, verifier_failures: 0,
-    reference_effort: 'ultra', reference_model: 'another-model'})).route, 'reference');
-  // Unbound historical lines and another model's tier reference never count.
-  const unbound = openRoutingLedger(join(dir, 'unbound'));
-  for (let i = 0; i < 20; i++) {
-    const raw = record('ultra'); delete raw.reference_effort; unbound.append(raw);
-    unbound.append(record('ultra', {route_kind: 'tier', ladder: {cheap_effort: 'low', reference_effort: 'ultra',
-      reference_model: 'another-model'}}));
-    unbound.append(record('ultra', {route_kind: 'reference', ladder: null}));
-    unbound.append(record('ultra', {route_kind: 'tier', ladder: {cheap_effort: 'low', reference_effort: 'ultra'}}));
-  }
-  assert.equal(admission('ultra', unbound.stats).route, 'reference');
-});
-
-test('cheaperRouteAdmission never admits without a verifier, without 20 passes, or with any failure', () => {
-  const family = routeFamily('standard', 'read_only', 'claude-chat');
-  assert.equal(family, 'standard:read_only:chat');
-  assert.equal(routeFamily(null, 'workspace_write', 'codex'), 'unclassified:workspace_write:agent');
-  assert.equal(LADDER_MIN_VERIFIED_PASSES, 20);
-  const base = {family, scope: 'read_only', model: 'claude-opus-5-5', referenceEffort: 'max',
-    cheaperEfforts: ['low', 'medium', 'max', 'ultra'], verifierRegistry: registry(family), ledgerStats: parity(20)};
-  assert.deepEqual(cheaperRouteAdmission(base),
-    {route: 'ladder', cheap_effort: 'low', reference_effort: 'max', reason: 'ladder_parity_evidence'});
-  const refused = [
-    [{verifierRegistry: null}, 'ladder_no_registered_verifier'],
-    [{verifierRegistry: new Map()}, 'ladder_no_registered_verifier'],
-    [{verifierRegistry: registry('deep:read_only:chat')}, 'ladder_no_registered_verifier'],
-    [{verifierRegistry: new Map([[family, 'not a function']])}, 'ladder_no_registered_verifier'],
-    [{scope: 'workspace_write'}, 'ladder_write_scope'],
-    [{ledgerStats: parity(19)}, 'ladder_insufficient_parity_evidence'],
-    [{ledgerStats: parity(1_000, 1)}, 'ladder_insufficient_parity_evidence'],
-    [{ledgerStats: () => { throw Error('ledger offline'); }}, 'ladder_insufficient_parity_evidence'],
-    [{ledgerStats: () => ({verified_passes: '25', verifier_failures: 0})}, 'ladder_insufficient_parity_evidence'],
-    [{ledgerStats: () => null}, 'ladder_insufficient_parity_evidence'],
-    [{ledgerStats: null}, 'ladder_no_ledger_evidence'],
-    [{cheaperEfforts: ['max', 'ultra']}, 'ladder_no_cheaper_route'],
-    [{referenceEffort: 'unknown'}, 'ladder_no_cheaper_route']];
-  for (const [change, reason] of refused)
-    assert.deepEqual(cheaperRouteAdmission({...base, ...change}), {route: 'reference', reason}, JSON.stringify(change));
-  // The cheapest effort with parity wins; one without parity is skipped.
-  const stats = (asked, model, effort, reference) => asked === family && model === 'claude-opus-5-5' ?
-    {verified_passes: effort === 'medium' ? 25 : 3, verifier_failures: 0,
-      reference_effort: reference, reference_model: model} : null;
-  assert.equal(cheaperRouteAdmission({...base, ledgerStats: stats}).cheap_effort, 'medium');
-});
-
-test('the resolver admits a ladder only with registry plus parity; writes and explicit intents stay reference', () => {
-  const request = task('/tmp', 'Explain one function', 'auto', {write: true});
-  const now = Date.now();
-  const rows = [row('chat-low', 'anthropic_shared', 'claude-opus-5-5', 'low', {surface: 'claude-chat'}),
-    row('chat-max', 'anthropic_shared', 'claude-opus-5-5', 'max', {surface: 'claude-chat'}),
-    row('claude-low', 'anthropic_shared', 'claude-opus-5-5', 'low'),
-    row('claude-max', 'anthropic_shared', 'claude-opus-5-5', 'max'),
-    row('claude-write-low', 'anthropic_shared', 'claude-opus-5-5', 'low', {scope: 'workspace_write', allowedPaths: ['**']}),
-    row('claude-write-max', 'anthropic_shared', 'claude-opus-5-5', 'max', {scope: 'workspace_write', allowedPaths: ['**']})];
-  const families = ['standard:read_only:chat', 'standard:workspace_write:agent'];
-  const resolve = (options, value = catalog(request, rows)) => resolveRoutePlan(plan(request, [graded('read', 'standard'),
-    graded('write', 'standard', {scope: 'workspace_write', ownedPaths: ['**']})]), request, value, now, options);
-  const admitted = resolve({verifierRegistry: registry(...families), ledgerStats: parity(20)});
-  assert.equal(admitted.decisions.read.resolved_candidate_id, 'chat-low');
-  assert.deepEqual(admitted.decisions.read.ladder, {cheap_effort: 'low', reference_effort: 'max'});
-  assert.equal(admitted.decisions.read.reason,
-    'resolver;route_ladder;pool_rank_0;effort_low;ladder_reference_effort_max;chat_lane_same_route');
-  assert.deepEqual(admitted.routes.read, {kind: 'ladder', reference_effort: 'max',
-    ladder: {cheap_effort: 'low', reference_effort: 'max', reference_candidate_id: 'chat-max'}});
-  // Writes are always reference, whatever the registry and ledger say.
-  assert.equal(admitted.decisions.write.resolved_candidate_id, 'claude-write-max');
-  assert.equal(Object.hasOwn(admitted.decisions.write, 'ladder'), false);
-  assert.equal(admitted.routes.write.kind, 'reference');
-  for (const [name, options] of [['no registry', {}], ['empty registry', {verifierRegistry: new Map(), ledgerStats: parity(99)}],
-    ['19 passes', {verifierRegistry: registry(...families), ledgerStats: parity(19)}],
-    ['one failure', {verifierRegistry: registry(...families), ledgerStats: parity(50, 1)}],
-    ['other family', {verifierRegistry: registry('deep:read_only:chat'), ledgerStats: parity(50)}]]) {
-    const decision = resolve(options).decisions.read;
-    assert.equal(decision.resolved_candidate_id, 'chat-max', name);
-    assert.equal(Object.hasOwn(decision, 'ladder'), false, name);
-    assert.match(decision.reason, /^resolver;route_reference;/, name);
-  }
-  assert.match(resolve({verifierRegistry: registry(...families), ledgerStats: parity(19)}).decisions.read.reason,
-    /;ladder_insufficient_parity_evidence;/);
-  // An explicit owner constraint fixes the route: no ladder below it.
-  const explicit = resolve({verifierRegistry: registry(...families), ledgerStats: parity(99)},
-    {...catalog(request, rows), routing_intent: {effort: null, model_family: 'opus'}});
-  assert.equal(explicit.decisions.read.resolved_candidate_id, 'chat-max');
-  assert.match(explicit.decisions.read.reason, /^resolver;route_explicit;intent_family_opus;/);
-});
-
-async function ladderRuntime(t, dir, name, {verify, stats = parity(20), rows, write = false, budget = 1}) {
-  const request = task(dir, 'Explain one function: ' + name, 'auto', {write});
-  request.budget.max_attempts = budget;
-  const dispatched = [], verified = [];
-  const runtime = await createRCCRuntime({stateDir: join(dir, name.replace(/\W+/g, '-')),
-    verifierRegistry: new Map([[write ? 'standard:workspace_write:agent' : 'standard:read_only:agent',
-      async input => { verified.push(input.selected_config.effort); return verify(input); }]]),
-    ledgerStats: stats,
-    catalog: async value => catalog(value, rows()),
-    plan: async () => plan(request, [graded('n', 'standard', write ? {scope: 'workspace_write', ownedPaths: ['**']} : {})]),
-    execute: async ticket => { dispatched.push(ticket.selected_config.effort);
-      return execution(ticket, {output: `answer at ${ticket.selected_config.effort}`, task_verified: false,
-        task_quality: 'execution_only'}); },
-    verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  await runtime.submit(request);
-  return {request, runtime, dispatched, verified, done: await wait(runtime, request)};
-}
+// ---- Routing ledger (2026-10-13) -------------------------------------------
+// One private record per settled attempt. No route reads it (build 407: the
+// route is fixed by R0's certifying sources); `stats` stays a diagnostic read.
 const ladderRows = () => [row('codex-low', 'openai_codex', 'gpt-5.7-sol', 'low'),
   row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
   row('codex-write-low', 'openai_codex', 'gpt-5.7-sol', 'low', {scope: 'workspace_write', allowedPaths: ['**']}),
@@ -2785,104 +2662,6 @@ const ledgerRecords = async stateDir => {
   const text = await readFile(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), 'utf8');
   return text.trim().split('\n').map(line => JSON.parse(line));
 };
-
-test('a verified ladder output is adopted; a failed one re-dispatches once at the reference, uncharged', async t => {
-  const dir = await fixture(t);
-  // Pass: the cheaper route is adopted after its verifier passes.
-  const pass = await ladderRuntime(t, dir, 'pass', {verify: async () => ({passed: true, reason: 'fake pass'}),
-    rows: ladderRows});
-  assert.equal(pass.done.state, 'completed', pass.done.error);
-  assert.deepEqual(pass.dispatched, ['low']); assert.deepEqual(pass.verified, ['low']);
-  assert.equal(pass.done.result.output, 'answer at low');
-  assert.deepEqual(pass.done.children[0].routing_decision.ladder, {cheap_effort: 'low', reference_effort: 'max'});
-  const passLedger = await ledgerRecords(join(dir, 'pass'));
-  assert.deepEqual(passLedger.map(record => [record.effort, record.route_kind, record.verifier_outcome]),
-    [['low', 'ladder', 'pass']]);
-  // Fail: the cheaper output is discarded and the node runs once at the
-  // reference route (same model, same pool), even with max_attempts 1.
-  const fail = await ladderRuntime(t, dir, 'fail once', {rows: ladderRows,
-    verify: async input => ({passed: input.selected_config.effort === 'max', reason: 'fake'})});
-  assert.equal(fail.done.state, 'completed', fail.done.error);
-  assert.deepEqual(fail.dispatched, ['low', 'max']); assert.deepEqual(fail.verified, ['low', 'max']);
-  assert.equal(fail.done.result.output, 'answer at max', 'the failed cheaper output is never adopted');
-  const decision = fail.done.children[0].routing_decision;
-  assert.equal(decision.effort, 'max'); assert.equal(decision.resolved_candidate_id, 'codex-max');
-  assert.equal(decision.reason,
-    'ladder_escalated_after_verifier_failure;route_reference;effort_max;agent_surface;instruction_host_locked');
-  assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'max'});
-  const events = fail.runtime.events({schema: 1, task_id: fail.request.task_id});
-  assert.equal(events.filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
-  assert.equal(events.some(event => event.kind === 'candidate_re_resolved'), false);
-  assert.deepEqual((await ledgerRecords(join(dir, 'fail-once'))).map(record =>
-    [record.effort, record.route_kind, record.verifier_outcome, record.reference_effort]),
-  [['low', 'ladder', 'fail', 'max'], ['max', 'reference', 'pass', 'max']]);
-  // Bounded once: a reference route that also fails its verifier is not
-  // escalated again (there is nothing above the reference).
-  const always = await ladderRuntime(t, dir, 'always fail', {rows: ladderRows,
-    verify: async () => ({passed: false, reason: 'fake fail'})});
-  assert.deepEqual(always.dispatched, ['low', 'max']);
-  assert.equal(always.done.state, 'returned_unverified');
-  assert.equal(always.done.error, 'node_verifier_failed');
-  assert.equal(always.done.result?.task_verified, false);
-  assert.equal(always.runtime._load(always.request.task_id).children[0].output, 'answer at max',
-    'the rejected reference remains raw evidence, not an adopted answer');
-  assert.equal(always.done.result?.output, 'n: answer at max', 'held output keeps the existing partial-result label');
-  assert.equal(always.runtime.events({schema: 1, task_id: always.request.task_id})
-    .filter(event => event.kind === 'ladder_escalated_to_reference').length, 1);
-  // A throwing or malformed verifier counts as a failure, never as a pass.
-  const broken = await ladderRuntime(t, dir, 'broken verifier', {rows: ladderRows,
-    verify: async input => { if (input.selected_config.effort === 'low') throw Error('verifier crashed');
-      return {passed: 'yes'}; }});
-  assert.deepEqual(broken.dispatched, ['low', 'max']);
-  assert.equal(broken.done.state, 'returned_unverified');
-  assert.equal(broken.done.error, 'node_verifier_failed');
-  assert.equal(broken.done.result?.task_verified, false);
-  assert.equal(broken.runtime._load(broken.request.task_id).children[0].output, 'answer at max');
-  assert.equal(broken.done.result?.output, 'n: answer at max');
-  // No parity evidence: the reference runs first and only once.
-  const noParity = await ladderRuntime(t, dir, 'no parity', {rows: ladderRows, stats: parity(19),
-    verify: async () => ({passed: true, reason: 'fake pass'})});
-  assert.deepEqual(noParity.dispatched, ['max']);
-  assert.equal(Object.hasOwn(noParity.done.children[0].routing_decision, 'ladder'), false);
-});
-
-test('a write node is never laddered or escalated, whatever the registry and ledger say', async t => {
-  const dir = await fixture(t);
-  const write = await ladderRuntime(t, dir, 'write', {write: true, rows: ladderRows, stats: parity(500),
-    verify: async () => ({passed: false, reason: 'fake fail'})});
-  assert.equal(write.done.state, 'completed', write.done.error);
-  assert.deepEqual(write.dispatched, ['max']);
-  assert.deepEqual(write.verified, [], 'no node verifier runs for a write');
-  assert.equal(write.done.children[0].routing_decision.reason,
-    'resolver;route_reference;pool_rank_0;effort_max;agent_surface;instruction_host_locked');
-  assert.equal(write.runtime.events({schema: 1, task_id: write.request.task_id})
-    .some(event => event.kind === 'ladder_escalated_to_reference'), false);
-});
-
-test('a ladder whose reference row cannot be restored holds instead of adopting the failed output', async t => {
-  const dir = await fixture(t);
-  const request = task(dir, 'Explain one function with a vanished reference');
-  const dispatched = [];
-  const runtime = await createRCCRuntime({stateDir: dir,
-    verifierRegistry: new Map([['standard:read_only:agent', async () => ({passed: false, reason: 'fake fail'})]]),
-    ledgerStats: parity(20), catalog: async value => catalog(value, ladderRows()),
-    plan: async () => plan(request, [graded('n', 'standard')]),
-    execute: async ticket => { dispatched.push(ticket.candidate_id); return execution(ticket); },
-    verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  // Corrupt the internal reference pointer before the verifier answers.
-  const original = runtime._escalateLadder.bind(runtime);
-  runtime._escalateLadder = (taskID, nodeID, attemptID) => {
-    runtime._update(taskID, 'fixture_reference_pointer_removed', state => {
-      state.children[0].ladder.reference_candidate_id = 'missing-row'; });
-    return original(taskID, nodeID, attemptID);
-  };
-  await runtime.submit(request);
-  const held = await wait(runtime, request);
-  assert.equal(held.state, 'held'); assert.equal(held.error, 'ladder_reference_unavailable');
-  assert.deepEqual(dispatched, ['codex-low']);
-  assert.equal(held.result, null, 'the failed cheaper output is not returned as a result');
-});
 
 test('routing ledger: one private record per settled attempt, ids and routing facts only', async t => {
   const dir = await fixture(t);
@@ -2908,15 +2687,13 @@ test('routing ledger: one private record per settled attempt, ids and routing fa
     assert.equal(text.includes(forbidden), false, forbidden);
   const records = await ledgerRecords(dir);
   assert.equal(records.length, 2, 'one record per attempt: the quota rejection and the success');
-  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'cost_gate', 'dispatched_at_ms',
+  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'dispatched_at_ms',
     'dispatched_failure', 'effort', 'escalated', 'escalation_outcome', 'execution_verified', 'family',
     'host_route_kind', 'ladder', 'model', 'node_id', 'quota_pool', 'quota_remaining_fraction',
     'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'surface', 'surface_kind',
     'task_id', 'task_quality', 'tier', 'usage', 'verifier_outcome']);
-  // An older catalog (no model_tiers) records no tier, no escalation and no
-  // cost gate (the gate only exists for a guarded tier route).
+  // An older catalog (no model_tiers) records no tier and no escalation.
   assert.equal(records[1].tier, null); assert.equal(records[1].escalated, false);
-  assert.equal(records[1].cost_gate, null);
   // Not a named route, and no failure after dispatch: both optional facts null.
   assert.equal(records[1].host_route_kind, null); assert.equal(records[1].dispatched_failure, null);
   assert.equal(records[1].escalation_outcome, null);
@@ -3039,202 +2816,9 @@ test('a cooled top Claude family under a Claude preference holds; a lower Claude
   assert.deepEqual(dispatched, ['claude-opus-max'], 'sonnet never stands in for the reference');
 });
 
-async function ladderPair(t, dir, name, {verify, execute, catalogRows, cancelGraceMs = 30_000, nodes = ['a', 'b']}) {
-  const request = task(dir, 'Explain two functions: ' + name);
-  const stateDir = join(dir, name.replace(/\W+/g, '-'));
-  const runtime = await createRCCRuntime({stateDir, cancelGraceMs,
-    verifierRegistry: new Map([['standard:read_only:agent', verify]]), ledgerStats: parity(20),
-    catalog: async value => catalog(value, catalogRows()),
-    plan: async () => plan(request, nodes.map(id => graded(id, 'standard')), null),
-    execute, verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  await runtime.submit(request);
-  return {request, runtime, stateDir};
-}
 const pairRows = () => [row('codex-low', 'openai_codex', 'gpt-5.7-sol', 'low'),
   row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max'),
   row('claude-max', 'anthropic_shared', 'claude-opus-5-5', 'max')];
-
-test('a failed ladder verifier never settles the task over a running sibling (cancel and unavailable reference)', async t => {
-  const dir = await fixture(t);
-  // Cancel while the sibling runs: the ladder child is cancelled, the sibling
-  // still reconciles, and no child stays running with its lease.
-  const aVerifier = gate(), bRelease = gate(), aStarted = gate(), bStarted = gate();
-  const bGate = gate(), bRunning = gate();
-  try {
-  const cancelled = await ladderPair(t, dir, 'cancel', {catalogRows: pairRows,
-    verify: async input => { if (input.node_id === 'a') { aStarted.resolve(); await aVerifier.promise;
-      return {passed: false, reason: 'fake fail'}; } return {passed: true, reason: 'ok'}; },
-    execute: async ticket => { if (ticket.node_id === 'b') { bStarted.resolve(); await bRelease.promise; }
-      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }});
-  await waitPairGate(cancelled, aStarted.promise, 'cancel:a verifier');
-  await waitPairGate(cancelled, bStarted.promise, 'cancel:b execute');
-  assert.equal(cancelled.runtime.cancel({schema: 1, task_id: cancelled.request.task_id}).state, 'cancelling');
-  aVerifier.resolve(); await sleep(150);
-  let status = cancelled.runtime.status({schema: 1, task_id: cancelled.request.task_id});
-  assert.equal(status.state, 'cancelling', 'the ladder failure does not overwrite the cancel');
-  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'cancelled'], ['b', 'running']]);
-  assert.equal(status.children[0].output_summary, null, 'the failed cheaper output is discarded');
-  bRelease.resolve();
-  status = await wait(cancelled.runtime, cancelled.request);
-  assert.equal(status.state, 'effects_uncertain'); assert.equal(status.error, 'cancel_effects_uncertain');
-  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'cancelled'], ['b', 'effects_uncertain']]);
-  const db = coreDB(cancelled.stateDir);
-  t.after(() => db.close());
-  // The uncertain sibling was cancelled while running and its record does not
-  // attest that the native turn ended (native_turn_terminated): a returned
-  // record alone is no proof (a Codex Desktop turn may still run), so it keeps
-  // its pool; the ladder child released codex.
-  assert.deepEqual(db.prepare('SELECT pool_key FROM quota_leases').all().map(item => item.pool_key),
-    ['anthropic_shared:account-1'], 'only the uncertain sibling keeps its pool; the ladder child released codex');
-  assert.ok(!cancelled.runtime.events({schema: 1, task_id: cancelled.request.task_id})
-    .some(event => event.kind.startsWith('quota_lease_released')), 'nothing was released as settled');
-
-  // The reference cannot be restored while the sibling runs: only the ladder
-  // child holds; the sibling finishes and the task holds with the typed reason.
-  const unavailable = await ladderPair(t, dir, 'unavailable', {catalogRows: pairRows,
-    verify: async input => ({passed: input.node_id !== 'a', reason: 'fake'}),
-    execute: async ticket => { if (ticket.node_id === 'b') { bRunning.resolve(); await bGate.promise; }
-      return execution(ticket, {task_verified: false, task_quality: 'execution_only', output: `${ticket.node_id} answer`}); }});
-  const original = unavailable.runtime._escalateLadder.bind(unavailable.runtime);
-  unavailable.runtime._escalateLadder = () => { throw Object.assign(new Error('x'), {code: 'ladder_reference_unavailable',
-    name: 'RCCRuntimeError'}); };
-  t.after(() => { unavailable.runtime._escalateLadder = original; });
-  await waitPairGate(unavailable, bRunning.promise, 'unavailable:b execute'); await sleep(150);
-  status = unavailable.runtime.status({schema: 1, task_id: unavailable.request.task_id});
-  assert.equal(status.state, 'running', 'the task does not settle while b runs');
-  assert.deepEqual(status.children.map(child => [child.id, child.state]), [['a', 'held'], ['b', 'running']]);
-  bGate.resolve();
-  status = await wait(unavailable.runtime, unavailable.request);
-  assert.equal(status.state, 'returned_unverified');
-  assert.equal(status.error, 'ladder_reference_unavailable');
-  assert.equal(status.result.output, 'b: b answer', 'only the sibling output is returned; the failed cheap one never');
-  const leases = coreDB(unavailable.stateDir);
-  t.after(() => leases.close());
-  assert.deepEqual(leases.prepare('SELECT pool_key FROM quota_leases').all(), [], 'every lease is released');
-  } finally {
-    aVerifier.resolve(); bRelease.resolve(); bGate.resolve();
-  }
-});
-
-test('a ladder escalates to its reference after a sibling refresh dropped that row, then re-resolves', async t => {
-  const dir = await fixture(t);
-  let codexExhausted = false; const dispatched = [];
-  const aVerifier = gate(), aStarted = gate();
-  try {
-  const pair = await ladderPair(t, dir, 'vanish', {
-    // Once the cheap run spends the last Codex quota, the builder offers no
-    // Codex row; b's dispatch refresh stores that catalog before a's verdict.
-    catalogRows: () => codexExhausted ? pairRows().filter(c => c.quota_pool !== 'openai_codex') : pairRows(),
-    verify: async input => { if (input.node_id === 'a' && input.selected_config.effort === 'low') {
-      await aVerifier.promise; return {passed: false, reason: 'fake fail'}; } return {passed: true, reason: 'ok'}; },
-    execute: async ticket => { dispatched.push([ticket.node_id, ticket.candidate_id]);
-      if (ticket.node_id === 'a') { codexExhausted = true; aStarted.resolve(); }
-      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }});
-  await waitPairGate(pair, aStarted.promise, 'vanish:a execute'); await sleep(300);
-  aVerifier.resolve();
-  const done = await wait(pair.runtime, pair.request);
-  assert.equal(done.state, 'completed', done.error);
-  assert.deepEqual(dispatched.filter(([id]) => id === 'a').map(([, candidate]) => candidate), ['codex-low', 'claude-max']);
-  assert.match(done.children[0].routing_decision.reason,
-    /^re_resolved_after:candidate_missing;other_pool;route_reference;/);
-  } finally { aVerifier.resolve(); }
-});
-
-test('a cheaper ladder result that is not deliverable escalates and counts against parity', async t => {
-  const dir = await fixture(t);
-  for (const [name, override] of [['quality failed', {task_quality: 'failed'}],
-    ['execution unverified', {execution_verified: false, acknowledged_config: null}], ['empty', {output: ''}]]) {
-    const request = task(dir, 'Explain one function: undeliverable ' + name);
-    const stateDir = join(dir, 'undeliverable-' + name.replace(/\W+/g, '-'));
-    const dispatched = [], verified = [];
-    const runtime = await createRCCRuntime({stateDir,
-      verifierRegistry: new Map([['standard:read_only:agent', async input => { verified.push(input.selected_config.effort);
-        return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
-      catalog: async value => catalog(value, ladderRows()),
-      plan: async () => plan(request, [graded('n', 'standard')]),
-      execute: async ticket => { dispatched.push(ticket.selected_config.effort);
-        return ticket.selected_config.effort === 'low' ? execution(ticket, {output: 'poor cheap answer',
-          task_verified: false, task_quality: 'execution_only', ...override}) :
-          execution(ticket, {output: 'reference answer', task_verified: false, task_quality: 'execution_only'}); },
-      verifyTask: taskVerdict});
-    t.after(async () => { await runtime.close(); });
-    await runtime.submit(request);
-    const done = await wait(runtime, request);
-    assert.equal(done.state, 'completed', `${name}: ${done.error}`);
-    assert.deepEqual(dispatched, ['low', 'max'], name); assert.deepEqual(verified, ['max'], name);
-    assert.equal(done.result.output, 'reference answer', name);
-    assert.equal(done.children[0].routing_decision.reason,
-      'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface;instruction_host_locked', name);
-    const records = await ledgerRecords(stateDir);
-    assert.deepEqual(records.map(record => [record.effort, record.route_kind, record.verifier_outcome, record.attempt_state]),
-      [['low', 'ladder', 'not_returned', 'ladder_not_returned'], ['max', 'reference', 'pass', 'completed']], name);
-    assert.deepEqual(openRoutingLedger(stateDir).stats('standard:read_only:agent', 'gpt-5.7-sol', 'low'),
-      {verified_passes: 0, verifier_failures: 1}, `${name}: the undeliverable cheap route counts as a failure`);
-  }
-});
-
-test('a ladder escalation never replays an attempt that reported effects', async t => {
-  const dir = await fixture(t);
-  for (const [name, override] of [['confirmed', {side_effects: 'confirmed'}], ['possible', {side_effects: 'possible'}]]) {
-    const request = task(dir, 'Explain one function: effects ' + name);
-    const dispatched = [];
-    const runtime = await createRCCRuntime({stateDir: join(dir, name),
-      verifierRegistry: new Map([['standard:read_only:agent', async input =>
-        ({passed: input.selected_config.effort === 'max', reason: 'fake'})]]), ledgerStats: parity(20),
-      catalog: async value => catalog(value, ladderRows()),
-      plan: async () => plan(request, [graded('n', 'standard')]),
-      execute: async ticket => { dispatched.push(ticket.selected_config.effort);
-        return execution(ticket, {task_verified: false, task_quality: 'execution_only', ...override}); },
-      verifyTask: taskVerdict});
-    t.after(async () => { await runtime.close(); });
-    await runtime.submit(request);
-    const held = await wait(runtime, request);
-    assert.equal(held.state, 'held', name); assert.equal(held.error, 'ladder_escalation_effects_reported', name);
-    assert.deepEqual(dispatched, ['low'], name); assert.equal(held.result, null, `${name}: the cheap output is never adopted`);
-  }
-});
-
-test('the failed ladder attempt is not charged to the cost or duration budget', async t => {
-  const dir = await fixture(t);
-  // Cost: one unit per row and a one-unit budget. Reference-only completes;
-  // so must a ladder whose cheap attempt failed its verifier.
-  for (const ladder of [false, true]) {
-    const request = task(dir, 'Explain one function: cost ' + ladder);
-    request.budget.max_cost_units = 1;
-    const dispatched = [];
-    const runtime = await createRCCRuntime({stateDir: join(dir, 'cost-' + ladder),
-      verifierRegistry: new Map([['standard:read_only:agent', async input =>
-        ({passed: input.selected_config.effort === 'max', reason: 'fake'})]]), ledgerStats: parity(ladder ? 20 : 0),
-      catalog: async value => catalog(value, ladderRows()),
-      plan: async () => plan(request, [graded('n', 'standard')]),
-      execute: async ticket => { dispatched.push(ticket.selected_config.effort);
-        return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
-    t.after(async () => { await runtime.close(); });
-    await runtime.submit(request);
-    const done = await wait(runtime, request);
-    assert.equal(done.state, 'completed', `${ladder}: ${done.error}`);
-    assert.deepEqual(dispatched, ladder ? ['low', 'max'] : ['max']);
-  }
-  // Duration: the cheap attempt plus its slow verifier outlast the 1 s budget;
-  // the reference would have dispatched at once, so it still dispatches.
-  const request = task(dir, 'Explain one function: duration');
-  request.budget.max_duration_ms = 1_000;
-  const dispatched = [];
-  const runtime = await createRCCRuntime({stateDir: join(dir, 'duration'),
-    verifierRegistry: new Map([['standard:read_only:agent', async input => {
-      if (input.selected_config.effort === 'low') { await sleep(1_100); return {passed: false, reason: 'slow fail'}; }
-      return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
-    catalog: async value => catalog(value, ladderRows()),
-    plan: async () => plan(request, [graded('n', 'standard')]),
-    execute: async ticket => { dispatched.push(ticket.selected_config.effort);
-      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  await runtime.submit(request);
-  const done = await wait(runtime, request);
-  assert.equal(done.state, 'completed', done.error);
-  assert.deepEqual(dispatched, ['low', 'max']);
-});
 
 test('stop during a node verifier holds the returned child, named as verifier-pending, across restart', async t => {
   const dir = await fixture(t);
@@ -3245,8 +2829,8 @@ test('stop during a node verifier holds the returned child, named as verifier-pe
     execute: async ticket => execution(ticket, {task_verified: false, task_quality: 'execution_only',
       usage: {input_tokens: 40, output_tokens: 10}}), verifyTask: taskVerdict};
   const runtime = await createRCCRuntime({stateDir: dir, ...options,
-    verifierRegistry: new Map([['standard:read_only:agent', async () => { started.resolve(); await release.promise;
-      return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20)});
+    verifierRegistry: new Map([['deep:read_only:agent', async () => { started.resolve(); await release.promise;
+      return {passed: true, reason: 'ok'}; }]])});
   await runtime.submit(request);
   await started.promise;
   await runtime.close({timeoutMs: 100});
@@ -3257,12 +2841,12 @@ test('stop during a node verifier holds the returned child, named as verifier-pe
   assert.equal(status.state, 'held'); assert.equal(status.error, 'owner_stopped_node_verifier_pending');
   assert.deepEqual(status.children.map(child => [child.id, child.state]), [['n', 'held']]);
   assert.ok(status.children[0].output_summary, 'the native attempt did run and return');
-  // The restart recorded the interrupted attempt once, with its real usage;
-  // an interruption counts against the cheaper route's parity.
+  // The restart recorded the interrupted attempt once, with its real usage,
+  // at the reference it ran (the node binds its reference: no grade descends).
   const records = await ledgerRecords(dir);
   assert.deepEqual(records.map(record => [record.effort, record.verifier_outcome, record.attempt_state, record.usage]),
-    [['low', 'interrupted', 'interrupted', {input_tokens: 40, output_tokens: 10}]]);
-  assert.equal(openRoutingLedger(dir).stats('standard:read_only:agent', 'gpt-5.7-sol', 'low').verifier_failures, 1);
+    [['max', 'interrupted', 'interrupted', {input_tokens: 40, output_tokens: 10}]]);
+  assert.equal(openRoutingLedger(dir).stats('deep:read_only:agent', 'gpt-5.7-sol', 'max').verifier_failures, 1);
 });
 
 test('routing ledger: attempts settled after stop or by restart are recorded exactly once', async t => {
@@ -3360,11 +2944,8 @@ test('routing ledger: failures survive rotation; torn, foreign or unindexed ledg
   for (let i = 0; i < 75; i++) rotated.append(record('pass', 'other:read_only:agent'));
   for (let i = 0; i < 60; i++) rotated.append(record('pass'));
   const evicted = rotated.stats('standard:read_only:agent', 'm', 'low');
-  assert.ok(evicted.verified_passes >= LADDER_MIN_VERIFIED_PASSES, JSON.stringify(evicted));
+  assert.ok(evicted.verified_passes >= 20, JSON.stringify(evicted));
   assert.equal(evicted.verifier_failures, 1, 'the evicted failure still counts');
-  assert.equal(cheaperRouteAdmission({family: 'standard:read_only:agent', scope: 'read_only', model: 'm',
-    referenceEffort: 'max', cheaperEfforts: ['low'], verifierRegistry: registry('standard:read_only:agent'),
-    ledgerStats: rotated.stats}).route, 'reference');
   for (const outcome of ['not_returned', 'interrupted']) {
     const other = openRoutingLedger(join(dir, outcome));
     await mkdir(join(dir, outcome), {mode: 0o700});
@@ -3419,10 +3000,9 @@ test('routing ledger: a FIFO at a ledger path never blocks the Core event loop',
   }
 });
 
-// ---- Review round 4: ladder session isolation, failed cheap attempts, task-wide
-// exemption, early pool release and fail-closed ledger custody ---------------
-const ladderVerifier = (passAt = 'max') => new Map([['standard:read_only:agent', async input =>
-  ({passed: input.selected_config.effort === passAt, reason: 'fake'})]]);
+// ---- Review round 4: early pool release and fail-closed ledger custody ------
+const referenceVerifier = (passed = true) => new Map([['deep:read_only:agent', async () =>
+  ({passed, reason: 'fake'})]]);
 const claudeLadderRows = () => [row('claude-low', 'anthropic_shared', 'claude-opus-5-5', 'low'),
   row('claude-max', 'anthropic_shared', 'claude-opus-5-5', 'max')];
 test('shared live fixture catalog factories refresh only observations after the original TTL expires', t => {
@@ -3463,92 +3043,6 @@ const indexRenameFails = ledgerIndex => {
   return () => { fs.renameSync = original; syncBuiltinESMExports(); };
 };
 
-test('a cheap ladder attempt runs in a fresh native session; the escalated reference resumes the owner session', async t => {
-  const dir = await fixture(t);
-  for (const [surface, extras, rows] of [['codex', {codexSession: 'owner-codex-thread'}, ladderRows],
-    ['claude', {claudeSession: 'owner-claude-thread'}, claudeLadderRows]]) {
-    const request = task(dir, 'Explain one function: session ' + surface, 'auto', extras);
-    const tickets = [];
-    const runtime = await createRCCRuntime({stateDir: join(dir, 'session-' + surface),
-      verifierRegistry: ladderVerifier(), ledgerStats: parity(20), catalog: async value => catalog(value, rows()),
-      plan: async () => plan(request, [graded('n', 'standard')]),
-      execute: async ticket => { tickets.push([ticket.selected_config.effort, ticket.native_resume_session_id]);
-        return execution(ticket, {output: `answer at ${ticket.selected_config.effort}`, task_verified: false,
-          task_quality: 'execution_only'}); },
-      verifyTask: taskVerdict});
-    t.after(async () => { await runtime.close(); });
-    await runtime.submit(request);
-    const done = await wait(runtime, request);
-    assert.equal(done.state, 'completed', `${surface}: ${done.error}`);
-    assert.deepEqual(tickets, [['low', null], ['max', extras.codexSession ?? extras.claudeSession]], surface);
-    assert.equal(done.result.output, 'answer at max', surface);
-  }
-});
-
-test('a cheap ladder attempt that failed after dispatch without effects escalates; effects or unknown dispatch stay uncertain', async t => {
-  const dir = await fixture(t);
-  for (const [name, failure, expected] of [
-    ['no effects', {side_effects: 'none', dispatch_stage: 'dispatched'}, 'completed'],
-    ['possible effects', {side_effects: 'possible', dispatch_stage: 'dispatched'}, 'effects_uncertain'],
-    ['unknown dispatch', {side_effects: 'none', dispatch_stage: 'unknown'}, 'effects_uncertain']]) {
-    const stateDir = join(dir, 'failed-' + name.replace(/\W+/g, '-'));
-    const dispatched = [];
-    const options = {stateDir, verifierRegistry: ladderVerifier(), ledgerStats: parity(20),
-      catalog: async value => catalog(value, ladderRows()),
-      plan: async ({task: value}) => plan(value, [graded('n', 'standard')]),
-      execute: async ticket => { dispatched.push([ticket.task_id, ticket.selected_config.effort]);
-        return ticket.selected_config.effort === 'low' && dispatched.length === 1 ?
-          execution(ticket, {status: 'failed', output: null, execution_verified: false, task_verified: false,
-            task_quality: 'failed', native_summary: null, ...failure}) :
-          execution(ticket, {output: `answer at ${ticket.selected_config.effort}`, task_verified: false,
-            task_quality: 'execution_only'}); },
-      verifyTask: taskVerdict};
-    const runtime = await createRCCRuntime(options);
-    t.after(async () => { await runtime.close(); });
-    const request = task(dir, 'Explain one function: failed ladder ' + name);
-    await runtime.submit(request);
-    const done = await wait(runtime, request);
-    assert.equal(done.state, expected, `${name}: ${done.error}`);
-    if (expected === 'completed') {
-      assert.deepEqual(dispatched.map(([, effort]) => effort), ['low', 'max'], name);
-      assert.equal(done.result.output, 'answer at max', name);
-      assert.equal(done.children[0].routing_decision.reason,
-        'ladder_escalated_after_undeliverable_result;route_reference;effort_max;agent_surface;instruction_host_locked', name);
-      assert.deepEqual((await ledgerRecords(stateDir)).map(record =>
-        [record.effort, record.route_kind, record.verifier_outcome, record.attempt_state]),
-      [['low', 'ladder', 'not_returned', 'ladder_not_returned'], ['max', 'reference', 'pass', 'completed']], name);
-      // The pool is not poisoned: the next task on it dispatches.
-      const next = task(dir, 'Explain one function: after failed ladder ' + name);
-      await runtime.submit(next);
-      assert.equal((await wait(runtime, next)).state, 'completed', `${name}: next task`);
-    } else {
-      assert.deepEqual(dispatched.map(([, effort]) => effort), ['low'], name);
-      assert.equal(done.error, 'dispatched_failure_no_replay', name);
-    }
-  }
-});
-
-test('the failed ladder time is exempt task-wide: a dependent node behind an escalated ladder still runs', async t => {
-  const dir = await fixture(t);
-  const request = task(dir, 'Explain two dependent functions: duration');
-  request.budget.max_duration_ms = 1_000;
-  const dispatched = [];
-  const runtime = await createRCCRuntime({stateDir: dir,
-    verifierRegistry: new Map([['standard:read_only:agent', async input => {
-      if (input.node_id === 'a' && input.selected_config.effort === 'low') {
-        await sleep(1_100); return {passed: false, reason: 'slow fail'}; }
-      return {passed: true, reason: 'ok'}; }]]), ledgerStats: parity(20),
-    catalog: async value => catalog(value, ladderRows()),
-    plan: async () => plan(request, [graded('a', 'standard'), graded('b', 'standard', {dependencies: ['a']})], 'b'),
-    execute: async ticket => { dispatched.push([ticket.node_id, ticket.selected_config.effort]);
-      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  await runtime.submit(request);
-  const done = await wait(runtime, request);
-  assert.equal(done.state, 'completed', done.error);
-  assert.deepEqual(dispatched, [['a', 'low'], ['a', 'max'], ['b', 'low']]);
-});
-
 test('a node verifier never holds the pool: after a cancel another task dispatches on it at once', async t => {
   const dir = await fixture(t);
   const started = gate(), release = gate();
@@ -3556,11 +3050,11 @@ test('a node verifier never holds the pool: after a cancel another task dispatch
   const second = task(dir, 'Explain one function: next on the pool');
   const dispatchedAt = new Map();
   const runtime = await createRCCRuntime({stateDir: dir,
-    verifierRegistry: new Map([['standard:read_only:agent', async input => {
+    // A reference route, whose registered verifier still runs.
+    verifierRegistry: new Map([['deep:read_only:agent', async input => {
       if (input.task_id === first.task_id) { started.resolve(); await release.promise; }
       return {passed: true, reason: 'ok'}; }]]),
-    // No parity evidence: a reference route, whose verifier still runs.
-    ledgerStats: parity(0), catalog: async value => catalog(value, ladderRows()),
+    catalog: async value => catalog(value, ladderRows()),
     plan: async ({task: value}) => plan(value, [graded('n', 'standard')]),
     execute: async ticket => { dispatchedAt.set(ticket.task_id, Date.now());
       return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); },
@@ -3583,8 +3077,6 @@ test('routing ledger index fails closed: a failed index write appends nothing; a
   const family = 'standard:read_only:agent';
   const record = outcome => ({schema: 1, task_id: 'task-x', node_id: 'n', attempt_id: randomUUID(), family,
     model: 'm', effort: 'low', verifier_outcome: outcome, execution_verified: true});
-  const admission = ledger => cheaperRouteAdmission({family, scope: 'read_only', model: 'm', referenceEffort: 'max',
-    cheaperEfforts: ['low'], verifierRegistry: registry(family), ledgerStats: ledger.stats}).route;
   const raw = async ledger => {
     const lines = [];
     for (const path of [ledger.rotatedPath, ledger.path]) {
@@ -3603,9 +3095,8 @@ test('routing ledger index fails closed: a failed index write appends nothing; a
   assert.deepEqual((await readdir(join(dir, 'injected', 'routing-ledger'))).filter(name => name.endsWith('.tmp')), []);
   injected.append(record('fail'));
   for (let i = 0; i < 120; i++) injected.append(record('pass'));
-  assert.ok(injected.stats(family, 'm', 'low').verified_passes >= LADDER_MIN_VERIFIED_PASSES);
+  assert.ok(injected.stats(family, 'm', 'low').verified_passes >= 20);
   assert.equal(injected.stats(family, 'm', 'low').verifier_failures, 1);
-  assert.equal(admission(injected), 'reference');
   // (B) A missing index is seeded from the raw generations, never recreated
   // empty, so the failure survives the rotation that drops its raw line.
   const missing = openRoutingLedger(join(dir, 'missing'), {maxBytes: 8_192});
@@ -3616,7 +3107,6 @@ test('routing ledger index fails closed: a failed index write appends nothing; a
   for (let i = 0; i < 120; i++) missing.append(record('pass'));
   assert.equal((await raw(missing)).some(item => item.verifier_outcome === 'fail'), false, 'the raw failure rotated away');
   assert.equal(missing.stats(family, 'm', 'low').verifier_failures, 1);
-  assert.equal(admission(missing), 'reference');
   // A missing index beside an unreadable raw line is seeded overflowed.
   const torn = openRoutingLedger(join(dir, 'torn-seed'));
   await mkdir(join(dir, 'torn-seed'), {mode: 0o700});
@@ -3633,53 +3123,15 @@ test('routing ledger index fails closed: a failed index write appends nothing; a
   for (let i = 0; i < 120; i++) lost.append(record('pass'));
   assert.equal(JSON.parse(await readFile(lost.failureIndexPath, 'utf8')).overflow, true);
   assert.deepEqual(lost.stats(family, 'm', 'low'), {verified_passes: 0, verifier_failures: 0});
-  assert.equal(admission(lost), 'reference');
-});
-
-test('a parity failure whose ledger write fails closes every ladder in the process until it is written', async t => {
-  const dir = await fixture(t);
-  const seed = openRoutingLedger(dir);
-  for (let i = 0; i < 20; i++) seed.append({schema: 1, task_id: 'seed', node_id: 'n', attempt_id: randomUUID(),
-    family: 'standard:read_only:agent', model: 'gpt-5.7-sol', effort: 'low', verifier_outcome: 'pass',
-    route_kind: 'ladder', reference_effort: 'max', execution_verified: true});
-  const dispatched = [], logged = [];
-  const runtime = await createRCCRuntime({stateDir: dir, ledgerLog: code => logged.push(code),
-    verifierRegistry: ladderVerifier(), catalog: async value => catalog(value, ladderRows()),
-    plan: async ({task: value}) => plan(value, [graded('n', 'standard')]),
-    execute: async ticket => { dispatched.push([ticket.task_id, ticket.selected_config.effort]);
-      return execution(ticket, {task_verified: false, task_quality: 'execution_only'}); }, verifyTask: taskVerdict});
-  t.after(async () => { await runtime.close(); });
-  const efforts = id => dispatched.filter(([taskID]) => taskID === id).map(([, effort]) => effort);
-  const restore = indexRenameFails(seed.failureIndexPath);
-  let restored = false;
-  t.after(() => { if (!restored) restore(); });
-  const first = task(dir, 'Explain one function: failure write fails');
-  await runtime.submit(first);
-  assert.equal((await wait(runtime, first)).state, 'completed');
-  assert.deepEqual(efforts(first.task_id), ['low', 'max'], 'the ledger had parity: the ladder ran and failed');
-  assert.ok(logged.includes('ENOSPC'), JSON.stringify(logged));
-  const second = task(dir, 'Explain one function: while the failure is unwritten');
-  await runtime.submit(second);
-  assert.equal((await wait(runtime, second)).state, 'completed');
-  assert.deepEqual(efforts(second.task_id), ['max'], 'no ladder while a parity failure is unwritten');
-  restore(); restored = true;
-  const third = task(dir, 'Explain one function: after the failure is written');
-  await runtime.submit(third);
-  assert.equal((await wait(runtime, third)).state, 'completed');
-  assert.deepEqual(efforts(third.task_id), ['max'], 'the written failure keeps the ladder closed');
-  assert.deepEqual(seed.stats('standard:read_only:agent', 'gpt-5.7-sol', 'low').verifier_failures, 1);
-  const pending = coreDB(dir);
-  t.after(() => pending.close());
-  assert.deepEqual(pending.prepare('SELECT attempt_id FROM ledger_pending').all(), []);
 });
 
 test('restart records a settled verdict as it was, never as interrupted', async t => {
   const dir = await fixture(t);
-  // A verified ladder pass whose live append failed (transient ledger fault).
+  // A verified reference pass whose live append failed (transient ledger fault).
   const passDir = join(dir, 'pass');
   const request = task(dir, 'Explain one function: transient ledger fault');
   const logged = [];
-  const options = {verifierRegistry: ladderVerifier('low'), ledgerStats: parity(20),
+  const options = {verifierRegistry: referenceVerifier(),
     catalog: async value => catalog(value, ladderRows()),
     plan: async () => plan(request, [graded('n', 'standard')]), verifyTask: taskVerdict};
   const runtime = await createRCCRuntime({stateDir: passDir, ...options, ledgerLog: code => logged.push(code),
@@ -3692,14 +3144,14 @@ test('restart records a settled verdict as it was, never as interrupted', async 
   assert.equal(done.state, 'completed', done.error);
   assert.ok(logged.includes('routing_ledger_directory_not_private'), JSON.stringify(logged));
   assert.deepEqual(runtime._load(request.task_id).children[0].attempt_history.map(entry =>
-    [entry.state, entry.verifier, entry.effort ?? entry.ledger.effort]), [['completed', 'pass', 'low']]);
+    [entry.state, entry.verifier, entry.effort ?? entry.ledger.effort]), [['completed', 'pass', 'max']]);
   await runtime.close();
   await chmod(join(passDir, 'routing-ledger'), 0o700);
   const reopened = await createRCCRuntime({stateDir: passDir, ...options, execute: async ticket => execution(ticket)});
   t.after(async () => { await reopened.close(); });
   assert.deepEqual((await ledgerRecords(passDir)).map(record => [record.effort, record.attempt_state, record.verifier_outcome]),
-    [['low', 'completed', 'pass']]);
-  assert.deepEqual(openRoutingLedger(passDir).stats('standard:read_only:agent', 'gpt-5.7-sol', 'low'),
+    [['max', 'completed', 'pass']]);
+  assert.deepEqual(openRoutingLedger(passDir).stats('deep:read_only:agent', 'gpt-5.7-sol', 'max'),
     {verified_passes: 1, verifier_failures: 0});
 
   // A verified pre-execution quota rejection is 'not_dispatched', not a failure.
@@ -3707,7 +3159,7 @@ test('restart records a settled verdict as it was, never as interrupted', async 
   const quota = task(dir, 'Explain one function: quota rejection under a ledger fault');
   const rows = [row('claude-quota', 'anthropic_shared', 'claude-opus-5-5', 'max'),
     row('codex-max', 'openai_codex', 'gpt-5.7-sol', 'max')];
-  const quotaOptions = {verifierRegistry: ladderVerifier(), ledgerStats: parity(0),
+  const quotaOptions = {verifierRegistry: referenceVerifier(),
     catalog: async value => catalog(value, rows), plan: async () => plan(quota, [graded('n', 'standard')]),
     verifyTask: taskVerdict};
   const quotaRuntime = await createRCCRuntime({stateDir: quotaDir, ...quotaOptions, ledgerLog: () => {},
@@ -3727,7 +3179,7 @@ test('restart records a settled verdict as it was, never as interrupted', async 
   const quotaRecords = (await ledgerRecords(quotaDir)).map(record => [record.quota_pool, record.attempt_state, record.verifier_outcome]);
   assert.deepEqual(quotaRecords.sort(), [['anthropic_shared', 'verified_not_dispatched', 'not_dispatched'],
     ['openai_codex', 'completed', 'pass']]);
-  assert.equal(openRoutingLedger(quotaDir).stats('standard:read_only:agent', 'claude-opus-5-5', 'max').verifier_failures, 0);
+  assert.equal(openRoutingLedger(quotaDir).stats('deep:read_only:agent', 'claude-opus-5-5', 'max').verifier_failures, 0);
 });
 
 // ---- Quota-pool leases of settled read-only attempts (2026-10-14) ----------
