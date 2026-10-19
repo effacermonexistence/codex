@@ -101,13 +101,42 @@ private func providerDisplayName(_ provider: String?, surface: String? = nil) ->
 /// model name nor a requested fan-out target is evidence of the executed lane.
 private struct ExecutionRoutePresentation: Equatable {
     let executionLine: String
+    /// The execution line where room is short (the conversation header).
+    let compactExecutionLine: String
     let modelLine: String?
     let reasoningLine: String?
     let detail: String
 
-    init(activity: RuntimeActivity?) {
+    /// `lanes`: the live task's routes, from the graph the conversation's
+    /// lanes and the Agent task tree read. While no single backend is the
+    /// run's executor, the routes Core split the task into are its route.
+    init(activity: RuntimeActivity?, lanes: RouteLanesPresentation? = nil) {
         let provider = activity?.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let route = ProviderSurface.resolveExecuted(rawSurface: activity?.surface, provider: provider)
+        if let lanes, !lanes.lanes.isEmpty, activity?.phase != .waitingForSource,
+           [nil, "", "routing"].contains(provider) {
+            let names = lanes.lanes.map { RouteLaneSurface.title($0.surface) ?? $0.title }
+            var distinct: [String] = []
+            for name in names where !distinct.contains(name) { distinct.append(name) }
+            if lanes.lanes.count > 1 {
+                compactExecutionLine = os1Tr("라우팅: 경로 \(lanes.lanes.count)개", "Route: \(lanes.lanes.count) routes")
+                executionLine = compactExecutionLine + " · " + distinct.joined(separator: "/")
+                modelLine = nil
+                reasoningLine = os1Tr("추론: 경로별 표시", "Reasoning: per route")
+                detail = os1Tr("OpenClaw가 작업을 경로 \(lanes.lanes.count)개(\(distinct.joined(separator: ", ")))로 나눴습니다. 경로마다 모델·추론·상태를 대화에 나란히 표시합니다. 모델은 Core가 선택한 설정이며 관측된 실행이 아닙니다.",
+                               "OpenClaw split the task into \(lanes.lanes.count) routes (\(distinct.joined(separator: ", "))). Each route's model, reasoning and status are shown side by side in the conversation. Models are Core's selection, not observed execution.")
+            } else {
+                let lane = lanes.lanes[0]
+                executionLine = os1Tr("라우팅: \(names[0])", "Route: \(names[0])")
+                compactExecutionLine = executionLine
+                modelLine = lane.model.flatMap { $0.isEmpty ? nil : os1Tr("모델: \($0)", "Model: \($0)") }
+                reasoningLine = os1Tr("추론: ", "Reasoning: ") +
+                    (lane.effort.map(RouteLanesRenderer.effortLabel) ?? os1Tr("기록 없음", "not recorded"))
+                detail = os1Tr("OpenClaw Core가 이 경로에 선택한 설정입니다. 관측된 실행이 아닙니다.",
+                               "The configuration OpenClaw Core selected for this route; not observed execution.")
+            }
+            return
+        }
         switch provider {
         case _ where activity?.phase == .waitingForSource:
             executionLine = os1Tr("백엔드 시작 전 · 소스 접근 대기", "Backend not started · waiting for source access")
@@ -147,6 +176,7 @@ private struct ExecutionRoutePresentation: Equatable {
         } else {
             reasoningLine = nil
         }
+        compactExecutionLine = executionLine
     }
 
     var governanceLine: String { [executionLine, modelLine, reasoningLine].compactMap { $0 }.joined(separator: " · ") }
@@ -5820,6 +5850,10 @@ private struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// folded above the answer as Codex shows "Worked for". Absent on every
     /// other message and on answers from earlier builds.
     var work: TurnWork? = nil
+    /// On the message holding a routed turn's result: the routes it ran,
+    /// drawn as lanes (model, reasoning, status and each route's answer).
+    /// Display only; absent on every other message and on earlier builds.
+    @RouteLanesField var routeLanes: RouteLanesRecord? = nil
 
     init(
         id: UUID = UUID(),
@@ -9085,6 +9119,43 @@ private final class SessionStore: ObservableObject {
         return active.activity.publicTextOrigin == .systemStatus ? nil : active.activity.publicText
     }
     private var publicFeedTexts: [UUID: (submission: UUID, revision: Int, text: String)] = [:]
+    /// A conversation's live task as lanes, from the same observed graph the
+    /// Agent task tree shows (a run this app owns, or one a surviving runtime
+    /// still owns after a restart); nil when idle or before the task has a
+    /// graph. Built once per graph change, not on every view update: the
+    /// result is kept with what earlier graphs showed (escalations,
+    /// continuations, a returned lane's clock).
+    func liveRouteLanes(_ conversationID: UUID) -> RouteLanesPresentation? {
+        guard isSessionRunning(conversationID) else {
+            if liveLaneMemos[conversationID] != nil { liveLaneMemos.removeValue(forKey: conversationID) }
+            return nil
+        }
+        let submission = activeRuns[conversationID]?.submissionID ?? externallyOwnedParallelSubmissions[conversationID]?.id
+        let raw = activeRuns[conversationID] != nil ? activeRuns[conversationID]?.agentTask
+            : sessions.first(where: { $0.id == conversationID })?.agentTask
+        guard let submission, let raw else { return nil }
+        let key = LiveLaneMemo.Key(submissionID: submission, planID: raw.planID, updatedAt: raw.updatedAt,
+            nodes: raw.nodes.count)
+        if let memo = liveLaneMemos[conversationID], memo.key == key { return memo.presentation }
+        var history = liveLaneMemos[conversationID]?.history ?? RouteLanesLiveHistory()
+        let presentation = agentTaskSnapshot(for: conversationID).flatMap(RouteLanesPresentation.init(liveGraph:))
+            .map { history.absorb($0, submissionID: submission, at: raw.updatedAt) }
+        liveLaneMemos[conversationID] = LiveLaneMemo(key: key, presentation: presentation, history: history)
+        liveLaneBuilds += 1
+        return presentation
+    }
+    private struct LiveLaneMemo {
+        struct Key: Equatable {
+            let submissionID: UUID, planID: UUID, updatedAt: Date, nodes: Int
+        }
+        let key: Key
+        let presentation: RouteLanesPresentation?
+        let history: RouteLanesLiveHistory
+    }
+    /// Not published: kept beside the graph, read by views.
+    private var liveLaneMemos: [UUID: LiveLaneMemo] = [:]
+    /// Live lane presentations built so far (a self-test reads it).
+    private(set) var liveLaneBuilds = 0
     /// A conversation's live run as its transcript row draws it; nil when idle.
     func liveRunPresentation(_ conversationID: UUID) -> LiveRunPresentation? {
         activeRuns[conversationID].map { LiveRunPresentation(activity: $0.activity, steps: $0.nativeSteps,
@@ -9312,6 +9383,8 @@ private final class SessionStore: ObservableObject {
         let prior = sessions[index].agentTask
         sessions[index].agentTask = graph
         activeRuns[submission.sessionID]?.agentTask = graph
+        // Every graph reaches the lanes' history, even one no view drew.
+        _ = liveRouteLanes(submission.sessionID)
         // Preserve real graph custody across GUI restarts without rewriting
         // a large session store on every native progress tick. Lifecycle and
         // final changes save immediately; progress-only changes coalesce.
@@ -11230,16 +11303,29 @@ private final class SessionStore: ObservableObject {
                             sessions[target].ownedCodexTurnIDs = Array(Set((sessions[target].ownedCodexTurnIDs ?? []) + [turn])).sorted()
                         }
                     }
-                    if let output = core.result?.output, !output.isEmpty {
+                    // The routes the task ran, kept with its result as lanes. The
+                    // local deterministic path ran no route and keeps none.
+                    let observations = summary.steps.map { step in
+                        RouteLanesRecord.Observation(surface: step.executedSurface?.rawValue ?? step.surface,
+                            model: step.model, effort: step.effort, output: step.output,
+                            verified: stepRecordIsVerified(step))
+                    }
+                    let resultText = core.result?.output.isEmpty == false ? core.result?.output : nil
+                    let laneRecord = localReceipt == nil
+                        ? RouteLanesRecord.build(core: core, submissionID: submission.id, messageText: resultText,
+                            observations: observations) : nil
+                    if let output = resultText {
                         // The owner already selected the returned result. Do
                         // not emit all intermediate children as separate final
                         // answers or add another summarization/selection pass.
                         let producers = summary.steps.filter { $0.output == output }
                         let producer = producers.count == 1 ? producers.first : nil
-                        sessions[target].messages.append(ChatMessage(role: .assistant, text: output,
+                        var answer = ChatMessage(role: .assistant, text: output,
                             provider: producer?.provider, executionSurface: producer?.executedSurface?.rawValue,
                             permissionProfile: producer?.permissionProfile,
-                            nativeRecordVerified: localReceipt == nil ? producer.map(stepRecordIsVerified) : nil))
+                            nativeRecordVerified: localReceipt == nil ? producer.map(stepRecordIsVerified) : nil)
+                        answer.routeLanes = laneRecord
+                        sessions[target].messages.append(answer)
                     }
                     let note = core.state == .completed
                         ? os1Tr("OpenClaw 작업 조건 확인됨 · 품질 기준 비교는 별도 기록", "OpenClaw task conditions verified · reference quality is a separate record")
@@ -11266,8 +11352,10 @@ private final class SessionStore: ObservableObject {
                     if let boundary = rccCoreBoundaryHeadline(core) {
                         sessions[target].messages.append(ChatMessage(role: .system, text: boundary))
                     }
-                    sessions[target].messages.append(rccCoreReceipt(core, submission: submission,
-                        localReceipt: localReceipt, note: note))
+                    var receipt = rccCoreReceipt(core, submission: submission, localReceipt: localReceipt, note: note)
+                    // No result: the routes it ran stay visible with its record.
+                    if resultText == nil { receipt.routeLanes = laneRecord }
+                    sessions[target].messages.append(receipt)
                     sessions[target].lastBackendFailure = nil
                     sessions[target].lastFailure = nil
                     sessions[target].updatedAt = Date()
@@ -11442,6 +11530,19 @@ private final class SessionStore: ObservableObject {
                         permissionProfile: step.permissionProfile
                     )
                     answer.work = work; work = nil
+                    // One verified route: its model, reasoning and status in
+                    // one line above the answer.
+                    if ["codex", "claude"].contains(step.provider), stepRecordIsVerified(step),
+                       let model = step.model, !model.isEmpty {
+                        let surface = step.executedSurface?.rawValue ?? step.surface ?? step.provider
+                        let ended = Date()
+                        answer.routeLanes = RouteLanesRecord(submissionID: submission.id,
+                            taskStatus: step.exitCode == 0 ? .completed : .failed, lanes: [RouteLane(id: "step-\(step.sequence)",
+                                surface: surface, label: RouteLaneSurface.title(surface) == nil ? step.routeTitle : nil, model: model,
+                                effort: step.effort, configuration: .observed, status: step.exitCode == 0 ? .completed : .failed,
+                                executionVerified: true, startedAt: ended.addingTimeInterval(-Double(max(0, step.durationMS)) / 1000),
+                                finishedAt: ended)], answersInText: true)
+                    }
                     sessions[target].messages.append(answer)
                     sessions[target].messages.append(ChatMessage(
                         role: .receipt,
@@ -14895,6 +14996,20 @@ private struct OS1DesktopApp: App {
             do { try codexShellSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if let flag = CommandLine.arguments.firstIndex(of: "--render-routing-lanes-preview") {
+            // Offscreen fixtures only: no provider call, no live store.
+            LiveRunEnvironment.detachCurrentProcess()
+            do {
+                let args = CommandLine.arguments
+                guard [flag + 2, flag + 3].contains(args.count) else { throw SourceContextError.invalid }
+                let language = args.count == flag + 3 ? args[flag + 2] : "ko"
+                guard ["ko", "en"].contains(language) else { throw SourceContextError.invalid }
+                setenv("OS1_INTERFACE_LANGUAGE", language, 1)
+                OS1Localization.invalidate()
+                try renderRoutingLanesPreview(to: URL(fileURLWithPath: args[flag + 1], isDirectory: true))
+                exit(EXIT_SUCCESS)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-shell-preview") {
             do {
                 guard CommandLine.arguments.count == flag + 2 else { throw SourceContextError.invalid }
@@ -15383,6 +15498,7 @@ private struct OS1DesktopApp: App {
                 try interactionSelfTest()
                 try transcriptLatencySelfTest()
                 try liveRunRowSelfTest()
+                try routeLanesSelfTest()
                 try publicFeedPresentationSelfTest()
                 try publicFeedLongRunSelfTest()
                 try railSelectionSelfTest()
@@ -15396,7 +15512,7 @@ private struct OS1DesktopApp: App {
                 Task { @MainActor in
                     do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
                         try rccDeterministicReceiptSelfTest(); try rccCoreNativeReceiptSelfTest(); try rccStartupWarmupSelfTest();
-                        try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
+                        try await rccCoreBoundarySelfTest(); try await routeLanesCompletionSelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }
                 NSApplication.shared.run()
@@ -16334,8 +16450,8 @@ private struct RootView: View {
                 .allowsHitTesting(!profileNavigation.governanceOpen)
                 .accessibilityHidden(profileNavigation.governanceOpen)
                 if profileNavigation.governanceOpen {
-                    GovernanceMonitorView(active: store.activeRuns.values.map { run in
-                        ExecutionRoutePresentation(activity: run.activity).governanceLine
+                    GovernanceMonitorView(active: store.activeRuns.map { id, run in
+                        ExecutionRoutePresentation(activity: run.activity, lanes: store.liveRouteLanes(id)).governanceLine
                     }.sorted(), queued: store.queuedSubmissions.count, onClose: { profileNavigation.governanceOpen = false })
                     .onExitCommand { profileNavigation.governanceOpen = false }
                 }
@@ -17873,7 +17989,8 @@ private struct SessionSidebar: View {
                             slotWait: idleQueue && store.globalSlotWait(session.id) != nil,
                             queueHelp: idleQueue ? store.queueReason(session.id) : nil,
                             onToggleAgentTask: onToggleAgentTask.map { toggle in { toggle(session.id) } },
-                            agentTreeOpen: store.openAgentTaskInspectorSessionIDs.contains(session.id)
+                            agentTreeOpen: store.openAgentTaskInspectorSessionIDs.contains(session.id),
+                            lanes: store.liveRouteLanes(session.id)
                         ) { store.select(session.id) }
                         .contextMenu {
                             Button(session.pinnedAt == nil ? os1Tr("상단에 고정", "Pin to top") : os1Tr("고정 해제", "Unpin")) { store.togglePin(session.id) }
@@ -18087,6 +18204,8 @@ private struct SessionRow: View {
     var previewStart: Date? = nil
     var onToggleAgentTask: (() -> Void)? = nil
     var agentTreeOpen = false
+    /// The live task's routes, so the row names what the lanes show.
+    var lanes: RouteLanesPresentation? = nil
     let action: () -> Void
     @State private var isHovering = false
 
@@ -18129,7 +18248,7 @@ private struct SessionRow: View {
                     }
                 }
                 if let activity {
-                    let route = ExecutionRoutePresentation(activity: activity)
+                    let route = ExecutionRoutePresentation(activity: activity, lanes: lanes)
                     HStack(spacing: 5) {
                         Text(route.executionLine)
                         Text(os1Tr("· 수렴 단계 \(activity.convergenceLabel)", "· convergence stage: \(activity.convergenceLabel)"))
@@ -18601,6 +18720,8 @@ private struct SessionExecutionBadge: View {
     let session: ConversationSession
     let activity: RuntimeActivity
     let compact: Bool
+    /// The live task's routes, so the badge names what the lanes show.
+    var lanes: RouteLanesPresentation? = nil
 
     private var sessionID: String? {
         guard activity.phase != .waitingForSource else { return nil }
@@ -18615,11 +18736,11 @@ private struct SessionExecutionBadge: View {
         HStack(spacing: compact ? 5 : 7) {
             Circle().fill(statusColor).frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
             VStack(alignment: .leading, spacing: 2) {
-                let route = ExecutionRoutePresentation(activity: activity)
+                let route = ExecutionRoutePresentation(activity: activity, lanes: lanes)
                 HStack(spacing: 5) {
                     Text(activity.executionBadgeTitle)
                         .font(.system(size: compact ? 9 : 10, weight: .bold))
-                    Text(route.executionLine)
+                    Text(compact ? route.compactExecutionLine : route.executionLine)
                         .font(.system(size: compact ? 9 : 10, weight: .semibold))
                     if let modelLine = route.modelLine {
                         Text(modelLine).font(.system(size: compact ? 9 : 10)).foregroundStyle(Theme.muted)
@@ -18654,8 +18775,8 @@ private struct SessionExecutionBadge: View {
             : os1Tr("실행 중인 백엔드 세션과 OS-1 공개 수렴 단계를 표시합니다. 모델 내부 수렴값은 노출되지 않습니다.",
                     "Shows the running backend session and OS-1's public convergence stage. The model's internal convergence value isn't exposed."))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(os1Tr("\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity).governanceLine), 수렴 단계 \(activity.convergenceLabel)",
-                                  "\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity).governanceLine), convergence stage \(activity.convergenceLabel)"))
+        .accessibilityLabel(os1Tr("\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity, lanes: lanes).governanceLine), 수렴 단계 \(activity.convergenceLabel)",
+                                  "\(activity.executionBadgeTitle) \(ExecutionRoutePresentation(activity: activity, lanes: lanes).governanceLine), convergence stage \(activity.convergenceLabel)"))
     }
 }
 
@@ -18878,7 +18999,8 @@ private struct ConversationView: View {
                         waitingReason: store.waitingBubbleReason(session.id),
                         progressAnchors: store.activeRuns[session.id]?.steeringAnchors ?? [:],
                         liveRun: store.liveRunPresentation(session.id),
-                        workLogStore: store.publicLogStore
+                        workLogStore: store.publicLogStore,
+                        liveLanes: store.liveRouteLanes(session.id)
                     )
                 }
                 ComposerView(store: store, session: session)
@@ -18944,7 +19066,8 @@ private struct ConversationHeader: View {
                 Spacer(minLength: 8)
                 MemoryContextView(conversationID: session.id.uuidString.lowercased())
                 if let activity = store.activeRuns[session.id]?.activity ?? store.sourceWaitingActivity(session.id) {
-                    SessionExecutionBadge(session: session, activity: activity, compact: true)
+                    SessionExecutionBadge(session: session, activity: activity, compact: true,
+                        lanes: store.liveRouteLanes(session.id))
                         .layoutPriority(1)
                 }
                 Menu {
@@ -19280,8 +19403,16 @@ private func timelineAttributedDocument(
     liveRun: LiveRunPresentation? = nil,
     liveRunExpanded: Bool = false,
     workLogStore: NativePublicRunLogStore = NativePublicRunLogStore(),
-    liveCallStates: [String: NativePublicRunLog.DisplaySegment]? = nil
+    liveCallStates: [String: NativePublicRunLog.DisplaySegment]? = nil,
+    liveLanes: RouteLanesPresentation? = nil,
+    laneCapacity: Int = RouteLanesRenderer.defaultCapacity,
+    liveLaneCapacity: Int? = nil,
+    closesDocument: Bool = true
 ) -> NSAttributedString {
+    // `laneCapacity`: lanes side by side in saved turns; `liveLaneCapacity`
+    // (default: the same) in the live task. `closesDocument`: nothing follows
+    // this part, so its last block keeps no spacing under it and the newest
+    // output sits close above the composer.
     let document = NSMutableAttributedString()
     // Given by the render cache, which draws the history without the live
     // output; read from the live output when it is drawn here too.
@@ -19294,12 +19425,14 @@ private func timelineAttributedDocument(
         minimumHeadIndent: CGFloat = 0,
         components: [(String, NSFont, NSColor)],
         richContent: NSAttributedString? = nil,
-        trailingSpacing: CGFloat = 40
+        trailingSpacing: CGFloat = 40,
+        tailIndent: CGFloat = 0
     ) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
         paragraph.headIndent = minimumHeadIndent
         paragraph.firstLineHeadIndent = minimumHeadIndent
+        paragraph.tailIndent = tailIndent
         paragraph.lineSpacing = 3
         // Borders extend 12–13 points past glyphs on BOTH neighboring messages.
         // Reserve that paint in text layout, not only in draw(_:).
@@ -19357,6 +19490,27 @@ private func timelineAttributedDocument(
             trailingSpacing: expandAll || expanded.contains(key) ? 24 : 14)
     }
 
+    // A finished routed turn's lanes, drawn from its saved record.
+    func appendRouteLanes(_ record: RouteLanesRecord, message: ChatMessage) {
+        let key = message.id.uuidString + "-lanes"
+        let presentation = RouteLanesPresentation(record: record)
+        let content = record.lanes.count == 1 && message.role == .receipt
+            ? RouteLanesRenderer.strip(record.lanes[0])
+            : RouteLanesRenderer.block(presentation, answers: record.answers(in: message.role == .assistant ? message.text : ""),
+                capacity: laneCapacity, key: key, expanded: expanded, expandAll: expandAll,
+                finalText: message.role == .assistant && !record.answersInText ? message.text : nil)
+        appendBlock(role: "routeLanes", components: [], richContent: content,
+            trailingSpacing: message.role == .assistant && !record.answersInText ? 18 : 30)
+    }
+
+    // Core's own task-state line ("OpenClaw task state: held · …") in a turn
+    // whose lanes show that state.
+    func routedTurnStateLine(at index: Int) -> Bool {
+        let text = messages[index].text
+        guard text.hasPrefix("OpenClaw 작업 상태: ") || text.hasPrefix("OpenClaw task state: ") else { return false }
+        return messages[(index + 1)...].prefix { $0.role != .user }.contains { $0.routeLanes != nil }
+    }
+
     // While the run is live, a steered input sits after the output that was
     // on screen when the owner sent it; only later output follows it.
     var steeredAfter = progressFollows
@@ -19384,7 +19538,10 @@ private func timelineAttributedDocument(
                     TimelinePalette.text
                 )] + steeringDeliveryCaption(message.steeringDelivery,
                     queueReason: queuedMessageIDs.contains(message.id) ? waitingReason : nil),
-                trailingSpacing: previews == nil ? 40 : 20
+                trailingSpacing: previews == nil ? 40 : 20,
+                // The bubble paints 18 points past its text: its edge then
+                // meets the column's edge, as the composer and lanes do.
+                tailIndent: -18
             )
             if let previews {
                 appendBlock(
@@ -19397,19 +19554,35 @@ private func timelineAttributedDocument(
             }
         case .assistant:
             appendWork(message, at: index)
+            // A routed turn: its routes side by side, each with its answer.
+            // When they hold the whole result, the joined text is not drawn
+            // again under them (it is still what copy and handoff carry).
+            if let lanes = message.routeLanes, lanes.lanes.count > 1 {
+                appendRouteLanes(lanes, message: message)
+                if lanes.answersInText { break }
+            }
             let provider = providerDisplayName(message.provider, surface: message.executionSurface)
             let providerColor = message.provider == "local"
                 ? TimelinePalette.green
                 : (message.provider == "claude" ? TimelinePalette.claude : TimelinePalette.codex)
+            // One route: its route, model, reasoning and status in one line.
+            let caption: [(String, NSFont, NSColor)] = message.routeLanes?.lanes.count == 1 ? []
+                : [("\(provider)", NSFont.systemFont(ofSize: 10, weight: .medium), providerColor)]
+            let answer = NSMutableAttributedString()
+            if let lanes = message.routeLanes, lanes.lanes.count == 1, let only = lanes.lanes.first {
+                answer.append(RouteLanesRenderer.strip(only))
+            }
+            answer.append(NSAttributedString(string: "\n\n", attributes: [.font: NSFont.systemFont(ofSize: 6),
+                .foregroundColor: TimelinePalette.muted]))
+            answer.append(assistantDisplayText(messages: messages, index: index, expanded: expanded, expandAll: expandAll, sourceStore: sourceStore))
             appendBlock(
                 role: MessageRole.assistant.rawValue,
-                components: [
-                    ("\(provider)", NSFont.systemFont(ofSize: 10, weight: .medium), providerColor),
-                    ("\n\n", NSFont.systemFont(ofSize: 6), TimelinePalette.muted),
-                ],
-                richContent: assistantDisplayText(messages: messages, index: index, expanded: expanded, expandAll: expandAll, sourceStore: sourceStore)
+                components: caption,
+                richContent: answer
             )
         case .receipt:
+            // A routed task that returned no result keeps its lanes here.
+            if let lanes = message.routeLanes { appendRouteLanes(lanes, message: message) }
             let key = "\(message.id.uuidString)-receipt"
             let show = expandAll || expanded.contains(key)
             // Pasted back, these lines are recognised as OS-1 output in both
@@ -19438,6 +19611,9 @@ private func timelineAttributedDocument(
             )
         case .system:
             appendWork(message, at: index)
+            // A routed turn's lanes already say the task's state and reason
+            // in their header: Core's raw state line is not repeated.
+            if routedTurnStateLine(at: index) { break }
             appendBlock(
                 role: MessageRole.system.rawValue,
                 components: [
@@ -19458,14 +19634,39 @@ private func timelineAttributedDocument(
         if let publicProgress {
             appendLiveProgress(liveProgress(after: steeredAfter, in: publicProgress), key: "live-progress", above: steeredAfter)
         }
-        // Activity, elapsed time and steps have one owner: this last row,
-        // one line until the owner opens it, as Codex shows a working turn.
-        if let liveRun {
+        // The live task's routes: lanes side by side when it split, one strip
+        // for one route or while it is still planning. Their statuses change
+        // in place as the graph moves. The run's working mark and its
+        // disclosure fold into their first line: one status line per turn.
+        if let liveLanes {
+            let lead = liveRun.map { LiveRunMarkSpec($0).space }
+            let tail = liveRun.map { liveRunFoldedTail($0, expanded: liveRunExpanded) }
+            let content = liveLanes.lanes.count > 1
+                ? RouteLanesRenderer.block(liveLanes, capacity: liveLaneCapacity ?? laneCapacity, key: "live-lanes",
+                    expanded: expanded, expandAll: expandAll, lead: lead, trailing: tail)
+                : liveLanes.lanes.first.map { RouteLanesRenderer.strip($0, now: liveLanes.now, lead: lead, trailing: tail) }
+                    ?? RouteLanesRenderer.header(liveLanes, lead: lead, trailing: tail)
+            appendBlock(role: "routeLanes", components: [], richContent: content, trailingSpacing: 14)
+            if let liveRun, liveRunExpanded {
+                let details = liveRunRow(liveRun, expanded: true, headless: true, lanes: liveLanes)
+                if details.length > 0 { appendBlock(role: "liveRun", components: [], richContent: details, trailingSpacing: 8) }
+            }
+        } else if let liveRun {
+            // Activity, elapsed time and steps have one owner: this last row,
+            // one line until the owner opens it, as Codex shows a working turn.
             appendBlock(role: "liveRun", components: [], richContent: liveRunRow(liveRun, expanded: liveRunExpanded),
                 trailingSpacing: 8)
         }
     }
 
+    if closesDocument, document.length > 0 {
+        let last = (document.string as NSString).paragraphRange(for: NSRange(location: document.length - 1, length: 0))
+        if let style = (document.attribute(.paragraphStyle, at: last.location, effectiveRange: nil) as? NSParagraphStyle)?
+            .mutableCopy() as? NSMutableParagraphStyle {
+            style.paragraphSpacing = 0
+            document.addAttribute(.paragraphStyle, value: style, range: last)
+        }
+    }
     return document.copy() as! NSAttributedString
 }
 
@@ -19558,6 +19759,49 @@ private final class ContinuousTranscriptTextView: NSTextView {
     var liveRunMarkPreview: RouteMarkPreview?
     /// Display passes so far: the mark's frames add none.
     private(set) var drawPasses = 0
+    /// The live conversation grows from the bottom: while its text is
+    /// shorter than the view, the text is laid out against the view's bottom
+    /// edge (just above the composer) instead of its top. Standalone views
+    /// (snapshots, layout exports, selection fixtures) keep the top origin.
+    var anchorsToBottom = false
+    private(set) var bottomAnchorOffset: CGFloat = 0
+    /// Lanes the text column holds side by side (`RouteLanesRenderer`).
+    private(set) var laneCapacity = RouteLanesRenderer.defaultCapacity
+    /// Called when a resize changes `laneCapacity`.
+    var onLaneCapacityChange: (() -> Void)?
+
+    override var textContainerOrigin: NSPoint {
+        var origin = super.textContainerOrigin
+        origin.y += bottomAnchorOffset
+        return origin
+    }
+
+    /// Space between the newest output's visible edge and the view's
+    /// bottom (the composer) while a short conversation sits against it.
+    static let bottomAnchorGap: CGFloat = 8
+
+    /// Lays a short conversation against the bottom edge; a conversation
+    /// taller than the view keeps the ordinary top origin and scrolls.
+    func updateBottomAnchor() {
+        var offset: CGFloat = 0
+        // Taller than its view: the conversation already fills it, so no
+        // layout pass is forced to learn that the offset stays zero.
+        let clip = enclosingScrollView?.contentView.bounds.height
+        if bottomAnchorOffset == 0, let clip, bounds.height > clip + 1 { return }
+        // No taller than its view (it does not scroll): its visible edge (a
+        // bubble's or a card's paint, not the spacing under the last line)
+        // sits just above the composer.
+        if anchorsToBottom, let layoutManager, let textContainer, bounds.height <= (clip ?? bounds.height) + 1 {
+            layoutManager.ensureLayout(for: textContainer)
+            let used = layoutManager.usedRect(for: textContainer).height
+            let bottom = visibleContentBottom().map { $0 - textContainerOrigin.y } ?? used
+            offset = max(0, floor(bounds.height - Self.bottomAnchorGap - textContainerInset.height - bottom))
+        }
+        guard abs(offset - bottomAnchorOffset) > 0.5 else { return }
+        bottomAnchorOffset = offset
+        invalidateTextContainerOrigin()
+        needsDisplay = true
+    }
 
     /// A folded line is a link whose text ends in "▸"/"▾": VoiceOver would
     /// say "black right-pointing small triangle, link". It is announced as
@@ -19600,18 +19844,39 @@ private final class ContinuousTranscriptTextView: NSTextView {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(completeTranscript, forType: .string)
     }
+    /// How much of the bottom inset a conversation taller than its view
+    /// gives up, so its newest line, scrolled to the end, sits as close
+    /// above the composer as a short conversation's (`bottomAnchorGap`).
+    static let bottomInsetTrim: CGFloat = 26
+
     override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
+        var size = newSize
+        // Measured from the text, not the size passed in: an autoresize that
+        // passes the current (already trimmed) height is not trimmed twice.
+        if anchorsToBottom, let clip = enclosingScrollView?.contentView.bounds.height, size.height > clip,
+           let layoutManager, let textContainer {
+            let needed = layoutManager.usedRect(for: textContainer).height + 2 * textContainerInset.height
+            size.height = max(clip, min(size.height, needed - Self.bottomInsetTrim))
+        }
+        super.setFrameSize(size)
         let centeredInset = max(32, (newSize.width - Theme.conversationWidth) / 2)
         if abs(textContainerInset.width - centeredInset) > 0.5 {
             textContainerInset = NSSize(width: centeredInset, height: 34)
         }
         // A reflow moves the live row's line; the next layout pass follows it.
         if liveRunMark != nil { needsLayout = true }
+        // A taller or shorter view moves a short conversation's bottom edge.
+        if anchorsToBottom { needsLayout = true }
+        let capacity = RouteLanesRenderer.capacity(textWidth: newSize.width - 2 * textContainerInset.width)
+        if capacity != laneCapacity {
+            laneCapacity = capacity
+            if onLaneCapacityChange != nil { DispatchQueue.main.async { [weak self] in self?.onLaneCapacityChange?() } }
+        }
     }
 
     override func layout() {
         super.layout()
+        updateBottomAnchor()
         placeLiveRunMark()
     }
 
@@ -19657,6 +19922,7 @@ private final class ContinuousTranscriptTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) {
         drawPasses += 1
         drawMessageBackgrounds(in: dirtyRect)
+        RouteLanesDrawing.draw(in: self, dirtyRect: dirtyRect)
         super.draw(dirtyRect)
         if let progressSession { ActivityDisplayTiming.didDraw(session: progressSession, text: progressText) }
     }
@@ -19678,7 +19944,9 @@ private final class ContinuousTranscriptTextView: NSTextView {
         return MathTypesetter.copyable(attributedString().attributedSubstring(from: range))
     }
 
-    func timelineFrames() -> [(role: String, content: NSRect, paint: NSRect)] {
+    /// `includingLaneCards`: a lanes block's frame also covers its cards
+    /// (layout exports); drawing never needs them.
+    func timelineFrames(includingLaneCards: Bool = false) -> [(role: String, content: NSRect, paint: NSRect)] {
         guard let textStorage,
               let layoutManager,
               let textContainer,
@@ -19720,6 +19988,8 @@ private final class ContinuousTranscriptTextView: NSTextView {
                 rect = rect.insetBy(dx: -16, dy: -12)
             case "queued":
                 rect = rect.insetBy(dx: -16, dy: -12)
+            case "routeLanes" where includingLaneCards:
+                for card in routeLaneFrames(in: range) { rect = rect.union(card.frame) }
             default:
                 break
             }
@@ -19741,6 +20011,38 @@ private final class ContinuousTranscriptTextView: NSTextView {
                 "x": rect.minX, "y": rect.minY, "width": rect.width, "height": rect.height])
         }
         return cells
+    }
+
+    /// Where the newest visible thing ends, in view coordinates: a bubble's
+    /// paint, a block's text or a lane card, not the spacing under them.
+    func visibleContentBottom() -> CGFloat? {
+        let edges = timelineFrames().map { frame in
+            [MessageRole.user.rawValue, "queued"].contains(frame.role) ? frame.paint.maxY : frame.content.maxY
+        } + routeLaneFrames().map(\.frame.maxY)
+        return edges.max()
+    }
+
+    /// Each route lane's card in view coordinates, in document order, with
+    /// its cell's text and range: for layout fixtures and exports.
+    func routeLaneFrames(in range: NSRange? = nil) -> [(text: String, frame: NSRect, range: NSRange)] {
+        guard let textStorage, let layoutManager, let textContainer, textStorage.length > 0 else { return [] }
+        layoutManager.ensureLayout(for: textContainer)
+        var seen = Set<ObjectIdentifier>(), cards: [(String, NSRect, NSRange)] = []
+        let scope = range.map { NSIntersectionRange($0, NSRange(location: 0, length: textStorage.length)) }
+            ?? NSRange(location: 0, length: textStorage.length)
+        textStorage.enumerateAttribute(.os1RouteLaneCard, in: scope) { value, range, _ in
+            guard value is RouteLaneCardStyle,
+                  let block = (textStorage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?
+                    .textBlocks.first as? NSTextTableBlock,
+                  seen.insert(ObjectIdentifier(block)).inserted else { return }
+            let blockRange = textStorage.range(of: block, at: range.location)
+            let glyphs = layoutManager.glyphRange(forCharacterRange: blockRange, actualCharacterRange: nil)
+            let margin = block.width(for: .margin, edge: .minX)
+            let rect = layoutManager.boundsRect(for: block, glyphRange: glyphs)
+                .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y).insetBy(dx: margin, dy: margin)
+            cards.append((textStorage.attributedSubstring(from: blockRange).string, rect, blockRange))
+        }
+        return cards
     }
 
     private func drawMessageBackgrounds(in dirtyRect: NSRect) {
@@ -19821,6 +20123,15 @@ private struct TranscriptRenderInput: Equatable {
     /// The live run's last row and its disclosure; the live suffix only.
     var liveRun: LiveRunPresentation? = nil
     var liveRunExpanded = false
+    /// The live run's routes as lanes, drawn with its last row (they tick
+    /// with its clock); the live suffix only.
+    var liveLanes: RouteLanesPresentation? = nil
+    /// Lanes the text column holds side by side in saved turns: part of the
+    /// history's identity only while a saved turn draws lanes.
+    var laneCapacity = RouteLanesRenderer.defaultCapacity
+    /// The same for the live task's lanes; the live suffix only, so a live
+    /// task that splits never rebuilds the history.
+    var liveLaneCapacity = RouteLanesRenderer.defaultCapacity
     /// Derived by the cache from the live output and the anchors: the latest
     /// state of each call drawn above a steered input. It changes only when
     /// such a call changes state, so the history redraws only then.
@@ -19865,6 +20176,7 @@ private final class TranscriptRenderCache {
     func parts(_ value: TranscriptRenderInput, expanded: Set<String>,
                workLogStore: NativePublicRunLogStore = NativePublicRunLogStore()) -> Parts {
         var stable = value; stable.publicProgress = nil; stable.liveRun = nil; stable.liveRunExpanded = false
+        stable.liveLanes = nil; stable.liveLaneCapacity = RouteLanesRenderer.defaultCapacity
         if value.isRunning, !value.progressAnchors.isEmpty {
             if let cached = anchoredStates, cached.progress == value.publicProgress, cached.anchors == value.progressAnchors {
                 stable.anchoredCallStates = cached.states
@@ -19877,7 +20189,8 @@ private final class TranscriptRenderCache {
         if rebuilt {
             prefix = timelineAttributedDocument(messages: value.messages, queuedSubmissions: value.queued,
                 isRunning: value.isRunning, workspace: value.workspace, expanded: expanded, waitingReason: value.waitingReason,
-                progressAnchors: value.progressAnchors, workLogStore: workLogStore, liveCallStates: stable.anchoredCallStates)
+                progressAnchors: value.progressAnchors, workLogStore: workLogStore, liveCallStates: stable.anchoredCallStates,
+                laneCapacity: value.laneCapacity, closesDocument: !value.isRunning)
             input = stable; self.expanded = expanded; prefixBuildCount += 1
         }
         // Output already drawn above the latest steered input stays there;
@@ -19887,12 +20200,14 @@ private final class TranscriptRenderCache {
             expanded: value.isRunning ? expanded : [])
         if key != progressInput {
             progress = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: value.isRunning,
-                workspace: value.workspace, expanded: key.expanded, publicProgress: value.publicProgress, progressFollows: key.follows)
+                workspace: value.workspace, expanded: key.expanded, publicProgress: value.publicProgress, progressFollows: key.follows,
+                closesDocument: !value.isRunning)
             progressInput = key; progressBuildCount += 1
         }
-        let row = value.isRunning && value.liveRun != nil
+        let row = value.isRunning && (value.liveRun != nil || value.liveLanes != nil)
             ? timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: value.workspace,
-                liveRun: value.liveRun, liveRunExpanded: value.liveRunExpanded)
+                liveRun: value.liveRun, liveRunExpanded: value.liveRunExpanded, liveLanes: value.liveLanes,
+                laneCapacity: value.liveLaneCapacity)
             : NSAttributedString(string: "")
         return Parts(prefix: prefix, progress: progress, row: row, rebuilt: rebuilt)
     }
@@ -19921,6 +20236,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     var liveRun: LiveRunPresentation? = nil
     /// Where finished runs' work feeds are kept (a fixture store's own).
     var workLogStore = NativePublicRunLogStore()
+    var liveLanes: RouteLanesPresentation? = nil
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
@@ -19954,13 +20270,35 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             let document = timelineAttributedDocument(messages: content.messages, queuedSubmissions: content.queuedSubmissions,
                 isRunning: content.isRunning, workspace: content.workspace, expanded: expanded, publicProgress: content.publicProgress,
                 waitingReason: content.waitingReason, progressAnchors: content.progressAnchors,
-                liveRun: content.liveRun, liveRunExpanded: liveRunExpanded, workLogStore: content.workLogStore)
+                liveRun: content.liveRun, liveRunExpanded: liveRunExpanded, workLogStore: content.workLogStore,
+                liveLanes: content.isRunning ? content.liveLanes : nil,
+                laneCapacity: Self.laneCapacity(content, textView: textView as? ContinuousTranscriptTextView),
+                liveLaneCapacity: Self.liveLaneCapacity(content, textView: textView as? ContinuousTranscriptTextView))
             textView.textStorage?.setAttributedString(document)
             renderCache.invalidate(); lastInput = nil; appliedProgress = nil
             textView.needsDisplay = true
             textView.needsLayout = true
             if let origin { scroll?.contentView.scroll(to: origin) }
             return true
+        }
+
+        /// Lanes the text column holds, only while a saved turn draws lanes,
+        /// so a resize never rebuilds a history that has none.
+        @MainActor static func laneCapacity(_ view: ContinuousTranscriptView, textView: ContinuousTranscriptTextView?) -> Int {
+            let drawsLanes = view.messages.contains { ($0.routeLanes?.lanes.count ?? 0) > 1 }
+            return drawsLanes ? (textView?.laneCapacity ?? RouteLanesRenderer.defaultCapacity) : RouteLanesRenderer.defaultCapacity
+        }
+
+        /// The same for the live task's lanes (the live suffix only).
+        @MainActor static func liveLaneCapacity(_ view: ContinuousTranscriptView, textView: ContinuousTranscriptTextView?) -> Int {
+            let drawsLanes = view.isRunning && (view.liveLanes?.lanes.count ?? 0) > 1
+            return drawsLanes ? (textView?.laneCapacity ?? RouteLanesRenderer.defaultCapacity) : RouteLanesRenderer.defaultCapacity
+        }
+
+        /// The text column crossed a lane breakpoint: lay the lanes out again.
+        @MainActor func laneCapacityChanged(in scrollView: NSScrollView) {
+            guard let content else { return }
+            render(content, in: scrollView)
         }
 
         @MainActor func render(_ view: ContinuousTranscriptView, in scrollView: NSScrollView) {
@@ -19973,7 +20311,9 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             let input = TranscriptRenderInput(sessionID: view.sessionID, messages: view.messages,
                 queued: view.queuedSubmissions, isRunning: view.isRunning, workspace: view.workspace, publicProgress: view.publicProgress,
                 waitingReason: view.waitingReason, progressAnchors: view.progressAnchors,
-                liveRun: view.liveRun, liveRunExpanded: liveRunExpanded)
+                liveRun: view.liveRun, liveRunExpanded: liveRunExpanded,
+                liveLanes: view.isRunning ? view.liveLanes : nil, laneCapacity: Self.laneCapacity(view, textView: textView),
+                liveLaneCapacity: Self.liveLaneCapacity(view, textView: textView))
             // Math attachments have object identity. Comparing freshly rendered
             // attributed strings would rewrite the text storage on every keystroke.
             guard lastInput != input else { return }
@@ -20077,6 +20417,13 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             height: CGFloat.greatestFiniteMagnitude
         )
         textView.setAccessibilityLabel("OS-1 conversation transcript")
+        // A conversation grows from the bottom, just above the composer, the
+        // way a messenger does; once it fills the view it scrolls as before.
+        textView.anchorsToBottom = true
+        textView.onLaneCapacityChange = { [weak delegate, weak scrollView] in
+            guard let delegate, let scrollView else { return }
+            MainActor.assumeIsolated { delegate.laneCapacityChanged(in: scrollView) }
+        }
         scrollView.documentView = textView
         return scrollView
     }
@@ -20110,11 +20457,13 @@ private struct MessageTimeline: View {
     var progressAnchors: [UUID: String] = [:]
     var liveRun: LiveRunPresentation? = nil
     var workLogStore = NativePublicRunLogStore()
+    /// The live task's routes, read from the graph the Agent task tree reads.
+    var liveLanes: RouteLanesPresentation? = nil
 
     var body: some View {
         // Outside the timeline: a clock tick must not re-read saved results.
         let messages = presentedMessages(session)
-        TimelineView(LiveRunTicks(started: isRunning ? liveRun?.started : nil)) { context in
+        TimelineView(LiveRunTicks(started: isRunning ? (liveRun?.started ?? liveLanes?.startedAt) : nil)) { context in
             ContinuousTranscriptView(
                 sessionID: session.id,
                 messages: messages,
@@ -20125,7 +20474,8 @@ private struct MessageTimeline: View {
                 waitingReason: waitingReason,
                 progressAnchors: progressAnchors,
                 liveRun: isRunning ? liveRun?.at(context.date) : nil,
-                workLogStore: workLogStore
+                workLogStore: workLogStore,
+                liveLanes: isRunning ? liveLanes?.at(context.date) : nil
             )
         }
     }
@@ -20773,6 +21123,30 @@ private final class LiveRunMarkSpec: NSObject {
 
 /// A received label on one line: breaks flattened and a long middle elided,
 /// so a path keeps both its root and its file name.
+/// The live row folded into a routed task's first line: what it would add
+/// there (a stop being confirmed, a quiet run) and its disclosure, which
+/// opens the run's steps under the lanes. The clock and the status are the
+/// lanes' own.
+private func liveRunFoldedTail(_ run: LiveRunPresentation, expanded: Bool) -> NSAttributedString {
+    let tail = NSMutableAttributedString()
+    let meta = NSFont.systemFont(ofSize: 11)
+    func piece(_ text: String, _ color: NSColor = TimelinePalette.muted) {
+        tail.append(NSAttributedString(string: text, attributes: [.font: meta, .foregroundColor: color]))
+    }
+    if run.stopping { piece("  · " + os1Tr("작업 중지 확인 중", "Confirming task stop"), TimelinePalette.pink) }
+    let quiet = max(0, Int(run.now.timeIntervalSince(NativeProgressPresentation(activity: run.activity).receivedAt)))
+    if run.activity.phase != .waitingForSource, quiet >= 30 {
+        piece("  · " + os1Tr("마지막 신호 \(quiet)초 전", "last signal \(quiet)s ago"))
+    }
+    piece("   ")
+    let toggle = NSMutableAttributedString(attributedString: TranscriptMarkdown.detailLink(
+        os1Tr("진행 단계", "Steps") + (expanded ? " ▾" : " ▸"), key: liveRunDetailKey, color: TimelinePalette.detail))
+    toggle.addAttribute(.toolTip, value: expanded ? os1Tr("진행 단계 접기", "Collapse the run's steps")
+        : os1Tr("진행 단계 펼쳐보기", "Expand the run's steps"), range: NSRange(location: 0, length: toggle.length))
+    tail.append(toggle)
+    return tail
+}
+
 private func liveRunClipped(_ text: String, _ limit: Int) -> String {
     let flat = text.components(separatedBy: .newlines).joined(separator: " ")
     guard flat.count > limit, limit > 1 else { return flat }
@@ -20954,7 +21328,19 @@ private func turnWorkContent(_ work: TurnWork, key: String, answer: String, expa
 /// backend is on — whose label opens it in place into the route, counts and
 /// every step of the run, as Codex shows a working turn. All of it is
 /// received metadata; none of it is a completion claim.
-private func liveRunRow(_ run: LiveRunPresentation, expanded: Bool) -> NSAttributedString {
+/// `headless`: the run's lanes already draw its mark, clock and disclosure
+/// (`liveRunFoldedTail`); only the opened lines are returned. `lanes`: the
+/// live task's routes, so the route line names them.
+private func liveRunRow(_ run: LiveRunPresentation, expanded: Bool, headless: Bool = false,
+                        lanes: RouteLanesPresentation? = nil) -> NSAttributedString {
+    if headless {
+        guard expanded else { return NSAttributedString(string: "") }
+        let full = NSMutableAttributedString(attributedString: liveRunRow(run, expanded: true, lanes: lanes))
+        let breakAt = (full.string as NSString).range(of: "\n")
+        guard breakAt.location != NSNotFound else { return NSAttributedString(string: "") }
+        full.deleteCharacters(in: NSRange(location: 0, length: breakAt.location + 1))
+        return full
+    }
     let activity = run.activity, now = run.now
     let muted = TimelinePalette.muted, small = NSFont.systemFont(ofSize: 11)
     func piece(_ text: String, _ font: NSFont, _ color: NSColor = TimelinePalette.muted) -> NSAttributedString {
@@ -21013,8 +21399,8 @@ private func liveRunRow(_ run: LiveRunPresentation, expanded: Bool) -> NSAttribu
         if let toolTip { row.addAttribute(.toolTip, value: toolTip, range: range) }
         previousStyle = style
     }
-    let route = ExecutionRoutePresentation(activity: activity)
-    line([piece(route.governanceLine, small)], before: 6, toolTip: route.detail)
+    let route = ExecutionRoutePresentation(activity: activity, lanes: lanes)
+    line([piece(route.governanceLine, small)], before: headless ? 0 : 6, toolTip: route.detail)
     if let counts = presentation.counts {
         line([piece(counts, NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), TimelinePalette.pink)])
     } else if !presentation.rows.isEmpty {
@@ -22291,4 +22677,1078 @@ private struct ComposerView: View {
         .background(Theme.background)
         .onDisappear { store.stopVoiceDictation() }
     }
+}
+
+// MARK: - Routing lanes fixtures (no provider call, no live store)
+
+/// Core snapshots shaped like the owner's route tests: explicit routes
+/// `requested-N`, each with its requested surface, the configuration Core
+/// selected, its state, and its output summary.
+private enum RouteLanesFixture {
+    typealias C = RCCRuntimeContract
+
+    struct Route {
+        let surface: C.Surface
+        let model: String
+        let effort: C.Effort
+        let instruction: String
+        let state: C.ChildState
+        var output: String? = nil
+        /// Seconds from the fixture's base moment.
+        var started: Double? = nil
+        var finished: Double? = nil
+        /// Core re-queued the route after a REVAS escalation: no configuration.
+        var hidden = false
+        var decision: C.RoutingDecision? = nil
+    }
+
+    static func config(_ surface: C.Surface, _ model: String, _ effort: C.Effort) -> C.ExactConfig {
+        let transport: C.Transport, pool: C.QuotaPool
+        switch surface {
+        case .local: (transport, pool) = (.local, .none)
+        case .codex, .gptChat: (transport, pool) = (.codexAppServer, .openAICodex)
+        case .claude, .claudeChat: (transport, pool) = (.claudeCLI, .anthropicShared)
+        case .chatgpt: (transport, pool) = (.chatGPTService, .openAIChat)
+        }
+        return C.ExactConfig(surface: surface, transport: transport, accountID: surface == .local ? "local" : "fixture-account",
+            model: model, effort: effort, tools: [], scope: .readOnly, permissionProfile: .readOnly, quotaPool: pool,
+            allowedPaths: [], configurationSHA256: appSHA256Hex("route-lanes-fixture:\(surface.rawValue):\(model):\(effort.rawValue)"))
+    }
+
+    /// Core's summary: the output's first 600 UTF-16 units.
+    static func summary(_ output: String) -> String { String(decoding: Array(output.utf16.prefix(600)), as: UTF16.self) }
+
+    static func core(taskID: String, request: String, state: C.State, routes: [Route], base: Date, result: String?,
+                     error: String? = nil, skipped: [C.SkippedRoute]? = nil) -> C.Snapshot {
+        func ms(_ offset: Double) -> Int64 { Int64(((base.timeIntervalSince1970 + offset) * 1_000).rounded()) }
+        let children = routes.enumerated().map { index, route in
+            C.ChildSnapshot(id: "requested-\(index + 1)", state: route.state,
+                attemptID: [.pending, .ready, .queued].contains(route.state) ? nil : "attempt-\(index + 1)",
+                candidateID: "candidate-\(index + 1)", selectedConfig: route.hidden ? nil : config(route.surface, route.model, route.effort),
+                instruction: route.instruction, dependencies: [], startedAtMS: route.started.map(ms),
+                finishedAtMS: route.finished.map(ms), outputSummary: route.output.map(summary),
+                requestedSurface: route.surface, routingDecision: route.decision)
+        }
+        return C.Snapshot(taskID: taskID, requestSHA256: appSHA256Hex(request), state: state, revision: 7, children: children,
+            result: result.map { .init(output: $0, executionVerified: true, taskVerified: state == .completed,
+                parityState: .unverified, nativeReceipt: "/tmp/os1-route-lanes-fixture/aggregate.json",
+                taskQuality: state == .completed ? .taskVerified : .executionOnly) },
+            error: error, skippedRoutes: skipped)
+    }
+
+    /// A REVAS ladder escalation as Core records it on the reference route.
+    static func escalation(_ surface: C.Surface, cheap: C.Effort, reference model: String, _ effort: C.Effort,
+                           cheapModel: String? = nil) -> C.RoutingDecision {
+        C.RoutingDecision(routeClass: "standard", resolvedCandidateID: "candidate-reference", surface: surface, model: model,
+            effort: effort, quotaPool: config(surface, model, effort).quotaPool,
+            reason: "ladder_escalated_after_verifier_failure;route_reference;effort_\(effort.rawValue);agent_surface",
+            quotaRemainingFraction: nil,
+            ladder: .init(cheapEffort: cheap, referenceEffort: effort, cheapModel: cheapModel, referenceModel: cheapModel == nil ? nil : model))
+    }
+
+    /// The owner's route-all test: local qwen 2, Codex 4, Claude Code 2, Claude chat 4.
+    static let routeAll: [Route] = [
+        Route(surface: .local, model: "qwen3.5:4b", effort: .none, instruction: "1+1", state: .completed, output: "2",
+              started: 0, finished: 1.4),
+        Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
+              started: 0.2, finished: 9.6),
+        Route(surface: .claude, model: "claude-haiku-4-5", effort: .none, instruction: "1+1", state: .completed, output: "2",
+              started: 0.3, finished: 7.1),
+        Route(surface: .claudeChat, model: "claude-haiku-4-5", effort: .none, instruction: "2+2", state: .completed, output: "4",
+              started: 0.3, finished: 4.8),
+    ]
+
+    /// Every route the owner can name, six at once.
+    static let sixRoutes: [Route] = routeAll + [
+        Route(surface: .gptChat, model: "gpt-6-luna", effort: .low, instruction: "3+3", state: .completed, output: "6",
+              started: 0.4, finished: 6.0),
+        Route(surface: .chatgpt, model: "gpt-6", effort: .medium, instruction: "4+4", state: .completed, output: "8",
+              started: 0.4, finished: 11.2),
+    ]
+
+    static func joined(_ routes: [Route]) -> String {
+        routes.enumerated().compactMap { index, route in route.output.map { "requested-\(index + 1): " + $0 } }
+            .joined(separator: "\n\n")
+    }
+
+    /// Three routes live: Processing / Verifying / Completed.
+    static func liveThree(base: Date) -> [Route] { [
+        Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "17*23", state: .running, started: 0.4),
+        Route(surface: .claude, model: "claude-haiku-4-5", effort: .none, instruction: "17*23", state: .waiting,
+              output: "391", started: 0.5, finished: 8.2),
+        Route(surface: .local, model: "qwen3.5:4b", effort: .none, instruction: "17*23", state: .completed, output: "391",
+              started: 0.2, finished: 2.9),
+    ] }
+
+    static var heldDiff: String {
+        os1Tr("""
+        diff 요약: 대화 렌더러는 이제 경로마다 한 칸씩 나란히 그리고, 각 칸에 경로·모델·추론과 그 자리에서 바뀌는 상태를 표시합니다. \
+        짧은 대화는 입력창 바로 위에서 시작해 위로 쌓이며, 긴 대화는 예전처럼 맨 아래로 따라갑니다. 저장된 기록은 코드만 담고 \
+        글자는 그릴 때 인터페이스 언어로 씁니다. 상태 기호는 텍스트가 아니라 배경에 그려서 VoiceOver는 상태 이름만 읽습니다. \
+        한 경로만 실행되고 나머지를 건너뛴 작업도 그 답을 잃지 않습니다. 카드는 화면의 일부만 다시 그릴 때도 빠짐없이 칠합니다. \
+        에스컬레이션은 1차 시도와 그 결과를 칸 안에 남깁니다. 검증 중인 칸은 반환 시점의 시간을 유지합니다. 너비가 좁으면 칸이 \
+        격자로 바뀝니다. 마지막으로 실행 중에는 상태가 머리글에 한 번만 나옵니다. 머리글의 실행 세션 표시도 칸이 보여 주는 \
+        경로 수를 그대로 말하므로 화면의 두 곳이 서로 다른 말을 하지 않습니다. 영어 화면에서도 모델과 추론은 각각 한 줄씩 차지해 \
+        같은 줄의 상태 표시가 모두 같은 높이에 놓입니다. 채택되지 않은 출력은 한 단계 작고 흐리게 그려 상태보다 눈에 띄지 않습니다. \
+        Core 요약이 600자에서 잘리면 칸 안에서 더 보기로 나머지를 열 수 있고, 전체 출력은 실행 기록에 그대로 남아 있습니다.
+        """, """
+        Diff summary: the conversation renderer now draws one lane per route side by side, each with its route, model, reasoning \
+        and a status that changes in place. A short conversation starts just above the composer and grows upward, while a long \
+        one follows its newest message as before. Saved records hold codes only; the words are written in the interface language \
+        when the turn is drawn. Status glyphs are painted, not text, so VoiceOver reads the status name alone. A task that ran a \
+        single route and skipped the rest keeps its answer. Cards are painted even when only part of the screen is redrawn. \
+        Escalations keep the first attempt and its outcome in the lane, and a verifying lane keeps the clock it had when it returned.
+        """)
+    }
+
+    static var failedHeld: [Route] { [
+        Route(surface: .codex, model: "gpt-6-luna", effort: .medium, instruction: "Summarize the diff", state: .failed,
+              started: 0.4, finished: 21.0),
+        Route(surface: .claude, model: "claude-sonnet-4-5", effort: .high, instruction: "Summarize the diff", state: .held,
+              output: heldDiff, started: 0.5, finished: 33.7),
+        Route(surface: .local, model: "qwen3.5:4b", effort: .none, instruction: "1+1", state: .completed, output: "2",
+              started: 0.2, finished: 1.6),
+    ] }
+
+    static var singleAnswer: String {
+        os1Tr("""
+        세 가지로 정리했습니다.
+
+        1. **대화는 아래에서 위로** 쌓입니다. 짧은 대화도 입력창 바로 위에서 시작합니다.
+        2. 경로가 여러 개면 **경로마다 한 칸**씩 나란히 보입니다.
+        3. 각 칸에 모델·추론·상태가 함께 표시됩니다.
+        """, """
+        Three points:
+
+        1. The conversation grows **from the bottom up**. Even a short one starts just above the composer.
+        2. When a task splits, **each route gets its own lane** side by side.
+        3. Every lane shows its model, reasoning and status.
+        """)
+    }
+
+    /// A long answer next to a short one: the long lane folds on "Show more".
+    static var longAnswer: String {
+        (1...14).map { index in
+            os1Tr("\(index). 경로 \(index)의 결과를 확인했고 다음 단계에 넘길 내용을 정리했습니다.",
+                  "\(index). Checked route \(index)'s result and noted what the next step needs.")
+        }.joined(separator: "\n")
+    }
+
+    static func graph(_ core: C.Snapshot, conversationID: UUID, submissionID: UUID, request: String,
+                      observedAt: Date, firstObservedAt: Date) throws -> ParallelAgentTask.Snapshot {
+        try RCCRuntimeProjection.project(core, conversationID: conversationID, submissionID: submissionID,
+            objective: request, observedAt: observedAt, firstObservedAt: firstObservedAt,
+            maxParallelism: max(1, core.children.count))
+    }
+}
+
+/// One rendered fixture's checks and layout export.
+private enum RouteLanesFixtureKind: String, CaseIterable {
+    case empty, twoShort = "two-short", long, planning, queued, routed3Live = "routed-3-live", escalated
+    case routed4Complete = "routed-4-complete", routed6Complete = "routed-6-complete"
+    case longAnswer = "long-answer", longAnswerOpen = "long-answer-open"
+    case singleRoute = "single-route", bestEffortSingle = "best-effort-single", failedHeld = "failed-held"
+
+    var live: Bool { [.planning, .queued, .routed3Live, .escalated].contains(self) }
+}
+
+/// The window sizes every fixture is rendered at: the full shell wide and at
+/// 900 points (rail, sidebar and conversation), and the conversation alone.
+private enum RouteLanesFixtureLayout: String, CaseIterable {
+    case shell1400 = "1400", shell900 = "900", conversation700 = "700"
+    var size: NSSize {
+        switch self {
+        case .shell1400: return NSSize(width: 1_400, height: 900)
+        case .shell900: return NSSize(width: 900, height: 820)
+        case .conversation700: return NSSize(width: 700, height: 800)
+        }
+    }
+    var shell: Bool { self != .conversation700 }
+}
+
+/// Puts `kind` on the store's first conversation. `now` anchors live clocks.
+@MainActor
+private func configureRouteLanesFixture(_ store: SessionStore, _ kind: RouteLanesFixtureKind, now: Date) throws {
+    typealias F = RouteLanesFixture
+    typealias C = RCCRuntimeContract
+    let id = store.sessions[0].id
+    store.activeRuns = [:]
+    store.sessions[0].agentTask = nil
+    store.sessions[0].title = os1Tr("경로 레인 미리보기", "Routing lanes preview")
+    /// A live task: the graph Core's snapshot projects, owned by an active run.
+    func live(_ request: String, _ cores: [(C.Snapshot, TimeInterval)], base: Date) throws {
+        let submission = UUID(uuidString: cores[0].0.taskID) ?? UUID()
+        store.sessions[0].messages = [ChatMessage(role: .user, text: request)]
+        var graph: ParallelAgentTask.Snapshot?
+        for (core, offset) in cores {
+            graph = try F.graph(core, conversationID: id, submissionID: submission, request: request,
+                observedAt: base.addingTimeInterval(offset), firstObservedAt: base)
+            store.sessions[0].agentTask = graph
+            if store.activeRuns[id] == nil {
+                store.activeRuns[id] = .init(submissionID: submission, started: base,
+                    activity: RuntimeActivity(.executing, timestamp: now, publicText: "OpenClaw task running",
+                        publicTextOrigin: .systemStatus, agentTask: graph), provider: nil, agentTask: graph)
+            } else {
+                store.activeRuns[id]?.agentTask = graph
+            }
+            // Each graph reaches the lanes' history, as receiveAgentTask does.
+            _ = store.liveRouteLanes(id)
+        }
+    }
+    func finished(_ request: String, _ routes: [F.Route], state: C.State = .completed, output: String?,
+                  base: Date, skipped: [C.SkippedRoute]? = nil, error: String? = nil, single: Bool = false) throws {
+        let submission = UUID()
+        let core = F.core(taskID: submission.uuidString.lowercased(), request: request, state: state,
+            routes: routes, base: base, result: output, error: error, skipped: skipped)
+        guard let record = RouteLanesRecord.build(core: core, submissionID: submission, messageText: output) else {
+            throw RunnerError.message("Routing lanes: fixture \(kind.rawValue) built no lanes")
+        }
+        var messages = [ChatMessage(role: .user, text: request)]
+        if let output {
+            var answer = ChatMessage(role: .assistant, text: output, provider: single ? "codex" : nil,
+                executionSurface: single ? "codex" : nil)
+            answer.routeLanes = record
+            messages.append(answer)
+            messages.append(ChatMessage(role: .receipt, text: "OpenClaw task \(core.taskID) · \(state.rawValue) · \(routes.count) route(s)",
+                nativeRecordVerified: true))
+        } else {
+            messages.append(ChatMessage(role: .system, text: rccCoreBoundaryHeadline(core) ?? "OpenClaw task held"))
+            var receipt = ChatMessage(role: .receipt, text: "OpenClaw task \(core.taskID) · \(state.rawValue) · \(error ?? "")",
+                nativeRecordVerified: false)
+            receipt.routeLanes = record
+            messages.append(receipt)
+        }
+        store.sessions[0].messages = messages
+    }
+    let liveBase = Date(timeIntervalSince1970: (now.timeIntervalSince1970 - 12).rounded(.down))
+    switch kind {
+    case .empty:
+        store.sessions[0].messages = []
+    case .twoShort:
+        store.sessions[0].messages = [
+            ChatMessage(role: .user, text: os1Tr("오늘 작업 순서만 짧게 알려 줘.", "Briefly, what's the order of today's work?")),
+            ChatMessage(role: .assistant, text: os1Tr("1. 경로 레인 확인 → 2. 아래부터 쌓이는 대화 확인 → 3. 스크린샷 검토.",
+                "1. Check the routing lanes → 2. check the bottom-up conversation → 3. review the screenshots."),
+                provider: "codex", executionSurface: "codex"),
+        ]
+    case .long:
+        store.sessions[0].messages = (0..<30).map { index in
+            index.isMultiple(of: 2)
+                ? ChatMessage(role: .user, text: os1Tr("질문 \(index / 2 + 1): 이 부분을 한 번 더 설명해 줘.",
+                                                       "Question \(index / 2 + 1): explain this part once more."))
+                : ChatMessage(role: .assistant, text: "## " + os1Tr("답변", "Answer") + " \(index / 2 + 1)\n" +
+                    String(repeating: os1Tr("긴 대화는 예전처럼 스크롤되고, 새 출력은 맨 아래에서 이어집니다. ",
+                                            "A long conversation scrolls as before and new output continues at the bottom. "), count: 4) +
+                    "\n\n- `ContinuousTranscriptView`\n- **bottom-up**", provider: index % 4 == 1 ? "claude" : "codex")
+        }
+    case .planning:
+        let request = os1Tr("네 경로로 나눠서 각각 계산해 줘", "Split this across four routes")
+        try live(request, [(C.Snapshot(taskID: UUID().uuidString.lowercased(), requestSHA256: appSHA256Hex(request),
+            state: .planning, revision: 1, children: [], result: nil, error: nil), 12)], base: liveBase)
+    case .queued:
+        let request = os1Tr("세 경로로 나눠서 17*23 확인", "Split 17*23 across three routes")
+        let routes = F.liveThree(base: liveBase).map {
+            F.Route(surface: $0.surface, model: $0.model, effort: $0.effort, instruction: $0.instruction, state: .queued)
+        }
+        try live(request, [(F.core(taskID: UUID().uuidString.lowercased(), request: request, state: .queued,
+            routes: routes, base: liveBase, result: nil), 2)], base: liveBase)
+    case .routed3Live:
+        let request = os1Tr("세 경로로 나눠서 17*23 확인", "Split 17*23 across three routes")
+        let task = UUID().uuidString.lowercased()
+        let routes = F.liveThree(base: liveBase)
+        // The Claude Code route was seen processing before it returned, so
+        // its Verifying pill keeps the clock it had when it returned.
+        var processing = routes; processing[1] = F.Route(surface: .claude, model: "claude-haiku-4-5", effort: .none,
+            instruction: "17*23", state: .running, started: 0.5)
+        try live(request, [(F.core(taskID: task, request: request, state: .running, routes: processing, base: liveBase, result: nil), 6),
+                           (F.core(taskID: task, request: request, state: .running, routes: routes, base: liveBase, result: nil), 12)],
+                 base: liveBase)
+    case .escalated:
+        let request = os1Tr("두 경로로 나눠서 17*23 확인", "Split 17*23 across two routes")
+        let task = UUID().uuidString.lowercased()
+        let local = F.Route(surface: .local, model: "qwen3.5:4b", effort: .none, instruction: "17*23", state: .completed,
+            output: "391", started: 0.2, finished: 2.4)
+        func codex(_ state: C.ChildState, _ model: String, _ effort: C.Effort, started: Double?, hidden: Bool = false) -> F.Route {
+            F.Route(surface: .codex, model: model, effort: effort, instruction: "17*23", state: state, started: started, hidden: hidden)
+        }
+        // Cheap tuple runs, returns, fails the node verifier; Core re-queues
+        // the route with no configuration, then runs the reference tuple.
+        try live(request, [
+            (F.core(taskID: task, request: request, state: .running, routes: [codex(.running, "gpt-6-mini", .low, started: 0.3), local],
+                base: liveBase, result: nil), 3),
+            (F.core(taskID: task, request: request, state: .running, routes: [codex(.waiting, "gpt-6-mini", .low, started: 0.3), local],
+                base: liveBase, result: nil), 6),
+            (F.core(taskID: task, request: request, state: .running, routes: [codex(.queued, "gpt-6-luna", .high, started: nil, hidden: true), local],
+                base: liveBase, result: nil), 7),
+            (F.core(taskID: task, request: request, state: .running, routes: [codex(.running, "gpt-6-luna", .high, started: 7.4), local],
+                base: liveBase, result: nil), 12),
+        ], base: liveBase)
+    case .routed4Complete:
+        try finished(os1Tr("라우팅 테스트: 로컬 1+1, Codex 2+2, Claude Code 1+1, Claude chat 2+2",
+            "Route test: local 1+1, Codex 2+2, Claude Code 1+1, Claude chat 2+2"), F.routeAll, output: F.joined(F.routeAll),
+            base: now.addingTimeInterval(-40))
+    case .routed6Complete:
+        try finished(os1Tr("라우팅 테스트: 경로 6개 모두", "Route test: all six routes"), F.sixRoutes, output: F.joined(F.sixRoutes),
+            base: now.addingTimeInterval(-40))
+    case .longAnswer, .longAnswerOpen:
+        let routes = [
+            F.Route(surface: .codex, model: "gpt-6-luna", effort: .medium, instruction: "plan", state: .completed,
+                    output: F.longAnswer, started: 0.3, finished: 18.6),
+            F.Route(surface: .claude, model: "claude-sonnet-4-5", effort: .medium, instruction: "plan", state: .completed,
+                    output: os1Tr("다음 단계는 하나입니다: 스크린샷을 검토하세요.", "One next step: review the screenshots."),
+                    started: 0.4, finished: 9.1),
+        ]
+        try finished(os1Tr("두 경로로 다음 단계를 정리해 줘", "Plan the next steps on two routes"), routes, output: F.joined(routes),
+            base: now.addingTimeInterval(-40))
+    case .singleRoute:
+        let request = os1Tr("바뀐 화면을 세 줄로 요약해 줘", "Summarize the new screen in three lines")
+        try finished(request, [F.Route(surface: .codex, model: "gpt-6-luna", effort: .medium, instruction: request, state: .completed,
+            output: F.singleAnswer, started: 0.3, finished: 14.2)], output: F.singleAnswer, base: now.addingTimeInterval(-30), single: true)
+    case .bestEffortSingle:
+        // A best-effort route test: one route ran, Core skipped the others,
+        // and answered with that route's output unlabeled.
+        try finished(os1Tr("되는 경로로만 1+1", "1+1 on whichever routes can run"),
+            [F.Route(surface: .local, model: "qwen3.5:4b", effort: .none, instruction: "1+1", state: .completed, output: "2",
+                     started: 0.2, finished: 1.3)], output: "2", base: now.addingTimeInterval(-20),
+            skipped: [.init(surface: .codex, instruction: "1+1", reason: "no_runnable_row_offered_this_route"),
+                      .init(surface: .chatgpt, instruction: "1+1", reason: "explicit_route_surface_unavailable")])
+    case .failedHeld:
+        try finished(os1Tr("세 경로로 diff 요약과 1+1", "Three routes: summarize the diff, and 1+1"), F.failedHeld, state: .held,
+            output: nil, base: now.addingTimeInterval(-60), error: "node_verifier_failed")
+    }
+}
+
+@MainActor
+private func findTranscriptView(in view: NSView) -> ContinuousTranscriptTextView? {
+    if let found = view as? ContinuousTranscriptTextView { return found }
+    for child in view.subviews { if let found = findTranscriptView(in: child) { return found } }
+    return nil
+}
+
+/// Renders `kind` the way the app composes it and checks the layout the owner
+/// asked for. Returns the PNG and its layout record. The production window
+/// is always dark (`.preferredColorScheme(.dark)`): fixtures render dark.
+@MainActor
+private func renderRouteLanesFixture(_ store: SessionStore, _ kind: RouteLanesFixtureKind, layout window: RouteLanesFixtureLayout,
+                                     saveTo file: URL? = nil, checks: inout Int) throws -> (png: Data, layout: [String: Any]) {
+    func check(_ ok: Bool, _ why: String) throws {
+        guard ok else { throw RunnerError.message("Routing lanes [\(kind.rawValue) \(window.rawValue)]: " + why) }
+        checks += 1
+    }
+    let size = window.size
+    let content: AnyView = window.shell
+        ? AnyView(HStack(spacing: 0) {
+            ProviderRail(store: store)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            SessionSidebar(store: store)
+            Rectangle().fill(Theme.border).frame(width: 1)
+            ConversationView(store: store)
+        })
+        : AnyView(ConversationView(store: store))
+    let host = NSHostingView(rootView: AnyView(content.frame(width: size.width, height: size.height).background(Theme.background)
+        .environment(\.colorScheme, .dark)))
+    host.appearance = NSAppearance(named: .darkAqua)
+    host.frame = NSRect(origin: .zero, size: size)
+    func settle() {
+        // The transcript follows its bottom and lays its lanes out for the
+        // column's width on the main queue after the first pass.
+        for _ in 0..<3 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        }
+    }
+    settle()
+    // "Show more", clicked the way the owner clicks it.
+    if kind == .longAnswerOpen, let textView = findTranscriptView(in: host), let storage = textView.textStorage,
+       let coordinator = textView.delegate as? ContinuousTranscriptView.Coordinator {
+        var link: (url: URL, at: Int)?
+        storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            guard let url = value as? URL, url.lastPathComponent.hasSuffix("-more") else { return }
+            link = (url, range.location); stop.pointee = true
+        }
+        guard let link else { throw RunnerError.message("Routing lanes [\(kind.rawValue)]: no Show more link to open") }
+        _ = coordinator.textView(textView, clickedOnLink: link.url, at: link.at)
+        settle()
+        if let scroll = textView.enclosingScrollView { textView.scrollToEndOfDocument(nil); scroll.reflectScrolledClipView(scroll.contentView) }
+        settle()
+    }
+    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw SourceContextError.invalid }
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]) else { throw SourceContextError.invalid }
+    // Written before the checks, so a failing fixture can be looked at.
+    if let file { try png.write(to: file, options: .atomic) }
+    let scale = CGFloat(bitmap.pixelsWide) / size.width
+    func box(_ rect: NSRect) -> [String: Double] {
+        ["x": Double(rect.minX), "y": Double(rect.minY), "width": Double(rect.width), "height": Double(rect.height)]
+    }
+    var layout: [String: Any] = ["fixture": kind.rawValue,
+        "layout": window.shell ? "shell-\(window.rawValue)pt" : "conversation-\(window.rawValue)pt",
+        "scheme": "dark (the production window forces .preferredColorScheme(.dark))", "sizePoints": [size.width, size.height],
+        "sizePixels": [bitmap.pixelsWide, bitmap.pixelsHigh], "coordinateSpace": "host points, top-left origin"]
+    guard let textView = findTranscriptView(in: host) else {
+        try check(kind == .empty, "the conversation drew no transcript")
+        layout["transcript"] = NSNull()
+        return (png, layout)
+    }
+    try check(kind != .empty, "an empty conversation drew a transcript instead of its welcome")
+    guard let scroll = textView.enclosingScrollView, let container = textView.textContainer else { throw SourceContextError.invalid }
+    let visible = scroll.contentView.bounds
+    func hostRect(_ rect: NSRect) -> NSRect {
+        let converted = host.convert(rect, from: textView)
+        return host.isFlipped ? converted : NSRect(x: converted.minX, y: size.height - converted.maxY,
+                                                    width: converted.width, height: converted.height)
+    }
+    let frames = textView.timelineFrames(includingLaneCards: true), lanes = textView.routeLaneFrames()
+    let column = NSRect(x: textView.textContainerOrigin.x, y: 0, width: container.size.width, height: textView.bounds.height)
+    let bottom = textView.visibleContentBottom() ?? 0
+    layout["viewport"] = box(hostRect(visible))
+    layout["column"] = box(hostRect(column))
+    layout["documentHeight"] = Double(textView.bounds.height)
+    layout["bottomAnchorOffset"] = Double(textView.bottomAnchorOffset)
+    layout["gapAboveComposer"] = Double(visible.maxY - bottom)
+    layout["laneCapacity"] = textView.laneCapacity
+    layout["frames"] = frames.map { ["role": $0.role].merging(box(hostRect($0.paint)).mapValues { $0 as Any }) { a, _ in a } }
+    layout["lanes"] = lanes.map { ["text": String($0.text.prefix(160))].merging(box(hostRect($0.frame)).mapValues { $0 as Any }) { a, _ in a } }
+    let text = textView.string
+
+    // Bottom-up: a short conversation sits just above the composer; a long
+    // one follows its newest message.
+    let fills = textView.bounds.height > visible.height + 1
+    layout["fillsViewport"] = fills
+    if fills {
+        try check(abs(visible.maxY - textView.bounds.height) < 2, "a conversation taller than its view is not at its newest message")
+    } else {
+        guard let first = frames.first else { throw SourceContextError.invalid }
+        // Short enough not to scroll: its newest output is at the bottom (a
+        // conversation that just fits needs no offset to be there).
+        try check(textView.bottomAnchorOffset > 0 || visible.maxY - bottom <= ContinuousTranscriptTextView.bottomAnchorGap + 1,
+            "a short conversation is laid out from the top")
+        try check(textView.bottomAnchorOffset == 0 || first.paint.minY > visible.minY + 34 + 0.5,
+            "the first message did not move down from the top")
+    }
+    try check(bottom <= visible.maxY + 0.5 && visible.maxY - bottom <= (fills ? 24 : 12),
+        "the newest output is not just above the composer: gap \(visible.maxY - bottom)")
+    if kind == .twoShort {
+        try check(frames.first!.paint.minY > visible.minY + visible.height * 0.5,
+            "two short messages do not start in the lower half: \(frames.first!.paint.minY) of \(visible.height)")
+    }
+    if kind == .long {
+        try check(fills && textView.bottomAnchorOffset == 0, "a long conversation keeps a bottom offset")
+        try check(abs(visible.maxY - textView.bounds.height) < 2, "a long conversation is not scrolled to its newest message")
+    }
+    // The user's bubble ends where the column (composer, lanes) ends.
+    for bubble in frames where bubble.role == MessageRole.user.rawValue {
+        try check(abs(bubble.paint.maxX - column.maxX) < 1.5, "the user bubble's edge \(bubble.paint.maxX) is not the column's \(column.maxX)")
+    }
+
+    // Lanes: equal widths side by side, a grid when narrow, each lane naming
+    // its route, model, reasoning and status.
+    let expected: [(model: String, status: RouteLaneStatus)]
+    switch kind {
+    case .queued: expected = [("gpt-6-luna", .queued), ("claude-haiku-4-5", .queued), ("qwen3.5:4b", .queued)]
+    case .routed3Live: expected = [("gpt-6-luna", .processing), ("claude-haiku-4-5", .verifying), ("qwen3.5:4b", .completed)]
+    case .escalated: expected = [("gpt-6-luna", .processing), ("qwen3.5:4b", .completed)]
+    case .routed4Complete: expected = [("qwen3.5:4b", .completed), ("gpt-6-luna", .completed),
+                                       ("claude-haiku-4-5", .completed), ("claude-haiku-4-5", .completed)]
+    case .routed6Complete: expected = RouteLanesFixture.sixRoutes.map { ($0.model, .completed) }
+    case .longAnswer, .longAnswerOpen: expected = [("gpt-6-luna", .completed), ("claude-sonnet-4-5", .completed)]
+    case .bestEffortSingle: expected = [("qwen3.5:4b", .completed), ("", .skipped), ("", .skipped)]
+    case .failedHeld: expected = [("gpt-6-luna", .failed), ("claude-sonnet-4-5", .held), ("qwen3.5:4b", .completed)]
+    default: expected = []
+    }
+    try check(lanes.count == expected.count, "\(lanes.count) lanes drawn, \(expected.count) expected: " +
+        lanes.map { "\($0.frame) \($0.text.prefix(40).replacingOccurrences(of: "\n", with: "/"))" }.joined(separator: " | "))
+    if !expected.isEmpty {
+        let columns = RouteLanesRenderer.columns(lanes: expected.count, capacity: textView.laneCapacity)
+        let rows = Dictionary(grouping: lanes, by: { Int(($0.frame.minY / 3).rounded()) })
+        try check(rows.count == (expected.count + columns - 1) / columns, "lanes are not in \(columns) columns: \(rows.count) rows")
+        if window == .shell1400, expected.count <= 4 { try check(rows.count == 1, "a wide window does not put every lane side by side") }
+        if kind == .routed4Complete && window == .conversation700 { try check(rows.count == 2 && columns == 2, "four lanes at 700 pt are not a 2 × 2 grid") }
+        let widths = lanes.map(\.frame.width)
+        try check((widths.max() ?? 0) - (widths.min() ?? 0) < 1.5,
+            "lanes are not equal width: \(lanes.map(\.frame)) capacity \(textView.laneCapacity) column \(column)")
+        try check(widths.allSatisfy { $0 >= RouteLanesRenderer.minimumLaneWidth - RouteLanesRenderer.gap - 1 },
+            "a lane is narrower than readable: \(widths)")
+        for (a, lhs) in lanes.enumerated() { for rhs in lanes[(a + 1)...] {
+            try check(lhs.frame.intersection(rhs.frame).width * lhs.frame.intersection(rhs.frame).height < 1, "lanes overlap")
+        } }
+        // Inside the conversation column, and inside their block's frame.
+        try check(lanes.allSatisfy { $0.frame.minX >= column.minX - 0.5 && $0.frame.maxX <= column.maxX + 0.5 },
+            "a lane leaves the conversation column \(column.minX)…\(column.maxX): \(lanes.map { ($0.frame.minX, $0.frame.maxX) })")
+        let blocks = frames.filter { $0.role == "routeLanes" }.map(\.paint)
+        try check(lanes.allSatisfy { lane in blocks.contains { $0.insetBy(dx: -0.5, dy: -0.5).contains(lane.frame) } },
+            "the lanes block's frame does not cover its cards")
+        // Every lane in a row has its status pill at the same height.
+        for row in rows.values where row.count > 1 {
+            let pillTops = row.compactMap { lane -> CGFloat? in
+                var top: CGFloat?
+                textView.textStorage?.enumerateAttribute(.os1RouteLanePill, in: lane.range) { value, range, stop in
+                    guard value != nil, let layoutManager = textView.layoutManager else { return }
+                    let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                    top = layoutManager.boundingRect(forGlyphRange: glyphs, in: container).minY; stop.pointee = true
+                }
+                return top
+            }
+            try check(pillTops.count == row.count && (pillTops.max()! - pillTops.min()!) < 1.5,
+                "status pills in one row are at different heights: \(pillTops)")
+        }
+        for (lane, want) in zip(lanes, expected) {
+            try check(lane.text.contains(want.status.title), "lane does not show \(want.status.title): \(lane.text.prefix(120))")
+            guard want.status != .skipped else { continue }
+            try check(lane.text.contains(want.model), "lane does not show \(want.model): \(lane.text.prefix(120))")
+            try check(lane.text.contains(os1Tr("추론", "reasoning") + "\u{00A0}"), "lane does not show its reasoning")
+            // Status glyphs are painted, not read out.
+            try check(!["●", "◐", "✓", "‖", "✕", "○"].contains(where: lane.text.contains) || lane.text.contains(" ✓"),
+                "a status glyph is part of the lane's text")
+            // A finished lane does not say "selected" under every model.
+            if !kind.live { try check(!lane.text.contains(os1Tr("선택값", "selected")), "a finished lane repeats \"selected\"") }
+        }
+        // Readable: bright text inside every visible lane.
+        // (A lane whose own text is scrolled away shows only empty card.)
+        for lane in lanes where lane.frame.minY >= visible.minY - 1 && lane.frame.intersection(visible).height >= 60 {
+            let rect = hostRect(lane.frame.intersection(visible))
+            var bright = 0
+            for y in stride(from: Int(rect.minY * scale), to: Int(rect.maxY * scale), by: 2) {
+                for x in stride(from: Int(rect.minX * scale), to: Int(rect.maxX * scale), by: 2) {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                    if 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent > 0.6 { bright += 1 }
+                }
+            }
+            try check(bright >= 30, "a lane has no readable text pixels (\(bright)) in \(rect)")
+        }
+    }
+    // One status line per turn: a live task's working row folds into its
+    // lanes' first line, and a routed turn does not repeat Core's state line.
+    if kind.live {
+        try check(!frames.contains { $0.role == "liveRun" }, "the live run's own row is drawn beside the lanes")
+        try check(text.contains(os1Tr("진행 단계", "Steps") + " ▸"), "the live run's disclosure is missing from the lanes' line")
+        var marks = 0
+        textView.textStorage?.enumerateAttribute(.os1LiveRunMark, in: NSRange(location: 0, length: textView.textStorage!.length)) { value, _, _ in
+            if value != nil { marks += 1 }
+        }
+        try check(marks == 1, "the live run's mark is drawn \(marks) times")
+    }
+    switch kind {
+    case .planning:
+        try check(text.contains(RouteLaneStatus.planning.title) && lanes.isEmpty, "a planning task is not Planning")
+    case .routed4Complete:
+        try check(!text.contains("requested-1: ") && !text.contains("requested-4: "),
+            "the joined route answers are drawn again under the lanes")
+        try check(lanes.map { $0.text.contains("Local") || $0.text.contains("로컬") } == [true, false, false, false] &&
+            lanes[1].text.contains("Codex · 2+2") && lanes[2].text.contains("Claude Code · 1+1") &&
+            lanes[3].text.contains("Claude chat · 2+2"), "lanes are not in the routes' order")
+        try check(zip(lanes, ["2", "4", "2", "4"]).allSatisfy { lane, answer in
+            lane.text.components(separatedBy: "\n").contains(answer) }, "a lane does not show its own answer")
+    case .routed3Live:
+        try check(text.contains(RouteLaneStatus.processing.title) && text.contains(os1Tr("경로 3개로 나눔", "split into 3 routes")),
+            "the live header does not say the task split into three routes")
+        try check(!lanes[2].text.components(separatedBy: "\n").contains(where: { $0.contains("391") }),
+            "a live lane shows an answer the run has not delivered")
+        try check(lanes[2].text.contains(os1Tr("답변은 최종 결과와 함께 표시", "Answer arrives with the final result")),
+            "a live completed lane does not say where its answer arrives")
+        try check(!lanes[1].text.contains("—") && lanes[1].text.contains(os1Tr("초", "s")), "a verifying lane lost its clock")
+    case .escalated:
+        try check(lanes[0].text.contains("gpt-6-mini") && lanes[0].text.contains(RouteLaneAttempt.Outcome.verifierFailed.title),
+            "an escalated lane does not show its first attempt")
+    case .longAnswer:
+        try check(lanes[0].text.contains(os1Tr("더 보기", "Show more")) && !lanes[0].text.contains("14."),
+            "a long lane answer does not fold")
+    case .longAnswerOpen:
+        try check(lanes[0].text.contains(os1Tr("접기", "Show less")) && lanes[0].text.contains("14."),
+            "a long lane answer does not open")
+    case .failedHeld:
+        try check(lanes[0].text.contains(RouteLane.reason(for: .failed)!) && lanes[1].text.contains(RouteLane.reason(for: .held)!),
+            "a failed or held lane does not say why")
+        try check(text.contains("node verifier failed"), "the task's own reason is not shown")
+        try check(!text.contains(os1Tr("OpenClaw 작업 상태: ", "OpenClaw task state: ")), "Core's raw state line repeats the lanes' header")
+        try check(lanes[1].text.contains(os1Tr("미채택 출력", "Output not adopted")) &&
+            lanes[1].text.contains(os1Tr("더 보기", "Show more")), "the held lane's cut output cannot open")
+    case .bestEffortSingle:
+        try check(lanes[0].text.components(separatedBy: "\n").contains("2"), "the one route that ran lost its answer")
+    case .singleRoute:
+        try check(lanes.isEmpty && text.contains("gpt-6-luna · " + os1Tr("추론 ", "reasoning ") + "medium") &&
+            text.contains(RouteLaneStatus.completed.title) && text.contains(os1Tr("아래에서 위로", "from the bottom up")),
+            "a single route does not show one strip above its answer")
+    default: break
+    }
+    return (png, layout)
+}
+
+@MainActor
+private func renderRoutingLanesPreview(to output: URL) throws {
+    let fm = FileManager.default
+    try fm.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-route-lanes-preview-" + UUID().uuidString)
+    defer { try? fm.removeItem(at: root) }
+    var providerCalls = 0
+    let store = SessionStore(storageRoot: root, runOperation: { _, _, _, _, _ in
+        providerCalls += 1
+        throw RunnerError.message("Preview cannot execute a backend")
+    }, nativeSessionOpener: { _ in false })
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    store.sessions[0].workspace = root.path
+    store.select(store.sessions[0].id)
+    var checks = 0, files: [String] = []
+    let now = Date()
+    for kind in RouteLanesFixtureKind.allCases {
+        for window in RouteLanesFixtureLayout.allCases {
+            // Fresh per window: an opened "Show more" is the view's own state.
+            try configureRouteLanesFixture(store, kind, now: now)
+            let name = "\(kind.rawValue)-\(window.rawValue)-dark.png"
+            let rendered = try renderRouteLanesFixture(store, kind, layout: window, saveTo: output.appendingPathComponent(name),
+                checks: &checks)
+            let json = try JSONSerialization.data(withJSONObject: rendered.layout, options: [.prettyPrinted, .sortedKeys])
+            try json.write(to: output.appendingPathComponent(name + ".layout.json"), options: .atomic)
+            files.append(name)
+        }
+    }
+    let manifest: [String: Any] = ["fixtures": RouteLanesFixtureKind.allCases.map(\.rawValue), "files": files,
+        "sizes": Dictionary(uniqueKeysWithValues: RouteLanesFixtureLayout.allCases.map {
+            ($0.shell ? "shell-\($0.rawValue)pt" : "conversation-\($0.rawValue)pt", [$0.size.width, $0.size.height]) }),
+        "scheme": "dark only: the production window forces .preferredColorScheme(.dark)",
+        "language": OS1Localization.interfaceLanguage,
+        "checks": checks, "providerCalls": providerCalls, "liveWrites": 0]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: output.appendingPathComponent("manifest.json"), options: .atomic)
+    guard providerCalls == 0 else { throw RunnerError.message("Routing lanes preview called a backend") }
+    print("Routing lanes previews: \(files.count) PNGs, \(checks) layout checks PASS; provider calls 0; live store untouched")
+}
+
+/// Routing lanes: the record, its storage, the live graph's reading, the
+/// transcript's rendering and the bottom-anchored view. Release-gated.
+@MainActor
+private func routeLanesSelfTest() throws {
+    typealias F = RouteLanesFixture
+    typealias C = RCCRuntimeContract
+    var checks = 0
+    func check(_ ok: Bool, _ why: String) throws {
+        guard ok else { throw RunnerError.message("Routing lanes: " + why) }; checks += 1
+    }
+    func columns(_ document: NSAttributedString) -> Set<Int> {
+        var found = Set<Int>()
+        document.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: document.length)) { value, _, _ in
+            if let cell = (value as? NSParagraphStyle)?.textBlocks.first as? NSTextTableBlock { found.insert(cell.table.numberOfColumns) }
+        }
+        return found
+    }
+    let ids = ["requested-1", "requested-2", "requested-3"]
+    // Core's joined answers split back exactly, or not at all.
+    try check(RouteLanesRecord.splitLabeled("requested-1: 2\n\nrequested-2: 4\n\nrequested-3: 2", ids: ids) ==
+        ["requested-1": "2", "requested-2": "4", "requested-3": "2"], "joined answers do not split back")
+    try check(RouteLanesRecord.splitLabeled("requested-1: a\n\nb\n\nrequested-3: c", ids: ids) ==
+        ["requested-1": "a\n\nb", "requested-3": "c"], "a blank line inside an answer or an absent route breaks the split")
+    try check(RouteLanesRecord.splitLabeled("free text", ids: ids) == nil &&
+        RouteLanesRecord.splitLabeled("requested-1:2", ids: ids) == nil, "unlabeled text splits into lanes")
+
+    // A finished route test: four lanes, in order, with the selected models.
+    let now = Date(), base = now.addingTimeInterval(-30), submission = UUID()
+    let output = F.joined(F.routeAll)
+    let completed = F.core(taskID: "lanes-fixture-1", request: "route test", state: .completed, routes: F.routeAll,
+        base: base, result: output)
+    guard let record = RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output) else {
+        throw RunnerError.message("Routing lanes: a completed route test has no lanes")
+    }
+    try check(record.lanes.map(\.title) == [os1Tr("로컬", "Local") + " · 1+1", "Codex · 2+2", "Claude Code · 1+1", "Claude chat · 2+2"],
+        "lane titles are not the routes in order: \(record.lanes.map(\.title))")
+    try check(record.lanes.map { $0.model ?? "" } == ["qwen3.5:4b", "gpt-6-luna", "claude-haiku-4-5", "claude-haiku-4-5"] &&
+        record.lanes.map { $0.effort ?? "" } == ["none", "low", "none", "none"] &&
+        record.lanes.allSatisfy { $0.configuration == .selected && $0.executionVerified == nil && $0.status == .completed },
+        "lanes do not carry Core's selected model and reasoning as selected, not observed")
+    try check(record.answersInText && record.lanes.allSatisfy { $0.excerpt == nil } &&
+        record.answers(in: output) == ["requested-1": "2", "requested-2": "4", "requested-3": "2", "requested-4": "4"],
+        "answers are copied instead of read back from the result")
+    try check(record.taskStatus == .completed && record.taskNote == .conditionsVerified &&
+        record.lanes[1].finishedAt!.timeIntervalSince(record.lanes[1].startedAt!) > 9, "the task's state or a lane's clock is lost")
+    // Saved words are codes: the interface language writes them when drawn.
+    let recordJSON = String(decoding: try JSONEncoder().encode(record), as: UTF8.self)
+    try check(![os1Tr("로컬", "Local"), RouteLanesTaskNote.conditionsVerified.title, "작업"].contains(where: recordJSON.contains),
+        "a saved record holds interface words: \(recordJSON.prefix(240))")
+    // Only a verified record of exactly one lane's output, claimed by no
+    // other lane, observes its model.
+    let observed = RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output, observations: [
+        .init(surface: "codex", model: "gpt-6-luna", effort: "low", output: "4", verified: true),
+        .init(surface: "claude", model: "claude-haiku-4-5", effort: "none", output: "2", verified: false)])
+    try check(observed?.lanes[1].configuration == .observed && observed?.lanes[1].executionVerified == true &&
+        observed?.lanes[1].selectedModel == nil && observed?.lanes[2].configuration == .selected &&
+        observed?.lanes[3].configuration == .selected, "an unverified or other lane's output upgraded a lane to observed")
+    let twins = [F.Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
+                         started: 0, finished: 3),
+                 F.Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
+                         started: 0, finished: 4)]
+    let twinRecord = RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-twins", request: "x", state: .completed,
+        routes: twins, base: base, result: F.joined(twins)), submissionID: submission, messageText: F.joined(twins), observations: [
+        .init(surface: "codex", model: "gpt-6-luna-pro", effort: "high", output: "4", verified: true)])
+    try check(twinRecord?.lanes.allSatisfy { $0.configuration == .selected && $0.executionVerified == nil } == true,
+        "one record of an output two lanes share observed both lanes")
+    let differs = RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output, observations: [
+        .init(surface: "codex", model: "gpt-6-luna-pro", effort: "high", output: "4", verified: true)])
+    try check(differs?.lanes[1].model == "gpt-6-luna-pro" && differs?.lanes[1].selectedModel == "gpt-6-luna" &&
+        differs?.lanes[1].selectedEffort == "low", "an observed model that differs from Core's selection lost the selection")
+    // A task verifier's rewritten result is not split into lanes.
+    let rewritten = F.core(taskID: "lanes-fixture-2", request: "route test", state: .completed, routes: F.routeAll,
+        base: base, result: "Every route answered: 2, 4, 2, 4.")
+    let excerpts = RouteLanesRecord.build(core: rewritten, submissionID: submission, messageText: "Every route answered: 2, 4, 2, 4.")
+    try check(excerpts?.answersInText == false && excerpts?.lanes.map { $0.excerpt ?? "" } == ["2", "4", "2", "4"],
+        "a rewritten result was split, or the lanes lost Core's summaries")
+    // A split that disagrees with a lane's own summary is not that lane's answer.
+    let swapped = "requested-2: 2\n\nrequested-1: 4"
+    try check(RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-3", request: "x", state: .completed,
+        routes: Array(F.routeAll.prefix(2)), base: base, result: swapped), submissionID: submission, messageText: swapped)?
+        .answersInText == false, "an answer was given to the wrong lane")
+    // A split that covers a lane that did not complete is not "the lanes'
+    // answers": the lanes keep Core's summaries, so none reads "No answer".
+    let mixed = [F.Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
+                         started: 0, finished: 3),
+                 F.Route(surface: .claude, model: "claude-sonnet-4-5", effort: .high, instruction: "2+2", state: .held, output: "5?",
+                         started: 0, finished: 9)]
+    let mixedRecord = RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-mixed", request: "x", state: .returnedUnverified,
+        routes: mixed, base: base, result: F.joined(mixed)), submissionID: submission, messageText: F.joined(mixed))
+    try check(mixedRecord?.answersInText == false && mixedRecord?.answers(in: F.joined(mixed)) == ["requested-1": "4", "requested-2": "5?"],
+        "lanes of a partly adopted split lost their answers")
+    // Best effort: one route ran, Core skipped the rest and answered with
+    // that route's output unlabeled. The answer stays on screen.
+    let bestEffort = F.core(taskID: "lanes-fixture-best-effort", request: "x", state: .completed,
+        routes: [F.Route(surface: .local, model: "qwen3.5:4b", effort: .none, instruction: "1+1", state: .completed, output: "2",
+                         started: 0, finished: 1)], base: base, result: "2",
+        skipped: [.init(surface: .codex, instruction: "1+1", reason: "no_runnable_row_offered_this_route"),
+                  .init(surface: .chatgpt, instruction: "1+1", reason: "explicit_route_surface_unavailable")])
+    let bestRecord = RouteLanesRecord.build(core: bestEffort, submissionID: submission, messageText: "2")
+    try check(bestRecord?.lanes.count == 3 && bestRecord?.answersInText == true &&
+        bestRecord?.answers(in: "2") == ["requested-1": "2"], "a single run route among skipped ones lost its answer")
+    var bestMessage = ChatMessage(role: .assistant, text: "2"); bestMessage.routeLanes = bestRecord
+    let bestDocument = timelineAttributedDocument(messages: [ChatMessage(role: .user, text: "x"), bestMessage],
+        queuedSubmissions: [], isRunning: false, workspace: "/tmp")
+    try check(bestDocument.string.components(separatedBy: "\n").contains("2") &&
+        !bestDocument.string.contains(os1Tr("답변 텍스트 없음", "No answer text")), "the transcript lost the one route's answer")
+    // Held without a result: each lane says what Core recorded; the task says why.
+    let held = F.core(taskID: "lanes-fixture-4", request: "x", state: .held, routes: F.failedHeld, base: base,
+        result: nil, error: "node_verifier_failed",
+        skipped: [.init(surface: .chatgpt, instruction: "1+1", reason: "no runnable row offered this route")])
+    let heldRecord = RouteLanesRecord.build(core: held, submissionID: submission, messageText: nil)
+    try check(heldRecord?.lanes.map(\.status) == [.failed, .held, .completed, .skipped] &&
+        heldRecord?.taskStatus == .held && heldRecord?.taskReason == "node verifier failed" &&
+        heldRecord?.lanes[3].reason == "no runnable row offered this route" && heldRecord?.lanes[2].excerpt == "2",
+        "a held task's lanes, skipped route or reason are wrong")
+    // Core states the lanes report, never inferred ones.
+    try check(RouteLanesRecord.laneStatus(.running, taskTerminal: true) == .unreported &&
+        RouteLanesRecord.laneStatus(.waiting, taskTerminal: true) == .unreported &&
+        RouteLanesRecord.laneStatus(.queued, taskTerminal: true) == .skipped &&
+        RouteLanesRecord.taskStatus(C.Snapshot(taskID: "lanes-cancelling", requestSHA256: appSHA256Hex("x"), state: .cancelling,
+            revision: 1, children: [], result: nil, error: nil)).0 == .cancelling, "a lane's state is inferred, not reported")
+    // One route: one lane, its answer the whole result.
+    let single = F.core(taskID: "lanes-fixture-5", request: "x", state: .completed,
+        routes: [F.Route(surface: .codex, model: "gpt-6-luna", effort: .medium, instruction: "x", state: .completed,
+            output: F.singleAnswer, started: 0, finished: 3)], base: base, result: F.singleAnswer)
+    let singleRecord = RouteLanesRecord.build(core: single, submissionID: submission, messageText: F.singleAnswer)
+    try check(singleRecord?.lanes.count == 1 && singleRecord?.answersInText == true, "one route is not one lane")
+    // A REVAS escalation: the cheap attempt and its outcome stay on the lane.
+    var escalatedRoute = F.Route(surface: .codex, model: "gpt-6-luna", effort: .high, instruction: "2+2", state: .completed,
+        output: "4", started: 0, finished: 12)
+    escalatedRoute.decision = F.escalation(.codex, cheap: .low, reference: "gpt-6-luna", .high)
+    let escalated = RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-escalated", request: "x", state: .completed,
+        routes: [escalatedRoute, F.routeAll[0]], base: base, result: F.joined([escalatedRoute, F.routeAll[0]])),
+        submissionID: submission, messageText: F.joined([escalatedRoute, F.routeAll[0]]))
+    try check(escalated?.lanes[0].attempts == [RouteLaneAttempt(model: "gpt-6-luna", effort: "low", outcome: .verifierFailed)] &&
+        escalated?.lanes[0].effort == "high" && escalated?.lanes[1].attempts == nil, "an escalation is not shown as a first attempt")
+
+    // Stored with its message; a corrupt or future record never makes the
+    // conversation unreadable, and a message without one keeps its shape.
+    var message = ChatMessage(role: .assistant, text: output)
+    message.routeLanes = record
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(message)
+    try check(try JSONDecoder().decode(ChatMessage.self, from: data) == message, "lanes do not survive a save")
+    try check(!String(decoding: try encoder.encode(ChatMessage(role: .assistant, text: "x")), as: UTF8.self).contains("routeLanes"),
+        "a message without lanes gained a field")
+    for corrupt in [#"{"schema":99}"#, #""lanes""#, #"{"schema":1,"lanes":[]}"#] {
+        var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        object["routeLanes"] = try JSONSerialization.jsonObject(with: Data(corrupt.utf8), options: .fragmentsAllowed)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
+        try check(decoded.routeLanes == nil && decoded.text == output, "a corrupt lane record broke its message: \(corrupt)")
+    }
+
+    // Colour means status: no route uses a status hue, and routes differ.
+    func distance(_ a: NSColor, _ b: NSColor) -> CGFloat {
+        guard let a = a.usingColorSpace(.sRGB), let b = b.usingColorSpace(.sRGB) else { return 0 }
+        return abs(a.redComponent - b.redComponent) + abs(a.greenComponent - b.greenComponent) + abs(a.blueComponent - b.blueComponent)
+    }
+    let routeTints = RouteLaneSurface.known.map { RouteLaneSurface.tint($0) }
+    let statusHues = [RouteLanePalette.pink, RouteLanePalette.violet, RouteLanePalette.green, RouteLanePalette.yellow, RouteLanePalette.red]
+    try check(routeTints.allSatisfy { tint in statusHues.allSatisfy { distance(tint, $0) > 0.25 } },
+        "a route is drawn in a status colour")
+    try check(routeTints.enumerated().allSatisfy { index, tint in routeTints[(index + 1)...].allSatisfy { distance(tint, $0) > 0.15 } },
+        "two routes share a colour")
+    // VoiceOver reads the status word and the route's name, not decorations.
+    let pill = RouteLanesRenderer.pill(.processing)
+    try check(!pill.string.contains(RouteLaneStatus.processing.glyph) && pill.string.contains(RouteLaneStatus.processing.title),
+        "a status glyph is text")
+    let icon = RouteLanesRenderer.symbol("terminal", color: .white, size: 12, label: "Codex")
+    let attachment = icon.length > 0 ? icon.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment : nil
+    try check(attachment?.image?.accessibilityDescription == "Codex", "a route icon has no accessible name")
+
+    // The live graph the Agent task tree reads, as lanes.
+    let conversation = UUID(), liveSubmission = UUID()
+    let liveBase = Date(timeIntervalSince1970: (now.timeIntervalSince1970 - 12).rounded(.down))
+    let liveCore = F.core(taskID: "lanes-live-1", request: "x", state: .running, routes: F.liveThree(base: liveBase),
+        base: liveBase, result: nil)
+    let graph = try F.graph(liveCore, conversationID: conversation, submissionID: liveSubmission, request: "x",
+        observedAt: now, firstObservedAt: liveBase)
+    guard let live = RouteLanesPresentation(liveGraph: graph) else { throw RunnerError.message("Routing lanes: no live lanes") }
+    try check(live.lanes.map(\.status) == [.processing, .verifying, .completed] && live.taskStatus == .processing,
+        "live lanes are not Processing / Verifying / Completed: \(live.lanes.map(\.status))")
+    try check(live.lanes.map { $0.model ?? "" } == ["gpt-6-luna", "claude-haiku-4-5", "qwen3.5:4b"] &&
+        live.lanes.allSatisfy { $0.configuration == .selected && $0.executionVerified != true },
+        "live lanes do not show the selected model as selected")
+    try check(live.lanes.map(\.surface) == ["codex", "claude", "local"] && live.lanes[0].title == "Codex · 17*23",
+        "live lanes lost their routes")
+    let returned = F.core(taskID: "lanes-live-2", request: "x", state: .running,
+        routes: F.routeAll, base: liveBase, result: nil)
+    let returnedLanes = RouteLanesPresentation(liveGraph: try F.graph(returned, conversationID: conversation,
+        submissionID: liveSubmission, request: "x", observedAt: now, firstObservedAt: liveBase))
+    try check(returnedLanes?.taskStatus == .verifying && returnedLanes?.taskNote == .allReturned,
+        "every route returned but the task does not say it is being checked")
+    let planning = C.Snapshot(taskID: "lanes-live-3", requestSHA256: appSHA256Hex("x"), state: .planning, revision: 1,
+        children: [], result: nil, error: nil)
+    let planningLanes = RouteLanesPresentation(liveGraph: try F.graph(planning, conversationID: conversation,
+        submissionID: liveSubmission, request: "x", observedAt: now, firstObservedAt: liveBase))
+    try check(planningLanes?.taskStatus == .planning && planningLanes?.lanes.isEmpty == true, "a planning task is not Planning")
+    let cancelling = C.Snapshot(taskID: "lanes-live-4", requestSHA256: appSHA256Hex("x"), state: .cancelling, revision: 3,
+        children: liveCore.children, result: nil, error: nil)
+    try check(RouteLanesPresentation(liveGraph: try F.graph(cancelling, conversationID: conversation, submissionID: liveSubmission,
+        request: "x", observedAt: now, firstObservedAt: liveBase))?.taskStatus == .cancelling, "a cancelling task is shown working")
+
+    // What the live graph forgets between snapshots: a returned lane's clock,
+    // an escalation and a continuation.
+    var history = RouteLanesLiveHistory()
+    func step(_ lanes: [RouteLane], at offset: TimeInterval) -> RouteLanesPresentation {
+        history.absorb(RouteLanesPresentation(taskStatus: .processing, lanes: lanes), submissionID: liveSubmission,
+            at: liveBase.addingTimeInterval(offset))
+    }
+    func lane(_ id: String, _ status: RouteLaneStatus, _ model: String?, _ effort: String?, start: TimeInterval? = nil) -> RouteLane {
+        RouteLane(id: id, surface: "codex", explicitRoute: true, model: model, effort: effort,
+            configuration: model == nil ? nil : .selected, status: status, startedAt: start.map { liveBase.addingTimeInterval($0) })
+    }
+    _ = step([lane("a", .processing, "gpt-6-mini", "low", start: 1), lane("b", .processing, "gpt-6-luna", "low", start: 1)], at: 2)
+    let back = step([lane("a", .verifying, "gpt-6-mini", "low"), lane("b", .verifying, "gpt-6-luna", "low")], at: 9)
+    try check(back.lanes[0].startedAt == liveBase.addingTimeInterval(1) && back.lanes[0].finishedAt == liveBase.addingTimeInterval(9),
+        "a verifying lane lost the clock it had when it returned")
+    _ = step([lane("a", .queued, nil, nil), lane("b", .processing, "gpt-6-luna", "low", start: 10)], at: 10)
+    let again = step([lane("a", .processing, "gpt-6-luna", "high", start: 11), lane("b", .processing, "gpt-6-luna", "low", start: 10)], at: 12)
+    try check(again.lanes[0].attempts == [RouteLaneAttempt(model: "gpt-6-mini", effort: "low", outcome: .verifierFailed)] &&
+        again.lanes[0].model == "gpt-6-luna", "an escalation is not kept as the lane's first attempt")
+    try check(again.lanes[1].attempts == [RouteLaneAttempt(model: "gpt-6-luna", effort: "low", outcome: .continued)],
+        "a continuation is not kept as an attempt")
+    let restarted = history.absorb(RouteLanesPresentation(taskStatus: .processing, lanes: [lane("a", .processing, "gpt-6-mini", "low", start: 1)]),
+        submissionID: UUID(), at: liveBase)
+    try check(restarted.lanes[0].attempts == nil, "a new run inherited the previous run's attempts")
+
+    // The routes the run split into name its route in the header badge.
+    let activity = RuntimeActivity(.executing, publicText: "OpenClaw task running", publicTextOrigin: .systemStatus)
+    let badge = ExecutionRoutePresentation(activity: activity, lanes: live)
+    try check(badge.executionLine.contains(os1Tr("경로 3개", "3 routes")) && badge.executionLine.contains("Claude Code") &&
+        badge.reasoningLine == os1Tr("추론: 경로별 표시", "Reasoning: per route") &&
+        badge.compactExecutionLine == os1Tr("라우팅: 경로 3개", "Route: 3 routes") &&
+        ExecutionRoutePresentation(activity: activity).executionLine == os1Tr("라우팅 결과: 아직 선택 전", "Route: not selected yet") &&
+        ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex"), lanes: live).executionLine.contains("Codex") &&
+        !ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex"), lanes: live).executionLine.contains("3"),
+        "the badge contradicts the lanes, or lanes rename a recorded executor")
+
+    // The transcript: lanes in place of the joined answers.
+    let history2 = [ChatMessage(role: .user, text: "route test"), message]
+    let document = timelineAttributedDocument(messages: history2, queuedSubmissions: [], isRunning: false, workspace: "/tmp")
+    try check(!document.string.contains("requested-1: ") && document.string.contains("Claude chat · 2+2") &&
+        document.string.contains(RouteLaneStatus.completed.title), "the transcript draws the joined answers, not the lanes")
+    try check(columns(document) == [4], "four lanes are not four columns: \(columns(document))")
+    let narrow = timelineAttributedDocument(messages: history2, queuedSubmissions: [], isRunning: false, workspace: "/tmp",
+        laneCapacity: 3)
+    try check(columns(narrow) == [2], "four lanes in a three-lane column are not a 2 × 2 grid")
+    try check(RouteLanesRenderer.capacity(textWidth: 760) == 4 && RouteLanesRenderer.capacity(textWidth: 636) == 3 &&
+        RouteLanesRenderer.capacity(textWidth: 476) == 2 && RouteLanesRenderer.columns(lanes: 3, capacity: 3) == 3 &&
+        RouteLanesRenderer.columns(lanes: 5, capacity: 4) == 3, "lane breakpoints changed")
+    // Core's raw state line is not repeated over a routed turn's lanes.
+    var heldReceipt = ChatMessage(role: .receipt, text: "held"); heldReceipt.routeLanes = heldRecord
+    let heldDocument = timelineAttributedDocument(messages: [ChatMessage(role: .user, text: "x"),
+        ChatMessage(role: .system, text: rccCoreBoundaryHeadline(held)!), heldReceipt], queuedSubmissions: [], isRunning: false,
+        workspace: "/tmp")
+    try check(!heldDocument.string.contains(os1Tr("OpenClaw 작업 상태: ", "OpenClaw task state: ")) &&
+        heldDocument.string.contains("node verifier failed"), "the routed turn repeats Core's raw state line")
+    let plainDocument = timelineAttributedDocument(messages: [ChatMessage(role: .user, text: "x"),
+        ChatMessage(role: .system, text: rccCoreBoundaryHeadline(held)!)], queuedSubmissions: [], isRunning: false, workspace: "/tmp")
+    try check(plainDocument.string.contains(os1Tr("OpenClaw 작업 상태: ", "OpenClaw task state: ")),
+        "a turn without lanes lost Core's state line")
+
+    // Live: the run's mark and disclosure fold into the lanes' first line.
+    let run = LiveRunPresentation(activity: activity, started: liveBase, now: now)
+    let folded = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+        liveRun: run, liveLanes: live.at(now))
+    var marks = 0, liveRows = 0
+    folded.enumerateAttribute(.os1LiveRunMark, in: NSRange(location: 0, length: folded.length)) { value, _, _ in if value != nil { marks += 1 } }
+    folded.enumerateAttribute(.os1TimelineRole, in: NSRange(location: 0, length: folded.length)) { value, _, _ in
+        if value as? String == "liveRun" { liveRows += 1 }
+    }
+    try check(marks == 1 && liveRows == 0 && folded.string.contains(os1Tr("진행 단계", "Steps") + " ▸") &&
+        !folded.string.contains(activity.label), "the live row is drawn again under the lanes")
+    let opened = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+        liveRun: run, liveRunExpanded: true, liveLanes: live.at(now))
+    try check(opened.string.contains(os1Tr("경로 3개", "3 routes")) && opened.string.contains(os1Tr("진행 단계", "Steps") + " ▾"),
+        "the opened live steps do not name the lanes' routes")
+
+    // Live lanes tick with the run's row: the history is never rebuilt, not
+    // even when the live task splits in a narrow column.
+    let cache = TranscriptRenderCache()
+    var input = TranscriptRenderInput(sessionID: conversation, messages: [ChatMessage(role: .user, text: "x")], queued: [],
+        isRunning: true, workspace: "/tmp")
+    var firstPrefix: NSAttributedString?
+    for tick in 0..<4 {
+        input.liveLanes = live.at(now.addingTimeInterval(Double(tick)))
+        input.liveLaneCapacity = tick < 2 ? RouteLanesRenderer.defaultCapacity : 2
+        let parts = cache.parts(input, expanded: [])
+        if tick == 0 { firstPrefix = parts.prefix }
+        try check(parts.prefix === firstPrefix && parts.row.string.contains(RouteLaneStatus.verifying.title),
+            "a live lane tick rebuilt the history or lost the lanes")
+    }
+    try check(cache.prefixBuildCount == 1, "live lanes reparsed the history")
+
+    // The real transcript view: a short conversation sits just above the
+    // composer; a long one scrolls as before; a standalone view is unchanged.
+    let coordinator = ContinuousTranscriptView.Coordinator()
+    let scroll = ContinuousTranscriptView.makeScrollView(delegate: coordinator)
+    scroll.frame = NSRect(x: 0, y: 0, width: 1_000, height: 700)
+    guard let textView = scroll.documentView as? ContinuousTranscriptTextView else { throw RunnerError.message("Routing lanes: no transcript view") }
+    let sessionID = UUID()
+    func show(_ messages: [ChatMessage]) {
+        coordinator.render(ContinuousTranscriptView(sessionID: sessionID, messages: messages, queuedSubmissions: [],
+            isRunning: false, workspace: "/tmp"), in: scroll)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        scroll.layoutSubtreeIfNeeded()
+    }
+    show([ChatMessage(role: .user, text: "first"), ChatMessage(role: .assistant, text: "short answer")])
+    let visible = scroll.contentView.bounds
+    guard let firstFrame = textView.timelineFrames().first, let bottom = textView.visibleContentBottom() else {
+        throw RunnerError.message("Routing lanes: nothing drawn")
+    }
+    try check(textView.bottomAnchorOffset > 0 && visible.maxY - bottom <= ContinuousTranscriptTextView.bottomAnchorGap + 1 &&
+        bottom <= visible.maxY && firstFrame.paint.minY > visible.minY + visible.height / 2,
+        "a short conversation does not grow from the bottom: \(firstFrame.paint) … \(bottom) in \(visible)")
+    try check(abs(textView.textContainerOrigin.y - 34 - textView.bottomAnchorOffset) < 0.5, "the anchor is not the text's origin")
+    try check(abs(firstFrame.paint.maxX - (textView.textContainerOrigin.x + textView.textContainer!.size.width)) < 1,
+        "the user bubble does not end at the column's edge")
+    show([ChatMessage(role: .user, text: "first"), message])
+    let wideLanes = textView.routeLaneFrames()
+    try check(wideLanes.count == 4 && Set(wideLanes.map { Int($0.frame.minY.rounded()) }).count == 1,
+        "four lanes are not side by side in a 1000-point view")
+    // A redraw of only the lower part of a lane row paints every card in
+    // it, the short lane's too, though its text lies above the redrawn area.
+    let tall = (1...12).map { "line \($0) of the tall lane" }.joined(separator: "\n")
+    let unequal = [F.Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
+                           started: 0, finished: 2),
+                   F.Route(surface: .claude, model: "claude-sonnet-4-5", effort: .low, instruction: "2+2", state: .completed,
+                           output: tall, started: 0, finished: 3)]
+    var unequalMessage = ChatMessage(role: .assistant, text: F.joined(unequal))
+    unequalMessage.routeLanes = RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-unequal", request: "x", state: .completed,
+        routes: unequal, base: base, result: F.joined(unequal)), submissionID: submission, messageText: F.joined(unequal))
+    show([ChatMessage(role: .user, text: "first"), unequalMessage])
+    let pair = textView.routeLaneFrames()
+    guard pair.count == 2, let layoutManager = textView.layoutManager, let container = textView.textContainer else {
+        throw RunnerError.message("Routing lanes: the unequal lanes were not drawn")
+    }
+    let shortText = layoutManager.boundingRect(forGlyphRange: layoutManager.glyphRange(forCharacterRange: pair[0].range,
+        actualCharacterRange: nil), in: container).offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
+    let dirty = NSRect(x: 0, y: shortText.maxY + 60, width: textView.bounds.width, height: 30)
+    try check(dirty.maxY < pair[0].frame.maxY - 4, "the unequal lanes are not unequal: \(shortText) in \(pair[0].frame)")
+    let width = Int(textView.bounds.width), height = Int(textView.bounds.height)
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+          let base2D = NSGraphicsContext(bitmapImageRep: rep) else { throw SourceContextError.invalid }
+    let context = NSGraphicsContext(cgContext: base2D.cgContext, flipped: true)
+    context.cgContext.translateBy(x: 0, y: CGFloat(height)); context.cgContext.scaleBy(x: 1, y: -1)
+    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
+    RouteLanesDrawing.draw(in: textView, dirtyRect: dirty)
+    NSGraphicsContext.restoreGraphicsState()
+    let probe = rep.colorAt(x: Int(pair[0].frame.minX + 6), y: Int(dirty.midY))?.alphaComponent ?? 0
+    try check(probe > 0.01, "a partial redraw left the short lane's card unpainted (alpha \(probe))")
+    scroll.frame = NSRect(x: 0, y: 0, width: 560, height: 700)
+    show([ChatMessage(role: .user, text: "first"), message])
+    scroll.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    scroll.layoutSubtreeIfNeeded()
+    let gridLanes = textView.routeLaneFrames()
+    try check(textView.laneCapacity == 2 && gridLanes.count == 4 &&
+        Set(gridLanes.map { Int($0.frame.minY.rounded()) }).count == 2, "a narrow view does not wrap the lanes into a grid")
+    scroll.frame = NSRect(x: 0, y: 0, width: 1_000, height: 700)
+    show((0..<120).map { ChatMessage(role: $0.isMultiple(of: 2) ? .user : .assistant, text: "message \($0) " +
+        String(repeating: "long text ", count: 20)) })
+    try check(textView.bottomAnchorOffset == 0 && textView.bounds.height > 700, "a long conversation keeps a bottom offset")
+    let standalone = ContinuousTranscriptTextView(frame: NSRect(x: 0, y: 0, width: 1_000, height: 700))
+    standalone.textContainerInset = NSSize(width: 40, height: 34)
+    standalone.textStorage?.setAttributedString(NSAttributedString(string: "x"))
+    standalone.layoutSubtreeIfNeeded()
+    try check(standalone.textContainerOrigin.y == 34 && standalone.bottomAnchorOffset == 0,
+        "a standalone transcript (snapshot, export) moved off its top origin")
+    print("Routing lanes: \(checks) checks PASS; split/build/storage/live graph/history/render/cache/paint/bottom anchor; provider calls 0")
+}
+
+/// The actual store: a routed run's live graph becomes lanes, and its Core
+/// result is saved with its lanes and survives a reload.
+@MainActor
+private func routeLanesCompletionSelfTest() async throws {
+    typealias F = RouteLanesFixture
+    var checks = 0
+    func check(_ ok: Bool, _ why: String) throws {
+        guard ok else { throw RunnerError.message("Routing lanes delivery: " + why) }; checks += 1
+    }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-route-lanes-delivery-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+    final class Gate { var continuation: CheckedContinuation<Void, Never>?; var calls = 0 }
+    let gate = Gate()
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, onActivity in
+        gate.calls += 1
+        let now = Date(), base = now.addingTimeInterval(-10)
+        let taskID = submission.id.uuidString.lowercased()
+        let live = F.core(taskID: taskID, request: submission.executionRequest, state: .running,
+            routes: F.liveThree(base: base), base: base, result: nil)
+        let graph = try F.graph(live, conversationID: submission.sessionID, submissionID: submission.id,
+            request: submission.request, observedAt: now, firstObservedAt: base)
+        onActivity(RuntimeActivity(.preparing, publicText: "OpenClaw task running · 3 child run(s)",
+            publicTextOrigin: .systemStatus, agentTask: graph))
+        await withCheckedContinuation { gate.continuation = $0 }
+        let output = F.joined(F.routeAll)
+        let done = F.core(taskID: taskID, request: submission.executionRequest, state: .completed, routes: F.routeAll,
+            base: base, result: output)
+        let final = try F.graph(done, conversationID: submission.sessionID, submissionID: submission.id,
+            request: submission.request, observedAt: Date(), firstObservedAt: base)
+        return AppRunSummary(status: "complete", steps: [], agentTask: final, rccRuntime: done)
+    }, memoryPressureSampler: { .normal }, nativeSessionOpener: { _ in false })
+    let id = store.selectedSessionID!
+    store.sessions[0].workspace = root.path
+    store.composer = "route test: local 1+1, Codex 2+2, Claude Code 1+1, Claude chat 2+2"; store.send()
+    let deadline = Date().addingTimeInterval(5)
+    while store.liveRouteLanes(id) == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    let live = store.liveRouteLanes(id)
+    try check(live?.lanes.map(\.status) == [.processing, .verifying, .completed],
+        "the live graph does not reach the conversation as lanes: \(String(describing: live?.lanes.map(\.status)))")
+    // Views read the lanes on every store change (a keystroke): the graph
+    // is read once per change of the graph, not once per read.
+    let builds = store.liveLaneBuilds
+    for _ in 0..<5 { _ = store.liveRouteLanes(id) }
+    try check(store.liveLaneBuilds == builds, "the live lanes were rebuilt without a graph change")
+    try check(ExecutionRoutePresentation(activity: store.activeRuns[id]?.activity, lanes: live).executionLine
+        .contains(os1Tr("경로 3개", "3 routes")), "the run's badge does not name the lanes' routes")
+    gate.continuation?.resume(); gate.continuation = nil
+    while store.isSessionRunning(id) && Date() < deadline.addingTimeInterval(5) { try await Task.sleep(for: .milliseconds(10)) }
+    try check(!store.isSessionRunning(id) && store.liveRouteLanes(id) == nil, "lanes stay live after the run")
+    let messages = store.sessions.first { $0.id == id }!.messages
+    let answer = messages.last { $0.role == .assistant }
+    try check(answer?.text == F.joined(F.routeAll) && answer?.routeLanes?.lanes.count == 4 &&
+        answer?.routeLanes?.answersInText == true && answer?.routeLanes?.lanes.allSatisfy { $0.status == .completed } == true,
+        "the result is not saved with its four lanes")
+    try check(messages.last { $0.role == .receipt }?.routeLanes == nil, "the receipt repeats the lanes")
+    store.flushPendingState()
+    let reloaded = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
+    try check(reloaded.sessions.first { $0.id == id }?.messages.last { $0.role == .assistant }?.routeLanes == answer?.routeLanes,
+        "the lanes do not survive a restart")
+    try check(gate.calls == 1, "the fixture ran more than once")
+    print("Routing lanes delivery: \(checks) checks PASS; actual SessionStore live graph/result/reload; provider calls 0")
 }
