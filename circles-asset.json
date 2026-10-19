@@ -1,0 +1,28 @@
+{
+  "purpose": "Two separate homepage circular paintings animated in the approved soft recursive style",
+  "version": "circle-recursive-v1",
+  "format": {
+    "width": 1080,
+    "height": 1080,
+    "duration": 18,
+    "fps": 30,
+    "codec": "H264 High",
+    "pixelFormat": "yuv420p",
+    "faststart": true,
+    "audio": false
+  },
+  "videos": {
+    "large": {
+      "file": "media/circle-recursive-large-soft.mp4",
+      "bytes": 27208535,
+      "sha256": "e9b26189a64881539afffadb9e0964c746f9bde87b8a34d32f890916e3ed368b",
+      "sourceSha256": "29c4b0db7de26f4520c7b6f55f7615a94ec11c1bee3ac119ea5d6c4fd50119ed"
+    },
+    "small": {
+      "file": "media/circle-recursive-small-soft.mp4",
+      "bytes": 27219693,
+      "sha256": "a8ea8bfe45144ee7648675f05cc9ff77f2294f085190310b287dcbb112f27174",
+      "sourceSha256": "ffe18521d06ed2a05cf347289dfac8ce922fe7f6fdd4c8e3a9fb41bcc68472df"
+    }
+  }
+}
