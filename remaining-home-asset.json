@@ -1,0 +1,36 @@
+{
+  "purpose": "Three remaining homepage artworks animated individually in the approved soft recursive style",
+  "version": "remaining-home-recursive-v1",
+  "videos": {
+    "axiom": {
+      "file": "media/home-artwork-axiom-soft.mp4",
+      "bytes": 27216335,
+      "sha256": "0d861f2412f64d8f6ea7db24f4dd613b0cab685ad9b2d92b19998b8ab25ce820",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "sourceSha256": "b9404bf108de86f1a698e562560f5f615339f42cb96d3ee0738a3f56572d2dec"
+    },
+    "archive": {
+      "file": "media/home-artwork-archive-soft.mp4",
+      "bytes": 27285965,
+      "sha256": "bb551a4a03ef936bdfdd3d217aad630fb205f1ecf0e9b7a1e40f3074e77dc767",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "sourceSha256": "f072fcdc13e96ac0cdd40445d2944d795a1e2b75c0dab63c7e9b4d0fbd8e2af4"
+    },
+    "entity": {
+      "file": "media/home-artwork-entity-soft.mp4",
+      "bytes": 27188382,
+      "sha256": "4d6aaa6d2b5a76e843bfc78edb9722123142a00528ff96fe349f27147e9f532e",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "sourceSha256": "0fee42235f068ca9762b8c4e01bc493fe16c072688db7e8bdece84960ea80489"
+    }
+  }
+}
