@@ -35,13 +35,80 @@ public struct BackendHealth: Codable, Equatable, Sendable {
             self.accountID = accountID; self.observedAt = observedAt; self.source = source; self.windows = windows
         }
         public static let maximumAge: TimeInterval = 120
-        public func isFresh(accountID: String, now: Date = Date(), maxAge: TimeInterval = maximumAge) -> Bool {
+        /// An observation kept after a failed refresh (2026-10-19: Anthropic's
+        /// usage endpoint answers about once per two minutes per sign-in, so
+        /// every other refresh came back without rows and the catalog lost
+        /// Claude's quota). Same account, no window reset since, at most ten
+        /// minutes old. Plan usage only rises inside a window, so its observed
+        /// remaining share is an upper bound; `estimate` discounts it.
+        public static let retainedMaximumAge: TimeInterval = 600
+        /// The retained estimate's burn allowance: about 7x the fastest
+        /// session-window burn observed (0.27 points/minute, 2026-10-19).
+        public static let retainedBurnPercentPerMinute: Double = 2
+        /// A discounted estimate at or below this is unknown, never dispatched.
+        public static let retainedDispatchFloorPercent: Double = 5
+        private func valid(accountID: String, now: Date, maxAge: TimeInterval) -> Bool {
             let age = now.timeIntervalSince(observedAt)
-            return self.accountID == accountID && !accountID.isEmpty && maxAge > 0 && maxAge <= Self.maximumAge &&
+            return self.accountID == accountID && !accountID.isEmpty && maxAge > 0 &&
                 age >= 0 && age <= maxAge && !windows.isEmpty && windows.count <= 64 && windows.allSatisfy {
                     !$0.bucket.isEmpty && $0.bucket.count <= 64 && $0.usedPercent.isFinite &&
                     (0...100).contains($0.usedPercent) && ($0.resetsAt.map { $0 > now } ?? true)
                 }
+        }
+        public func isFresh(accountID: String, now: Date = Date(), maxAge: TimeInterval = maximumAge) -> Bool {
+            maxAge <= Self.maximumAge && valid(accountID: accountID, now: now, maxAge: maxAge)
+        }
+        /// Fresh or retained: same account, no reset crossed, ten minutes at most.
+        public func isRetainable(accountID: String, now: Date = Date()) -> Bool {
+            valid(accountID: accountID, now: now, maxAge: Self.retainedMaximumAge)
+        }
+        /// The observation's own remaining share (no discount) while it is
+        /// retainable. What a health record shows; never dispatch evidence.
+        public func observedRemaining(accountID: String, model: String? = nil, surface: String? = nil,
+                                      now: Date = Date()) -> Double? {
+            guard isRetainable(accountID: accountID, now: now) else { return nil }
+            return windows.filter { applies($0, model: model, surface: surface) }.map { 100 - $0.usedPercent }.min()
+        }
+        public func observedLimitingReset(accountID: String, model: String? = nil, surface: String? = nil,
+                                          now: Date = Date()) -> Date? {
+            guard let remaining = observedRemaining(accountID: accountID, model: model, surface: surface, now: now) else { return nil }
+            return windows.filter { applies($0, model: model, surface: surface) && 100 - $0.usedPercent == remaining }
+                .compactMap(\.resetsAt).max()
+        }
+        /// Dispatch evidence for one model: a fresh observation as observed
+        /// (valid 120 s from observation, the former rule unchanged), or a
+        /// retained one as a conservative estimate valid until ten minutes
+        /// after observation or the earliest applicable reset, whichever
+        /// comes first. An observed 0% stays 0% until that window resets; an
+        /// estimate at or below the floor is unknown.
+        public struct Estimate: Equatable, Sendable {
+            public enum Basis: String, Sendable { case fresh, retainedEstimate = "retained_estimate" }
+            public let basis: Basis
+            public let remainingPercent: Double
+            public let observedAt: Date
+            public let validUntil: Date
+            public let limitingReset: Date?
+        }
+        public func estimate(accountID: String, model: String? = nil, surface: String? = nil,
+                             now: Date = Date()) -> Estimate? {
+            if isFresh(accountID: accountID, now: now) {
+                guard let remaining = effectiveRemaining(accountID: accountID, model: model, surface: surface, now: now) else { return nil }
+                return Estimate(basis: .fresh, remainingPercent: remaining, observedAt: observedAt,
+                                validUntil: observedAt.addingTimeInterval(Self.maximumAge),
+                                limitingReset: limitingReset(accountID: accountID, model: model, surface: surface, now: now))
+            }
+            guard let observed = observedRemaining(accountID: accountID, model: model, surface: surface, now: now) else { return nil }
+            let applicable = windows.filter { applies($0, model: model, surface: surface) }
+            let validUntil = ([observedAt.addingTimeInterval(Self.retainedMaximumAge)] + applicable.compactMap(\.resetsAt)).min()!
+            let reset = observedLimitingReset(accountID: accountID, model: model, surface: surface, now: now)
+            if observed == 0 {
+                return Estimate(basis: .retainedEstimate, remainingPercent: 0, observedAt: observedAt,
+                                validUntil: validUntil, limitingReset: reset)
+            }
+            let discounted = observed - Self.retainedBurnPercentPerMinute * now.timeIntervalSince(observedAt) / 60
+            guard discounted > Self.retainedDispatchFloorPercent else { return nil }
+            return Estimate(basis: .retainedEstimate, remainingPercent: discounted, observedAt: observedAt,
+                            validUntil: validUntil, limitingReset: reset)
         }
         private func applies(_ window: Window, model: String?, surface: String?) -> Bool {
             if let scopedSurface = window.surface {
@@ -69,6 +136,50 @@ public struct BackendHealth: Codable, Equatable, Sendable {
             guard let remaining = effectiveRemaining(accountID: accountID, model: model, surface: surface, now: now) else { return nil }
             return windows.filter { applies($0, model: model, surface: surface) && 100 - $0.usedPercent == remaining }
                 .compactMap(\.resetsAt).max()
+        }
+        /// The CLI answers get_usage from its own usage snapshot when one
+        /// under this age exists, so the reply can be that old on receipt.
+        public static let claudeSnapshotReuseWindow: TimeInterval = 60
+        /// When a get_usage body was observed: the server's own
+        /// `rate_limits.seven_day_breakdown.as_of`, never later than receipt;
+        /// without it, receipt minus the CLI's snapshot window. Stamping the
+        /// receipt time overstated freshness by up to 60 s.
+        public static func claudeObservedAt(_ body: [String: Any], receivedAt: Date) -> Date {
+            if let limits = body["rate_limits"] as? [String: Any],
+               let breakdown = limits["seven_day_breakdown"] as? [String: Any],
+               let text = breakdown["as_of"] as? String, text.count <= 64, let asOf = isoDate(text) {
+                return min(asOf, receivedAt)
+            }
+            return receivedAt.addingTimeInterval(-claudeSnapshotReuseWindow)
+        }
+        /// RFC 3339 with or without a fraction of any length (the server
+        /// writes microseconds, which the fractional formatter rejects).
+        static func isoDate(_ text: String) -> Date? {
+            let whole = ISO8601DateFormatter()
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = whole.date(from: text) ?? fractional.date(from: text) { return date }
+            guard let dot = text.firstIndex(of: "."),
+                  let zone = text[dot...].firstIndex(where: { $0 == "Z" || $0 == "+" || $0 == "-" }) else { return nil }
+            let digits = text[text.index(after: dot)..<zone]
+            guard !digits.isEmpty, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber),
+                  let base = whole.date(from: String(text[..<dot]) + String(text[zone...])),
+                  let fraction = Double("0." + digits) else { return nil }
+            return base.addingTimeInterval(fraction)
+        }
+        /// Classifies a get_usage body and adopts it only when it carries live
+        /// rows. The CLI's answer after HTTP 429 or a failed fetch keeps
+        /// `rate_limits` but drops `limits`: that is a usage-endpoint
+        /// fallback, never quota evidence.
+        public static func claudeUsageOutcome(_ body: [String: Any], accountID: String,
+                                              observedAt: Date) -> (outcome: QuotaProbe.Outcome, snapshot: Self?) {
+            guard let available = body["rate_limits_available"] as? NSNumber,
+                  CFGetTypeID(available) == CFBooleanGetTypeID() else { return (.malformed, nil) }
+            guard available.boolValue else { return (.notApplicable, nil) }
+            guard let limits = body["rate_limits"] as? [String: Any] else { return (.usageUnavailable, nil) }
+            guard let rows = limits["limits"], !(rows is NSNull) else { return (.usageEndpointFallback, nil) }
+            guard let snapshot = claudeUsage(body, accountID: accountID, observedAt: observedAt) else { return (.malformed, nil) }
+            return (.ok, snapshot)
         }
         /// Adopt only fresh server rows. Legacy utilization bars may be cached
         /// by the CLI on a failed usage fetch and must not masquerade as fresh.
@@ -153,6 +264,37 @@ public struct BackendHealth: Codable, Equatable, Sendable {
             return Self(accountID: accountID, observedAt: observedAt, source: .codexNative, windows: windows)
         }
     }
+    /// The latest native quota metadata attempt: what happened, when, and
+    /// when the next one may run. Public state only, never a body or a
+    /// credential. Optional on the record, so older caches still decode; an
+    /// outcome spelled by a newer build decodes as `unrecognized`.
+    public struct QuotaProbe: Codable, Equatable, Sendable {
+        public enum Outcome: String, Codable, Sendable {
+            case ok
+            /// HTTP 429 or a failed usage fetch: the CLI answered with its
+            /// fallback body (rate_limits without live `limits` rows).
+            case usageEndpointFallback = "usage_endpoint_fallback"
+            case usageUnavailable = "usage_unavailable"
+            /// rate_limits_available false: not a subscription plan lane.
+            case notApplicable = "not_applicable"
+            case malformed
+            case controlUnsupported = "control_unsupported"
+            case timeoutOrNoReply = "timeout_or_no_reply"
+            case exitNonzero = "exit_nonzero"
+            case executableMissing = "executable_missing"
+            case accountChanged = "account_changed"
+            case unrecognized
+            public init(from decoder: Decoder) throws {
+                self = Outcome(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unrecognized
+            }
+        }
+        public let outcome: Outcome
+        public let attemptedAt: Date
+        public let nextEligibleAt: Date
+        public init(outcome: Outcome, attemptedAt: Date, nextEligibleAt: Date) {
+            self.outcome = outcome; self.attemptedAt = attemptedAt; self.nextEligibleAt = nextEligibleAt
+        }
+    }
     public enum State: String, Codable, Sendable {
         case usable
         case loggedOut = "logged_out"
@@ -173,6 +315,7 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         public var windowUsedPercent: Double? = nil
         public var windowResetsAt: Date? = nil
         public var quota: QuotaSnapshot? = nil
+        public var quotaProbe: QuotaProbe? = nil
         public init(state: State, detail: String? = nil, recoversAt: Date? = nil) {
             self.state = state
             self.detail = detail.map { String($0.prefix(600)) }
@@ -237,6 +380,35 @@ public struct BackendHealth: Codable, Equatable, Sendable {
         }
         if source.contains("기본 지시문") || source.contains("base instructions") { return Backend(state: .contextBudget, detail: source) }
         return Backend(state: .probeFailed, detail: source)
+    }
+
+    /// A writer whose probe returned no quota (a failed usage fetch, or a
+    /// path that skipped the probe) never erases the previous record's
+    /// observation: it is carried forward unchanged, original observedAt
+    /// included, while it is retainable for the same account and the backend
+    /// is still signed in and present. An observed exhausted Claude window
+    /// stays exhausted until its reset (usage never falls inside a window).
+    /// `supersededAt` names, per provider, the latest account-wide quota
+    /// rejection: an observation made at or before it is not carried forward.
+    public func retainingQuota(from previous: BackendHealth?, accountIDs: [String: String],
+                               supersededAt: [String: Date] = [:], now: Date = Date()) -> BackendHealth {
+        func retain(_ current: Backend, _ prior: Backend?, provider: String, markExhausted: Bool) -> Backend {
+            guard current.quota == nil, let account = accountIDs[provider], let quota = prior?.quota,
+                  supersededAt[provider].map({ quota.observedAt > $0 }) ?? true,
+                  ![.loggedOut, .missing, .disabled].contains(current.state),
+                  let remaining = quota.observedRemaining(accountID: account, now: now) else { return current }
+            let reset = quota.observedLimitingReset(accountID: account, now: now)
+            var kept = remaining == 0 && markExhausted && current.usable
+                ? Backend(state: .quotaExhausted, detail: "Native Claude plan quota exhausted", recoversAt: reset) : current
+            kept.quota = quota
+            kept.quotaProbe = current.quotaProbe ?? prior?.quotaProbe
+            kept.windowUsedPercent = 100 - remaining
+            kept.windowResetsAt = reset
+            return kept
+        }
+        return BackendHealth(claude: retain(claude, previous?.claude, provider: "claude", markExhausted: true),
+                             codex: retain(codex, previous?.codex, provider: "codex", markExhausted: false),
+                             checkedAt: checkedAt)
     }
 
     /// Poll metadata independently of blocked jobs. A reset invalidates evidence;

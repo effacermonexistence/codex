@@ -390,12 +390,16 @@ public enum RCCNativeCatalogBuilder {
             if profile.provider == "codex", input.codexQuotaExhaustedModels.contains(profile.model) {
                 exclude(profile.provider, "quota_zero"); continue
             }
-            // Only a fresh observation for this account is quota evidence. A
-            // stale, foreign or not-yet-current snapshot is unknown quota: all
-            // three quota fields stay null (never an observed time without a
-            // validity window, which the catalog contract rejects as a whole).
-            let fresh = quota.flatMap { $0.isFresh(accountID: account, now: input.now) ? $0 : nil }
-            let remaining = fresh?.effectiveRemaining(accountID: account, model: profile.model, now: input.now)
+            // Quota evidence for this account: a fresh observation as observed
+            // (valid 120 s, unchanged), or one retained after a failed refresh
+            // as a conservative estimate (`QuotaSnapshot.estimate`: discounted,
+            // true observedAt, valid at most ten minutes and never past a
+            // reset). Anything else (foreign, future-dated, reset-crossed,
+            // older than ten minutes, or estimated at/below the floor) is
+            // unknown: all three quota fields stay null (never an observed
+            // time without a validity window, which the contract rejects).
+            let estimate = quota?.estimate(accountID: account, model: profile.model, now: input.now)
+            let remaining = estimate?.remainingPercent
             if remaining == 0 { exclude(profile.provider, "quota_zero"); continue }
             for scope in scopes {
                 let surfaces = scope == "read_only" ? providerSurfaces(profile.provider) : [profile.provider]
@@ -417,8 +421,8 @@ public enum RCCNativeCatalogBuilder {
                         "availability": "available", "availability_observed_at_ms": nowMS,
                         "availability_valid_until_ms": Int64(input.now.addingTimeInterval(120).timeIntervalSince1970 * 1000),
                         "quota_remaining_fraction": remaining.map { $0 / 100 as Any } ?? NSNull(),
-                        "quota_observed_at_ms": remaining == nil ? NSNull() : fresh.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
-                        "quota_valid_until_ms": remaining == nil ? NSNull() : fresh.map { Int64($0.observedAt.addingTimeInterval(120).timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
+                        "quota_observed_at_ms": estimate.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
+                        "quota_valid_until_ms": estimate.map { Int64($0.validUntil.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
                         "quality_state": "policy_admitted", "estimated_cost_units": NSNull()]
                     rows.append(Row(fields: fields, provider: profile.provider, model: profile.model, surface: surface,
                                     effort: profile.effort, scope: scope, id: id, remaining: remaining.map { $0 / 100 },
@@ -507,7 +511,7 @@ public enum RCCNativeCatalogBuilder {
         func scoreParts(_ row: Row) -> (share: Double, hours: Double, resetUnknown: Bool, score: Double?) {
             let share = Double(capacity(row.provider, input.capacityPlan)) / 100
             let quota = row.provider == "codex" ? input.codexQuota : input.claudeQuota
-            let reset = quota?.limitingReset(accountID: input.accountIDs[row.provider] ?? "", model: row.model, now: input.now)
+            let reset = quota?.estimate(accountID: input.accountIDs[row.provider] ?? "", model: row.model, now: input.now)?.limitingReset
             let hours = reset.map { max(0, $0.timeIntervalSince(input.now) / 3600) } ?? 168
             return (share, hours, reset == nil, row.remaining.map { share * $0 / max(hours, 1) })
         }

@@ -187,6 +187,7 @@ struct ActiveCodexCatalog {
 func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog: ActiveCodexCatalog,
                            workspace: String, claudeLimitedOnly: Bool = false,
                            claudeQuota: BackendHealth.QuotaSnapshot? = nil,
+                           claudeQuotaProbe: BackendHealth.QuotaProbe? = nil,
                            receipts: URL = ClaudeQuotaBackoff.defaultDirectory,
                            authProbe: ((String) -> ModelAvailability.ClaudeAuthProbe)? = nil,
                            now: Date = Date()) -> BackendHealth {
@@ -215,14 +216,19 @@ func observedBackendHealth(claudeCatalog: [ClaudeModelCapability], codexCatalog:
         case .failed(let detail): claude = BackendHealth.Backend(state: .probeFailed, detail: detail)
         }
     }
-    if let quota = claudeQuota, let remaining = quota.effectiveRemaining(accountID: quota.accountID, now: now) {
+    // The record keeps the observation itself (true observedAt), fresh or
+    // retained after a failed refresh; readers that need fresh evidence
+    // still test isFresh. An observed exhausted window stays exhausted
+    // until it resets: plan usage never falls inside a window.
+    if let quota = claudeQuota, let remaining = quota.observedRemaining(accountID: quota.accountID, now: now) {
         if remaining == 0, claude.usable {
             claude = BackendHealth.Backend(state: .quotaExhausted,
-                detail: "Native Claude plan quota exhausted", recoversAt: quota.limitingReset(accountID: quota.accountID, now: now))
+                detail: "Native Claude plan quota exhausted", recoversAt: quota.observedLimitingReset(accountID: quota.accountID, now: now))
         }
         claude.quota = quota; claude.windowUsedPercent = 100 - remaining
-        claude.windowResetsAt = quota.limitingReset(accountID: quota.accountID, now: now)
+        claude.windowResetsAt = quota.observedLimitingReset(accountID: quota.accountID, now: now)
     }
+    claude.quotaProbe = claudeQuotaProbe
     var codex = BackendHealth.codexBackend(modelCount: codexCatalog.models.count, source: codexCatalog.source,
         resetsAt: codexCatalog.quotaResetsAt, executablePresent: (try? findExecutable("codex")) != nil,
         window: codexCatalog.quotaWindow)
@@ -262,6 +268,53 @@ func backendHealthLabelSelfTest() throws {
     print("Backend health label: \(checks.count) checks OK; failed inventory never reported as a model-limit wait")
 }
 
+/// 2026-10-19: a refused Claude usage refresh never erases the health record's
+/// observation, and a retained observation still reaches the record with its
+/// own observedAt and the refresh outcome. Private temporary files only; no
+/// provider, config or live record is touched.
+func claudeQuotaPersistenceSelfTest() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-quota-persist-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("backend-health.json")
+    let now = Date()
+    let account = BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id
+    func observed(_ age: TimeInterval) -> BackendHealth.QuotaSnapshot {
+        .init(accountID: account, observedAt: now.addingTimeInterval(-age), source: .claudeNative, windows: [
+            .init(bucket: "session", usedPercent: 9, resetsAt: now.addingTimeInterval(3 * 3600)),
+            .init(bucket: "weekly_all", usedPercent: 3, resetsAt: now.addingTimeInterval(5 * 86_400))])
+    }
+    let codex = ActiveCodexCatalog(models: [], source: "self-test")
+    let models = [ClaudeModelCapability(model: "opus", supportedEfforts: ["xhigh"])]
+    let refused = BackendHealth.QuotaProbe(outcome: .usageEndpointFallback, attemptedAt: now, nextEligibleAt: now.addingTimeInterval(125))
+    let good = observed(30)
+    persistBackendHealth(observedBackendHealth(claudeCatalog: models, codexCatalog: codex, workspace: root.path,
+        claudeQuota: good, receipts: root, now: now), url: url, receipts: root, now: now)
+    let afterRefusal = persistBackendHealth(observedBackendHealth(claudeCatalog: models, codexCatalog: codex,
+        workspace: root.path, claudeQuotaProbe: refused, receipts: root, now: now), url: url, receipts: root, now: now)
+    let reloaded = BackendHealth.load(from: url, maxAge: 60, now: now)
+    let retained = observedBackendHealth(claudeCatalog: models, codexCatalog: codex, workspace: root.path,
+        claudeQuota: observed(245), claudeQuotaProbe: refused, receipts: root, now: now).claude
+    // A real account-wide refusal after that observation: once its 300 s
+    // cooldown ends the record must not carry the earlier observation on.
+    let later = now.addingTimeInterval(301)
+    try ClaudeQuotaBackoff.record(at: root.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now)
+    let afterRejection = persistBackendHealth(observedBackendHealth(claudeCatalog: models, codexCatalog: codex,
+        workspace: root.path, claudeQuotaProbe: refused, receipts: root, now: later), url: url, receipts: root, now: later)
+    let checks = [
+        // The record encodes whole seconds (ISO 8601), as it always has.
+        afterRefusal.claude.quota?.windows.map(\.usedPercent) == good.windows.map(\.usedPercent),
+        reloaded.flatMap { $0.claude.quota.map { abs($0.observedAt.timeIntervalSince(good.observedAt)) < 1 } } == true,
+        reloaded?.claude.quotaProbe?.outcome == .usageEndpointFallback, reloaded?.claude.windowUsedPercent == 9,
+        retained.quota?.observedAt == now.addingTimeInterval(-245), retained.windowUsedPercent == 9,
+        retained.quotaProbe == refused, retained.state == .usable,
+        retained.quota?.estimate(accountID: account, now: now)?.basis == .retainedEstimate,
+        afterRejection.claude.quota == nil, afterRejection.claude.state == .usable,
+    ]
+    guard checks.allSatisfy({ $0 }) else { throw OS1Error.message("Claude quota persistence regression failed: \(checks)") }
+    print("Claude quota persistence: \(checks.count) checks OK; a refused usage refresh keeps the observation and names the outcome; a real quota refusal supersedes it")
+}
+
 /// Full read-only probe of both backends (native metadata only, no inference).
 /// Saves the record for the fleet heartbeat and the app's recovery monitor.
 @discardableResult
@@ -273,12 +326,33 @@ func probeBackendHealth(workspace: String, config: RuntimeConfig) -> BackendHeal
             ?? ActiveCodexCatalog(models: [], source: "native account metadata unavailable"))
         : ActiveCodexCatalog(models: [], source: BackendHealth.disabledCatalogSource)
     let claude = (try? ModelAvailability.claudeCatalogs(workspace: workspace, config: config)) ?? (configured: [], routable: [])
-    let claudeQuota = ModelAvailability.claudeQuota(workspace: workspace)
+    let claudeQuota = ModelAvailability.claudeQuotaObservation(workspace: workspace)
     let health = observedBackendHealth(claudeCatalog: claude.routable, codexCatalog: codex, workspace: workspace,
                                        claudeLimitedOnly: !claude.configured.isEmpty && claude.routable.isEmpty,
-                                       claudeQuota: claudeQuota)
-    try? health.save()
-    return health
+                                       claudeQuota: claudeQuota.snapshot, claudeQuotaProbe: claudeQuota.probe)
+    return persistBackendHealth(health)
+}
+
+/// Every backend-health writer saves through here: a record whose probe
+/// observed no quota (a failed usage fetch, or a path that skipped the
+/// probe) keeps the previous record's retainable observation instead of
+/// replacing it with nothing (2026-10-19: `{"state":"usable"}` every other
+/// minute, and every catalog then held the Claude pool as unknown quota).
+/// An observation made before the latest account-wide Claude quota refusal
+/// is never carried forward (`receipts` is injectable for the self-test).
+@discardableResult
+func persistBackendHealth(_ health: BackendHealth, url: URL = BackendHealth.defaultURL,
+                          receipts: URL = ClaudeQuotaBackoff.defaultDirectory, now: Date = Date()) -> BackendHealth {
+    let book = BackendAccounts.load()
+    let accounts = Dictionary(uniqueKeysWithValues: ["claude", "codex"].map { ($0, BackendAccounts.active(provider: $0, in: book).id) })
+    let previous = BackendHealth.load(from: url, maxAge: BackendHealth.QuotaSnapshot.retainedMaximumAge + 60, now: now,
+                                      invalidateReset: false)
+    let rejection = ClaudeQuotaBackoff.lastAccountRejection(
+        at: receipts.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent), now: now)
+    let merged = health.retainingQuota(from: previous, accountIDs: accounts,
+                                       supersededAt: rejection.map { ["claude": $0] } ?? [:], now: now)
+    try? merged.save(to: url)
+    return merged
 }
 
 /// Bounded self-repair for a preflight with no usable backend. The only
@@ -12086,13 +12160,13 @@ func runTaskWithOwnerPolicy(
     if codexCatalog.models.isEmpty, observedClaudeCatalog.isEmpty, publicDeterministicExpression(prompt) == nil {
         let health = observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
                                            workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly, claudeQuota: observedClaudeQuota)
-        try? health.save()
+        persistBackendHealth(health)
         RuntimeActivity.emit(.recovering, publicText: health.publicSummary)
         let repair = selfRepairBackends(health: health, codexCatalog: codexCatalog, workspace: canonicalWorkspace, config: config)
         if let repaired = repair.catalogs {
             observedClaudeCatalog = repaired.claude
             codexCatalog = repaired.codex
-            try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace).save()
+            persistBackendHealth(observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog, workspace: canonicalWorkspace))
         } else {
             let diagnosis = health.holdMessage(repairNote: repair.note)
             BackendFailureNotice(provider: "local", sessionID: nil, blocker: .backendUnavailable,
@@ -12101,8 +12175,8 @@ func runTaskWithOwnerPolicy(
         }
     } else if !claudeInventoryDeferred {
         // Never persist unobserved alternative health as disconnected.
-        try? observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
-                                   workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly, claudeQuota: observedClaudeQuota).save()
+        persistBackendHealth(observedBackendHealth(claudeCatalog: observedClaudeCatalog, codexCatalog: codexCatalog,
+                                   workspace: canonicalWorkspace, claudeLimitedOnly: claudeLimitedOnly, claudeQuota: observedClaudeQuota))
     }
     // The signed router receives only stage-eligible native model/effort
     // tuples. A stage directive in prose alone would not enforce this policy.
@@ -17607,6 +17681,7 @@ func selfTest() throws {
     try routeFanoutSummarySelfTest()
     try providerSurfaceRoutingSelfTest()
     try backendHealthLabelSelfTest()
+    try claudeQuotaPersistenceSelfTest()
     try resultUsageSelfTest()
     print("OS-1 native session, permission orchestration, model, effort, and executor contract self-test: OK")
 }
@@ -17937,7 +18012,7 @@ struct OS1Main {
                     throw OS1Error.message("RCC native bridge accepts one private input file")
                 }
                 let input = try rccPrivateInput(arguments[2])
-                let output = command == "rcc-catalog" ? try rccNativeCatalog(input) : try await rccNativeAdapter(input)
+                let output = command == "rcc-catalog" ? try await rccNativeCatalog(input) : try await rccNativeAdapter(input)
                 print(String(decoding: output, as: UTF8.self))
             case "version", "--version", "-V": print(os1RuntimeVersionString)
             case "doctor": try doctor()
@@ -18491,7 +18566,7 @@ func rccPrivateInput(_ path: String) throws -> Data {
 /// catalog. The builder owns row identity, admission and order; this wrapper
 /// only probes providers that can still yield a candidate under the current
 /// preference, capacity, intent and chat gate.
-private func rccNativeCatalog(_ bytes: Data) throws -> Data {
+private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     let request = try RCCRuntimeContract.decodeRequest(bytes)
     guard let host = request.hostContext else { throw OS1Error.message("RCC host context missing") }
     let config = try RuntimeConfig.load()
@@ -18536,13 +18611,28 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
     // Likewise a Codex model a real rate/usage-limit rejection just cooled.
     input.codexQuotaBackoffModels = Set(CodexQuotaBackoff.activeModels())
     let probe = RCCNativeCatalogBuilder.providersToProbe(input)
+    // Every probe below is an independent, read-only native metadata process
+    // (the Codex app-server, the Claude inventory, the shared Claude quota
+    // observation, each provider's sign-in status). One after another they
+    // cost 4.2-6.3 s per build, twice per task (2026-10-19); together a
+    // build costs about its slowest probe. Nothing below depends on order.
+    let codexProbe = probe.contains("codex") ? Task.detached {
+        (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
+    } : nil
+    let claudeProbe = probe.contains("claude") ? Task.detached {
+        (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.configured ?? []
+    } : nil
+    let quotaProbe = probe.contains("claude") ? Task.detached { ModelAvailability.claudeQuotaObservation(workspace: host.workspace) } : nil
+    let authProbes = probe.sorted().map { provider in
+        (provider, Task.detached { observeNativeSurfaceAuth(provider: provider, workspace: host.workspace, book: book) })
+    }
     // The general catalogs strip a quota-exhausted Codex slug and a cooled
     // Claude family for every other caller. The builder must still see them:
     // an exhausted or cooled row is a recorded quota_zero / quota_backoff,
     // and an exhausted frontier model is the pool's reference_unavailable
     // (no deep work or escalation there), never a lower model standing in.
-    if probe.contains("codex") {
-        let codex = (try? ModelAvailability.codexCatalog(workspace: host.workspace, config: config)) ?? ActiveCodexCatalog(models: [], source: "unavailable")
+    if let codexProbe {
+        let codex = await codexProbe.value
         let shaped = RCCNativeCatalogBuilder.codexInventory(
             available: codex.models.map { .init(slug: $0.slug, supportedEfforts: $0.supportedEfforts, priority: $0.priority) },
             quotaExcluded: codex.quotaExcludedModels.map { .init(slug: $0.slug, supportedEfforts: $0.supportedEfforts, priority: $0.priority) })
@@ -18550,22 +18640,31 @@ private func rccNativeCatalog(_ bytes: Data) throws -> Data {
         input.codexQuotaExhaustedModels = shaped.quotaExhausted
         input.codexQuota = codex.quotaSnapshot
     }
-    if probe.contains("claude") {
+    if let claudeProbe {
         // `configured`, not `routable`: a cooled family stays in the inventory
         // and the builder excludes it with quota_backoff (claudeQuotaBackoffFamilies).
-        let claude = (try? ModelAvailability.claudeCatalogs(workspace: host.workspace, config: config))?.configured ?? []
+        let claude = await claudeProbe.value
         // One inventory read for both the order and the native row of each
         // configured name (alias and resolved ID of one row share a rank).
         let native = ClaudeInventoryCache.shared.models(workspace: host.workspace, maxAge: 600)
         let ranks = native.map(ModelAvailability.nativeRowRanks) ?? [:]
         input.claudeModels = (native.map { ModelAvailability.inventoryOrdered(claude, native: $0.map(\.model)) } ?? claude)
             .map { .init(model: $0.model, supportedEfforts: $0.supportedEfforts, nativeRank: ranks[$0.model]) }
-        input.claudeQuota = ModelAvailability.claudeQuota(workspace: host.workspace)
+    }
+    if let quotaProbe {
+        // The shared observation: fresh, or retained after a failed refresh
+        // (the builder then offers a discounted estimate, never unknown just
+        // because the usage endpoint refused one refresh). The basis and the
+        // probe outcome go to this build's private stderr receipt.
+        let observation = await quotaProbe.value
+        input.claudeQuota = observation.snapshot
+        FileHandle.standardError.write(Data(("os1 rcc-catalog: " +
+            observation.publicLine(accountID: input.accountIDs["claude"] ?? "") + "\n").utf8))
     }
     // Authentication is provider state, not per-model state. Observe each
     // probed native account once per catalog snapshot.
-    for provider in probe.sorted() {
-        guard let observed = observeNativeSurfaceAuth(provider: provider, workspace: host.workspace, book: book) else { continue }
+    for (provider, authProbe) in authProbes {
+        guard let observed = await authProbe.value else { continue }
         input.auth[provider] = observed.signedIn == false ? .signedOut
             : observed.mode == .subscription && observed.billing == .includedSubscription ? .subscription : .nonSubscription
     }

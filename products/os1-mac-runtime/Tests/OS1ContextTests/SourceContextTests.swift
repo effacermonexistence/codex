@@ -213,6 +213,7 @@ final class SourceContextTests {
         try runTakeoverFixtures()
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()
+        try runClaudeQuotaStoreFixtures()
         try runBackendAccountsFixtures()
         try runBackendSetupFixtures()
         try runGovernanceLearningFixtures()

@@ -27,6 +27,17 @@ public struct ClaudeQuotaBackoff: Codable, Equatable {
               value.retryAfter.timeIntervalSince(value.observedAt) == cooldown else { return nil }
         return value
     }
+    /// When the latest account-wide rejection was recorded, active or not.
+    /// The receipt outlives its 300 s cooldown, and a plan-quota observation
+    /// made before it is superseded evidence: a retained observation lasts
+    /// up to ten minutes, longer than the cooldown, so without this the next
+    /// catalog after the cooldown re-offered the pool the run was just
+    /// refused from. Nil when absent, malformed, or from the future.
+    public static func lastAccountRejection(at url: URL = defaultURL, now: Date = Date()) -> Date? {
+        guard let value = read(url), value.model == nil, value.observedAt <= now.addingTimeInterval(5),
+              value.retryAfter.timeIntervalSince(value.observedAt) == cooldown else { return nil }
+        return value.observedAt
+    }
     /// A family that can name its own receipt file: 1–32 of [a-z0-9._-], starting alphanumeric.
     /// Checked per scalar, so no regex anchor can let a trailing newline through.
     public static func validFamily(_ family: String) -> Bool {

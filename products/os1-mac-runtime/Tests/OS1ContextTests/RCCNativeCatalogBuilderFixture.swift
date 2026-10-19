@@ -485,6 +485,38 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         "anthropic_shared/sonnet/medium/route_tier>claude-fable-5-1", "anthropic_shared/claude-fable-5-1/max/route_reference"],
               "trivial and standard take the cheapest tier, deep the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
 
+    // ---- Source incident 2026-10-19 (build 405): one refused refresh ------
+    // Claude was last observed 4 minutes ago (session 9% used, weekly 3%);
+    // the refresh after it got HTTP 429. Codex is fresh with 10% left until
+    // a reset five days out. Build 405 emitted every Claude row with null
+    // quota, so a standard node bound Codex at 10%. The retained observation
+    // is now a discounted estimate with its true observedAt, valid for ten
+    // minutes from observation: Claude stays dispatchable and wins the pool.
+    var refusedRefresh = referenceInput()
+    refusedRefresh.claudeQuota = BackendHealth.QuotaSnapshot(accountID: "acct-claude", observedAt: now.addingTimeInterval(-240),
+        source: .claudeNative, windows: [
+            .init(bucket: "session", usedPercent: 9, resetsAt: now.addingTimeInterval(3 * 3600)),
+            .init(bucket: "weekly_all", usedPercent: 3, resetsAt: now.addingTimeInterval(5 * 86_400))])
+    refusedRefresh.codexQuota = quota("acct-codex", used: 90, resetIn: 5 * 24)
+    let refusedOut = try B.build(refusedRefresh)
+    let refusedRow = refusedOut.candidates.first { $0["model"] as? String == "claude-sonnet-5-5" }
+    let refusedFraction = refusedRow?["quota_remaining_fraction"] as? Double
+    try check(refusedFraction.map { abs($0 - (91 - 2 * 240.0 / 60) / 100) < 1e-9 } == true &&
+              refusedRow?["quota_observed_at_ms"] as? Int64 == Int64(now.addingTimeInterval(-240).timeIntervalSince1970 * 1000) &&
+              refusedRow?["quota_valid_until_ms"] as? Int64 == Int64(now.addingTimeInterval(360).timeIntervalSince1970 * 1000) &&
+              refusedOut.quotaScores["claude-sonnet-5-5"] != nil,
+              "a retained Claude observation is a discounted, dated, valid estimate with a pool score: \(String(describing: refusedRow))")
+    _ = try C.decodeCatalog(B.catalogData(refusedOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))
+    try check((try routes(refusedOut))[1].hasPrefix("anthropic_shared/"),
+              "standard work binds the Claude pool (83% est.) over Codex at 10%: \((try? routes(refusedOut)) ?? [])")
+    var unknownClaudeInput = refusedRefresh; unknownClaudeInput.claudeQuota = nil
+    try check((try routes(try B.build(unknownClaudeInput)))[1].hasPrefix("openai_codex/"),
+              "the build-405 failure reproduced: unknown Claude quota spends the scarce pool: \((try? routes(try B.build(unknownClaudeInput))) ?? [])")
+    var expired = refusedRefresh; expired.now = now.addingTimeInterval(400)
+    try check(try B.build(expired).candidates.filter { $0["quota_pool"] as? String == "anthropic_shared" }
+                .allSatisfy { $0["quota_remaining_fraction"] is NSNull && $0["quota_valid_until_ms"] is NSNull },
+              "an observation older than ten minutes is unknown again")
+
     // ---- Native reference ceiling: cheap-first routing remains cheap ------
     // This is a deterministic regression fixture, not a new provider claim.
     // Native capabilities and signed profiles must BOTH authorize execution.

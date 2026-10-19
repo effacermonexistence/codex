@@ -72,6 +72,8 @@ private final class ClaudeQuotaMetadataControl: @unchecked Sendable {
     private var buffer = Data()
     private var requestedUsage = false
     private var closed = false
+    private var initializeRefused = false
+    private var usageRefused = false
     private var received: (body: [String: Any], observedAt: Date)?
     private func send(_ id: String, _ request: [String: Any]) {
         guard let writer, let data = try? JSONSerialization.data(withJSONObject:
@@ -97,24 +99,30 @@ private final class ClaudeQuotaMetadataControl: @unchecked Sendable {
                   let response = message["response"] as? [String: Any],
                   let id = response["request_id"] as? String else { continue }
             if id == initializeID, !requestedUsage {
-                guard response["subtype"] as? String == "success" else { closeLocked(); return }
+                guard response["subtype"] as? String == "success" else { initializeRefused = true; closeLocked(); return }
                 requestedUsage = true
                 send(usageID, ["subtype": "get_usage", "skip_behaviors": true])
                 // The quota-only wait is bounded independently of startup.
                 DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [self] in finish() }
             } else if id == usageID, requestedUsage {
                 if response["subtype"] as? String == "success", let body = response["response"] as? [String: Any] {
-                    received = (body, Date())
-                }
+                    // Observed when the server produced it, not on receipt:
+                    // the CLI may answer from its own snapshot (<= 60 s old).
+                    received = (body, BackendHealth.QuotaSnapshot.claudeObservedAt(body, receivedAt: Date()))
+                } else { usageRefused = true }
                 closeLocked(); return
             }
         }
     }
     func finish() { lock.lock(); defer { lock.unlock() }; closeLocked() }
-    func snapshot(accountID: String) -> BackendHealth.QuotaSnapshot? {
+    func snapshot(accountID: String) -> BackendHealth.QuotaSnapshot? { result(accountID: accountID)?.snapshot }
+    /// The classified reply, or nil when no get_usage reply arrived (the
+    /// caller then names the transport failure).
+    func result(accountID: String) -> (outcome: BackendHealth.QuotaProbe.Outcome, snapshot: BackendHealth.QuotaSnapshot?)? {
         lock.lock(); defer { lock.unlock() }
+        if initializeRefused || usageRefused { return (.controlUnsupported, nil) }
         guard let received else { return nil }
-        return BackendHealth.QuotaSnapshot.claudeUsage(received.body, accountID: accountID, observedAt: received.observedAt)
+        return BackendHealth.QuotaSnapshot.claudeUsageOutcome(received.body, accountID: accountID, observedAt: received.observedAt)
     }
     static func fixtureChecks() -> [Bool] {
         var checks: [Bool] = []
@@ -147,7 +155,30 @@ private final class ClaudeQuotaMetadataControl: @unchecked Sendable {
         _ = other.fileHandleForReading.availableData
         unsupported.receive(frame(unsupported.initializeID, subtype: "error"))
         checks.append(unsupported.snapshot(accountID: "claude.default") == nil)
+        checks.append(unsupported.result(accountID: "claude.default")?.outcome == .controlUnsupported)
         unsupported.finish(); try? other.fileHandleForReading.close()
+        // The CLI's answer after HTTP 429 (2026-10-19): rate_limits without
+        // live rows. Named, never adopted; and a live reply's observation
+        // time is the server's as_of, not its receipt.
+        func replied(_ body: [String: Any]) -> ClaudeQuotaMetadataControl {
+            let probe = ClaudeQuotaMetadataControl(), pipe = Pipe()
+            probe.start(pipe.fileHandleForWriting)
+            _ = pipe.fileHandleForReading.availableData
+            probe.receive(frame(probe.initializeID))
+            _ = pipe.fileHandleForReading.availableData
+            probe.receive(frame(probe.usageID, body: body))
+            probe.finish(); try? pipe.fileHandleForReading.close()
+            return probe
+        }
+        let seeded = replied(["rate_limits_available": true, "rate_limits": ["five_hour": ["utilization": 9]]])
+        checks.append(seeded.result(accountID: "claude.default")?.outcome == .usageEndpointFallback &&
+                      seeded.snapshot(accountID: "claude.default") == nil)
+        let asOf = Date().addingTimeInterval(-30)
+        var dated = body
+        dated["rate_limits"] = (body["rate_limits"] as! [String: Any]).merging(["seven_day_breakdown":
+            ["as_of": ISO8601DateFormatter().string(from: asOf)]]) { _, new in new }
+        let live = replied(dated).result(accountID: "claude.default")
+        checks.append(live?.outcome == .ok && live.flatMap { $0.snapshot.map { abs($0.observedAt.timeIntervalSince(asOf)) < 1 } } == true)
         return checks
     }
 }
@@ -188,27 +219,51 @@ struct NativeClaudeModel {
 }
 
 enum ModelAvailability {
-    /// Unpaid, no-prompt plan metadata. A same-account fresh cache avoids another
-    /// CLI trip. Timeout, absent rows, unsupported control and account switches
-    /// all return unknown, not 0% or 100% remaining and not an auth failure.
+    /// Unpaid, no-prompt plan metadata through the one shared observation
+    /// (`ClaudeQuotaStore`): at most one probe per account every 125 s across
+    /// all OS-1 processes, one process probing at a time, and a failed probe
+    /// keeps the last good observation. Returns the newest retainable
+    /// observation (up to ten minutes old, same account, no reset since);
+    /// `QuotaSnapshot.estimate` decides whether it is dispatch evidence.
+    /// Timeout, absent rows, the CLI's fallback body and account switches
+    /// never become 0% or 100% remaining, nor an auth failure.
     static func claudeQuota(workspace: String) -> BackendHealth.QuotaSnapshot? {
+        claudeQuotaObservation(workspace: workspace).snapshot
+    }
+    static func claudeQuotaObservation(workspace: String) -> ClaudeQuotaStore.Observation {
         let book = BackendAccounts.load()
         let accountID = BackendAccounts.active(provider: "claude", in: book).id
-        if let cached = BackendHealth.load(maxAge: 60)?.claude.quota,
-           cached.isFresh(accountID: accountID, maxAge: 60) { return cached }
         let environment = BackendAccounts.environment(provider: "claude", in: book)
+        // Another writer's observation (an older build's health record) is
+        // both an attempt the spacing must respect and a usable observation.
+        let other = BackendHealth.load(maxAge: BackendHealth.QuotaSnapshot.retainedMaximumAge + 60,
+                                       invalidateReset: false)?.claude.quota
+        // A real account-wide quota refusal supersedes any earlier observation,
+        // including one retained past the refusal's 300 s cooldown.
+        return ClaudeQuotaStore.observe(accountID: accountID, other: other,
+                                        rejectedAt: ClaudeQuotaBackoff.lastAccountRejection()) {
+            probeClaudeQuota(workspace: workspace, accountID: accountID, environment: environment)
+        }
+    }
+    /// One native get_usage round trip, classified. A reply that arrived is
+    /// judged on its body even if the CLI's exit was not clean afterwards.
+    private static func probeClaudeQuota(workspace: String, accountID: String, environment: [String: String])
+        -> (outcome: BackendHealth.QuotaProbe.Outcome, snapshot: BackendHealth.QuotaSnapshot?) {
+        guard let executable = try? findExecutable("claude") else { return (.executableMissing, nil) }
         let control = ClaudeQuotaMetadataControl()
         defer { control.finish() }
-        guard let executable = try? findExecutable("claude"),
-              let output = try? commandOutput(executable, ["--safe-mode", "--print", "--input-format", "stream-json",
-                "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
-                "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"],
-                timeout: 8, currentDirectory: workspace, isProvider: true, environmentOverrides: environment,
-                onOutput: { control.receive($0) }, interactiveStdin: { control.start($0) }),
-              output.0 == 0,
-              BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id == accountID,
-              BackendAccounts.environment(provider: "claude", in: BackendAccounts.load()) == environment else { return nil }
-        return control.snapshot(accountID: accountID)
+        let output = try? commandOutput(executable, ["--safe-mode", "--print", "--input-format", "stream-json",
+            "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config",
+            "{\"mcpServers\":{}}", "--tools", "", "--no-session-persistence"],
+            timeout: 8, currentDirectory: workspace, isProvider: true, environmentOverrides: environment,
+            onOutput: { control.receive($0) }, interactiveStdin: { control.start($0) })
+        guard BackendAccounts.active(provider: "claude", in: BackendAccounts.load()).id == accountID,
+              BackendAccounts.environment(provider: "claude", in: BackendAccounts.load()) == environment else {
+            return (.accountChanged, nil)
+        }
+        if let classified = control.result(accountID: accountID) { return classified }
+        guard let output else { return (.timeoutOrNoReply, nil) }
+        return (output.0 == 0 ? .timeoutOrNoReply : .exitNonzero, nil)
     }
     static func selfTest() throws {
         let daybreak: [String: Any] = ["model": "gpt-daybreak-blue-latest", "defaultReasoningEffort": "high",
