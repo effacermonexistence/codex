@@ -1,0 +1,248 @@
+{
+  "schemaVersion": 1,
+  "version": "home-recursive-offscreen-v1",
+  "renderMethod": "KEEP_RECURSION: 24-depth nonrotating affine recursive composition, fixedpoint(-.75,.5) outside viewport/circle at every frame, scale .88+.008sin, accepted nonradial .019 liquid field and .105 quintic feather; original ownsource bytes/crop/phase preserved",
+  "fixedPoint": [
+    -0.75,
+    0.5
+  ],
+  "firstHeroUnchanged": true,
+  "womanUnchanged": true,
+  "assets": [
+    {
+      "role": "large",
+      "file": "motion-large-fff1b40e17e511a1.mp4",
+      "bytes": 27233434,
+      "sha256": "fff1b40e17e511a1e8f46ff4e2b6a4dc1a7d433f37605ef6520ae76124a5c834",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "parts": [
+        {
+          "path": "chunks/offscreen-v1/large/000.bin",
+          "bytes": 4194304,
+          "sha256": "482546acf9c50a7288e092f90c694120cb39a33faabc66eede011488be97362e"
+        },
+        {
+          "path": "chunks/offscreen-v1/large/001.bin",
+          "bytes": 4194304,
+          "sha256": "dede4fbbf9cef6adf62ee1c9ae7909a445a27ec4bc617fb16ec21b02703d5020"
+        },
+        {
+          "path": "chunks/offscreen-v1/large/002.bin",
+          "bytes": 4194304,
+          "sha256": "aa630ed74a02cf2d43c0a7c1bda8d18e5719a2ecb4f51f8a8134498a47779306"
+        },
+        {
+          "path": "chunks/offscreen-v1/large/003.bin",
+          "bytes": 4194304,
+          "sha256": "16e13572534de8867d8d584613aef3d1356fb532fbf264407e0190008fcbf384"
+        },
+        {
+          "path": "chunks/offscreen-v1/large/004.bin",
+          "bytes": 4194304,
+          "sha256": "ce486fb6705a85001c867e560879deb501c90aaa8fd5bbddb02a504c8c8f9e38"
+        },
+        {
+          "path": "chunks/offscreen-v1/large/005.bin",
+          "bytes": 4194304,
+          "sha256": "b6977bd6936e8169ccd32fefbfa916b8a3e75a8cee5d8b472f7829b13e18c46b"
+        },
+        {
+          "path": "chunks/offscreen-v1/large/006.bin",
+          "bytes": 2067610,
+          "sha256": "36e82ad4157724f81dd6b3946f92975a5dfe801cdc1631cc71e2819e43a9d6b5"
+        }
+      ]
+    },
+    {
+      "role": "small",
+      "file": "motion-small-05218dcc5d202616.mp4",
+      "bytes": 27163963,
+      "sha256": "05218dcc5d20261688001f6378ed118bab0b36fc0605b09316258d8684d12d39",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "parts": [
+        {
+          "path": "chunks/offscreen-v1/small/000.bin",
+          "bytes": 4194304,
+          "sha256": "4d21ca0248fef20ed1bfb8fe5acba32bc86e0032d69fdebd169a0202610d4ab1"
+        },
+        {
+          "path": "chunks/offscreen-v1/small/001.bin",
+          "bytes": 4194304,
+          "sha256": "4b4cddabc49824ff9497dbaddb4c8d81c4130e5f74724945f8f2b8355cff4001"
+        },
+        {
+          "path": "chunks/offscreen-v1/small/002.bin",
+          "bytes": 4194304,
+          "sha256": "e5a42983f61ccdd8138ec8b08e02ec045751779cbac7817508d470e8a2c1b817"
+        },
+        {
+          "path": "chunks/offscreen-v1/small/003.bin",
+          "bytes": 4194304,
+          "sha256": "0de97c0c62c50a5fffd4150a18f547a7fb3afd1085d907b964c54397918f9216"
+        },
+        {
+          "path": "chunks/offscreen-v1/small/004.bin",
+          "bytes": 4194304,
+          "sha256": "cd39020a4c91a695271ea857ffda09f1de32992dd5099f88c30394acb43d9e35"
+        },
+        {
+          "path": "chunks/offscreen-v1/small/005.bin",
+          "bytes": 4194304,
+          "sha256": "1f727940644ec2a0449cb00d9e2d6a55605b745f092e90318e1cfad180104604"
+        },
+        {
+          "path": "chunks/offscreen-v1/small/006.bin",
+          "bytes": 1998139,
+          "sha256": "1aabfff799a46dd5a6bba76774b61c3a93bd7374109c2b3298f006ec89fa3252"
+        }
+      ]
+    },
+    {
+      "role": "axiom",
+      "file": "motion-axiom-ee26cff59c2920ea.mp4",
+      "bytes": 27176674,
+      "sha256": "ee26cff59c2920ea3affd8baa271a0f4cf61d4405355993b2da803c830ec7987",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "parts": [
+        {
+          "path": "chunks/offscreen-v1/axiom/000.bin",
+          "bytes": 4194304,
+          "sha256": "c6aec08e512a35be75769aba9ad0ac550524bca7dd46a9621f239e36a3304932"
+        },
+        {
+          "path": "chunks/offscreen-v1/axiom/001.bin",
+          "bytes": 4194304,
+          "sha256": "34af199ec1c5aa7e52aaeb9322ac985dc36e0e38133f96970c8fa48acee81f8f"
+        },
+        {
+          "path": "chunks/offscreen-v1/axiom/002.bin",
+          "bytes": 4194304,
+          "sha256": "8de34c36f2cd8c9e41cdaa353089f71ef9b64fb9f7c5a38db7875cc302b750b9"
+        },
+        {
+          "path": "chunks/offscreen-v1/axiom/003.bin",
+          "bytes": 4194304,
+          "sha256": "144283754d7d72673d7438c686b5ba893a0615c4808ed86a3f589117763bc048"
+        },
+        {
+          "path": "chunks/offscreen-v1/axiom/004.bin",
+          "bytes": 4194304,
+          "sha256": "c4d7a71df985ec6f138ad9655851ff60835b5d72c68cc2eacfcd50673366d168"
+        },
+        {
+          "path": "chunks/offscreen-v1/axiom/005.bin",
+          "bytes": 4194304,
+          "sha256": "cab5be2ab30d74166d0d5bd5e1e3cc5164e62fa79ba03dc2c229048b532fa5ee"
+        },
+        {
+          "path": "chunks/offscreen-v1/axiom/006.bin",
+          "bytes": 2010850,
+          "sha256": "b8935d9e750196a7b56d30967c79d37ad3de89f62278bbf17466a22340ab829c"
+        }
+      ]
+    },
+    {
+      "role": "archive",
+      "file": "motion-archive-88d12d1a4333305f.mp4",
+      "bytes": 27244649,
+      "sha256": "88d12d1a4333305f1ba05b45141aa66d1d02df4cd1dfb79123391373934c7212",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "parts": [
+        {
+          "path": "chunks/offscreen-v1/archive/000.bin",
+          "bytes": 4194304,
+          "sha256": "7d0f8eb5df42c4d4941c4ed02f70a46ff14fafad301aa49ac9f1d83e5a6e35b0"
+        },
+        {
+          "path": "chunks/offscreen-v1/archive/001.bin",
+          "bytes": 4194304,
+          "sha256": "65c41d8e1b73256d27c9044b77e636503f6ea3edfaf3a35b36abd671623d78ae"
+        },
+        {
+          "path": "chunks/offscreen-v1/archive/002.bin",
+          "bytes": 4194304,
+          "sha256": "d45e4658dcaac0315e4bf452680066723c08713f15ff3c48a75edb0770167a07"
+        },
+        {
+          "path": "chunks/offscreen-v1/archive/003.bin",
+          "bytes": 4194304,
+          "sha256": "c032bff3bef3ba2633b17360651a07080d284fd1d3d717b29d00ec6d5e1537f2"
+        },
+        {
+          "path": "chunks/offscreen-v1/archive/004.bin",
+          "bytes": 4194304,
+          "sha256": "311e83ce8f1395abe996c098803c7a39afdc81bdc443a2687c0b5b1f170f6a04"
+        },
+        {
+          "path": "chunks/offscreen-v1/archive/005.bin",
+          "bytes": 4194304,
+          "sha256": "fbc4451e9b62f2a9572fec0908b7a532bfeab95ae482a2fcc80842600d2bdcc6"
+        },
+        {
+          "path": "chunks/offscreen-v1/archive/006.bin",
+          "bytes": 2078825,
+          "sha256": "dc1dd1e0549bda54056f42458cfe11dffc16f78ea15c9ebe43f10c05b254daaf"
+        }
+      ]
+    },
+    {
+      "role": "entity",
+      "file": "motion-entity-cc754b30f1d1ed70.mp4",
+      "bytes": 27141011,
+      "sha256": "cc754b30f1d1ed70de3de4391bafb5bfbe15ac6e7d6d5b9e8b2c6cca5aae0983",
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "durationSeconds": 18,
+      "parts": [
+        {
+          "path": "chunks/offscreen-v1/entity/000.bin",
+          "bytes": 4194304,
+          "sha256": "b5c0d5a953079bb29664c017198d2dadccfbbd574551fa66f0c823e8f5670f84"
+        },
+        {
+          "path": "chunks/offscreen-v1/entity/001.bin",
+          "bytes": 4194304,
+          "sha256": "b7ca7118475f60184b4634434a13b6078799f6caccc756572cfa064c65c43a6f"
+        },
+        {
+          "path": "chunks/offscreen-v1/entity/002.bin",
+          "bytes": 4194304,
+          "sha256": "a756646b7364470cbfe63194ffc388e70b4a79bbc87723ff4441c2ef828f2a87"
+        },
+        {
+          "path": "chunks/offscreen-v1/entity/003.bin",
+          "bytes": 4194304,
+          "sha256": "0025b02b58a2828f3e396ad477a458ae159d9c591501046f8a58e46b0cab554d"
+        },
+        {
+          "path": "chunks/offscreen-v1/entity/004.bin",
+          "bytes": 4194304,
+          "sha256": "7b288c57b43110a8617a5b1c0ae51cd1d008cee1df5ed696aa1bee3e15ce7cbb"
+        },
+        {
+          "path": "chunks/offscreen-v1/entity/005.bin",
+          "bytes": 4194304,
+          "sha256": "8c99d0855f8e0a5de405850fa7adb5b6c2ca373ac91a8f07e5e402cb7c22e09e"
+        },
+        {
+          "path": "chunks/offscreen-v1/entity/006.bin",
+          "bytes": 1975187,
+          "sha256": "d2e8dfcfc75f30c5b85d51154aebac77a9ea8fa82aa0b8649652cd61533d4a65"
+        }
+      ]
+    }
+  ]
+}
