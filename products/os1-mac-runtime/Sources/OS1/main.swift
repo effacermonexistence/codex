@@ -1582,9 +1582,41 @@ func validateExecutorContract(_ contract: ExecutorContract) throws -> Bool {
 /// instead of the owner's whole-engine file (see LeanBackendInstructions).
 func codexLeanInstructionOverrides(environment: [String: String] = ProcessInfo.processInfo.environment,
                                    root: URL = LeanBackendInstructions.defaultRoot) -> [String] {
+    codexLeanInstructions(environment: environment, root: root).overrides
+}
+
+/// One Codex session's lean base instructions: the `-c` override, and whether
+/// the file it names was read back holding exactly the owner-policy projection
+/// (`projectionDelivered`). Kill switch, no snapshot, or a file that could not
+/// be written or read back: no override, nothing delivered.
+struct CodexLeanInstructions {
+    let overrides: [String]
+    let projectionDelivered: Bool
+}
+
+func codexLeanInstructions(environment: [String: String] = ProcessInfo.processInfo.environment,
+                           root: URL = LeanBackendInstructions.defaultRoot) -> CodexLeanInstructions {
     guard LeanBackendInstructions.enabled(environment), let snapshot = OwnerPolicyContext.snapshot,
-          let file = try? LeanBackendInstructions.codexInstructionsFile(snapshot.projection, root: root) else { return [] }
-    return [LeanBackendInstructions.codexOverride(file: file)]
+          let file = try? LeanBackendInstructions.codexInstructionsFile(snapshot.projection, root: root) else {
+        return CodexLeanInstructions(overrides: [], projectionDelivered: false)
+    }
+    return CodexLeanInstructions(overrides: [LeanBackendInstructions.codexOverride(file: file)],
+        projectionDelivered: LeanBackendInstructions.codexFileHolds(snapshot.projection, file: file))
+}
+
+/// Whether a Codex developer channel may carry the owner policy without its
+/// projection body (OwnerPolicySnapshot.instructions(projectionDeliveredAsBaseInstructions:)):
+/// only when this session's base-instructions file was read back holding the
+/// projection, that override is among the app-server's own `-c` overrides,
+/// and the thread is STARTED by that app-server. A resumed thread keeps the
+/// base instructions it was started with (rollout session_meta) and a
+/// Desktop-owned turn runs under Desktop's configuration, so both keep the
+/// full text in the developer channel.
+func codexDeveloperOmitsProjection(lean: CodexLeanInstructions, appServerOverrides: [String],
+                                   startsNewThread: Bool) -> Bool {
+    lean.projectionDelivered && startsNewThread && lean.overrides.count == 1 &&
+        appServerOverrides.contains(lean.overrides[0]) &&
+        appServerOverrides.filter({ $0.hasPrefix("model_instructions_file=") }).count == 1
 }
 
 /// Claude skips every CLAUDE.md; OS-1 supplies the projection (executor
@@ -1623,6 +1655,10 @@ func claudePromptCacheEnvironment(startsNewSession: Bool, chatLane: Bool, source
 /// Writers keep the owner's hooks (the remote completion guard among them).
 let claudeDelegatedReadOnlySettings = #"{"disableAllHooks":true}"#
 
+/// No MCP server: with `--strict-mcp-config`, the CLI loads none of the
+/// owner's servers or claude.ai connectors (the tool-free lane's shape).
+let claudeEmptyMCPConfiguration = #"{"mcpServers":{}}"#
+
 /// `settings` (a JSON object) with `disableAllHooks` set; every other key kept.
 func claudeSettingsDisablingHooks(_ settings: String) throws -> String {
     guard var object = try JSONSerialization.jsonObject(with: Data(settings.utf8)) as? [String: Any] else {
@@ -1649,12 +1685,17 @@ func rccDelegatedSessionOneShot(resumedSessionID: String?, conversationSessionID
         conversationSessionID: conversationSessionID, chatLane: chatLane)
 }
 
-func executorInstructions(contract: ExecutorContract, ticket: Ticket) -> String {
+/// `ownerPolicyProjectionInBaseInstructions`: the Codex session verifiably
+/// holds the projection as its base instructions (codexDeveloperOmitsProjection),
+/// so this channel carries the owner policy without that body. Every other
+/// caller keeps the default and the full text.
+func executorInstructions(contract: ExecutorContract, ticket: Ticket,
+                          ownerPolicyProjectionInBaseInstructions: Bool = false) -> String {
     let directives = contract.directives.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
     return """
     OS-1 executor contract \(contract.version)
     \(directives)
-    \(OwnerPolicyContext.instructions)
+    \(OwnerPolicyContext.instructions(projectionDeliveredAsBaseInstructions: ownerPolicyProjectionInBaseInstructions))
 
     Assigned execution constraints:
     - backend: \(ticket.provider)
@@ -2291,6 +2332,14 @@ func claudeArguments(
         if let index = permissions.firstIndex(of: "--allowedTools") {
             permissions[index + 1] += ",mcp__os1_memory__memory_query"
         } else { permissions += ["--allowedTools", "mcp__os1_memory__memory_query"] }
+    } else if interactiveHooksDisabled && permissionProfile == "read_only" && !sourceContextOnly {
+        // A read-only RCC delegated child already denies every MCP tool
+        // (`--disallowedTools mcp__*`), yet the CLI still loaded the owner's
+        // MCP servers and claude.ai connectors and sent their instructions and
+        // authorization notices with every call (2,139 B + 591 B measured
+        // 2026-10-18). With no server it may use, it loads none. Writers, the
+        // memory-config path and the tool-free lane (above) are unchanged.
+        arguments += ["--strict-mcp-config", "--mcp-config", claudeEmptyMCPConfiguration]
     }
     if interactiveHooksDisabled && permissionProfile == "read_only" {
         // One --settings value: the read-only lane already carries its shell
@@ -6345,6 +6394,10 @@ func normalizedSessionID(_ value: String?) throws -> String? {
 
 final class CodexAppServerClient: @unchecked Sendable {
     private(set) var interruptedPublicProgress = ""
+    /// The turn the provider acknowledged last on this connection (kept after
+    /// the turn ends), so an attempt that ended without a result can still be
+    /// measured from that turn's records (NativeAttemptUsage).
+    private(set) var lastStartedTurnID: String?
     /// Unrecovered tool breakdowns of the model's own in the last waited turn.
     private(set) var lastTurnToolBreakdowns = 0
     /// The last waited turn ended without completing: the provider's own
@@ -6779,6 +6832,7 @@ final class CodexAppServerClient: @unchecked Sendable {
         onStarted: (() -> Void)? = nil
     ) throws -> CodexTurnOutput {
         approvalThread = threadID
+        lastStartedTurnID = nil
         approvalScopeAllowsTools = permissionProfile == "workspace_write" && RCCNativeLocalQualityProfile.Context.current == nil
         approvalDeadline = deadline
         nativeApprovedApps.removeAll()
@@ -6831,6 +6885,7 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw OS1Error.message("Codex did not start a persistent desktop turn")
         }
         activeTurn = (threadID, turnID)
+        lastStartedTurnID = turnID
         if let pending = pendingThreadName, pending.threadID == threadID {
             pendingThreadName = nil
             let id = nextRequestID; nextRequestID += 1
@@ -7614,6 +7669,44 @@ func codexRolloutPathTrusted(_ path: String, threadID: String) -> Bool {
         FileManager.default.fileExists(atPath: path, isDirectory: &directory) && !directory.boolValue
 }
 
+/// An RCC native receipt's usage (keys rcc-runtime.mjs validUsage accepts).
+/// Codex input already includes its cached subset; cache reads are the cached
+/// tokens that were not cache writes.
+func rccNativeUsage(_ measured: CompletionMeasuredUsage?, dispatched: Bool, durationMS: Int64?) -> RCCRuntimeContract.Usage {
+    let readCache: Int64? = measured.flatMap { usage in
+        guard let total = usage.cacheTokens, let writes = usage.cacheWriteTokens, total >= writes else { return nil }
+        return Int64(total - writes)
+    }
+    return .init(inputTokens: measured?.inputTokens.map(Int64.init),
+        outputTokens: measured?.outputTokens.map(Int64.init),
+        cacheReadTokens: readCache, cacheWriteTokens: measured?.cacheWriteTokens.map(Int64.init),
+        providerCalls: dispatched ? 1 : nil, durationMS: durationMS,
+        metric: measured == nil ? nil : "native_usage_observation")
+}
+
+/// What one Codex attempt spent from Codex's own records: the attempt's turn
+/// (or, with no acknowledged turn, its records since `since`) on its trusted
+/// rollout, plus the auto-review and sub-agent threads started under it
+/// (NativeAttemptUsage.codex). Nil without a trusted rollout or any record.
+func codexAttemptUsage(threadID: String, rolloutPath: String?, turnID: String?, since: Date) -> CompletionMeasuredUsage? {
+    // A thread started for this attempt may not have reported its path yet.
+    let sessions = URL(fileURLWithPath: backendAccountEnvironment("codex")["CODEX_HOME"] ??
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path).appendingPathComponent("sessions")
+    guard let rolloutPath = rolloutPath ?? NativeAttemptUsage.codexRollout(threadID: threadID, sessions: sessions, since: since)?.path,
+          codexRolloutPathTrusted(rolloutPath, threadID: threadID) else { return nil }
+    return NativeAttemptUsage.codex(parentRollout: URL(fileURLWithPath: rolloutPath), parentThreadID: threadID,
+                                    turnID: turnID, since: since)
+}
+
+/// What a Claude attempt that ended without a parseable `result` spent: its
+/// session transcript's assistant usage since `since` (nil: no transcript or
+/// no usage there).
+func claudeTranscriptAttemptUsage(sessionID: String, since: Date) -> CompletionMeasuredUsage? {
+    guard let path = claudeTranscriptPath(sessionID: sessionID),
+          let data = NativeAttemptUsage.boundedRead(URL(fileURLWithPath: path)) else { return nil }
+    return NativeAttemptUsage.claudeTranscript(data, since: since)
+}
+
 /// Native persistence does not imply a Desktop renderer owned execution.
 /// Preserve the branch that actually dispatched the turn; normal publication
 /// still decides whether an independently executed record should be revealed.
@@ -7912,6 +8005,7 @@ private func recordPreDispatchGovernance(
     instructions: String?,
     driftState: String,
     routeAdmission: URL? = nil,
+    ownerPolicyProjectionChannel: String? = nil,
     root: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/OS-1/pre-dispatch-governance", isDirectory: true)
 ) throws -> String {
@@ -7926,8 +8020,15 @@ private func recordPreDispatchGovernance(
         throw OS1Error.message("OS-1 pre-dispatch governance channel is invalid; no executor was called")
     }
     try OwnerPolicyContext.snapshot?.verifyOriginal()
+    // "codex_base_instructions": `instructions` carries the owner policy
+    // without its projection body, which the session holds as its base
+    // instructions (codexDeveloperOmitsProjection). Absent: in `instructions`.
+    guard ownerPolicyProjectionChannel == nil ||
+            (ownerPolicyProjectionChannel == "codex_base_instructions" && channel == "codex_developer") else {
+        throw OS1Error.message("OS-1 pre-dispatch governance channel is invalid; no executor was called")
+    }
     let admissionDigest = try routeAdmission.map { sha256Hex(try Data(contentsOf: $0)) }
-    let receipt: [String: Any] = [
+    var receipt: [String: Any] = [
         "schema": 1,
         "execution_id": ticket.executionID,
         "sequence": ticket.sequence,
@@ -7952,6 +8053,7 @@ private func recordPreDispatchGovernance(
         "backend_delivery": "not_verified_at_pre_dispatch",
         "recorded_at": ISO8601DateFormatter().string(from: Date())
     ]
+    if let ownerPolicyProjectionChannel { receipt["owner_policy_projection_channel"] = ownerPolicyProjectionChannel }
     let data = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
     guard data.count <= 8_192 else { throw OS1Error.message("OS-1 pre-dispatch receipt exceeds its bound") }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
@@ -7994,8 +8096,32 @@ private func preDispatchGovernanceSelfTest() throws {
         objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
         channel: "codex_developer", instructions: policy, driftState: "applied", root: root)
     let codex = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: codexPath))) as? [String: Any]
-    guard codex?["channel"] as? String == "codex_developer" else {
+    guard codex?["channel"] as? String == "codex_developer", codex?["owner_policy_projection_channel"] == nil,
+          receipt["owner_policy_projection_channel"] == nil else {
         throw OS1Error.message("Codex developer-channel pre-dispatch receipt changed")
+    }
+    // A Codex developer channel whose session holds the projection as base
+    // instructions says so; no other channel may claim it.
+    let leanPath = try recordPreDispatchGovernance(ticket: codexTicket, model: "fixture-model", effort: "medium",
+        objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
+        channel: "codex_developer", instructions: policy, driftState: "applied",
+        ownerPolicyProjectionChannel: "codex_base_instructions", root: root)
+    let lean = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: leanPath))) as? [String: Any]
+    guard lean?["owner_policy_projection_channel"] as? String == "codex_base_instructions",
+          lean?["instructions_sha256"] as? String == sha256Hex(Data(policy.utf8)) else {
+        throw OS1Error.message("Codex base-instructions projection channel was not recorded")
+    }
+    for (claimTicket, claimChannel, claimValue) in [(ticket, "claude_append_system", "codex_base_instructions"),
+                                                    (codexTicket, "codex_developer", "claude_append_system")] {
+        do {
+            _ = try recordPreDispatchGovernance(ticket: claimTicket, model: "fixture-model", effort: "medium",
+                objective: "2+2", input: "2+2", contractSHA256: String(repeating: "b", count: 64),
+                channel: claimChannel, instructions: policy, driftState: "applied",
+                ownerPolicyProjectionChannel: claimValue, root: root)
+            throw OS1Error.message("A projection channel the session does not hold was admitted")
+        } catch let error as OS1Error {
+            guard String(describing: error).contains("channel is invalid") else { throw error }
+        }
     }
     let localTicket = Ticket(executionID: "fixture-local-governance", sequence: 4, provider: "local",
         action: "os1_exact", permissionProfile: "read_only", expiresAt: "2099-01-01T00:00:00Z",
@@ -8162,17 +8288,32 @@ private func execute(
         guard let codex = try? findExecutable("codex") else {
             throw OS1Error.backendBlocked(.capabilityUnavailable)
         }
-        preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
-            ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
-            contractSHA256: executorContract.sha256, channel: "codex_developer", instructions: instructions,
-            driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
-            routeAdmission: admissionPath)
-        onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
-        let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         // GPT chat: the model alone, in the empty answer workspace, on a fresh
         // thread (resuming a full Codex thread would reload what the lane drops).
         let gptChat = surfaceOverride.map { $0 == .gptChat } ?? codexChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
                                     hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        let localQualityProfile = RCCNativeLocalQualityProfile.Context.current
+        let previousID = try normalizedSessionID(localQualityProfile == nil ? providerSessionID : nil)
+        let previousMeasured = MemoryContextMeter.readNative(provider: "codex", id: previousID)
+        // This session's lean base instructions (the projection, read back).
+        // A thread this app-server STARTS takes them as its base instructions,
+        // so its developer channel omits the projection's second copy
+        // (codexDeveloperOmitsProjection; the start is certain here, before
+        // the context budget, and is re-checked against the final overrides).
+        let codexLean = codexLeanInstructions()
+        let startsNewThread = gptChat || previousID == nil || (memoryTurn != nil && (manuallyFresh || previousMeasured == nil))
+        let projectionInBase = codexLean.projectionDelivered && startsNewThread
+        let codexInstructions = projectionInBase
+            ? executorInstructions(contract: executorContract, ticket: ticket, ownerPolicyProjectionInBaseInstructions: true)
+                + definitionsDirective + evidenceDirective + presentationDirective + correctionDirective + boundedShellDirective
+            : instructions
+        preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
+            ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
+            contractSHA256: executorContract.sha256, channel: "codex_developer", instructions: codexInstructions,
+            driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
+            routeAdmission: admissionPath, ownerPolicyProjectionChannel: projectionInBase ? "codex_base_instructions" : nil)
+        onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
+        let deadline = Date().addingTimeInterval(TimeInterval(timeout))
         RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort)
         if gptChat {
             RuntimeActivity.emit(.preparing, provider: "codex", surface: executedSurface?.rawValue, model: model, effort: effort,
@@ -8180,11 +8321,8 @@ private func execute(
                                   "Running a tool-free GPT model using Codex allowance · this is not the separate ordinary ChatGPT chat transport."))
         }
         let codexWorkspace = gptChat ? executionWorkspace : workspace
-        let localQualityProfile = RCCNativeLocalQualityProfile.Context.current
-        let previousID = try normalizedSessionID(localQualityProfile == nil ? providerSessionID : nil)
-        let previousMeasured = MemoryContextMeter.readNative(provider: "codex", id: previousID)
         let contextBudget = try memoryTurn.map { try pagingBudget(manifest: $0, provider: "codex", model: model,
-            previousID: previousID, prompt: prompt, instructions: instructions,
+            previousID: previousID, prompt: prompt, instructions: codexInstructions,
             forceFresh: manuallyFresh || gptChat || previousID == nil || previousMeasured == nil) }
         let rotateContext = memoryTurn != nil && (manuallyFresh || contextBudget?.action == .rotateSession ||
             (previousID != nil && previousMeasured == nil))
@@ -8200,7 +8338,7 @@ private func execute(
         if let extendedWindowOverride = CodexContextBudget.extendedWindowOverride(model: model) {
             codexConfigOverrides.append(extendedWindowOverride)
         }
-        codexConfigOverrides.append(contentsOf: codexLeanInstructionOverrides())
+        codexConfigOverrides.append(contentsOf: codexLean.overrides)
         codexConfigOverrides.append(contentsOf: chatOverrides)
         if let memoryTurn, localQualityProfile == nil {
             codexConfigOverrides.append(contentsOf: MemoryPaging.codexOverrides(memoryTurn, executable: currentOS1Executable()))
@@ -8216,6 +8354,12 @@ private func execute(
         // Managed delegation only (ParallelAgentRuntime): this OS-1-owned app
         // server runs with Codex's own multi-agent features off per process.
         codexConfigOverrides = ParallelAgentRuntime.codexDelegationOverrides(codexConfigOverrides)
+        // The developer channel omitted the projection only for a started
+        // thread whose app-server carries exactly this base-instructions file.
+        guard !projectionInBase || codexDeveloperOmitsProjection(lean: codexLean, appServerOverrides: codexConfigOverrides,
+                                                                 startsNewThread: expectedSessionID == nil) else {
+            throw OS1Error.message("Codex base-instructions delivery changed after the developer channel was prepared; no executor was called")
+        }
         let appServer = try rccLocalQualityAppServer(executable: codex, workspace: codexWorkspace,
             baseOverrides: codexConfigOverrides, profile: localQualityProfile, submissionID: codexSubmissionID, deadline: deadline)
         defer { appServer.close() }
@@ -8246,14 +8390,14 @@ private func execute(
             existingSessionID: expectedSessionID,
             workspace: codexWorkspace,
             model: model,
-            instructions: instructions,
+            instructions: codexInstructions,
             permissionProfile: ticket.permissionProfile,
             title: codexSessionTitle(from: lockedObjective),
             deadline: deadline
         )
         if memoryTurn != nil && !appServer.ownsThreadWriter {
             actualSessionID = try appServer.startOrResumeThread(existingSessionID: nil, workspace: codexWorkspace,
-                model: model, instructions: instructions, permissionProfile: ticket.permissionProfile,
+                model: model, instructions: codexInstructions, permissionProfile: ticket.permissionProfile,
                 title: codexSessionTitle(from: lockedObjective), deadline: deadline)
             RuntimeActivity.emit(.preparing, publicText: os1Tr("원본 Codex 창이 세션을 소유하고 있어 memory paging을 지원하는 새 작업 컨텍스트로 이어갑니다. OS-1 대화와 원문은 유지됩니다.",
                 "The original Codex window owns this session. Continuing in a fresh memory-paging working context; OS-1 conversation and original evidence are retained."))
@@ -8286,6 +8430,9 @@ private func execute(
         let turn: CodexTurnOutput
         let executedDesktopVisibility: String
         let desktopObservation = CodexDesktopTurnObservation()
+        // Records of this attempt, on its own thread and on threads Codex
+        // starts under it, are stamped from here on (NativeAttemptUsage).
+        let attemptRecordsSince = Date().addingTimeInterval(-1)
         do {
             if appServer.ownsThreadWriter {
                 executedDesktopVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: true)
@@ -8304,7 +8451,7 @@ private func execute(
                 appServer.close()
                 turn = try runCodexDesktopTurn(executable: codex, threadID: actualSessionID,
                     prompt: prompt, workspace: codexWorkspace, model: model, effort: effort,
-                    permissionProfile: ticket.permissionProfile, instructions: instructions, deadline: deadline,
+                    permissionProfile: ticket.permissionProfile, instructions: codexInstructions, deadline: deadline,
                     idleTimeout: idleTimeout.map(TimeInterval.init), observation: desktopObservation,
                     onDispatch: {
                         if manuallyFresh, let memoryTurn { try? MemoryContextMeter.consumeFresh(conversationID: memoryTurn.conversationID) }
@@ -8331,12 +8478,24 @@ private func execute(
             // deferred close stops that app-server before the throw arrives)
             // or Codex Desktop itself reported a terminal status for it.
             rejection.nativeTurnTerminated = appServer.ownsThreadWriter || desktopObservation.terminalStatus != nil
+            // What the ended turn spent, from Codex's own records: an attempt
+            // that returns no answer still spent its tokens. Only a turn that
+            // ended (writer stopped first, so its records are complete); a
+            // Desktop turn without a terminal status may still be running.
+            if rejection.nativeTurnTerminated == true {
+                appServer.close()
+                if let usage = codexAttemptUsage(threadID: actualSessionID, rolloutPath: currentPath,
+                                                 turnID: appServer.lastStartedTurnID, since: attemptRecordsSince) {
+                    onUsage?(usage)
+                }
+            }
             throw rejection
         }
         // Account for this exact native turn before any quality guard rejects
         // it. Never hide a second paid repair inside one signed route ticket.
         var recordPath: String?
         var persistence = "verified"
+        var codexUsageReported = false
         AttemptLatencyTrace.mark("turn_completed")
         let writerStderr = appServer.stderr()
         appServer.close()
@@ -8369,7 +8528,11 @@ private func execute(
                let size = try? FileManager.default.attributesOfItem(atPath: recordPath)[.size] as? NSNumber,
                size.intValue <= 64_000_000,
                let data = try? Data(contentsOf: URL(fileURLWithPath: recordPath)) {
-                onUsage?(CompletionUsageParser.parseCodexJSONL(data, turnID: turn.turnID))
+                // The turn plus the auto-review / sub-agent threads it started.
+                onUsage?(NativeAttemptUsage.codex(parentData: data, parentRollout: URL(fileURLWithPath: recordPath),
+                    parentThreadID: actualSessionID, turnID: turn.turnID, since: attemptRecordsSince)
+                    ?? CompletionUsageParser.parseCodexJSONL(data, turnID: turn.turnID))
+                codexUsageReported = true
                 if memoryTurn != nil, let usage = ContextInputUsageParser.parseCodexJSONL(data, turnID: turn.turnID) {
                     try MemoryContextMeter.saveNative(usage, provider: "codex", id: actualSessionID)
                     contextStatus?.latestRequest = usage
@@ -8378,6 +8541,12 @@ private func execute(
             }
         } catch {
             persistence = "unverified: \(error)"
+        }
+        // An unverified persistence readback still leaves Codex's records of
+        // the finished turn; the spend is reported from them.
+        if !codexUsageReported, let usage = codexAttemptUsage(threadID: actualSessionID, rolloutPath: currentPath,
+                                                              turnID: turn.turnID, since: attemptRecordsSince) {
+            onUsage?(usage)
         }
         AttemptLatencyTrace.mark("record_verified")
         let correctedObjective = ExecutionSteering.currentSubmission.map { id in
@@ -8620,7 +8789,10 @@ private func execute(
             }
         ) } catch {
             stream.finishClaude()
-            if let result = stream.result { onUsage?(CompletionUsageParser.parseClaudeResult(result)) }
+            // A run stopped before its result event still spent what its
+            // transcript records (commandOutput already ended the CLI).
+            if let usage = stream.result.flatMap(CompletionUsageParser.parseClaudeResult)
+                ?? claudeTranscriptAttemptUsage(sessionID: activeSessionID, since: started) { onUsage?(usage) }
             var rejection = interruptedExecution(ticket: ticket, model: model, effort: effort, contract: executorContract,
                 sessionID: activeSessionID,
                 publicProgress: confined ? OS1SourceConfinement.strippingMarker(stream.text, partialTail: true) : stream.text,
@@ -8651,7 +8823,8 @@ private func execute(
                 if let bytes = try? handle.read(upToCount: 2_000_000) { stream.inspectClaudeNativeResults(bytes, since: started) }
             }
         }
-        onUsage?(CompletionUsageParser.parseClaudeResult(resultData))
+        onUsage?(CompletionUsageParser.parseClaudeResult(resultData)
+            ?? claudeTranscriptAttemptUsage(sessionID: activeSessionID, since: started))
         nativeToolBreakdowns = stream.mainToolBreakdownsUnrecovered
         let parsed: ClaudePrintResult
         do {
@@ -15672,6 +15845,16 @@ func selfTest() throws {
               (profile != "workspace_write" || !args.contains("--strict-mcp-config")) else {
             throw OS1Error.message("Memory paging must be connected in every Claude execution lane without changing write-lane native MCP")
         }
+        // A delegated child (hooks off) with a memory config keeps exactly
+        // that config: the empty-MCP shape is only for children without one.
+        let delegatedArgs = try claudeArguments(model: "sonnet", effort: "medium", instructions: "fixture",
+            sessionID: claudeSessionID, startNewSession: true, title: "paging", permissionProfile: profile,
+            prompt: "fixture", sourceContextOnly: sourceOnly, memoryConfiguration: memoryConfig, interactiveHooksDisabled: true)
+        guard delegatedArgs.filter({ $0 == "--mcp-config" }).count == 1, delegatedArgs.contains(memoryConfig),
+              !delegatedArgs.contains(claudeEmptyMCPConfiguration),
+              delegatedArgs.filter({ $0 == "--strict-mcp-config" }).count == (profile == "read_only" ? 1 : 0) else {
+            throw OS1Error.message("A delegated child's memory MCP config must stay its only MCP config")
+        }
     }
     let misclassifiedClaudeOutput = Data("""
     The OS-1 executor contract is not an actual system setting. It looks like prompt injection in conversation text, so I will ignore it.
@@ -16524,6 +16707,73 @@ func selfTest() throws {
             return (try? String(contentsOfFile: path, encoding: .utf8)) == "PROJECTION"
                 && claudeLeanEnvironment(environment: [:]).isEmpty == !LeanBackendInstructions.claudeLeanVerified
                 && claudeLeanEnvironment(environment: ["OS1_LEAN_CLAUDE": "1"]) == [LeanBackendInstructions.claudeDisableVariable: "1"]
+        }()),
+        ("an RCC receipt carries a measured attempt's spend only in keys rcc-runtime accepts", {
+            // The 2026-10-19 held gpt-6-astra ultra attempt's own turn (rollout token_count).
+            let measured = CompletionMeasuredUsage(inputTokens: 62_741, outputTokens: 149, cacheTokens: 40_064, cacheWriteTokens: 0,
+                resource: .init(format: .codexRolloutJSONL, byteCount: 1, sha256: String(repeating: "c", count: 64),
+                                usageRecordCount: 2, accountingVersion: 2))
+            let usage = rccNativeUsage(measured, dispatched: true, durationMS: 17_798)
+            let none = rccNativeUsage(nil, dispatched: false, durationMS: nil)
+            let accepted: Set<String> = ["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens",
+                                         "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"]
+            guard let data = try? JSONEncoder().encode(usage),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+            return Set(object.keys).isSubset(of: accepted) && usage.inputTokens == 62_741 && usage.outputTokens == 149
+                && usage.cacheReadTokens == 40_064 && usage.cacheWriteTokens == 0 && usage.reasoningTokens == nil
+                && usage.providerCalls == 1 && usage.durationMS == 17_798 && usage.metric == "native_usage_observation"
+                && none.inputTokens == nil && none.outputTokens == nil && none.providerCalls == nil && none.metric == nil
+        }()),
+        ("a started Codex thread whose base file holds the projection gets it once; every other channel keeps it", {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-lean-once-" + UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let projection = "Fixture projection paragraph one.\n\nParagraph two: Conclusion / Core reason / Breaking variable.\n\nParagraph three."
+            let record: [String: Any] = ["schema": 1, "sourceSHA256": "s", "sourceFile": "s.txt", "projectionSHA256": "p",
+                "projection": projection, "sourceID": "i", "sourceModified": "m", "checkedAt": 0, "routing": "Fixture routing."]
+            guard let data = try? JSONSerialization.data(withJSONObject: record),
+                  let snapshot = try? JSONDecoder().decode(OwnerPolicySnapshot.self, from: data) else { return false }
+            let contract = ExecutorContract(version: "fixture-lean", sha256: String(repeating: "a", count: 64), directives: ["Fixture directive."])
+            let ticket = Ticket(executionID: "fixture", sequence: 1, provider: "codex", action: "execute",
+                permissionProfile: "read_only", expiresAt: "", nonce: "", signature: "")
+            func copies(_ text: String) -> Int { text.components(separatedBy: projection).count - 1 }
+            let absent = OwnerPolicyContext.$snapshot.withValue(nil) { codexLeanInstructions(environment: [:], root: root) }
+            // A root that cannot hold the file: no override, nothing delivered.
+            let blocked = root.appendingPathComponent("blocked")
+            guard (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil,
+                  (try? Data("not a directory".utf8).write(to: blocked)) != nil else { return false }
+            return OwnerPolicyContext.$snapshot.withValue(snapshot) {
+                let lean = codexLeanInstructions(environment: [:], root: root)
+                let killed = codexLeanInstructions(environment: [LeanBackendInstructions.killSwitch: "1"], root: root)
+                let unwritable = codexLeanInstructions(environment: [:], root: blocked)
+                guard lean.overrides.count == 1, lean.projectionDelivered else { return false }
+                let path = String(lean.overrides[0].dropFirst("model_instructions_file=\"".count).dropLast())
+                let base = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+                let full = executorInstructions(contract: contract, ticket: ticket)
+                let omitted = executorInstructions(contract: contract, ticket: ticket, ownerPolicyProjectionInBaseInstructions: true)
+                let claude = claudeExecutorInstructions(contract: contract, ticket: ticket)
+                let fresh = ["features.memories=false"] + lean.overrides + ["features.multi_agent=false"]
+                let tampered = root.appendingPathComponent("tampered.md")
+                try? Data((projection + " ").utf8).write(to: tampered)
+                return base == projection && copies(full) == 1 && copies(claude) == 1 && copies(omitted) == 0
+                    // The union Codex receives holds the projection exactly once ...
+                    && copies(base + "\n" + omitted) == 1
+                    // ... and the developer text differs from today's only where the body stood.
+                    && omitted.replacingOccurrences(of: OwnerPolicySnapshot.projectionInBaseInstructionsNote, with: projection) == full
+                    && full.contains(OwnerPolicyContext.instructions) && omitted.contains("Fixture routing.")
+                    && omitted.contains("Before returning: verify actual artifacts/effects")
+                    && codexDeveloperOmitsProjection(lean: lean, appServerOverrides: fresh, startsNewThread: true)
+                    // A resumed thread, the kill switch, a missing or unwritable file, an
+                    // override the app-server does not carry, or a second base file: full text.
+                    && !codexDeveloperOmitsProjection(lean: lean, appServerOverrides: fresh, startsNewThread: false)
+                    && killed.overrides.isEmpty && !killed.projectionDelivered
+                    && !codexDeveloperOmitsProjection(lean: killed, appServerOverrides: fresh, startsNewThread: true)
+                    && absent.overrides.isEmpty && !absent.projectionDelivered
+                    && unwritable.overrides.isEmpty && !unwritable.projectionDelivered
+                    && !codexDeveloperOmitsProjection(lean: lean, appServerOverrides: ["features.memories=false"], startsNewThread: true)
+                    && !codexDeveloperOmitsProjection(lean: lean, appServerOverrides: fresh + ["model_instructions_file=\"/other.md\""], startsNewThread: true)
+                    && !LeanBackendInstructions.codexFileHolds(projection, file: tampered)
+                    && !LeanBackendInstructions.codexFileHolds(projection, file: root)
+            }
         }()),
         ("a request using an owner term gets the original's own definition, other requests nothing", {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-owner-terms-" + UUID().uuidString, isDirectory: true)
@@ -18967,6 +19217,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     var sourceConfined = false
     var protectedSourceAtDispatch: OS1SourceWatch?
     var sourceBeforeClean = false
+    // What the native attempt spent, as its provider recorded it. Kept for a
+    // failed, rejected or interrupted attempt too: its tokens were spent.
+    var measuredUsage: CompletionMeasuredUsage?
     let id = UUID().uuidString.lowercased()
     let root = try rccNativeReceiptDirectory(home: FileManager.default.homeDirectoryForCurrentUser)
     let receipt = root.appendingPathComponent(id + ".json")
@@ -19113,7 +19366,6 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         try RCCOperationalQuality.enforceLocalEffectsAdmission(declared: ownerLocalBoundary != nil,
             profileAvailable: localQualityProfile != nil)
         if t.qualityContinuation != nil && localQualityProfile == nil { throw RCCOperationalQuality.Failure.unavailable }
-        var measuredUsage: CompletionMeasuredUsage?
         let sourceCompletion = boundRoot == nil || t.selectedConfig.scope != .workspaceWrite ? "" : """
         \nBOUND OS-1 SOURCE COMPLETION: modify only the delegated source scope. Do not call os1 run/self-repair/self-update, install, restart, merge or push. When source changes are ready, preserve existing changes, run appropriate checks, make the bundle/runtime identity version-ready above the installed build, and create an authorized LOCAL commit of only this task's changes. The original OpenClaw task performs separate mechanical staging and installation receipt checks; source/build alone is not installed or finished. If a checker/policy/installer needs changing, report it for separate stable review rather than weakening it to pass.
         """
@@ -19188,15 +19440,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         record.taskVerified = verified && exact
         record.taskQuality = verified ? (exact ? .taskVerified : .executionOnly) : .failed
         record.sideEffects = t.selectedConfig.scope == .workspaceWrite ? (a.workspaceBeforeHash == a.workspaceAfterHash ? .possible : .confirmed) : .none
-        let readCache: Int64? = measuredUsage.flatMap { usage in
-            guard let total = usage.cacheTokens, let writes = usage.cacheWriteTokens, total >= writes else { return nil }
-            return Int64(total - writes)
-        }
-        record.usage = .init(inputTokens: measuredUsage?.inputTokens.map(Int64.init),
-            outputTokens: measuredUsage?.outputTokens.map(Int64.init),
-            cacheReadTokens: readCache, cacheWriteTokens: measuredUsage?.cacheWriteTokens.map(Int64.init),
-            providerCalls: dispatched ? 1 : nil, durationMS: a.durationMS,
-            metric: measuredUsage == nil ? nil : "native_usage_observation")
+        record.usage = rccNativeUsage(measuredUsage, dispatched: dispatched, durationMS: a.durationMS)
         // Actual model/effort are not universally exposed; requested artifact fields are NOT independent observations.
         record.observedConfig = nil
         // A finished read-only answer during which a tool call of its own broke
@@ -19372,6 +19616,13 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         record.dispatchStage = report.dispatchStage
         record.sideEffects = report.sideEffects
         record.error = report.error
+        // A rejected, held or interrupted attempt reports the spend its
+        // provider recorded (execute measured it before it threw); an
+        // unmeasured one keeps no usage, as before.
+        if measuredUsage != nil {
+            record.usage = rccNativeUsage(measuredUsage, dispatched: dispatched,
+                durationMS: rejected?.execution.artifact.durationMS ?? record.usage?.durationMS)
+        }
         // Core releases a settled read-only attempt's pool only when the turn
         // itself ended; a returned record from the Codex Desktop transport
         // without a terminal status keeps that lease (shared pool peak 1).
@@ -19889,6 +20140,24 @@ func effortlessRoutingSelfTest() throws {
         startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", sourceContextOnly: true, interactiveHooksDisabled: true)
     try check(settings(sourceOnlyRead).count == 1 && settings(sourceOnlyRead)[0] as? [String: Bool] == ["disableAllHooks": true],
               "a tool-free delegated read gets a hooks-off --settings of its own")
+    // A read-only delegated child already denies every MCP tool, so it loads
+    // no MCP server or claude.ai connector at all (their instructions and
+    // authorization notices were sent with every call); writers, own sessions
+    // and the tool-free lane keep their MCP arguments byte-for-byte.
+    func mcpValues(_ arguments: [String]) -> [String] {
+        arguments.indices.filter { arguments[$0] == "--mcp-config" && arguments.indices.contains($0 + 1) }.map { arguments[$0 + 1] }
+    }
+    let emptyAt = hooklessRead.firstIndex(of: "--mcp-config")
+    try check(hooklessRead.filter { $0 == "--strict-mcp-config" }.count == 1 && mcpValues(hooklessRead) == [claudeEmptyMCPConfiguration] &&
+              emptyAt.map { hooklessRead.indices.contains($0 + 2) && hooklessRead[$0 + 2].hasPrefix("--") } == true &&
+              hooklessRead.contains("mcp__*") && hooklessRead.last == "p" &&
+              ownRead.filter({ !hooklessRead.contains($0) }) == [ClaudeReadOnlyShell.sandboxSettings] &&
+              hooklessRead.filter({ !ownRead.contains($0) }).count == 4,
+              "a read-only delegated child adds only --strict-mcp-config, an empty --mcp-config and its hooks-off settings; MCP tools stay denied")
+    try check(!hookedWrite.contains("--strict-mcp-config") && mcpValues(hookedWrite).isEmpty &&
+              !ownRead.contains("--strict-mcp-config") && mcpValues(ownRead).isEmpty &&
+              sourceOnlyRead.filter { $0 == "--strict-mcp-config" }.count == 1 && mcpValues(sourceOnlyRead) == [claudeEmptyMCPConfiguration],
+              "a writer and an own read session keep the owner's MCP configuration; the tool-free lane keeps its own single empty config")
     // The 5-minute cache only for a session that starts new and is one-shot.
     let ttl = ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"]
     try check(claudePromptCacheEnvironment(startsNewSession: true, chatLane: true, sourceOnly: false, delegatedOneShot: false) == ttl &&

@@ -28,6 +28,24 @@ func runOwnerPolicyFixtures() throws {
     let loaded = try OwnerPolicySnapshot.load(root: root, now: now)!
     precondition(loaded.instructions.contains("not the entire original"))
     precondition(loaded.instructions.contains(digest))
+    // A channel whose session holds the projection as base instructions gets
+    // the same text with only the body replaced by the pointer note.
+    let note = OwnerPolicySnapshot.projectionInBaseInstructionsNote
+    precondition(loaded.instructions == loaded.instructions(projectionDeliveredAsBaseInstructions: false))
+    let omitted = loaded.instructions(projectionDeliveredAsBaseInstructions: true)
+    precondition(omitted.contains(note) && !loaded.instructions.contains(note))
+    precondition(omitted.replacingOccurrences(of: "\n" + note + "\n", with: "\nprojection\n") == loaded.instructions)
+    precondition(omitted.components(separatedBy: "\n").count == loaded.instructions.components(separatedBy: "\n").count)
+    let baseFile = root.appendingPathComponent("codex-base.md")
+    try Data("projection".utf8).write(to: baseFile)
+    precondition(LeanBackendInstructions.codexFileHolds("projection", file: baseFile))
+    precondition(!LeanBackendInstructions.codexFileHolds("projection ", file: baseFile))
+    precondition(!LeanBackendInstructions.codexFileHolds("", file: baseFile))
+    precondition(!LeanBackendInstructions.codexFileHolds("projection", file: root))
+    let linkedBase = root.appendingPathComponent("codex-linked.md")
+    try FileManager.default.createSymbolicLink(at: linkedBase, withDestinationURL: baseFile)
+    precondition(!LeanBackendInstructions.codexFileHolds("projection", file: linkedBase))
+    precondition(!LeanBackendInstructions.codexFileHolds("projection", file: root.appendingPathComponent("missing.md")))
     try loaded.verifyOriginal(root: root)
     for key in ["sourceFile", "sourceSHA256", "projection", "routing", "projectionSHA256"] {
         var bad = record; bad[key] = "../changed"; try reject(bad)

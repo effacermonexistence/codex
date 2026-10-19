@@ -47,6 +47,16 @@ public enum LeanBackendInstructions {
         return file
     }
 
+    /// Whether `file`, read back now, holds exactly `projection` as a regular
+    /// file: the evidence a Codex session started with it as base instructions
+    /// carries the projection, so its developer channel may omit the copy.
+    public static func codexFileHolds(_ projection: String, file: URL) -> Bool {
+        guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true,
+              let data = try? Data(contentsOf: file) else { return false }
+        return !projection.isEmpty && data == Data(projection.utf8)
+    }
+
     /// `-c` override that points Codex's base instructions at `file`.
     public static func codexOverride(file: URL) -> String {
         var quoted = "\""

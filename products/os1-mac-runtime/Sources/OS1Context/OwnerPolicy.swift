@@ -37,8 +37,19 @@ public struct OwnerPolicySnapshot: Codable, Equatable, Sendable {
               digest(try Data(contentsOf: source)) == p.sourceSHA256 else { throw Failure.invalid }
         return p
     }
-    public var instructions: String {
-        """
+    public var instructions: String { instructions(projectionDeliveredAsBaseInstructions: false) }
+    /// Stands where `projection` stands in `instructions` when the receiving
+    /// session already carries `projection` verbatim as its base instructions.
+    public static let projectionInBaseInstructionsNote =
+        "[Projection body: delivered verbatim as this session's base instructions; not repeated here.]"
+    /// `instructions`, with the projection body replaced by
+    /// `projectionInBaseInstructionsNote` when `projectionDeliveredAsBaseInstructions`:
+    /// for a channel whose session verifiably holds `projection` as its base
+    /// instructions (Codex `model_instructions_file`, LeanBackendInstructions),
+    /// so the model receives it once. Every other byte equals `instructions`.
+    public func instructions(projectionDeliveredAsBaseInstructions: Bool) -> String {
+        let body = projectionDeliveredAsBaseInstructions ? Self.projectionInBaseInstructionsNote : projection
+        return """
         Device-owner governance policy projection (not the entire original).
         Source SHA-256: \(sourceSHA256)
         Projection SHA-256: \(projectionSHA256)
@@ -49,7 +60,7 @@ public struct OwnerPolicySnapshot: Codable, Equatable, Sendable {
         Read the original at \(Self.defaultRoot.appendingPathComponent(sourceFile).path)
         when a material rule is not covered here; do not load it for unrelated tasks.
         \(routing)
-        \(projection)
+        \(body)
         Before returning: verify actual artifacts/effects; preserve unknowns; distinguish
         attempted, executed, verified and adopted. Hashes attest delivery, not compliance.
         """
@@ -81,6 +92,9 @@ public struct OwnerPolicySnapshot: Codable, Equatable, Sendable {
 public enum OwnerPolicyContext {
     @TaskLocal public static var snapshot: OwnerPolicySnapshot?
     public static var instructions: String { snapshot?.instructions ?? "" }
+    public static func instructions(projectionDeliveredAsBaseInstructions: Bool) -> String {
+        snapshot?.instructions(projectionDeliveredAsBaseInstructions: projectionDeliveredAsBaseInstructions) ?? ""
+    }
 }
 
 /// The refresh the CLI runs (scripts/sync-owner-policy.py) before any routing

@@ -190,6 +190,7 @@ final class SourceContextTests {
         try suite.testBoundedConnectionProbe()
         suite.testRetrievedAnswerPresentation()
         try runCompletionFeedbackFixtures()
+        try runNativeAttemptUsageFixtures()
         try runGovernanceActivityFixtures()
         try runDriftPolicyFixtures()
         try runBackendRecoveryFixtures()
