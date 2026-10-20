@@ -333,6 +333,26 @@ public enum RCCNativeCatalogBuilder {
 
     // MARK: Admission facts (build 407)
 
+    /// A scope hint is not write authority. Only a registered owner contract
+    /// rechecked by RCCCatalogFacts for this objective/context/source/tree/
+    /// policy can resolve a conservative text-classifier ambiguity. A public
+    /// draft is not registered authority, nor is partial test coverage quality
+    /// parity. Explicit host read-only and conflicting owner/chat facts win.
+    private static func catalogReadOnly(_ input: Input) -> Bool {
+        if input.requireReadOnly { return true }
+        if let bound = input.taskContract, bound.bindingsChecked,
+           bound.objectiveSHA256 == input.requestSHA256,
+           bound.validUntilMS > Int64(input.now.timeIntervalSince1970 * 1000),
+           [bound.contractSHA256, bound.contextSHA256, bound.startTreeSHA256,
+            bound.referencePolicySHA256].allSatisfy(RCCRuntimeContract.isHash),
+           bound.sourceSHA256.map(RCCRuntimeContract.isHash) ?? true {
+            if bound.scope == .readOnly { return true }
+            if bound.scope == .workspaceWrite, input.ownerScope == .workspaceWrite,
+               !input.chatLaneEligible, input.explicitRouteSurfaces == nil { return false }
+        }
+        return ScopeResolution.resolve(input.request).scope == .readOnly
+    }
+
     /// The deterministic request class (R0/R2), from host predicates only:
     /// an explicit route test first; then the R2 scope (read-only when the
     /// catalog offers no writer row (the host requires read-only, or the
@@ -357,7 +377,7 @@ public enum RCCNativeCatalogBuilder {
     public static func admissionFacts(_ input: Input) -> AdmissionFacts? {
         guard let ownerScope = input.ownerScope else { return nil }
         let requestClass = requestClass(explicitRoute: input.explicitRouteSurfaces != nil,
-            catalogReadOnly: input.requireReadOnly || ScopeResolution.resolve(input.request).scope == .readOnly,
+            catalogReadOnly: catalogReadOnly(input),
             ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible,
             textOperation: ClaudeChatLane.selfContainedTextOperation(input.request), hasMaterial: input.hasMaterialRefs)
         return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,
@@ -379,7 +399,7 @@ public enum RCCNativeCatalogBuilder {
         var excluded: [String: [String: Int]] = [:]
         var intentFiltered: [String: Int] = [:]
         func exclude(_ provider: String, _ reason: String) { excluded[provider, default: [:]][reason, default: 0] += 1 }
-        let readOnly = input.requireReadOnly || ScopeResolution.resolve(input.request).scope == .readOnly
+        let readOnly = catalogReadOnly(input)
         let scopes = readOnly ? ["read_only"] : ["read_only", "workspace_write"]
         let chatAllowed = input.chatLaneEligible && !input.hasMaterialRefs
         let nowMS = Int64(input.now.timeIntervalSince1970 * 1000)

@@ -63,6 +63,122 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     }
     func reasons(_ output: B.Output) -> [String] { output.exclusions.map { "\($0.provider):\($0.reason):\($0.count)" } }
 
+    // Scope facts are not mutation authorization. These falsifiers protect
+    // blanket bans from a broader ownerScope heuristic or a request-class fix.
+    // A bounded named-target fence is tested separately by ScopeResolution;
+    // no catalog hint may reinterpret a blanket ban as permission to write.
+    let blanketWriteBans = [
+        "Fix the login bug in Sources/App.swift. Do not modify files. Explain only.",
+        "Repair report.csv. Do not modify any files; return an explanation only.",
+        "Fix usage_ledger.py. Never modify files. Only describe the bug.",
+        "이 파일의 버그를 고쳐줘. 파일 수정하지 마. 설명만 해.",
+        "코드 문제를 확인해. 파일은 수정하지 마. 설명만 해.",
+    ]
+    for original in blanketWriteBans {
+        let nfd = original.decomposedStringWithCanonicalMapping
+        let forms = original.utf8.elementsEqual(nfd.utf8) ? [original] : [original, nfd]
+        for request in forms {
+            try check(ScopeResolution.resolve(request).scope == .readOnly,
+                      "blanket write ban is an actual read-only boundary")
+            for owner: C.Scope? in [nil, .readOnly, .workspaceWrite] {
+                var value = input(request, chat: false)
+                value.ownerScope = owner
+                let output = try B.build(value)
+                try check(!output.candidates.isEmpty && output.candidates.allSatisfy {
+                    $0["scope"] as? String == "read_only"
+                }, "ownerScope hint never overrides a blanket file-write ban")
+                if owner == nil {
+                    try check(output.admission == nil, "unknown owner scope invents no admission facts")
+                } else {
+                    try check(output.admission?.requestClass == .readonlyLookup,
+                              "a blanket file-write ban cannot become writer request class")
+                }
+            }
+        }
+    }
+    var explicitHostReadOnly = input(writeRequest, chat: false, readOnly: true)
+    explicitHostReadOnly.ownerScope = .workspaceWrite
+    let explicitHostRows = try B.build(explicitHostReadOnly)
+    try check(explicitHostRows.candidates.allSatisfy { $0["scope"] as? String == "read_only" } &&
+              explicitHostRows.admission?.requestClass == .readonlyLookup,
+              "the explicit host read-only boundary beats a write-oriented owner hint")
+
+    // A host-rechecked registered contract is distinct from the ownerScope
+    // hint above. It can settle bounded-preservation ambiguity for exactly
+    // its current objective, without upgrading partial quality coverage.
+    let publicBoundedRepair = "이 작은 저장소의 usage_ledger.py 버그를 고쳐줘. README의 계약을 그대로 지키고 공개 테스트를 실행해. 고쳐도 되는 파일은 usage_ledger.py 하나뿐이야. 테스트·README는 바꾸지 마. 외부 패키지 설치, 네트워크, 다른 폴더 접근은 하지 마. 마지막 답변은 한국어로 바뀐 점과 실제 테스트 결과만 짧게 보고해.\n"
+    func boundContract(_ request: String, scope: C.Scope = .workspaceWrite) -> C.TaskContractFact {
+        .init(coverage: .partial, scope: scope, objectiveSHA256: C.digest(Data(request.utf8)),
+              contractSHA256: String(repeating: "1", count: 64), contextSHA256: String(repeating: "2", count: 64),
+              sourceSHA256: nil, startTreeSHA256: String(repeating: "3", count: 64),
+              referencePolicySHA256: String(repeating: "4", count: 64),
+              validUntilMS: Int64(now.addingTimeInterval(600).timeIntervalSince1970 * 1000), bindingsChecked: true)
+    }
+    for request in [publicBoundedRepair, publicBoundedRepair.decomposedStringWithCanonicalMapping,
+                    "Fix output.py only. Do not modify validation files or README.md."] {
+        var value = input(request, chat: false)
+        value.ownerScope = .workspaceWrite
+        let fact = boundContract(request)
+        value.taskContract = fact
+        let output = try B.build(value)
+        try check(output.candidates.contains { $0["scope"] as? String == "workspace_write" } &&
+                  output.admission?.requestClass == .writer,
+                  "exact rechecked current contract preserves the requested writer scope")
+        try check(output.admission?.taskContract == fact && output.admission?.taskContract?.coverage == .partial &&
+                  output.admission?.classCertificate == nil && output.admission?.classProviderPin == nil,
+                  "a partial execution contract never becomes full quality or a class certificate")
+    }
+    var boundWriter = input(publicBoundedRepair, chat: false)
+    boundWriter.ownerScope = .workspaceWrite
+    boundWriter.taskContract = boundContract(publicBoundedRepair)
+    var noContract = boundWriter; noContract.taskContract = nil
+    let unboundRows = try B.build(noContract)
+    let unboundScopes = Set(unboundRows.candidates.compactMap { $0["scope"] as? String })
+    for invalid in ["expired", "wrong_objective", "bindings_unchecked", "owner_unknown",
+                    "bad_contract_hash", "bad_context_hash", "bad_tree_hash", "bad_policy_hash", "bad_source_hash"] {
+        var value = boundWriter
+        switch invalid {
+        case "expired": value.taskContract?.validUntilMS = Int64(now.timeIntervalSince1970 * 1000)
+        case "wrong_objective": value.taskContract?.objectiveSHA256 = String(repeating: "5", count: 64)
+        case "bindings_unchecked": value.taskContract?.bindingsChecked = false
+        case "bad_contract_hash": value.taskContract?.contractSHA256 = "invalid"
+        case "bad_context_hash": value.taskContract?.contextSHA256 = "invalid"
+        case "bad_tree_hash": value.taskContract?.startTreeSHA256 = "invalid"
+        case "bad_policy_hash": value.taskContract?.referencePolicySHA256 = "invalid"
+        case "bad_source_hash": value.taskContract?.sourceSHA256 = "invalid"
+        default: value.ownerScope = nil
+        }
+        let output = try B.build(value)
+        try check(Set(output.candidates.compactMap { $0["scope"] as? String }) == unboundScopes,
+                  "invalid or unknown owner contract cannot override the original scope: " + invalid)
+        if invalid == "owner_unknown" {
+            try check(output.admission == nil, "a contract cannot invent missing owner-scope facts")
+        } else {
+            try check(output.admission?.requestClass == unboundRows.admission?.requestClass,
+                      "invalid contract does not rewrite the original request class")
+        }
+    }
+    for boundary in ["owner_read_only", "chat", "explicit", "host_read_only"] {
+        var value = boundWriter
+        switch boundary {
+        case "owner_read_only": value.ownerScope = .readOnly
+        case "chat": value.chatLaneEligible = true
+        case "explicit": value.explicitRouteSurfaces = ["codex"]
+        default: value.requireReadOnly = true
+        }
+        let output = try B.build(value)
+        try check(!output.candidates.isEmpty && output.candidates.allSatisfy { $0["scope"] as? String == "read_only" },
+                  "conflicting owner/chat/explicit/hard-read-only facts prevent writer override: " + boundary)
+        try check(output.admission?.requestClass != .writer, "boundary does not become a writer request class")
+    }
+    var narrowed = input(writeRequest, chat: false)
+    narrowed.ownerScope = .workspaceWrite
+    narrowed.taskContract = boundContract(writeRequest, scope: .readOnly)
+    let narrowedRows = try B.build(narrowed)
+    try check(!narrowedRows.candidates.isEmpty && narrowedRows.candidates.allSatisfy { $0["scope"] as? String == "read_only" } &&
+              narrowedRows.admission?.requestClass == .readonlyLookup,
+              "a bound read-only contract narrows an otherwise executable writer request")
+
     // Source-derived regression: the initial frozen quality smoke requested
     // an implementation, but named-file preservation and a future evaluator's
     // sandbox were incorrectly promoted into a global worker no-write rule.
