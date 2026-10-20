@@ -19368,6 +19368,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         var operationalAssessment: TaskQualityEvidence.Evaluation?
         let localQualityProfile: RCCNativeLocalQualityProfile?
         let ownerLocalBoundary = try RCCOperationalQuality.localEffectsBoundary(ticket: t)
+        try RCCOperationalQuality.enforceRequiredExecutionIsolation(required: t.executionIsolation,
+            envelopeSHA256: t.executionIsolationSHA256, boundary: ownerLocalBoundary, config: t.selectedConfig,
+            sourceBound: sourceRoot != nil, nativeResume: t.nativeResumeSessionID != nil,
+            permissionContinuation: t.continuation != nil)
         if ownerLocalBoundary != nil, RCCOperationalQuality.supportsLocalEffects(config: t.selectedConfig,
             sourceBound: sourceRoot != nil, nativeResume: t.nativeResumeSessionID != nil, permissionContinuation: t.continuation != nil) {
             localQualityProfile = try RCCNativeLocalQualityProfile(ticket: t, workspace: workspace, boundary: ownerLocalBoundary)

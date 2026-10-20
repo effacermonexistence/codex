@@ -42,10 +42,17 @@ enum RCCCatalogFacts {
                   [issuedMS, untilMS].allSatisfy({ $0.isFinite && (0...9_007_199_254_740_991).contains($0) }),
                   contract.issuedAt <= now, contract.issuedAt < contract.validUntil,
                   contract.validUntil > now else { return nil }
+            let isolatedBoundary = prepared.envelope.localEffectsOnly && source == nil && host.codexSessionID == nil &&
+                (request.nativeSessions == nil || request.nativeSessions?.isEmpty == true) &&
+                OS1SourceWatch.containedRoot(workspace: host.workspace) == nil &&
+                LocalProjectWorkspace.root(containing: host.workspace, projectID: "os1-clodex") == nil
+                ? (try? RCCOperationalQuality.localEffectsBoundary(request: request, rootURL: rootURL)) : nil
             return .init(coverage: contract.fullCoverage ? .full : .partial, scope: scope == .readOnly ? .readOnly : .workspaceWrite,
                 objectiveSHA256: objectiveSHA, contractSHA256: contract.sha256, contextSHA256: context, sourceSHA256: source,
                 startTreeSHA256: tree, referencePolicySHA256: request.policySHA256,
-                validUntilMS: Int64(untilMS.rounded(.down)))
+                validUntilMS: Int64(untilMS.rounded(.down)),
+                executionIsolation: isolatedBoundary == nil ? nil : "codex_fresh_local_effects_v1",
+                executionIsolationSHA256: isolatedBoundary?.envelopeSHA256)
         }
         return nil
     }
@@ -78,8 +85,8 @@ func rccCatalogFactsSelfTest() throws {
         guard try pass() else { throw OS1Error.message("RCC catalog facts fixture: " + label) }; checks += 1
     }
     let policy = C.digest(Data("fixture policy".utf8)), tree = C.digest(Data("fixture tree".utf8))
-    func request(_ text: String, context: String? = nil, materials: [String] = []) throws -> C.Request {
-        let host = C.HostContext(workspace: root.path, context: context, providerPreference: "auto", codexSessionID: nil,
+    func request(_ text: String, context: String? = nil, materials: [String] = [], codexSession: String? = nil) throws -> C.Request {
+        let host = C.HostContext(workspace: root.path, context: context, providerPreference: "auto", codexSessionID: codexSession,
                                  claudeSessionID: nil, requireReadOnly: false, ownerPolicy: nil)
         return C.Request(taskID: "fixture-facts", request: text, requestSHA256: C.digest(Data(text.utf8)), objective: text,
             policySHA256: policy, sourceFingerprint: C.digest(try C.encode(host)), mode: .auto, materialRefs: materials,
@@ -102,14 +109,14 @@ func rccCatalogFactsSelfTest() throws {
     try checker.write(to: root.appendingPathComponent("checkers/\(checkerSHA).py"))
     func save(_ req: C.Request, scope: TaskContext.Scope = .readOnly, full: Bool = true, context: String? = nil,
               policy contractPolicy: String? = nil, issued: Date = Date(), schema: Int = 1,
-              until: Date = Date().addingTimeInterval(600)) throws {
+              until: Date = Date().addingTimeInterval(600), localEffectsOnly: Bool = false) throws {
         var contract = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: req.requestSHA256,
             contextSHA256: context ?? C.digest(Data((req.hostContext?.context ?? "").utf8)), sourceSHA256: nil,
             startTreeSHA256: tree, scope: scope, verifierCodeSHA256: checkerSHA, referencePolicySHA256: contractPolicy ?? policy,
             requiredCheckIDs: ["owner.full"], fullCoverage: full, referenceProfiles: [], reference: nil,
             issuedAt: issued, validUntil: until)
         contract.schema = schema
-        let envelope = PreparedTaskQuality.Envelope(contract: contract, checkerSHA256: checkerSHA, timeoutSeconds: 30, workspacePaths: [])
+        let envelope = PreparedTaskQuality.Envelope(contract: contract, checkerSHA256: checkerSHA, timeoutSeconds: 30, workspacePaths: [], localEffectsOnly: localEffectsOnly)
         let path = root.appendingPathComponent("contracts/\(req.requestSHA256).json")
         try? fm.removeItem(at: path)
         try RCCOperationalQuality.encoded(envelope).write(to: path)
@@ -155,6 +162,52 @@ func rccCatalogFactsSelfTest() throws {
     try save(lookup, issued: clock, until: Date(timeIntervalSince1970: 1e16))
     try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree }) == nil,
               "an out-of-range expiry is rejected before integer conversion")
+
+    // Pool sharing is a capability from the exact rechecked envelope, never
+    // inferred from a route label, model output, or a requested write hint.
+    try save(lookup, full: false, localEffectsOnly: true)
+    guard let isolated = RCCCatalogFacts.taskContract(lookup, rootURL: root, startTree: { _ in tree }) else {
+        throw OS1Error.message("Missing isolated catalog fixture")
+    }
+    try check(isolated.executionIsolation == "codex_fresh_local_effects_v1" && isolated.executionIsolationSHA256 != nil && isolated.coverage == .partial,
+              "exact fresh local-effects boundary advertises isolation, never full quality")
+    var catalog = C.Catalog(taskID: lookup.taskID, requestSHA256: lookup.requestSHA256, candidates: [],
+        exclusions: [.init(provider: "codex", reason: "explicit_constraint_unavailable", count: 1)],
+        ownerScope: .readOnly, chatLaneEligible: false, requestClass: .readonlyLookup, taskContract: isolated)
+    try check(try C.decodeCatalog(C.encode(catalog), request: lookup).taskContract?.executionIsolation == isolated.executionIsolation,
+              "optional isolation field round-trips strict wire validation")
+    func invalidIsolation(_ value: String?, source: String? = nil, checked: Bool = true) throws -> Bool {
+        var c = isolated; c.executionIsolation = value; if value == nil { c.executionIsolationSHA256 = nil }; c.sourceSHA256 = source; c.bindingsChecked = checked
+        catalog.taskContract = c
+        do { _ = try C.decodeCatalog(C.encode(catalog), request: lookup); return false } catch { return true }
+    }
+    try check(try invalidIsolation("invented"), "unknown isolation class is rejected")
+    try check(try invalidIsolation("codex_fresh_local_effects_v1", source: tree), "source-bound fact cannot claim fresh local isolation")
+    try check(try invalidIsolation("codex_fresh_local_effects_v1", checked: false), "unchecked fact is not isolation authority")
+    var missingPair = isolated; missingPair.executionIsolationSHA256 = nil; catalog.taskContract = missingPair
+    do { _ = try C.decodeCatalog(C.encode(catalog), request: lookup); throw OS1Error.message("Isolation missing hash was accepted") }
+    catch let error as C.Rejection { _ = error; checks += 1 }
+    var malformedPair = isolated; malformedPair.executionIsolationSHA256 = "not-a-hash"; catalog.taskContract = malformedPair
+    do { _ = try C.decodeCatalog(C.encode(catalog), request: lookup); throw OS1Error.message("Isolation malformed hash was accepted") }
+    catch let error as C.Rejection { _ = error; checks += 1 }
+    catalog.taskContract = fact
+    try check(try C.decodeCatalog(C.encode(catalog), request: lookup).taskContract?.executionIsolation == nil,
+              "old fact without capability stays wire-compatible and exclusive")
+    try save(lookup, localEffectsOnly: false)
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, startTree: { _ in tree })?.executionIsolation == nil,
+              "ordinary contract does not invent local-effects capability")
+    let resumed = try request(lookup.request, codexSession: UUID().uuidString.lowercased())
+    try save(resumed, localEffectsOnly: true)
+    try check(RCCCatalogFacts.taskContract(resumed, rootURL: root, startTree: { _ in tree })?.executionIsolation == nil,
+              "resumed host session cannot claim fresh native isolation")
+    var legacySessions = try request(lookup.request)
+    legacySessions.nativeSessions = ["codex": UUID().uuidString.lowercased()]
+    try save(legacySessions, localEffectsOnly: true)
+    try check(RCCCatalogFacts.taskContract(legacySessions, rootURL: root, startTree: { _ in tree })?.executionIsolation == nil,
+              "legacy native session metadata omits isolation rather than making an invalid shared catalog")
+    try save(lookup, until: Date().addingTimeInterval(-1), localEffectsOnly: true)
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, startTree: { _ in tree }) == nil,
+              "expired local-effects boundary cannot enable sharing")
 
     // 407-f: the adapter tolerates exactly the binding mismatch prepare throws.
     try save(lookup)

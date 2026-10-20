@@ -341,6 +341,28 @@ check('allowRegressionAcquisition: !qualityRegressionAcquisitionAttempted' in co
       and 'frozenQualityWorkspace == observedWorkspace ? frozenQualityRegression : nil' in code,
       'retry must reuse first test custody only for the same workspace, never reacquire model-rewritten tests')
 
+# Shared reservations carry a frozen local-effects requirement. Removing the
+# declaration after catalog time must not turn that ticket into an ordinary
+# unconfined native attempt. Behavioral file-mutation cases live in the CLI
+# local-effects fixture; this gate pins the actual adapter call-site/order.
+native_adapter = lexical(function(main, 'rccNativeAdapter'), strings=True)
+required_gate = native_adapter.find('RCCOperationalQuality.enforceRequiredExecutionIsolation(')
+profile_creation = native_adapter.find('RCCNativeLocalQualityProfile(ticket:')
+native_execution = native_adapter.find('execute(ticket:')
+check(required_gate >= 0 and profile_creation > required_gate and native_execution > required_gate,
+      'shared isolation requirement must be enforced on the actual native path before profile/process execution')
+check('required: t.executionIsolation' in native_adapter and 'envelopeSHA256: t.executionIsolationSHA256' in native_adapter
+      and 'boundary: ownerLocalBoundary' in native_adapter,
+      'actual adapter must compare the ticket requirement to the freshly read owner boundary')
+required_body = lexical(function(runtime, 'enforceRequiredExecutionIsolation'), strings=True)
+check('boundary.envelopeSHA256 == envelopeSHA256' in required_body and 'supportsLocalEffects(' in required_body
+      and 'throw Failure.localEffectsCapabilityUnavailable' in required_body,
+      'missing/changed/unsupported shared boundary must fail closed, never become ordinary execution')
+check('removed declaration cannot silently become an ordinary shared attempt' in runtime
+      and 'toggled declaration cannot silently widen a shared attempt' in runtime
+      and 'a different valid envelope cannot reuse the frozen shared admission' in runtime,
+      'actual-file removal/toggle/replacement regressions must remain in the local-effects self-test')
+
 if failures:
     for failure in failures:
         print('OS-1 task quality wiring: FAILED: ' + failure, file=sys.stderr)

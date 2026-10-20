@@ -92,7 +92,7 @@ func selfRepairCommand(_ arguments: [String]) async throws -> Bool {
 /// Shared with the runtime hook in main.swift.
 let selfRepairFailurePrefixText = "OS-1 self-repair could not complete: "
 
-let os1RuntimeVersionString = "OS-1 Runtime 0.9.345 (qualified-native163-build411)"
+let os1RuntimeVersionString = "OS-1 Runtime 0.9.346 (bounded-concurrency-observability-build412)"
 
 /// Where the source leases live. A fixture binds a scratch folder so its
 /// real flock leases on a temporary tree never leave lock files in the owner's

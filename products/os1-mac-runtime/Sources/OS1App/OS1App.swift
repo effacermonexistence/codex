@@ -6735,11 +6735,16 @@ private func rccCoreBoundaryHeadline(_ core: RCCRuntimeContract.Snapshot) -> Str
 /// an unrelated final producer or a selected UI route. No model/readback runs.
 private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: PendingSubmission,
                             localReceipt: RCCDeterministicReceipt?, note: String) -> ChatMessage {
-    var unchanged = ChatMessage(role: .receipt, text: localReceipt?.detail ?? note)
+    let boundCore = (try? RCCRuntimeContract.validate(core)) != nil &&
+        core.taskID == submission.id.uuidString.lowercased() &&
+        core.requestSHA256 == appSHA256Hex(submission.executionRequest)
+    // This is the existing task's observed resource ledger, not another
+    // provider call or a quality/billing claim. Local zero and missing legacy
+    // accounting remain distinct; a foreign Core cannot lend its usage.
+    let resourceText = boundCore ? "\n" + RuntimeResourcePresentation.resources(core.resourceUsage).text : ""
+    var unchanged = ChatMessage(role: .receipt, text: (localReceipt?.detail ?? note) + resourceText)
     unchanged.deterministicExecution = localReceipt
-    guard localReceipt == nil, (try? RCCRuntimeContract.validate(core)) != nil,
-          core.taskID == submission.id.uuidString.lowercased(),
-          core.requestSHA256 == appSHA256Hex(submission.executionRequest),
+    guard localReceipt == nil, boundCore,
           let result = core.result, result.executionVerified,
           [.completed, .returnedUnverified, .awaitingInstall].contains(core.state) else { return unchanged }
     // R6 disclosure is already part of this exact validated Core result.
@@ -6805,7 +6810,7 @@ private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: Pen
               }
           }) else { return unchanged }
     let providers = Set(native.map(\.provider))
-    let detail = note + "\n" + native.map(nativeRecordReceipt).joined(separator: "\n") + disclosureText
+    let detail = note + "\n" + native.map(nativeRecordReceipt).joined(separator: "\n") + disclosureText + resourceText
     return ChatMessage(role: .receipt, text: detail,
         provider: providers.count == 1 ? providers.first : nil,
         executionSurface: native.count == 1 ? native.first?.executedSurface?.rawValue : nil,
@@ -7925,6 +7930,35 @@ private func rccCoreNativeReceiptSelfTest() throws {
                 nativeReceipt: "/tmp/fixture-core.json", nativeSummaries: missing ? [] : summaries,
                 taskQuality: .executionOnly), error: "parent_task_verifier_unavailable")
     }
+    let resourceFixture = Data(#"{"schema":1,"accounting_complete":true,"total_tokens_observed":23,"local_tokens_observed":3,"native_tokens_observed":20,"local_calls_started":1,"local_calls_settled":1,"local_worker_attempts":1,"native_attempts":2,"plan_model_calls":0,"issues":[],"quota_savings":"not_measured","cash_cost":"not_measured","accounting_scope":"observed_attempts_as_of_snapshot_not_future_cost"}"#.utf8)
+    var resourceCore = try fixture(1)
+    resourceCore.resourceUsage = try JSONDecoder().decode(C.ResourceUsageSummary.self, from: resourceFixture)
+    let resourceBefore = try C.encode(resourceCore)
+    let observedResourceText = RuntimeResourcePresentation.resources(resourceCore.resourceUsage).text
+    let resourceReceipt = rccCoreReceipt(resourceCore, submission: submission, localReceipt: nil, note: "Result received")
+    try check(resourceReceipt.text.contains(observedResourceText) && resourceReceipt.nativeRecordVerified == true,
+              "exact bound Core resource observations appear without dropping native execution receipt")
+    try check(try C.encode(resourceCore) == resourceBefore && resourceReceipt.taskQuality?.state == .executionOnly,
+              "resource projection does not mutate output, adoption or task-quality status")
+    let persistedResource = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(resourceReceipt))
+    try check(persistedResource.text.contains(observedResourceText), "resource observations persist in existing receipt text")
+    var foreignResource = resourceCore; foreignResource.taskID = UUID().uuidString.lowercased()
+    try check(!rccCoreReceipt(foreignResource, submission: submission, localReceipt: nil, note: "Foreign").text.contains(observedResourceText),
+              "foreign task cannot borrow resource accounting")
+    foreignResource = resourceCore; foreignResource.requestSHA256 = String(repeating: "b", count: 64)
+    try check(!rccCoreReceipt(foreignResource, submission: submission, localReceipt: nil, note: "Foreign").text.contains(observedResourceText),
+              "foreign request cannot borrow resource accounting")
+    var partialResource = resourceCore
+    partialResource.resourceUsage?.accountingComplete = false
+    partialResource.resourceUsage?.totalTokensObserved = nil
+    partialResource.resourceUsage?.localTokensObserved = 0
+    partialResource.resourceUsage?.nativeTokensObserved = nil
+    partialResource.resourceUsage?.issues = ["native_missing"]
+    try check(rccCoreReceipt(partialResource, submission: submission, localReceipt: nil, note: "Partial").text.contains(
+        RuntimeResourcePresentation.resources(partialResource.resourceUsage).text), "partial aggregate displayed explicitly unknown")
+    var legacyResource = resourceCore; legacyResource.resourceUsage = nil
+    try check(rccCoreReceipt(legacyResource, submission: submission, localReceipt: nil, note: "Legacy").text.contains(
+        RuntimeResourcePresentation.resources(nil).text), "legacy missing usage displayed unknown, not fabricated zero")
     for (count, mixed) in [(1, false), (2, false), (2, true)] {
         let core = try fixture(count, mixed: mixed), before = try C.encode(core)
         let receipt = rccCoreReceipt(core, submission: submission, localReceipt: nil, note: "Task incomplete")
@@ -18133,7 +18167,7 @@ private struct SessionSidebar: View {
                     Label(os1Tr("제공자 상태", "Provider status"), systemImage: "waveform.path.ecg")
                         .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }.buttonStyle(.plain)
-                    .popover(isPresented: $showMonitor) { FrontierMonitorView(store: store).frame(width: 300).padding(8).preferredColorScheme(.dark) }
+                    .popover(isPresented: $showMonitor) { ProviderStatusView(store: store).frame(width: 360).padding(8).preferredColorScheme(.dark) }
                 Spacer()
             }.padding(16)
 
@@ -18145,6 +18179,132 @@ private struct SessionSidebar: View {
         .frame(width: Theme.sidebarWidth)
         .background(Color.black.opacity(0.72))
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("os1.focusSearch"))) { _ in searching = true }
+    }
+}
+
+/// Reads only the existing metadata caches when opened or explicitly reloaded.
+/// The periodic view recomputes age, never invokes a quota probe/model or writes
+/// account state. The ordinary maintenance loop remains the only poll owner.
+private struct ProviderStatusView: View {
+    @ObservedObject var store: SessionStore
+    @State private var health: BackendHealth?
+    @State private var claudeStore: ClaudeQuotaStore?
+    @State private var accountIDs: [String: String] = [:]
+    @State private var loadedAt: Date?
+
+    private func loadCachedObservations() {
+        let now = Date(), accounts = BackendAccounts.load()
+        accountIDs = Dictionary(uniqueKeysWithValues: BackendAccounts.providers.map {
+            ($0, BackendAccounts.active(provider: $0, in: accounts).id)
+        })
+        health = BackendHealth.load(maxAge: BackendHealth.QuotaSnapshot.retainedMaximumAge,
+                                    now: now, invalidateReset: false)
+        claudeStore = ClaudeQuotaStore.load(from: ClaudeQuotaStore.defaultURL)
+        loadedAt = now
+    }
+
+    private func quota(_ provider: String, now: Date) -> RuntimeResourcePresentation.Quota {
+        let account = accountIDs[provider] ?? ""
+        let backend = provider == "codex" ? health?.codex : health?.claude
+        let ownClaude = provider == "claude" && claudeStore?.accountID == account ? claudeStore : nil
+        let snapshots = [backend?.quota, ownClaude?.snapshot].compactMap { $0 }
+        // Account matching happens before freshness ranking. Never borrow a
+        // newer observation from a different sign-in or expose its identity.
+        let snapshot = snapshots.filter { $0.accountID == account }.max { $0.observedAt < $1.observedAt }
+        let backendAccountMatches = backend?.quota?.accountID == account
+        let probes = [backendAccountMatches ? backend?.quotaProbe : nil, ownClaude?.probe]
+            .compactMap { $0 }.filter { $0.attemptedAt <= now }
+        return RuntimeResourcePresentation.quota(provider: provider, accountID: account,
+            connectionState: provider == "codex" && !store.appSettings.showCodex
+                ? .disabled : backendAccountMatches ? backend?.state : nil, snapshot: snapshot,
+            probe: probes.max { $0.attemptedAt < $1.attemptedAt }, now: now)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(os1Tr("계정 쿼터 관측", "Account quota observations")).font(.headline)
+                    Spacer()
+                    Button { loadCachedObservations() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.plain)
+                        .help(os1Tr("저장된 관측만 다시 읽기 · 공급자 호출 없음", "Reload saved observations only · no provider call"))
+                        .accessibilityLabel(os1Tr("저장된 쿼터 관측 다시 읽기", "Reload cached quota observations"))
+                }
+                TimelineView(.periodic(from: .now, by: 15)) { context in
+                    VStack(alignment: .leading, spacing: 12) {
+                        quotaRow(quota("codex", now: context.date))
+                        quotaRow(quota("claude", now: context.date))
+                    }
+                }
+                if let loadedAt {
+                    Text(os1Tr("캐시 읽은 시각: ", "Cache read: ") + stamp(loadedAt))
+                        .font(.caption2).foregroundStyle(Theme.muted)
+                }
+                Text(os1Tr("계정 한도와 작업 토큰은 별개입니다. 이 화면은 작업별 구독 소모·청구액·절감량을 계산하지 않습니다.",
+                           "Account limits and task tokens are separate. This view does not calculate per-task subscription charges, billing or savings."))
+                    .font(.caption2).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Text(os1Tr("프론티어 뉴스", "Frontier news")).font(.headline)
+                FrontierMonitorView(store: store)
+            }.padding(12)
+        }
+        .frame(maxHeight: 590)
+        .onAppear { loadCachedObservations() }
+        .onReceive(NotificationCenter.default.publisher(for: BackendAccountsModel.changed)) { _ in
+            // An open popover must not keep the previous account's identity.
+            // Only local metadata is reread; no sign-in or quota probe starts.
+            loadCachedObservations()
+        }
+    }
+
+    private func quotaRow(_ value: RuntimeResourcePresentation.Quota) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(value.provider == "codex" ? "Codex" : "Claude").font(.subheadline.weight(.semibold))
+                Spacer()
+                if let connection = value.connectionState {
+                    Text(os1Tr("연결: ", "Connection: ") + connection.rawValue)
+                        .font(.caption2).foregroundStyle(Theme.muted)
+                }
+            }
+            Text(value.headline).font(.caption.weight(.semibold))
+                .foregroundStyle(value.basis == .unknown ? Theme.muted : Theme.pink)
+            if let reason = value.reasonText { Text(reason).font(.caption2).foregroundStyle(Theme.muted) }
+            if let source = value.source { Text(os1Tr("출처: ", "Source: ") + source.rawValue).font(.caption2).foregroundStyle(Theme.muted) }
+            if let observed = value.observedAt { Text(os1Tr("관측 시각: ", "Observed: ") + stamp(observed)).font(.caption2).foregroundStyle(Theme.muted) }
+            ForEach(Array(value.windows.enumerated()), id: \.offset) { _, window in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(safe(window.bucket) + " · " + percent(window.observedRemainingPercent) +
+                         os1Tr(" 잔여 (관측값)", " remaining (observed)"))
+                        .font(.caption)
+                    if window.model != nil || window.surface != nil {
+                        Text([window.model, window.surface].compactMap { $0 }.map(safe).joined(separator: " · "))
+                            .font(.caption2).foregroundStyle(Theme.muted)
+                    }
+                    if let reset = window.resetsAt { Text(os1Tr("리셋: ", "Reset: ") + stamp(reset)).font(.caption2).foregroundStyle(Theme.muted) }
+                }
+            }
+            if value.basis == .retainedEstimate {
+                Text(value.generalRemainingEstimate.map {
+                    os1Tr("일반 한도 보수적 추정: ", "Conservative general-window estimate: ") + percent($0)
+                } ?? os1Tr("일반 한도 실행 추정 미상", "General-window dispatch estimate unknown"))
+                    .font(.caption2).foregroundStyle(Theme.muted)
+            }
+            if let outcome = value.probeOutcome, let attempted = value.probeAttemptedAt {
+                Text(os1Tr("최근 조회: ", "Last probe: ") + outcome.rawValue + " · " + stamp(attempted))
+                    .font(.caption2).foregroundStyle(Theme.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func stamp(_ date: Date) -> String { date.formatted(date: .abbreviated, time: .standard) }
+    private func percent(_ value: Double) -> String { String(format: "%.1f%%", value) }
+    private func safe(_ value: String) -> String {
+        String(String.UnicodeScalarView(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).prefix(128).description
     }
 }
 

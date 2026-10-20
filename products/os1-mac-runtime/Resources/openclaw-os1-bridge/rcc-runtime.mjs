@@ -1497,7 +1497,9 @@ function validTaskContract(contract, catalog, task) {
   const required = ['coverage', 'scope', 'objective_sha256', 'contract_sha256', 'context_sha256',
     'start_tree_sha256', 'reference_policy_sha256', 'valid_until_ms', 'bindings_checked'];
   return plain(contract) && required.every(key => Object.hasOwn(contract, key)) &&
-    Object.keys(contract).every(key => required.includes(key) || key === 'source_sha256') &&
+    Object.keys(contract).every(key => required.includes(key) || ['source_sha256', 'execution_isolation', 'execution_isolation_sha256'].includes(key)) &&
+    ((contract.execution_isolation == null && contract.execution_isolation_sha256 == null) ||
+      (contract.execution_isolation === 'codex_fresh_local_effects_v1' && HASH.test(contract.execution_isolation_sha256 ?? '') && contract.source_sha256 == null)) &&
     ['partial', 'full'].includes(contract.coverage) && SCOPES.has(contract.scope) &&
     contract.bindings_checked === true && contract.objective_sha256 === catalog.request_sha256 &&
     [contract.contract_sha256, contract.context_sha256, contract.start_tree_sha256,
@@ -2130,6 +2132,10 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
     CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, snapshot TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS write_leases (workspace TEXT PRIMARY KEY, task_id TEXT NOT NULL, acquired_ms INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS quota_leases (pool_key TEXT PRIMARY KEY, task_id TEXT NOT NULL, acquired_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS pool_claims (seq INTEGER PRIMARY KEY AUTOINCREMENT, pool_key TEXT NOT NULL,
+      task_id TEXT NOT NULL, node_id TEXT NOT NULL, claim_id TEXT NOT NULL UNIQUE, candidate_id TEXT NOT NULL,
+      workspace TEXT, mode TEXT NOT NULL, shared INTEGER NOT NULL, binding_sha256 TEXT NOT NULL, phase TEXT NOT NULL, requested_ms INTEGER NOT NULL,
+      UNIQUE(pool_key,task_id,node_id));
     CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
       revision INTEGER NOT NULL, kind TEXT NOT NULL, at_ms INTEGER NOT NULL, payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ledger_pending (attempt_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
@@ -2196,7 +2202,7 @@ class RCCRuntime {
     // settles, even when a timeout has already held the task.
     this.intentControllers = new Map();
     this.installationObservations = new Map();
-    this.poolReservations = new Set(); this.readPoolReservations = new Map();
+    this.poolReservations = new Set(); this.readPoolReservations = new Map(); this.claimReservations = new Map();
     this.maximumReadWorkersPerPool = maximumReadWorkersPerPool; this.activeWriteWorkspaces = new Set();
     // Per task: the catalog bind instant a pool spread already re-probed.
     this.spreadProbes = new Map();
@@ -2558,6 +2564,7 @@ class RCCRuntime {
     const legacy = reconcile ? legacySettleCutoff(snapshot) : null;
     const kept = protectedPools(snapshot, legacy), settled = settledReadOnlyPools(snapshot, legacy);
     this.transaction(() => {
+      this._reconcilePoolClaims();
       const rows = this.db.prepare('SELECT pool_key FROM quota_leases WHERE task_id=?').all(taskID);
       for (const row of rows) if (!kept.has(row.pool_key)) {
         this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?').run(row.pool_key, taskID);
@@ -3118,31 +3125,18 @@ class RCCRuntime {
     if (failure !== null) throw new RCCRuntimeError(failure);
     return candidate;
   }
-  /** A cheap, read-only look at whether this row could take a lease now. It
-   * avoids a native catalog probe while the pool or workspace is busy;
-   * _tryReserve remains the authoritative, transactional reservation. */
-  _leasePossible(candidate, task) {
-    if (this.activeWorkers >= this.maximumWorkers) return false;
-    const poolKey = this._poolKey(candidate);
-    if (poolKey && this.poolReservations.has(poolKey)) return false;
-    let workspaceKey = null;
-    if (candidate.scope === 'workspace_write') {
-      try { workspaceKey = realpathSync(task.host_context.workspace); } catch { return true; }
-      if (this.activeWriteWorkspaces.has(workspaceKey)) return false;
-    }
-    const foreign = (table, column, value) => {
-      if (!value) return false;
-      const row = this.db.prepare(`SELECT task_id FROM ${table} WHERE ${column}=?`).get(value);
-      if (!row || row.task_id === task.task_id) return false;
-      const owner = this._load(row.task_id);
-      // A stale quota lease (vanished or terminal owner, no attempt of its
-      // own protecting the pool) is released by _tryReserve: not a wait.
-      if (table === 'quota_leases' && (!owner || (TERMINAL.has(owner.state) && !protectedPools(owner).has(value))))
-        return false;
-      // An effects-uncertain owner must surface as the existing hold, not wait.
-      return owner?.state !== 'effects_uncertain';
-    };
-    return !foreign('quota_leases', 'pool_key', poolKey) && !foreign('write_leases', 'workspace', workspaceKey);
+  /** Bounded SQLite resource probe; never a model/catalog call. An uncertain
+   * member reaches the authoritative reservation check so it holds, not spins. */
+  _leasePossible(candidate, task, nodeID, note = true) {
+    try {
+      const claim = this._poolClaim(candidate, task, nodeID, {note});
+      if (claim.state === 'busy') return false;
+      // Preserve the legacy ready-wave's busy -> async spread -> admission
+      // recheck path. Returning free synchronously could dispatch a stale
+      // sibling before an immediately returned authorization failure settles.
+      if (!claim.info.shared && claim.info.poolKey && this.poolReservations.has(claim.info.poolKey)) return false;
+      return true;
+    } catch { return true; } // _tryReserve reports the exact canonical-path error.
   }
   /** A node the host resolved and bound (its routing decision has a class):
    * any resolved node, and an explicit route on a tier-routed catalog,
@@ -3244,7 +3238,7 @@ class RCCRuntime {
         const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
           {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry});
         return choice.candidate.quota_pool !== planned.quota_pool &&
-          this._leasePossible(choice.candidate, executionTask(snapshot)) ? choice : null;
+          this._leasePossible(choice.candidate, executionTask(snapshot), node.id, false) ? choice : null;
       } catch { return null; }
     };
     let state = snapshot;
@@ -3367,64 +3361,215 @@ class RCCRuntime {
       !state.children.some(child => poolKeyOf(child.selected_config) === key &&
         child.state === 'effects_uncertain' && !settledReadOnly(child));
   }
-  _tryReserve(candidate, task, nodeID) {
-    const poolKey = this._poolKey(candidate);
-    let workspaceKey = null;
-    if (candidate.scope === 'workspace_write') {
-      try { workspaceKey = realpathSync(task.host_context.workspace); }
-      catch { throw new RCCRuntimeError('write_workspace_unavailable'); }
+  /** Sharing is a host-attested resource capability, never a route/model guess.
+   * The adapter independently rechecks the exact local-effects boundary before
+   * dispatch. Legacy, resumed, source/permission handbacks remain exclusive. */
+  _claimInfo(candidate, task, nodeID) {
+    let workspace = null;
+    try { workspace = realpathSync(task.host_context.workspace); }
+    catch { if (candidate.scope === 'workspace_write') throw new RCCRuntimeError('write_workspace_unavailable'); }
+    const snapshot = this._load(task.task_id), child = snapshot?.children.find(c => c.id === nodeID);
+    const contract = snapshot?.catalog?.task_contract;
+    const shared = this.maximumReadWorkersPerPool > 1 && candidate.surface === 'codex' &&
+      candidate.transport === 'codex_app_server' && candidate.quota_pool === 'openai_codex' &&
+      candidate.scope === candidate.permission_profile && workspace === task.host_context.workspace &&
+      task.host_context.codex_session_id === null &&
+      (task.native_sessions == null || Object.keys(task.native_sessions).length === 0) &&
+      child?.attempts === 0 && !child.stage && !child.continuation && !child.quality_continuation && !child.repair_needed &&
+      contract?.execution_isolation === 'codex_fresh_local_effects_v1' && HASH.test(contract.execution_isolation_sha256 ?? '') &&
+      validTaskContract(contract, snapshot.catalog, task) && contract.valid_until_ms > Date.now() &&
+      contract.source_sha256 == null && (contract.scope === 'workspace_write' || candidate.scope === 'read_only');
+    return {poolKey: this._poolKey(candidate), taskID: task.task_id, nodeID, workspace,
+      mode: candidate.scope === 'workspace_write' ? 'write' : 'read', shared: Boolean(shared), candidateID: candidate.id,
+      isolation: shared ? {execution_isolation: contract.execution_isolation, execution_isolation_sha256: contract.execution_isolation_sha256} : null,
+      binding: sha(Buffer.from(stable({config: exactConfig(candidate), workspace, shared: Boolean(shared),
+        contract: shared ? contract : null, session: task.host_context.codex_session_id, native_sessions: task.native_sessions ?? null})))};
+  }
+  _rootsOverlap(a, b) {
+    if (a === null || b === null) return true;
+    const under = (root, path) => { const r = relative(root, path); return r === '' || (!r.startsWith('../') && r !== '..' && !isAbsolute(r)); };
+    return under(a, b) || under(b, a);
+  }
+  _claimChild(row) { return this._load(row.task_id)?.children.find(c => c.id === row.node_id); }
+  _validClaimRow(row) {
+    if (!boundedText(row.pool_key, 600) || !ID.test(row.task_id ?? '') || !ID.test(row.node_id ?? '') ||
+        !(typeof row.claim_id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(row.claim_id)) || !ID.test(row.candidate_id ?? '') || !HASH.test(row.binding_sha256 ?? '') ||
+        !['waiting', 'active'].includes(row.phase) || !['read', 'write'].includes(row.mode) ||
+        ![0, 1].includes(row.shared) || !(row.workspace === null ||
+          (typeof row.workspace === 'string' && isAbsolute(row.workspace)))) return false;
+    if (row.shared === 1 && row.workspace === null) return false;
+    const child = this._claimChild(row), reservation = this.claimReservations.get(row.claim_id);
+    if (reservation && (row.phase !== 'active' || reservation.binding !== row.binding_sha256 ||
+        reservation.workspace !== row.workspace || reservation.mode !== row.mode || reservation.poolKey !== row.pool_key ||
+        reservation.taskID !== row.task_id || reservation.nodeID !== row.node_id ||
+        Boolean(reservation.isolation) !== (row.shared === 1))) return false;
+    if (row.phase === 'waiting' && child && leaseProtectingChild(child)) return false;
+    if (row.phase === 'active' && child?.selected_config) {
+      if (poolKeyOf(child.selected_config) !== row.pool_key ||
+          (child.selected_config.scope === 'workspace_write' ? 'write' : 'read') !== row.mode) return false;
+      // Legacy rows also name resources; a forged old reader root must not
+      // become permission for a newer isolated writer in another account.
+      try {
+        if (realpathSync(this._load(row.task_id).task.host_context.workspace) !== row.workspace) return false;
+      } catch { return false; }
     }
-    if (this.activeWorkers >= this.maximumWorkers ||
-        (poolKey && this.poolReservations.has(poolKey) && !this._joinReadPool(candidate, task)) ||
-        (workspaceKey && this.activeWriteWorkspaces.has(workspaceKey))) return null;
-    const lease = this.transaction(() => {
-      let pool = poolKey ? this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(poolKey) : null;
-      const writer = workspaceKey ? this.db.prepare('SELECT task_id FROM write_leases WHERE workspace=?').get(workspaceKey) : null;
-      if (pool && pool.task_id !== task.task_id) {
-        const owner = this._load(pool.task_id);
-        // Lease acquisition reconciles too: a foreign lease that no running
-        // attempt and no unsettled uncertain attempt of a terminal (or
-        // vanished) owner protects is stale, never a hold on this pool.
-        if (!owner || (TERMINAL.has(owner.state) && !protectedPools(owner).has(poolKey))) {
-          this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?').run(poolKey, pool.task_id);
-          if (owner) this._leaseEvent(owner, 'quota_lease_released_' +
-            (settledReadOnlyPools(owner).has(poolKey) ? 'settled_read_only' : 'task_terminal'));
-          pool = null;
-        } else return owner?.state === 'effects_uncertain' ? 'uncertain_pool' : 'busy';
+    return true;
+  }
+  /** Called only under this owner's transaction. Reservations precede the
+   * durable dispatch marker; absent markers are known not dispatched on restart. */
+  _reconcilePoolClaims() {
+    for (const row of this.db.prepare('SELECT * FROM pool_claims').all()) {
+      if (!this._validClaimRow(row)) continue; // Undecidable membership is not permission to release.
+      const state = this._load(row.task_id), child = state?.children.find(c => c.id === row.node_id);
+      const candidate = state?.catalog?.candidates.find(c => c.id === row.candidate_id);
+      const waitingGone = row.phase === 'waiting' && (!state || state.cancel_requested || TERMINAL.has(state.state) ||
+        child?.state !== 'queued' || child.candidate_id !== row.candidate_id || !candidate ||
+        !dispatchable(candidate, executionTask(state), Date.now()));
+      const settled = row.phase === 'active' && !this.claimReservations.has(row.claim_id) &&
+        (!state || !child || !leaseProtectingChild(child));
+      if (waitingGone || settled) this.db.prepare('DELETE FROM pool_claims WHERE claim_id=?').run(row.claim_id);
+    }
+  }
+  _claimsConflict(a, b, task, candidate) {
+    if (a.pool_key === b.poolKey && !(a.shared === 1 && b.shared)) {
+      // Preserve the older same-parent read-only DAG capability, not an
+      // arbitrary cross-parent exemption for unbounded native effects.
+      if (!(a.task_id === b.taskID && a.mode === 'read' && b.mode === 'read' && this._joinReadPool(candidate, task))) return true;
+    }
+    // The new mixed-sharing admission extends workspace exclusion; wholly
+    // legacy paths retain their existing quota/write-lease behavior.
+    return (a.shared || b.shared) && (a.mode === 'write' || b.mode === 'write') && this._rootsOverlap(a.workspace, b.workspace);
+  }
+  /** One durable waiter/member ledger, not another scheduler. Fair first-ready
+   * intents remove polling-order starvation; unsupported classes keep old fences. */
+  _poolClaim(candidate, task, nodeID, {acquire = false, note = true} = {}) {
+    const info = this._claimInfo(candidate, task, nodeID);
+    if (!info.poolKey) return {state: 'local', info};
+    return this.transaction(() => {
+      this._reconcilePoolClaims();
+      if (this.db.prepare('SELECT * FROM pool_claims').all().some(row => !this._validClaimRow(row)))
+        return {state: 'uncertain_pool', info};
+      let own = this.db.prepare('SELECT * FROM pool_claims WHERE pool_key=? AND task_id=? AND node_id=?')
+        .get(info.poolKey, info.taskID, nodeID);
+      if (own?.phase === 'active') return {state: 'busy', info};
+      if (own && own.binding_sha256 !== info.binding) {
+        // A changed permission/configuration/attestation is a new intent, not
+        // an upgrade of an old reader's age or release token (ABA).
+        this.db.prepare('DELETE FROM pool_claims WHERE claim_id=? AND phase=?').run(own.claim_id, 'waiting');
+        own = null;
       }
-      if (writer && writer.task_id !== task.task_id) {
-        const owner = this._load(writer.task_id);
-        return owner?.state === 'effects_uncertain' ? 'uncertain_workspace' : 'busy';
+      if (note && !own && dispatchable(candidate, task, Date.now())) {
+        this.db.prepare(`INSERT INTO pool_claims(pool_key,task_id,node_id,claim_id,candidate_id,workspace,mode,shared,binding_sha256,phase,requested_ms)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(info.poolKey, info.taskID, nodeID, randomUUID(), info.candidateID,
+            info.workspace, info.mode, info.shared ? 1 : 0, info.binding, 'waiting', Date.now());
+        own = this.db.prepare('SELECT * FROM pool_claims WHERE pool_key=? AND task_id=? AND node_id=?')
+          .get(info.poolKey, info.taskID, nodeID);
       }
-      if (poolKey && !pool) this.db.prepare('INSERT INTO quota_leases(pool_key,task_id,acquired_ms) VALUES(?,?,?)')
-        .run(poolKey, task.task_id, Date.now());
-      if (workspaceKey && !writer) this.db.prepare('INSERT INTO write_leases(workspace,task_id,acquired_ms) VALUES(?,?,?)')
-        .run(workspaceKey, task.task_id, Date.now());
-      return 'owned';
+      const active = this.db.prepare("SELECT * FROM pool_claims WHERE phase='active'").all();
+      const uncertain = active.some(row => row.pool_key === info.poolKey &&
+        this._claimChild(row)?.state === 'effects_uncertain' && !settledReadOnly(this._claimChild(row)));
+      if (uncertain) return {state: 'uncertain_pool', info};
+      let legacy = this.db.prepare('SELECT task_id FROM quota_leases WHERE pool_key=?').get(info.poolKey);
+      if (legacy && legacy.task_id !== task.task_id) {
+        const owner = this._load(legacy.task_id);
+        if (!owner || (TERMINAL.has(owner.state) && !protectedPools(owner).has(info.poolKey))) {
+          this.db.prepare('DELETE FROM quota_leases WHERE pool_key=? AND task_id=?').run(info.poolKey, legacy.task_id);
+          legacy = null;
+        } else if (owner.state === 'effects_uncertain') return {state: 'uncertain_pool', info};
+        else return {state: 'busy', info};
+      }
+      if (this.activeWorkers >= this.maximumWorkers || active.length >= this.maximumWorkers ||
+          active.filter(row => row.pool_key === info.poolKey).length >= this.maximumReadWorkersPerPool ||
+          active.some(row => this._claimsConflict(row, info, task, candidate))) return {state: 'busy', info};
+      // A writer lease may outlive its returned child until the parent settles.
+      // Respect canonical overlapping roots across pools, including HOME.
+      for (const writer of this.db.prepare('SELECT * FROM write_leases').all()) {
+        if (writer.task_id === task.task_id) continue;
+        const state = this._load(writer.task_id);
+        if (!state || (TERMINAL.has(state.state) && !state.children.some(c => leaseProtectingChild(c)))) {
+          this.db.prepare('DELETE FROM write_leases WHERE workspace=? AND task_id=?').run(writer.workspace, writer.task_id);
+          continue;
+        }
+        const boundedWriter = active.some(row => row.task_id === writer.task_id && row.shared && row.mode === 'write');
+        const conflict = info.shared || boundedWriter ? this._rootsOverlap(writer.workspace, info.workspace) :
+          info.mode === 'write' && writer.workspace === info.workspace;
+        if (conflict) return {state: state.state === 'effects_uncertain' ? 'uncertain_workspace' : 'busy', info};
+      }
+      const ahead = this.db.prepare("SELECT * FROM pool_claims WHERE phase='waiting' AND seq<? ORDER BY seq")
+        .all(own?.seq ?? Number.MAX_SAFE_INTEGER).filter(row => row.pool_key === info.poolKey);
+      const priorWaiters = [];
+      for (const waiter of ahead) {
+        // Keep unrelated legacy spread/re-resolution semantics unchanged.
+        if (!info.shared && !waiter.shared) continue;
+        // An older exclusive intent drains the pool; an overlapping writer
+        // drains its resource. New readers must not refill either forever.
+        const conflictsWithNew = !(waiter.shared && info.shared) ||
+          ((waiter.mode === 'write' || info.mode === 'write') && this._rootsOverlap(waiter.workspace, info.workspace));
+        if (conflictsWithNew) return {state: 'busy', info};
+        // Genuinely disjoint bounded work may pass a resource-blocked waiter,
+        // but once it is eligible its next capacity opportunity is reserved.
+        const blocked = active.some(row => (row.pool_key === waiter.pool_key && !(row.shared && waiter.shared)) ||
+          ((row.mode === 'write' || waiter.mode === 'write') && this._rootsOverlap(row.workspace, waiter.workspace))) ||
+          priorWaiters.some(row => !(row.shared && waiter.shared) ||
+            ((row.mode === 'write' || waiter.mode === 'write') && this._rootsOverlap(row.workspace, waiter.workspace)));
+        if (!blocked) return {state: 'busy', info};
+        // A read waiting behind an earlier writer is not itself eligible to
+        // head-of-line block a genuinely disjoint candidate.
+        priorWaiters.push(waiter);
+      }
+      if (!acquire) return {state: 'free', info};
+      if (!own || !dispatchable(candidate, task, Date.now())) return {state: 'busy', info};
+      if (!info.shared && !legacy) this.db.prepare('INSERT INTO quota_leases(pool_key,task_id,acquired_ms) VALUES(?,?,?)')
+        .run(info.poolKey, task.task_id, Date.now());
+      if (info.mode === 'write') this.db.prepare('INSERT OR IGNORE INTO write_leases(workspace,task_id,acquired_ms) VALUES(?,?,?)')
+        .run(info.workspace, task.task_id, Date.now());
+      this.db.prepare("UPDATE pool_claims SET phase='active' WHERE claim_id=?").run(own.claim_id);
+      return {state: 'owned', info, claimID: own.claim_id};
     });
-    if (lease === 'uncertain_pool') throw new RCCRuntimeError('quota_pool_effects_uncertain');
-    if (lease === 'uncertain_workspace') throw new RCCRuntimeError('write_workspace_effects_uncertain');
-    if (lease !== 'owned') return null;
+  }
+
+  _tryReserve(candidate, task, nodeID) {
+    const claim = this._poolClaim(candidate, task, nodeID, {acquire: true});
+    if (claim.state === 'uncertain_pool') throw new RCCRuntimeError('quota_pool_effects_uncertain');
+    if (claim.state === 'uncertain_workspace') throw new RCCRuntimeError('write_workspace_effects_uncertain');
+    if (!['owned', 'local'].includes(claim.state)) return null;
+    if (claim.state === 'local' && this.activeWorkers >= this.maximumWorkers) return null;
+    const {poolKey, workspace, mode} = claim.info;
     this.activeWorkers += 1;
     if (poolKey) {
       this.poolReservations.add(poolKey);
-      if (this._readPoolEligible(candidate, task)) {
+      if (!claim.info.shared && this._readPoolEligible(candidate, task)) {
         const readers = this.readPoolReservations.get(poolKey);
         this.readPoolReservations.set(poolKey, {taskID: task.task_id, nodes: new Set([...(readers?.nodes ?? []), nodeID])});
       }
     }
+    const workspaceKey = mode === 'write' ? workspace : null;
     if (workspaceKey) this.activeWriteWorkspaces.add(workspaceKey);
-    return {poolKey, workspaceKey, taskID: task.task_id, nodeID};
+    const reservation = {poolKey, workspaceKey, taskID: task.task_id, nodeID, claimID: claim.claimID ?? null, isolation: claim.info.isolation, binding: claim.info.binding,
+      workspace: claim.info.workspace, mode: claim.info.mode};
+    if (reservation.claimID) this.claimReservations.set(reservation.claimID, reservation);
+    return reservation;
   }
+
   _release(reservation) {
+    if (reservation.claimID && !this.claimReservations.has(reservation.claimID)) return;
+    if (reservation.claimID) this.claimReservations.delete(reservation.claimID);
     this.activeWorkers -= 1;
+    if (reservation.claimID && !this.closed) this.transaction(() => {
+      const child = this._load(reservation.taskID)?.children.find(c => c.id === reservation.nodeID);
+      if (!child || !leaseProtectingChild(child))
+        this.db.prepare('DELETE FROM pool_claims WHERE claim_id=?').run(reservation.claimID);
+    });
     if (reservation.poolKey) {
       const readers = this.readPoolReservations.get(reservation.poolKey);
       if (readers && readers.taskID === reservation.taskID) {
         const nodes = new Set(readers.nodes); nodes.delete(reservation.nodeID);
         if (nodes.size) this.readPoolReservations.set(reservation.poolKey, {...readers, nodes});
         else { this.readPoolReservations.delete(reservation.poolKey); this.poolReservations.delete(reservation.poolKey); }
-      } else this.poolReservations.delete(reservation.poolKey);
+      } else {
+        const active = [...this.claimReservations.values()].some(r => r.poolKey === reservation.poolKey);
+        if (!active) this.poolReservations.delete(reservation.poolKey);
+      }
     }
     if (reservation.workspaceKey) this.activeWriteWorkspaces.delete(reservation.workspaceKey);
     if (reservation.poolKey && !this.closed) {
@@ -3654,7 +3799,7 @@ class RCCRuntime {
         // another task's lease on the pool it left. bound_rows stays for
         // validation only.
         const planned = current.catalog.candidates.find(c => c.id === node.candidate_id);
-        if (planned && !this._leasePossible(planned, executionTask(current))) {
+        if (planned && !this._leasePossible(planned, executionTask(current), node.id)) {
           // Independent resolved work waits for the busy pool only when the
           // other admitted pool cannot take it now either.
           if (await this._spreadAcrossPools(taskID, current, node, planned)) { reResolved = true; break; }
@@ -3770,7 +3915,11 @@ class RCCRuntime {
       isSingleFullAgent && candidate.surface === 'claude' ?
         executionTask(snapshot).host_context.claude_session_id : null;
     assert(resumeSession === null || ID.test(resumeSession), 'native_resume_session_invalid');
-    return {schema: 1, task_id: executionTask(snapshot).task_id, node_id: node.id,
+    const granted = [...this.claimReservations.values()].find(r => r.taskID === executionTask(snapshot).task_id && r.nodeID === node.id)?.isolation;
+    if (granted) assert(resumeSession === null && snapshot.catalog.task_contract?.execution_isolation === granted.execution_isolation &&
+      snapshot.catalog.task_contract?.execution_isolation_sha256 === granted.execution_isolation_sha256 &&
+      snapshot.catalog.task_contract.valid_until_ms > Date.now(), 'execution_isolation_lost_before_dispatch');
+    return {schema: 1, ...(granted ?? {}), task_id: executionTask(snapshot).task_id, node_id: node.id,
       attempt_id: attemptID, candidate_id: candidate.id,
       objective: node.instruction,
       original_request: executionTask(snapshot).request, original_objective: executionTask(snapshot).objective,

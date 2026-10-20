@@ -1462,6 +1462,21 @@ enum RCCOperationalQuality {
     static func enforceLocalEffectsAdmission(declared: Bool, profileAvailable: Bool) throws {
         guard !declared || profileAvailable else { throw Failure.localEffectsCapabilityUnavailable }
     }
+    /// A shared reservation cannot become an ordinary unrestricted attempt if
+    /// its catalog-time boundary is removed or changed before dispatch. Bind
+    /// the requirement to the exact original envelope bytes, then enforce the
+    /// actual native profile as usual. Legacy exclusive tickets stay unchanged.
+    static func enforceRequiredExecutionIsolation(required: String?, envelopeSHA256: String?,
+        boundary: LocalEffectsBoundary?, config: C.ExactConfig, sourceBound: Bool,
+        nativeResume: Bool, permissionContinuation: Bool) throws {
+        if required == nil && envelopeSHA256 == nil { return }
+        guard required == "codex_fresh_local_effects_v1", let envelopeSHA256,
+              let boundary, boundary.envelopeSHA256 == envelopeSHA256,
+              supportsLocalEffects(config: config, sourceBound: sourceBound,
+                nativeResume: nativeResume, permissionContinuation: permissionContinuation) else {
+            throw Failure.localEffectsCapabilityUnavailable
+        }
+    }
     /// Admission closure for the same owner boundary before the local planner.
     /// Legacy/undeclared catalogs return byte-identically, not a new catalog.
     static func constrainCatalogData(_ data: Data, request: C.Request, sourceBound: Bool,
@@ -2276,6 +2291,44 @@ func rccLocalEffectsAdmissionSelfTest() throws {
         instruction: "Read one part of the original local task", contextRefs: [], ownedPaths: [], originalRequest: original, originalObjective: original, hostContext: host)
     guard let inherited = try Q.localEffectsBoundary(ticket: readTicket, rootURL: base) else { throw OS1Error.message("Missing original owner writer ceiling") }
     try check(inherited.scope == .workspaceWrite, "inherited boundary preserves original owner ceiling as provenance")
+    let frozenEnvelope = try Data(contentsOf: path)
+    func required(_ boundary: Q.LocalEffectsBoundary?, kind: String? = "codex_fresh_local_effects_v1",
+                  digest: String? = inherited.envelopeSHA256, config: C.ExactConfig? = nil,
+                  source: Bool = false, resumed: Bool = false, continuation: Bool = false) throws {
+        try Q.enforceRequiredExecutionIsolation(required: kind, envelopeSHA256: digest,
+            boundary: boundary, config: config ?? cheap.exactConfig, sourceBound: source,
+            nativeResume: resumed, permissionContinuation: continuation)
+    }
+    try required(inherited); count += 1
+    try required(nil, kind: nil, digest: nil); count += 1 // Old exclusive tickets retain their semantics.
+    try reject("required shared boundary cannot disappear") { try required(nil) }
+    try reject("required isolation pair cannot lose its hash") { try required(inherited, digest: nil) }
+    try reject("orphan isolation hash cannot create authority") { try required(inherited, kind: nil) }
+    try reject("unknown isolation class cannot create authority") { try required(inherited, kind: "unbounded") }
+    try reject("different envelope cannot inherit a shared slot") { try required(inherited, digest: hash) }
+    try reject("shared capability cannot move to Claude") { try required(inherited, config: claude.exactConfig) }
+    try reject("shared capability cannot widen to source custody") { try required(inherited, source: true) }
+    try reject("shared capability cannot become a resumed session") { try required(inherited, resumed: true) }
+    try reject("shared capability cannot become a permission handback") { try required(inherited, continuation: true) }
+    // Actual file changes after catalog-time capture: absence/toggle/valid
+    // replacement all fail before a native process/model can be started.
+    try fm.removeItem(at: path)
+    let removedBoundary = try Q.localEffectsBoundary(ticket: readTicket, rootURL: base)
+    try check(removedBoundary == nil, "removed declaration is absent, not a default local restriction")
+    try reject("removed declaration cannot silently become an ordinary shared attempt") { try required(removedBoundary) }
+    var toggled = try JSONSerialization.jsonObject(with: frozenEnvelope) as! [String: Any]
+    toggled["localEffectsOnly"] = false
+    try JSONSerialization.data(withJSONObject: toggled, options: [.sortedKeys]).write(to: path)
+    let toggledBoundary = try Q.localEffectsBoundary(ticket: readTicket, rootURL: base)
+    try check(toggledBoundary == nil, "false local-effects declaration is not a capability")
+    try reject("toggled declaration cannot silently widen a shared attempt") { try required(toggledBoundary) }
+    toggled["localEffectsOnly"] = true; toggled["timeoutSeconds"] = 2
+    try JSONSerialization.data(withJSONObject: toggled, options: [.sortedKeys]).write(to: path)
+    let changedBoundary = try Q.localEffectsBoundary(ticket: readTicket, rootURL: base)
+    try check(changedBoundary?.envelopeSHA256 != inherited.envelopeSHA256, "raw envelope change has a new identity")
+    try reject("a different valid envelope cannot reuse the frozen shared admission") { try required(changedBoundary) }
+    try frozenEnvelope.write(to: path)
+    try required(Q.localEffectsBoundary(ticket: readTicket, rootURL: base)); count += 1
     let childProfile = try RCCNativeLocalQualityProfile(ticket: readTicket, workspace: base.path, boundary: inherited)
     defer { try? fm.removeItem(atPath: childProfile.scratch) }
     try check(childProfile.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(base.path) + "=\"read\"") }) &&

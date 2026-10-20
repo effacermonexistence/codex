@@ -103,6 +103,41 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               explicitHostRows.admission?.requestClass == .readonlyLookup,
               "the explicit host read-only boundary beats a write-oriented owner hint")
 
+    // Closed Korean exact-file fences work on a cold start, WITHOUT a
+    // registered quality contract or an ownerScope override. Catalog rows
+    // and admission class must consume the same shared scope resolution.
+    let koreanColdWrite = "result.py만 고쳐, settings.yaml은 수정하지 마."
+    for request in [koreanColdWrite, koreanColdWrite.decomposedStringWithCanonicalMapping,
+                    "Modify result.py. settings.yaml은 수정하지 마.",
+                    "result.py만 고쳐. Do not modify settings.yaml."] {
+        var value = input(request, chat: false)
+        value.ownerScope = .workspaceWrite
+        value.taskContract = nil
+        let output = try B.build(value)
+        try check(output.candidates.contains { $0["scope"] as? String == "workspace_write" } &&
+                  output.admission?.requestClass == .writer && output.admission?.taskContract == nil,
+                  "cold Korean bounded write has writer rows AND writer class, without a registered contract")
+        value.requireReadOnly = true
+        let restricted = try B.build(value)
+        try check(restricted.candidates.allSatisfy { $0["scope"] as? String == "read_only" } &&
+                  restricted.admission?.requestClass == .readonlyLookup,
+                  "hard host read-only still beats a parsed Korean write")
+    }
+    for request in ["result.py만 고쳐. result.py는 수정하지 마.",
+                    "result.py만 고쳐. 어떤 파일도 수정하지 마.",
+                    "어떤 파일도 수정하지 마. result.py만 고쳐.",
+                    "승인받은 뒤에만 진행해. result.py만 고쳐. settings.yaml은 수정하지 마.",
+                    "result.py만 고쳐. settings.yaml은 수정하지 마. Unless approved, do not proceed.",
+                    "result.py만 고쳐. 테스트·README는 바꾸지 마."] {
+        var value = input(request, chat: false)
+        value.ownerScope = .workspaceWrite
+        value.taskContract = nil
+        let output = try B.build(value)
+        try check(output.candidates.allSatisfy { $0["scope"] as? String == "read_only" } &&
+                  output.admission?.requestClass == .readonlyLookup,
+                  "contradiction/global ban/unresolved artifact labels never acquire cold writer rows from an owner hint")
+    }
+
     // A host-rechecked registered contract is distinct from the ownerScope
     // hint above. It can settle bounded-preservation ambiguity for exactly
     // its current objective, without upgrading partial quality coverage.

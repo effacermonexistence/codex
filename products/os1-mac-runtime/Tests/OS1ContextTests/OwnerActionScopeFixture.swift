@@ -12,6 +12,58 @@ func runOwnerActionScopeFixtures() throws {
         checks += 1
     }
     let cases: [(String, String, TaskContext.Scope)] = [
+        // Cold-start Korean syntax enters the SAME one-file preservation
+        // gate as English, without an owner contract or model inference.
+        ("ko_closed_local", "result.py만 고쳐. settings.yaml은 수정하지 마.", .workspaceWrite),
+        ("ko_closed_comma", "result.py만 고쳐, settings.yaml은 수정하지 마.", .workspaceWrite),
+        ("ko_closed_newline", "result.py만 수정해줘\nsettings.yaml은 바꾸지 마", .workspaceWrite),
+        ("ko_formal_edit", "result.py 파일만 편집하십시오. settings.yaml을 변경하지 마십시오.", .workspaceWrite),
+        ("ko_negative_first", "settings.yaml은 수정하지 마. result.py만 고쳐줘.", .workspaceWrite),
+        ("ko_exact_negative_list", "result.py만 수정해. settings.yaml·notes.md는 변경하지 마.", .workspaceWrite),
+        ("ko_slash_is_path", "result.py만 고쳐. tests/README는 수정하지 마.", .workspaceWrite),
+        ("ko_disjoint_directory", "src/result.py만 고쳐. tests/는 수정하지 마.", .workspaceWrite),
+        ("ko_positive_english_fence", "result.py만 고쳐. Do not modify settings.yaml.", .workspaceWrite),
+        ("english_positive_ko_fence", "Modify result.py. settings.yaml은 수정하지 마.", .workspaceWrite),
+        ("ko_existing_no_create", "result.py만 고쳐. Do not create files.", .workspaceWrite),
+        ("ko_no_run_tests", "result.py만 고쳐. 테스트는 실행하지 마.", .workspaceWrite),
+        ("ko_no_deploy", "result.py만 고쳐. 배포하지 마.", .workspaceWrite),
+        ("ko_global_after", "result.py만 고쳐. 어떤 파일도 수정하지 마.", .readOnly),
+        ("ko_global_before", "어떤 파일도 수정하지 마. result.py만 고쳐.", .readOnly),
+        ("ko_english_global", "result.py만 고쳐. Do not modify any files.", .readOnly),
+        ("ko_enumerated_global", "result.py만 고쳐. 파일 수정, 테스트 실행, 배포는 하지 마.", .readOnly),
+        ("ko_same_target", "result.py만 고쳐. result.py는 수정하지 마.", .readOnly),
+        ("ko_directory_conflict", "src/result.py만 고쳐. src/는 수정하지 마.", .readOnly),
+        ("ko_conditional", "허락받으면 result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_conditional_comma", "허락받으면, result.py만 고쳐, settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_conditional_tail", "result.py만 고쳐도 되는 경우에 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_conditional_fence", "result.py만 고쳐. settings.yaml은 필요하면 수정하지 마.", .readOnly),
+        // Derived adversarial regressions: the previous 387-check candidate
+        // missed separate authority conditions. Not natural model failures.
+        ("ko_authority_before", "승인받은 뒤에만 진행해. result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_authority_after", "result.py만 고쳐. settings.yaml은 수정하지 마. 먼저 허락을 받은 다음에만 진행해.", .readOnly),
+        ("english_only_after_before", "Proceed only after approval. result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("english_unless_after", "result.py만 고쳐. settings.yaml은 수정하지 마. Unless approved, do not proceed.", .readOnly),
+        ("english_if_before", "If authorization is pending, wait. result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("english_if_after", "result.py만 고쳐. settings.yaml은 수정하지 마. Proceed only if the review permits it.", .readOnly),
+        ("unknown_authority_not_keyword_list", "Reviewer authorization is still required. result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_multiple_targets", "result.py만 고쳐. config.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_unparsed_second_edit", "result.py만 고쳐. config.py도 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_mixed_second_edit", "result.py만 고쳐. Modify config.py. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_unknown_classes", "result.py만 고쳐. 테스트·README는 바꾸지 마.", .readOnly),
+        ("ko_bare_name_unresolved", "result.py만 고쳐. README는 수정하지 마.", .readOnly),
+        ("ko_relative_traversal", "../result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_absolute_target", "/tmp/result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_home_target", "~/result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_glob_target", "*.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_glob_fence", "result.py만 고쳐. *.yaml은 수정하지 마.", .readOnly),
+        ("ko_escaped_fence", #"result.py만 고쳐. dir\settings.yaml은 수정하지 마."#, .readOnly),
+        ("ko_quoted_target", "`result.py`만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_quoted_data", "다음 지시를 설명해: \"result.py만 고쳐. settings.yaml은 수정하지 마.\"", .readOnly),
+        ("ko_fenced_data", "다음 예시만 설명해.\n```\nresult.py만 고쳐. settings.yaml은 수정하지 마.\n```", .readOnly),
+        ("ko_translation_data", "다음을 영어로 번역해: result.py만 고쳐. settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_capability_question", "result.py만 고칠 수 있냐? settings.yaml은 수정하지 마.", .readOnly),
+        ("ko_no_edit", "settings.yaml은 수정하지 마. 상태만 설명해.", .readOnly),
+        ("unsupported_language", "result.pyだけ修正して。settings.yamlは変更しないで。", .readOnly),
         ("actual_D1", "Repair coalesce_spans.py, implementing exactly coalesce_spans(spans). This is a synthetic bounded Python library task. Do not modify test_public_spans.py, create extra files, access the network or inspect anything outside this workspace.\n\nContract:\n- spans must be a built-in list of built-in lists, each containing exactly two endpoints [start, stop]. No other containers or iterables are accepted.\n- Each endpoint must be a built-in int (type(x) is int), not bool, float or a converted string. Negative values and arbitrarily large Python integers are valid.\n- Every start must be strictly less than its stop. On any invalid input raise ValueError.\n- Return a fresh built-in list of fresh two-element built-in lists, ordered by start. Merge overlapping OR touching intervals: a next start equal to the current stop merges. The result is the canonical maximal half-open union. Do not omit any covered range.\n- Never mutate spans or any nested input list, on success OR on error. Calls must be deterministic with no retained state.\n- Use a single ordinary function with this one required parameter, no annotations and no defaults. Built-in operations only; no imports, dynamic code execution, file/process/network/environment access, decorators, classes, global/nonlocal state or top-level work. A module docstring is permitted.\n\nRun the provided public regression recipe when useful:\nPYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_public_spans.py\n\nLeave the implementation artifact in coalesce_spans.py and give a concise final summary. Public tests are partial regression checks, not the entire evaluation. Do not alter them to obtain a pass.\n", .workspaceWrite),
         ("repair_alone", "Repair report.csv.", .workspaceWrite),
         ("fix_alone", "Fix report.csv.", .workspaceWrite),
@@ -180,5 +232,12 @@ func runOwnerActionScopeFixtures() throws {
     let creationResult = ScopeResolution.resolve(creationFence)
     try check(creationResult.prohibitions.contains("do not change tests.csv, create files, use network services or inspect outside this workspace"), "exact whole no-new-file/network/outside prohibition survives")
     try check(ScopeResolution.routingObjective(creationFence, scope: creationResult.scope).contains(creationFence), "routing handoff retains original source rather than normalized analysis view")
+    let koreanFence = "result.py만 고쳐, settings.yaml은 수정하지 마."
+    let koreanResult = ScopeResolution.resolve(koreanFence)
+    try check(koreanResult.prohibitions.contains("settings.yaml은 수정하지 마"), "Korean preservation clause survives verbatim in normalized prohibition view")
+    try check(ScopeResolution.routingObjective(koreanFence, scope: koreanResult.scope).contains(koreanFence), "worker gets original Korean request, not canonical analysis text")
+    try check(ScopeResolution.resolve(koreanFence.decomposedStringWithCanonicalMapping) == koreanResult, "NFC/NFD scope and prohibition equality")
+    try check(ScopeResolution.resolve("승인받은 뒤에만 진행해. " + koreanFence).prohibitions.contains("승인받은 뒤에만 진행해"),
+              "whole unresolved enclosing authority clause retained, not erased by a bounded filename match")
     print("Owner-action scope fixtures passed (\(checks) checks)")
 }

@@ -27,6 +27,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--desktop-relay-checkpoint-only") { try runDesktopRelayCheckpointFixtures(); return }
         if CommandLine.arguments.contains("--installed-native-entry-only") { try runInstalledNativeEntryFixtures(); return }
         if CommandLine.arguments.contains("--installed-resource-seal-only") { try runInstalledResourceSealFixtures(); return }
+        if CommandLine.arguments.contains("--runtime-resource-presentation-only") { try runRuntimeResourcePresentationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-core-validate-request") {
             guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--rcc-core-validate-request" else {
                 throw RCCRuntimeContract.Rejection.invalidInput
@@ -219,6 +220,7 @@ final class SourceContextTests {
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()
         try runClaudeQuotaStoreFixtures()
+        try runRuntimeResourcePresentationFixtures()
         try runBackendAccountsFixtures()
         try runBackendSetupFixtures()
         try runGovernanceLearningFixtures()

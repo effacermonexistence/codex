@@ -966,6 +966,120 @@ public struct ScopeResolution: Equatable, Sendable {
         var requiresSingleEdit = false
         var requiresExistingEdit = false
     }
+
+    private struct KoreanFileScopeView {
+        var text: String
+        var protectedPaths: [String] = []
+        var prohibitions: [String] = []
+        var unresolved = false
+        var requiresSingleEdit = false
+        var existingEdits = 0
+    }
+
+    /// Syntax adapter, not a second permission resolver. Only complete Korean
+    /// ONE-file repair directives and concrete preservation clauses enter the
+    /// existing single-edit/conflict checks. The worker still receives the
+    /// original request. Unknown labels (e.g. "테스트·README"), conditions and
+    /// global bans are never erased or guessed into filesystem paths.
+    private static func koreanFileScopeView(_ source: String) -> KoreanFileScopeView {
+        var view = KoreanFileScopeView(text: source)
+        let positive = #"^("# + concretePathPattern + #")(?:\s*파일)?\s*만\s*(?:고쳐(?:\s*줘|주세요|라)?|(?:수정|변경|편집)\s*(?:해(?:\s*줘|주세요|라)?|하세요|하십시오))$"#
+        // A trailing slash is a directory fence, never a list separator.
+        let path = #"(?:"# + concretePathPattern + #"/?|(?:[A-Za-z0-9_.~-]+/)+)"#
+        let negative = #"^((?:"# + path + #")(?:\s*(?:[,·ㆍ]|및|와|과)\s*(?:"# + path + #")){0,8})(?:은|는|을|를)?\s*(?:(?:수정|변경|편집|삭제)\s*하지\s*마(?:세요|십시오)?|(?:고치|바꾸)지\s*마(?:세요|십시오)?)$"#
+        guard let edit = try? NSRegularExpression(pattern: positive),
+              let fence = try? NSRegularExpression(pattern: negative),
+              let operands = try? NSRegularExpression(pattern: #"\s*(?:[,·ㆍ]|및|와|과)\s*"#) else { return view }
+        func capture(_ text: String, _ pattern: NSRegularExpression) -> String? {
+            let whole = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = pattern.firstMatch(in: text, range: whole), match.range == whole,
+                  let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+        func relativePath(_ value: String, directory: Bool) -> String? {
+            var value = value
+            if directory && value.hasSuffix("/") { value.removeLast() }
+            guard !value.isEmpty, !value.hasPrefix("/"), !value.hasPrefix("~"),
+                  !value.contains(where: { "\"“”'‘’`\\*?[]{}".contains($0) }),
+                  !value.hasSuffix("/"), value.split(separator: "/", omittingEmptySubsequences: false)
+                    .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
+            return value
+        }
+        func negativePaths(_ text: String) -> [String]? {
+            guard let captured = capture(text, fence) else { return nil }
+            let range = NSRange(captured.startIndex..<captured.endIndex, in: captured)
+            let pieces = operands.stringByReplacingMatches(in: captured, range: range, withTemplate: "\n")
+                .components(separatedBy: "\n")
+            let paths = pieces.compactMap { relativePath($0, directory: true) }
+            return paths.count == pieces.count && !paths.isEmpty ? paths : nil
+        }
+        var clauses: [(Range<String.Index>, String, Character?)] = []
+        var cursor = source.startIndex
+        while cursor < source.endIndex {
+            let end = clauseEnd(source, from: cursor)
+            clauses.append((cursor..<end, String(source[cursor..<end]).trimmingCharacters(in: .whitespacesAndNewlines),
+                            end < source.endIndex ? source[end] : nil))
+            guard end < source.endIndex else { break }
+            cursor = source.index(after: end)
+        }
+        var unparsedClauses: [String] = []
+        for (range, clause, ending) in clauses.reversed() {
+            // A question or quoted/conditional/mixed clause is not a closed
+            // imperative. It stays in the original conservative classifier.
+            guard !clause.isEmpty else { continue }
+            guard ending != "?" else { unparsedClauses.append(clause); continue }
+            var replacement: String?, target: String?, protected: [String]?, prohibition: String?
+            if let raw = capture(clause, edit) {
+                view.requiresSingleEdit = true
+                if let path = relativePath(raw, directory: false) { target = path; replacement = "modify " + path }
+                else { view.unresolved = true }
+            } else if let paths = negativePaths(clause) {
+                protected = paths; prohibition = clause; replacement = " "
+            } else {
+                // Only the comma immediately after a CLOSED positive may
+                // separate its preservation clause. "허락받으면, ..." cannot
+                // turn an arbitrary comma into fresh permission authority.
+                for comma in clause.indices.filter({ clause[$0] == "," }).prefix(12) {
+                    let head = String(clause[..<comma]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let tail = String(clause[clause.index(after: comma)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let raw = capture(head, edit), let paths = negativePaths(tail) else { continue }
+                    view.requiresSingleEdit = true
+                    guard let path = relativePath(raw, directory: false) else { view.unresolved = true; break }
+                    target = path; protected = paths; prohibition = tail; replacement = "modify " + path
+                    break
+                }
+            }
+            if let protected { view.protectedPaths += protected; view.requiresSingleEdit = true }
+            if let prohibition { view.prohibitions.append(prohibition) }
+            if target != nil { view.existingEdits += 1 }
+            if let replacement { view.text.replaceSubrange(range, with: " " + replacement + " ") }
+            else { unparsedClauses.append(clause) }
+        }
+        if view.requiresSingleEdit {
+            // The new exemption is a CLOSED authority document, not merely a
+            // matching sentence somewhere in one. An unresolved enclosing
+            // approval/authority clause (before OR after it) must not disappear.
+            // Reuse existing complete clauses; do not enumerate synonyms for
+            // "approval" and accidentally authorize the next wording instead.
+            func existingClosedClause(_ clause: String) -> Bool {
+                let directive = boundedFileDirectiveView(clause)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                for (text, pattern) in [(directive, singleFileEditPattern)] +
+                    [namedTargetFencePattern, relativeTargetFencePattern, existingResourceFencePattern,
+                     koreanRelativeTargetFencePattern, enumeratedProhibitionPattern].map({ (clause, $0) }) {
+                    if text.range(of: pattern, options: .regularExpression) == text.startIndex..<text.endIndex { return true }
+                }
+                if negatedTargets.contains(where: { $0.pattern == clause }) { return true }
+                let coordinated = coordinatedFenceView(clause)
+                return !coordinated.unresolved && coordinated.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            for clause in unparsedClauses where !existingClosedClause(clause) {
+                view.unresolved = true
+                view.prohibitions.append(clause) // retain the whole unresolved authority clause
+            }
+        }
+        return view
+    }
     /// Negation applies to every complete action item. Only an entirely
     /// classified list is removed from the global classifier; the full
     /// original clause remains a prohibition. Unknown fragments stay held.
@@ -1228,19 +1342,20 @@ public struct ScopeResolution: Equatable, Sendable {
 
     public static func resolve(_ prompt: String) -> ScopeResolution {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
-        let coordinated = coordinatedFenceView(suppliedFileEditView(boundedFileDirectiveView(value)))
-        var prohibitions = coordinated.prohibitions
+        let korean = koreanFileScopeView(value)
+        let coordinated = coordinatedFenceView(suppliedFileEditView(boundedFileDirectiveView(korean.text)))
+        var prohibitions = korean.prohibitions + coordinated.prohibitions
         var remaining = coordinated.text
-        var protectedPaths = coordinated.protectedPaths
-        var unresolvedTargetFence = coordinated.unresolved
+        var protectedPaths = korean.protectedPaths + coordinated.protectedPaths
+        var unresolvedTargetFence = korean.unresolved || coordinated.unresolved
         if coordinated.requiresExistingEdit {
             // The normalized view may canonicalize create/save into "modify".
             // Consult ORIGINAL authority for the operation; never infer that
             // a creation directive satisfies an existing-file edit constraint.
             let existing = #"(?i)(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:fix|repair|modify|edit|update)\s+(?:only\s+)?(?:(?:exactly\s+)?(?:one|1|a|an|the)\s+)?(?:file\s+)?("# + concretePathPattern + #")"#
             let pattern = try? NSRegularExpression(pattern: existing)
-            unresolvedTargetFence = unresolvedTargetFence || pattern?.numberOfMatches(in: value,
-                range: NSRange(value.startIndex..<value.endIndex, in: value)) != 1
+            let englishEdits = pattern?.numberOfMatches(in: value, range: NSRange(value.startIndex..<value.endIndex, in: value)) ?? 0
+            unresolvedTargetFence = unresolvedTargetFence || englishEdits + korean.existingEdits != 1
         }
 
         if let pattern = try? NSRegularExpression(pattern: namedTargetFencePattern) {
@@ -1252,7 +1367,7 @@ public struct ScopeResolution: Equatable, Sendable {
                 protectedPaths.append(contentsOf: namedPaths(String(remaining[targets])))
             }
             remaining = pattern.stringByReplacingMatches(in: remaining, range: range, withTemplate: " ")
-            if !protectedPaths.isEmpty || coordinated.requiresSingleEdit {
+            if !protectedPaths.isEmpty || coordinated.requiresSingleEdit || korean.requiresSingleEdit {
                 let range = NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
                 let single = try? NSRegularExpression(pattern: singleFileEditPattern)
                 let occurrences = try? NSRegularExpression(pattern: fileEditOccurrencePattern)
@@ -1326,10 +1441,15 @@ public struct ScopeResolution: Equatable, Sendable {
             if !prohibitions.contains(target.prohibition) { prohibitions.append(target.prohibition) }
             remaining = remaining.replacingOccurrences(of: target.pattern, with: " ")
         }
-        let generallyProhibited = unresolvedTargetFence || generalProhibitions.contains(where: remaining.contains) ||
+        let editView = withoutCapabilityQuestions(remaining)
+        // A second/unparsed Korean action must not disappear merely because
+        // the first bounded directive was rendered into the English view.
+        let unparsedKoreanEdit = korean.requiresSingleEdit && positiveEdit.contains {
+            $0.range(of: #"[가-힣]"#, options: .regularExpression) != nil && editView.contains($0)
+        }
+        let generallyProhibited = unresolvedTargetFence || unparsedKoreanEdit || generalProhibitions.contains(where: remaining.contains) ||
             remaining.range(of: globalNoWriteClausePattern, options: .regularExpression) != nil ||
             remaining.range(of: ambiguousPathRestrictionPattern, options: .regularExpression) != nil
-        let editView = withoutCapabilityQuestions(remaining)
         let editPaths = directEditPaths(editView)
         let asksEdit = positiveEdit.contains(where: editView.contains) ||
             positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil } ||
