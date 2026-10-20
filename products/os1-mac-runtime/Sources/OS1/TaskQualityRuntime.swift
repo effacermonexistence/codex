@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import CoreFoundation
 import OS1Context
 import Darwin
 
@@ -42,10 +43,12 @@ struct PreparedTaskQuality {
     let checkerBytes: Data
     let referencePolicySHA256: String
     private let partialRegression: PythonRegressionSnapshot?
+    let resourceScheduleSnapshot: ResourceScheduleSupplement.Snapshot?
     var frozenRegressionSnapshot: PythonRegressionSnapshot? { partialRegression }
 
     init(envelope: Envelope, checkerBytes: Data, referencePolicySHA256: String,
-         partialRegression: PythonRegressionSnapshot? = nil) {
+         partialRegression: PythonRegressionSnapshot? = nil, resourceScheduleSnapshot: ResourceScheduleSupplement.Snapshot? = nil) {
+        self.resourceScheduleSnapshot = resourceScheduleSnapshot
         self.envelope = envelope; self.checkerBytes = checkerBytes
         self.referencePolicySHA256 = referencePolicySHA256; self.partialRegression = partialRegression
     }
@@ -61,6 +64,11 @@ struct PreparedTaskQuality {
         let objectiveSHA = TaskQualityEvidence.digest(Data(objective.utf8))
         let path = rootURL.appendingPathComponent("contracts", isDirectory: true).appendingPathComponent(objectiveSHA + ".json")
         guard FileManager.default.fileExists(atPath: path.path) else {
+            if scope == .readOnly {
+                return try ResourceScheduleSupplement.attach(nil, objective: objective, contextSHA256: contextSHA256,
+                    sourceSHA256: sourceSHA256, startTreeSHA256: startTreeSHA256, scope: scope,
+                    referencePolicySHA256: referencePolicySHA256, workspace: workspace)
+            }
             guard let workspace, scope != .readOnly,
                   objective.range(of: #"\b(?:tests?|regressions?|unittest)\b|테스트|회귀"#, options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
             let acquired: PythonRegressionSnapshot?
@@ -107,7 +115,10 @@ struct PreparedTaskQuality {
             guard snapshot.allowedRoots == envelope.workspacePaths, try snapshot.checkerBytes() == bytes,
                 !envelope.contract.fullCoverage, envelope.contract.reference == nil else { throw OS1Error.message("Public partial suite identity/coverage changed") }
         }
-        return Self(envelope: envelope, checkerBytes: bytes, referencePolicySHA256: referencePolicySHA256, partialRegression: envelope.publicRegressionSnapshot)
+        let prepared = Self(envelope: envelope, checkerBytes: bytes, referencePolicySHA256: referencePolicySHA256, partialRegression: envelope.publicRegressionSnapshot)
+        return try ResourceScheduleSupplement.attach(prepared, objective: objective, contextSHA256: contextSHA256,
+            sourceSHA256: sourceSHA256, startTreeSHA256: startTreeSHA256, scope: scope,
+            referencePolicySHA256: referencePolicySHA256, workspace: workspace)
     }
 
     func evaluate(artifact: Artifact, artifactSHA256: String, contextSHA256: String,
@@ -125,12 +136,13 @@ struct PreparedTaskQuality {
         contract.startTreeSHA256 = startTreeSHA256
         return Self(envelope: Envelope(contract: contract, checkerSHA256: envelope.checkerSHA256,
             timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths, localEffectsOnly: envelope.localEffectsOnly, publicRegressionSnapshot: envelope.publicRegressionSnapshot),
-            checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression)
+            checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression, resourceScheduleSnapshot: resourceScheduleSnapshot)
     }
 
     func evaluateWithWitness(artifact: Artifact, artifactSHA256: String, contextSHA256: String,
                   workspace: String, executionID: String, runsRoot: URL = Self.root) throws -> Witness {
         let c = envelope.contract
+        if let snapshot = resourceScheduleSnapshot { try ResourceScheduleSupplement.revalidate(snapshot, workspace: workspace) }
         if !envelope.workspacePaths.isEmpty, observedStateHash(workspace) != artifact.workspaceAfterHash {
             throw OS1Error.message("Task-quality candidate changed after the execution artifact was captured")
         }
@@ -209,6 +221,7 @@ struct PreparedTaskQuality {
         if !envelope.workspacePaths.isEmpty, observedStateHash(workspace) != artifact.workspaceAfterHash {
             throw OS1Error.message("Task-quality live candidate changed during the copied-artifact check")
         }
+        if let snapshot = resourceScheduleSnapshot { try ResourceScheduleSupplement.revalidate(snapshot, workspace: workspace) }
         let receiptSHA = TaskQualityEvidence.digest(result.1)
         let rawChecks = result.0 == 0 && result.1.count <= 128_000
             ? try? JSONDecoder().decode([TaskQualityEvidence.Check].self, from: result.1) : nil
@@ -242,6 +255,243 @@ struct PreparedTaskQuality {
         }.joined(separator: "\n")
         return Witness(assessment: assessment, contract: c, receipt: receipt, artifact: observed,
             failureDiagnostic: String(diagnostic.prefix(8_000)))
+    }
+}
+
+/// A fixed, source-custodied partial feasibility checker. It never executes
+/// project code, guesses an output, infers full coverage, or changes routing.
+enum ResourceScheduleSupplement {
+    struct Snapshot: Codable, Equatable { let file: String; let workspace: String; let sha256: String; let custodySHA256: String }
+    static let ids = ["partial.schedule.source", "partial.schedule.shape", "partial.schedule.identity",
+        "partial.schedule.tasks", "partial.schedule.release", "partial.schedule.deadline",
+        "partial.schedule.dependencies", "partial.schedule.capacity"]
+    static func selectedFile(_ objective: String) -> String? {
+        guard objective.utf8.count <= 65_536 else { return nil }
+        let owner = OwnerIntentText.authorityText(objective)
+        let pattern = #"^\s*read\s+([A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json)\s+and\s+(?:return|produce|provide)\s+(?:one|a)\s+feasible\s+non-preemptive\s+schedule\s*(?:[.!]|\n|$)"#
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+            let m = re.firstMatch(in: owner, range: NSRange(owner.startIndex..., in: owner)),
+            let range = Range(m.range(at: 1), in: owner) else { return nil }
+        let file = String(owner[range])
+        // A feasible schedule does not itself authorize a particular output
+        // representation. Require the explicit closed JSON template, not a
+        // mere mention of JSON, quoted example, or a prose/array override.
+        let output = #"(?:^|[.!?\n]\s*)return\s+exactly\s+\{\s*(?-i:"project")\s*:\s*<[^>\r\n]{1,80}>\s*,\s*(?-i:"version")\s*:\s*<[^>\r\n]{1,80}>\s*,\s*(?-i:"schedule")\s*:\s*\[\s*\{\s*(?-i:"task_id")\s*:\s*<[^>\r\n]{1,80}>\s*,\s*(?-i:"start")\s*:\s*<(?:built-in\s+JSON\s+|nonnegative\s+)?integer>\s*\}\s*,\s*(?:\.\.\.|…)\s*\]\s*\}(?=\s*(?:[.!](?:\s|$)|\n|$))"#
+        guard let format = owner.range(of: output, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        let prefix = String(owner[..<format.lowerBound])
+        guard prefix.range(of: #"\b(?:example|illustration|quoted(?:\s+template)?)\s*:\s*$"#, options: [.regularExpression, .caseInsensitive]) == nil,
+            ownerSpan(prefix) else { return nil }
+        let presentations = try? NSRegularExpression(pattern: #"(?:^|[.!?;\n]\s*)(?:(?:please|also|then|instead)\s+)?(?:you\s+(?:must|should|shall)\s+)?(explain|write|return|output|use|provide|produce|format|send)\b([^.!?\n]*)"#, options: [.caseInsensitive])
+        for m in presentations?.matches(in: owner, range: NSRange(owner.startIndex..., in: owner)) ?? [] {
+            guard let verbRange = Range(m.range(at: 1), in: owner), let bodyRange = Range(m.range(at: 2), in: owner) else { return nil }
+            let verb = owner[verbRange].lowercased(), body = String(owner[bodyRange]).trimmingCharacters(in: .whitespaces)
+            guard verb == "return", body.range(of: #"^(?:exactly\s*\{|JSON\s+only\b)"#, options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
+        }
+        let denies = try? NSRegularExpression(pattern: #"\b(?:(?:do|must|shall|should|may|can)\s+not|cannot|can't|don't|never)\s+(?:read|open|access|inspect)\b(.*?)(?=;|!|\n|\.(?:\s|$)|$)"#, options: [.caseInsensitive])
+        let denied = (denies?.matches(in: owner, range: NSRange(owner.startIndex..., in: owner)) ?? []).contains { m in
+            guard let r = Range(m.range(at: 1), in: owner) else { return true }
+            let clause = String(owner[r])
+            return clause.range(of: NSRegularExpression.escapedPattern(for: file), options: [.regularExpression, .caseInsensitive]) != nil ||
+                clause.range(of: #"^\s*(?:(?:any|all|the)\s+)?(?:files?|source(?:\s+files?)?)(?:\s|$)"#, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        guard !denied, !file.contains(".."), !file.hasPrefix("."),
+            owner.range(of: #"\b(?:ignore|omit|relax|override|change|adjust)\b[^.\n]*(?:resource|capacit(?:y|ies)|constraint|dependenc|deadline|release|duration|horizon|preempt)|\b(?:do\s+not|don't|never|without)\s+(?:enforce|check|satisfy|consider|respect|use)\b[^.\n]*(?:resource|capacit(?:y|ies)|constraint|dependenc|deadline|release|duration|horizon|preempt)"#,
+                options: [.regularExpression, .caseInsensitive]) == nil,
+            owner.range(of: #"\b(?:allow|enable|use)\s+preempt(?:ion|ive)\b"#, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
+        return file
+    }
+    /// Inspect only the prefix before the format directive. JSON property
+    /// quotes after it remain intact; a period inside quoted data cannot
+    /// create a new owner instruction. Ambiguous escaped quotes abstain.
+    static func ownerSpan(_ prefix: String) -> Bool {
+        let scalars = Array(prefix.unicodeScalars.map(\.value))
+        var quote: UInt32? = nil, escape = false
+        func word(_ x: UInt32) -> Bool { (48...57).contains(x) || (65...90).contains(x) || (97...122).contains(x) }
+        for i in scalars.indices {
+            let c = scalars[i], apostrophe = c == 39 && i > 0 && i + 1 < scalars.count && word(scalars[i-1]) && word(scalars[i+1])
+            if escape { if [34,39,96,0x2018,0x2019,0x201c,0x201d].contains(c) { return false }; escape = false; continue }
+            if c == 92 { escape = true; continue }
+            if apostrophe { continue }
+            if let end = quote { if c == end { quote = nil }; continue }
+            switch c {
+            case 34,39,96: quote = c
+            case 0x2018: quote = 0x2019
+            case 0x201c: quote = 0x201d
+            case 0x2019,0x201d: return false
+            default: break
+            }
+        }
+        return quote == nil && !escape
+    }
+    static func source(_ file: String, workspace: String) throws -> (Data, Snapshot) {
+        guard file.range(of: #"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json$"#, options: [.regularExpression]) != nil,
+            !file.contains(".."), !file.hasPrefix(".") else { throw OS1Error.message("Schedule source is not a closed relative leaf") }
+        let requested = URL(fileURLWithPath: workspace).standardizedFileURL
+        var originalRoot = stat(); guard lstat(requested.path, &originalRoot) == 0,
+            originalRoot.st_mode & S_IFMT == S_IFDIR else { throw OS1Error.message("Schedule root is not a real directory") }
+        let root = requested.resolvingSymlinksInPath()
+        guard root.path == requested.path || (requested.path.hasPrefix("/var/") && root.path == "/private" + requested.path) else { throw OS1Error.message("Schedule root is not canonical") }
+        var rs = stat(); guard lstat(root.path, &rs) == 0, rs.st_mode & S_IFMT == S_IFDIR,
+            rs.st_uid == getuid(), rs.st_mode & 0o022 == 0 else { throw OS1Error.message("Schedule source root custody unavailable") }
+        let path = root.appendingPathComponent(file).path
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { throw OS1Error.message("Schedule source unavailable") }; defer { close(fd) }
+        var a = stat(); guard fstat(fd, &a) == 0, a.st_mode & S_IFMT == S_IFREG, a.st_uid == getuid(),
+            a.st_nlink == 1, a.st_mode & 0o022 == 0, a.st_size > 0, a.st_size <= 65_536 else { throw OS1Error.message("Schedule source custody unavailable") }
+        var data = Data(); var buffer = [UInt8](repeating: 0, count: 8192)
+        while true { let n = Darwin.read(fd, &buffer, buffer.count); guard n >= 0 else { throw OS1Error.message("Schedule source read failed") }; if n == 0 { break }; data.append(contentsOf: buffer.prefix(n)); guard data.count <= 65_536 else { throw OS1Error.message("Schedule source oversized") } }
+        var z = stat(), pathState = stat()
+        guard fstat(fd, &z) == 0, lstat(path, &pathState) == 0,
+            a.st_dev == z.st_dev, a.st_ino == z.st_ino, a.st_size == z.st_size,
+            a.st_mtimespec.tv_sec == z.st_mtimespec.tv_sec, a.st_mtimespec.tv_nsec == z.st_mtimespec.tv_nsec,
+            a.st_ctimespec.tv_sec == z.st_ctimespec.tv_sec, a.st_ctimespec.tv_nsec == z.st_ctimespec.tv_nsec,
+            a.st_dev == pathState.st_dev, a.st_ino == pathState.st_ino, a.st_size == pathState.st_size,
+            a.st_mtimespec.tv_sec == pathState.st_mtimespec.tv_sec, a.st_mtimespec.tv_nsec == pathState.st_mtimespec.tv_nsec,
+            a.st_ctimespec.tv_sec == pathState.st_ctimespec.tv_sec, a.st_ctimespec.tv_nsec == pathState.st_ctimespec.tv_nsec else { throw OS1Error.message("Schedule source changed during capture") }
+        try validate(data)
+        let identity = [String(rs.st_dev), String(rs.st_ino), String(rs.st_mode), String(rs.st_uid), String(a.st_dev), String(a.st_ino), String(a.st_mode), String(a.st_uid), String(a.st_nlink),
+            String(a.st_size), String(a.st_mtimespec.tv_sec), String(a.st_mtimespec.tv_nsec),
+            String(a.st_ctimespec.tv_sec), String(a.st_ctimespec.tv_nsec)].joined(separator: "\n")
+        return (data, Snapshot(file: file, workspace: root.path, sha256: TaskQualityEvidence.digest(data),
+            custodySHA256: TaskQualityEvidence.digest(Data(identity.utf8))))
+    }
+    static func revalidate(_ frozen: Snapshot, workspace: String) throws {
+        let (_, now) = try source(frozen.file, workspace: workspace)
+        guard now == frozen else { throw OS1Error.message("Schedule source changed after preparation") }
+    }
+    static func validate(_ data: Data) throws {
+        func fail() throws -> Never { throw OS1Error.message("Unsupported bounded resource schedule source") }
+        func integer(_ value: Any?, _ range: ClosedRange<Int>) -> Int? {
+            guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+                !["f", "d"].contains(String(cString: n.objCType)), range.contains(n.intValue) else { return nil }; return n.intValue
+        }
+        func identifier(_ x: Any?) -> String? { guard let x = x as? String, !x.isEmpty, x.utf8.count <= 128,
+            x.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }; return x }
+        // Foundation may normalize 1.0 to an integral NSNumber. This closed
+        // schema permits only integer numeric tokens outside JSON strings.
+        let raw = Array(data); var i = 0, quoted = false, escaped = false
+        while i < raw.count {
+            let b = raw[i]
+            if quoted { if escaped { escaped = false } else if b == 92 { escaped = true } else if b == 34 { quoted = false }; i += 1; continue }
+            if b == 34 { quoted = true; i += 1; continue }
+            if b == 45 || (48...57).contains(b) {
+                var end = i + 1
+                while end < raw.count && ((48...57).contains(raw[end]) || [45, 43, 46, 101, 69].contains(raw[end])) { end += 1 }
+                guard !raw[i..<end].contains(where: { [46, 101, 69].contains($0) }) else { try fail() }; i = end
+            } else { i += 1 }
+        }
+        guard let root = try? RCCRuntimeContract.checkedObject(data),
+            (Set(root.keys) == ["project", "version", "horizon", "resources", "tasks"] ||
+             (Set(root.keys) == ["schema", "project", "version", "horizon", "resources", "tasks"] && integer(root["schema"], 1...1) == 1)), identifier(root["project"]) != nil,
+            identifier(root["version"]) != nil, let horizon = integer(root["horizon"], 1...4096),
+            let resources = root["resources"] as? [String: Any], (1...16).contains(resources.count),
+            resources.allSatisfy({ identifier($0.key) != nil && integer($0.value, 0...1_000_000) != nil }),
+            let tasks = root["tasks"] as? [[String: Any]], (1...32).contains(tasks.count) else { try fail() }
+        var keys = Set<String>(), dependencies: [String: [String]] = [:]
+        for t in tasks {
+            guard Set(t.keys) == ["id", "duration", "release", "deadline", "requires", "depends"],
+                let id = identifier(t["id"]), keys.insert(id).inserted,
+                integer(t["duration"], 1...horizon) != nil, let release = integer(t["release"], 0...horizon),
+                let deadline = integer(t["deadline"], 0...horizon), release <= deadline,
+                let needs = t["requires"] as? [String: Any], Set(needs.keys).isSubset(of: Set(resources.keys)),
+                needs.allSatisfy({ integer($0.value, 0...1_000_000) != nil }),
+                let deps = t["depends"] as? [String], deps.allSatisfy({ identifier($0) != nil }),
+                Set(deps).count == deps.count, !deps.contains(id), deps.count <= 31 else { try fail() }
+            dependencies[id] = deps
+        }
+        guard dependencies.values.allSatisfy({ Set($0).isSubset(of: keys) }) else { try fail() }
+        var remaining = keys, finished = Set<String>()
+        while !remaining.isEmpty { let ready = remaining.filter { Set(dependencies[$0]!).isSubset(of: finished) }; guard !ready.isEmpty else { try fail() }; remaining.subtract(ready); finished.formUnion(ready) }
+    }
+    static func attach(_ prepared: PreparedTaskQuality?, objective: String, contextSHA256: String, sourceSHA256: String?,
+        startTreeSHA256: String, scope: TaskContext.Scope, referencePolicySHA256: String, workspace: String?) throws -> PreparedTaskQuality? {
+        guard scope == .readOnly, let file = selectedFile(objective), let workspace else { return prepared }
+        // Never rewrite a full/reference-bearing owner contract or a copied
+        // project test suite. No source family is inferred from their code.
+        if let p = prepared, p.envelope.contract.fullCoverage || p.envelope.contract.reference != nil || p.frozenRegressionSnapshot != nil { return p }
+        let (bytes, snapshot) = try source(file, workspace: workspace), sourceHash = TaskQualityEvidence.digest(bytes)
+        let prior = prepared?.checkerBytes ?? Data(), priorIDs = prepared?.envelope.contract.requiredCheckIDs ?? []
+        guard Set(priorIDs).isDisjoint(with: Set(ids)), priorIDs.count + ids.count <= 128 else { throw OS1Error.message("Schedule checker obligation collision") }
+        let checker = Data(program(file: file, source: bytes, sourceSHA256: sourceHash, prior: prior).utf8)
+        guard checker.count <= 256_000 else { throw OS1Error.message("Schedule checker composition oversized") }
+        let now = Date(), hash = TaskQualityEvidence.digest(checker)
+        var c = prepared?.envelope.contract ?? TaskQualityEvidence.Contract(basis: .declaredTrustedContract,
+            objectiveSHA256: TaskQualityEvidence.digest(Data(objective.utf8)), contextSHA256: contextSHA256,
+            sourceSHA256: sourceSHA256, startTreeSHA256: startTreeSHA256, scope: .readOnly, verifierCodeSHA256: hash,
+            referencePolicySHA256: referencePolicySHA256, requiredCheckIDs: [], fullCoverage: false,
+            referenceProfiles: [], reference: nil, issuedAt: now, validUntil: now.addingTimeInterval(86_400))
+        c.verifierCodeSHA256 = hash; c.requiredCheckIDs = priorIDs + ids
+        let envelope = PreparedTaskQuality.Envelope(contract: c, checkerSHA256: hash,
+            timeoutSeconds: prepared?.envelope.timeoutSeconds ?? 10,
+            workspacePaths: Array(Set((prepared?.envelope.workspacePaths ?? []) + [file])).sorted(),
+            localEffectsOnly: prepared?.envelope.localEffectsOnly ?? false)
+        return PreparedTaskQuality(envelope: envelope, checkerBytes: checker, referencePolicySHA256: referencePolicySHA256, resourceScheduleSnapshot: snapshot)
+    }
+    static func program(file: String, source: Data, sourceSHA256: String, prior: Data) -> String {
+        // Values are encoded, never interpolated as Python code/instructions.
+        let path64 = Data(file.utf8).base64EncodedString(), source64 = source.base64EncodedString(), prior64 = prior.base64EncodedString()
+        return #"""
+# os1-source-bound-resource-schedule-partial-v1
+import base64,contextlib,hashlib,io,json,pathlib,sys
+SOURCE=base64.b64decode('\#(source64)')
+SOURCE_SHA='\#(sourceSHA256)'
+FILE=base64.b64decode('\#(path64)').decode('utf8')
+PRIOR=base64.b64decode('\#(prior64)')
+def pairs(xs):
+ d={}
+ for k,v in xs:
+  if k in d:raise ValueError('duplicate key')
+  d[k]=v
+ return d
+def parsed(s):return json.loads(s,object_pairs_hook=pairs)
+payload=parsed(pathlib.Path(sys.argv[1]).read_text(encoding='utf8'))
+rows=[]
+if PRIOR:
+ capture=io.StringIO()
+ try:
+  with contextlib.redirect_stdout(capture):
+   exec(compile(PRIOR,'frozen-owner-checker','exec'),{'__name__':'__main__','__file__':'frozen-owner-checker'})
+ except SystemExit as e:
+  if e.code not in (None,0):raise
+ text=capture.getvalue()
+ if len(text.encode())>128000:raise ValueError('owner checker output oversized')
+ rows=parsed(text)
+ if type(rows)is not list or any(type(r)is not dict or r.get('status')not in ['passed','failed']for r in rows):raise ValueError('owner checker receipt unavailable')
+def add(suffix,value):rows.append({'checkID':'partial.schedule.'+suffix,'status':'passed'if value else'failed','score':1.0 if value else 0.0,'observedReceiptSHA256':None})
+p=parsed(SOURCE)
+f=pathlib.Path(payload['workspace'])/FILE
+source_ok=f.is_file()and not f.is_symlink()and f.stat().st_nlink==1 and hashlib.sha256(f.read_bytes()).hexdigest()==SOURCE_SHA
+if not source_ok:raise ValueError('frozen schedule source identity changed')
+add('source',True)
+try:
+ text=payload['output']
+ a=parsed(text)if type(text)is str and len(text.encode())<=65536 else None
+ shape=type(a)is dict and set(a)=={'project','version','schedule'}
+except Exception:a=None;shape=False
+add('shape',shape)
+add('identity',shape and a['project']==p['project']and a['version']==p['version'])
+ts={t['id']:t for t in p['tasks']}
+rs=a['schedule']if shape else None
+valid=type(rs)is list and len(rs)==len(ts)and all(type(r)is dict and set(r)=={'task_id','start'}and type(r['task_id'])is str and r['task_id']in ts and type(r['start'])is int and 0<=r['start']<=p['horizon']for r in rs)
+valid=valid and len({r['task_id']for r in rs})==len(ts)
+add('tasks',valid)
+starts={r['task_id']:r['start']for r in rs}if valid else{}
+add('release',valid and all(starts[k]>=t['release']for k,t in ts.items()))
+add('deadline',valid and all(starts[k]+t['duration']<=min(t['deadline'],p['horizon'])for k,t in ts.items()))
+add('dependencies',valid and all(starts[d]+ts[d]['duration']<=starts[k]for k,t in ts.items()for d in t['depends']))
+# Independent event sweep: end events precede start events at the same time.
+capacity=valid
+if valid:
+ for resource,cap in p['resources'].items():
+  events=[]
+  for key,t in ts.items():
+   amount=t['requires'].get(resource,0);events.extend([(starts[key],1,amount),(starts[key]+t['duration'],0,-amount)])
+  used=0
+  for _,_,delta in sorted(events):
+   used+=delta
+   if used>cap:capacity=False
+add('capacity',capacity)
+print(json.dumps(rows,separators=(',',':')))
+"""#
     }
 }
 
@@ -574,6 +824,8 @@ func taskQualityReferencePolicySHA256(config: RuntimeConfig) -> String {
 /// Existing os1 self-test coverage. Local deterministic fixtures only: no model,
 /// network, live registry, account credential or user worktree is involved.
 func taskQualityRuntimeSelfTest() throws {
+    try resourceScheduleSupplementSelfTest()
+    try resourceScheduleOwnerCompositionSelfTest()
     try pythonRegressionLayoutSelfTest()
     let fm = FileManager.default
     let versionedDeveloper = "/Applications/Xcode_16.4.app/Contents/Developer"
@@ -1054,12 +1306,14 @@ enum RCCOperationalQuality {
         let checkerBytes: Data
         let referencePolicySHA256: String
         let partialRegression: PythonRegressionSnapshot?
+        let resourceScheduleSnapshot: ResourceScheduleSupplement.Snapshot?
         init(_ value: PreparedTaskQuality) {
             envelope = value.envelope; checkerBytes = value.checkerBytes; referencePolicySHA256 = value.referencePolicySHA256
             partialRegression = value.frozenRegressionSnapshot
+            resourceScheduleSnapshot = value.resourceScheduleSnapshot
         }
         var prepared: PreparedTaskQuality {
-            .init(envelope: envelope, checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression)
+            .init(envelope: envelope, checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression, resourceScheduleSnapshot: resourceScheduleSnapshot)
         }
     }
     struct Preparation {
@@ -2015,4 +2269,169 @@ func rccLocalEffectsAdmissionSelfTest() throws {
     try save(envelope(scope: .workspaceWrite, context: hash))
     try reject("foreign context declaration is not applied") { _ = try Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base) }
     print("RCC hard local-effects admission: \(count) checks PASS; provider/native/model calls0")
+}
+
+/// Independent fresh generic examples, not benchmark answers or source IDs.
+func resourceScheduleSupplementSelfTest() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-resource-check-" + UUID().uuidString).resolvingSymlinksInPath()
+    try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); defer { try? fm.removeItem(at: root) }
+    let ws = root.appendingPathComponent("workspace"), registry = root.appendingPathComponent("registry")
+    try fm.createDirectory(at: ws, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    var count = 0
+    func check(_ value: @autoclosure () throws -> Bool, _ name: String) throws { guard try value() else { throw OS1Error.message("Resource schedule fixture: " + name) }; count += 1 }
+    func rejects(_ name: String, _ fn: () throws -> Void) throws { do { try fn() } catch { count += 1; return }; throw OS1Error.message("Resource schedule fixture accepted " + name) }
+    let spec = #"{"project":"fresh-work","version":"s1","horizon":12,"resources":{"beam":1,"analyst":2},"tasks":[{"id":"cut","duration":2,"release":0,"deadline":6,"requires":{"beam":1},"depends":[]},{"id":"seal","duration":2,"release":0,"deadline":8,"requires":{"beam":1},"depends":[]},{"id":"review","duration":1,"release":0,"deadline":12,"requires":{"analyst":1},"depends":["cut","seal"]}]}"#
+    let objective = #"Read workload.json and return one feasible non-preemptive schedule. Return EXACTLY {"project":<project ID>,"version":<version>,"schedule":[{"task_id":<ID>,"start":<integer>}, ...]}. Return JSON only."#
+    let source = ws.appendingPathComponent("workload.json")
+    func put(_ text: String) throws { try Data(text.utf8).write(to: source); try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: source.path) }
+    try put(spec)
+    let hash = String(repeating: "a", count: 64)
+    func prepare(_ request: String = objective, _ scope: TaskContext.Scope = .readOnly) throws -> PreparedTaskQuality? {
+        try PreparedTaskQuality.prepare(objective: request, contextSHA256: hash, sourceSHA256: nil,
+            startTreeSHA256: workspaceHash(ws.path), scope: scope, referencePolicySHA256: hash, workspace: ws.path, rootURL: registry)
+    }
+    guard var p = try prepare() else { throw OS1Error.message("Fresh schedule acquisition absent") }
+    try check(!p.envelope.contract.fullCoverage && p.envelope.contract.reference == nil, "partial/no reference")
+    try check(p.envelope.workspacePaths == ["workload.json"] && !p.envelope.localEffectsOnly, "no new capability")
+    try check(p.envelope.contract.requiredCheckIDs == ResourceScheduleSupplement.ids, "fixed obligations")
+    func witness(_ prepared: PreparedTaskQuality, _ output: String) throws -> PreparedTaskQuality.Witness {
+        let native = NativeRecordEvidence(turnID: "fixture-turn", recordPath: "/fixture/native", persistence: "verified", desktopVisibility: "fixture")
+        let a = Artifact(provider: "codex", action: "execute", permissionProfile: "read_only", model: "fixture", effort: "low",
+            executorContractVersion: "fixture", executorContractSHA256: hash, exitCode: 0, output: output, stderr: "", durationMS: 1,
+            workspaceBeforeHash: prepared.envelope.contract.startTreeSHA256, workspaceAfterHash: workspaceHash(ws.path), nativeRecord: native)
+        return try prepared.evaluateWithWitness(artifact: a, artifactSHA256: TaskQualityEvidence.digest(try RCCOperationalQuality.encoded(a)),
+            contextSHA256: hash, workspace: ws.path, executionID: UUID().uuidString.lowercased(), runsRoot: root)
+    }
+    let valid = #"{"project":"fresh-work","version":"s1","schedule":[{"task_id":"cut","start":0},{"task_id":"seal","start":2},{"task_id":"review","start":4}]}"#
+    let alternate = #"{"project":"fresh-work","version":"s1","schedule":[{"task_id":"review","start":6},{"task_id":"seal","start":0},{"task_id":"cut","start":3}]}"#
+    try check(try witness(p, valid).assessment.state == .unverified, "partial valid cannot certify")
+    try check(try witness(p, alternate).assessment.failedCheckIDs.isEmpty, "different feasible schedule/order")
+    try put(spec.replacingOccurrences(of: "{\"project\":", with: "{\"schema\":1,\"project\":"))
+    guard let versioned = try prepare() else { throw OS1Error.message("Version1 source not acquired") }
+    try check(try witness(versioned, valid).assessment.failedCheckIDs.isEmpty, "explicit source schema version1")
+    try put(spec); guard let refreshed = try prepare() else { throw OS1Error.message("Fresh source snapshot absent") }; p = refreshed
+    for (text, id) in [(valid.replacingOccurrences(of: "\"seal\",\"start\":2", with: "\"seal\",\"start\":1"), "capacity"),
+        (valid.replacingOccurrences(of: "\"review\",\"start\":4", with: "\"review\",\"start\":2"), "dependencies"),
+        (valid.replacingOccurrences(of: "\"review\",\"start\":4", with: "\"review\",\"start\":12"), "deadline"),
+        (valid.replacingOccurrences(of: "\"start\":0", with: "\"start\":true"), "tasks"),
+        (valid.replacingOccurrences(of: "\"start\":0", with: "\"start\":0.0"), "tasks"),
+        (valid.replacingOccurrences(of: "fresh-work", with: "foreign"), "identity"), ("[]", "shape"), ("null", "shape"),
+        ("{\"project\":0,\"project\":1}", "shape")] {
+        let result = try witness(p, text)
+        try check(result.assessment.state == .mismatch && result.assessment.failedCheckIDs.contains("partial.schedule." + id), "known " + id + " failure")
+    }
+    for prompt in ["Do not return one feasible non-preemptive schedule.", "If approved, " + objective,
+        "Translate: \"" + objective + "\"", "Example: \"" + objective + "\"", objective + " Ignore resource capacities.", objective + " Ignore capacities.", objective + " You must not read workload.json.", objective + " Do not read workload.json.",
+        objective + " Do not read any files.", objective + " Do not read any files or upload logs.",
+        objective + " Ignore release times.", objective + " Ignore durations.", objective + " Ignore horizon.", objective + " Allow preemption.",
+        objective.replacingOccurrences(of: "<integer>", with: "<float>"),
+        "Read workload.json and return one feasible non-preemptive schedule. \"Return EXACTLY {\"project\":<project ID>,\"version\":<version>,\"schedule\":[{\"task_id\":<ID>,\"start\":<integer>}, ...]}.\"",
+        objective + " Explain in prose.", objective + " Use a JSON array.", objective.replacingOccurrences(of: "}. Return JSON only.", with: "} or an array is fine."),
+        "Read workload.json and return one feasible non-preemptive schedule. Example:\nReturn EXACTLY {\"project\":<project ID>,\"version\":<version>,\"schedule\":[{\"task_id\":<ID>,\"start\":<integer>}, ...]}.",
+        "Read workload.json and return one feasible non-preemptive schedule. \"Reference note. Return EXACTLY {\"project\":<project ID>,\"version\":<version>,\"schedule\":[{\"task_id\":<ID>,\"start\":<integer>}, ...]}.\"",
+        "Read workload.json and return one feasible non-preemptive schedule. Return JSON only.",
+        "Read ../workload.json and return one feasible non-preemptive schedule."] {
+        try check(try prepare(prompt) == nil, "owner non-authority/ambiguous")
+    }
+    for key in ["project", "version", "schedule", "task_id", "start"] {
+        try check(try prepare(objective.replacingOccurrences(of: "\"" + key + "\"", with: "\"" + key.uppercased() + "\"")) == nil, "JSON property case is not normalized")
+    }
+    try check(try prepare(objective, .workspaceWrite) == nil, "writer untouched")
+    for bad in [spec.replacingOccurrences(of: "{\"project\":", with: "{\"schema\":2,\"project\":"),
+        spec.replacingOccurrences(of: "{\"project\":", with: "{\"schema\":true,\"project\":"),
+        spec.replacingOccurrences(of: "\"horizon\":12", with: "\"horizon\":true"),
+        spec.replacingOccurrences(of: "\"horizon\":12", with: "\"horizon\":4097"),
+        spec.replacingOccurrences(of: "\"horizon\":12", with: "\"horizon\":12.5"),
+        spec.replacingOccurrences(of: "\"horizon\":12", with: "\"horizon\":12.0"),
+        spec.replacingOccurrences(of: "\"horizon\":12", with: "\"horizon\":12e0"),
+        spec.replacingOccurrences(of: "\"horizon\":12", with: "\"horizon\":12,\"horizon\":10"),
+        spec.replacingOccurrences(of: "\"project\":", with: "\"unknown\":1,\"project\":"),
+        spec.replacingOccurrences(of: "\"depends\":[]", with: "\"depends\":[\"review\"]"),
+        spec.replacingOccurrences(of: "\"depends\":[\"cut\",\"seal\"]", with: "\"depends\":[\"absent\"]")] {
+        try put(bad); try rejects("unsupported schema/bounds/cycle") { _ = try prepare() }
+    }
+    try put(spec); try fm.removeItem(at: source)
+    let outside = root.appendingPathComponent("outside.json"); try Data(spec.utf8).write(to: outside)
+    try fm.createSymbolicLink(at: source, withDestinationURL: outside); try rejects("symlink") { _ = try prepare() }; try fm.removeItem(at: source)
+    try fm.linkItem(at: outside, to: source); try rejects("hardlink") { _ = try prepare() }; try fm.removeItem(at: source)
+    try put(spec); try fm.setAttributes([.posixPermissions: 0o666], ofItemAtPath: source.path); try rejects("writable source") { _ = try prepare() }; try put(spec)
+    // A changed source is infrastructure/binding unknown, never a fabricated
+    // candidate constraint failure authorizing a replay.
+    try put(spec.replacingOccurrences(of: "\"beam\":1", with: "\"beam\":2"))
+    try rejects("changed source cannot reuse frozen checker") { _ = try witness(p, valid) }
+    print("RCC resource schedule supplement: \(count) checks PASS; model/provider calls 0")
+}
+
+func resourceScheduleOwnerCompositionSelfTest() throws {
+    let fm = FileManager.default, hash = String(repeating: "b", count: 64)
+    let root = fm.temporaryDirectory.appendingPathComponent("os1-resource-owner-" + UUID().uuidString).resolvingSymlinksInPath()
+    let ws = root.appendingPathComponent("workspace"), registry = root.appendingPathComponent("registry")
+    try fm.createDirectory(at: ws, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try fm.createDirectory(at: registry.appendingPathComponent("contracts"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try fm.createDirectory(at: registry.appendingPathComponent("checkers"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: root) }
+    let objective = #"Read jobs.json and return a feasible non-preemptive schedule. Return EXACTLY {"project":<project ID>,"version":<version>,"schedule":[{"task_id":<ID>,"start":<integer>}, ...]}."#
+    let source = #"{"project":"owner-example","version":"a","horizon":8,"resources":{"machine":1},"tasks":[{"id":"red","duration":2,"release":0,"deadline":8,"requires":{"machine":1},"depends":[]},{"id":"blue","duration":2,"release":0,"deadline":8,"requires":{"machine":1},"depends":[]}]}"#
+    let sourceURL = ws.appendingPathComponent("jobs.json"); try Data(source.utf8).write(to: sourceURL)
+    let valid = #"{"project":"owner-example","version":"a","schedule":[{"task_id":"red","start":0},{"task_id":"blue","start":2}]}"#
+    let invalid = valid.replacingOccurrences(of: "\"blue\",\"start\":2", with: "\"blue\",\"start\":1")
+    var checks = 0
+    func check(_ test: @autoclosure () throws -> Bool, _ name: String) throws { guard try test() else { throw OS1Error.message("Resource owner fixture: " + name) }; checks += 1 }
+    func putOwner(_ status: String, full: Bool = false, exit: Int = 0) throws -> (Data, Data) {
+        let code = Data("import json,sys\nprint(json.dumps([{'checkID':'partial.owner','status':'\(status)','score':None,'observedReceiptSHA256':None}]))\nsys.exit(\(exit))\n".utf8), codeSHA = TaskQualityEvidence.digest(code)
+        let c = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: TaskQualityEvidence.digest(Data(objective.utf8)),
+            contextSHA256: hash, sourceSHA256: nil, startTreeSHA256: workspaceHash(ws.path), scope: .readOnly,
+            verifierCodeSHA256: codeSHA, referencePolicySHA256: hash, requiredCheckIDs: ["partial.owner"], fullCoverage: full,
+            referenceProfiles: [], reference: nil, issuedAt: Date(), validUntil: Date().addingTimeInterval(1000))
+        let env = PreparedTaskQuality.Envelope(contract: c, checkerSHA256: codeSHA, timeoutSeconds: 10, workspacePaths: [], localEffectsOnly: true)
+        let bytes = try RCCOperationalQuality.encoded(env)
+        try bytes.write(to: registry.appendingPathComponent("contracts/" + c.objectiveSHA256 + ".json")); try code.write(to: registry.appendingPathComponent("checkers/" + codeSHA + ".py"))
+        return (bytes, code)
+    }
+    func load() throws -> PreparedTaskQuality {
+        guard let p = try PreparedTaskQuality.prepare(objective: objective, contextSHA256: hash, sourceSHA256: nil,
+            startTreeSHA256: workspaceHash(ws.path), scope: .readOnly, referencePolicySHA256: hash, workspace: ws.path, rootURL: registry) else { throw OS1Error.message("Missing owner fixture") }; return p
+    }
+    func artifact(_ p: PreparedTaskQuality, _ output: String) -> Artifact {
+        .init(provider: "codex", action: "execute", permissionProfile: "read_only", model: "fixture", effort: "low", executorContractVersion: "fixture", executorContractSHA256: hash,
+            exitCode: 0, output: output, stderr: "", durationMS: 1, workspaceBeforeHash: p.envelope.contract.startTreeSHA256,
+            workspaceAfterHash: workspaceHash(ws.path), nativeRecord: .init(turnID: "fixture-turn", recordPath: "/fixture/native", persistence: "verified", desktopVisibility: "fixture"))
+    }
+    func evaluate(_ p: PreparedTaskQuality, _ out: String) throws -> PreparedTaskQuality.Witness {
+        let a = artifact(p, out)
+        return try p.evaluateWithWitness(artifact: a, artifactSHA256: TaskQualityEvidence.digest(try RCCOperationalQuality.encoded(a)), contextSHA256: hash,
+            workspace: ws.path, executionID: UUID().uuidString.lowercased(), runsRoot: root)
+    }
+    let original = try putOwner("passed"), p = try load()
+    try check(p.envelope.contract.requiredCheckIDs == ["partial.owner"] + ResourceScheduleSupplement.ids, "owner obligations retained")
+    try check(!p.envelope.contract.fullCoverage && p.envelope.localEffectsOnly && p.envelope.contract.reference == nil, "coverage/capability unchanged")
+    try check(try evaluate(p, valid).receipt?.checks.count == 9, "normal owner zero exit still runs supplement")
+    try check(try evaluate(p, invalid).assessment.failedCheckIDs == ["partial.schedule.capacity"], "capacity fail alongside owner pass")
+    let ownerPath = registry.appendingPathComponent("contracts/" + p.envelope.contract.objectiveSHA256 + ".json")
+    try check(try Data(contentsOf: ownerPath) == original.0, "owner registry not overwritten")
+    try check(try Data(contentsOf: registry.appendingPathComponent("checkers/" + TaskQualityEvidence.digest(original.1) + ".py")) == original.1, "owner code unchanged")
+    _ = try putOwner("failed"); try check(try evaluate(load(), valid).assessment.failedCheckIDs == ["partial.owner"], "owner failure preserved")
+    _ = try putOwner("unverified"); try check(try evaluate(load(), valid).receipt == nil, "owner unknown remains infrastructure unknown")
+    _ = try putOwner("passed", exit: 1); try check(try evaluate(load(), valid).receipt == nil, "nonzero owner never candidate failure")
+    let full = try putOwner("passed", full: true), fullPrepared = try load()
+    try check(fullPrepared.checkerBytes == full.1 && fullPrepared.envelope.contract.requiredCheckIDs == ["partial.owner"] && fullPrepared.resourceScheduleSnapshot == nil, "full owner not replaced")
+    _ = try putOwner("passed"); let bound = try load()
+    let sameBytes = try Data(contentsOf: sourceURL), oldDate = (try fm.attributesOfItem(atPath: sourceURL.path))[.modificationDate] as! Date
+    try fm.removeItem(at: sourceURL); try sameBytes.write(to: sourceURL); try fm.setAttributes([.modificationDate: oldDate], ofItemAtPath: sourceURL.path)
+    let selected = RCCRuntimeContract.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "fixture", model: "fixture", effort: .low, tools: [], scope: .readOnly, permissionProfile: .readOnly, quotaPool: .openAICodex, allowedPaths: [], configurationSHA256: hash)
+    let host = RCCRuntimeContract.HostContext(workspace: ws.path, context: nil, providerPreference: "auto", codexSessionID: nil, claudeSessionID: nil, requireReadOnly: true, ownerPolicy: nil)
+    let ticket = RCCRuntimeContract.ExecutionTicket(taskID: UUID().uuidString.lowercased(), nodeID: "schedule", attemptID: UUID().uuidString.lowercased(), candidateID: "fixture", requestSHA256: TaskQualityEvidence.digest(Data(objective.utf8)), policySHA256: hash, policySourceSHA256: hash, sourceFingerprint: RCCRuntimeContract.digest(try RCCRuntimeContract.encode(host)), configurationSHA256: hash, selectedConfig: selected, objective: objective, instruction: objective, contextRefs: [], ownedPaths: [], originalRequest: objective, originalObjective: objective, hostContext: host)
+    let prep = RCCOperationalQuality.Preparation(prepared: bound, before: try RCCOperationalQuality.ContentManifest.capture(workspace: ws.path), correctiveAttempts: 0, budget: .init(), correctionPrompt: nil)
+    let a = artifact(bound, valid)
+    let finished = try RCCOperationalQuality.finish(prep, ticket: ticket, artifact: a, artifactSHA256: TaskQualityEvidence.digest(try RCCOperationalQuality.encoded(a)), workspace: ws.path, root: root.appendingPathComponent("witnesses"))
+    try check(finished.assessment.state == .unverified && !finished.checkerReceiptAvailable && finished.assessment.failedCheckIDs.isEmpty, "same-byte replaced source custody returns UNVERIFIED not mismatch/pass")
+    var rejectedTraversal = false
+    do { _ = try ResourceScheduleSupplement.source("../outside.json", workspace: ws.path) } catch { rejectedTraversal = true }
+    try check(rejectedTraversal, "decoded snapshot traversal rejected at read boundary")
+    let alias = root.appendingPathComponent("alias"); try fm.createSymbolicLink(at: alias, withDestinationURL: ws)
+    var rejectedRoot = false
+    do { _ = try ResourceScheduleSupplement.source("jobs.json", workspace: alias.path) } catch { rejectedRoot = true }
+    try check(rejectedRoot, "symlink source root rejected before read")
+    print("RCC resource owner composition/custody: \(checks) checks PASS; model/provider calls 0")
 }

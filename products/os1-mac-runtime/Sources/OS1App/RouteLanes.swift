@@ -235,6 +235,32 @@ enum RouteLanesTaskNote: String, Codable, Sendable {
     }
 }
 
+/// Host-built navigation custody. A label or a URL in model prose cannot
+/// create this attribute, and the store rechecks the current graph on click.
+struct RouteLaneInspection: Codable, Equatable, Sendable {
+    let submissionID: UUID
+    let planID: UUID
+    let requestSHA256: String
+    let nodeID: UUID
+
+    func matches(_ graph: ParallelAgentTask.Snapshot, conversationID: UUID) -> Bool {
+        guard let bound = try? graph.validated(conversationID: conversationID, submissionID: submissionID,
+                                               requestSHA256: requestSHA256), bound.planID == planID else { return false }
+        return bound.nodes.contains { $0.id == nodeID && $0.role == .worker }
+    }
+    var isValid: Bool { requestSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil }
+    static func trustedLink(in text: NSAttributedString, url: URL, at index: Int) -> Self? {
+        guard (0..<text.length).contains(index),
+              let host = text.attribute(.os1RouteLaneInspection, at: index, effectiveRange: nil) as? RouteLaneInspectionBox,
+              host.binding.isValid, host.binding.url == url else { return nil }
+        return host.binding
+    }
+    var url: URL {
+        URL(string: "os1-route://inspect/" + submissionID.uuidString.lowercased() + "/" +
+            planID.uuidString.lowercased() + "/" + nodeID.uuidString.lowercased())!
+    }
+}
+
 struct RouteLane: Codable, Equatable, Sendable, Identifiable {
     var id: String
     /// Raw surface ("codex", …); nil when Core named none.
@@ -256,6 +282,11 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
     var selectedModel: String?
     var selectedEffort: String?
     var status: RouteLaneStatus
+    /// Public graph observations only; never generated progress or hidden reasoning.
+    var progressText: String?
+    var publicOutputSummary: String?
+    var qualityDisclosure: RCCRuntimeContract.QualityDisclosure?
+    var inspection: RouteLaneInspection?
     /// Core's own words for this route (a skipped route's reason).
     var coreReason: String?
     /// Core's ≤600-character summary of this route's output, kept only when
@@ -271,13 +302,16 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
     init(id: String, surface: String? = nil, explicitRoute: Bool = false, instruction: String? = nil, planIndex: Int? = nil,
          label: String? = nil, model: String? = nil, effort: String? = nil, configuration: RouteLaneConfigProvenance? = nil,
          status: RouteLaneStatus, coreReason: String? = nil, excerpt: String? = nil, executionVerified: Bool? = nil,
-         startedAt: Date? = nil, finishedAt: Date? = nil, attempts: [RouteLaneAttempt]? = nil) {
+         startedAt: Date? = nil, finishedAt: Date? = nil, attempts: [RouteLaneAttempt]? = nil,
+         progressText: String? = nil, publicOutputSummary: String? = nil,
+         qualityDisclosure: RCCRuntimeContract.QualityDisclosure? = nil, inspection: RouteLaneInspection? = nil) {
         self.id = id; self.surface = surface; self.explicitRoute = explicitRoute
         self.instruction = RouteLaneSurface.publicInstruction(instruction); self.planIndex = planIndex
         self.label = label; self.model = model; self.effort = effort; self.configuration = configuration
         self.status = status; self.coreReason = coreReason; self.excerpt = excerpt
         self.executionVerified = executionVerified; self.startedAt = startedAt; self.finishedAt = finishedAt
-        self.attempts = attempts
+        self.attempts = attempts; self.progressText = progressText; self.publicOutputSummary = publicOutputSummary
+        self.qualityDisclosure = qualityDisclosure; self.inspection = inspection
     }
 
     /// The lane's name in the interface language.
@@ -286,6 +320,18 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
         if explicitRoute, let name { return instruction.map { name + " · " + $0 } ?? name }
         if let planIndex { return (name.map { $0 + " · " } ?? "") + os1Tr("작업 \(planIndex + 1)", "task \(planIndex + 1)") }
         return label ?? name ?? id
+    }
+
+    /// Quality is independent of execution state: an executed/returned worker
+    /// can have known failed partial checks, without becoming an execution error.
+    var qualityNotice: String? {
+        guard let q = qualityDisclosure else { return nil }
+        if !q.failedCheckIDs.isEmpty {
+            return os1Tr("실행 종료 · 검사 실패: ", "Finished · checks failed: ") + q.failedCheckIDs.prefix(8).joined(separator: ", ") +
+                (q.failedCheckIDs.count > 8 ? os1Tr(" · 외 \(q.failedCheckIDs.count - 8)건", " · +\(q.failedCheckIDs.count - 8) more") : "")
+        }
+        if q.checker == .unavailable { return os1Tr("검사기 사용 불가 · 품질 미검증", "Checker unavailable · quality unverified") }
+        return os1Tr("검사 기록 있음 · 전체 작업 품질 미검증", "Checks recorded · whole-task quality unverified")
     }
 
     /// What this lane can truthfully say about itself.
@@ -309,7 +355,15 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
         return !id.isEmpty && bounded(id, 128) && bounded(surface, 32) && bounded(instruction, 80) && bounded(label, 256) &&
             (planIndex.map { (0..<64).contains($0) } ?? true) &&
             bounded(model, 256) && bounded(effort, 32) && bounded(selectedModel, 256) && bounded(selectedEffort, 32) &&
-            bounded(coreReason, 1_024) && bounded(excerpt, 4_096) && (attempts?.count ?? 0) <= 8 &&
+            bounded(coreReason, 1_024) && bounded(excerpt, 4_096) && bounded(progressText, 500) &&
+            bounded(publicOutputSummary, 1_000) && (inspection?.isValid ?? true) &&
+            (qualityDisclosure.map { [.completed, .returned].contains(status) &&
+                ($0.coverage != nil || $0.checker != nil || !$0.failedCheckIDs.isEmpty) &&
+                $0.failedCheckIDs.count <= 64 && Set($0.failedCheckIDs).count == $0.failedCheckIDs.count &&
+                $0.failedCheckIDs.allSatisfy { !$0.isEmpty && $0.utf8.count <= 256 &&
+                    !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } &&
+                ($0.witnessSHA256.map { $0.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil } ?? true)
+            } ?? true) && (attempts?.count ?? 0) <= 8 &&
             (attempts ?? []).allSatisfy { bounded($0.model, 256) && bounded($0.effort, 32) } &&
             (startedAt.flatMap { start in finishedAt.map { $0 >= start } } ?? true)
     }
@@ -340,7 +394,8 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
 
     var isValid: Bool {
         schema == Self.currentSchema && (1...24).contains(lanes.count) && lanes.allSatisfy(\.isValid) &&
-            Set(lanes.map(\.id)).count == lanes.count && (taskReason.map { $0.utf8.count <= 1_024 } ?? true)
+            Set(lanes.map(\.id)).count == lanes.count &&
+            lanes.allSatisfy({ $0.inspection.map { $0.submissionID == submissionID } ?? true }) && (taskReason.map { $0.utf8.count <= 1_024 } ?? true)
     }
 
     /// Each lane's answer: read from the message text when the lanes cover
@@ -465,6 +520,10 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
                     lane.model = observed; lane.effort = step.effort ?? effort; lane.configuration = .observed
                 }
             }
+            let display = RCCRuntimeProjection.inspectionIdentity(taskID: core.taskID, childID: child.id)
+            lane.inspection = RouteLaneInspection(submissionID: submissionID, planID: display.planID,
+                requestSHA256: core.requestSHA256, nodeID: display.nodeID)
+            lane.qualityDisclosure = child.qualityDisclosure
             // A REVAS ladder or tier escalation ran a cheaper tuple first.
             if let decision, decision.reason.contains("escalated_after"), let ladder = decision.ladder {
                 lane.attempts = [RouteLaneAttempt(model: ladder.cheapModel ?? decision.model, effort: ladder.cheapEffort.rawValue,
@@ -598,9 +657,15 @@ struct RouteLanesPresentation: Equatable {
     /// The live run's lanes from its observed task graph: one per worker, in
     /// plan order. nil without a coordinator.
     init?(liveGraph graph: ParallelAgentTask.Snapshot) {
-        guard let root = graph.nodes.first(where: { $0.id == graph.rootNodeID }) else { return nil }
+        guard let graph = try? graph.validated(),
+              let root = graph.nodes.first(where: { $0.id == graph.rootNodeID }) else { return nil }
         let workers = graph.nodes.filter { $0.role == .worker }
-        let lanes = workers.prefix(8).map(Self.lane)
+        let lanes = workers.prefix(8).map { node in
+            var lane = Self.lane(node)
+            lane.inspection = RouteLaneInspection(submissionID: graph.submissionID, planID: graph.planID,
+                requestSHA256: graph.requestSHA256, nodeID: node.id)
+            return lane
+        }
         let rootRaw = Self.captures(Self.rootState, root.progressText)?.first
         let interpreting = root.progressText?.hasPrefix("OpenClaw core is interpreting") == true
         let status: RouteLaneStatus
@@ -666,6 +731,14 @@ struct RouteLanesPresentation: Equatable {
             model: node.model ?? selectedModel, effort: node.effort ?? selection?[2],
             configuration: observed ? .observed : (selectedModel == nil ? nil : .selected), status: status,
             startedAt: node.startedAt, finishedAt: node.finishedAt)
+        lane.progressText = node.progressText
+        if let native = node.nativeProgress, native.isValid {
+            let counts = os1Tr("관측 도구 요청 \(native.toolsRequested) · 반환 \(native.toolsReturned)",
+                "Observed tool requests \(native.toolsRequested) · returns \(native.toolsReturned)")
+            lane.progressText = String(([node.progressText, counts].compactMap { $0 }).joined(separator: " · ").prefix(500))
+        }
+        lane.publicOutputSummary = node.publicOutputSummary
+        lane.qualityDisclosure = node.qualityDisclosure
         if node.provider != nil || progress?.contains("execution verified") == true { lane.executionVerified = true }
         return lane
     }
@@ -725,6 +798,13 @@ extension NSAttributedString.Key {
     static let os1RouteLaneCard = NSAttributedString.Key("com.omaragi.os1.route-lane-card")
     /// On a status label: the rounded pill (and its glyph) painted behind it.
     static let os1RouteLanePill = NSAttributedString.Key("com.omaragi.os1.route-lane-pill")
+    static let os1RouteLaneInspection = NSAttributedString.Key("com.omaragi.os1.route-lane-inspection")
+}
+
+/// Host-created attributed-string payload, separate from any model Markdown link.
+final class RouteLaneInspectionBox: NSObject {
+    let binding: RouteLaneInspection
+    init(_ binding: RouteLaneInspection) { self.binding = binding }
 }
 
 /// What a lane card is painted with.
@@ -734,10 +814,13 @@ final class RouteLaneCardStyle: NSObject {
     let accent: NSColor
     let live: Bool
     let index: Int
-    init(accent: NSColor, live: Bool, index: Int) { self.accent = accent; self.live = live; self.index = index }
+    let inspection: RouteLaneInspection?
+    init(accent: NSColor, live: Bool, index: Int, inspection: RouteLaneInspection? = nil) {
+        self.accent = accent; self.live = live; self.index = index; self.inspection = inspection
+    }
     override func isEqual(_ object: Any?) -> Bool {
         guard let other = object as? RouteLaneCardStyle else { return false }
-        return accent == other.accent && live == other.live && index == other.index
+        return accent == other.accent && live == other.live && index == other.index && inspection == other.inspection
     }
     override var hash: Int { accent.hash ^ (live ? 1 : 0) ^ (index << 4) }
 }
@@ -980,14 +1063,15 @@ enum RouteLanesRenderer {
             cell.setWidth(gap / 2, type: .absoluteValueType, for: .margin)
             cell.setWidth(0, type: .absoluteValueType, for: .border)
             cell.verticalAlignment = .topAlignment
-            let content = laneContent(lane, answer: answers[lane.id], now: p.now, key: key, expanded: expanded,
+            let content = laneContent(lane, answer: answers[lane.id] ?? lane.publicOutputSummary, now: p.now, key: key, expanded: expanded,
                                       expandAll: expandAll, finalText: finalText)
             content.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: content.length)) { value, range, _ in
                 let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
                 style.textBlocks = [cell] + style.textBlocks
                 content.addAttribute(.paragraphStyle, value: style, range: range)
             }
-            content.addAttribute(.os1RouteLaneCard, value: RouteLaneCardStyle(accent: lane.status.color, live: live, index: index),
+            content.addAttribute(.os1RouteLaneCard, value: RouteLaneCardStyle(accent: lane.qualityNotice == nil ? lane.status.color : RouteLanePalette.yellow,
+                live: live, index: index, inspection: lane.inspection),
                                  range: NSRange(location: 0, length: content.length))
             result.append(content)
         }
@@ -1026,6 +1110,13 @@ enum RouteLanesRenderer {
         let title = NSMutableAttributedString(attributedString: symbol(RouteLaneSurface.symbol(lane.surface), color: tint, size: 12,
             label: RouteLaneSurface.title(lane.surface)))
         title.append(piece(" " + lane.title, NSFont.systemFont(ofSize: 12.5, weight: .semibold), tint))
+        if let inspection = lane.inspection {
+            title.addAttribute(.link, value: inspection.url, range: NSRange(location: 0, length: title.length))
+            title.addAttribute(.os1RouteLaneInspection, value: RouteLaneInspectionBox(inspection),
+                               range: NSRange(location: 0, length: title.length))
+            title.addAttribute(.toolTip, value: os1Tr("기존 작업 트리의 이 노드 열기", "Open this node in the existing task inspector"),
+                               range: NSRange(location: 0, length: title.length))
+        }
         paragraph(title, before: 10, after: 4)
         // Model on one line, reasoning on the next: every lane in a row keeps
         // its status pill at the same height.
@@ -1052,12 +1143,19 @@ enum RouteLanesRenderer {
         }
         paragraph(effortLine, after: 1, tip: configurationTip(lane))
         // Every pill row has the same shape: a clock, or a dash without one.
-        let status = NSMutableAttributedString(attributedString: pill(lane.status))
+        let status = NSMutableAttributedString(attributedString: pill(lane.qualityDisclosure == nil ? lane.status : .returned))
         status.append(piece("  " + (elapsed(start: lane.startedAt, end: lane.finishedAt, now: now) ?? "—"),
                             NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular), RouteLanePalette.muted))
         paragraph(status, before: 6, after: 6)
         if let reason = lane.reason, !reason.isEmpty, lane.status != .completed {
             paragraph(piece(reason, NSFont.systemFont(ofSize: 10.5), lane.status.color.withAlphaComponent(0.9)), after: 6)
+        }
+        if let quality = lane.qualityNotice {
+            paragraph(piece(quality, NSFont.systemFont(ofSize: 10.5, weight: .medium), RouteLanePalette.yellow), after: 6)
+        }
+        if let progress = lane.progressText, !progress.isEmpty {
+            paragraph(piece(os1Tr("공개 진행: ", "Public progress: ") + progress,
+                NSFont.systemFont(ofSize: 10.5), RouteLanePalette.secondary), after: 6)
         }
         for attempt in attemptLines(lane) {
             paragraph(piece("↳ " + attempt, NSFont.systemFont(ofSize: 10.5), RouteLanePalette.secondary), after: 6)
@@ -1080,6 +1178,10 @@ enum RouteLanesRenderer {
             paragraph(piece(os1Tr("↓ 아래 최종 답변으로 사용됨", "↓ Used as the final answer below"), NSFont.systemFont(ofSize: 10.5),
                             RouteLanePalette.muted), after: 10)
             return content
+        }
+        if now != nil, lane.publicOutputSummary != nil {
+            paragraph(piece(os1Tr("공개 출력 요약 · 최종 답변/품질 판정 아님", "Public output summary · not a final answer or quality verdict"),
+                NSFont.systemFont(ofSize: 10), RouteLanePalette.muted), after: 4)
         }
         let adopted = lane.status == .completed
         // Core's summary is cut at 600 characters: it can always open to

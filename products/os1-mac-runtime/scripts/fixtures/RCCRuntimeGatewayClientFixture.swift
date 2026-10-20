@@ -98,6 +98,19 @@ struct RCCRuntimeGatewayClientFixture {
                 countfile=root/'observer-reads.json'; counts=read(countfile) if countfile.exists() else {}
                 if method=='os1.rcc.status':
                     counts[name]=counts.get(name,0)+1;write(countfile,counts)
+                    if name in ['observer_multiple_loss','observer_multi_epoch_loss','observer_retry_rejected','observer_cancel_multiple','observer_missing_source']:
+                        lose = counts[name] <= 2 if name=='observer_multiple_loss' else counts[name] in ([1,3] if name=='observer_multi_epoch_loss' else [1])
+                        if lose:
+                            (root/('status-started-'+name)).write_text('metadata only')
+                            sys.exit(2)
+                        if name=='observer_retry_rejected':
+                            print(json.dumps({'ok':False,'error':{'type':'gateway_request_error','code':'INVALID_REQUEST'}}));sys.exit(1)
+                        if name=='observer_multi_epoch_loss' and counts[name]==2:
+                            obj['revision']=4;write(task,obj)
+                        else:
+                            obj['state']='returned_unverified';obj['revision']+=1
+                            obj['result']={'output':'2','execution_verified':True,'task_verified':False,'parity_state':'unverified','native_receipt':None};write(task,obj)
+                        print(json.dumps(obj));sys.exit(0)
                     if name=='observer_rejected':
                         print(json.dumps({'ok':False,'error':{'type':'gateway_request_error','code':'INVALID_REQUEST'}}));sys.exit(1)
                     if counts[name]==1:
@@ -306,6 +319,31 @@ struct RCCRuntimeGatewayClientFixture {
         try require(try request("observer_timeout") == immutable, "recovery rebuilt original source/policy request")
         var reads = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
         try require(reads["observer_timeout"] == 2, "status recovery was not one bounded same-task read")
+        // Reconnect is a task-lifetime read policy, not one retry for the
+        // entire run. Two consecutive losses and a later independent loss
+        // both preserve the original task, request and monotonic projection.
+        for (id, count) in [("observer_multiple_loss", 3), ("observer_multi_epoch_loss", 4)] {
+            let original = try request(id)
+            let answer = try RCCRuntimeGatewayClient.runForOfflineFixture(request: original,
+                configuration: configuration, root: privateRoot)
+            try require(try state(answer) == "returned_unverified", "repeated transport loss detached live task: " + id)
+            let observed = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
+            try require(observed[id] == count && (try request(id)) == original, "reconnect changed request or read sequence")
+        }
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("observer_retry_rejected"), configuration: configuration, root: privateRoot)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "reconnect retried authenticated refusal"])
+        } catch RCCRuntimeGatewayClient.Failure.rpcRejected { }
+        var unacknowledged = try JSONSerialization.jsonObject(with: request("observer_missing_source")) as! [String: Any]
+        unacknowledged.removeValue(forKey: "source_fingerprint"); unacknowledged.removeValue(forKey: "policy_sha256")
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: JSONSerialization.data(withJSONObject: unacknowledged, options: [.sortedKeys]),
+                configuration: configuration, root: privateRoot)
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "missing source admission gained reconnect authority"])
+        } catch RCCRuntimeGatewayClient.Failure.rpcFailed { }
+        let stopDuringReconnect = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("observer_cancel_multiple"), configuration: configuration, root: privateRoot,
+            cancelled: { fm.fileExists(atPath: privateRoot.appendingPathComponent("status-started-observer_cancel_multiple").path) })
+        try require(try state(stopDuringReconnect) == "cancelled", "Stop during reconnect lost same-task cancellation")
         for id in ["observer_wrong_revision", "observer_wrong_hash", "observer_wrong_source"] {
             do {
                 _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request(id), configuration: configuration, root: privateRoot)
@@ -325,13 +363,15 @@ struct RCCRuntimeGatewayClientFixture {
                 cancelled: { fm.fileExists(atPath: privateRoot.appendingPathComponent("status-started-" + id).path) })
             try require(try state(answer) == expected, "Stop/terminal race lost original Core state: " + id)
         }
+        let disconnectedStarted = Date()
         do {
             _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("observer_permanent_timeout"), configuration: configuration, root: privateRoot)
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "unbounded unavailable observer fabricated a result"])
-        } catch RCCRuntimeGatewayClient.Failure.rpcTimeout { }
+        } catch RCCRuntimeGatewayClient.Failure.observationEnded { }
+        try require(Date().timeIntervalSince(disconnectedStarted) < 6.5, "disconnected observer escaped original task budget")
         reads = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
-        try require(reads["observer_permanent_timeout"] == 2 && reads["observer_rejected"] == 1,
-                    "observer retry budget or authenticated-negative boundary changed")
+        try require(reads["observer_permanent_timeout"] == 2 && reads["observer_rejected"] == 1 && reads["observer_retry_rejected"] == 2 && reads["observer_missing_source"] == 1,
+                    "original observation budget or authenticated/source boundary changed")
         let afterRecoverySubmits = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
         try require(afterRecoverySubmits.filter { $0.key.hasPrefix("observer_") }.values.allSatisfy { $0 == 1 },
                     "observer recovery submitted an existing task twice")

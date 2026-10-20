@@ -41,7 +41,43 @@ public enum HumanOutputContract {
         return identifiers * 5 >= cells.count * 3 && tableBytes * 2 >= text.utf8.count
     }
 
+    /// An explicit source-copy-only reply is data in the source's language,
+    /// not a request for new prose. This identifies presentation intent only;
+    /// the execution/source verifier must still establish what was read.
+    static func sourceCopyOnly(_ request: String) -> Bool {
+        guard request.utf8.count <= 131_072 else { return false }
+        var value = OwnerIntentText.normalized(OwnerIntentText.authorityText(request))
+        // This presentation classifier must not adopt a quoted copy instruction
+        // as the current request. Do not change the shared authority classifier;
+        // quoted filenames can disappear here without changing the real request.
+        for pattern in [#"\"[^\"\\\n]{0,4096}\""#, #"“[^”\\\n]{0,4096}”"#,
+                        #"`[^`\\\n]{0,4096}`"#, #"‘[^’\\\n]{0,4096}’"#,
+                        #"(?<![\p{L}\p{N}])'[^'\\\n]{0,4096}'(?![\p{L}\p{N}])"#] {
+            value = value.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        // Unbalanced/escaped quotation is not a sound basis for an exemption.
+        if value.range(of: #"[\"“”`]|(?<![\p{L}\p{N}])['‘’]|['‘’](?![\p{L}\p{N}])"#,
+                       options: .regularExpression) != nil { return false }
+        let override = #"그대로\s*(?:말고|아니|(?:답|출력|반환|복사|재현|사용|쓰)[^.!?\n]{0,12}하지\s*마)|(?:한국어|한글|영어|영문)로\s*(?:답|출력|반환)(?:하세요|하십시오|하라|해(?:줘|주세요|라)?)|\b(?:do\s+not|don't|never)\s+(?:copy|return|print|output|reply)|\b(?:not|without)\s+(?:copying|verbatim)\b"#
+        if value.range(of: override, options: .regularExpression) != nil { return false }
+        // Additional explanatory output is a different contract. Negated
+        // "do not explain" constraints do not match these positive endings.
+        let explanation = #"(?:설명|요약|해설|번역|의역|분석)(?:을|를|도)?\s*(?:해(?:줘|주세요|라|봐)?|하(?:세요|십시오|라)|해\s*주(?:세요|십시오))|(?:설명|요약|해설|번역|의역|분석)(?:을|를|도)?\s*(?:추가해|붙여)|\b(?:and|then|also)\s+(?:explain|summarize|translate|analyse|analyze)\b"#
+        if value.range(of: explanation, options: .regularExpression) != nil { return false }
+        let korean = #"(?:파일|로그|출력|응답|원문|텍스트|내용|값)[^.!?\n]{0,96}?(?:한\s*줄|1\s*줄|첫\s*줄|마지막\s*줄|해당\s*줄|값|내용|문구|텍스트|출력)(?:을|를)?\s*만\s*그대로\s*(?:답(?:하세요|하십시오|하라|해(?:줘|주세요|라)?)|출력(?:하세요|하십시오|하라|해(?:줘|주세요|라)?)|반환(?:하세요|하십시오|하라|해(?:줘|주세요|라)?)|적어(?:줘|주세요|라)?|보여(?:줘|주세요|라)?)(?=[\s.!?;]|$)"#
+        let english = #"(?:^|(?<=[.!?;\n]))\s*(?:please\s+)?(?:return|print|output|copy|reply\s+with)\s+(?:only|just)\s+(?:the\s+)?(?:exact\s+)?(?:line|value|text|contents?)[^.!?\n]{0,96}\b(?:verbatim|unchanged)\b"#
+        return value.range(of: korean, options: .regularExpression) != nil ||
+            value.range(of: english, options: .regularExpression) != nil
+    }
+
+    static let sourceCopyInstructions = """
+    User-facing OS-1 answer contract (source-copy-only reply):
+    - Return only the source material the user requested, unchanged and in its original language. Do not translate it or add a natural-language lead, heading, explanation, Markdown wrapper or persona header.
+    - This is a presentation constraint, not proof of source access, execution success or correctness. Preserve the original task, source and permission boundaries; do not invent unavailable source text.
+    """
+
     public static func preservesOriginalValues(_ request: String) -> Bool {
+        if sourceCopyOnly(request) { return true }
         let value = request.precomposedStringWithCanonicalMapping.lowercased()
         let korean = #"(?:원문|원래)(?:\s*(?:값|내용|문구|텍스트))?\s*그대로"#
         if value.range(of: korean + #"\s*(?:말고|아니|쓰지|하지)"#, options: .regularExpression) != nil ||
@@ -93,6 +129,7 @@ public enum HumanOutputContract {
     /// tier answered "1 + 1 = **2**".
     public static func instructions(for request: String, provider: String? = nil, exactAnswer: Bool = false) -> String {
         if exactAnswer { return exactAnswerInstructions }
+        if sourceCopyOnly(request) { return sourceCopyInstructions }
         if provider == "claude" { return claudeInstructions(for: request) }
         return """
         User-facing OS-1 answer contract:
@@ -200,7 +237,7 @@ public enum HumanOutputContract {
         // Reproducing a source/log is not an assertion that its syntax or
         // stage design is valid. Never "repair" quoted original material.
         let intent = request.precomposedStringWithCanonicalMapping.lowercased()
-        if ["원문 그대로", "수정 없이", "verbatim", "without modification"].contains(where: intent.contains) { return [] }
+        if sourceCopyOnly(request) || ["원문 그대로", "수정 없이", "verbatim", "without modification"].contains(where: intent.contains) { return [] }
         var issues: [String] = []
         let text = answer.precomposedStringWithCanonicalMapping
         let blocks = fencedJSON(text)

@@ -204,6 +204,23 @@ final class AgentTaskInspectorWindows {
         open(state: state, adjacentTo: sourceWindow, onClose: onClose)
     }
 
+    /// A transcript card reuses the existing graph and node detail windows.
+    /// The store has already matched conversation/submission/plan/request; this
+    /// final membership gate prevents navigation from inventing a worker.
+    @discardableResult
+    func revealNode(state: AgentTaskInspectorState, nodeID: UUID, onClose: @escaping () -> Void) -> Bool {
+        guard let graph = state.snapshot.flatMap({ try? $0.validated(conversationID: state.conversationID) }),
+              graph.nodes.contains(where: { $0.id == nodeID && $0.role == .worker }) else { return false }
+        if let entry = entries[state.conversationID] {
+            update(state: state)
+            entry.window.orderFront(nil)
+        } else {
+            open(state: state, adjacentTo: NSApp.keyWindow, onClose: onClose)
+        }
+        openNode(conversationID: state.conversationID, nodeID: nodeID, adjacentTo: entries[state.conversationID]?.window)
+        return entries[state.conversationID]?.nodes[nodeID] != nil
+    }
+
     /// The store calls this on actual graph/progress changes, not on clicks.
     /// A replacement plan or an unknown current graph invalidates stale node
     /// windows; it never silently maps their ids into a new run.
@@ -482,6 +499,13 @@ final class AgentTaskInspectorWindows {
         controller.openNode(conversationID: conversation, nodeID: worker, adjacentTo: entry.window)
         try check(entry.nodes.count == 1 && ObjectIdentifier(entry.nodes[worker]!.window) == detailIdentity,
             "same node navigation reuses existing detail")
+        try check(controller.revealNode(state: state, nodeID: worker, onClose: {}) &&
+            entry.nodes.count == 1 && ObjectIdentifier(entry.nodes[worker]!.window) == detailIdentity,
+            "transcript card navigation did not reuse the exact node detail")
+        try check(!controller.revealNode(state: state, nodeID: root, onClose: {}), "coordinator accepted as a card worker")
+        try check(!controller.revealNode(state: state, nodeID: UUID(), onClose: {}), "foreign worker navigation accepted")
+        try check(controller.hasWindow(conversationID: conversation) && closeCalls == 0,
+            "card navigation closed the existing right task tree")
         detail.window.contentView?.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(40))
         let nativeKey = NativeAgentScopeWindowKey(nodeID: worker, scope: childScope)

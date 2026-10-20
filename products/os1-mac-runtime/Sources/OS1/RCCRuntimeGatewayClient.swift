@@ -397,7 +397,6 @@ enum RCCRuntimeGatewayClient {
         let observationDeadline = Date().addingTimeInterval(min(limits.observe, binding.duration + 120))
         var cancellationSent = false
         var cancellationDeadline: Date?
-        var observerRecoveries = 1 // whole-run budget, not one retry per poll
         func deadline() -> Date { min(observationDeadline, cancellationDeadline ?? observationDeadline) }
         func cancelOriginal(minimumRevision: Int) throws -> Snapshot? {
             guard !cancellationSent else { return nil }
@@ -419,21 +418,29 @@ enum RCCRuntimeGatewayClient {
                 hardDeadline: deadline(), cancelled: { interruptible && cancellation() && !cancellationSent })
             return try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: minimumRevision)
         }
-        func reconcileCancellation(minimumRevision: Int) throws -> Snapshot {
-            if let observed = try cancelOriginal(minimumRevision: minimumRevision) { return observed }
-            return try statusOnce(minimumRevision: minimumRevision, interruptible: false)
-        }
         func observe(minimumRevision: Int) throws -> Snapshot {
-            do { return try statusOnce(minimumRevision: minimumRevision, interruptible: true) }
-            catch is CancellationError { return try reconcileCancellation(minimumRevision: minimumRevision) }
-            catch {
-                guard recoverableObservation(error), sourceAcknowledged, observerRecoveries > 0,
-                      sha256(request) == binding.originalSHA256, Date() < deadline() else { throw error }
-                observerRecoveries -= 1
-                // Same authenticated owner, exact original task/hash and a
-                // monotonic revision. No submit, new owner, route or model.
-                do { return try statusOnce(minimumRevision: minimumRevision, interruptible: true) }
-                catch is CancellationError { return try reconcileCancellation(minimumRevision: minimumRevision) }
+            var consecutiveLosses = 0
+            while true {
+                if cancellation(), !cancellationSent,
+                   let observed = try cancelOriginal(minimumRevision: minimumRevision) { return observed }
+                if let end = cancellationDeadline, Date() >= end { throw Failure.cancellationPending }
+                guard Date() < observationDeadline else { throw Failure.observationEnded }
+                do { return try statusOnce(minimumRevision: minimumRevision, interruptible: !cancellationSent) }
+                catch is CancellationError { continue } // deliver Stop once to this exact Core task
+                catch {
+                    guard recoverableObservation(error), sourceAcknowledged,
+                          sha256(request) == binding.originalSHA256 else { throw error }
+                    // A failed read is not a failed task. Keep this observer on
+                    // the admitted immutable request, same authenticated owner,
+                    // exact task/hash and monotonic revision until its original
+                    // observation/Stop budget expires. Never submit or plan here.
+                    consecutiveLosses = min(consecutiveLosses + 1, 6)
+                    let pause = min(2, limits.poll * pow(2, Double(consecutiveLosses)))
+                    let retryAt = min(deadline(), Date().addingTimeInterval(pause))
+                    while Date() < retryAt, !(cancellation() && !cancellationSent) {
+                        Thread.sleep(forTimeInterval: min(0.05, max(0, retryAt.timeIntervalSinceNow)))
+                    }
+                }
             }
         }
         while let current = last {

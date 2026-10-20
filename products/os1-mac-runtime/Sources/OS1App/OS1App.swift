@@ -6742,6 +6742,44 @@ private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: Pen
           core.requestSHA256 == appSHA256Hex(submission.executionRequest),
           let result = core.result, result.executionVerified,
           [.completed, .returnedUnverified, .awaitingInstall].contains(core.state) else { return unchanged }
+    // R6 disclosure is already part of this exact validated Core result.
+    // Project a known failed check separately from unavailable verification;
+    // neither changes output bytes, execution proof, scheduling or adoption.
+    let disclosures = core.children.compactMap(\.qualityDisclosure)
+    let failedChecks = Array(Set(disclosures.flatMap(\.failedCheckIDs))).sorted()
+    let checkerUnavailable = disclosures.contains { $0.checker == .unavailable }
+    var disclosureLines: [String] = []
+    if !failedChecks.isEmpty {
+        let visible = failedChecks.prefix(8).map { check in
+            String(check.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        }
+        let remainder = failedChecks.count > 8 ? " · +\(failedChecks.count - 8)" : ""
+        disclosureLines.append(os1Tr("Core가 보고한 검사 실패: ", "Core-reported failed checks: ") +
+            visible.joined(separator: ", ") + remainder)
+    }
+    if checkerUnavailable {
+        disclosureLines.append(os1Tr("검사기 사용 불가 · 그 자체가 검사 실패 판정은 아님",
+            "Checker unavailable · not itself a failed-check verdict"))
+    }
+    if !disclosures.isEmpty, disclosureLines.isEmpty {
+        disclosureLines.append(os1Tr("Core 검사 기록은 있으나 작업 완수/기준 동등성 미검증",
+            "Core check record present · task completion/reference parity unverified"))
+    }
+    let disclosureText = disclosureLines.isEmpty ? "" : "\n" + disclosureLines.joined(separator: "\n")
+    let quality: TaskQualityEvidence.Evaluation?
+    if !disclosures.isEmpty {
+        // This is a display projection of disclosed checks, not a fabricated
+        // contract, full-coverage assessment, native receipt or parity proof.
+        quality = .init(state: failedChecks.isEmpty ? .unverified : .mismatch,
+            reason: failedChecks.isEmpty ? "core_disclosed_verification_unavailable" : "core_disclosed_failed_checks",
+            contractSHA256: "", artifactSHA256: appSHA256Hex(result.output),
+            requiredCheckIDs: [], failedCheckIDs: Array(failedChecks.prefix(64)))
+        unchanged = ChatMessage(role: .receipt, text: unchanged.text + disclosureText, taskQuality: quality)
+    } else if !result.taskVerified, result.taskQuality == .executionOnly || result.taskQuality == .unverified {
+        quality = .init(state: result.taskQuality == .executionOnly ? .executionOnly : .unverified,
+            reason: "core_result_preserved_without_task_or_reference_verification", contractSHA256: "",
+            artifactSHA256: appSHA256Hex(result.output), requiredCheckIDs: [], failedCheckIDs: [])
+    } else { quality = nil } // A Core flag alone is not TaskQualityEvidence proof.
     let nativeChildren = core.children.filter {
         $0.selectedConfig?.transport == .codexAppServer || $0.selectedConfig?.transport == .claudeCLI
     }
@@ -6766,14 +6804,8 @@ private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: Pen
                   step.permissionProfile == configuration.permissionProfile.rawValue
               }
           }) else { return unchanged }
-    let quality: TaskQualityEvidence.Evaluation?
-    if !result.taskVerified, result.taskQuality == .executionOnly || result.taskQuality == .unverified {
-        quality = .init(state: result.taskQuality == .executionOnly ? .executionOnly : .unverified,
-            reason: "core_result_preserved_without_task_or_reference_verification", contractSHA256: "",
-            artifactSHA256: appSHA256Hex(result.output), requiredCheckIDs: [], failedCheckIDs: [])
-    } else { quality = nil } // No TaskQualityEvidence proof is manufactured from a Core flag.
     let providers = Set(native.map(\.provider))
-    let detail = note + "\n" + native.map(nativeRecordReceipt).joined(separator: "\n")
+    let detail = note + "\n" + native.map(nativeRecordReceipt).joined(separator: "\n") + disclosureText
     return ChatMessage(role: .receipt, text: detail,
         provider: providers.count == 1 ? providers.first : nil,
         executionSurface: native.count == 1 ? native.first?.executedSurface?.rawValue : nil,
@@ -7913,6 +7945,64 @@ private func rccCoreNativeReceiptSelfTest() throws {
         if mixed { try check(receipt.provider == nil && receipt.executionSurface == nil,
                              "mixed native aggregation does not invent one final provider/surface") }
     }
+    // Known negative evidence must survive the R6 returned-unverified
+    // projection instead of becoming the same label as an unknown checker.
+    var mismatch = try fixture(1)
+    mismatch.children[0].qualityDisclosure = .init(coverage: .partial,
+        failedCheckIDs: ["partial.schedule.capacity"], witnessSHA256: String(repeating: "c", count: 64))
+    mismatch.error = "child_quality_disclosed"
+    let mismatchBytes = try C.encode(mismatch)
+    let mismatchReceipt = rccCoreReceipt(mismatch, submission: submission, localReceipt: nil, note: "Result received")
+    try check(mismatchReceipt.nativeRecordVerified == true && mismatchReceipt.taskQuality?.state == .mismatch &&
+              mismatchReceipt.taskQuality?.failedCheckIDs == ["partial.schedule.capacity"],
+              "known failed check stays distinct from verified native execution")
+    try check(mismatchReceipt.text.contains("partial.schedule.capacity") &&
+              mismatchReceipt.taskQuality?.taskCompletionVerified == false &&
+              mismatchReceipt.taskQuality?.referenceParityVerified == false,
+              "known negative is visible without claiming completion or parity")
+    let mismatchDisplay = timelineAttributedDocument(messages: [mismatchReceipt], queuedSubmissions: [], isRunning: false,
+        workspace: "/tmp/fixture", expandAll: true).string
+    try check(mismatchDisplay.contains("partial.schedule.capacity") &&
+              (mismatchDisplay.contains("실행 기록 확인됨") || mismatchDisplay.contains("Execution record verified")) &&
+              (mismatchDisplay.contains("과제 품질 검사 실패") || mismatchDisplay.contains("Task quality check failed")) &&
+              !mismatchDisplay.contains("Execution record unverified") && !mismatchDisplay.contains("실행 기록 미확인"),
+              "rendering does not relabel a failed quality check as an execution failure")
+    let savedMismatch = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(mismatchReceipt))
+    try check(savedMismatch.text == mismatchReceipt.text && savedMismatch.taskQuality == mismatchReceipt.taskQuality,
+              "disclosure survives receipt persistence")
+    try check(try C.encode(mismatch) == mismatchBytes && mismatch.result?.output == "NO_READ_TOOL",
+              "rendering leaves original Core state and answer bytes unchanged")
+
+    var unavailable = try fixture(1)
+    unavailable.children[0].qualityDisclosure = .init(coverage: .partial, failedCheckIDs: [], checker: .unavailable)
+    unavailable.error = "child_quality_disclosed"
+    let unavailableBytes = try C.encode(unavailable)
+    let unavailableReceipt = rccCoreReceipt(unavailable, submission: submission, localReceipt: nil, note: "Result received")
+    try check(unavailableReceipt.nativeRecordVerified == true && unavailableReceipt.taskQuality?.state == .unverified &&
+              unavailableReceipt.taskQuality?.failedCheckIDs.isEmpty == true &&
+              (unavailableReceipt.text.contains("검사기 사용 불가") || unavailableReceipt.text.contains("Checker unavailable")),
+              "checker unavailable is visible uncertainty, not a failed check or failed execution")
+    try check(try C.encode(unavailable) == unavailableBytes, "checker disclosure does not mutate Core")
+    let ordinary = rccCoreReceipt(try fixture(1), submission: submission, localReceipt: nil, note: "Result received")
+    try check(ordinary.taskQuality?.state == .executionOnly && ordinary.taskQuality?.failedCheckIDs.isEmpty == true &&
+              !ordinary.text.contains("partial.schedule.capacity") &&
+              !ordinary.text.contains("Checker unavailable") && !ordinary.text.contains("검사기 사용 불가"),
+              "ordinary unverified result does not invent a known check failure or checker outage")
+
+    var noSummary = try fixture(1, missing: true)
+    noSummary.children[0].qualityDisclosure = mismatch.children[0].qualityDisclosure
+    let noSummaryReceipt = rccCoreReceipt(noSummary, submission: submission, localReceipt: nil, note: "Result received")
+    try check(noSummaryReceipt.nativeRecordVerified != true && noSummaryReceipt.taskQuality?.state == .mismatch &&
+              noSummaryReceipt.text.contains("partial.schedule.capacity"),
+              "valid Core disclosure survives missing native summary without inventing execution proof")
+    var bounded = try fixture(2)
+    let many = (0..<12).map { String(format: "bounded.check-%02d", $0) }
+    bounded.children[0].qualityDisclosure = .init(coverage: .partial, failedCheckIDs: many)
+    bounded.children[1].qualityDisclosure = .init(coverage: .partial, failedCheckIDs: many)
+    let boundedReceipt = rccCoreReceipt(bounded, submission: submission, localReceipt: nil, note: "Result received")
+    try check(boundedReceipt.taskQuality?.failedCheckIDs.count == 12 && boundedReceipt.text.contains("+4") &&
+              boundedReceipt.text.contains("bounded.check-07") && !boundedReceipt.text.contains("bounded.check-08"),
+              "rendering deduplicates and bounds check IDs while retaining typed negative evidence")
     for core in [try fixture(1, verified: false), try fixture(1, malformed: true),
                  try fixture(1, missing: true), try fixture(2, duplicate: true), try fixture(0)] {
         let receipt = rccCoreReceipt(core, submission: submission, localReceipt: nil, note: "Unverified")
@@ -9309,6 +9399,19 @@ private final class SessionStore: ObservableObject {
             openAgentTaskInspectorSessionIDs.remove(id)
             if requestedInspectorSessionID == id { requestedInspectorSessionID = nil }
         }
+    }
+
+    /// Explicit navigation only. An old message cannot redirect a newer run's
+    /// task tree, and a model-produced Markdown URL carries no host binding.
+    @discardableResult
+    func inspectRouteLane(_ id: UUID, binding: RouteLaneInspection) -> Bool {
+        guard let graph = agentTaskSnapshot(for: id), binding.matches(graph, conversationID: id) else { return false }
+        requestedInspectorSessionID = id; openAgentTaskInspectorSessionIDs.insert(id)
+        return AgentTaskInspectorWindows.shared.revealNode(state: agentTaskInspectorState(id),
+            nodeID: binding.nodeID, onClose: { [weak self] in
+                self?.openAgentTaskInspectorSessionIDs.remove(id)
+                if self?.requestedInspectorSessionID == id { self?.requestedInspectorSessionID = nil }
+            })
     }
 
     private func agentTaskInspectorState(_ id: UUID) -> AgentTaskInspectorState {
@@ -14996,6 +15099,11 @@ private struct OS1DesktopApp: App {
             do { try codexShellSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if CommandLine.arguments.contains("--self-test-inline-route-cards") {
+            LiveRunEnvironment.detachCurrentProcess()
+            do { try routeLanesSelfTest(); try inlineRouteCardSelfTest(); exit(EXIT_SUCCESS) }
+            catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+        }
         if let flag = CommandLine.arguments.firstIndex(of: "--render-routing-lanes-preview") {
             // Offscreen fixtures only: no provider call, no live store.
             LiveRunEnvironment.detachCurrentProcess()
@@ -15499,6 +15607,7 @@ private struct OS1DesktopApp: App {
                 try transcriptLatencySelfTest()
                 try liveRunRowSelfTest()
                 try routeLanesSelfTest()
+                try inlineRouteCardSelfTest()
                 try publicFeedPresentationSelfTest()
                 try publicFeedLongRunSelfTest()
                 try railSelectionSelfTest()
@@ -19000,7 +19109,8 @@ private struct ConversationView: View {
                         progressAnchors: store.activeRuns[session.id]?.steeringAnchors ?? [:],
                         liveRun: store.liveRunPresentation(session.id),
                         workLogStore: store.publicLogStore,
-                        liveLanes: store.liveRouteLanes(session.id)
+                        liveLanes: store.liveRouteLanes(session.id),
+                        onInspectRoute: { store.inspectRouteLane(session.id, binding: $0) }
                     )
                 }
                 ComposerView(store: store, session: session)
@@ -19494,9 +19604,7 @@ private func timelineAttributedDocument(
     func appendRouteLanes(_ record: RouteLanesRecord, message: ChatMessage) {
         let key = message.id.uuidString + "-lanes"
         let presentation = RouteLanesPresentation(record: record)
-        let content = record.lanes.count == 1 && message.role == .receipt
-            ? RouteLanesRenderer.strip(record.lanes[0])
-            : RouteLanesRenderer.block(presentation, answers: record.answers(in: message.role == .assistant ? message.text : ""),
+        let content = RouteLanesRenderer.block(presentation, answers: record.answers(in: message.role == .assistant ? message.text : ""),
                 capacity: laneCapacity, key: key, expanded: expanded, expandAll: expandAll,
                 finalText: message.role == .assistant && !record.answersInText ? message.text : nil)
         appendBlock(role: "routeLanes", components: [], richContent: content,
@@ -19557,7 +19665,7 @@ private func timelineAttributedDocument(
             // A routed turn: its routes side by side, each with its answer.
             // When they hold the whole result, the joined text is not drawn
             // again under them (it is still what copy and handoff carry).
-            if let lanes = message.routeLanes, lanes.lanes.count > 1 {
+            if let lanes = message.routeLanes, !lanes.lanes.isEmpty {
                 appendRouteLanes(lanes, message: message)
                 if lanes.answersInText { break }
             }
@@ -19569,9 +19677,6 @@ private func timelineAttributedDocument(
             let caption: [(String, NSFont, NSColor)] = message.routeLanes?.lanes.count == 1 ? []
                 : [("\(provider)", NSFont.systemFont(ofSize: 10, weight: .medium), providerColor)]
             let answer = NSMutableAttributedString()
-            if let lanes = message.routeLanes, lanes.lanes.count == 1, let only = lanes.lanes.first {
-                answer.append(RouteLanesRenderer.strip(only))
-            }
             answer.append(NSAttributedString(string: "\n\n", attributes: [.font: NSFont.systemFont(ofSize: 6),
                 .foregroundColor: TimelinePalette.muted]))
             answer.append(assistantDisplayText(messages: messages, index: index, expanded: expanded, expandAll: expandAll, sourceStore: sourceStore))
@@ -19641,11 +19746,10 @@ private func timelineAttributedDocument(
         if let liveLanes {
             let lead = liveRun.map { LiveRunMarkSpec($0).space }
             let tail = liveRun.map { liveRunFoldedTail($0, expanded: liveRunExpanded) }
-            let content = liveLanes.lanes.count > 1
+            let content = !liveLanes.lanes.isEmpty
                 ? RouteLanesRenderer.block(liveLanes, capacity: liveLaneCapacity ?? laneCapacity, key: "live-lanes",
                     expanded: expanded, expandAll: expandAll, lead: lead, trailing: tail)
-                : liveLanes.lanes.first.map { RouteLanesRenderer.strip($0, now: liveLanes.now, lead: lead, trailing: tail) }
-                    ?? RouteLanesRenderer.header(liveLanes, lead: lead, trailing: tail)
+                : RouteLanesRenderer.header(liveLanes, lead: lead, trailing: tail)
             appendBlock(role: "routeLanes", components: [], richContent: content, trailingSpacing: 14)
             if let liveRun, liveRunExpanded {
                 let details = liveRunRow(liveRun, expanded: true, headless: true, lanes: liveLanes)
@@ -19828,6 +19932,28 @@ private final class ContinuousTranscriptTextView: NSTextView {
             link.setAccessibilityExpanded(disclosure.open)
         }
         return children
+    }
+
+    var onInspectRoute: ((RouteLaneInspection) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        // Existing links (including the separate output fold) own their clicks.
+        // Modified/double clicks retain NSTextView text-selection behavior.
+        if event.clickCount == 1, event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
+           let storage = textStorage, let layout = layoutManager, let container = textContainer {
+            let point = convert(event.locationInWindow, from: nil)
+            let local = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+            let character = layout.characterIndex(for: local, in: container, fractionOfDistanceBetweenInsertionPoints: nil)
+            let existingLink = character < storage.length ? storage.attribute(.link, at: character, effectiveRange: nil) : nil
+            if existingLink == nil,
+               let card = routeLaneFrames().first(where: { $0.frame.contains(point) }),
+               let style = storage.attribute(.os1RouteLaneCard, at: card.range.location, effectiveRange: nil) as? RouteLaneCardStyle,
+               let binding = style.inspection, let onInspectRoute {
+                onInspectRoute(binding)
+                return
+            }
+        }
+        super.mouseDown(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -20237,6 +20363,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
     /// Where finished runs' work feeds are kept (a fixture store's own).
     var workLogStore = NativePublicRunLogStore()
     var liveLanes: RouteLanesPresentation? = nil
+    var onInspectRoute: ((RouteLaneInspection) -> Void)? = nil
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var renderedSessionID: UUID?
@@ -20256,7 +20383,14 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
         let renderCache = TranscriptRenderCache()
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-            guard let url = link as? URL, url.scheme == "os1-detail", let content else { return false }
+            guard let url = link as? URL, let content else { return false }
+            if url.scheme == "os1-route" {
+                guard let storage = textView.textStorage,
+                      let binding = RouteLaneInspection.trustedLink(in: storage, url: url, at: charIndex) else { return true }
+                content.onInspectRoute?(binding)
+                return true
+            }
+            guard url.scheme == "os1-detail" else { return false }
             let key = url.lastPathComponent
             if key == liveRunDetailKey {
                 // Only the live row changes; the history keeps its rendering.
@@ -20384,6 +20518,7 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
 
         let textView = ContinuousTranscriptTextView(frame: scrollView.contentView.bounds)
         textView.delegate = delegate
+        textView.onInspectRoute = { [weak delegate] binding in delegate?.content?.onInspectRoute?(binding) }
         textView.linkTextAttributes = TimelinePalette.linkAttributes
         textView.drawsBackground = false
         textView.isEditable = false
@@ -20459,6 +20594,7 @@ private struct MessageTimeline: View {
     var workLogStore = NativePublicRunLogStore()
     /// The live task's routes, read from the graph the Agent task tree reads.
     var liveLanes: RouteLanesPresentation? = nil
+    var onInspectRoute: ((RouteLaneInspection) -> Void)? = nil
 
     var body: some View {
         // Outside the timeline: a clock tick must not re-read saved results.
@@ -20475,7 +20611,8 @@ private struct MessageTimeline: View {
                 progressAnchors: progressAnchors,
                 liveRun: isRunning ? liveRun?.at(context.date) : nil,
                 workLogStore: workLogStore,
-                liveLanes: isRunning ? liveLanes?.at(context.date) : nil
+                liveLanes: isRunning ? liveLanes?.at(context.date) : nil,
+                onInspectRoute: onInspectRoute
             )
         }
     }
@@ -23153,6 +23290,7 @@ private func renderRouteLanesFixture(_ store: SessionStore, _ kind: RouteLanesFi
     case .routed6Complete: expected = RouteLanesFixture.sixRoutes.map { ($0.model, .completed) }
     case .longAnswer, .longAnswerOpen: expected = [("gpt-6-luna", .completed), ("claude-sonnet-4-5", .completed)]
     case .bestEffortSingle: expected = [("qwen3.5:4b", .completed), ("", .skipped), ("", .skipped)]
+    case .singleRoute: expected = [("gpt-6-luna", .completed)]
     case .failedHeld: expected = [("gpt-6-luna", .failed), ("claude-sonnet-4-5", .held), ("qwen3.5:4b", .completed)]
     default: expected = []
     }
@@ -23242,10 +23380,10 @@ private func renderRouteLanesFixture(_ store: SessionStore, _ kind: RouteLanesFi
     case .routed3Live:
         try check(text.contains(RouteLaneStatus.processing.title) && text.contains(os1Tr("경로 3개로 나눔", "split into 3 routes")),
             "the live header does not say the task split into three routes")
-        try check(!lanes[2].text.components(separatedBy: "\n").contains(where: { $0.contains("391") }),
-            "a live lane shows an answer the run has not delivered")
-        try check(lanes[2].text.contains(os1Tr("답변은 최종 결과와 함께 표시", "Answer arrives with the final result")),
-            "a live completed lane does not say where its answer arrives")
+        try check(lanes[2].text.components(separatedBy: "\n").contains(where: { $0.contains("391") }),
+            "the bound worker's existing public output summary is missing")
+        try check(lanes[2].text.contains(os1Tr("공개 출력 요약 · 최종 답변/품질 판정 아님", "Public output summary · not a final answer or quality verdict")),
+            "a live output summary was mislabeled as an adopted final answer")
         try check(!lanes[1].text.contains("—") && lanes[1].text.contains(os1Tr("초", "s")), "a verifying lane lost its clock")
     case .escalated:
         try check(lanes[0].text.contains("gpt-6-mini") && lanes[0].text.contains(RouteLaneAttempt.Outcome.verifierFailed.title),
@@ -23266,9 +23404,10 @@ private func renderRouteLanesFixture(_ store: SessionStore, _ kind: RouteLanesFi
     case .bestEffortSingle:
         try check(lanes[0].text.components(separatedBy: "\n").contains("2"), "the one route that ran lost its answer")
     case .singleRoute:
-        try check(lanes.isEmpty && text.contains("gpt-6-luna · " + os1Tr("추론 ", "reasoning ") + "medium") &&
-            text.contains(RouteLaneStatus.completed.title) && text.contains(os1Tr("아래에서 위로", "from the bottom up")),
-            "a single route does not show one strip above its answer")
+        try check(lanes.count == 1 && lanes[0].text.contains("gpt-6-luna") &&
+            lanes[0].text.contains(RouteLanesRenderer.reasoningTag("medium")) &&
+            lanes[0].text.contains(RouteLaneStatus.completed.title) && lanes[0].text.contains(os1Tr("아래에서 위로", "from the bottom up")),
+            "a single route does not show one actual card with its answer")
     default: break
     }
     return (png, layout)
@@ -23686,6 +23825,113 @@ private func routeLanesSelfTest() throws {
     try check(standalone.textContainerOrigin.y == 34 && standalone.bottomAnchorOffset == 0,
         "a standalone transcript (snapshot, export) moved off its top origin")
     print("Routing lanes: \(checks) checks PASS; split/build/storage/live graph/history/render/cache/paint/bottom anchor; provider calls 0")
+}
+
+/// Synthetic public graph only. Does not create a SessionStore, access HOME,
+/// call a provider or mutate a conversation. The same renderer and hit targets
+/// as production are exercised without running the application's live store.
+@MainActor
+private func inlineRouteCardSelfTest() throws {
+    var checks = 0
+    func check(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw RunnerError.message("Inline route cards: " + message) }; checks += 1
+    }
+    let now = Date(timeIntervalSince1970: 1_700_000_000), conversation = UUID(), submission = UUID(), plan = UUID()
+    let request = appSHA256Hex("synthetic route-card fixture"), root = UUID()
+    let workers = (0..<3).map { _ in UUID() }
+    let quality = RCCRuntimeContract.QualityDisclosure(coverage: .partial, failedCheckIDs: ["resource.capacity"],
+        witnessSHA256: String(repeating: "a", count: 64))
+    let graph = try ParallelAgentTask.Snapshot(planID: plan, conversationID: conversation, submissionID: submission,
+        requestSHA256: request, rootNodeID: root, objective: "Synthetic public graph", createdAt: now,
+        updatedAt: now.addingTimeInterval(3), maxParallelism: 3, nodes: [
+            .init(id: root, title: "OpenClaw task", role: .coordinator, state: .running, startedAt: now,
+                  progressText: "OpenClaw core state: running"),
+            .init(id: workers[0], parentID: root, title: "Task 1 · worker-a", role: .worker, state: .running,
+                  startedAt: now, progressText: "Core child state: running · selected codex / fixture-model / medium"),
+            .init(id: workers[1], parentID: root, title: "Task 2 · worker-b", role: .worker, state: .pending,
+                  progressText: "Core child state: waiting · selected codex / fixture-model / high"),
+            .init(id: workers[2], parentID: root, title: "Task 3 · worker-c", role: .worker, state: .succeeded,
+                  startedAt: now, finishedAt: now.addingTimeInterval(2), progressText: "Core child state: completed",
+                  publicOutputSummary: "Public fixture output", qualityDisclosure: quality)
+        ]).validated()
+    guard let presentation = RouteLanesPresentation(liveGraph: graph)?.at(now.addingTimeInterval(3)) else {
+        throw RunnerError.message("Inline route cards: no presentation")
+    }
+    try check(presentation.lanes.map(\.status) == [.processing, .verifying, .completed], "state mapping changed")
+    try check(presentation.lanes[0].model == "fixture-model" && presentation.lanes[0].effort == "medium", "model/effort missing")
+    try check(presentation.lanes[2].qualityNotice?.contains("resource.capacity") == true &&
+        presentation.lanes[2].status == .completed, "quality failure rewrote execution state")
+    let binding = presentation.lanes[0].inspection!
+    try check(binding.matches(graph, conversationID: conversation), "current worker binding rejected")
+    var foreign = graph; foreign.submissionID = UUID()
+    try check(!binding.matches(foreign, conversationID: conversation), "new submission adopted a stale click")
+    foreign = graph; foreign.planID = UUID()
+    try check(!binding.matches(foreign, conversationID: conversation), "new plan adopted a stale click")
+    foreign = graph; foreign.requestSHA256 = appSHA256Hex("other")
+    try check(!binding.matches(foreign, conversationID: conversation), "changed request adopted a stale click")
+    try check(!binding.matches(graph, conversationID: UUID()), "foreign conversation accepted")
+    let coordinatorBinding = RouteLaneInspection(submissionID: submission, planID: plan, requestSHA256: request, nodeID: root)
+    try check(!coordinatorBinding.matches(graph, conversationID: conversation), "coordinator invented as worker")
+    let doc = RouteLanesRenderer.block(presentation, capacity: 3, key: "fixture", expanded: [], expandAll: false)
+    try check(doc.string.contains("Public fixture output") && doc.string.contains("resource.capacity"), "public output/disclosure absent")
+    var cards = 0, trustedLinks = 0
+    doc.enumerateAttribute(.os1RouteLaneCard, in: NSRange(location: 0, length: doc.length)) { value, _, _ in
+        if value is RouteLaneCardStyle { cards += 1 }
+    }
+    doc.enumerateAttribute(.os1RouteLaneInspection, in: NSRange(location: 0, length: doc.length)) { value, _, _ in
+        if value is RouteLaneInspectionBox { trustedLinks += 1 }
+    }
+    try check(cards == 3 && trustedLinks == 3, "three real workers do not have three host-bound cards")
+    let forged = NSAttributedString(string: "model link", attributes: [.link: binding.url])
+    try check(RouteLaneInspection.trustedLink(in: forged, url: binding.url, at: 0) == nil,
+        "model Markdown URL minted host navigation")
+    var trustedIndex: Int?
+    doc.enumerateAttribute(.os1RouteLaneInspection, in: NSRange(location: 0, length: doc.length)) { value, range, stop in
+        if let box = value as? RouteLaneInspectionBox, box.binding == binding { trustedIndex = range.location; stop.pointee = true }
+    }
+    try check(trustedIndex.flatMap { RouteLaneInspection.trustedLink(in: doc, url: binding.url, at: $0) } == binding,
+        "actual host title link cannot navigate")
+    try check(RouteLaneInspection.trustedLink(in: doc, url: URL(string: "os1-route://inspect/foreign")!, at: trustedIndex ?? 0) == nil,
+        "foreign URL reused a host attribute")
+    let single = RouteLanesPresentation(taskStatus: .processing, lanes: [presentation.lanes[0]], now: now)
+    let one = RouteLanesRenderer.block(single, capacity: 3, key: "one", expanded: [], expandAll: false)
+    var oneCard = 0
+    one.enumerateAttribute(.os1RouteLaneCard, in: NSRange(location: 0, length: one.length)) { value, _, _ in
+        if value is RouteLaneCardStyle { oneCard += 1 }
+    }
+    try check(oneCard == 1, "single worker did not get one card")
+    // Persisted display-only metadata cannot claim another run or a finished
+    // quality status for a worker still processing.
+    var malformed = presentation.lanes[2]; malformed.status = .processing
+    try check(!malformed.isValid, "processing lane accepted a finished quality disclosure")
+    malformed = presentation.lanes[2]
+    malformed.qualityDisclosure = .init(coverage: nil, failedCheckIDs: [])
+    try check(!malformed.isValid, "empty disclosure fabricated a checker record")
+    let foreignRecord = RouteLanesRecord(submissionID: UUID(), taskStatus: .processing,
+        lanes: [presentation.lanes[0]], answersInText: false)
+    try check(!foreignRecord.isValid, "saved lane accepted another submission's inspector binding")
+    let oldLane = RouteLane(id: "old-node", status: .queued)
+    let oldBytes = try JSONEncoder().encode(oldLane)
+    let oldDecoded = try JSONDecoder().decode(RouteLane.self, from: oldBytes)
+    try check(oldDecoded.inspection == nil && oldDecoded.qualityDisclosure == nil && oldDecoded.publicOutputSummary == nil,
+        "old lane JSON without optional fields cannot decode")
+    var oldNodeJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(graph.nodes[3])) as! [String: Any]
+    oldNodeJSON.removeValue(forKey: "publicOutputSummary"); oldNodeJSON.removeValue(forKey: "qualityDisclosure")
+    let oldNode = try JSONDecoder().decode(ParallelAgentTask.Node.self, from: JSONSerialization.data(withJSONObject: oldNodeJSON))
+    try check(oldNode.publicOutputSummary == nil && oldNode.qualityDisclosure == nil,
+        "old graph node without optional display fields cannot decode")
+    let many = RouteLane(id: "bounded-checks", status: .completed,
+        qualityDisclosure: .init(coverage: .partial, failedCheckIDs: (0..<64).map { "check-\($0)" }))
+    try check(many.qualityNotice?.contains("check-7") == true && many.qualityNotice?.contains("check-8,") == false &&
+        many.qualityNotice?.contains("56") == true, "main card failed-check list is unbounded or loses remainder count")
+    let noPlan = RouteLanesPresentation(taskStatus: .planning, lanes: [])
+    try check(RouteLanesRenderer.block(noPlan, capacity: 3, key: "none", expanded: [], expandAll: false).string.contains("fixture-model") == false,
+        "planning invented a worker/model")
+    let unavailable = RouteLane(id: "unavailable", status: .completed,
+        qualityDisclosure: .init(coverage: nil, failedCheckIDs: [], checker: .unavailable))
+    try check(unavailable.qualityNotice == os1Tr("검사기 사용 불가 · 품질 미검증", "Checker unavailable · quality unverified"),
+        "unavailable checker became known failure")
+    print("Inline route cards: \(checks) checks PASS; synthetic public graph only; provider calls 0; live store writes 0")
 }
 
 /// The actual store: a routed run's live graph becomes lanes, and its Core

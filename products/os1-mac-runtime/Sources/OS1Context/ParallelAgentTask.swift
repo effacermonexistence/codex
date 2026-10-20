@@ -168,6 +168,10 @@ public enum ParallelAgentTask {
         public var progressText: String?
         public var tool: String?
         public var resultSummary: String?
+        /// Bounded, redacted Core public output only. Never native raw output or reasoning.
+        public var publicOutputSummary: String?
+        /// Display disclosure beside returned output, not execution failure or quality certification.
+        public var qualityDisclosure: RCCRuntimeContract.QualityDisclosure?
         public var failureSummary: String?
         public var scope: TaskContext.Scope?
         public var workspace: String?
@@ -178,22 +182,26 @@ public enum ParallelAgentTask {
                     effort: String? = nil, nativeSessionID: String? = nil, workerSubmissionID: UUID? = nil,
                     startedAt: Date? = nil, finishedAt: Date? = nil, progressText: String? = nil, tool: String? = nil,
                     resultSummary: String? = nil, failureSummary: String? = nil, scope: TaskContext.Scope? = nil,
-                    workspace: String? = nil, ownedPaths: [String]? = nil, nativeProgress: NativeExecutionProgress? = nil) {
+                    workspace: String? = nil, ownedPaths: [String]? = nil, nativeProgress: NativeExecutionProgress? = nil,
+                    publicOutputSummary: String? = nil, qualityDisclosure: RCCRuntimeContract.QualityDisclosure? = nil) {
             self.id = id; self.parentID = parentID; self.dependencies = dependencies; self.title = title
             self.role = role; self.state = state; self.provider = provider; self.surface = surface; self.model = model; self.effort = effort
             self.nativeSessionID = nativeSessionID; self.workerSubmissionID = workerSubmissionID
             self.startedAt = startedAt; self.finishedAt = finishedAt; self.progressText = progressText; self.tool = tool
             self.resultSummary = resultSummary; self.failureSummary = failureSummary
+            self.publicOutputSummary = publicOutputSummary; self.qualityDisclosure = qualityDisclosure
             self.scope = scope; self.workspace = workspace; self.ownedPaths = ownedPaths; self.nativeProgress = nativeProgress
         }
         private enum CodingKeys: String, CodingKey {
             case id, parentID, dependencies, title, role, state, provider, surface, model, effort, nativeSessionID
             case workerSubmissionID, startedAt, finishedAt, progressText, tool, resultSummary, failureSummary, scope, workspace, ownedPaths, nativeProgress
+            case publicOutputSummary, qualityDisclosure
         }
         public init(from decoder: Decoder) throws {
             try exactKeys(decoder, ["id", "parentID", "dependencies", "title", "role", "state", "provider", "surface", "model",
                 "effort", "nativeSessionID", "workerSubmissionID", "startedAt", "finishedAt", "progressText", "tool",
-                "resultSummary", "failureSummary", "scope", "workspace", "ownedPaths", "nativeProgress"])
+                "resultSummary", "failureSummary", "scope", "workspace", "ownedPaths", "nativeProgress",
+                "publicOutputSummary", "qualityDisclosure"])
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.init(id: try c.decode(UUID.self, forKey: .id), parentID: try c.decodeIfPresent(UUID.self, forKey: .parentID),
                 dependencies: try c.decode([UUID].self, forKey: .dependencies), title: try c.decode(String.self, forKey: .title),
@@ -207,7 +215,20 @@ public enum ParallelAgentTask {
                 scope: try c.decodeIfPresent(TaskContext.Scope.self, forKey: .scope),
                 workspace: try c.decodeIfPresent(String.self, forKey: .workspace),
                 ownedPaths: try c.decodeIfPresent([String].self, forKey: .ownedPaths),
-                nativeProgress: try? c.decode(NativeExecutionProgress.self, forKey: .nativeProgress))
+                nativeProgress: try? c.decode(NativeExecutionProgress.self, forKey: .nativeProgress),
+                publicOutputSummary: try c.decodeIfPresent(String.self, forKey: .publicOutputSummary),
+                qualityDisclosure: try c.decodeIfPresent(DisplayDisclosure.self, forKey: .qualityDisclosure)?.value)
+        }
+        /// The Core wire has its own shape gate. Saved display graphs must
+        /// retain the same four-field boundary instead of decoding an opaque blob.
+        private struct DisplayDisclosure: Decodable {
+            let value: RCCRuntimeContract.QualityDisclosure
+            init(from decoder: Decoder) throws {
+                try exactKeys(decoder, ["coverage", "failed_check_ids", "witness_sha256", "checker"])
+                let disclosure = try RCCRuntimeContract.QualityDisclosure(from: decoder)
+                guard validDisclosure(disclosure) else { throw Failure.invalidSnapshot }
+                value = disclosure
+            }
         }
     }
 
@@ -290,6 +311,8 @@ public enum ParallelAgentTask {
                       node.nativeSessionID.map({ UUID(uuidString: $0) != nil }) ?? true,
                       node.tool.map(NativeExecutionProgress.safeToolName) ?? true,
                       optional(node.progressText, maximum: 500), optional(node.resultSummary, maximum: 1_000),
+                      optional(node.publicOutputSummary, maximum: 1_000),
+                      node.qualityDisclosure.map({ node.role == .worker && node.state == .succeeded && validDisclosure($0) }) ?? true,
                       optional(node.failureSummary, maximum: 500), node.startedAt.map(finite) ?? true,
                       node.finishedAt.map(finite) ?? true,
                       node.startedAt.map({ $0 >= createdAt && $0 <= updatedAt }) ?? true,
@@ -307,6 +330,7 @@ public enum ParallelAgentTask {
                 node.title = publicText(node.title, maximum: 120) ?? "Task"
                 node.progressText = node.progressText.flatMap { publicText($0, maximum: 500) }
                 node.resultSummary = node.resultSummary.flatMap { publicText($0, maximum: 1_000) }
+                node.publicOutputSummary = node.publicOutputSummary.flatMap { publicText($0, maximum: 1_000) }
                 node.failureSummary = node.failureSummary.flatMap { publicText($0, maximum: 500) }
                 node.nativeSessionID = node.nativeSessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() }
                 node.nativeProgress = node.nativeProgress.flatMap(boundedProgress)
@@ -512,6 +536,14 @@ public enum ParallelAgentTask {
             value.utf8.count <= maximum * 4 && !value.contains("\0")
     }
     private static func optional(_ value: String?, maximum: Int) -> Bool { value.map { nonempty($0, maximum: maximum) } ?? true }
+    /// Same bounded R6 disclosure fields; this grants no execution/adoption authority.
+    static func validDisclosure(_ value: RCCRuntimeContract.QualityDisclosure) -> Bool {
+        (value.coverage != nil || value.checker != nil || !value.failedCheckIDs.isEmpty) &&
+            value.failedCheckIDs.count <= 64 && Set(value.failedCheckIDs).count == value.failedCheckIDs.count &&
+            value.failedCheckIDs.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                $0.utf8.count <= 256 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } &&
+            (value.witnessSHA256.map(RCCRuntimeContract.isHash) ?? true)
+    }
     private static func digest(_ value: String) -> Bool { value.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil }
     private static func slug(_ value: String) -> Bool { value.range(of: #"^[a-z][a-z0-9_-]{0,47}$"#, options: .regularExpression) != nil }
     private static func finite(_ value: Date) -> Bool { value.timeIntervalSince1970.isFinite }

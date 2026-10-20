@@ -55,6 +55,12 @@ public enum RCCRuntimeProjection {
         }
     }
 
+    /// Stable display-selection identity for a Core task/child. This is the
+    /// existing display namespace, not a ticket, action permission or native session.
+    public static func inspectionIdentity(taskID: String, childID: String) -> (planID: UUID, nodeID: UUID) {
+        (identifier(taskID, "plan"), identifier(taskID, "child:" + childID))
+    }
+
     public static func project(_ core: RCCRuntimeContract.Snapshot,
                                conversationID: UUID, submissionID: UUID,
                                objective: String, observedAt: Date = Date(),
@@ -179,7 +185,11 @@ public enum RCCRuntimeProjection {
                 resultSummary: [.succeeded, .completed].contains(child.state) ? "Child execution returned; parent task quality remains a separate state." : nil,
                 failureSummary: child.state == .effectsUncertain ? "Side effects uncertain; automatic replay is not authorized." :
                     ([.held, .failed].contains(child.state) ? "Core child did not complete; evidence retained." : nil),
-                scope: child.selectedConfig.map { $0.scope == .workspaceWrite ? .workspaceWrite : .readOnly }))
+                scope: child.selectedConfig.map { $0.scope == .workspaceWrite ? .workspaceWrite : .readOnly },
+                // Only THIS validated Core child's already-public fields. Never
+                // inherit a prior attempt's output or read native-summary output.
+                publicOutputSummary: child.outputSummary.flatMap { ParallelAgentTask.publicText($0, maximum: 1_000) },
+                qualityDisclosure: child.qualityDisclosure.flatMap { ParallelAgentTask.validDisclosure($0) ? $0 : nil }))
         }
         return try ParallelAgentTask.Snapshot(planID: planID, conversationID: conversationID,
             submissionID: submissionID, requestSHA256: core.requestSHA256, rootNodeID: rootID,

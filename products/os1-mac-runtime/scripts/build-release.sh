@@ -84,6 +84,7 @@ node --test "$script_dir/fixtures/openclaw-rcc-ready-wave.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-partial-failure.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-native-budget.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-operational-quality.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-resource-quality.test.mjs"
 python3 "$script_dir/test-local-openclaw-gateway-runner.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
