@@ -7274,9 +7274,9 @@ private func rccLocalQualityAppServer(executable codex: String, workspace codexW
             // Metadata discovery does not start a thread/turn/model. Scope
             // actual root and plugin MCP connections off in the owned process,
             // retaining all hook/package/security controls.
+            try localQualityProfile.bindNative(executable: codex)
             let discovery = try CodexAppServerClient(executable: codex, workspace: codexWorkspace, configOverrides: codexConfigOverrides)
             defer { discovery.close() }
-            try localQualityProfile.bindNative(executable: codex)
             try discovery.initialize(deadline: deadline)
             let effective = try discovery.localQualityConfiguration(workspace: codexWorkspace, deadline: deadline)
             try localQualityProfile.validateHooks(discovery.localQualityHooks(workspace: codexWorkspace, deadline: deadline),

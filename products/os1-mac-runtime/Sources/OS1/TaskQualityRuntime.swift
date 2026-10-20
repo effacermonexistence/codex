@@ -1998,7 +1998,9 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
                 overrides.insert("plugins.\(id).mcp_servers.\(name).enabled=false")
             } else { overrides.insert("mcp_servers.\(name).enabled=false") }
         }
-        let cleanupHashes = ["browser": "d80b9bbd6a70139245a1fc9a2514cb9877dfc4c36289b9083ad1872b4c9864de", "chrome": "e8ef0a714882cabaf52e82b59989333fc83ab9d1fc716a24838e65519a66a889", "unified-computer-use": "5d49cfd6fe6e1ea0d0941c1fa0c29f2cc94cd4c15b3fc852c30b2eb96054943a"]
+        // Exact 26.1013.40934 manifests: byte-identical to the signed vendor
+        // bundle; fixed turn_ended cleanup only. Future versions need review.
+        let cleanupHashes = ["browser": "188f075c18e33ff9ac5ea55bc5ac463ff385cbdf283b8afd5a45015586c8859f", "chrome": "4c985d7ed75fdffab590c59fa1da639595381a1c9327a4b9cd9d09e003eb8656", "unified-computer-use": "39d5b863cc3ba6705b65ba5177bca8929e789ee6203a5e50dffcd331367a4abd"]
         guard plugins.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
         for plugin in plugins {
             guard let summary = plugin["summary"] as? [String: Any], let id = summary["id"] as? String, Self.key(id) else { throw RCCOperationalQuality.Failure.unavailable }
@@ -2075,14 +2077,24 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
         // actual native turn boundary; a crash/opaque failure never refunds it.
         if ticket.qualityContinuation != nil { try RCCOperationalQuality.claimCorrection(ticket: ticket) }
     }
+    // Qualified by actual writer/read-only named-profile canaries, with host
+    // positive controls and no model turns. This is one exact compatibility
+    // tuple, not permission to trust arbitrary future signed SDKs.
+    static let qualifiedNativeLauncherSHA256 = "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8"
+    static let qualifiedNativeBackendSHA256 = "1afb28c01d7d49e892bd75f11076b10f1451e34e0ee308a95e5ab7f69f9c84fe"
+    static func qualifiedNativeVersion(launcherSHA256: String, backendSHA256: String) -> String? {
+        guard launcherSHA256 == qualifiedNativeLauncherSHA256,
+            backendSHA256 == qualifiedNativeBackendSHA256 else { return nil }
+        return "codex-cli 0.163.0-alpha.10.2"
+    }
     func bindNative(executable: String) throws {
         let wrapper = URL(fileURLWithPath: executable).resolvingSymlinksInPath().standardizedFileURL
         // The installed official launcher is itself a tiny pinned source
         // whose exact bytes resolve this signed native binary. Future unknown
         // binaries must be revalidated, not silently inherit this canary.
-        try bindFile(wrapper.path, expected: "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8")
+        try bindFile(wrapper.path, expected: Self.qualifiedNativeLauncherSHA256)
         let binary = wrapper.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("CodexCLI.app/Contents/MacOS/codex")
-        try bindFile(binary.path, expected: "0d5ac7aae20c4eda6242428d5e218c55ba96d8763fda2a271088ff37104b9d28")
+        try bindFile(binary.path, expected: Self.qualifiedNativeBackendSHA256)
         nativeExecutable = binary.path
     }
     func verifyRunningNative(pid: Int32) throws {
@@ -2095,15 +2107,19 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
         if Self.rowsEmpty(config["notify"]) { return }
         guard let values = config["notify"] as? [String], values.count == 2, values[1] == "turn-ended",
             values[0].hasSuffix("/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient") else { throw RCCOperationalQuality.Failure.unavailable }
-        try bindFile(values[0], expected: "1bc7716cf9e0437caff3de3a6fc8f8988a70f853865633c7a754b409f30149e9")
+        try bindFile(values[0], expected: "4861d29eb73f6f71a5a82dc94fc7c696d34e8cd6493f1932f6ba7b51f6448cf5")
     }
     func recordVerified(executable: String) throws {
         try bindNative(executable: executable)
-        guard let hooksDigest else { throw RCCOperationalQuality.Failure.unavailable }
+        let wrapper = URL(fileURLWithPath: executable).resolvingSymlinksInPath().standardizedFileURL.path
+        guard let hooksDigest, let nativeExecutable,
+            let launcherHash = sourceHashes[wrapper], let backendHash = sourceHashes[nativeExecutable],
+            let nativeVersion = Self.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: backendHash)
+            else { throw RCCOperationalQuality.Failure.unavailable }
         let payload: [String: Any] = ["schema": 1, "task_id": ticket.taskID, "node_id": ticket.nodeID, "attempt_id": ticket.attemptID,
             "configuration_sha256": ticket.configurationSHA256, "source_fingerprint": ticket.sourceFingerprint,
             "policy_sha256": ticket.policySHA256, "workspace": workspace, "scratch": scratch,
-            "profile": Self.profileID, "native_version": "codex-cli 0.162.0-alpha.17.2", "source_hashes": sourceHashes, "hooks_sha256": hooksDigest,
+            "profile": Self.profileID, "native_version": nativeVersion, "source_hashes": sourceHashes, "hooks_sha256": hooksDigest,
             "unresolved_plugin_ids": unresolvedPluginIDs, "local_only_attestation": attestationEligible,
             "native_hook_trust_state_sha256": trustStateDigest ?? "",
             "original_owner_boundary_envelope_sha256": boundary?.envelopeSHA256 ?? "",
@@ -2139,6 +2155,16 @@ func rccNativeLocalQualityProfileSelfTest() throws {
     var checks = 0
     func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throws { guard try condition() else { throw OS1Error.message("Native local profile fixture: " + message) }; checks += 1 }
     func reject(_ message: String, _ body: () throws -> Void) throws { do { try body() } catch { checks += 1; return }; throw OS1Error.message("Native local profile fixture: " + message) }
+    let launcherHash = RCCNativeLocalQualityProfile.qualifiedNativeLauncherSHA256
+    let backendHash = RCCNativeLocalQualityProfile.qualifiedNativeBackendSHA256
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: backendHash) == "codex-cli 0.163.0-alpha.10.2", "qualified exact tuple has truthful version")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: backendHash, backendSHA256: launcherHash) == nil, "swapped tuple is not equivalent")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: h, backendSHA256: backendHash) == nil, "unknown launcher cannot inherit qualification")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: h) == nil, "unknown backend cannot inherit qualification")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: "0d5ac7aae20c4eda6242428d5e218c55ba96d8763fda2a271088ff37104b9d28") == nil, "old SDK cannot claim new version canary")
+    let unknownLauncher = workspace.appendingPathComponent("unknown-native-launcher")
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: unknownLauncher)
+    try reject("unqualified executable fails binding without a process") { try profile.bindNative(executable: unknownLauncher.path) }
     var effective: [String: Any] = ["default_permissions": RCCNativeLocalQualityProfile.profileID, "web_search": "disabled", "bypass_hook_trust": false,
         "features": ["hooks": true, "apps": false, "browser_use": false, "browser_use_external": false, "computer_use": false, "js_repl": false, "remote_control": false, "memories": false],
         "hooks": ["state": [:]], "permissions": [RCCNativeLocalQualityProfile.profileID: ["extends": NSNull(), "workspace_roots": NSNull(),
