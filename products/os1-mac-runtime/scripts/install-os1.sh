@@ -132,6 +132,16 @@ verify_unnotarized_beta_package() {
     requires_rcc_runtime=1
   fi
 
+  # 0.9.343 adds the signed pure resource-usage ledger imported by RCC.
+  # Earlier immutable recovery packages retain their exact five modules.
+  local requires_rcc_resource_usage=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 343) )); then
+    expected_payload_files=39
+    expected_component_files=42
+    requires_rcc_resource_usage=1
+  fi
+
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
     return 1
@@ -216,6 +226,15 @@ verify_unnotarized_beta_package() {
       echo "OS-1 beta verification refused an RCC task-runtime module in a legacy release." >&2; return 1
     fi
   done
+  if (( requires_rcc_resource_usage )); then
+    [[ -f "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" &&
+       ! -L "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" ]] || {
+      echo "OS-1 beta verification requires signed RCC resource-usage module." >&2; return 1;
+    }
+  elif [[ -e "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" ||
+          -L "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" ]]; then
+    echo "OS-1 beta verification refused an RCC resource-usage module in a legacy release." >&2; return 1
+  fi
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -260,6 +279,7 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-runtime.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-plugin.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

@@ -967,6 +967,32 @@ public enum RCCRuntimeContract {
         }
         enum CodingKeys: String, CodingKey { case state, notices, reason, resolutionSHA256 = "resolution_sha256" }
     }
+    /// Actual resource observations, not a route grade or a subscription bill.
+    /// Missing legacy data stays nil; failed/cancelled attempts still count.
+    public struct ResourceUsageSummary: Codable, Equatable, Sendable {
+        public var schema: Int
+        public var accountingComplete: Bool
+        public var totalTokensObserved: Int?
+        public var localTokensObserved: Int?
+        public var nativeTokensObserved: Int?
+        public var localCallsStarted: Int
+        public var localCallsSettled: Int
+        public var localWorkerAttempts: Int
+        public var nativeAttempts: Int
+        public var planModelCalls: Int?
+        public var issues: [String]
+        public var quotaSavings: String
+        public var cashCost: String
+        public var accountingScope: String
+        enum CodingKeys: String, CodingKey {
+            case schema, issues, accountingComplete = "accounting_complete", totalTokensObserved = "total_tokens_observed"
+            case localTokensObserved = "local_tokens_observed", nativeTokensObserved = "native_tokens_observed"
+            case localCallsStarted = "local_calls_started", localCallsSettled = "local_calls_settled"
+            case localWorkerAttempts = "local_worker_attempts", nativeAttempts = "native_attempts"
+            case planModelCalls = "plan_model_calls", quotaSavings = "quota_savings", cashCost = "cash_cost"
+            case accountingScope = "accounting_scope"
+        }
+    }
     public struct Snapshot: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -980,16 +1006,20 @@ public enum RCCRuntimeContract {
         /// Present only when Core skipped a best-effort route; older snapshots have none.
         public var skippedRoutes: [SkippedRoute]?
         public var routingIntent: RoutingIntentSummary?
+        public var resourceUsage: ResourceUsageSummary?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, state: State, revision: Int,
                     children: [ChildSnapshot], result: Result?, error: String?, installHandoff: InstallHandoff? = nil,
-                    skippedRoutes: [SkippedRoute]? = nil, routingIntent: RoutingIntentSummary? = nil) {
+                    skippedRoutes: [SkippedRoute]? = nil, routingIntent: RoutingIntentSummary? = nil,
+                    resourceUsage: ResourceUsageSummary? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.state = state
             self.revision = revision; self.children = children; self.result = result; self.error = error
             self.installHandoff = installHandoff; self.skippedRoutes = skippedRoutes; self.routingIntent = routingIntent
+            self.resourceUsage = resourceUsage
         }
         enum CodingKeys: String, CodingKey {
             case schema, state, revision, children, result, error, taskID = "task_id", requestSHA256 = "request_sha256"
             case installHandoff = "install_handoff", skippedRoutes = "skipped_routes", routingIntent = "routing_intent"
+            case resourceUsage = "resource_usage"
         }
     }
     public struct Event: Codable, Equatable, Sendable {
@@ -1485,6 +1515,21 @@ public enum RCCRuntimeContract {
                   intent.reason.map({ text($0, max: 4_096) }) ?? true,
                   intent.resolutionSHA256.map(isHash) ?? true else { throw Rejection.invalidSnapshot }
         }
+        if let usage = value.resourceUsage {
+            let counts = [usage.totalTokensObserved, usage.localTokensObserved, usage.nativeTokensObserved,
+                          usage.planModelCalls, usage.localCallsStarted, usage.localCallsSettled,
+                          usage.localWorkerAttempts, usage.nativeAttempts]
+            guard usage.schema == 1, counts.allSatisfy({ $0.map { (0...9_007_199_254_740_991).contains($0) } ?? true }),
+                  usage.localCallsSettled <= usage.localCallsStarted,
+                  usage.issues.count <= 64, usage.issues.allSatisfy({ text($0, max: 256) }),
+                  usage.quotaSavings == "not_measured", usage.cashCost == "not_measured",
+                  usage.accountingScope == "observed_attempts_as_of_snapshot_not_future_cost" else { throw Rejection.invalidSnapshot }
+            if usage.accountingComplete {
+                guard usage.issues.isEmpty, let total = usage.totalTokensObserved,
+                      let local = usage.localTokensObserved, let native = usage.nativeTokensObserved,
+                      total == local + native, usage.planModelCalls == 0 else { throw Rejection.invalidSnapshot }
+            } else if usage.totalTokensObserved != nil { throw Rejection.invalidSnapshot }
+        }
         for child in value.children {
             guard id(child.id), child.attemptID.map(id) ?? true, child.candidateID.map(id) ?? true,
                   child.state != .running || (child.attemptID != nil && child.candidateID != nil) else { throw Rejection.invalidSnapshot }
@@ -1634,7 +1679,8 @@ public enum RCCRuntimeContract {
     private static let childShape = Shape.object(["id", "state", "attempt_id", "candidate_id", "selected_config", "instruction", "dependencies", "started_at_ms", "finished_at_ms", "native_receipt", "output_summary", "requested_surface", "routing_decision", "quality_disclosure"], ["selected_config": configShape, "routing_decision": routingDecisionShape, "quality_disclosure": qualityDisclosureShape])
     private static let skippedRouteShape = Shape.object(["surface", "instruction", "reason"])
     private static let routingIntentSummaryShape = Shape.object(["state", "notices", "reason", "resolution_sha256"])
-    private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff", "skipped_routes", "routing_intent"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape, "skipped_routes": .array(skippedRouteShape), "routing_intent": routingIntentSummaryShape])
+    private static let resourceUsageShape = Shape.object(["schema", "accounting_complete", "total_tokens_observed", "local_tokens_observed", "native_tokens_observed", "local_calls_started", "local_calls_settled", "local_worker_attempts", "native_attempts", "plan_model_calls", "issues", "quota_savings", "cash_cost", "accounting_scope"])
+    private static let snapshotShape = Shape.object(["schema", "task_id", "request_sha256", "state", "revision", "children", "result", "error", "install_handoff", "skipped_routes", "routing_intent", "resource_usage"], ["children": .array(childShape), "result": resultShape, "install_handoff": installHandoffShape, "skipped_routes": .array(skippedRouteShape), "routing_intent": routingIntentSummaryShape, "resource_usage": resourceUsageShape])
     private static let eventShape = Shape.object(["schema", "task_id", "revision", "type", "node_id", "attempt_id", "observed_at_ms", "snapshot"], ["snapshot": snapshotShape])
     private static func checkShape(_ object: Any, _ shape: Shape, depth: Int = 0) throws {
         guard depth <= 32 else { throw Rejection.oversized }

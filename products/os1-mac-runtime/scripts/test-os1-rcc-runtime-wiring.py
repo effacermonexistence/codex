@@ -9,6 +9,8 @@ gates. No provider, network, live state, user HOME or other product is touched.
 from pathlib import Path
 import hashlib
 import re
+import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = (ROOT / "Sources/OS1/main.swift").read_text()
@@ -245,12 +247,55 @@ plan_activity = section(MAIN, "if plannerActivity.firstEngagement(state)", "if l
 check("model: nil, effort: nil" in plan_activity and "OpenClaw execution plan is ready" in plan_activity and
       "RCCNativeCatalogBuilder.localWorkerModel" not in plan_activity,
       "a deterministic DAG does not fabricate planner-model execution in UI activity")
+# Execute only extracted local version/resource gates, never the installer,
+# pkgutil, signing, network, provider, user state or package installation.
+version_gate = INSTALLER.split("  local release_major release_minor release_patch", 1)[1].split(
+    '  pkgutil --expand-full "$package_path"', 1)[0]
+version_gate = "  local release_major release_minor release_patch" + version_gate
+for version, expected in (("0.9.106", "18/21/0"), ("0.9.107", "19/22/0"),
+                          ("0.9.237", "22/25/0"), ("0.9.274", "23/26/0"),
+                          ("0.9.293", "24/27/0"), ("0.9.295", "36/39/0"),
+                          ("0.9.301", "36/39/0"), ("0.9.302", "38/41/0"),
+                          ("0.9.342", "38/41/0"), ("0.9.343", "39/42/1"),
+                          ("0.10.0", "39/42/1"), ("1.0.0", "39/42/1")):
+    fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
+               version_gate + '\nprintf "%s/%s/%s" "$expected_payload_files" '
+               '"$expected_component_files" "$requires_rcc_resource_usage"; }; check_gate "$1"')
+    result = subprocess.run(["/bin/bash", "-c", fixture, "fixture", version],
+                            capture_output=True, text=True, timeout=5)
+    check(result.returncode == 0 and result.stdout == expected,
+          "exact extracted installer version count fixture: " + version)
+usage_gate = "  if (( requires_rcc_resource_usage )); then" + INSTALLER.split(
+    "  if (( requires_rcc_resource_usage )); then", 1)[1].split(
+    '  [[ "$(/usr/bin/xmllint --xpath', 1)[0]
+with tempfile.TemporaryDirectory(prefix="os1-resource-package-gate-") as temp:
+    app = Path(temp) / "Fixture.app"
+    helper = app / "Contents/Resources/openclaw-os1-bridge/resource-usage.mjs"
+    helper.parent.mkdir(parents=True)
+    fixture = ('set -eu; check_gate() { local app_path="$1" requires_rcc_resource_usage="$2";\n' +
+               usage_gate + '\n}; check_gate "$1" "$2"')
+    def usage_result(required):
+        return subprocess.run(["/bin/bash", "-c", fixture, "fixture", str(app), str(required)],
+                              capture_output=True, text=True, timeout=5)
+    check(usage_result(0).returncode == 0 and usage_result(1).returncode != 0,
+          "legacy absence allowed but new usage module absence rejected")
+    helper.write_text("export const synthetic = true;\n")
+    check(usage_result(1).returncode == 0 and usage_result(0).returncode != 0,
+          "new regular helper required but legacy helper injection rejected")
+    helper.unlink()
+    target = helper.with_name("synthetic-module.mjs")
+    target.write_text("export const synthetic = true;\n")
+    helper.symlink_to(target.name)
+    check(usage_result(1).returncode != 0 and usage_result(0).returncode != 0,
+          "usage helper symbolic aliases rejected for both new and legacy releases")
+
 pins = {
     "index.mjs": "pinnedPluginIndexSHA256",
     "openclaw.plugin.json": "pinnedPluginManifestSHA256",
     "package.json": "pinnedPluginPackageSHA256",
     "rcc-runtime.mjs": "rccRuntimeModuleSHA256",
     "rcc-plugin.mjs": "rccRuntimePluginSHA256",
+    "resource-usage.mjs": "rccResourceUsageSHA256",
 }
 for filename, symbol in pins.items():
     file = PLUGIN_ROOT / filename
@@ -262,15 +307,25 @@ for filename, symbol in pins.items():
     check(RELEASE.count(resource) >= 2 and resource in INSTALLER,
           "exact bridge file appears in staged, expanded and installer allowlists: " + filename)
 
-exact_bridge_list = "index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs"
+exact_bridge_list = "index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs"
 check("for resource in " + exact_bridge_list in RELEASE and "cmp \"$runtime_root/Resources/openclaw-os1-bridge/$resource\"" in RELEASE,
-      "release copies exact five resources and compares source/staged/packaged bytes")
+      "release copies exact six resources and compares source/staged/packaged bytes")
 check("expected_payload_files=38" in INSTALLER and "expected_component_files=41" in INSTALLER and
       "release_patch >= 302" in INSTALLER and "expected_payload_files=36" in INSTALLER,
       "new two-module package has exact version-gated counts; older recovery stays exact")
 check("requires signed RCC task-runtime module" in INSTALLER and
       "refused an RCC task-runtime module in a legacy release" in INSTALLER,
       "new required modules cannot silently disappear or contaminate a legacy recovery package")
+check("expected_payload_files=39" in INSTALLER and "expected_component_files=42" in INSTALLER and
+      "release_patch >= 343" in INSTALLER and "requires_rcc_resource_usage=1" in INSTALLER and
+      "requires signed RCC resource-usage module" in INSTALLER and
+      "refused an RCC resource-usage module in a legacy release" in INSTALLER,
+      "pure usage helper is required only for343+, preserving exact302--342 recovery counts")
+check(RELEASE.count("for resource in " + exact_bridge_list + "; do") == 3 and
+      "resource-usage.test.mjs" not in exact_bridge_list and "*.mjs" not in RELEASE and
+      "Contents/Resources/openclaw-os1-bridge/resource-usage.test.mjs" not in RELEASE and
+      "rccResourceUsageSHA256" in BRIDGE,
+      "release copy and both identity comparisons use the same exact six files; no test/wildcard shipping")
 check('"--append-system-prompt"' in MAIN and '"developerInstructions": instructions' in MAIN,
       "native execution retains real provider-supported governance channels")
 DISPLAY = (ROOT / "Sources/OS1Context/RCCNativeDisplayReceipts.swift").read_text()

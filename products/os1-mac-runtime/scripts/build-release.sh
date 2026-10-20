@@ -85,6 +85,8 @@ node --test "$script_dir/fixtures/openclaw-rcc-partial-failure.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-native-budget.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-operational-quality.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-resource-quality.test.mjs"
+node --test "$runtime_root/Resources/openclaw-os1-bridge/resource-usage.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-resource-observation.test.mjs"
 python3 "$script_dir/test-local-openclaw-gateway-runner.py"
 # The bundle's own Info.plist is the single source of truth for the release
 # version. A hardcoded default silently diverged from it and the identity
@@ -238,14 +240,14 @@ for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDict
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
 mkdir -p "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge"
-for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs; do
+for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs; do
   install -m 0644 "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource"
 done
 # Source/packaged module identity is separate from the dependency acquisition
-# contract. Only the exact five bridge resources are allowed, never a directory
+# contract. Only the exact six bridge resources are allowed, never a directory
 # exemption for all JavaScript or a wildcard recursive copy.
-for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs; do
+for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs; do
   cmp "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
       "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource" || {
     echo "Staged controller bridge differs from source: $resource" >&2; exit 1;
@@ -295,6 +297,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-runtime.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-plugin.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
@@ -407,7 +410,7 @@ fi
 
 pkgutil --expand-full "$final_pkg" "$audit_dir/expanded"
 expanded_payload="$audit_dir/expanded/OS-1-component.pkg/Payload"
-for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs; do
+for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs; do
   cmp "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
       "$expanded_payload/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource" || {
     echo "Packaged controller bridge differs from source: $resource" >&2; exit 1;
@@ -440,6 +443,7 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/index.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-runtime.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-plugin.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

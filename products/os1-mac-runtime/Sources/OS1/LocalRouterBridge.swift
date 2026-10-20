@@ -22,13 +22,14 @@ enum LocalRouterBridge {
         let old = try gatewayIdentity(resources: resources, manifest: checked.manifest, runtime: checked.runtime)
         let plugin = URL(fileURLWithPath: old.pluginDirectory)
         var hashes: [String: String] = [:]
-        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs"] {
+        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs"] {
             hashes[name] = try fileSHA256(plugin.appendingPathComponent(name))
         }
         // The module hashes below are generated from the reviewed source and
         // sealed with the app/CLI. Never take these values from the model.
         guard hashes["rcc-runtime.mjs"] == rccRuntimeModuleSHA256,
-              hashes["rcc-plugin.mjs"] == rccRuntimePluginSHA256 else {
+              hashes["rcc-plugin.mjs"] == rccRuntimePluginSHA256,
+              hashes["resource-usage.mjs"] == rccResourceUsageSHA256 else {
             throw OS1Error.message("Installed RCC task-runtime modules differ from the sealed source")
         }
         let nativeIdentity = try InstalledNativeEntry.resolve(
@@ -79,8 +80,9 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "74083a94ece8d57e412d93591f0dedea26a52e011d81ec0ed2f6ecdc46cdcfe4"
-    static let rccRuntimePluginSHA256 = "9fc22f1486a2222edde8ea4d6927675f7fb2ed9c0ec4659105e8fa4843381a25"
+    static let rccRuntimeModuleSHA256 = "3c6735a55308df1fa11a48ed1eca7692dee7688314aaef615c30ab92c92856f1"
+    static let rccRuntimePluginSHA256 = "cd55302f49bc56f650e5628a4fdeb422ea916ed833de11d88b44ac721b6935e3"
+    static let rccResourceUsageSHA256 = "710a9b9cddc3f2aa9fe9ce4970537131d4cb7108d221a3ce83ff44c4dde7ccaa"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"

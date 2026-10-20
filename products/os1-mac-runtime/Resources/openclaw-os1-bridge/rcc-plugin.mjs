@@ -207,7 +207,18 @@ const MAX_INTENT_INPUT_BYTES = 48_000;
  * a JSON classifier answer nor a native operation creates provider authority. */
 export function routingIntentResolver({complete, native = nativeOperation,
   lifetimeSignal = () => null, stateDir = null}) {
-  return async ({task, signal}) => {
+  return async ({task, signal, observeResourceUsage}) => {
+    const operationID = randomUUID();
+    let modelStarted = false, noModelObserved = false;
+    const observe = (state, usage, elapsedMS, reason = null) => {
+      // Only metadata, never the prompt, answer, credentials or model thinking.
+      // Core owns persistence; a broken optional observer cannot alter routing.
+      try { observeResourceUsage?.({id: operationID, stage: 'routing_intent', state,
+        provider: 'ollama', model: LOCAL_MODEL, usage,
+        elapsed_ms: elapsedMS, observed_at_ms: Date.now(),
+        usage_basis: 'openclaw_input_excludes_cache', reason}); } catch {}
+    };
+    try {
     const signals = [signal, lifetimeSignal()].filter(value => value instanceof AbortSignal);
     const combined = signals.length ? AbortSignal.any(signals) : undefined;
     const checkAbort = () => { if (combined?.aborted) throw new RCCRuntimeError('intent_cancelled'); };
@@ -221,7 +232,11 @@ export function routingIntentResolver({complete, native = nativeOperation,
     checkAbort();
     const probe = bound(await native('rcc-intent', {schema: 1, task}, combined));
     checkAbort();
-    if (probe.kind !== 'needs_model') return {...probe, model_answer: null};
+    if (probe.kind !== 'needs_model') {
+      noModelObserved = true;
+      observe('not_needed', null, 0, 'native_probe_did_not_require_model');
+      return {...probe, model_answer: null};
+    }
     if (typeof complete !== 'function' || typeof probe.model_prompt !== 'string' ||
         Buffer.byteLength(probe.model_prompt) > 16_384 || typeof probe.model_input !== 'string' ||
         Buffer.byteLength(probe.model_input) > 8_192 || probe.model_schema?.type !== 'object' ||
@@ -245,12 +260,30 @@ export function routingIntentResolver({complete, native = nativeOperation,
     if (Buffer.byteLength(instructions) + Buffer.byteLength(probe.model_input) > MAX_INTENT_INPUT_BYTES)
       throw new RCCRuntimeError('intent_input_budget_exceeded');
     const started = Date.now();
-    const response = await complete({model: LOCAL_MODEL,
-      messages: [{role: 'user', content: probe.model_input}], systemPrompt: instructions,
-      responseFormat, maxTokens: 192, temperature: 0, reasoning: 'off',
-      signal: combined, purpose: 'os1.rcc.internal-routing-intent'});
+    modelStarted = true;
+    observe('started', null, null);
+    let response;
+    try {
+      response = await complete({model: LOCAL_MODEL,
+        messages: [{role: 'user', content: probe.model_input}], systemPrompt: instructions,
+        responseFormat, maxTokens: 192, temperature: 0, reasoning: 'off',
+        signal: combined, purpose: 'os1.rcc.internal-routing-intent'});
+    } catch (error) {
+      observe(combined?.aborted ? 'cancelled' : 'failed', null, Date.now() - started,
+        combined?.aborted ? 'completion_cancelled' : 'completion_failed');
+      throw error;
+    }
+    let answer;
+    try { answer = assertLocalModelCompletion(response, 'intent_local_model_receipt_invalid'); }
+    catch (error) {
+      observe('failed', null, Date.now() - started, 'completion_receipt_invalid');
+      throw error;
+    }
+    // Record returned usage even if cancellation happened just before return.
+    // OpenClaw's normalized local input is net-new, unlike native inclusive input.
+    observe(combined?.aborted ? 'cancelled' : 'completed', response.usage ?? null,
+      Date.now() - started, combined?.aborted ? 'completion_cancelled' : null);
     checkAbort();
-    const answer = assertLocalModelCompletion(response, 'intent_local_model_receipt_invalid');
     if (!answer || Buffer.byteLength(answer) > 4_096)
       throw new RCCRuntimeError('intent_model_output_invalid');
     if (isAbsolute(stateDir ?? '')) {
@@ -270,6 +303,10 @@ export function routingIntentResolver({complete, native = nativeOperation,
     checkAbort();
     if (admitted.kind === 'needs_model') throw new RCCRuntimeError('intent_compiler_did_not_settle');
     return {...admitted, model_answer: answer};
+    } finally {
+      if (!modelStarted && !noModelObserved)
+        observe('not_needed', null, 0, 'stopped_before_model_call');
+    }
   };
 }
 

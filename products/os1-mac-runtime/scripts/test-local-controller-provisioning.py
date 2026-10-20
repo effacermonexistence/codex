@@ -110,7 +110,7 @@ for name in ("local-router-config.template.json", "local-controller-sources.json
              "provision-local-controller.sh", "provision-local-controller.mjs"):
     check(release.count('Contents/Resources/' + name) >= 2, "staged and expanded release allowlist: " + name)
     check(('Contents/Resources/' + name) in installer, "installer allowlist: " + name)
-for name in ("index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs"):
+for name in ("index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs"):
     relative = "openclaw-os1-bridge/" + name
     check(release.count('Contents/Resources/' + relative) >= 2, "signed plugin staged and allowed: " + relative)
     check(('Contents/Resources/' + relative) in installer, "installer signed plugin allowlist: " + relative)

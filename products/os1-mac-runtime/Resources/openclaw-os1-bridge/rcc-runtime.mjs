@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usage.mjs';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
 // The pinned OpenClaw plugin must call this module from its long-lived Gateway
@@ -1868,10 +1869,24 @@ function requestedSurface(snapshot, child) {
     route.instruction === child.instruction)?.surface ?? null;
 }
 
+function publicResourceUsage(snapshot) {
+  const s = summarizeTaskResources(snapshot);
+  return {schema: 1, accounting_complete: s.accounting_complete,
+    total_tokens_observed: s.total_tokens_observed,
+    local_tokens_observed: s.local.total_tokens_observed, native_tokens_observed: s.native.total_tokens_observed,
+    local_calls_started: s.local.calls_started, local_calls_settled: s.local.calls_settled,
+    local_worker_attempts: s.local.worker.attempts, native_attempts: s.native.attempts,
+    plan_model_calls: s.plan.model_calls, issues: s.issues,
+    quota_savings: s.quota_savings, cash_cost: s.cash_cost,
+    accounting_scope: 'observed_attempts_as_of_snapshot_not_future_cost'};
+}
 function publicSnapshot(snapshot) {
   return { schema: 1, task_id: snapshot.task.task_id,
     request_sha256: snapshot.task.request_sha256, state: snapshot.state,
     revision: snapshot.revision,
+    // Observation only: never an adoption, routing score, quota percentage or
+    // dollar estimate. Includes failed attempts; unknown usage remains unknown.
+    resource_usage: publicResourceUsage(snapshot),
     children: snapshot.children.map(child => {
       const {id, state, attempt_id, candidate_id, selected_config,
         instruction, dependencies, started_at_ms, finished_at_ms, native_receipt, output} = child;
@@ -2772,6 +2787,37 @@ class RCCRuntime {
     });
   }
 
+  _recordResourceUsage(taskID, event) {
+    // This callback is held by Core's intent resolver, never deserialized from
+    // a model/tool result. Telemetry cannot rewrite the task or its verdict.
+    if (this.closed) return false;
+    try {
+      validateLocalUsageEvent(event);
+      const current = this._load(taskID);
+      if (!current) return false;
+      const prior = (current.resource_events ?? []).filter(row => row.id === event.id);
+      if (prior.some(row => stable(row) === stable(event))) return true;
+      assert(prior.length === 0 ? ['started', 'not_needed'].includes(event.state) :
+        prior.length === 1 && prior[0].state === 'started' &&
+        ['completed', 'failed', 'cancelled'].includes(event.state) &&
+        prior[0].stage === event.stage && prior[0].provider === event.provider &&
+        prior[0].model === event.model && event.observed_at_ms >= prior[0].observed_at_ms,
+      'resource_usage_transition_invalid');
+      assert((current.resource_events?.length ?? 0) < 16, 'resource_usage_event_bound');
+      this._update(taskID, 'resource_usage_observed', snapshot => {
+        snapshot.resource_events = [...(snapshot.resource_events ?? []), immutable(event)];
+      });
+      return true;
+    } catch {
+      // Preserve the missing-data boundary, but do not lose an otherwise
+      // valid task because optional accounting failed.
+      try { this._update(taskID, 'resource_usage_unavailable', snapshot => {
+        snapshot.resource_accounting_errors = ['local_usage_observation_unavailable'];
+      }); } catch { /* Existing task/DB failure remains authoritative. */ }
+      return false;
+    }
+  }
+
   async _resolveTaskIntent(taskID) {
     const state = this._load(taskID);
     if (!state || TERMINAL.has(state.state) || state.cancel_requested) return null;
@@ -2779,7 +2825,13 @@ class RCCRuntime {
     // replays a planning task, and a catalog refresh never calls this path.
     if (state.intent_resolution !== undefined) return executionTask(state);
     const original = state.task;
-    if (original.mode !== 'auto' || typeof this.resolveIntent !== 'function') return original;
+    if (original.mode !== 'auto') {
+      this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'routing_intent', state: 'not_needed',
+        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0,
+        observed_at_ms: Date.now(), usage_basis: 'openclaw_input_excludes_cache', reason: 'explicit_routes_bypass_intent'});
+      return original;
+    }
+    if (typeof this.resolveIntent !== 'function') return original;
     const remaining = original.budget.max_duration_ms - (Date.now() - state.created_at_ms);
     if (remaining <= 0) { this._hold(taskID, 'task_duration_budget_exhausted'); return null; }
     this._update(taskID, 'intent_resolution_started', snapshot => {
@@ -2803,7 +2855,8 @@ class RCCRuntime {
     // the race never installs a late result or replays its original request.
     item.promise = Promise.resolve().then(() => {
       if (controller.signal.aborted) throw controller.signal.reason;
-      return this.resolveIntent({task: immutable(original), signal: controller.signal});
+      return this.resolveIntent({task: immutable(original), signal: controller.signal,
+        observeResourceUsage: event => this._recordResourceUsage(taskID, event)});
     })
       .finally(() => { if (this.intentControllers.get(taskID) === item) this.intentControllers.delete(taskID); });
     try {
@@ -2988,6 +3041,7 @@ class RCCRuntime {
     if (this._load(taskID).cancel_requested) { this._markCancelled(taskID); return; }
     state = this._update(taskID, 'plan_admitted', snapshot => {
       snapshot.plan = plan; snapshot.state = 'running';
+      snapshot.plan_provenance = this.hostAutoPlan ? 'host_exact_request' : 'external_plan_callback';
       snapshot.bound_rows = boundRows(plan, catalog);
       // A certified descent is admitted with its reference row too: a
       // sibling's later catalog refresh may drop that row, and the escalation
@@ -3026,6 +3080,11 @@ class RCCRuntime {
     this._update(taskID, kind, snapshot => {
       if (snapshot.cancel_requested) { snapshot.state = 'cancelled'; return; }
       const now = Date.now();
+      snapshot.plan_provenance = 'deterministic_no_model';
+      if (!Array.isArray(snapshot.resource_events) || snapshot.resource_events.length === 0)
+        snapshot.resource_events = [{id: randomUUID(), stage: 'routing_intent', state: 'not_needed',
+          provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0,
+          observed_at_ms: now, usage_basis: 'openclaw_input_excludes_cache', reason: 'deterministic_no_model'}];
       const config = {surface: 'local', transport: 'local', account_id: 'os1-core',
         model: 'none', effort: 'none', tools: [], scope: 'read_only',
         permission_profile: 'read_only', quota_pool: 'none', allowed_paths: [],

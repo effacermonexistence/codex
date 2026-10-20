@@ -313,6 +313,39 @@ func runRCCRuntimeContractFixture() throws {
               "legacy child missing requested surface remains decodable and unknown")
     try check(legacySnapshot.children.first?.routingDecision == nil,
               "snapshot written before host routing decisions remains decodable")
+    try check(legacySnapshot.resourceUsage == nil, "legacy missing resource data remains unknown, not zero")
+    var meteredObject = try JSONSerialization.jsonObject(with: C.encode(deterministic)) as! [String: Any]
+    var resourceObject: [String: Any] = ["schema": 1, "accounting_complete": true,
+        "total_tokens_observed": 121, "local_tokens_observed": 16, "native_tokens_observed": 105,
+        "local_calls_started": 1, "local_calls_settled": 1, "local_worker_attempts": 0,
+        "native_attempts": 1, "plan_model_calls": 0, "issues": [String](),
+        "quota_savings": "not_measured", "cash_cost": "not_measured",
+        "accounting_scope": "observed_attempts_as_of_snapshot_not_future_cost"]
+    meteredObject["resource_usage"] = resourceObject
+    let metered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+    try check(metered.resourceUsage?.totalTokensObserved == 121 && metered.resourceUsage?.accountingComplete == true,
+              "Core resource metadata decodes without changing the answer")
+    try check(try C.decodeSnapshot(C.encode(metered)) == metered, "resource usage roundtrip")
+    for (key, value) in [("local_calls_started", -1), ("local_calls_settled", 2), ("total_tokens_observed", 120)] {
+        var bad = resourceObject; bad[key] = value; meteredObject["resource_usage"] = bad
+        try reject("invalid resource counter or sum: " + key) {
+            _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+        }
+    }
+    resourceObject["accounting_complete"] = false
+    resourceObject["total_tokens_observed"] = NSNull()
+    resourceObject["local_tokens_observed"] = NSNull()
+    resourceObject["plan_model_calls"] = NSNull()
+    resourceObject["issues"] = ["local_usage_unknown"]
+    meteredObject["resource_usage"] = resourceObject
+    let partialResources = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+    try check(partialResources.resourceUsage?.totalTokensObserved == nil && partialResources.resourceUsage?.accountingComplete == false,
+              "missing local usage does not become zero tokens")
+    var inventedBilling = resourceObject; inventedBilling["cash_cost"] = "0 dollars"
+    meteredObject["resource_usage"] = inventedBilling
+    try reject("resource tokens do not authorize an invented bill") {
+        _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+    }
     let decision = C.RoutingDecision(routeClass: "deep", resolvedCandidateID: candidate.id, surface: config.surface,
         model: config.model, effort: config.effort, quotaPool: config.quotaPool,
         reason: "resolver;pool_rank_0;effort_exact", quotaRemainingFraction: 0.4)

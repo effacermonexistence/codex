@@ -774,7 +774,7 @@ enum RCCRuntimeGatewayClient {
     }
 
     private static func verifyInstalled(_ identity: InstalledIdentity) throws {
-        guard Set(identity.pluginFileSHA256.keys).isSuperset(of: ["index.mjs", "rcc-runtime.mjs", "rcc-plugin.mjs", "openclaw.plugin.json", "package.json"]),
+        guard Set(identity.pluginFileSHA256.keys).isSuperset(of: ["index.mjs", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "openclaw.plugin.json", "package.json"]),
               identity.pluginFileSHA256.count <= 16 else { throw Failure.identityMismatch }
         var files = [(identity.nodePath, identity.nodeSHA256), (identity.entryPath, identity.entrySHA256),
                      (identity.nativeOS1Path, identity.nativeOS1SHA256)]

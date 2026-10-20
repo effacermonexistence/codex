@@ -32,8 +32,10 @@ if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0
 if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 302):
     resources.append(('openclaw-os1-bridge/rcc-runtime.mjs', 'requires signed RCC task-runtime module'))
     resources.append(('openclaw-os1-bridge/rcc-plugin.mjs', 'requires signed RCC task-runtime module'))
+if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 343):
+    resources.append(('openclaw-os1-bridge/resource-usage.mjs', 'requires signed RCC resource-usage module'))
 for filename, missing_reason in resources:
-    for mutation in ('rename', 'content'):
+    for mutation in (('rename', 'content', 'symlink') if filename.endswith('/resource-usage.mjs') else ('rename', 'content')):
         with tempfile.TemporaryDirectory(prefix='os1-beta-policy-') as tmp:
             root = Path(tmp)
             expanded = root / 'expanded'
@@ -42,6 +44,11 @@ for filename, missing_reason in resources:
             assert helper.is_file()
             if mutation == 'rename':
                 helper.rename(helper.with_name('unexpected-' + helper.name))
+            elif mutation == 'symlink':
+                # Preserve the payload's file count while proving aliases are refused.
+                target = helper.with_name('moved-' + helper.name)
+                helper.rename(target)
+                helper.symlink_to(target.name)
             else:
                 with helper.open('a') as f:
                     f.write('\n# unauthorized payload mutation\n')
@@ -53,5 +60,7 @@ for filename, missing_reason in resources:
             changed_meta = root / 'changed.json'
             changed_meta.write_text(json.dumps(meta))
             verify(changed, changed_meta, False,
-                   missing_reason if mutation == 'rename' else 'refused the unnotarized beta package')
+                   missing_reason if mutation == 'rename' else
+                   'refused a symbolic link' if mutation == 'symlink' else
+                   'refused the unnotarized beta package')
 print('PASS: legitimate payload accepted; same-count resource rename and signed-resource mutation rejected')

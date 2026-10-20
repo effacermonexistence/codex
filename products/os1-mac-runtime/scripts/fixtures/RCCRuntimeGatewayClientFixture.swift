@@ -47,7 +47,7 @@ struct RCCRuntimeGatewayClientFixture {
         let plugin = root.appendingPathComponent("plugin", isDirectory: true)
         try fm.createDirectory(at: plugin, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         var pluginHashes: [String: String] = [:]
-        for file in ["index.mjs", "rcc-runtime.mjs", "rcc-plugin.mjs", "openclaw.plugin.json", "package.json"] {
+        for file in ["index.mjs", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "openclaw.plugin.json", "package.json"] {
             let bytes = Data((file + " fake fixture bytes\n").utf8)
             try bytes.write(to: plugin.appendingPathComponent(file)); pluginHashes[file] = hash(bytes)
         }
