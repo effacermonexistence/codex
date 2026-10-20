@@ -57,6 +57,69 @@ def verified_public_bytes(
     return source
 
 
+
+def add_relocated_diagnostic_source_paths(policy: dict, root: Path, commit: str) -> int:
+    """Rebind only already-reviewed diagnostic sources to this clean checkout.
+
+    This is exact-token normalization for #filePath, not a path-prefix,
+    compiler-symbol, section, filename or unknown-entropy exemption. Caller
+    requires a clean producing checkout; source bytes must independently
+    match both the registered source digest and the immutable producing commit.
+    """
+    allowed = policy["entropy"]["allowedTokenSha256"]
+    provenance = policy.setdefault("publicTokenProvenance", {})
+    added = 0
+    for registered_hash, entry in list(provenance.items()):
+        if not isinstance(entry, dict) or entry.get("tokenKind") != "diagnostic_source_path":
+            continue
+        relative = entry.get("source")
+        require(isinstance(relative, str), "Diagnostic source path is missing")
+        source_path = Path(relative)
+        require(not source_path.is_absolute() and source_path.as_posix() == relative and
+                all(part not in (".", "..") for part in source_path.parts) and
+                relative.startswith("products/os1-mac-runtime/Sources/") and source_path.suffix == ".swift",
+                "Diagnostic source path is not a closed public Swift source")
+        registered_token = entry.get("publicToken")
+        suffix = "/" + source_path.with_suffix("").as_posix()
+        require(isinstance(registered_token, str) and registered_token.startswith("/") and
+                registered_token.endswith(suffix) and sha256(registered_token.encode()) == registered_hash and
+                registered_hash in allowed,
+                "Diagnostic source token registration changed")
+        source = root / source_path
+        require(not source.is_symlink() and source.resolve() == source,
+                "Diagnostic source path is not canonical")
+        source_bytes = source.read_bytes()
+        if not (sha256(source_bytes) == entry.get("sourceSHA256") and
+                source_bytes == committed_bytes(root, commit, relative) and
+                b"URL(fileURLWithPath: #filePath)" in source_bytes):
+            # A stale registration certifies no relocated token. Do not
+            # invent approval for changed source, or block another independent
+            # registration whose own bytes remain exactly supported.
+            continue
+        token = str(source.with_suffix(""))
+        # The existing scanner extracts this precise token from the .swift
+        # diagnostic string. Other spellings remain subject to normal scanning.
+        if re.fullmatch(r"[A-Za-z0-9_+/=-]{48,}", token) is None:
+            # Unsupported spelling (spaces/non-ASCII/etc.) certifies nothing.
+            # Keep the normal scanner gate; do not fail unrelated clean builds
+            # here or invent exemptions for extracted partial substrings.
+            continue
+        fingerprint = sha256(token.encode())
+        if fingerprint not in allowed:
+            allowed.append(fingerprint)
+            added += 1
+        provenance[fingerprint] = {
+            "tokenKind": "diagnostic_source_path",
+            "description": "Exact #filePath diagnostic token for an existing reviewed public source, rebound to this clean producing checkout; no prefix, section or unknown-token exemption.",
+            "publicToken": token,
+            "source": relative,
+            "sourceSHA256": sha256(source_bytes),
+            "sourceRevision": commit,
+            "registeredTokenSHA256": registered_hash,
+        }
+    return added
+
+
 def generate(
     policy_path: Path, output_path: Path, commit: str, source_clean: bool,
     root: Path, expanded_payload: Path,
@@ -142,6 +205,8 @@ def generate(
             "sourceSHA256": sha256(type_bytes),
             "description": "Exact compiler-emitted source/type path for a public OS-1 view.",
         }
+    if source_clean:
+        add_relocated_diagnostic_source_paths(policy, root, commit)
     output_path.write_text(json.dumps(policy, sort_keys=True), encoding="utf-8")
     return policy
 
