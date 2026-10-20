@@ -18,8 +18,8 @@ for (const [fingerprint, provenance] of Object.entries(policy.publicTokenProvena
     if (fingerprint === "5f4fefa8202359ac40fe5e33b2c99063fea2f7845c4bb6b2c5aa5efa1866e99f" && !(
       provenance.demangledPublicType === 'Gate #1 in OS1App.(routeLanesCompletionSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()' &&
       provenance.source === 'products/os1-mac-runtime/Sources/OS1App/OS1App.swift' &&
-      provenance.sourceRevision === '4b8822b1f5323e3c2980fd049fe83ee61231f160' &&
-      provenance.sourceSHA256 === '6b80bd56c4818e3697158a34949ca14021be27a39d15c8f757b7154bcd4c6996' &&
+      provenance.sourceRevision === '3e9245b10c33dd8001f7ec456b19631a6c0cb863' &&
+      provenance.sourceSHA256 === '67d557f1a2a7c37723898ffe3a8d7e54bdade7fd21dc91d380602321d6f1a0df' &&
       provenance.sourceURL === `https://github.com/effacermonexistence/codex/blob/${provenance.sourceRevision}/${provenance.source}` &&
       provenance.sourceAnchor === 'private func routeLanesCompletionSelfTest() async throws' &&
       provenance.localTypeAnchor === 'final class Gate { var continuation: CheckedContinuation<Void, Never>?; var calls = 0 }'
