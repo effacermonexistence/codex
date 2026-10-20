@@ -34,11 +34,18 @@ enum RCCCatalogFacts {
                 sourceSHA256: source, startTreeSHA256: tree, scope: scope, referencePolicySHA256: request.policySHA256,
                 workspace: nil, allowRegressionAcquisition: false, rootURL: rootURL) else { continue }
             let contract = prepared.envelope.contract
-            guard contract.validUntil > now else { return nil }
+            let issuedMS = contract.issuedAt.timeIntervalSince1970 * 1000
+            let untilMS = contract.validUntil.timeIntervalSince1970 * 1000
+            // A future or inverted grant is not current scope authority,
+            // even before the later quality evaluator checks its dates.
+            guard contract.schema == 1,
+                  [issuedMS, untilMS].allSatisfy({ $0.isFinite && (0...9_007_199_254_740_991).contains($0) }),
+                  contract.issuedAt <= now, contract.issuedAt < contract.validUntil,
+                  contract.validUntil > now else { return nil }
             return .init(coverage: contract.fullCoverage ? .full : .partial, scope: scope == .readOnly ? .readOnly : .workspaceWrite,
                 objectiveSHA256: objectiveSHA, contractSHA256: contract.sha256, contextSHA256: context, sourceSHA256: source,
                 startTreeSHA256: tree, referencePolicySHA256: request.policySHA256,
-                validUntilMS: Int64((contract.validUntil.timeIntervalSince1970 * 1000).rounded(.down)))
+                validUntilMS: Int64(untilMS.rounded(.down)))
         }
         return nil
     }
@@ -94,12 +101,14 @@ func rccCatalogFactsSelfTest() throws {
     let checker = Data("print('fixture')\n".utf8), checkerSHA = C.digest(checker)
     try checker.write(to: root.appendingPathComponent("checkers/\(checkerSHA).py"))
     func save(_ req: C.Request, scope: TaskContext.Scope = .readOnly, full: Bool = true, context: String? = nil,
-              policy contractPolicy: String? = nil, until: Date = Date().addingTimeInterval(600)) throws {
-        let contract = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: req.requestSHA256,
+              policy contractPolicy: String? = nil, issued: Date = Date(), schema: Int = 1,
+              until: Date = Date().addingTimeInterval(600)) throws {
+        var contract = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: req.requestSHA256,
             contextSHA256: context ?? C.digest(Data((req.hostContext?.context ?? "").utf8)), sourceSHA256: nil,
             startTreeSHA256: tree, scope: scope, verifierCodeSHA256: checkerSHA, referencePolicySHA256: contractPolicy ?? policy,
             requiredCheckIDs: ["owner.full"], fullCoverage: full, referenceProfiles: [], reference: nil,
-            issuedAt: Date(), validUntil: until)
+            issuedAt: issued, validUntil: until)
+        contract.schema = schema
         let envelope = PreparedTaskQuality.Envelope(contract: contract, checkerSHA256: checkerSHA, timeoutSeconds: 30, workspacePaths: [])
         let path = root.appendingPathComponent("contracts/\(req.requestSHA256).json")
         try? fm.removeItem(at: path)
@@ -126,6 +135,26 @@ func rccCatalogFactsSelfTest() throws {
     try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, startTree: { _ in tree }) == nil, "another reference policy is not a contract")
     try save(lookup, until: Date().addingTimeInterval(-1))
     try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, startTree: { _ in tree }) == nil, "an expired contract is not a contract")
+    let clock = Date(timeIntervalSince1970: 1_800_000_000)
+    try save(lookup, scope: .workspaceWrite, full: false,
+             issued: clock.addingTimeInterval(1), until: clock.addingTimeInterval(600))
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree }) == nil,
+              "future issuance cannot authorize a current write")
+    try save(lookup, issued: clock, until: clock)
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree }) == nil,
+              "equal issuance and expiry is not a grant")
+    try save(lookup, issued: clock.addingTimeInterval(500), until: clock.addingTimeInterval(400))
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree }) == nil,
+              "inverted validity cannot authorize scope")
+    try save(lookup, scope: .workspaceWrite, full: false, issued: clock, until: clock.addingTimeInterval(600))
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree })?.scope == .workspaceWrite,
+              "a current bound partial grant remains usable without becoming full quality proof")
+    try save(lookup, issued: clock, schema: 2, until: clock.addingTimeInterval(600))
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree }) == nil,
+              "an unsupported contract schema is not scope authority")
+    try save(lookup, issued: clock, until: Date(timeIntervalSince1970: 1e16))
+    try check(RCCCatalogFacts.taskContract(lookup, rootURL: root, now: clock, startTree: { _ in tree }) == nil,
+              "an out-of-range expiry is rejected before integer conversion")
 
     // 407-f: the adapter tolerates exactly the binding mismatch prepare throws.
     try save(lookup)

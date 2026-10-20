@@ -337,7 +337,8 @@ public enum RCCNativeCatalogBuilder {
     /// rechecked by RCCCatalogFacts for this objective/context/source/tree/
     /// policy can resolve a conservative text-classifier ambiguity. A public
     /// draft is not registered authority, nor is partial test coverage quality
-    /// parity. Explicit host read-only and conflicting owner/chat facts win.
+    /// parity. Host read-only always wins; conflicting owner/chat facts do
+    /// not authorize an override of the existing conservative classifier.
     private static func catalogReadOnly(_ input: Input) -> Bool {
         if input.requireReadOnly { return true }
         if let bound = input.taskContract, bound.bindingsChecked,
