@@ -908,6 +908,18 @@ private func providerIntentSelfTest() throws {
           olderJSON.nativeSessionDetached == nil, nativeSessionRebinds(olderJSON, bound: ownerThread) else {
         throw RunnerError.message("OS-1 detached REVAS session continuity self-test failed.")
     }
+    // A successful staged writer's cwd is disposable. Unlike a legacy fresh
+    // side session, it may never initialize even an empty conversation binding.
+    var ephemeralAnswer = fullPart
+    ephemeralAnswer.nativeSessionEphemeralWorkspace = true
+    ephemeralAnswer.nativeSessionDetached = true
+    guard !nativeSessionRebinds(ephemeralAnswer, bound: nil),
+          !nativeSessionRebinds(ephemeralAnswer, bound: ownerThread),
+          let ephemeralJSON = try? JSONDecoder().decode(AppRunStep.self, from: Data(#"{"sequence":1,"provider":"codex","action":"execute","model":"gpt-6-luna","effort":"low","revas_disposition":"execution_only","session_id":"staged-native","permission_profile":"workspace_write","exit_code":0,"output":"answer","stderr":"","duration_ms":1,"native_session_ephemeral_workspace":true}"#.utf8)),
+          ephemeralJSON.nativeSessionEphemeralWorkspace == true,
+          !nativeSessionRebinds(ephemeralJSON, bound: nil) else {
+        throw RunnerError.message("OS-1 staged workspace session must never become conversation continuity")
+    }
     // A side question answered on a chat lane is not a read-only work task:
     // the next edit continues the conversation's work (2026-10-02).
     var sideChat = ConversationSession(workspace: "/tmp")
@@ -6398,6 +6410,7 @@ private struct AppRunStep: Decodable, Sendable {
     /// own thread (a cheaper REVAS attempt, one part of a plan). Absent on
     /// older records.
     var nativeSessionDetached: Bool? = nil
+    var nativeSessionEphemeralWorkspace: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case sequence, provider, action, model, effort, output, stderr, surface
@@ -6413,6 +6426,7 @@ private struct AppRunStep: Decodable, Sendable {
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
         case nativeSessionDetached = "native_session_detached"
+        case nativeSessionEphemeralWorkspace = "native_session_ephemeral_workspace"
     }
 
     /// Explicit lane evidence only. Display fallback must not become stored
@@ -6674,7 +6688,8 @@ private func isChatLaneRoutePart(_ step: AppRunStep) -> Bool {
 /// bound thread, which the next turn resumes; with nothing bound yet the
 /// step's session becomes the conversation's.
 private func nativeSessionRebinds(_ step: AppRunStep, bound: String?) -> Bool {
-    bound == nil || !(isChatLaneRoutePart(step) || step.nativeSessionDetached == true)
+    step.nativeSessionEphemeralWorkspace != true &&
+        (bound == nil || !(isChatLaneRoutePart(step) || step.nativeSessionDetached == true))
 }
 
 /// A fresh bounded chat thread is not the conversation's resumable agent

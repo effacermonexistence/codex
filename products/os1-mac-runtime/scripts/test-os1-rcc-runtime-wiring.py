@@ -465,4 +465,9 @@ check("transaction.stageAssessment(artifact: a)" in native and
 check('record.error = descriptor.state == .discarded ? "native_staged_writer_discarded" : "native_staged_writer_held"' in native,
       "only exact host discard can signal clean-reference replay; unknown state stays held")
 
+check("delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(" in native and
+      "step.nativeSessionEphemeralWorkspace = true" in native and "checkStep.nativeSessionEphemeralWorkspace = true" in native and
+      "step.nativeSessionEphemeralWorkspace != true &&" in APP and
+      '!nativeSessionRebinds(ephemeralAnswer, bound: nil)' in APP,
+      "disposable staged workspaces never seed or replace native conversation continuity, including first session")
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

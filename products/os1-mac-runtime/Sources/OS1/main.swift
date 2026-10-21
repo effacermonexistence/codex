@@ -1351,6 +1351,8 @@ struct RunStepSummary: Codable {
     /// conversation's own thread (`RCCNativeAttemptOutcome.nativeSessionDetached`):
     /// the app keeps the conversation bound to its own thread. Absent elsewhere.
     var nativeSessionDetached: Bool? = nil
+    /// The native cwd is a disposable host-owned candidate, never conversation continuity.
+    var nativeSessionEphemeralWorkspace: Bool? = nil
     /// Why an interrupted RCC native execution stopped: the thrown error's
     /// class and a sanitized short message (`RCCNativeAttemptOutcome.failureCause`:
     /// no path, no credential). Absent on every other step and older records.
@@ -1388,6 +1390,7 @@ struct RunStepSummary: Codable {
         case taskQuality = "task_quality"
         case consumerChatGPTRecord = "consumer_chatgpt_record"
         case nativeSessionDetached = "native_session_detached"
+        case nativeSessionEphemeralWorkspace = "native_session_ephemeral_workspace"
         case failureCause = "failure_cause"
     }
 }
@@ -19447,7 +19450,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 surfaceOverride: surface, workspaceOverride: workspace,
                 // Only a side session that never becomes the conversation's
                 // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
-                delegatedOneShotSession: rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
+                delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
                     conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
                     continuing: t.continuation != nil, chatLane: surface.forcesChatLane),
                 delegatedChild: true)
@@ -19537,6 +19540,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                         nativeRecord: execution.nativeRecord, surface: surface.rawValue,
                         preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt,
                         taskQuality: verifiedOriginal.assessment)
+                    checkStep.nativeSessionEphemeralWorkspace = true; checkStep.nativeSessionDetached = true
                     checkStep.os1SourceConfined = false; checkStep.os1ChangeRequired = false
                     checkStep.os1FullAccessRequired = false
                     if RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: t.nativeResumeSessionID,
@@ -19610,6 +19614,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         if RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: t.nativeResumeSessionID,
             conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
             chatLane: surface.forcesChatLane) { step.nativeSessionDetached = true }
+        if stagedTransaction != nil {
+            step.nativeSessionEphemeralWorkspace = true
+            step.nativeSessionDetached = true
+        }
         record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
         if verified, !ExecutionCancellation.isCancelled, step.os1SourceConfined,
            step.os1ChangeRequired || step.os1FullAccessRequired,
@@ -19676,6 +19684,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             // from the receipt alone (the provider's own words included).
             step.failureCause = RCCNativeAttemptOutcome.failureCause(kind: rccFailureCauseKind(rejected.cause),
                 message: rccFailureCauseMessage(rejected))
+            if stagedTransaction != nil {
+                step.nativeSessionEphemeralWorkspace = true
+                step.nativeSessionDetached = true
+            }
             record.nativeSummary = String(decoding: try JSONEncoder().encode(RunSummary(status: "returned_unverified", steps: [step])), as: UTF8.self)
             if knownFinishedCandidate, !ExecutionCancellation.isCancelled, sourceConfined,
                step.os1ChangeRequired || step.os1FullAccessRequired, let watch = protectedSourceAtDispatch,
