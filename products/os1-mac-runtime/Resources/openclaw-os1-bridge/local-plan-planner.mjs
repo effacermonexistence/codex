@@ -26,11 +26,32 @@ Use agent nodes within the projected scope/paths. Never propose deterministic/ex
 Give only a terse operational reason_code and visible task graph, NOT a chain of thought.`;
 const sha = s => createHash('sha256').update(s, 'utf8').digest('hex');
 export const LOCAL_PLAN_KERNEL_SHA256 = sha(LOCAL_PLAN_KERNEL);
-export const LOCAL_PLAN_LIMITS = Object.freeze({input_bytes: 65536, output_bytes: 65536,
-  policy_bytes: 32768, max_tokens: 2048, timeout_ms: 20000, max_nodes: 8, max_workers: 4, max_revisions: 1});
+// A proposal is routing DATA, not a second copy of the task/source narrative.
+// These are representation ceilings, NOT a measured tokens/s or 20s guarantee.
+// The original request/context stays on the existing executor path unchanged.
+export const LOCAL_PLAN_COMPACT_BUDGET = Object.freeze({version: 'compact-v2-proposal-v1',
+  node_id_bytes: 24, instruction_bytes: 192, required_output_bytes: 96, reason_bytes: 48});
+const COMPACT_PROMPT = `COMPACT V2 PROPOSAL BUDGET
+Use short node IDs, short operational directives, and requirement/material/check IDs.
+Do not restate the objective, source facts, conditions, or the owner policy in node prose:
+their exact originals remain separately bound. Preserve every requirement/material mapping,
+dependency and final owner. Prefer one node unless decomposition is necessary; max_nodes is
+an upper bound, not a request to fill it. Keep instruction <=192 UTF-8 bytes, required_output
+<=96 bytes, reason_code <=48 bytes and node IDs <=24 bytes. No explanations or repeated context.
+If a faithful graph cannot fit, do not drop constraints or claim a usable plan.`;
+export const LOCAL_PLAN_COMPACT_PROMPT_SHA256 = sha(COMPACT_PROMPT);
+export const LOCAL_PLAN_LIMITS = Object.freeze({input_bytes: 65536, output_bytes: 4096,
+  policy_bytes: 32768, max_tokens: 512, timeout_ms: 20000, max_nodes: 8, max_workers: 4, max_revisions: 1});
 const idSchema = {type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$'};
 const idsSchema = max => ({type: 'array', maxItems: max, uniqueItems: true, items: idSchema});
-const stringSchema = max => ({type: 'string', minLength: 1, maxLength: max, pattern: '^[^\\u0000]+$'});
+// Generation-only schema: use the converter's JSON-string + length branch.
+// A broad pattern can become a raw GBNF character class (including quotes and
+// newlines) and bypass maxLength in llama.cpp's pattern-first conversion.
+// P1 decoding and the compact UTF-8 checks independently reject NUL/invalid
+// JSON/unknown fields; removing this generation hint does not relax them.
+const stringSchema = max => ({type: 'string', minLength: 1, maxLength: max});
+const nodeIDSchema = {...idSchema, maxLength: LOCAL_PLAN_COMPACT_BUDGET.node_id_bytes};
+const nodeIDsSchema = max => ({...idsSchema(max), items: nodeIDSchema});
 function freeze(x) { if (x && typeof x === 'object') { for (const v of Object.values(x)) freeze(v); Object.freeze(x); } return x; }
 export const LOCAL_PLAN_RESPONSE_FORMAT = freeze({type: 'object', additionalProperties: false,
   required: ['schema', 'kind', 'nodes', 'final_output_proposal'], properties: {
@@ -38,15 +59,16 @@ export const LOCAL_PLAN_RESPONSE_FORMAT = freeze({type: 'object', additionalProp
       items: {type: 'object', additionalProperties: false,
         required: ['proposal_node_id', 'instruction', 'requirement_refs', 'dependencies', 'material_refs',
           'proposed_candidate_id', 'proposed_scope', 'proposed_owned_paths', 'required_output', 'check_refs', 'reason_code'],
-        properties: {proposal_node_id: idSchema, instruction: stringSchema(12000),
-          requirement_refs: {...idsSchema(128), minItems: 1}, dependencies: idsSchema(8), material_refs: idsSchema(128),
+        properties: {proposal_node_id: nodeIDSchema, instruction: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.instruction_bytes),
+          requirement_refs: {...idsSchema(128), minItems: 1}, dependencies: nodeIDsSchema(8), material_refs: idsSchema(128),
           proposed_candidate_id: {anyOf: [idSchema, {type: 'null'}]},
           proposed_scope: {enum: ['read_only', 'workspace_write']},
           proposed_owned_paths: {type: 'array', maxItems: 128, uniqueItems: true, items: stringSchema(1024)},
-          required_output: stringSchema(4000), check_refs: idsSchema(128), reason_code: stringSchema(96)}}},
+          required_output: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.required_output_bytes), check_refs: idsSchema(128),
+          reason_code: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.reason_bytes)}}},
     final_output_proposal: {type: 'object', additionalProperties: false, required: ['mode', 'node_ids'],
       properties: {mode: {enum: ['direct_child', 'ordered_collection', 'integration_node']},
-        node_ids: {...idsSchema(8), minItems: 1}}}},
+        node_ids: {...nodeIDsSchema(8), minItems: 1}}}},
 });
 const HASH = /^[a-f0-9]{64}$/;
 const PID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
@@ -123,6 +145,29 @@ function validateHost(host, expected) {
     final_output_proposal: {mode: 'direct_child', node_ids: ['host_probe']}};
   compileLocalPlanProposal(JSON.stringify(probe), host, expected);
 }
+function checkProposalRepresentation(host, materials, limits) {
+  // A lower bound, not a generated/accepted plan: even a single minimal node
+  // has to carry the exact mandatory IDs. Never truncate/rename them to fit.
+  const minimum = {schema: 2, kind: 'untrusted_local_plan_proposal', nodes: [{
+    proposal_node_id: 'n', instruction: 'x', requirement_refs: host.requirement_ids,
+    dependencies: [], material_refs: materials.filter(m => m.required === true).map(m => m.id),
+    proposed_candidate_id: null, proposed_scope: host.scope, proposed_owned_paths: [],
+    required_output: 'x', check_refs: [], reason_code: 'x'}],
+    final_output_proposal: {mode: 'direct_child', node_ids: ['n']}};
+  requireValue(Buffer.byteLength(JSON.stringify(minimum)) <= limits.output_bytes,
+    'planner_proposal_budget_unrepresentable');
+}
+function proposalBudget(limits) {
+  return {version: LOCAL_PLAN_COMPACT_BUDGET.version, prompt_sha256: LOCAL_PLAN_COMPACT_PROMPT_SHA256,
+    max_output_tokens: limits.max_tokens, max_output_bytes: limits.output_bytes,
+    max_nodes: limits.max_nodes, structural_fit_only: true, token_fit_verified: false, latency_guaranteed: false};
+}
+function checkCompactProposal(proposal) {
+  const b = LOCAL_PLAN_COMPACT_BUDGET;
+  requireValue(proposal.nodes.every(n => Buffer.byteLength(n.proposal_node_id) <= b.node_id_bytes &&
+    text(n.instruction, b.instruction_bytes) && text(n.required_output, b.required_output_bytes) &&
+    text(n.reason_code, b.reason_bytes)), 'planner_compact_node_budget_exceeded');
+}
 function projectInput(host, expected, policy, projection, attempt, limits) {
   validateHost(host, expected);
   requireValue(exact(policy, ['source_sha256', 'projection_sha256', 'text']) &&
@@ -146,6 +191,7 @@ function projectInput(host, expected, policy, projection, attempt, limits) {
     seenMaterials.add(row.id); return {id: row.id, kind: row.kind, read_status: row.read_status,
       label: row.label, authority_scope: 'task_data', required: row.required};
   });
+  checkProposalRepresentation(host, materials, limits);
   const structured = {schema: 2, kind: 'OS1_LOCAL_PLAN_INPUT_V2', task_id: expected.task_id,
     original_request: host.request, objective: host.objective, request_sha256: expected.request_sha256,
     scope: host.scope, allowed_owned_paths: [...host.allowed_owned_paths], requirements, materials,
@@ -153,7 +199,7 @@ function projectInput(host, expected, policy, projection, attempt, limits) {
     budget: {max_nodes: limits.max_nodes, max_parallel_workers: limits.max_workers,
       max_plan_revisions: limits.max_revisions, max_output_tokens: limits.max_tokens}, revision: copy(attempt)};
   const userInput = JSON.stringify(structured);
-  const systemPrompt = 'HOST-BOUND OWNER POLICY PROJECTION\n' + policy.text + '\n\n' + LOCAL_PLAN_KERNEL;
+  const systemPrompt = 'HOST-BOUND OWNER POLICY PROJECTION\n' + policy.text + '\n\n' + COMPACT_PROMPT + '\n\n' + LOCAL_PLAN_KERNEL;
   requireValue(Buffer.byteLength(userInput) + Buffer.byteLength(systemPrompt) + Buffer.byteLength(JSON.stringify(LOCAL_PLAN_RESPONSE_FORMAT)) <= limits.input_bytes,
     'planner_input_budget_exceeded');
   return {userInput, systemPrompt, materials};
@@ -203,7 +249,8 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       resource_events: [...events], resource_adapter_required: 'plan_proposal_v1',
       completion_observation: completionObservation,
       ...capture,
-      kernel_version: LOCAL_PLAN_KERNEL_VERSION, kernel_sha256: LOCAL_PLAN_KERNEL_SHA256});
+      kernel_version: LOCAL_PLAN_KERNEL_VERSION, kernel_sha256: LOCAL_PLAN_KERNEL_SHA256,
+      proposal_budget: proposalBudget(limits)});
     let input;
     try {
       requireValue(exact(attempt, ['index', 'revision_of', 'correction_codes']) && [0, 1].includes(attempt.index) && attempt.index <= limits.max_revisions &&
@@ -273,6 +320,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
         requireValue(capture.raw_capture_status !== 'reasoning_withheld_hash_only', 'planner_reasoning_output_rejected');
         proposal = decodeLocalPlanProposal(response.text);
         requireValue(proposal.nodes.length <= limits.max_nodes, 'planner_node_budget_exceeded');
+        checkCompactProposal(proposal);
         compileLocalPlanProposal(response.text, host, expected);
         const mapped = new Set(proposal.nodes.flatMap(n => n.material_refs));
         requireValue(input.materials.filter(m => m.required === true).every(m => mapped.has(m.id)), 'planner_required_material_unmapped');
@@ -286,10 +334,11 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
         output_sha256: outputSHA, execution_authorized: false, quality_parity_verified: false,
         semantic_coverage_verified: false, requires_host_material_review: input.materials.some(m => m.required === 'unknown'),
         kernel_version: LOCAL_PLAN_KERNEL_VERSION, kernel_sha256: LOCAL_PLAN_KERNEL_SHA256,
+        proposal_budget: proposalBudget(limits),
         owner_policy_source_sha256: ownerPolicy.source_sha256, owner_policy_projection_sha256: ownerPolicy.projection_sha256,
         classifier_view: 'exact_objective_and_host_projected_metadata_only', executor_view_supplied: false,
         operation_id: operationID, model_calls_started: 1, resource_events: [...events],
-        completion_observation: completionObservation,
+        completion_observation: completionObservation, completion_outcome_unknown: completionUnknown,
         raw_capture_status: capture.raw_capture_status, raw_output_bytes: capture.raw_output_bytes,
         resource_adapter_required: 'plan_proposal_v1'});
     } catch (error) {

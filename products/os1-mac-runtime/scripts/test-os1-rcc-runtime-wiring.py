@@ -252,23 +252,25 @@ check("model: nil, effort: nil" in plan_activity and "OpenClaw execution plan is
 version_gate = INSTALLER.split("  local release_major release_minor release_patch", 1)[1].split(
     '  pkgutil --expand-full "$package_path"', 1)[0]
 version_gate = "  local release_major release_minor release_patch" + version_gate
-for version, expected in (("0.9.106", "18/21/0/0"), ("0.9.107", "19/22/0/0"),
-                          ("0.9.237", "22/25/0/0"), ("0.9.274", "23/26/0/0"),
-                          ("0.9.293", "24/27/0/0"), ("0.9.295", "36/39/0/0"),
-                          ("0.9.301", "36/39/0/0"), ("0.9.302", "38/41/0/0"),
-                          ("0.9.342", "38/41/0/0"), ("0.9.343", "39/42/1/0"),
-                          ("0.9.349", "39/42/1/0"), ("0.9.350", "46/49/1/1"),
-                          ("0.10.0", "46/49/1/1"), ("1.0.0", "46/49/1/1")):
+for version, expected in (("0.9.106", "18/21/0/0/0"), ("0.9.107", "19/22/0/0/0"),
+                          ("0.9.237", "22/25/0/0/0"), ("0.9.274", "23/26/0/0/0"),
+                          ("0.9.293", "24/27/0/0/0"), ("0.9.295", "36/39/0/0/0"),
+                          ("0.9.301", "36/39/0/0/0"), ("0.9.302", "38/41/0/0/0"),
+                          ("0.9.342", "38/41/0/0/0"), ("0.9.343", "39/42/1/0/0"),
+                          ("0.9.349", "39/42/1/0/0"), ("0.9.350", "46/49/1/1/0"),
+                          ("0.9.351", "48/51/1/1/1"), ("0.10.0", "48/51/1/1/1"),
+                          ("1.0.0", "48/51/1/1/1")):
     fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
-               version_gate + '\nprintf "%s/%s/%s/%s" "$expected_payload_files" '
-               '"$expected_component_files" "$requires_rcc_resource_usage" "$requires_rcc_adaptive_routing"; }; check_gate "$1"')
+               version_gate + '\nprintf "%s/%s/%s/%s/%s" "$expected_payload_files" '
+               '"$expected_component_files" "$requires_rcc_resource_usage" "$requires_rcc_adaptive_routing" '
+               '"$requires_rcc_frozen_routes"; }; check_gate "$1"')
     result = subprocess.run(["/bin/bash", "-c", fixture, "fixture", version],
                             capture_output=True, text=True, timeout=5)
     check(result.returncode == 0 and result.stdout == expected,
           "exact extracted installer version count fixture: " + version)
 usage_gate = "  if (( requires_rcc_resource_usage )); then" + INSTALLER.split(
     "  if (( requires_rcc_resource_usage )); then", 1)[1].split(
-    '  [[ "$(/usr/bin/xmllint --xpath', 1)[0]
+    '  # RCC frozen route companion gate:', 1)[0]
 with tempfile.TemporaryDirectory(prefix="os1-resource-package-gate-") as temp:
     app = Path(temp) / "Fixture.app"
     helper = app / "Contents/Resources/openclaw-os1-bridge/resource-usage.mjs"
@@ -322,6 +324,39 @@ with tempfile.TemporaryDirectory(prefix="os1-routing-package-gate-") as temp:
               "companion symbolic alias rejected: " + name)
         helper.unlink(); moved.rename(helper)
 
+# The417 additions have a separate absence gate:416 recovery still has exactly
+# the previous13 resources. These tests execute extracted shell on synthetic
+# files only; signed-byte mutation tests remain the package suite's job.
+frozen_companions = ('frozen-route-artifacts.mjs', 'frozen-route-predictor.mjs')
+frozen_gate = INSTALLER.split("  # RCC frozen route companion gate:", 1)[1].split(
+    '  [[ "$(/usr/bin/xmllint --xpath', 1)[0]
+frozen_gate = frozen_gate[frozen_gate.index("  for bridge_resource in "):]
+with tempfile.TemporaryDirectory(prefix="os1-frozen-route-package-gate-") as temp:
+    app = Path(temp) / "Fixture.app"
+    bridge = app / "Contents/Resources/openclaw-os1-bridge"
+    bridge.mkdir(parents=True)
+    fixture = ('set -eu; check_gate() { local app_path="$1" requires_rcc_frozen_routes="$2" bridge_resource;\n' +
+               frozen_gate + '\n}; check_gate "$1" "$2"')
+    def frozen_result(required):
+        return subprocess.run(["/bin/bash", "-c", fixture, "fixture", str(app), str(required)],
+                              capture_output=True, text=True, timeout=5)
+    check(frozen_result(0).returncode == 0 and frozen_result(1).returncode != 0,
+          "416 absence accepted but417 cannot omit frozen-evidence source companions")
+    for name in frozen_companions:
+        (bridge / name).write_text("export const synthetic = true;\n")
+    check(frozen_result(1).returncode == 0 and frozen_result(0).returncode != 0,
+          "417 regular frozen companions accepted;416 injection remains rejected")
+    for name in frozen_companions:
+        helper = bridge / name
+        moved = helper.with_name("unexpected-" + name)
+        helper.rename(moved)
+        check(frozen_result(1).returncode != 0,
+              "same-count renamed frozen companion rejected: " + name)
+        helper.symlink_to(moved.name)
+        check(frozen_result(1).returncode != 0 and frozen_result(0).returncode != 0,
+              "frozen companion symbolic alias rejected: " + name)
+        helper.unlink(); moved.rename(helper)
+
 pins = {
     "index.mjs": "pinnedPluginIndexSHA256",
     "openclaw.plugin.json": "pinnedPluginManifestSHA256",
@@ -336,6 +371,8 @@ pins = {
     "local-plan-proposal.mjs": "rccLocalPlanProposalSHA256",
     "routing-outcome.mjs": "rccRoutingOutcomeSHA256",
     "routing-outcome-capture.mjs": "rccRoutingOutcomeCaptureSHA256",
+    "frozen-route-artifacts.mjs": "rccFrozenRouteArtifactsSHA256",
+    "frozen-route-predictor.mjs": "rccFrozenRoutePredictorSHA256",
 }
 for filename, symbol in pins.items():
     file = PLUGIN_ROOT / filename
@@ -347,9 +384,9 @@ for filename, symbol in pins.items():
     check(RELEASE.count(resource) >= 2 and resource in INSTALLER,
           "exact bridge file appears in staged, expanded and installer allowlists: " + filename)
 
-exact_bridge_list = "index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs"
+exact_bridge_list = "index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs"
 check("for resource in " + exact_bridge_list in RELEASE and "cmp \"$runtime_root/Resources/openclaw-os1-bridge/$resource\"" in RELEASE,
-      "release copies exact thirteen resources and compares source/staged/packaged bytes")
+      "release copies exact fifteen resources and compares source/staged/packaged bytes")
 check("expected_payload_files=38" in INSTALLER and "expected_component_files=41" in INSTALLER and
       "release_patch >= 302" in INSTALLER and "expected_payload_files=36" in INSTALLER,
       "new two-module package has exact version-gated counts; older recovery stays exact")
@@ -365,15 +402,29 @@ check(RELEASE.count("for resource in " + exact_bridge_list + "; do") == 3 and
       "resource-usage.test.mjs" not in exact_bridge_list and "*.mjs" not in RELEASE and
       "Contents/Resources/openclaw-os1-bridge/resource-usage.test.mjs" not in RELEASE and
       "rccResourceUsageSHA256" in BRIDGE,
-      "release copy and both identity comparisons use the same exact thirteen files; no test/wildcard shipping")
+      "release copy and both identity comparisons use the same exact fifteen files; no test/wildcard shipping")
 check("expected_payload_files=46" in INSTALLER and "expected_component_files=49" in INSTALLER and
       "release_patch >= 350" in INSTALLER and "requires_rcc_adaptive_routing=1" in INSTALLER,
       "416 adds exactly seven signed companions without changing <=415 recovery counts")
 check("Set(identity.pluginFileSHA256.keys) == Set([" in CLIENT and "identity.pluginFileSHA256.count <= 16" in CLIENT,
-      "Gateway requires the closed13-module identity without increasing cap16")
+      "Gateway requires the closed15-module identity without increasing cap16")
+client_inventory = re.search(r'Set\(identity\.pluginFileSHA256\.keys\)\s*==\s*Set\(\[(.*?)\]\)', CLIENT, re.S)
+check(client_inventory is not None and
+      len(re.findall(r'"([^\"]+)"', client_inventory.group(1))) == 15 and
+      set(re.findall(r'"([^\"]+)"', client_inventory.group(1))) == set(exact_bridge_list.split()),
+      "Gateway closed inventory exactly matches15 named packaged resources, without missing/extra names")
+check("expected_payload_files=48" in INSTALLER and "expected_component_files=51" in INSTALLER and
+      "release_patch >= 351" in INSTALLER and "requires_rcc_frozen_routes=1" in INSTALLER and
+      "requires signed RCC frozen route companion" in INSTALLER and
+      "refused an RCC frozen route companion in a legacy release" in INSTALLER,
+      "417 adds exactly two signed source modules;416 and older recovery counts/gates retained")
+check(len(exact_bridge_list.split()) == 15 and len(set(exact_bridge_list.split())) == 15 and
+      "frozen-route-artifacts.mjs" in exact_bridge_list and "frozen-route-predictor.mjs" in exact_bridge_list,
+      "closed inventory is exactly15 unique named resources, not a private artifact directory")
 for fixture in ("local-plan-proposal", "local-plan-planner", "joint-selector", "adaptive-policy",
                 "adaptive-plan-host", "routing-outcome", "adaptive-runtime", "adaptive-plugin",
-                "adaptive-joint-shadow", "routing-outcome-capture", "adaptive-prompt-views"):
+                "adaptive-joint-shadow", "routing-outcome-capture", "adaptive-prompt-views",
+                "frozen-route-artifacts", "frozen-route-predictor", "frozen-runtime"):
     check('node --test "$script_dir/fixtures/openclaw-rcc-' + fixture + '.test.mjs"' in RELEASE,
           "release executes exact pure routing fixture: " + fixture)
 check('"--append-system-prompt"' in MAIN and '"developerInstructions": instructions' in MAIN,

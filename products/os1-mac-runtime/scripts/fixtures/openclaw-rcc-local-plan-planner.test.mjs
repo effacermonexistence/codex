@@ -3,8 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createLocalPlanPlanner, LOCAL_PLAN_MODEL, LOCAL_PLAN_PURPOSE, LOCAL_PLAN_KERNEL,
-  LOCAL_PLAN_KERNEL_SHA256, LOCAL_PLAN_RESPONSE_FORMAT, LOCAL_PLAN_LIMITS}
+  LOCAL_PLAN_KERNEL_SHA256, LOCAL_PLAN_RESPONSE_FORMAT, LOCAL_PLAN_LIMITS,
+  LOCAL_PLAN_COMPACT_BUDGET, LOCAL_PLAN_COMPACT_PROMPT_SHA256}
   from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
+import {compileLocalPlanProposal} from '../../Resources/openclaw-os1-bridge/local-plan-proposal.mjs';
 import {validateLocalUsageEvent} from '../../Resources/openclaw-os1-bridge/resource-usage.mjs';
 const sha = s => createHash('sha256').update(s).digest('hex');
 const pause = ms => new Promise(r => setTimeout(r, ms));
@@ -38,10 +40,13 @@ function setup(complete = async () => reply(), options = {}) {
 test('one canned local proposal preserves exact objective and returns only untrusted data', async () => {
   const f = setup(), i = input(), r = await f.run(i), call = f.requests[0];
   assert.equal(f.calls(), 1); assert.equal(r.status, 'proposal'); assert.equal(r.raw_proposal, JSON.stringify(proposal()));
+  // Only validateCompletion's exact local origin + terminal stop can reach
+  // this return. Do not force Core to infer terminality from status alone.
+  assert.equal(r.completion_outcome_unknown, false);
   assert.equal(r.execution_authorized, false); assert.equal(r.quality_parity_verified, false); assert.equal(r.semantic_coverage_verified, false);
   assert.equal(Object.hasOwn(r, 'plan'), false); assert.equal(Object.hasOwn(r, 'candidate_id'), false);
   assert.equal(call.model, LOCAL_PLAN_MODEL); assert.equal(call.purpose, LOCAL_PLAN_PURPOSE);
-  assert.equal(call.maxTokens, 2048); assert.equal(call.temperature, 0); assert.equal(call.reasoning, 'off');
+  assert.equal(call.maxTokens, 512); assert.equal(call.temperature, 0); assert.equal(call.reasoning, 'off');
   assert.deepEqual(call.responseFormat, LOCAL_PLAN_RESPONSE_FORMAT); assert.ok(call.signal instanceof AbortSignal);
   const data = JSON.parse(call.messages[0].content);
   assert.equal(data.original_request, i.hostProjection.request); assert.equal(data.objective, i.hostProjection.objective);
@@ -99,7 +104,8 @@ test('visible input cap rejects instead of truncating exact request', async () =
   assert.equal(r.reason, 'planner_input_budget_exceeded'); assert.equal(f.calls(), 0);
 });
 test('low caller output/node caps are enforced and no larger token budget is inferred', async () => {
-  const f = setup(undefined, {limits: {max_tokens: 256, output_bytes: 100}}), r = await f.run(input());
+  const f = setup(async () => ({...reply(), text: ' '.repeat(700) + JSON.stringify(proposal())}),
+    {limits: {max_tokens: 256, output_bytes: 700}}), r = await f.run(input());
   assert.equal(f.requests[0].maxTokens, 256); assert.equal(r.reason, 'planner_output_budget_exceeded');
   const p = proposal(); p.nodes.push({...structuredClone(p.nodes[0]), proposal_node_id: 'n2'});
   p.final_output_proposal = {mode: 'ordered_collection', node_ids: ['read_one', 'n2']};
@@ -284,4 +290,187 @@ test('hidden reasoning tags/fields are hash-only even in failed raw capture', as
   const f = setup(async () => reply(p)), r = await f.run(input());
   assert.equal(r.reason, 'planner_reasoning_output_rejected'); assert.equal(r.raw_proposal, null);
   assert.equal(r.raw_model_output, null); assert.equal(r.raw_capture_status, 'reasoning_withheld_hash_only');
+});
+
+test('compact v2 contract bounds routing prose without changing compiler keys or kernel identity', async () => {
+  const f = setup(), r = await f.run(input()), call = f.requests[0], s = call.responseFormat;
+  assert.equal(LOCAL_PLAN_LIMITS.timeout_ms, 20000); assert.equal(LOCAL_PLAN_LIMITS.max_tokens, 512);
+  assert.equal(LOCAL_PLAN_LIMITS.output_bytes, 4096); assert.equal(LOCAL_PLAN_LIMITS.max_nodes, 8);
+  assert.equal(s.properties.schema.const, 2); assert.equal(s.properties.nodes.maxItems, 8);
+  assert.equal(s.properties.nodes.items.additionalProperties, false);
+  assert.equal(s.properties.nodes.items.properties.instruction.maxLength, 192);
+  assert.equal(s.properties.nodes.items.properties.required_output.maxLength, 96);
+  assert.equal(s.properties.nodes.items.properties.reason_code.maxLength, 48);
+  assert.equal(s.properties.nodes.items.properties.proposal_node_id.maxLength, 24);
+  assert.equal(s.properties.nodes.items.properties.requirement_refs.items.pattern,
+    '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$');
+  assert.equal(r.proposal_budget.version, LOCAL_PLAN_COMPACT_BUDGET.version);
+  assert.equal(r.proposal_budget.prompt_sha256, LOCAL_PLAN_COMPACT_PROMPT_SHA256);
+  assert.equal(r.kernel_sha256, LOCAL_PLAN_KERNEL_SHA256); assert.ok(call.systemPrompt.endsWith(LOCAL_PLAN_KERNEL));
+  assert.match(call.systemPrompt, /Do not restate the objective/);
+  assert.equal(r.proposal_budget.structural_fit_only, true);
+  assert.equal(r.proposal_budget.token_fit_verified, false); assert.equal(r.proposal_budget.latency_guaranteed, false);
+});
+
+test('unrepresentable mandatory IDs abstain before model rather than truncate or rename', async () => {
+  const i = input(), before = structuredClone(i);
+  i.hostProjection.requirement_ids = Array.from({length: 64}, (_, n) => `required_${n}_` + 'x'.repeat(80));
+  i.projection.requirements = i.hostProjection.requirement_ids.map(id => ({id, text: 'Keep this exact requirement.', status: 'explicit'}));
+  const ids = structuredClone(i.hostProjection.requirement_ids), f = setup(), r = await f.run(i);
+  assert.equal(r.reason, 'planner_proposal_budget_unrepresentable'); assert.equal(f.calls(), 0);
+  assert.equal(r.model_calls_started, 0); assert.deepEqual(i.hostProjection.requirement_ids, ids);
+  assert.equal(i.hostProjection.request, before.hostProjection.request);
+  assert.equal(r.proposal_budget.token_fit_verified, false);
+  assert.deepEqual(f.events.map(e => e.state), ['not_needed']);
+});
+
+test('a caller byte cap below even minimum v2 framing causes a zero-call typed fallback', async () => {
+  const f = setup(undefined, {limits: {output_bytes: 100}}), r = await f.run(input());
+  assert.equal(f.calls(), 0); assert.equal(r.reason, 'planner_proposal_budget_unrepresentable');
+  assert.equal(r.completion_outcome_unknown, false); assert.equal(r.raw_model_output, null);
+});
+
+test('mandatory material IDs participate in structural budget without converting unknown to required', async () => {
+  const make = required => {
+    const i = input(); i.hostProjection.material_aliases = {};
+    i.projection.materials = Array.from({length: 56}, (_, n) => {
+      const id = `material_${n}_` + 'x'.repeat(78); i.hostProjection.material_aliases[id] = `opaque:${n}`;
+      return {id, kind: 'source_snapshot', label: 'Source', read_status: 'unknown', authority_scope: 'task_data', required};
+    }); return i;
+  };
+  const f = setup(), r = await f.run(make(true)); assert.equal(f.calls(), 0);
+  assert.equal(r.reason, 'planner_proposal_budget_unrepresentable');
+  const p = proposal(); p.nodes[0].material_refs = [];
+  const g = setup(async () => reply(p)), unknown = make('unknown'), observed = await g.run(unknown);
+  assert.equal(g.calls(), 1); assert.equal(observed.status, 'proposal'); assert.equal(observed.requires_host_material_review, true);
+  assert.ok(JSON.parse(g.requests[0].messages[0].content).materials.every(m => m.required === 'unknown'));
+});
+
+for (const [name, change] of [
+  ['instruction UTF-8 bytes', p => p.nodes[0].instruction = '가'.repeat(65)],
+  ['required output UTF-8 bytes', p => p.nodes[0].required_output = '가'.repeat(33)],
+  ['reason bytes', p => p.nodes[0].reason_code = 'x'.repeat(49)],
+  ['generated node identity bytes', p => {p.nodes[0].proposal_node_id = 'n'.repeat(25); p.final_output_proposal.node_ids = ['n'.repeat(25)];}],
+]) test('compact returned plan rejects over-budget ' + name + ' without silently rewriting it', async () => {
+  const p = proposal(); change(p); const exact = JSON.stringify(p), f = setup(async () => ({...reply(), text: exact}));
+  const r = await f.run(input()); assert.equal(r.reason, 'planner_compact_node_budget_exceeded');
+  assert.equal(r.proposal, null); assert.equal(r.raw_model_output, exact); assert.equal(r.raw_proposal, null);
+  assert.equal(r.raw_output_sha256, sha(exact)); assert.equal(f.calls(), 1); assert.equal(r.automatic_retry, false);
+});
+
+test('compact directives retain exact original objective, source mapping and independent compiler obligations', async () => {
+  const i = input(), p = proposal(); p.nodes[0].instruction = 'Perform requirement r1.';
+  const f = setup(async () => reply(p)), r = await f.run(i), data = JSON.parse(f.requests[0].messages[0].content);
+  assert.equal(r.status, 'proposal'); assert.equal(data.original_request, i.hostProjection.request);
+  assert.equal(data.objective, i.hostProjection.objective); assert.deepEqual(data.requirements, i.projection.requirements);
+  const c = compileLocalPlanProposal(r.raw_proposal, i.hostProjection, i.expectedBinding);
+  assert.equal(c.original_objective.request, i.hostProjection.request);
+  assert.equal(c.original_objective.objective, i.hostProjection.objective);
+  assert.deepEqual(c.node_obligations[0].requirement_refs, ['r1']);
+  assert.deepEqual(c.plan.nodes[0].context_refs, [i.hostProjection.material_aliases.m1]);
+  assert.equal(c.execution_authorized, false); assert.equal(c.coverage.semantic_coverage_verified, false);
+});
+
+test('eight compact synthetic nodes preserve DAG and final ownership, not a native latency claim', async () => {
+  const p = proposal(); p.nodes = Array.from({length: 8}, (_, n) => ({...structuredClone(p.nodes[0]),
+    proposal_node_id: `n${n}`, instruction: 'Perform the assigned requirement.', required_output: 'Result',
+    dependencies: n ? [`n${n - 1}`] : [], reason_code: 'stage'}));
+  p.final_output_proposal = {mode: 'integration_node', node_ids: ['n7']};
+  assert.ok(Buffer.byteLength(JSON.stringify(p)) <= 4096);
+  const f = setup(async () => reply(p)), r = await f.run(input());
+  assert.equal(r.status, 'proposal'); assert.equal(r.proposal.nodes.length, 8);
+  assert.deepEqual(r.proposal.nodes[7].dependencies, ['n6']);
+  assert.equal(r.proposal.final_output_proposal.mode, p.final_output_proposal.mode);
+  assert.deepEqual(r.proposal.final_output_proposal.node_ids, p.final_output_proposal.node_ids);
+  assert.equal(r.proposal_budget.max_nodes, 8); assert.equal(r.proposal_budget.max_output_tokens, 512);
+  assert.equal(r.proposal_budget.token_fit_verified, false); assert.equal(r.proposal_budget.latency_guaranteed, false);
+});
+
+test('compact budget cannot bypass strict unknown fields or cyclic dependency validation', async () => {
+  const unknown = proposal(); unknown.nodes[0].approved = true;
+  const cycle = proposal(); cycle.nodes.push({...structuredClone(cycle.nodes[0]), proposal_node_id: 'n2', dependencies: ['read_one']});
+  cycle.nodes[0].dependencies = ['n2'];
+  for (const p of [unknown, cycle]) {
+    const f = setup(async () => reply(p)), r = await f.run(input());
+    assert.equal(r.status, 'fallback_required'); assert.equal(r.proposal, null); assert.equal(f.calls(), 1);
+  }
+});
+
+test('a tiny token limit is never treated as structural or latency proof', async () => {
+  // Canned response deliberately tests the boundary only; it does not assert
+  // a real512-token model can emit every graph or finish before20s.
+  const f = setup(async () => ({...reply(), stopReason: 'length'}), {limits: {max_tokens: 1}});
+  const r = await f.run(input()); assert.equal(f.requests[0].maxTokens, 1);
+  assert.equal(r.reason, 'planner_completion_receipt_invalid_or_truncated');
+  assert.equal(r.proposal_budget.token_fit_verified, false); assert.equal(r.proposal_budget.latency_guaranteed, false);
+  assert.equal(r.proposal, null); assert.equal(r.automatic_retry, false);
+});
+
+test('generation prose uses standard JSON string bounds, not a delimiter-consuming pattern', async () => {
+  const f = setup(); await f.run(input());
+  const properties = f.requests[0].responseFormat.properties.nodes.items.properties;
+  for (const [name, max] of [['instruction', 192], ['required_output', 96], ['reason_code', 48]]) {
+    assert.deepEqual(properties[name], {type: 'string', minLength: 1, maxLength: max});
+  }
+  assert.deepEqual(properties.proposed_owned_paths.items, {type: 'string', minLength: 1, maxLength: 1024});
+  // Structural branch regression against pinned upstream converter behavior,
+  // not execution of that converter or a real model: b11232 KIND_STRING picks
+  // pattern before min/maxLength and copies a character class into raw GBNF.
+  // That old class permits JSON delimiters/newlines, so apparent extra fields
+  // can still be a prefix of one unfinished grammar string until token limit.
+  const oldClass = /^[^\u0000]+$/u;
+  assert.equal(oldClass.test('note", "candidate_ids":["x"]}]}\n```\ncommentary'), true);
+  assert.equal(oldClass.test('x'.repeat(193)), true);
+  assert.equal(oldClass.test('note\0tail'), false);
+  // Identifiers keep their narrow, JSON-safe character-class constraint.
+  assert.equal(properties.proposal_node_id.pattern, '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$');
+  assert.equal(f.requests[0].responseFormat.properties.nodes.items.additionalProperties, false);
+  assert.deepEqual(f.requests[0].responseFormat.required,
+    ['schema', 'kind', 'nodes', 'final_output_proposal']);
+});
+
+for (const field of ['instruction', 'required_output', 'reason_code'])
+  test('host P1 still rejects escaped NUL in ' + field + ' after generation pattern removal', async () => {
+    const p = proposal(); p.nodes[0][field] = 'before\0after';
+    const raw = JSON.stringify(p); assert.ok(raw.includes('\\u0000'));
+    const f = setup(async () => ({...reply(), text: raw})), r = await f.run(input());
+    assert.equal(r.status, 'fallback_required'); assert.equal(r.reason, 'node_text');
+    assert.equal(r.raw_model_output, raw); assert.equal(r.raw_proposal, null);
+    assert.equal(r.execution_authorized, false); assert.equal(r.completion_outcome_unknown, false);
+  });
+
+test('host P1 still rejects an escaped NUL path and unexpected fields', async () => {
+  const nulPath = proposal(); nulPath.nodes[0].proposed_scope = 'workspace_write';
+  nulPath.nodes[0].proposed_owned_paths = ['notes/a\0.txt'];
+  const extra = proposal(); extra.nodes[0].candidate_ids = ['native_small'];
+  for (const [p, expected] of [[nulPath, 'path_hint_invalid'], [extra, 'proposal_node_unknown_or_missing_field']]) {
+    const raw = JSON.stringify(p), f = setup(async () => ({...reply(), text: raw})), r = await f.run(input());
+    assert.equal(r.status, 'fallback_required'); assert.equal(r.reason, expected);
+    assert.equal(r.raw_model_output, raw); assert.equal(r.raw_proposal, null); assert.equal(f.calls(), 1);
+  }
+});
+
+test('unescaped quotes/newlines and trailing commentary remain invalid JSON, never repaired', async () => {
+  const raw = JSON.stringify(proposal());
+  const marker = JSON.stringify(proposal().nodes[0].instruction);
+  for (const text of [raw.replace(marker, '"unescaped "quote""'),
+    raw.replace(marker, '"unescaped\nnewline"'), raw + '\n```\ncommentary']) {
+    assert.throws(() => JSON.parse(text));
+    const f = setup(async () => ({...reply(), text})), r = await f.run(input());
+    assert.equal(r.status, 'fallback_required'); assert.equal(r.reason, 'proposal_json');
+    assert.equal(r.raw_model_output, text); assert.equal(r.raw_proposal, null); assert.equal(f.calls(), 1);
+  }
+});
+
+test('properly escaped quotes and newlines in legitimate prose retain exact P1 meaning', async () => {
+  const p = proposal(); p.nodes[0].instruction = 'Read "quoted" text.\nPreserve both lines.';
+  p.nodes[0].required_output = 'A "faithful" result\nwith the condition.';
+  p.nodes[0].reason_code = 'source "quoted"\nline';
+  const raw = JSON.stringify(p), f = setup(async () => ({...reply(), text: raw})), r = await f.run(input());
+  assert.equal(r.status, 'proposal'); assert.equal(r.raw_proposal, raw);
+  const compiled = compileLocalPlanProposal(raw, input().hostProjection, input().expectedBinding);
+  assert.equal(compiled.plan.nodes[0].instruction, p.nodes[0].instruction);
+  assert.equal(r.proposal.nodes[0].required_output, p.nodes[0].required_output);
+  assert.equal(r.proposal.nodes[0].reason_code, p.nodes[0].reason_code);
+  assert.equal(r.completion_outcome_unknown, false); assert.equal(r.execution_authorized, false);
 });

@@ -158,6 +158,47 @@
             }
           }
         ]
+      },
+      "frozen_route_artifacts": {
+        "description": "Optional host-pinned DEVELOPMENT data, SHADOW only; no calibrated or live authority.",
+        "anyOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "manifest_sha256",
+              "manifest_bytes",
+              "loader_sha256",
+              "predictor_sha256"
+            ],
+            "properties": {
+              "schema": {
+                "const": 1
+              },
+              "manifest_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "manifest_bytes": {
+                "type": "integer",
+                "minimum": 2,
+                "maximum": 32768
+              },
+              "loader_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "predictor_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        ]
       }
     }
   }

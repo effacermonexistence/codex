@@ -4,8 +4,10 @@
 This document is not a release/install receipt, live routing activation,
 calibration artifact, quality-parity result or quota-savings measurement.
 `covered_live` cannot be activated by a configuration flag or hash-shaped JSON.
-P6–P9 native measurement, learned calibration, fresh/held-out evaluation and
-bounded live-family promotion are **not done by this change**.
+P6 has a separately recorded six-parent, two-case **development component**
+comparison, not Auto/live/full-task parity. P7 adds development-only artifact
+loading and finite inference plumbing, not learned calibration. Fresh/held-out
+evaluation and bounded live-family promotion are **not done by this change**.
 
 The objective remains quality/completeness under a frozen reference policy,
 then minimum supported total resources. Neither every node on the strongest
@@ -135,6 +137,73 @@ owner-engine bytes or execute a provider.
 The planner helper has a bounded host-requested revision API. The current
 shadow Core invocation supplies attempt index 0; this does not claim an
 automatic Core refinement loop or that a revision improves the result.
+
+### Local schema and observer failure recovery
+
+The proposal representation is bounded to 512 output tokens / 4,096 UTF-8
+bytes, separately from the original task/source bytes. A minimal structural
+byte-fit check is not a token-fit, latency or semantic-coverage certificate.
+Node prose is short routing data, not a replacement for the original ticket.
+
+Two real local component failures were preserved: a 20-second unknown-outcome
+timeout, then a known terminal `length` response with malformed proposal data.
+The pinned Ollama/llama.cpp converter's broad string-pattern branch bypasses
+the normal JSON-string length/escaping branch. Generic prose/path `pattern`
+constraints were removed **only from the generation schema**; P1 decoding,
+NUL/type/byte/scope/authority checks remain mandatory. A new one-call loopback
+component trial then returned a valid bounded proposal with `stop`. This is
+not a measured SLO, proof of every grammar state, official OpenClaw service
+execution, production Core success or quality equivalence.
+
+The existing SHADOW observer cannot block an otherwise valid original task
+solely because optional proposal computation times out or its completion is
+unknown. Its pending callback remains tracked; late output cannot re-plan,
+retry, adopt or write through a closed owner. Task cancellation, maintenance,
+quiescence and the whole-task deadline still forbid dispatch. Callback
+settlement and actual backend termination remain separate observations.
+
+Primary implementation sources actually inspected for the schema repair:
+[Ollama v0.35.1](https://github.com/ollama/ollama/tree/v0.35.1) and its pinned
+[llama.cpp b11232 converter](https://github.com/ggml-org/llama.cpp/blob/b11232/common/json-schema-to-grammar.cpp).
+These support the causal hypothesis; no internal compiled-grammar trace is
+claimed.
+
+### P7 development artifacts, not a calibrated router
+
+`frozen-route-artifacts.mjs` loads only a host-pinned, bounded private JSON
+inventory at service start. OFF or absent registration performs no artifact
+I/O. Exact bytes, closed inventory, private custody, no links, stable reads,
+duplicate-key/type checks and current code hashes are required. Malformed
+optional artifacts are quarantined without replacing the original route.
+Hashes establish byte identity, not label correctness, rights clearance or
+scientific validity. No datasets, weights or private original engine are
+shipped in the app.
+
+`frozen-route-predictor.mjs` accepts only the loader's immutable in-memory
+capability. It performs a bounded, deterministic development table lookup
+when CURRENT host features/configuration/reference/harness evidence exists.
+It keeps task success separate from reference matching and unknown resources
+separate from zero. Actual lookup gets a separately branded inference receipt;
+the pure selector's `predictor_executed: false` is not rewritten.
+This initial development format supports one native executable cohort
+(surface/transport/account/quota pool) per artifact, with exact model/effort
+configurations inside it. A mixed-provider pool requires a future per-config
+harness map; one binary hash must not be relabelled as several executables.
+
+All development outputs keep `calibration`, `forecasts` and `host_evidence`
+null and preserve the original host route. Synthetic, empty, unmeasured or
+development rows cannot become calibrated/held-out-accepted/live authority.
+The production native catalog still lacks the complete prepared feature and
+harness evidence needed by this provider: missing data returns unmeasured,
+not an invented context capacity, model rank, probability or cheap equivalence.
+
+The six-parent development comparison retained negative results: the Korean
+case failed citation mapping or raw output format in every lane; the English
+case passed its frozen finite checks and source-rubric review. Equal aggregate
+pass counts do not establish quality parity, especially when both outputs are
+wrong. That review was the current assistant's source-based review, not owner
+blind adoption or an independent gold standard. No live promotion, calibrated
+predictor, generic quota reduction or public proof follows from these cases.
 
 Related offline fixtures cover untrusted proposal compilation, exact tuple
 selection, typed outcome/idempotency, plugin policy limits and advisory-only

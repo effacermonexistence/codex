@@ -6,7 +6,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp, chmod, rm, mkdir, writeFile, readFile, realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createRCCRuntime, hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import {createRCCRuntime, hostContextFingerprint, RCCRuntimeError} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {createLocalPlanPlanner} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
 const H = s => createHash('sha256').update(s).digest('hex');
 const policyText = 'Preserve the original objective and source. Proposal is not execution authority.';
@@ -90,7 +90,7 @@ test('malformed trusted-candidate injection is preserved raw and cannot replace 
   const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
   assert.equal(done.state, 'returned_unverified'); assert.equal(h.tickets.length, 1);
   assert.equal(saved.adaptive_routing.raw_proposal, raw); assert.equal(saved.adaptive_routing.proposal_sha256, H(raw));
-  assert.equal(saved.adaptive_routing.proposed_unbound_plan, undefined);
+  assert.equal(saved.adaptive_routing.proposed_unbound_plan, null);
   assert.equal(saved.adaptive_routing.live_plan_changed, false); assert.equal(h.tickets[0].instruction, q.request);
 });
 test('foreign source policy skips observation, not source/quality guard', async t => {
@@ -117,7 +117,7 @@ test('quiescence tracks an abort-ignoring callback until ACTUAL settlement, neve
   const first = h.runtime.quiesce({schema: 1, request_id: 'stop_fixture'});
   assert.equal(first.safe_to_stop, false); assert(first.active_dispatches > 0);
   const held = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 2000});
-  assert.equal(held.state, 'held'); assert.equal(held.error, 'adaptive_plan_completion_unsettled');
+  assert.equal(held.state, 'held'); assert.equal(held.error, 'adaptive_plan_interrupted');
   assert.equal(h.tickets.length, 0);
   assert.equal(h.runtime.quiesce({schema: 1, request_id: 'still_waiting'}).safe_to_stop, false);
   resolve({status: 'proposal', raw_proposal: proposal()}); await sleep(30);
@@ -179,4 +179,223 @@ test('missing optional outcome source quarantines only accounting and does not r
   const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
   assert.equal(done.state, 'returned_unverified'); assert.equal(done.result.output, 'fixture result');
   assert.equal(saved.children[0].attempt_history[0].routing_outcome.status, 'quarantined');
+});
+
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => {resolve = yes; reject = no;});
+  return {promise, resolve, reject};
+};
+async function waitFor(predicate) {
+  for (let i = 0; i < 300 && !predicate(); i++) await sleep(5);
+  assert(predicate(), 'bounded synthetic observer checkpoint reached');
+}
+function timeoutObserver(runtime, q) {
+  const item = runtime.intentControllers.get(q.task_id);
+  assert(item);
+  // Deterministically trigger the SAME observer-local reason as its 20s timer,
+  // without waiting20s, modifying a production timeout or running a model.
+  item.controller.abort(new RCCRuntimeError('adaptive_plan_timeout'));
+}
+const ticketWithoutAttempt = ({attempt_id, ...ticket}) => ticket;
+
+test('settled unknown SHADOW preserves the exact OFF ticket/source/graph and cannot replay', async t => {
+  let calls = 0;
+  const h = await harness(t, {adaptiveRoutingPolicy: adaptive(), proposeLocalPlan: async () => {
+    calls++; return {status: 'proposal', raw_proposal: proposal(), completion_outcome_unknown: true};
+  }}), off = await harness(t), q = task(h.directory);
+  const done = await h.run(q), baseline = await off.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(done.state, baseline.state); assert.equal(done.result.output, baseline.result.output);
+  assert.deepEqual(ticketWithoutAttempt(h.tickets[0]), ticketWithoutAttempt(off.tickets[0]));
+  assert.deepEqual(saved.plan, off.runtime._load(q.task_id).plan); assert.deepEqual(saved.task, q);
+  assert.equal(saved.adaptive_routing.reason, 'shadow_backend_unknown_original_route_preserved');
+  assert.equal(saved.adaptive_routing.callback_pending, false);
+  assert.equal(saved.adaptive_routing.backend_completion_unknown, true);
+  assert.equal(saved.adaptive_routing.planner_invoked, true);
+  assert.equal(saved.adaptive_routing.proposed_unbound_plan, null);
+  assert.equal(saved.adaptive_routing.live_plan_changed, false);
+  assert.equal(saved.adaptive_routing.quality_certificate, false);
+  assert.equal(done.resource_usage.accounting_complete, false);
+  await h.runtime.submit(q); assert.equal(calls, 1); assert.equal(h.tickets.length, 1);
+});
+
+test('cooperative observer timeout preserves host floor and counts unknown local usage, not zero', async t => {
+  let calls = 0;
+  const planner = createLocalPlanPlanner({complete: request => {
+    calls++; return new Promise((_, reject) => request.signal.addEventListener('abort',
+      () => reject(request.signal.reason), {once: true}));
+  }});
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(), proposeLocalPlan: planner}), q = task(h.directory);
+  await h.runtime.submit(q); await waitFor(() => calls === 1); timeoutObserver(h.runtime, q);
+  const done = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 3000}), saved = h.runtime._load(q.task_id);
+  assert.equal(done.state, 'returned_unverified'); assert.equal(h.tickets.length, 1);
+  assert.equal(h.tickets[0].instruction, q.request); assert.equal(calls, 1);
+  assert.equal(saved.adaptive_routing.callback_pending, false);
+  assert.equal(saved.adaptive_routing.backend_completion_unknown, true);
+  assert.equal(done.resource_usage.plan_model_calls, 1);
+  assert.equal(done.resource_usage.local_calls_started, 1);
+  assert.equal(done.resource_usage.accounting_complete, false);
+  assert.equal(done.resource_usage.total_tokens_observed, null);
+  assert.equal(saved.resource_events.filter(e => e.stage === 'plan_proposal' && e.state === 'started').length, 1);
+  assert.equal(saved.resource_events.some(e => e.stage === 'plan_proposal' && e.state === 'not_needed'), false);
+});
+
+test('pending tool-free shadow fallback dispatches exact OFF floor once; quiescence still waits for actual callback', async t => {
+  const pending = deferred(); let calls = 0;
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: () => {calls++; return pending.promise;}}), off = await harness(t), q = task(h.directory);
+  try {
+    await h.runtime.submit(q); await waitFor(() => calls === 1); timeoutObserver(h.runtime, q);
+    const done = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 3000}); await off.run(q);
+    assert.equal(done.state, 'returned_unverified'); assert.equal(h.tickets.length, 1);
+    assert.deepEqual(ticketWithoutAttempt(h.tickets[0]), ticketWithoutAttempt(off.tickets[0]));
+    const saved = h.runtime._load(q.task_id), result = structuredClone(saved.result), plan = structuredClone(saved.plan);
+    assert.equal(saved.adaptive_routing.reason, 'shadow_callback_pending_original_route_preserved');
+    assert.equal(saved.adaptive_routing.callback_pending, true); assert.equal(saved.adaptive_routing.backend_completion_unknown, true);
+    assert.equal(h.runtime.intentControllers.size, 1);
+    const paused = h.runtime.quiesce({schema: 1, request_id: 'pending_shadow'});
+    assert.equal(paused.safe_to_stop, false); assert(paused.active_dispatches >= 1);
+    const invalid = '{"candidate_id":"untrusted-late-route","request":"replace original"}';
+    pending.resolve({status: 'proposal', raw_proposal: invalid, completion_outcome_unknown: false});
+    await waitFor(() => h.runtime.intentControllers.size === 0);
+    const after = h.runtime._load(q.task_id);
+    assert.deepEqual(after.plan, plan); assert.deepEqual(after.result, result); assert.deepEqual(after.task, q);
+    assert.equal(after.adaptive_routing.raw_proposal, invalid);
+    assert.equal(after.adaptive_routing.proposed_unbound_plan, null);
+    assert.equal(after.adaptive_routing.callback_pending, false); assert.equal(after.adaptive_routing.backend_completion_unknown, false);
+    assert.equal(after.adaptive_routing.reply_settled_after_abort, true);
+    assert.equal(h.tickets.length, 1); assert.equal(calls, 1);
+    assert.equal(h.runtime.quiesce({schema: 1, request_id: 'callback_settled'}).safe_to_stop, true);
+  } finally {pending.resolve({status: 'fallback_required', completion_outcome_unknown: true});}
+});
+
+for (const control of ['cancel', 'quiesce', 'close']) {
+  test(`authoritative ${control} during timeout grace forbids original-floor dispatch`, async t => {
+    const pending = deferred(); let entered = false;
+    const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+      proposeLocalPlan: () => {entered = true; return pending.promise;}}), q = task(h.directory);
+    try {
+      await h.runtime.submit(q); await waitFor(() => entered); timeoutObserver(h.runtime, q);
+      await sleep(10); // Inside the bounded grace, after its pre-await state read.
+      if (control === 'cancel') h.runtime.cancel({schema: 1, task_id: q.task_id});
+      else if (control === 'quiesce') h.runtime.quiesce({schema: 1, request_id: 'quiesce_during_grace'});
+      else await h.runtime.close({timeoutMs: 0});
+      if (control !== 'close') {
+        const done = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 2000});
+        assert.equal(done.state, control === 'cancel' ? 'cancelled' : 'held');
+        assert.equal(h.runtime.quiesce({schema: 1, request_id: 'not_physically_settled'}).safe_to_stop, false);
+      }
+      assert.equal(h.tickets.length, 0);
+      pending.resolve({status: 'proposal', raw_proposal: proposal(), completion_outcome_unknown: false}); await sleep(25);
+      assert.equal(h.tickets.length, 0, 'late result never restarts authoritative stopped work');
+    } finally {pending.resolve({status: 'fallback_required', completion_outcome_unknown: true});}
+  });
+}
+
+test('overall task deadline remains authoritative despite observer-local timeout', async t => {
+  const pending = deferred(); let entered = false;
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: () => {entered = true; return pending.promise;}});
+  const q = task(h.directory, {budget: {max_attempts: 1, max_parallel: 4, max_cost_units: null, max_duration_ms: 1000}});
+  try {
+    await h.runtime.submit(q); await waitFor(() => entered);
+    const done = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 2000});
+    assert.equal(done.state, 'held'); assert.equal(done.error, 'adaptive_plan_interrupted');
+    assert.equal(h.tickets.length, 0); assert.equal(h.runtime._load(q.task_id).created_at_ms + 1000 <= Date.now(), true);
+  } finally {pending.resolve({status: 'fallback_required', completion_outcome_unknown: true});}
+});
+
+test('observer soft fallback never resets native cost or attempt budgets', async t => {
+  const h = await harness(t, {adaptiveRoutingPolicy: adaptive(), proposeLocalPlan: async () =>
+    ({status: 'fallback_required', completion_outcome_unknown: true})});
+  const q = task(h.directory, {budget: {max_attempts: 1, max_parallel: 4, max_cost_units: 0, max_duration_ms: 10000}});
+  const done = await h.run(q);
+  assert.equal(done.state, 'held'); assert.equal(done.error, 'task_cost_budget_exhausted');
+  assert.equal(h.tickets.length, 0); assert.deepEqual(h.runtime._load(q.task_id).task.budget, q.budget);
+});
+
+test('native unknown effects and authoritative intent-resolution failure do not become optional shadow fallback', async t => {
+  let calls = 0;
+  const native = await harness(t, {adaptiveRoutingPolicy: adaptive(), proposeLocalPlan: async () =>
+    ({status: 'fallback_required', completion_outcome_unknown: true}), execute: async () => {calls++; throw Error('native outcome unknown');}});
+  const q = task(native.directory), result = await native.run(q);
+  assert.equal(result.state, 'effects_uncertain'); assert.equal(calls, 1);
+  let observations = 0;
+  const intent = await harness(t, {adaptiveRoutingPolicy: adaptive(), resolveIntent: async () => {throw Error('intent unavailable');},
+    proposeLocalPlan: async () => {observations++; return {status: 'fallback_required'};}});
+  const held = await intent.run(task(intent.directory));
+  assert.equal(held.state, 'held'); assert.equal(observations, 0); assert.equal(intent.tickets.length, 0);
+});
+
+test('late pending observer cannot write through closed owner or replay after restart', async t => {
+  const pending = deferred(); let calls = 0;
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: () => {calls++; return pending.promise;}}), q = task(h.directory);
+  await h.runtime.submit(q); await waitFor(() => calls === 1); timeoutObserver(h.runtime, q);
+  const done = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 3000}); assert.equal(done.state, 'returned_unverified');
+  await h.runtime.close({timeoutMs: 0});
+  const restarted = await createRCCRuntime({stateDir: h.directory, hostAutoPlan: true, catalog: async v => catalog(v),
+    execute: async () => assert.fail('terminal task replayed'), adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: async () => assert.fail('observer replayed')});
+  t.after(() => restarted.close());
+  const before = restarted.status({schema: 1, task_id: q.task_id});
+  pending.resolve({status: 'proposal', raw_proposal: proposal(), completion_outcome_unknown: false}); await sleep(30);
+  assert.deepEqual(restarted.status({schema: 1, task_id: q.task_id}), before);
+  assert.equal(restarted._load(q.task_id).adaptive_routing.raw_proposal, undefined);
+  assert.equal(restarted._load(q.task_id).adaptive_routing.callback_pending, true, 'new owner does not fabricate old callback settlement');
+  assert.equal(calls, 1); assert.equal(h.tickets.length, 1);
+});
+
+test('late callback lifecycle writes require the SAME original observer binding', async t => {
+  const pending = deferred(); let entered = false;
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: () => {entered = true; return pending.promise;}}), q = task(h.directory);
+  await h.runtime.submit(q); await waitFor(() => entered); timeoutObserver(h.runtime, q);
+  await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 3000});
+  h.runtime._update(q.task_id, 'fixture_replaced_binding', s => {s.adaptive_routing.binding = {foreign: 'synthetic'};});
+  const before = h.runtime._load(q.task_id);
+  pending.resolve({status: 'proposal', raw_proposal: proposal(), completion_outcome_unknown: false});
+  await waitFor(() => h.runtime.intentControllers.size === 0);
+  assert.deepEqual(h.runtime._load(q.task_id), before); assert.equal(h.tickets.length, 1);
+});
+
+test('ordinary optional observer exception preserves floor without fabricating backend completion', async t => {
+  const h = await harness(t, {adaptiveRoutingPolicy: adaptive(), proposeLocalPlan: async () => {throw Error('local transport rejected');}}), q = task(h.directory);
+  const done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(done.state, 'returned_unverified'); assert.equal(h.tickets.length, 1);
+  assert.equal(h.tickets[0].instruction, q.request);
+  assert.equal(saved.adaptive_routing.callback_pending, false);
+  assert.equal(saved.adaptive_routing.backend_completion_unknown, true);
+  assert.equal(done.resource_usage.total_tokens_observed, null);
+});
+
+test('unknown controller abort is not silently relabeled as the optional observer deadline', async t => {
+  const pending = deferred(); let entered = false;
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: () => {entered = true; return pending.promise;}}), q = task(h.directory);
+  try {
+    await h.runtime.submit(q); await waitFor(() => entered);
+    h.runtime.intentControllers.get(q.task_id).controller.abort(new RCCRuntimeError('foreign_abort_reason'));
+    const done = await h.runtime.wait({schema: 1, task_id: q.task_id}, {timeoutMs: 2000});
+    assert.equal(done.state, 'held'); assert.equal(done.error, 'adaptive_plan_interrupted'); assert.equal(h.tickets.length, 0);
+  } finally {pending.resolve({status: 'fallback_required', completion_outcome_unknown: true});}
+});
+
+test('restart of a persisted STARTED observer never replays it or automatically salvages a predispatch task', async t => {
+  const pending = deferred(); let calls = 0;
+  const h = await harness(t, {cancelGraceMs: 100, adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: () => {calls++; return pending.promise;}}), q = task(h.directory);
+  await h.runtime.submit(q); await waitFor(() => calls === 1);
+  assert.equal(h.runtime._load(q.task_id).adaptive_routing.state, 'started');
+  await h.runtime.close({timeoutMs: 0});
+  const restarted = await createRCCRuntime({stateDir: h.directory, hostAutoPlan: true, catalog: async v => catalog(v),
+    execute: async () => assert.fail('interrupted predispatch task replayed'), adaptiveRoutingPolicy: adaptive(),
+    proposeLocalPlan: async () => assert.fail('durable STARTED observer replayed')});
+  t.after(() => restarted.close());
+  const held = restarted.status({schema: 1, task_id: q.task_id});
+  assert.equal(held.state, 'held'); assert.equal(restarted._load(q.task_id).adaptive_routing.planner_invoked, true);
+  await restarted.submit(q);
+  pending.resolve({status: 'proposal', raw_proposal: proposal(), completion_outcome_unknown: false}); await sleep(25);
+  assert.deepEqual(restarted.status({schema: 1, task_id: q.task_id}), held);
+  assert.equal(calls, 1); assert.equal(h.tickets.length, 0);
 });

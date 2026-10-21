@@ -10,6 +10,7 @@ import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adapti
 import { createPlannerHostProjection, compileFreshPlannerProposal } from './adaptive-plan-host.mjs';
 import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector.mjs';
 import { captureRoutingOutcome } from './routing-outcome-capture.mjs';
+import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
 // The pinned OpenClaw plugin must call this module from its long-lived Gateway
@@ -2137,7 +2138,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, hostAutoPlan = false, ledgerLog = null,
-                                         adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null} = {}) {
+                                         adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null,
+                                         frozenRoutePredictor = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
@@ -2149,6 +2151,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   const adaptivePolicy = decodeAdaptiveRoutingPolicy(adaptiveRoutingPolicy);
   assert(proposeLocalPlan === undefined || typeof proposeLocalPlan === 'function', 'adaptive_planner_invalid');
   assert(jointRouteEvidence === null || typeof jointRouteEvidence === 'function', 'adaptive_joint_evidence_invalid');
+  assert(frozenRoutePredictor === null || isFrozenRoutePredictor(frozenRoutePredictor),
+    'adaptive_frozen_predictor_not_host_factory');
   assert(adaptivePolicy.mode !== 'shadow' || typeof proposeLocalPlan === 'function', 'adaptive_planner_missing');
   // Descriptor-shaped input cannot register calibrated authority. Until the
   // separate host artifact/admission rollout exists, never activate it by flag.
@@ -2201,7 +2205,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, hostAutoPlan, ledger, ledgerLog,
-                                 adaptivePolicy, proposeLocalPlan, jointRouteEvidence});
+                                 adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor});
   runtime.reconcileRestart();
   runtime.reconcileLedger();
   runtime.startQueued();
@@ -2212,7 +2216,7 @@ class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, ledger,
-               ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence}) {
+               ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -2225,6 +2229,7 @@ class RCCRuntime {
     this.verifierRegistry = verifierRegistry; this.hostAutoPlan = hostAutoPlan;
     this.adaptivePolicy = adaptivePolicy; this.proposeLocalPlan = proposeLocalPlan;
     this.jointRouteEvidence = jointRouteEvidence;
+    this.frozenRoutePredictor = frozenRoutePredictor;
     this.ledger = ledger; this.ledgerLog = ledgerLog;
     // Dispatched attempts whose ledger record is not written yet, with the
     // route facts fixed at dispatch: an attempt that settles after stop is
@@ -2865,6 +2870,50 @@ class RCCRuntime {
     }
   }
 
+  // P7 is an optional finite DEVELOPMENT observation inside this owner, not a
+  // calibrated selector/admission source. Native catalog rows alone lack the
+  // needed capacity/harness/feature evidence; do not manufacture it here.
+  _frozenPredictorShadow(task, node, plan, input = null) {
+    if (this.frozenRoutePredictor === null) return null;
+    try {
+      let prepared;
+      if (plain(input?.frozen_predictor_input)) {
+        const {current_bindings, features} = input.frozen_predictor_input;
+        assert(current_bindings?.rcc_source_sha256 === task.policy?.source_sha256,
+          'frozen_current_source_mismatch');
+        prepared = {current_bindings, features, selector_input: Object.fromEntries(
+          ['schema', 'task', 'candidates', 'selection_policy', 'quality_reference', 'execution_fallback',
+            'calibration', 'forecasts', 'host_evidence'].map(k => [k, input[k]]))};
+        prepared.selector_input.now_ms = Date.now();
+      }
+      const result = this.frozenRoutePredictor(prepared);
+      assert(plain(result) && !result.then && Buffer.byteLength(stable(result)) <= 131072 &&
+        result.execution_authorized === false && result.live_route_change_authorized === false &&
+        result.calibration === null && result.forecasts === null && result.host_evidence === null &&
+        result.calibration_validated === false && result.holdout_accepted === false,
+      'frozen_development_result_invalid');
+      if (result.predictor_inference_observed) {
+        const receipt = result.inference_receipt;
+        assert(isFrozenRouteInference(result) && receipt?.task_id === task.task_id &&
+          receipt.node_id === node.id && receipt.request_sha256 === task.request_sha256 &&
+          receipt.source_snapshot_sha256 === task.source_fingerprint &&
+          receipt.policy_sha256 === task.policy_sha256 && receipt.plan_sha256 === sha(Buffer.from(stable(plan))),
+        'frozen_inference_task_binding');
+      }
+      // No predictions or private dataset bodies enter the prompt/selector.
+      return {schema: 1, status: result.status, reason: result.reason,
+        artifact_loaded: result.artifact_loaded, artifact_manifest_sha256: result.artifact_manifest_sha256,
+        predictor_inference_observed: result.predictor_inference_observed,
+        inference_receipt: result.inference_receipt, selector_predictor_executed: false,
+        calibration_validated: false, holdout_accepted: false, live_route_change_authorized: false,
+        execution_authorized: false, quality_certificate: false};
+    } catch {
+      return {schema: 1, status: 'rejected', reason: 'frozen_development_observation_invalid',
+        predictor_inference_observed: false, calibration_validated: false, holdout_accepted: false,
+        live_route_change_authorized: false, execution_authorized: false, quality_certificate: false};
+    }
+  }
+
   /** P2/P4 shadow path inside this same durable owner. The model can propose
    * a graph; no graph or candidate from it is executed until a separate,
    * versioned host adoption policy passes. A failed observation preserves the
@@ -2887,7 +2936,8 @@ class RCCRuntime {
       // not supplied by the planner or invented from a model name. Until the
       // artifact loader is registered, keep the already-admitted host route.
       if (this.jointRouteEvidence === null) return {...base, state: 'unmeasured',
-        reason: 'joint_host_artifacts_not_registered', predictor_executed: false, selection: null};
+        reason: 'joint_host_artifacts_not_registered', predictor_executed: false, selection: null,
+        frozen_predictor: this._frozenPredictorShadow(task, node, plan)};
       try {
         const candidate = byID.get(node.candidate_id);
         const input = this.jointRouteEvidence({task: immutable(task), plan: immutable(plan),
@@ -2907,7 +2957,8 @@ class RCCRuntime {
             stable(c.config) === stable(exactConfig(byID.get(c.id)))), 'joint_shadow_evidence_binding');
         const selection = selectJointRoute({...input, now_ms: Date.now()});
         return {...base, state: 'observed', reason: selection.reason,
-          predictor_executed: selection.predictor_executed, selection};
+          predictor_executed: selection.predictor_executed, selection,
+          frozen_predictor: this._frozenPredictorShadow(task, node, plan, input)};
       } catch {
         return {...base, state: 'rejected', reason: 'joint_shadow_evidence_invalid',
           predictor_executed: false, selection: null};
@@ -2955,6 +3006,7 @@ class RCCRuntime {
       snapshot.state = 'planning'; snapshot.plan_provenance = 'host_exact_request_shadow';
       snapshot.adaptive_routing = {schema: 1, mode: 'shadow', state: 'started', planner_invoked: true,
         policy_id: policy.policy_id, policy_version: policy.version, binding: prepared.expectedBinding,
+        callback_pending: true, backend_completion_unknown: true,
         live_plan_changed: false, quality_certificate: false};
     });
     const controller = new AbortController(), item = {controller, promise: null};
@@ -2974,7 +3026,7 @@ class RCCRuntime {
       const current = this._load(taskID);
       if (stable(current?.adaptive_routing?.binding) !== stable(prepared.expectedBinding)) return result;
       // Late settlement can retain a source receipt, but NEVER re-adopts the
-      // proposal or restarts the held/cancelled task. After owner shutdown the
+      // proposal or restarts any task. After owner shutdown the
       // missing capture remains unknown rather than writing through a new owner.
       this._update(taskID, 'adaptive_reply_captured', snapshot => {
         const reportedHash = result?.raw_output_sha256 ?? result?.output_sha256;
@@ -2985,6 +3037,7 @@ class RCCRuntime {
           raw_capture_status: raw !== null && Buffer.byteLength(raw) <= 262_144 ? 'captured_exact' :
             ['not_returned', 'oversize_hash_only', 'reasoning_withheld_hash_only'].includes(result?.raw_capture_status)
               ? result.raw_capture_status : 'not_returned',
+          backend_completion_unknown: result?.completion_outcome_unknown !== false,
           reply_settled_after_abort: controller.signal.aborted};
       });
       return result;
@@ -2998,7 +3051,17 @@ class RCCRuntime {
         observeResourceUsage: event => this._recordResourceUsage(taskID, event)});
     }).then(captureReply).finally(() => {
       settled = true;
-      if (this.intentControllers.get(taskID) === item) this.intentControllers.delete(taskID);
+      if (this.intentControllers.get(taskID) !== item) return;
+      this.intentControllers.delete(taskID);
+      // Callback settlement is not backend termination. Keep that separate
+      // observation, and never write through a closed/replaced Core owner.
+      if (!this.closed) try {
+        const current = this._load(taskID);
+        if (stable(current?.adaptive_routing?.binding) === stable(prepared.expectedBinding))
+          this._update(taskID, 'adaptive_callback_settled', snapshot => {
+            snapshot.adaptive_routing = {...snapshot.adaptive_routing, callback_pending: false};
+          });
+      } catch { /* Optional lifecycle metadata cannot replace owner/state guards. */ }
     });
     try {
       const result = await Promise.race([item.promise, aborted]);
@@ -3031,21 +3094,30 @@ class RCCRuntime {
       const current = this._load(taskID);
       if (!current || current.cancel_requested || TERMINAL.has(current.state)) return false;
       if (!settled) {
-        // Unknown local completion is not permission to replay or start a new
-        // owner. The same controller remains tracked until its callback ends.
+        // This observer can only compute proposal DATA. A timeout is not
+        // permission to replay it or forget a still-pending local callback.
         await Promise.race([item.promise.catch(() => {}),
           new Promise(resolve => setTimeout(resolve, Math.min(this.cancelGraceMs, 1000)))]);
       }
-      if (!settled || error?.code === 'adaptive_plan_completion_unknown') {
-        this._hold(taskID, 'adaptive_plan_completion_unsettled'); return false;
-      }
-      if (this.stopping || this.quiescing || controller.signal.aborted ||
-          Date.now() >= state.created_at_ms + task.budget.max_duration_ms) {
+      // Cancellation/maintenance/deadline can arrive DURING the grace wait.
+      // Those authoritative controls still forbid dispatch; an observer-local
+      // deadline or unknown compute outcome alone does not change the host plan.
+      const latest = this.closed ? null : this._load(taskID);
+      if (!latest || latest.cancel_requested || TERMINAL.has(latest.state)) return false;
+      if (this.stopping || this.quiescing ||
+          Date.now() >= latest.created_at_ms + task.budget.max_duration_ms ||
+          (controller.signal.aborted && controller.signal.reason?.code !== 'adaptive_plan_timeout')) {
         this._hold(taskID, 'adaptive_plan_interrupted'); return false;
       }
       this._update(taskID, 'adaptive_plan_rejected', snapshot => {
         snapshot.adaptive_routing = {...snapshot.adaptive_routing, state: 'observed',
-          reason: 'shadow_proposal_invalid_original_route_preserved',
+          reason: !settled ? 'shadow_callback_pending_original_route_preserved' :
+            error?.code === 'adaptive_plan_completion_unknown' ? 'shadow_backend_unknown_original_route_preserved' :
+            controller.signal.aborted ? 'shadow_observer_timeout_original_route_preserved' :
+              'shadow_proposal_invalid_original_route_preserved',
+          callback_pending: !settled,
+          proposed_unbound_plan: null, candidate_preferences: [], node_obligations: [],
+          semantic_coverage_verified: false,
           live_plan_changed: false, quality_certificate: false};
       });
       return true;

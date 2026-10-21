@@ -152,6 +152,16 @@ verify_unnotarized_beta_package() {
     requires_rcc_adaptive_routing=1
   fi
 
+  # 0.9.351 (build417) adds two exact signed frozen-evidence companions.
+  # Keep 416's13 files and all older recovery identities/counts unchanged.
+  local requires_rcc_frozen_routes=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 351) )); then
+    expected_payload_files=48
+    expected_component_files=51
+    requires_rcc_frozen_routes=1
+  fi
+
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
     return 1
@@ -257,6 +267,18 @@ verify_unnotarized_beta_package() {
           -L "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" ]]; then
     echo "OS-1 beta verification refused an RCC resource-usage module in a legacy release." >&2; return 1
   fi
+  # RCC frozen route companion gate: source code only, never private artifacts.
+  for bridge_resource in frozen-route-artifacts.mjs frozen-route-predictor.mjs; do
+    if (( requires_rcc_frozen_routes )); then
+      [[ -f "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" &&
+         ! -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]] || {
+        echo "OS-1 beta verification requires signed RCC frozen route companion: $bridge_resource" >&2; return 1;
+      }
+    elif [[ -e "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ||
+            -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]]; then
+      echo "OS-1 beta verification refused an RCC frozen route companion in a legacy release." >&2; return 1
+    fi
+  done
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -309,6 +331,8 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/local-plan-proposal.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome-capture.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-artifacts.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-predictor.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

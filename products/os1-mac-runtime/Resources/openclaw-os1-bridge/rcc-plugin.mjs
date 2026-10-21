@@ -8,6 +8,8 @@ import { createRCCRuntime, effectiveExplicitRoutes, explicitRouteNodeID, explici
   localWorkerRow, RCCRuntimeError } from './rcc-runtime.mjs';
 import {decodeAdaptiveRoutingPolicy} from './adaptive-routing-policy.mjs';
 import {createLocalPlanPlanner, LOCAL_PLAN_LIMITS} from './local-plan-planner.mjs';
+import {loadFrozenRouteArtifacts} from './frozen-route-artifacts.mjs';
+import {createFrozenRoutePredictor} from './frozen-route-predictor.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -494,17 +496,23 @@ export async function verifyExactExplicitArithmetic({task, plan, children}, {sta
 /** Host configuration only, no model-authored settings. Factory limits are
  * the intersection of the frozen policy and the pinned local helper bounds;
  * a small declared budget can fail BEFORE generation, never be ignored. */
-export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal}) {
+export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, stateDir}) {
   if (pluginConfig != null && (typeof pluginConfig !== 'object' || Array.isArray(pluginConfig) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(pluginConfig)) ||
-      Reflect.ownKeys(pluginConfig).some(k => k !== 'adaptive_routing') ||
+      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts'].includes(k)) ||
       Object.values(Object.getOwnPropertyDescriptors(pluginConfig)).some(d => !Object.hasOwn(d, 'value'))))
     throw new RCCRuntimeError('adaptive_plugin_config_invalid');
   const policy = decodeAdaptiveRoutingPolicy(pluginConfig?.adaptive_routing);
   if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy};
   // A manifest hash in config does not register a calibrated host artifact.
   if (policy.mode !== 'shadow') throw new RCCRuntimeError('adaptive_live_policy_not_registered');
-  return {adaptiveRoutingPolicy: policy, proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
+  // Registration is host configuration, never task/proposal JSON. Optional
+  // failures quarantine its bytes; they do not fail the user's original task.
+  const registration = pluginConfig?.frozen_route_artifacts ?? null;
+  const loaded = registration === null ? null : loadFrozenRouteArtifacts({stateDir, mode: 'shadow', registration});
+  return {adaptiveRoutingPolicy: policy,
+    frozenRoutePredictor: loaded === null ? null : createFrozenRoutePredictor({artifacts: loaded.artifacts}),
+    proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
     limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
       max_tokens: Math.min(policy.planner_output_tokens, LOCAL_PLAN_LIMITS.max_tokens),
       max_nodes: policy.max_nodes, max_workers: policy.max_parallel,
@@ -538,7 +546,7 @@ export function registerRCCRuntime(api) {
       starting = createRCCRuntime({ stateDir,
         ...adaptiveRuntimeOptions({pluginConfig: api.pluginConfig,
           complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request)),
-          lifetimeSignal: () => plannerLifetime?.signal ?? null}),
+          lifetimeSignal: () => plannerLifetime?.signal ?? null, stateDir}),
         maximumWorkers: 4,
         maximumReadWorkersPerPool: 4,
         resolveIntent: routingIntentResolver({stateDir,

@@ -47,7 +47,7 @@ struct RCCRuntimeGatewayClientFixture {
         let plugin = root.appendingPathComponent("plugin", isDirectory: true)
         try fm.createDirectory(at: plugin, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         var pluginHashes: [String: String] = [:]
-        for file in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs"] {
+        for file in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs"] {
             let bytes = Data((file + " fake fixture bytes\n").utf8)
             try bytes.write(to: plugin.appendingPathComponent(file)); pluginHashes[file] = hash(bytes)
         }
@@ -448,7 +448,7 @@ struct RCCRuntimeGatewayClientFixture {
         }
         // Each signed companion is part of the same owner identity. Hash or
         // required-set failure happens before any fixture transport can run.
-        for name in ["adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs"] {
+        for name in ["adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs"] {
             let file = plugin.appendingPathComponent(name), original = try Data(contentsOf: file)
             try Data("mutated companion".utf8).write(to: file)
             do {
