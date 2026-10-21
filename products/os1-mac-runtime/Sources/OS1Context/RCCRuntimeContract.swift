@@ -362,19 +362,23 @@ public enum RCCRuntimeContract {
         /// Host-rechecked local-effects/fresh-session capability; absent preserves exclusive legacy dispatch.
         public var executionIsolation: String?
         public var executionIsolationSHA256: String?
+        public var stagedWriterEnvelopeSHA256: String?
+        public var stagedWriterBaseSHA256: String?
         public init(coverage: OperationalQuality.Coverage, scope: Scope, objectiveSHA256: String, contractSHA256: String,
                     contextSHA256: String, sourceSHA256: String?, startTreeSHA256: String, referencePolicySHA256: String,
-                    validUntilMS: Int64, bindingsChecked: Bool = true, executionIsolation: String? = nil, executionIsolationSHA256: String? = nil) {
+                    validUntilMS: Int64, bindingsChecked: Bool = true, executionIsolation: String? = nil, executionIsolationSHA256: String? = nil, stagedWriterEnvelopeSHA256: String? = nil, stagedWriterBaseSHA256: String? = nil) {
             self.coverage = coverage; self.scope = scope; self.objectiveSHA256 = objectiveSHA256
             self.contractSHA256 = contractSHA256; self.contextSHA256 = contextSHA256; self.sourceSHA256 = sourceSHA256
             self.startTreeSHA256 = startTreeSHA256; self.referencePolicySHA256 = referencePolicySHA256
             self.validUntilMS = validUntilMS; self.bindingsChecked = bindingsChecked; self.executionIsolation = executionIsolation; self.executionIsolationSHA256 = executionIsolationSHA256
+            self.stagedWriterEnvelopeSHA256 = stagedWriterEnvelopeSHA256; self.stagedWriterBaseSHA256 = stagedWriterBaseSHA256
         }
         enum CodingKeys: String, CodingKey {
             case coverage, scope, objectiveSHA256 = "objective_sha256", contractSHA256 = "contract_sha256"
             case contextSHA256 = "context_sha256", sourceSHA256 = "source_sha256", startTreeSHA256 = "start_tree_sha256"
             case referencePolicySHA256 = "reference_policy_sha256", validUntilMS = "valid_until_ms"
             case bindingsChecked = "bindings_checked", executionIsolation = "execution_isolation", executionIsolationSHA256 = "execution_isolation_sha256"
+            case stagedWriterEnvelopeSHA256 = "staged_writer_envelope_sha256", stagedWriterBaseSHA256 = "staged_writer_base_sha256"
         }
     }
     public struct Catalog: Codable, Equatable, Sendable {
@@ -643,13 +647,15 @@ public enum RCCRuntimeContract {
         public var allowNativeSubagents: Bool?
         public var executionIsolation: String?
         public var executionIsolationSHA256: String?
+        public var stagedWriterEnvelopeSHA256: String?
+        public var stagedWriterBaseSHA256: String?
         public init(schema: Int = 1, taskID: String, nodeID: String, attemptID: String, candidateID: String,
                     requestSHA256: String, policySHA256: String, policySourceSHA256: String, sourceFingerprint: String,
                     configurationSHA256: String, selectedConfig: ExactConfig, objective: String, instruction: String,
                     contextRefs: [String], ownedPaths: [String], originalRequest: String? = nil,
                     originalObjective: String? = nil, hostContext: HostContext? = nil,
                     nativeResumeSessionID: String? = nil, continuation: Continuation? = nil, coreRouting: CoreRouting? = nil, qualityContinuation: QualityContinuation? = nil,
-                    allowNativeSubagents: Bool? = nil, executionIsolation: String? = nil, executionIsolationSHA256: String? = nil) {
+                    allowNativeSubagents: Bool? = nil, executionIsolation: String? = nil, executionIsolationSHA256: String? = nil, stagedWriterEnvelopeSHA256: String? = nil, stagedWriterBaseSHA256: String? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.requestSHA256 = requestSHA256; self.policySHA256 = policySHA256
             self.policySourceSHA256 = policySourceSHA256; self.sourceFingerprint = sourceFingerprint
@@ -660,6 +666,7 @@ public enum RCCRuntimeContract {
             self.continuation = continuation; self.coreRouting = coreRouting; self.qualityContinuation = qualityContinuation
             self.allowNativeSubagents = allowNativeSubagents
             self.executionIsolation = executionIsolation; self.executionIsolationSHA256 = executionIsolationSHA256
+            self.stagedWriterEnvelopeSHA256 = stagedWriterEnvelopeSHA256; self.stagedWriterBaseSHA256 = stagedWriterBaseSHA256
         }
         enum CodingKeys: String, CodingKey {
             case schema, objective, instruction
@@ -672,6 +679,7 @@ public enum RCCRuntimeContract {
             case continuation, coreRouting = "core_routing", qualityContinuation = "quality_continuation"
             case allowNativeSubagents = "allow_native_subagents"
             case executionIsolation = "execution_isolation", executionIsolationSHA256 = "execution_isolation_sha256"
+            case stagedWriterEnvelopeSHA256 = "staged_writer_envelope_sha256", stagedWriterBaseSHA256 = "staged_writer_base_sha256"
         }
     }
     public struct Usage: Codable, Equatable, Sendable {
@@ -747,6 +755,19 @@ public enum RCCRuntimeContract {
             case stagedIntentID = "staged_intent_id", stagedReceiptSHA256 = "staged_receipt_sha256", installedReceipt = "installed_receipt"
         }
     }
+    /// Host-owned atomic workspace transaction result, never a model-authored grade.
+    public struct StagedWriter: Codable, Equatable, Sendable {
+        public enum State: String, Codable, Sendable { case applied, discarded, held }
+        public var state: State
+        public var receiptPath: String
+        public var receiptSHA256: String
+        public init(state: State, receiptPath: String, receiptSHA256: String) {
+            self.state = state; self.receiptPath = receiptPath; self.receiptSHA256 = receiptSHA256
+        }
+        enum CodingKeys: String, CodingKey {
+            case state, receiptPath = "receipt_path", receiptSHA256 = "receipt_sha256"
+        }
+    }
     public struct ExecutionRecord: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
@@ -781,13 +802,14 @@ public enum RCCRuntimeContract {
         /// lease only on true. Absent on records from older adapters.
         public var nativeTurnTerminated: Bool?
         public var operationalQuality: OperationalQuality?
+        public var stagedWriter: StagedWriter?
         public init(schema: Int = 1, taskID: String, nodeID: String, attemptID: String, candidateID: String,
                     configurationSHA256: String, selectedConfig: ExactConfig, acknowledgedConfig: ExactConfig?,
                     observedConfig: ExactConfig?, status: ExecutionStatus, output: String?, executionVerified: Bool,
                     taskVerified: Bool, taskQuality: TaskQuality, parityState: Parity, nativeReceipt: String?,
                     sideEffects: SideEffects, usage: Usage?, error: String? = nil,
                     dispatchStage: DispatchStage = .unknown, nativeSummary: String? = nil, handback: Handback? = nil,
-                    repairSource: RepairSource? = nil, nativeTurnTerminated: Bool? = nil, operationalQuality: OperationalQuality? = nil) {
+                    repairSource: RepairSource? = nil, nativeTurnTerminated: Bool? = nil, operationalQuality: OperationalQuality? = nil, stagedWriter: StagedWriter? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.configurationSHA256 = configurationSHA256; self.selectedConfig = selectedConfig
             self.acknowledgedConfig = acknowledgedConfig; self.observedConfig = observedConfig; self.status = status
@@ -798,11 +820,11 @@ public enum RCCRuntimeContract {
             self.nativeSummary = nativeSummary
             self.handback = handback
             self.repairSource = repairSource
-            self.nativeTurnTerminated = nativeTurnTerminated; self.operationalQuality = operationalQuality
+            self.nativeTurnTerminated = nativeTurnTerminated; self.operationalQuality = operationalQuality; self.stagedWriter = stagedWriter
         }
         enum CodingKeys: String, CodingKey {
             case schema, status, output, usage, error, handback
-            case repairSource = "repair_source", nativeTurnTerminated = "native_turn_terminated", operationalQuality = "operational_quality"
+            case repairSource = "repair_source", nativeTurnTerminated = "native_turn_terminated", operationalQuality = "operational_quality", stagedWriter = "staged_writer"
             case taskID = "task_id", nodeID = "node_id", attemptID = "attempt_id", candidateID = "candidate_id"
             case configurationSHA256 = "configuration_sha256", selectedConfig = "selected_config"
             case acknowledgedConfig = "acknowledged_config", observedConfig = "observed_config"
@@ -1272,6 +1294,12 @@ public enum RCCRuntimeContract {
                   (contract.executionIsolation == nil) == (contract.executionIsolationSHA256 == nil),
                   contract.executionIsolation == nil || (contract.executionIsolation == "codex_fresh_local_effects_v1" && contract.executionIsolationSHA256.map(isHash) == true),
                   contract.executionIsolation == nil || contract.sourceSHA256 == nil else { throw Rejection.invalidObservation }
+            guard (contract.stagedWriterEnvelopeSHA256 == nil) == (contract.stagedWriterBaseSHA256 == nil),
+                  contract.stagedWriterEnvelopeSHA256 == nil || (contract.stagedWriterEnvelopeSHA256.map(isHash) == true &&
+                    contract.stagedWriterBaseSHA256.map(isHash) == true && contract.coverage == .full &&
+                    contract.scope == .workspaceWrite && contract.sourceSHA256 == nil &&
+                    contract.executionIsolation == "codex_fresh_local_effects_v1" &&
+                    contract.stagedWriterEnvelopeSHA256 == contract.executionIsolationSHA256) else { throw Rejection.invalidObservation }
             if let request {
                 guard contract.referencePolicySHA256 == request.policySHA256,
                       contract.contextSHA256 == digest(Data((request.hostContext?.context ?? "").utf8)),
@@ -1359,6 +1387,11 @@ public enum RCCRuntimeContract {
                 value.selectedConfig.transport == .codexAppServer && value.nativeResumeSessionID == nil && value.continuation == nil) else {
             throw Rejection.invalidConfiguration
         }
+        guard (value.stagedWriterEnvelopeSHA256 == nil) == (value.stagedWriterBaseSHA256 == nil),
+              value.stagedWriterEnvelopeSHA256 == nil || (value.stagedWriterEnvelopeSHA256.map(isHash) == true &&
+                value.stagedWriterBaseSHA256.map(isHash) == true && value.selectedConfig.scope == .workspaceWrite &&
+                value.selectedConfig.surface == .codex && value.executionIsolation == "codex_fresh_local_effects_v1" &&
+                value.stagedWriterEnvelopeSHA256 == value.executionIsolationSHA256 && value.qualityContinuation == nil) else { throw Rejection.invalidConfiguration }
         // Only a native agent surface has sub-agents to allow (R5).
         if value.allowNativeSubagents == true, ![.codex, .claude].contains(value.selectedConfig.surface) {
             throw Rejection.invalidConfiguration
@@ -1443,6 +1476,21 @@ public enum RCCRuntimeContract {
               value.nativeReceipt.map({ text($0, max: 4_096) }) ?? true,
               value.nativeSummary.map({ $0.utf8.count <= 512_000 && !$0.contains("\0") }) ?? true,
               value.error.map({ text($0, max: 8_192) }) ?? true else { throw Rejection.invalidExecutionRecord }
+        if let staged = value.stagedWriter {
+            guard value.selectedConfig.surface == .codex, value.selectedConfig.scope == .workspaceWrite,
+                  text(staged.receiptPath, max: 4_096), staged.receiptPath.hasPrefix("/"), isHash(staged.receiptSHA256),
+                  value.handback == nil, value.repairSource == nil else { throw Rejection.invalidExecutionRecord }
+            if staged.state == .applied {
+                guard value.executionVerified, value.nativeTurnTerminated == true, value.taskVerified,
+                      value.operationalQuality?.coverage == .full else { throw Rejection.invalidExecutionRecord }
+            } else if staged.state == .discarded {
+                guard value.nativeTurnTerminated == true, value.sideEffects == .none, !value.taskVerified,
+                      value.error == "native_staged_writer_discarded" else { throw Rejection.invalidExecutionRecord }
+            }
+            if let ticket { guard ticket.stagedWriterEnvelopeSHA256 != nil else { throw Rejection.invalidExecutionRecord } }
+        } else if let ticket, ticket.stagedWriterEnvelopeSHA256 != nil, value.dispatchStage == .dispatched {
+            throw Rejection.invalidExecutionRecord
+        }
         if let q = value.operationalQuality {
             guard q.schema == 1, [q.contractSHA256, q.witnessSHA256, q.artifactSHA256, q.workspaceAfterSHA256].allSatisfy(isHash),
                   text(q.witnessPath, max: 4_096), q.witnessPath.hasPrefix("/"),
@@ -1676,7 +1724,7 @@ public enum RCCRuntimeContract {
     private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
-    private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256"])
+    private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256"])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
@@ -1687,9 +1735,10 @@ public enum RCCRuntimeContract {
     private static let continuationShape = Shape.object(["kind", "parent_attempt_id", "parent_native_receipt", "parent_native_receipt_sha256", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256"])
     private static let qualityContinuationShape = Shape.object(["schema", "parent_attempt_id", "parent_native_receipt", "parent_native_receipt_sha256", "witness_path", "witness_sha256", "expected_workspace_after_sha256", "original_instruction_sha256", "corrective_attempts"])
     private static let operationalQualityShape = Shape.object(["schema", "coverage", "assessment_state", "contract_sha256", "witness_path", "witness_sha256", "artifact_sha256", "workspace_after_sha256", "failed_check_ids", "corrective_attempts", "local_only_verified"])
-    private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation", "core_routing", "quality_continuation", "allow_native_subagents", "execution_isolation", "execution_isolation_sha256"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape, "core_routing": coreRoutingShape, "quality_continuation": qualityContinuationShape])
+    private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation", "core_routing", "quality_continuation", "allow_native_subagents", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape, "core_routing": coreRoutingShape, "quality_continuation": qualityContinuationShape])
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
-    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated", "operational_quality"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape, "operational_quality": operationalQualityShape])
+    private static let stagedWriterShape = Shape.object(["state", "receipt_path", "receipt_sha256"])
+    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated", "operational_quality", "staged_writer"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape, "operational_quality": operationalQualityShape, "staged_writer": stagedWriterShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
     private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
     private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])

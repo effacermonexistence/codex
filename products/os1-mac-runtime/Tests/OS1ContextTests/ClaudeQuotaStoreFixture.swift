@@ -135,6 +135,41 @@ func runClaudeQuotaStoreFixtures() throws {
         from: Data(#"{"outcome":"a_later_reason","attemptedAt":0,"nextEligibleAt":125}"#.utf8))
     check(futureOutcome.outcome == .unrecognized, "an outcome spelled by a newer build decodes as unrecognized, not a failure")
 
+    // ---- Send, provider observation and receipt are different instants ----
+    let sentAt = now, receivedAt = now.addingTimeInterval(2)
+    let observedDuringProbe = snapshot(observedAt: now.addingTimeInterval(1))
+    let empty = ClaudeQuotaStore(accountID: account)
+    let receivedLive = empty.recording(.ok, snapshot: observedDuringProbe,
+                                      attemptedAt: sentAt, receivedAt: receivedAt)
+    check(receivedLive.snapshot == observedDuringProbe &&
+          receivedLive.snapshot?.observedAt != sentAt && receivedLive.snapshot?.observedAt != receivedAt,
+          "an observation after send but before receipt is retained with its original provider time")
+    check(receivedLive.probe?.attemptedAt == sentAt &&
+          receivedLive.probe?.nextEligibleAt == sentAt.addingTimeInterval(125),
+          "receipt validation never moves the attempt/next-eligible timestamps")
+    let trulyFuture = snapshot(observedAt: receivedAt.addingTimeInterval(1))
+    check(empty.recording(.ok, snapshot: trulyFuture, attemptedAt: sentAt, receivedAt: receivedAt).snapshot == nil,
+          "an observation actually after receipt remains unknown, never clamped to now")
+    let oldGood = snapshot(observedAt: now.addingTimeInterval(-30))
+    let withOld = ClaudeQuotaStore(accountID: account, snapshot: oldGood)
+    check(withOld.recording(.ok, snapshot: trulyFuture, attemptedAt: sentAt, receivedAt: receivedAt).snapshot == oldGood,
+          "rejecting an invalid new observation preserves the last valid observation")
+    check(empty.recording(.ok, snapshot: snapshot(observedAt: now.addingTimeInterval(-601)),
+                          attemptedAt: sentAt, receivedAt: receivedAt).snapshot == nil,
+          "stale observations remain rejected at receipt time")
+    check(empty.recording(.ok, snapshot: snapshot(observedAt: now, account: "claude.other"),
+                          attemptedAt: sentAt, receivedAt: receivedAt).snapshot == nil,
+          "a different account never gains authority from receipt timing")
+    check(empty.recording(.ok, snapshot: snapshot(observedAt: now.addingTimeInterval(-1), sessionReset: now.addingTimeInterval(1)),
+                          attemptedAt: sentAt, receivedAt: receivedAt).snapshot == nil,
+          "a reset crossed during the round trip invalidates the old window")
+    for interrupted in [BackendHealth.QuotaProbe.Outcome.timeoutOrNoReply, .exitNonzero] {
+        let kept = withOld.recording(interrupted, snapshot: nil, attemptedAt: sentAt, receivedAt: receivedAt)
+        check(kept.snapshot == oldGood && kept.probe?.attemptedAt == sentAt &&
+              kept.probe?.nextEligibleAt == sentAt.addingTimeInterval(125) && kept.probe?.outcome == interrupted,
+              "an interrupted/cancelled metadata attempt retains its original spacing and observation")
+    }
+
     // ---- Store: spacing, one fetcher, retention -----------------------------
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-claude-quota-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -146,6 +181,44 @@ func runClaudeQuotaStoreFixtures() throws {
         var current: Int { lock.lock(); defer { lock.unlock() }; return value }
     }
     let spawns = Counter()
+
+    // The real shared-store entry point must validate AFTER the callback,
+    // not merely offer the fixed direct recording helper above.
+    let lateURL = root.appendingPathComponent("late-observation.json")
+    var lateClock = sentAt
+    let lateSpawns = Counter()
+    let late = ClaudeQuotaStore.observe(accountID: account, storeURL: lateURL, lockURL: lockURL,
+                                        now: { lateClock }) {
+        _ = lateSpawns.next(); lateClock = receivedAt
+        return (.ok, observedDuringProbe)
+    }
+    check(late.probed && late.snapshot == observedDuringProbe && lateSpawns.current == 1,
+          "a native observation newer than send survives observe's post-probe validation")
+    let savedLate = ClaudeQuotaStore.load(from: lateURL)
+    check(savedLate?.snapshot?.observedAt == observedDuringProbe.observedAt &&
+          savedLate?.probe?.attemptedAt == sentAt && savedLate?.probe?.nextEligibleAt == sentAt.addingTimeInterval(125),
+          "persisted receipt preserves distinct observation/send times without substituting receipt time")
+    check(!ClaudeQuotaStore.needsProbe(savedLate, accountID: account, other: nil, now: sentAt.addingTimeInterval(124)),
+          "post-send observation does not permit a retry before the existing spacing")
+    lateClock = sentAt.addingTimeInterval(126)
+    let interruptedStart = lateClock
+    let interrupted = ClaudeQuotaStore.observe(accountID: account, storeURL: lateURL, lockURL: lockURL,
+                                               now: { lateClock }) {
+        _ = lateSpawns.next(); lateClock = interruptedStart.addingTimeInterval(2)
+        return (.timeoutOrNoReply, nil)
+    }
+    check(interrupted.probed && interrupted.snapshot == observedDuringProbe && lateSpawns.current == 2 &&
+          interrupted.probe?.nextEligibleAt == interruptedStart.addingTimeInterval(125),
+          "an interrupted round trip uses start-based spacing, not receipt-based spacing")
+    check(!ClaudeQuotaStore.needsProbe(ClaudeQuotaStore.load(from: lateURL), accountID: account, other: nil,
+                                      now: interruptedStart.addingTimeInterval(124)) &&
+          ClaudeQuotaStore.needsProbe(ClaudeQuotaStore.load(from: lateURL), accountID: account, other: nil,
+                                     now: interruptedStart.addingTimeInterval(125)),
+          "cancellation/timeout spacing still opens at the existing boundary")
+    let expiring = ClaudeQuotaStore(accountID: account, snapshot: snapshot(observedAt: sentAt.addingTimeInterval(-599)))
+    check(expiring.recording(.timeoutOrNoReply, snapshot: nil, attemptedAt: sentAt, receivedAt: receivedAt).snapshot == nil,
+          "an observation that expires in flight is not retained using the older send timestamp")
+
     var clock = now
     func observe(_ outcome: BackendHealth.QuotaProbe.Outcome, _ observation: BackendHealth.QuotaSnapshot?,
                  other: BackendHealth.QuotaSnapshot? = nil) -> ClaudeQuotaStore.Observation {

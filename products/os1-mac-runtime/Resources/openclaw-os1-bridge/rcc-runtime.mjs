@@ -62,6 +62,8 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 //  (a) a full-coverage owner contract the host re-bound to this exact request;
 //  (b) a registered gold-blind node verifier for the certified class;
 //  (c) a signed class certificate (rcc-class-table.json, empty as shipped).
+// A bounded full-contract writer may descend only with the native host's exact
+// staged-workspace capability: failed candidates never touch the original.
 // No model-authored grade lowers a tuple. A certified read-only node runs the
 // cheaper tier (TIER_ROUTES.trivial, or the certificate's own tuple) only
 // beside a reference that can dispatch now, fixed as its one escalation, and
@@ -748,7 +750,8 @@ function verifiedSurfaceKinds(registry) {
  *    than 'auto') fix the reference those words leave (R10): source
  *    'owner_words'. A bare provider name binds that provider's reference
  *    (the catalog already holds only its rows), never a certified descent;
- *  - a writer or deterministic node is never certified (R5);
+ *  - a deterministic node is never certified here; writers need the exact
+ *    host-attested full-contract atomic-stage capability (413), never a hint;
  *  - (a) 'contract': a full-coverage read-only owner contract that the host
  *    re-bound at catalog time to this exact request, still valid, and a node
  *    running that request byte-exact;
@@ -771,7 +774,14 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
   if (task?.mode === 'explicit_routing_test' || routingIntent(catalog) !== null ||
       providerChosen(task?.host_context?.provider_preference) || providerChosen(task?.provider_preference))
     return reference('owner_words');
-  if (node?.kind !== 'agent' || node.scope !== 'read_only') return reference('uncertified');
+  if (node?.kind !== 'agent') return reference('uncertified');
+  if (node.scope === 'workspace_write') {
+    const c = catalog?.task_contract;
+    return node.instruction === task.request && stagedWriterContract(c) && c.bindings_checked === true &&
+      c.objective_sha256 === task.request_sha256 && c.valid_until_ms > now ?
+      {class: 'certified', source: 'contract', certificate_id: null} : reference('uncertified');
+  }
+  if (node.scope !== 'read_only') return reference('uncertified');
   const own = node.instruction === task.request;
   const contract = catalog?.task_contract;
   if (own && plain(contract) && contract.coverage === 'full' && contract.scope === 'read_only' &&
@@ -807,7 +817,8 @@ function certifiedEntries(pool, admission, catalog, verifierRegistry) {
   }
   const kinds = admission.source === 'contract' ? ['agent'] : admission.source === 'exact' ? ['agent', 'chat'] :
     verifiedSurfaceKinds(verifierRegistry);
-  const rows = pool.rows.filter(({candidate}) => kinds.includes(surfaceKind(candidate.surface)));
+  const rows = pool.rows.filter(({candidate}) => kinds.includes(surfaceKind(candidate.surface)) &&
+    (!stagedWriterContract(catalog.task_contract) || (candidate.surface === 'codex' && candidate.transport === 'codex_app_server')));
   return TIER_ROUTES[CERTIFIED_CLASS].map(([tier, effort], index) =>
     ({index, rows: entryRows(rows, {tier, effort}, catalog, null)}));
 }
@@ -873,6 +884,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     pinned(pool) ? 0 : 1, affine(pool) ? 0 : 1];
   const r11 = (a, b) => { const x = r11Keys(a), y = r11Keys(b); return x.map((v, i) => v - y[i]).find(d => d !== 0) ?? 0; };
   const pools = poolRows(node, catalog, {widenWrites, surface: explicitRoute?.surface ?? null})
+    .filter(pool => !stagedWriterContract(catalog.task_contract) || pool.pool === 'openai_codex')
     .sort((a, b) => r11(a.pool, b.pool) || (ordinal.get(a.pool) - ordinal.get(b.pool)));
   // One pass of the pools: each pool's offer is its first entry with a
   // dispatchable row; the offers then rank by R11.
@@ -1493,13 +1505,20 @@ function validAdmissionFacts(catalog, task) {
 }
 /** An owner contract the host re-bound at catalog time to exactly this
  * request, context and reference policy (R0(a)). */
+function stagedWriterContract(c) {
+  return plain(c) && c.coverage === 'full' && c.scope === 'workspace_write' && c.source_sha256 == null &&
+    c.execution_isolation === 'codex_fresh_local_effects_v1' && HASH.test(c.execution_isolation_sha256 ?? '') &&
+    HASH.test(c.staged_writer_envelope_sha256 ?? '') && HASH.test(c.staged_writer_base_sha256 ?? '') &&
+    c.staged_writer_envelope_sha256 === c.execution_isolation_sha256;
+}
 function validTaskContract(contract, catalog, task) {
   const required = ['coverage', 'scope', 'objective_sha256', 'contract_sha256', 'context_sha256',
     'start_tree_sha256', 'reference_policy_sha256', 'valid_until_ms', 'bindings_checked'];
   return plain(contract) && required.every(key => Object.hasOwn(contract, key)) &&
-    Object.keys(contract).every(key => required.includes(key) || ['source_sha256', 'execution_isolation', 'execution_isolation_sha256'].includes(key)) &&
+    Object.keys(contract).every(key => required.includes(key) || ['source_sha256', 'execution_isolation', 'execution_isolation_sha256', 'staged_writer_envelope_sha256', 'staged_writer_base_sha256'].includes(key)) &&
     ((contract.execution_isolation == null && contract.execution_isolation_sha256 == null) ||
       (contract.execution_isolation === 'codex_fresh_local_effects_v1' && HASH.test(contract.execution_isolation_sha256 ?? '') && contract.source_sha256 == null)) &&
+    ((contract.staged_writer_envelope_sha256 == null && contract.staged_writer_base_sha256 == null) || stagedWriterContract(contract)) &&
     ['partial', 'full'].includes(contract.coverage) && SCOPES.has(contract.scope) &&
     contract.bindings_checked === true && contract.objective_sha256 === catalog.request_sha256 &&
     [contract.contract_sha256, contract.context_sha256, contract.start_tree_sha256,
@@ -1945,6 +1964,10 @@ function pendingEscalation(child) {
 /** A certified descent's structural failure signals: an output that is only
  * whitespace, or a failure the native adapter recorded beside a finished
  * attempt (a failed task quality is already undeliverable). */
+function stagedWriterDiscarded(result) {
+  return result?.staged_writer?.state === 'discarded' && result.error === 'native_staged_writer_discarded' &&
+    result.side_effects === 'none' && result.native_turn_terminated === true;
+}
 function tierFailureSignal(result) {
   return typeof result.output !== 'string' || result.output.trim() === '' || result.error != null;
 }
@@ -1957,6 +1980,7 @@ function tierFailureSignal(result) {
  * (an older build) is never accepted: it escalates. */
 function certifiedAnswer(ladder, result) {
   if (tierFailureSignal(result)) return false;
+  if (result.selected_config?.scope === 'workspace_write' && result.staged_writer?.state !== 'applied') return false;
   const q = result.operational_quality;
   if (q && (q.coverage !== 'full' || ['unverified', 'mismatch'].includes(q.assessment_state))) return false;
   switch (ladder?.admitted_by) {
@@ -3919,7 +3943,13 @@ class RCCRuntime {
     if (granted) assert(resumeSession === null && snapshot.catalog.task_contract?.execution_isolation === granted.execution_isolation &&
       snapshot.catalog.task_contract?.execution_isolation_sha256 === granted.execution_isolation_sha256 &&
       snapshot.catalog.task_contract.valid_until_ms > Date.now(), 'execution_isolation_lost_before_dispatch');
-    return {schema: 1, ...(granted ?? {}), task_id: executionTask(snapshot).task_id, node_id: node.id,
+    const staged = snapshot.catalog.task_contract;
+    const staging = stagedWriterContract(staged) && node.scope === 'workspace_write' && candidate.surface === 'codex' ? {
+      execution_isolation: staged.execution_isolation, execution_isolation_sha256: staged.execution_isolation_sha256,
+      staged_writer_envelope_sha256: staged.staged_writer_envelope_sha256, staged_writer_base_sha256: staged.staged_writer_base_sha256} : {};
+    if (Object.keys(staging).length) assert(staged.valid_until_ms > Date.now() && resumeSession === null,
+      'staged_writer_authority_lost_before_dispatch');
+    return {schema: 1, ...(granted ?? {}), ...staging, task_id: executionTask(snapshot).task_id, node_id: node.id,
       attempt_id: attemptID, candidate_id: candidate.id,
       objective: node.instruction,
       original_request: executionTask(snapshot).request, original_objective: executionTask(snapshot).objective,
@@ -3937,7 +3967,7 @@ class RCCRuntime {
       'configuration_sha256', 'selected_config', 'status', 'dispatch_stage', 'side_effects',
       'execution_verified', 'task_verified', 'task_quality', 'parity_state'];
     const optional = ['acknowledged_config', 'observed_config', 'output', 'native_receipt',
-      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality'];
+      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality', 'staged_writer'];
     assert(plain(result) && required.every(key => Object.hasOwn(result, key)) &&
       Object.keys(result).every(key => required.includes(key) || optional.includes(key)) &&
       result.schema === 1 &&
@@ -4005,6 +4035,41 @@ class RCCRuntime {
       if (q.assessment_state === 'task_contract_verified')
         assert(q.coverage === 'full' && result.task_verified, 'operational_quality_upgrade_invalid');
     }
+    if (result.staged_writer != null) {
+      const st = result.staged_writer;
+      assert(ticket.staged_writer_envelope_sha256 != null && ticket.selected_config.scope === 'workspace_write' &&
+        keys(st, ['state', 'receipt_path', 'receipt_sha256']) && ['applied', 'discarded', 'held'].includes(st.state) &&
+        HASH.test(st.receipt_sha256 ?? '') && st.receipt_path === join(this.stateDir, 'staged-writer-receipts', ticket.attempt_id + '.json'),
+      'staged_writer_record_invalid');
+      // Exact private host receipt bytes, not the label or the model's self report.
+      let fd;
+      try {
+        const directory = dirname(st.receipt_path), directoryStat = lstatSync(directory);
+        assert(directoryStat.isDirectory() && !directoryStat.isSymbolicLink() && directoryStat.uid === process.getuid() &&
+          (directoryStat.mode & 0o077) === 0 && realpathSync(directory) === join(realpathSync(this.stateDir), 'staged-writer-receipts'), 'staged_writer_receipt_directory_invalid');
+        fd = openSync(st.receipt_path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const stat = fstatSync(fd);
+        assert(stat.isFile() && stat.uid === process.getuid() && stat.nlink === 1 &&
+          (stat.mode & 0o077) === 0 && stat.size <= 128_000, 'staged_writer_receipt_custody_invalid');
+        const raw = readFileSync(fd), receipt = JSON.parse(raw.toString('utf8'));
+        assert(sha(raw) === st.receipt_sha256 && receipt.schema === 1 && receipt.task_id === ticket.task_id &&
+          receipt.node_id === ticket.node_id && receipt.attempt_id === ticket.attempt_id &&
+          receipt.configuration_sha256 === ticket.configuration_sha256 && receipt.state === st.state &&
+          receipt.envelope_sha256 === ticket.staged_writer_envelope_sha256 && receipt.base_sha256 === ticket.staged_writer_base_sha256,
+        'staged_writer_receipt_binding_invalid');
+        if (st.state !== 'held') assert(receipt.local_only_verified === true && HASH.test(receipt.native_profile_sha256 ?? ''),
+          'staged_writer_local_effects_unproven');
+        if (st.state === 'discarded') assert(receipt.original_unchanged === true && receipt.native_turn_terminated === true &&
+          result.side_effects === 'none' && result.native_turn_terminated === true && !result.task_verified &&
+          result.error === 'native_staged_writer_discarded', 'staged_writer_discard_unproven');
+        if (st.state === 'applied') assert(receipt.native_turn_terminated === true && receipt.checks_passed === true &&
+          receipt.original_contract_sha256 === result.operational_quality?.contract_sha256 &&
+          receipt.mapped_final_artifact_sha256 === result.operational_quality?.artifact_sha256 &&
+          result.task_verified && result.native_turn_terminated === true &&
+          result.operational_quality?.coverage === 'full' && result.operational_quality.assessment_state === 'task_contract_verified',
+        'staged_writer_apply_unverified');
+      } finally { if (fd !== undefined) closeSync(fd); }
+    } else assert(ticket.staged_writer_envelope_sha256 == null || result.dispatch_stage !== 'dispatched', 'staged_writer_receipt_missing');
     if (result.handback != null) validateHandback(result.handback, ticket, result);
     if (result.repair_source != null) validateRepairSource(result.repair_source, ticket, result);
     return immutable(result);
@@ -4561,7 +4626,7 @@ class RCCRuntime {
     const holdReason = ({state, child}) => state.cancel_requested ? 'ladder_cancelled_before_escalation' :
       this.stopping ? 'owner_stopped_before_ladder_escalation' :
       result.dispatch_stage !== 'dispatched' || result.side_effects !== 'none' ? 'ladder_escalation_effects_reported' :
-      !child.ladder || child.ladder.escalated || candidate.scope !== 'read_only' ?
+      !child.ladder || child.ladder.escalated || !(candidate.scope === 'read_only' || stagedWriterDiscarded(result)) ?
         'ladder_verifier_failed_reference_unavailable' : null;
     let found = current();
     if (!found) return;
@@ -4623,8 +4688,9 @@ class RCCRuntime {
         }
       }
     }
-    assert(child.ladder?.source === 'tier' && node && cheap && reference && node.scope === 'read_only' &&
-      reference.scope === 'read_only' && reference.id !== cheap.id && reference.surface !== 'local' &&
+    assert(child.ladder?.source === 'tier' && node && cheap && reference &&
+      (node.scope === 'read_only' || (node.scope === 'workspace_write' && stagedWriterContract(snapshot.catalog.task_contract))) &&
+      reference.scope === node.scope && reference.id !== cheap.id && reference.surface !== 'local' &&
       (!explicitRoute || reference.surface === cheap.surface), 'ladder_reference_unavailable');
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: reference.id} : n)};
@@ -4814,6 +4880,22 @@ class RCCRuntime {
         const recorded = current.children.find(c => c.id === node.id);
         const descent = pendingEscalation(recorded);
         const mismatch = result.operational_quality?.assessment_state === 'mismatch';
+        if (result.staged_writer && result.staged_writer.state !== 'applied') {
+          const safe = stagedWriterDiscarded(result);
+          verifierOutcome = safe ? 'fail' : 'not_returned';
+          this._update(taskID, 'staged_writer_not_applied', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            Object.assign(child, {state: descent && safe ? 'waiting' : 'held', output: null,
+              execution_verified: false, task_quality: 'unverified', parity_state: 'unverified',
+              native_receipt: result.native_receipt, native_summary: null, usage: result.usage ?? null,
+              hold_reason: result.error ?? 'staged_writer_not_applied', dispatched_at_ms: null});
+            Object.assign(child.attempt_history.at(-1), {state: safe ? 'ladder_verifier_failed' : 'staged_writer_held',
+              native_receipt: result.native_receipt, usage: result.usage ?? null, staged_writer: result.staged_writer});
+            recordTurnSettlement(child.attempt_history.at(-1), result);
+          });
+          if (descent && safe) await this._ladderFailed(taskID, node, candidate, result, 'fail');
+          return;
+        }
         if (!descent && (mismatch || result.error === 'native_operational_quality_unverified' ||
             result.error === 'native_operational_quality_mismatch')) {
           // R6: a reference (or owner-chosen) node's completed output is the
@@ -4899,7 +4981,8 @@ class RCCRuntime {
           });
           if (discard) { await this._ladderFailed(taskID, node, candidate, result, 'not_returned'); return; }
           if (!deliverable) return;
-          verifierOutcome = 'not_registered';
+          verifierOutcome = result.task_verified && result.operational_quality?.coverage === 'full' &&
+            result.operational_quality.assessment_state === 'task_contract_verified' ? 'pass' : 'not_registered';
           if (verifier && this._load(taskID)?.children.find(c => c.id === node.id)?.state === 'waiting') {
             // No provider work runs while the verifier thinks: free the worker
             // slot and the pool now, so neither a cancel nor a slow verifier

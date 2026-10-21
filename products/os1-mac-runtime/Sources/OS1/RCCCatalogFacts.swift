@@ -47,12 +47,16 @@ enum RCCCatalogFacts {
                 OS1SourceWatch.containedRoot(workspace: host.workspace) == nil &&
                 LocalProjectWorkspace.root(containing: host.workspace, projectID: "os1-clodex") == nil
                 ? (try? RCCOperationalQuality.localEffectsBoundary(request: request, rootURL: rootURL)) : nil
+            let staged = isolatedBoundary.flatMap { boundary in
+                try? RCCStagedWriterTransaction.catalogBinding(prepared: prepared, workspace: host.workspace, boundary: boundary, now: now)
+            }
             return .init(coverage: contract.fullCoverage ? .full : .partial, scope: scope == .readOnly ? .readOnly : .workspaceWrite,
                 objectiveSHA256: objectiveSHA, contractSHA256: contract.sha256, contextSHA256: context, sourceSHA256: source,
                 startTreeSHA256: tree, referencePolicySHA256: request.policySHA256,
                 validUntilMS: Int64(untilMS.rounded(.down)),
                 executionIsolation: isolatedBoundary == nil ? nil : "codex_fresh_local_effects_v1",
-                executionIsolationSHA256: isolatedBoundary?.envelopeSHA256)
+                executionIsolationSHA256: isolatedBoundary?.envelopeSHA256,
+                stagedWriterEnvelopeSHA256: staged?.envelopeSHA256, stagedWriterBaseSHA256: staged?.baseSHA256)
         }
         return nil
     }

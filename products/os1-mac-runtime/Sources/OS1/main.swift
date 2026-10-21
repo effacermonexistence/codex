@@ -18247,6 +18247,16 @@ struct OS1Main {
                 guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOperationalQuality.Failure.binding }
                 let ticket = try RCCRuntimeContract.decodeTicket(rccPrivateInput(arguments[2]))
                 print(String(decoding: try RCCOperationalQuality.publicContractDraft(ticket: ticket), as: UTF8.self))
+            case "rcc-quality-workspace-identity":
+                // Read-only source acquisition for a trusted owner contract.
+                // This reports identity; it registers no contract and grants no execution rights.
+                guard arguments.count == 3, arguments[1] == "--workspace" else { throw RCCOperationalQuality.Failure.binding }
+                let workspace = URL(fileURLWithPath: arguments[2]).standardizedFileURL.path
+                let manifest = try RCCOperationalQuality.ContentManifest.capture(workspace: workspace)
+                let output: [String: Any] = ["schema": 1, "workspace": workspace,
+                    "start_tree_sha256": workspaceHash(workspace), "content_manifest_sha256": manifest.sha256,
+                    "entries": manifest.entries.count, "provider_calls": 0, "authority": "observation_only"]
+                print(String(decoding: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), as: UTF8.self))
             case "rcc-native-local-preflight":
                 guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOperationalQuality.Failure.binding }
                 print(String(decoding: try rccNativeLocalPreflight(rccPrivateInput(arguments[2])), as: UTF8.self))
@@ -19235,6 +19245,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         nativeReceipt: receipt.path, sideEffects: .none, usage: nil, dispatchStage: .notDispatched)
     let timing = try RCCNativePreparationTiming(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID,
         configurationSHA256: t.configurationSHA256, sourceFingerprint: t.sourceFingerprint, provider: provider)
+    var stagedTransaction: RCCStagedWriterTransaction.Transaction?
     var receiptPersisted = false
     defer {
         // This is a separate optional diagnostic, never execution/adoption
@@ -19349,9 +19360,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         defer { OS1SourceConfinement.activeRoots = []; withExtendedLifetime(custody.lease) {} }
         // The catalog admitted this chat-lane row through the chat gate, so
         // it is a selected lane: never hand a tool-free lane the real workspace.
-        let workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true) : h.workspace
+        var workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true) : h.workspace
         timing.mark(.workspaceHashStarted)
-        let before = workspaceHash(workspace)
+        var before = workspaceHash(workspace)
         timing.mark(.workspaceHashReady)
         executionWorkspace = workspace; executionWorkspaceBefore = before
         // The trusted operational checker is frozen BEFORE any native model
@@ -19368,6 +19379,16 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         var operationalAssessment: TaskQualityEvidence.Evaluation?
         let localQualityProfile: RCCNativeLocalQualityProfile?
         let ownerLocalBoundary = try RCCOperationalQuality.localEffectsBoundary(ticket: t)
+        stagedTransaction = try RCCStagedWriterTransaction.prepare(ticket: t,
+            preparation: operationalPreparation, boundary: ownerLocalBoundary)
+        if let transaction = stagedTransaction {
+            // The original is never granted to the speculative native writer.
+            // Core keeps its logical original workspace lease; the native
+            // profile and actual process cwd receive only this fresh clone.
+            workspace = transaction.stage.path
+            before = workspaceHash(workspace)
+            executionWorkspace = workspace; executionWorkspaceBefore = before
+        }
         try RCCOperationalQuality.enforceRequiredExecutionIsolation(required: t.executionIsolation,
             envelopeSHA256: t.executionIsolationSHA256, boundary: ownerLocalBoundary, config: t.selectedConfig,
             sourceBound: sourceRoot != nil, nativeResume: t.nativeResumeSessionID != nil,
@@ -19398,7 +19419,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective,
             continuation: isFullAccess ? fullAccessContinuationPrompt(request: t.instruction, report: parent?.output ?? "") : operationalPreparation?.correctionPrompt,
             answerOnly: answerOnly, surface: t.selectedConfig.surface,
-            scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion,
+            scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion + (stagedTransaction?.directive ?? ""),
             taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)
         let protected = protectedRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
         sourceConfined = sourceRoot != nil && t.selectedConfig.scope == .workspaceWrite
@@ -19440,7 +19461,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         operationalPreparation?.localOnlyVerified = localQualityProfile?.localOnlyVerified == true
         operationalPreparation?.nativeProfileSHA256 = localQualityProfile?.receiptSHA256
         timing.mark(.executeReturned)
-        let a = execution.artifact
+        var a = execution.artifact
         // execute returned: the native turn ended (a finished answer).
         record.nativeTurnTerminated = true
         if isFullAccess, let continuation = t.continuation,
@@ -19470,7 +19491,84 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             scope: t.selectedConfig.scope, unrecoveredBreakdowns: execution.nativeToolBreakdowns) {
             record.error = toolError
         }
-        if verified, let prepared = operationalPreparation, record.handback == nil {
+        if let transaction = stagedTransaction {
+            transaction.observeNative(terminated: record.nativeTurnTerminated == true,
+                localOnlyVerified: localQualityProfile?.localOnlyVerified == true,
+                profileSHA256: localQualityProfile?.receiptSHA256)
+            do {
+                guard verified, record.acknowledgedConfig == t.selectedConfig,
+                    record.error == nil, !a.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    a.output.utf8.count <= 256_000, !a.output.contains("\0"),
+                    !ExecutionCancellation.isCancelled, !Task.isCancelled else {
+                    throw RCCStagedWriterTransaction.Failure.unsettled
+                }
+                let stagedCheck = try transaction.stageAssessment(artifact: a)
+                guard stagedCheck.assessment.taskCompletionVerified, stagedCheck.contract.fullCoverage else {
+                    throw RCCStagedWriterTransaction.Failure.scope
+                }
+                let checked: RCCOperationalQuality.Finished
+                let applied = try transaction.commit(terminated: true,
+                    cancelled: ExecutionCancellation.isCancelled || Task.isCancelled) {
+                    // A host-derived artifact maps the actual staged native
+                    // record back to the ORIGINAL frozen task/tree. Raw native
+                    // artifact bytes stay preserved separately in the receipt.
+                    let finalArtifact = try transaction.mapped(execution.artifact)
+                    let verifiedOriginal = try RCCOperationalQuality.finish(transaction.originalPreparation,
+                        ticket: t, artifact: finalArtifact,
+                        artifactSHA256: sha256Hex(try RCCOperationalQuality.encoded(finalArtifact)),
+                        workspace: transaction.original.path)
+                    guard verifiedOriginal.checkerReceiptAvailable,
+                        verifiedOriginal.assessment.taskCompletionVerified,
+                        verifiedOriginal.descriptor?.coverage == .full else {
+                        throw RCCStagedWriterTransaction.Failure.scope
+                    }
+                    // Validate the prospective ordinary record's actual
+                    // fields BEFORE transaction adoption; do not manufacture
+                    // an applied descriptor to get through this pure check.
+                    var prospective = record
+                    prospective.taskVerified = true; prospective.taskQuality = .taskVerified
+                    prospective.parityState = .unverified; prospective.error = nil
+                    prospective.operationalQuality = verifiedOriginal.descriptor
+                    var checkStep = RunStepSummary(sequence: 1, provider: provider, action: signed.action,
+                        model: t.selectedConfig.model, effort: t.selectedConfig.effort.rawValue,
+                        revasDisposition: "execution_only", sessionID: execution.sessionID,
+                        permissionProfile: signed.permissionProfile, exitCode: finalArtifact.exitCode,
+                        output: finalArtifact.output, stderr: finalArtifact.stderr, durationMS: finalArtifact.durationMS,
+                        nativeRecord: execution.nativeRecord, surface: surface.rawValue,
+                        preDispatchGovernanceReceipt: execution.preDispatchGovernanceReceipt,
+                        taskQuality: verifiedOriginal.assessment)
+                    checkStep.os1SourceConfined = false; checkStep.os1ChangeRequired = false
+                    checkStep.os1FullAccessRequired = false
+                    if RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: t.nativeResumeSessionID,
+                        conversationSessionID: h.codexSessionID, chatLane: false) { checkStep.nativeSessionDetached = true }
+                    prospective.nativeSummary = String(decoding: try JSONEncoder().encode(
+                        RunSummary(status: "returned_unverified", steps: [checkStep])), as: UTF8.self)
+                    try RCCRuntimeContract.validate(prospective)
+                    return (finalArtifact, verifiedOriginal)
+                }
+                a = applied.0.0; checked = applied.0.1
+                record.stagedWriter = applied.1
+                record.sideEffects = .confirmed
+                record.taskVerified = true; record.taskQuality = .taskVerified; record.parityState = .unverified
+                record.operationalQuality = checked.descriptor; operationalAssessment = checked.assessment
+                record.error = nil
+            } catch {
+                // No rejected candidate is copied into the original. A known
+                // local-only ended turn may be discarded; everything else is
+                // held, including an uncertain swap or failed rollback.
+                let descriptor: RCCRuntimeContract.StagedWriter
+                if transaction.unchanged(), !transaction.swapped,
+                    let discarded = try? transaction.settle(.discarded,
+                        terminated: record.nativeTurnTerminated == true) { descriptor = discarded }
+                else { descriptor = try transaction.settle(.held,
+                    terminated: record.nativeTurnTerminated == true) }
+                record.stagedWriter = descriptor
+                record.taskVerified = false; record.taskQuality = .unverified; record.parityState = .unverified
+                record.operationalQuality = nil
+                record.sideEffects = descriptor.state == .discarded ? .none : .possible
+                record.error = descriptor.state == .discarded ? "native_staged_writer_discarded" : "native_staged_writer_held"
+            }
+        } else if verified, let prepared = operationalPreparation, record.handback == nil {
             do {
                 let artifactSHA = sha256Hex(try RCCOperationalQuality.encoded(a))
                 let checked = try RCCOperationalQuality.finish(prepared, ticket: t, artifact: a,
@@ -19648,6 +19746,14 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // (A failure after execute returned keeps that attestation.)
         record.nativeTurnTerminated = record.nativeTurnTerminated == true || RCCNativeAttemptOutcome.turnTerminated(
             dispatched: dispatched, transportAttested: rejected?.nativeTurnTerminated == true)
+        if let transaction = stagedTransaction, dispatched {
+            transaction.observeNative(terminated: record.nativeTurnTerminated == true,
+                localOnlyVerified: false, profileSHA256: nil)
+            record.stagedWriter = try transaction.settle(.held, terminated: record.nativeTurnTerminated == true)
+            record.sideEffects = .possible; record.taskVerified = false; record.taskQuality = .unverified
+            record.parityState = .unverified; record.operationalQuality = nil
+            record.error = "native_staged_writer_held"
+        }
     }
     timing.mark(.receiptPersistStarted)
     let data = try RCCRuntimeContract.encode(record)

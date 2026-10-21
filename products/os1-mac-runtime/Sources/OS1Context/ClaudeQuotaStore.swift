@@ -120,11 +120,15 @@ public struct ClaudeQuotaStore: Codable, Equatable, Sendable {
 
     /// The store after one attempt: a live observation replaces the old one;
     /// any other outcome keeps it (its own observedAt) and records why.
+    /// attemptedAt owns retry spacing, not observation validation: a server
+    /// may legitimately observe the quota after send but before receipt.
     public func recording(_ outcome: BackendHealth.QuotaProbe.Outcome, snapshot observed: BackendHealth.QuotaSnapshot?,
-                          attemptedAt: Date) -> ClaudeQuotaStore {
+                          attemptedAt: Date, receivedAt: Date) -> ClaudeQuotaStore {
         var next = self
-        if outcome == .ok, let observed, observed.accountID == accountID { next.snapshot = observed }
-        if let kept = next.snapshot, !kept.isRetainable(accountID: accountID, now: attemptedAt) { next.snapshot = nil }
+        if outcome == .ok, let observed, observed.isRetainable(accountID: accountID, now: receivedAt) {
+            next.snapshot = observed
+        }
+        if let kept = next.snapshot, !kept.isRetainable(accountID: accountID, now: receivedAt) { next.snapshot = nil }
         next.probe = .init(outcome: outcome, attemptedAt: attemptedAt,
                            nextEligibleAt: attemptedAt.addingTimeInterval(Self.minimumProbeSpacing))
         return next
@@ -171,9 +175,10 @@ public struct ClaudeQuotaStore: Codable, Equatable, Sendable {
                 return view(current, accountID: accountID, other: other, now: started, probed: false, rejectedAt: rejectedAt)
             }
             let result = probe()
+            let received = now()
             let own = current?.accountID == accountID ? current! : ClaudeQuotaStore(accountID: accountID)
-            let base = adopting(own, other: other, accountID: accountID, now: started) ?? own
-            let next = base.recording(result.outcome, snapshot: result.snapshot, attemptedAt: started)
+            let base = adopting(own, other: other, accountID: accountID, now: received) ?? own
+            let next = base.recording(result.outcome, snapshot: result.snapshot, attemptedAt: started, receivedAt: received)
             try? next.save(to: storeURL)
             return view(next, accountID: accountID, other: other, now: now(), probed: true, rejectedAt: rejectedAt)
         }

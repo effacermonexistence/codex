@@ -25,11 +25,15 @@ struct PreparedTaskQuality {
         /// local model-controlled effects. Automatic test discovery never does.
         let localEffectsOnly: Bool
         let publicRegressionSnapshot: PythonRegressionSnapshot?
-        init(contract: TaskQualityEvidence.Contract, checkerSHA256: String, timeoutSeconds: Int, workspacePaths: [String], localEffectsOnly: Bool = false, publicRegressionSnapshot: PythonRegressionSnapshot? = nil) {
+        /// Optional exact content base declared by the owner BEFORE routing.
+        /// Absence retains legacy checks but never admits speculative writers.
+        let stagedWriterBaseSHA256: String?
+        init(contract: TaskQualityEvidence.Contract, checkerSHA256: String, timeoutSeconds: Int, workspacePaths: [String], localEffectsOnly: Bool = false, publicRegressionSnapshot: PythonRegressionSnapshot? = nil, stagedWriterBaseSHA256: String? = nil) {
             self.contract = contract; self.checkerSHA256 = checkerSHA256; self.timeoutSeconds = timeoutSeconds
             self.workspacePaths = workspacePaths; self.localEffectsOnly = localEffectsOnly; self.publicRegressionSnapshot = publicRegressionSnapshot
+            self.stagedWriterBaseSHA256 = stagedWriterBaseSHA256
         }
-        enum CodingKeys: String, CodingKey { case contract, checkerSHA256, timeoutSeconds, workspacePaths, localEffectsOnly, publicRegressionSnapshot }
+        enum CodingKeys: String, CodingKey { case contract, checkerSHA256, timeoutSeconds, workspacePaths, localEffectsOnly, publicRegressionSnapshot, stagedWriterBaseSHA256 }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             contract = try c.decode(TaskQualityEvidence.Contract.self, forKey: .contract)
@@ -37,6 +41,7 @@ struct PreparedTaskQuality {
             workspacePaths = try c.decode([String].self, forKey: .workspacePaths)
             localEffectsOnly = try c.decodeIfPresent(Bool.self, forKey: .localEffectsOnly) ?? false
             publicRegressionSnapshot = try c.decodeIfPresent(PythonRegressionSnapshot.self, forKey: .publicRegressionSnapshot)
+            stagedWriterBaseSHA256 = try c.decodeIfPresent(String.self, forKey: .stagedWriterBaseSHA256)
         }
     }
     let envelope: Envelope
@@ -135,7 +140,8 @@ struct PreparedTaskQuality {
         contract.contextSHA256 = contextSHA256
         contract.startTreeSHA256 = startTreeSHA256
         return Self(envelope: Envelope(contract: contract, checkerSHA256: envelope.checkerSHA256,
-            timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths, localEffectsOnly: envelope.localEffectsOnly, publicRegressionSnapshot: envelope.publicRegressionSnapshot),
+            timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths, localEffectsOnly: envelope.localEffectsOnly, publicRegressionSnapshot: envelope.publicRegressionSnapshot,
+            stagedWriterBaseSHA256: envelope.stagedWriterBaseSHA256),
             checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression, resourceScheduleSnapshot: resourceScheduleSnapshot)
     }
 
@@ -1772,6 +1778,7 @@ func rccOperationalQualitySelfTest() throws {
     try fm.createDirectory(at: root.appendingPathComponent(".git"), withIntermediateDirectories: false)
     try rejects("unsupported Git administrative identity does not acquire automatic replay authority") { _ = try RCCOperationalQuality.ContentManifest.capture(workspace: root.path) }
     print("RCC operational exact-content custody: \(count) checks PASS; provider/auth calls 0")
+    try rccStagedWriterTransactionSelfTest()
 }
 
 /// Current-path checker/witness/correction fixture with a public original suite.

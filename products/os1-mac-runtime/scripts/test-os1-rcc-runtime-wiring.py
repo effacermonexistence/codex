@@ -179,7 +179,7 @@ check("let answerOnly = !isFullAccess && RCCDelegatedEnvelope.answerOnly(instruc
       "surface: t.selectedConfig.surface, scope: t.selectedConfig.scope, explicitRoutes: h.explicitRoutes)" in native and
       "let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective," in native and
       "answerOnly: answerOnly, surface: t.selectedConfig.surface," in native and
-      "scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion," in native and
+      'scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion + (stagedTransaction?.directive ?? ""),' in native and
       "taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)" in native,
       "every provider's child message comes from the one envelope with scope, surface, source rules and ids")
 check("ORIGINAL OWNER OBJECTIVE" not in native and "DELEGATED WORK ONLY" not in native and
@@ -449,5 +449,20 @@ check("if (signals.some(value => value.aborted)) record.error = 'local_model_com
       "'local_model_completion_failed'" in PLUGIN and "'native_outcome_uncertain_preserved'" not in
       section(PLUGIN, "export function localModelExecutor(", "async function readExactNativeReceipt("),
       "a failed or cancelled local completion is a finished no-effect turn, never an uncertain one")
+
+
+# 413: staging is native execution custody inside the same task, not a second planner.
+check(native.index("stagedTransaction = try RCCStagedWriterTransaction.prepare(") <
+      native.index("workspace = transaction.stage.path") <
+      native.index("localQualityProfile = try RCCNativeLocalQualityProfile(") <
+      native.index("let execution = try await"),
+      "actual native workspace/profile bind the private stage before any execution")
+check("transaction.stageAssessment(artifact: a)" in native and
+      "let finalArtifact = try transaction.mapped(execution.artifact)" in native and
+      "ticket: t, artifact: finalArtifact," in native and
+      "try RCCRuntimeContract.validate(prospective)" in native,
+      "immutable stage checker and original-contract witness both precede applied receipt")
+check('record.error = descriptor.state == .discarded ? "native_staged_writer_discarded" : "native_staged_writer_held"' in native,
+      "only exact host discard can signal clean-reference replay; unknown state stays held")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

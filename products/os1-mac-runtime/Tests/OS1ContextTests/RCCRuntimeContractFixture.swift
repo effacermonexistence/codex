@@ -651,5 +651,36 @@ func runRCCRuntimeContractFixture() throws {
     parentRecord.handback?.adoption = .rejected; parentRecord.taskQuality = .failed
     try check(try C.decodeRecord(C.encode(parentRecord)).handback?.adoption == .rejected,
               "known executed rejected output remains handback evidence, not quality proof")
+    // 413: a staging capability is a paired host fact, not a writer hint.
+    var stagedTicket = ticket
+    stagedTicket.selectedConfig.scope = .workspaceWrite
+    stagedTicket.selectedConfig.permissionProfile = .workspaceWrite
+    stagedTicket.selectedConfig.allowedPaths = ["**"]
+    stagedTicket.selectedConfig.surface = .codex
+    stagedTicket.selectedConfig.transport = .codexAppServer
+    stagedTicket.selectedConfig.quotaPool = .openAICodex
+    stagedTicket.configurationSHA256 = stagedTicket.selectedConfig.configurationSHA256
+    stagedTicket.ownedPaths = ["**"]
+    stagedTicket.nativeResumeSessionID = nil
+    stagedTicket.continuation = nil; stagedTicket.qualityContinuation = nil
+    stagedTicket.hostContext = nil
+    stagedTicket.executionIsolation = "codex_fresh_local_effects_v1"
+    stagedTicket.executionIsolationSHA256 = hash
+    stagedTicket.stagedWriterEnvelopeSHA256 = hash
+    stagedTicket.stagedWriterBaseSHA256 = policyHash
+    try check(try C.decodeTicket(C.encode(stagedTicket)).stagedWriterBaseSHA256 == policyHash,
+              "staged writer exact envelope/base pair survives strict wire")
+    var invalidStaging = stagedTicket; invalidStaging.stagedWriterBaseSHA256 = nil
+    try reject("missing staging base cannot gain transactional authority") { try C.validate(invalidStaging) }
+    invalidStaging = stagedTicket; invalidStaging.stagedWriterEnvelopeSHA256 = policyHash
+    try reject("staging and actual isolation must name identical envelope bytes") { try C.validate(invalidStaging) }
+    invalidStaging = stagedTicket; invalidStaging.selectedConfig.scope = .readOnly
+    invalidStaging.selectedConfig.permissionProfile = .readOnly; invalidStaging.selectedConfig.allowedPaths = []
+    invalidStaging.ownedPaths = []; invalidStaging.configurationSHA256 = invalidStaging.selectedConfig.configurationSHA256
+    try reject("read-only task cannot smuggle writer apply rights") { try C.validate(invalidStaging) }
+    invalidStaging = stagedTicket; invalidStaging.nativeResumeSessionID = "prior-session"
+    try reject("staged candidates cannot resume dirty native history") { try C.validate(invalidStaging) }
+    invalidStaging = stagedTicket; invalidStaging.executionIsolation = nil; invalidStaging.executionIsolationSHA256 = nil
+    try reject("staging needs independent native local effect isolation") { try C.validate(invalidStaging) }
     print("RCC Runtime contract: \(checks) offline identity/schema/config/DAG/state checks PASS; provider calls 0")
 }
