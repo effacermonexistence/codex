@@ -1946,12 +1946,16 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
     var environment: [String: String] { ["TMPDIR": scratch] }
     static func key(_ s: String) -> Bool { !s.isEmpty && s.utf8.count <= 256 && s.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45,95,64].contains($0) } }
     static func toml(_ s: String) -> String { String(decoding: try! JSONSerialization.data(withJSONObject: s, options: [.fragmentsAllowed, .withoutEscapingSlashes]), as: UTF8.self) }
+    // Native 0.163 command/exec canary: :minimal alone still permits shared
+    // /tmp. Deny that implicit alias explicitly; exact workspace/scratch paths
+    // retain their declared access (the native policy gives narrower paths priority).
+    // Public contract: https://learn.chatgpt.com/docs/permissions
     var fixedOverrides: [String] {
         ["default_permissions=\(Self.toml(Self.profileID))",
-         "permissions.\(Self.profileID).filesystem={\":minimal\"=\"read\",\(Self.toml(workspace))=\(Self.toml(ticket.selectedConfig.scope == .readOnly ? "read" : "write")),\(Self.toml(scratch))=\"write\"}",
+         "permissions.\(Self.profileID).filesystem={\":minimal\"=\"read\",\":slash_tmp\"=\"deny\",\(Self.toml(workspace))=\(Self.toml(ticket.selectedConfig.scope == .readOnly ? "read" : "write")),\(Self.toml(scratch))=\"write\"}",
          "permissions.\(Self.profileID).network.enabled=false",
          "features.apps=false", "features.browser_use=false", "features.browser_use_external=false", "features.computer_use=false",
-         "features.js_repl=false", "features.remote_control=false", "features.memories=false", "bypass_hook_trust=false", "web_search=\"disabled\"", "tools.web_search=false"]
+         "features.js_repl=false", "features.remote_control=false", "features.memories=false", "web_search=\"disabled\"", "tools.web_search=false"]
     }
     static func rowsEmpty(_ value: Any?) -> Bool {
         if value == nil || value is NSNull { return true }
@@ -2074,8 +2078,9 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
             let permissions = config["permissions"] as? [String: Any], let profile = permissions[Self.profileID] as? [String: Any],
             Self.rowsEmpty(profile["extends"]), let network = profile["network"] as? [String: Any], network["enabled"] as? Bool == false,
             network.allSatisfy({ $0.key == "enabled" || Self.rowsEmpty($0.value) }), Self.rowsEmpty(profile["workspace_roots"]),
-            let filesystem = profile["filesystem"] as? [String: Any], Set(filesystem.keys).isSubset(of: [":minimal", workspace, scratch, "glob_scan_max_depth"]),
+            let filesystem = profile["filesystem"] as? [String: Any], Set(filesystem.keys).isSubset(of: [":minimal", ":slash_tmp", workspace, scratch, "glob_scan_max_depth"]),
             Self.rowsEmpty(filesystem["glob_scan_max_depth"]), filesystem[":minimal"] as? String == "read",
+            filesystem[":slash_tmp"] as? String == "deny",
             filesystem[workspace] as? String == (ticket.selectedConfig.scope == .readOnly ? "read" : "write"),
             filesystem[scratch] as? String == "write" else { throw RCCOperationalQuality.Failure.unavailable }
     }
@@ -2190,13 +2195,33 @@ func rccNativeLocalQualityProfileSelfTest() throws {
     var effective: [String: Any] = ["default_permissions": RCCNativeLocalQualityProfile.profileID, "web_search": "disabled", "bypass_hook_trust": false,
         "features": ["hooks": true, "apps": false, "browser_use": false, "browser_use_external": false, "computer_use": false, "js_repl": false, "remote_control": false, "memories": false],
         "hooks": ["state": [:]], "permissions": [RCCNativeLocalQualityProfile.profileID: ["extends": NSNull(), "workspace_roots": NSNull(),
-            "filesystem": [":minimal": "read", workspace.path: "write", profile.scratch: "write", "glob_scan_max_depth": NSNull()],
+            "filesystem": [":minimal": "read", ":slash_tmp": "deny", workspace.path: "write", profile.scratch: "write", "glob_scan_max_depth": NSNull()],
             "network": ["enabled": false, "unix_sockets": NSNull(), "allow_local_binding": NSNull()]]]]
     do { try profile.verifyConfiguration(effective) }
     catch { throw OS1Error.message("Native local profile fixture normalized effective config: \(error)") }
     checks += 1
     try check(!RCCNativeLocalQualityProfile.toml(workspace.path).contains("\\/"), "TOML path serialization must not emit JSON-only slash escapes")
     try check(profile.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(workspace.path)) && $0.contains(RCCNativeLocalQualityProfile.toml(profile.scratch)) }), "exact roots, not dynamic cwd or broad tmp grant")
+    try check(profile.fixedOverrides.contains(where: { $0.contains("\":slash_tmp\"=\"deny\"") }), "shared slash-tmp deny is explicit in process profile")
+    try check(!profile.fixedOverrides.contains("bypass_hook_trust=false"), "ignored process hook-trust key is omitted; owned thread binding remains false")
+    // Actual native canary qualified this exact deny while workspace and
+    // private scratch still wrote successfully. A missing/rewritten token
+    // cannot inherit that observation just because other fields look safe.
+    for invalid: Any in ["read", "write", true, NSNull(), [".": "deny"]] {
+        var ps = effective["permissions"] as! [String: Any], entry = ps[RCCNativeLocalQualityProfile.profileID] as! [String: Any]
+        var fs = entry["filesystem"] as! [String: Any]; fs[":slash_tmp"] = invalid
+        entry["filesystem"] = fs; ps[RCCNativeLocalQualityProfile.profileID] = entry
+        var changed = effective; changed["permissions"] = ps
+        try reject("slash-tmp deny must be exact native string, not weaker/unknown/structured access") { try profile.verifyConfiguration(changed) }
+    }
+    do {
+        var ps = effective["permissions"] as! [String: Any], entry = ps[RCCNativeLocalQualityProfile.profileID] as! [String: Any]
+        var fs = entry["filesystem"] as! [String: Any]; fs.removeValue(forKey: ":slash_tmp")
+        entry["filesystem"] = fs; ps[RCCNativeLocalQualityProfile.profileID] = entry
+        var changed = effective; changed["permissions"] = ps
+        try reject("missing shared slash-tmp deny cannot pass a local-only profile") { try profile.verifyConfiguration(changed) }
+    }
+    try check(profile.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(workspace.path) + "=\"write\"") && $0.contains(RCCNativeLocalQualityProfile.toml(profile.scratch) + "=\"write\"") }), "writer workspace and exact private scratch remain writable")
     var profiles = effective["permissions"] as! [String: Any], row = profiles[RCCNativeLocalQualityProfile.profileID] as! [String: Any]
     var files = row["filesystem"] as! [String: Any]; files["/tmp"] = "write"; row["filesystem"] = files; profiles[RCCNativeLocalQualityProfile.profileID] = row
     var bad = effective; bad["permissions"] = profiles
@@ -2228,6 +2253,14 @@ func rccNativeLocalQualityProfileSelfTest() throws {
     let read = try RCCNativeLocalQualityProfile(ticket: ticket, workspace: workspace.path)
     defer { try? fm.removeItem(atPath: read.scratch) }
     try check(read.fixedOverrides.contains(where: { $0.contains(RCCNativeLocalQualityProfile.toml(workspace.path) + "=\"read\"") }), "read-only child cannot inherit write grant")
+    do {
+        var ps = effective["permissions"] as! [String: Any], entry = ps[RCCNativeLocalQualityProfile.profileID] as! [String: Any]
+        entry["filesystem"] = [":minimal": "read", ":slash_tmp": "deny", workspace.path: "read", read.scratch: "write"]
+        ps[RCCNativeLocalQualityProfile.profileID] = entry
+        var validRead = effective; validRead["permissions"] = ps
+        try read.verifyConfiguration(validRead); checks += 1
+        try check(read.fixedOverrides.contains(where: { $0.contains("\":slash_tmp\"=\"deny\"") && $0.contains(RCCNativeLocalQualityProfile.toml(read.scratch) + "=\"write\"") }), "read-only profile keeps shared-temp denied and only exact private scratch writable")
+    }
     let c = TaskQualityEvidence.Contract(basis: .declaredTrustedContract, objectiveSHA256: h, contextSHA256: h, sourceSHA256: nil, startTreeSHA256: h,
         scope: .workspaceWrite, verifierCodeSHA256: h, referencePolicySHA256: h, requiredCheckIDs: ["check"], fullCoverage: false,
         referenceProfiles: [], reference: nil, issuedAt: Date(), validUntil: Date().addingTimeInterval(60))

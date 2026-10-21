@@ -56,3 +56,32 @@ parent dispatch counts are not backend-call counts.
 Ordinary tasks without a complete verifier/certificate still have no automatic
 proof of cheap-route quality. This capability must not be generalized by
 silently promoting partial tests or by choosing benchmark winners after scores.
+
+
+## Explicit shared temporary-directory denial (build414)
+
+A real bounded validation found that the native named profile could permit a
+model-created helper in shared `/private/tmp` even when the recorded compatibility
+sandbox description excluded slash-tmp. The declared `:minimal` read grant and
+workspace/scratch roots were not enough to certify that boundary. That run's
+source-isolation result is HOLD; its successful functional checker does not
+retroactively make the out-of-scope write acceptable. Raw output and findings are
+preserved separately from the repaired implementation.
+
+Every local-quality profile now explicitly requires `:slash_tmp = "deny"`.
+The private per-attempt scratch directory remains separately writable. Actual
+configuration verification must reject a missing, non-string, read, or write
+replacement for that denial. A configuration/turn summary is not a substitute for
+a real command-level negative canary.
+
+The bounded no-model canary exercises the exact native named profile: workspace
+and own scratch writes succeed, an unrelated owned directory is denied, and a
+unique shared temporary-file write is denied. The previous profile is retained
+as the positive failure control. No model turn, API key, credential transfer,
+global permission change, or provider-billing fallback is needed for this test.
+
+Official profile semantics: https://learn.chatgpt.com/docs/permissions
+Official zero-turn command execution: https://learn.chatgpt.com/docs/app-server
+
+This repair does not turn the failed validation into quality-equivalence proof,
+expand finite checker coverage, or authorize replay of an ambiguous native call.

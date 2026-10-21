@@ -470,4 +470,29 @@ check("delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionO
       "step.nativeSessionEphemeralWorkspace != true &&" in APP and
       '!nativeSessionRebinds(ephemeralAnswer, bound: nil)' in APP,
       "disposable staged workspaces never seed or replace native conversation continuity, including first session")
+# 414: explicit shared /tmp deny is part of the exact native capability.
+QUALITY = (ROOT / "Sources/OS1/TaskQualityRuntime.swift").read_text()
+local_profile = section(QUALITY, "final class RCCNativeLocalQualityProfile:", "func rccNativeLocalQualityProfileSelfTest()")
+fixed = section(local_profile, "var fixedOverrides:", "static func rowsEmpty(")
+verify = section(local_profile, "func verifyConfiguration(", "func verifyThread(")
+check('\\\":slash_tmp\\\"=\\\"deny\\\"' in fixed and 'filesystem[":slash_tmp"] as? String == "deny"' in verify and
+      '[":minimal", ":slash_tmp", workspace, scratch, "glob_scan_max_depth"]' in verify,
+      "shared slash-tmp is explicitly denied and actual effective access must be the exact deny string")
+check('Self.toml(scratch))=\\\"write\\\"' in fixed and 'filesystem[scratch] as? String == "write"' in verify and
+      'ticket.selectedConfig.scope == .readOnly ? "read" : "write"' in fixed,
+      "explicit shared-temp deny preserves exact private scratch write and declared workspace scope")
+check('"bypass_hook_trust=false"' not in fixed and 'config["bypass_hook_trust"] as? Bool != true' in verify and
+      'params["config"] = ["bypass_hook_trust": false]' in MAIN,
+      "ignored process override removal keeps owned-thread hook-trust bypass false and rejects an exposed true setting")
+check('"missing shared slash-tmp deny cannot pass a local-only profile"' in QUALITY and
+      '"slash-tmp deny must be exact native string, not weaker/unknown/structured access"' in QUALITY and
+      '"read-only profile keeps shared-temp denied and only exact private scratch writable"' in QUALITY,
+      "native profile fixtures cover missing/retyped deny and legitimate writer/read-only scratch controls")
+staged = (ROOT / "Sources/OS1/RCCStagedWriterTransaction.swift").read_text()
+check("Run file-relative tests from their actual containing directory" in staged and
+      "Prefer inline commands for temporary helpers" in staged and
+      "Only when the original task permits temporary helper files" in staged and
+      "native private $TMPDIR" in staged and
+      "A writable scratch capability does not expand the original task scope" in staged,
+      "staged directives preserve real cwd and original task permission despite native private scratch access")
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

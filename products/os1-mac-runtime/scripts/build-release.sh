@@ -77,6 +77,7 @@ python3 "$script_dir/test-local-controller-provisioning.py"
 python3 "$script_dir/test-client-scan-policy.py"
 python3 "$script_dir/test-os1-openclaw-sidecar-wiring.py"
 python3 "$script_dir/test-os1-rcc-runtime-wiring.py"
+python3 "$script_dir/test-native-local-quality-tmp-boundary.py" --self-test
 node --test "$script_dir/fixtures/openclaw-rcc-admission.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-host-plan.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-reference-floor.test.mjs"
