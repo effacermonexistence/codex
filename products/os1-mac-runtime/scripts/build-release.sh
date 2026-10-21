@@ -61,6 +61,8 @@ PY
   echo 'CI release source is dirty; refusing an unstamped public package.' >&2
   exit 1
 fi
+python3 "$script_dir/test-release-version-identity.py" --self-test
+python3 "$script_dir/test-release-version-identity.py" --verify-current --expected-version "${OS1_VERSION:-}"
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-composer-viewport.py"
 python3 "$script_dir/test-task-quality-wiring.py"
