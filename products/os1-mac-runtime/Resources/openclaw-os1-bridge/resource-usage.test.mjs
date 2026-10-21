@@ -135,3 +135,36 @@ test('ongoing observations expose their as-of scope and missing usage remains in
   const running = summarizeTaskResources(snapshot({state: 'running', children: [child(attempt(2, null, 'dispatch_started'))]}));
   assert.equal(running.accounting_complete, false); assert.equal(running.native.usage_unknown, 1);
 });
+
+
+test('typed planner events count separately from intent and add all costs once', () => {
+  const r = summarizeTaskResources(snapshot({plan_provenance: 'host_exact_request_shadow',
+    resource_events: [event('started'), event(), event('started', {id: id(9), stage: 'plan_proposal'}),
+      event('completed', {id: id(9), stage: 'plan_proposal'})]}));
+  assert.equal(r.plan.model_calls, 1); assert.equal(r.local.intent.calls_started, 1);
+  assert.equal(r.local.planner.calls_started, 1); assert.equal(r.local.total_tokens_observed, 40);
+  assert.equal(r.total_tokens_observed, 40); assert.equal(r.accounting_complete, true);
+  assert.equal(r.quota_savings, 'not_measured');
+});
+test('planner revision, failure and cancellation consumption are retained', () => {
+  const r = summarizeTaskResources(snapshot({plan_provenance: 'host_exact_request_shadow',
+    resource_events: [event('failed', {id: id(9), stage: 'plan_proposal'}),
+      event('cancelled', {id: id(10), stage: 'plan_proposal'})]}));
+  assert.equal(r.plan.model_calls, 2); assert.equal(r.local.planner.calls_settled, 2);
+  assert.equal(r.local.intent.calls_started, 0); assert.equal(r.total_tokens_observed, 40);
+});
+test('planner not-needed is zero invocation, unknown invocation is not zero', () => {
+  let r = summarizeTaskResources(snapshot({plan_provenance: 'host_exact_request_shadow',
+    resource_events: [event('not_needed', {stage: 'plan_proposal'})]}));
+  assert.equal(r.plan.model_calls, 0); assert.equal(r.total_tokens_observed, 0);
+  r = summarizeTaskResources(snapshot({plan_provenance: 'host_exact_request_shadow', resource_events: []}));
+  assert.equal(r.plan.model_calls, null); assert.equal(r.accounting_complete, false);
+  r = summarizeTaskResources(snapshot({plan_provenance: 'host_exact_request_shadow',
+    resource_events: [event('started', {stage: 'plan_proposal'})]}));
+  assert.equal(r.plan.model_calls, 1); assert.equal(r.total_tokens_observed, null);
+});
+test('one ID cannot bridge intent-start into planner-terminal', () => {
+  const r = summarizeTaskResources(snapshot({resource_events: [event('started'), event('completed', {stage: 'plan_proposal'})]}));
+  assert.equal(r.accounting_complete, false); assert.equal(r.plan.model_calls, null);
+  assert(r.issues.includes('local_operation_lifecycle_conflict'));
+});

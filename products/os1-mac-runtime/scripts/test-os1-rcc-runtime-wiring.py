@@ -252,15 +252,16 @@ check("model: nil, effort: nil" in plan_activity and "OpenClaw execution plan is
 version_gate = INSTALLER.split("  local release_major release_minor release_patch", 1)[1].split(
     '  pkgutil --expand-full "$package_path"', 1)[0]
 version_gate = "  local release_major release_minor release_patch" + version_gate
-for version, expected in (("0.9.106", "18/21/0"), ("0.9.107", "19/22/0"),
-                          ("0.9.237", "22/25/0"), ("0.9.274", "23/26/0"),
-                          ("0.9.293", "24/27/0"), ("0.9.295", "36/39/0"),
-                          ("0.9.301", "36/39/0"), ("0.9.302", "38/41/0"),
-                          ("0.9.342", "38/41/0"), ("0.9.343", "39/42/1"),
-                          ("0.10.0", "39/42/1"), ("1.0.0", "39/42/1")):
+for version, expected in (("0.9.106", "18/21/0/0"), ("0.9.107", "19/22/0/0"),
+                          ("0.9.237", "22/25/0/0"), ("0.9.274", "23/26/0/0"),
+                          ("0.9.293", "24/27/0/0"), ("0.9.295", "36/39/0/0"),
+                          ("0.9.301", "36/39/0/0"), ("0.9.302", "38/41/0/0"),
+                          ("0.9.342", "38/41/0/0"), ("0.9.343", "39/42/1/0"),
+                          ("0.9.349", "39/42/1/0"), ("0.9.350", "46/49/1/1"),
+                          ("0.10.0", "46/49/1/1"), ("1.0.0", "46/49/1/1")):
     fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
-               version_gate + '\nprintf "%s/%s/%s" "$expected_payload_files" '
-               '"$expected_component_files" "$requires_rcc_resource_usage"; }; check_gate "$1"')
+               version_gate + '\nprintf "%s/%s/%s/%s" "$expected_payload_files" '
+               '"$expected_component_files" "$requires_rcc_resource_usage" "$requires_rcc_adaptive_routing"; }; check_gate "$1"')
     result = subprocess.run(["/bin/bash", "-c", fixture, "fixture", version],
                             capture_output=True, text=True, timeout=5)
     check(result.returncode == 0 and result.stdout == expected,
@@ -289,6 +290,38 @@ with tempfile.TemporaryDirectory(prefix="os1-resource-package-gate-") as temp:
     check(usage_result(1).returncode != 0 and usage_result(0).returncode != 0,
           "usage helper symbolic aliases rejected for both new and legacy releases")
 
+# Execute the exact new gate on synthetic private files. Content tampering is
+# checked by compiled source pins/codesign, not falsely claimed by presence tests.
+routing_companions = ('adaptive-plan-host.mjs', 'adaptive-routing-policy.mjs', 'joint-route-selector.mjs', 'local-plan-planner.mjs', 'local-plan-proposal.mjs', 'routing-outcome.mjs', 'routing-outcome-capture.mjs')
+adaptive_gate = INSTALLER.split("  # RCC adaptive routing companion gate:", 1)[1].split(
+    "  if (( requires_rcc_resource_usage )); then", 1)[0]
+adaptive_gate = adaptive_gate[adaptive_gate.index("  for bridge_resource in "):]
+with tempfile.TemporaryDirectory(prefix="os1-routing-package-gate-") as temp:
+    app = Path(temp) / "Fixture.app"
+    bridge = app / "Contents/Resources/openclaw-os1-bridge"
+    bridge.mkdir(parents=True)
+    fixture = ('set -eu; check_gate() { local app_path="$1" requires_rcc_adaptive_routing="$2" bridge_resource;\n' +
+               adaptive_gate + '\n}; check_gate "$1" "$2"')
+    def adaptive_result(required):
+        return subprocess.run(["/bin/bash", "-c", fixture, "fixture", str(app), str(required)],
+                              capture_output=True, text=True, timeout=5)
+    check(adaptive_result(0).returncode == 0 and adaptive_result(1).returncode != 0,
+          "old package has no companions; new package cannot omit them")
+    for name in routing_companions:
+        (bridge / name).write_text("export const synthetic = true;\n")
+    check(adaptive_result(1).returncode == 0 and adaptive_result(0).returncode != 0,
+          "new regular13-file bridge accepted; companions cannot enter old recovery")
+    for name in routing_companions:
+        helper = bridge / name
+        moved = helper.with_name("unexpected-" + name)
+        helper.rename(moved)
+        check(adaptive_result(1).returncode != 0,
+              "same-count renamed companion rejected: " + name)
+        helper.symlink_to(moved.name)
+        check(adaptive_result(1).returncode != 0 and adaptive_result(0).returncode != 0,
+              "companion symbolic alias rejected: " + name)
+        helper.unlink(); moved.rename(helper)
+
 pins = {
     "index.mjs": "pinnedPluginIndexSHA256",
     "openclaw.plugin.json": "pinnedPluginManifestSHA256",
@@ -296,6 +329,13 @@ pins = {
     "rcc-runtime.mjs": "rccRuntimeModuleSHA256",
     "rcc-plugin.mjs": "rccRuntimePluginSHA256",
     "resource-usage.mjs": "rccResourceUsageSHA256",
+    "adaptive-plan-host.mjs": "rccAdaptivePlanHostSHA256",
+    "adaptive-routing-policy.mjs": "rccAdaptiveRoutingPolicySHA256",
+    "joint-route-selector.mjs": "rccJointRouteSelectorSHA256",
+    "local-plan-planner.mjs": "rccLocalPlanPlannerSHA256",
+    "local-plan-proposal.mjs": "rccLocalPlanProposalSHA256",
+    "routing-outcome.mjs": "rccRoutingOutcomeSHA256",
+    "routing-outcome-capture.mjs": "rccRoutingOutcomeCaptureSHA256",
 }
 for filename, symbol in pins.items():
     file = PLUGIN_ROOT / filename
@@ -307,9 +347,9 @@ for filename, symbol in pins.items():
     check(RELEASE.count(resource) >= 2 and resource in INSTALLER,
           "exact bridge file appears in staged, expanded and installer allowlists: " + filename)
 
-exact_bridge_list = "index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs"
+exact_bridge_list = "index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs"
 check("for resource in " + exact_bridge_list in RELEASE and "cmp \"$runtime_root/Resources/openclaw-os1-bridge/$resource\"" in RELEASE,
-      "release copies exact six resources and compares source/staged/packaged bytes")
+      "release copies exact thirteen resources and compares source/staged/packaged bytes")
 check("expected_payload_files=38" in INSTALLER and "expected_component_files=41" in INSTALLER and
       "release_patch >= 302" in INSTALLER and "expected_payload_files=36" in INSTALLER,
       "new two-module package has exact version-gated counts; older recovery stays exact")
@@ -325,7 +365,17 @@ check(RELEASE.count("for resource in " + exact_bridge_list + "; do") == 3 and
       "resource-usage.test.mjs" not in exact_bridge_list and "*.mjs" not in RELEASE and
       "Contents/Resources/openclaw-os1-bridge/resource-usage.test.mjs" not in RELEASE and
       "rccResourceUsageSHA256" in BRIDGE,
-      "release copy and both identity comparisons use the same exact six files; no test/wildcard shipping")
+      "release copy and both identity comparisons use the same exact thirteen files; no test/wildcard shipping")
+check("expected_payload_files=46" in INSTALLER and "expected_component_files=49" in INSTALLER and
+      "release_patch >= 350" in INSTALLER and "requires_rcc_adaptive_routing=1" in INSTALLER,
+      "416 adds exactly seven signed companions without changing <=415 recovery counts")
+check("Set(identity.pluginFileSHA256.keys) == Set([" in CLIENT and "identity.pluginFileSHA256.count <= 16" in CLIENT,
+      "Gateway requires the closed13-module identity without increasing cap16")
+for fixture in ("local-plan-proposal", "local-plan-planner", "joint-selector", "adaptive-policy",
+                "adaptive-plan-host", "routing-outcome", "adaptive-runtime", "adaptive-plugin",
+                "adaptive-joint-shadow", "routing-outcome-capture", "adaptive-prompt-views"):
+    check('node --test "$script_dir/fixtures/openclaw-rcc-' + fixture + '.test.mjs"' in RELEASE,
+          "release executes exact pure routing fixture: " + fixture)
 check('"--append-system-prompt"' in MAIN and '"developerInstructions": instructions' in MAIN,
       "native execution retains real provider-supported governance channels")
 DISPLAY = (ROOT / "Sources/OS1Context/RCCNativeDisplayReceipts.swift").read_text()
@@ -374,17 +424,21 @@ check("hostAutoPlan: true" in PLUGIN and "export function hostPlan(" in RUNTIME 
       "plan: async" not in section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.") and
       not re.search(r"GRADED_PLAN|buildBoundedPlannerInput|decodePlannerResponse|route_class picks", PLUGIN) and
       not re.search(r"tierCostGate|cheaperRouteAdmission|LADDER_MIN_VERIFIED_PASSES|costGate", RUNTIME),
-      "Auto plans are host-built: no planner model call, no graded planner path, no cost gate or ledger ladder")
-# Build 407-g: the local model is reached only through intent resolution and
-# the explicit local route, never to plan Auto; the fixtures that guard the
-# host plan, the admission law and the reference floor run in every release
-# (hostAutoPlan defaults to false for injected-plan fixtures).
+      "live plans keep the host admission/floor: no graded planner path, cost gate or ledger ladder")
+# The new local completion is an explicitly frozen SHADOW producer inside the
+# SAME service. It cannot replace the live host plan or register parity.
 registration = section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.")
-check(registration.count("api.runtime.llm.complete(") == 2 and
+check(registration.count("api.runtime.llm.complete(") == 3 and
       re.search(r"localModelExecutor\(\{stateDir,\s*complete: request => plannerScope\.runInAsyncScope\(\(\) => api\.runtime\.llm\.complete\(request\)\)", registration) and
       re.search(r"resolveIntent: routingIntentResolver\(\{stateDir,\s*complete: request => plannerScope\.runInAsyncScope\(\(\) => api\.runtime\.llm\.complete\(request\)\)", registration) and
+      "...adaptiveRuntimeOptions({pluginConfig: api.pluginConfig" in registration and
       "purpose: 'os1.rcc.internal-routing-intent'" in PLUGIN,
-      "the local model completes only intent resolution and the explicit local route; Auto never asks it for a plan")
+      "same tool-free local service supplies intent, explicit local route and bounded shadow proposal")
+check("policy.mode !== 'shadow'" in PLUGIN and "adaptive_live_policy_not_registered" in PLUGIN and
+      "proposeLocalPlan: createLocalPlanPlanner" in PLUGIN and "compileFreshPlannerProposal(raw" in RUNTIME and
+      "shadow_proposal_validated_not_executed" in RUNTIME and "live_plan_changed: false" in RUNTIME and
+      "quality_certificate: false" in RUNTIME and registration.count("api.registerService({") == 1,
+      "shadow proposal stays unbound/non-authoritative; config cannot create another runtime or live parity")
 for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rcc-reference-floor"):
     check(f'node --test "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
           (ROOT / f"scripts/fixtures/{fixture}.test.mjs").is_file(),

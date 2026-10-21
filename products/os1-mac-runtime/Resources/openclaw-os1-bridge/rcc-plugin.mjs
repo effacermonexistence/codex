@@ -6,6 +6,8 @@ import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 import { createRCCRuntime, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
   localWorkerRow, RCCRuntimeError } from './rcc-runtime.mjs';
+import {decodeAdaptiveRoutingPolicy} from './adaptive-routing-policy.mjs';
+import {createLocalPlanPlanner, LOCAL_PLAN_LIMITS} from './local-plan-planner.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -489,6 +491,26 @@ export async function verifyExactExplicitArithmetic({task, plan, children}, {sta
   return verdict(true, output, 'exact_explicit_route_arithmetic_receipts');
 }
 
+/** Host configuration only, no model-authored settings. Factory limits are
+ * the intersection of the frozen policy and the pinned local helper bounds;
+ * a small declared budget can fail BEFORE generation, never be ignored. */
+export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal}) {
+  if (pluginConfig != null && (typeof pluginConfig !== 'object' || Array.isArray(pluginConfig) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(pluginConfig)) ||
+      Reflect.ownKeys(pluginConfig).some(k => k !== 'adaptive_routing') ||
+      Object.values(Object.getOwnPropertyDescriptors(pluginConfig)).some(d => !Object.hasOwn(d, 'value'))))
+    throw new RCCRuntimeError('adaptive_plugin_config_invalid');
+  const policy = decodeAdaptiveRoutingPolicy(pluginConfig?.adaptive_routing);
+  if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy};
+  // A manifest hash in config does not register a calibrated host artifact.
+  if (policy.mode !== 'shadow') throw new RCCRuntimeError('adaptive_live_policy_not_registered');
+  return {adaptiveRoutingPolicy: policy, proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
+    limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
+      max_tokens: Math.min(policy.planner_output_tokens, LOCAL_PLAN_LIMITS.max_tokens),
+      max_nodes: policy.max_nodes, max_workers: policy.max_parallel,
+      max_revisions: Math.min(policy.max_plan_revisions, policy.max_planner_calls - 1)}})};
+}
+
 export function registerRCCRuntime(api) {
   let runtime, starting;
   // Durable work outlives the submit RPC. Capture the service's registration
@@ -514,6 +536,9 @@ export function registerRCCRuntime(api) {
         lifetimeSignal: () => plannerLifetime?.signal ?? null});
       const local = ticket => ticket?.selected_config?.surface === 'local';
       starting = createRCCRuntime({ stateDir,
+        ...adaptiveRuntimeOptions({pluginConfig: api.pluginConfig,
+          complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request)),
+          lifetimeSignal: () => plannerLifetime?.signal ?? null}),
         maximumWorkers: 4,
         maximumReadWorkersPerPool: 4,
         resolveIntent: routingIntentResolver({stateDir,
@@ -523,11 +548,13 @@ export function registerRCCRuntime(api) {
         // this service holds before any native probe or worker runs (every
         // pre-dispatch refresh included); a mismatch holds the task typed.
         catalog: task => { policy(task); return nativeOperation('rcc-catalog', task); },
-        // R7: Core builds every plan itself (one node running the owner's
+        // Default: Core builds every live plan itself (one node running the owner's
         // request byte-exact, or one node per named route) and binds it by the
         // one admission law. No model plans, grades or rewrites it; repairs
         // re-resolve rows and never re-plan. The local model below answers
-        // only intent resolution and an explicit local route.
+        // only intent resolution and an explicit local route. The separately
+        // frozen SHADOW option can observe untrusted proposals inside this same
+        // owner, but cannot change a live plan or register parity by config.
         hostAutoPlan: true,
         execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :
           nativeOperation('rcc-adapter', ticket, signal),

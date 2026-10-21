@@ -487,15 +487,59 @@ public enum RCCRuntimeContract {
             case candidateID = "candidate_id", ownedPaths = "owned_paths", contextRefs = "context_refs"
         }
     }
+    /// Wire presence is semantic: omission is a legacy single worker, null
+    /// collects independent outputs, and a string names the final owner.
+    /// Optional<String> cannot preserve the first two states through Codable.
+    public enum PlanFinalNode: Equatable, Sendable {
+        case absent
+        case collection
+        case node(String)
+    }
+    /// A trusted caller may read a host-bound collection after Core inserted
+    /// writer safety ordering. A proposal cannot opt in through JSON.
+    public enum PlanValidationContext: Equatable, Sendable {
+        case authored
+        case hostBound
+        /// Caller has already established the original explicit-routing mode.
+        /// Existing Core fan-outs omit final_node_id and collect every route.
+        case hostBoundExplicitRoutes
+    }
     public struct Plan: Codable, Equatable, Sendable {
         public var schema: Int
         public var taskID: String
         public var requestSHA256: String
         public var nodes: [PlanNode]
-        public init(schema: Int = 1, taskID: String, requestSHA256: String, nodes: [PlanNode]) {
+        public var finalNodeID: PlanFinalNode
+        public init(schema: Int = 1, taskID: String, requestSHA256: String, nodes: [PlanNode],
+                    finalNodeID: PlanFinalNode = .absent) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.nodes = nodes
+            self.finalNodeID = finalNodeID
         }
-        enum CodingKeys: String, CodingKey { case schema, nodes, taskID = "task_id", requestSHA256 = "request_sha256" }
+        enum CodingKeys: String, CodingKey {
+            case schema, nodes, taskID = "task_id", requestSHA256 = "request_sha256", finalNodeID = "final_node_id"
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            schema = try c.decode(Int.self, forKey: .schema)
+            taskID = try c.decode(String.self, forKey: .taskID)
+            requestSHA256 = try c.decode(String.self, forKey: .requestSHA256)
+            nodes = try c.decode([PlanNode].self, forKey: .nodes)
+            if !c.contains(.finalNodeID) { finalNodeID = .absent }
+            else if try c.decodeNil(forKey: .finalNodeID) { finalNodeID = .collection }
+            else { finalNodeID = .node(try c.decode(String.self, forKey: .finalNodeID)) }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(schema, forKey: .schema)
+            try c.encode(taskID, forKey: .taskID)
+            try c.encode(requestSHA256, forKey: .requestSHA256)
+            try c.encode(nodes, forKey: .nodes)
+            switch finalNodeID {
+            case .absent: break
+            case .collection: try c.encodeNil(forKey: .finalNodeID)
+            case .node(let id): try c.encode(id, forKey: .finalNodeID)
+            }
+        }
     }
     /// Native receipt facts, not marker text or a model-authored permission grant.
     public enum HandbackKind: String, Codable, Sendable {
@@ -1326,7 +1370,8 @@ public enum RCCRuntimeContract {
             value.effort != .none && isHash(value.measurementSHA256) &&
             value.formatCheck.range(of: "^[a-z][a-z0-9_]{0,63}$", options: .regularExpression) != nil
     }
-    public static func validate(_ value: Plan, catalog: Catalog? = nil) throws {
+    public static func validate(_ value: Plan, catalog: Catalog? = nil,
+                                context: PlanValidationContext = .authored) throws {
         guard value.schema == schema else { throw Rejection.invalidSchema }
         guard id(value.taskID), isHash(value.requestSHA256), !value.nodes.isEmpty, value.nodes.count <= maximumNodes,
               Set(value.nodes.map(\.id)).count == value.nodes.count else { throw Rejection.invalidPlan }
@@ -1350,6 +1395,28 @@ public enum RCCRuntimeContract {
             finished.formUnion(ready.map(\.id))
         }
         let byID = Dictionary(uniqueKeysWithValues: value.nodes.map { ($0.id, $0) })
+        if context == .hostBoundExplicitRoutes {
+            guard value.nodes.allSatisfy({ $0.dependencies.isEmpty && $0.kind == .agent }) else {
+                throw Rejection.invalidPlan
+            }
+            if case .node = value.finalNodeID { throw Rejection.invalidPlan }
+        }
+        switch value.finalNodeID {
+        case .absent:
+            // Do not infer a sink, final worker or output order for old graphs.
+            guard value.nodes.count == 1 || context == .hostBoundExplicitRoutes else { throw Rejection.invalidPlan }
+        case .collection:
+            guard context == .hostBound || value.nodes.allSatisfy({ $0.dependencies.isEmpty }) else {
+                throw Rejection.invalidPlan
+            }
+        case .node(let final):
+            guard id(final), ids.contains(final) else { throw Rejection.invalidPlan }
+            var frontier = [final], covered = Set<String>()
+            while let next = frontier.popLast() {
+                if covered.insert(next).inserted { frontier += byID[next]?.dependencies ?? [] }
+            }
+            guard covered == ids else { throw Rejection.invalidPlan }
+        }
         func precedes(_ earlier: String, _ later: String) -> Bool {
             var frontier = byID[later]?.dependencies ?? [], visited = Set<String>()
             while let next = frontier.popLast() {
@@ -1587,13 +1654,15 @@ public enum RCCRuntimeContract {
                           usage.localWorkerAttempts, usage.nativeAttempts]
             guard usage.schema == 1, counts.allSatisfy({ $0.map { (0...9_007_199_254_740_991).contains($0) } ?? true }),
                   usage.localCallsSettled <= usage.localCallsStarted,
+                  usage.planModelCalls.map({ $0 <= usage.localCallsStarted }) ?? true,
                   usage.issues.count <= 64, usage.issues.allSatisfy({ text($0, max: 256) }),
                   usage.quotaSavings == "not_measured", usage.cashCost == "not_measured",
                   usage.accountingScope == "observed_attempts_as_of_snapshot_not_future_cost" else { throw Rejection.invalidSnapshot }
             if usage.accountingComplete {
                 guard usage.issues.isEmpty, let total = usage.totalTokensObserved,
                       let local = usage.localTokensObserved, let native = usage.nativeTokensObserved,
-                      total == local + native, usage.planModelCalls == 0 else { throw Rejection.invalidSnapshot }
+                      total == local + native, usage.planModelCalls != nil,
+                      usage.localCallsSettled == usage.localCallsStarted else { throw Rejection.invalidSnapshot }
             } else if usage.totalTokensObserved != nil { throw Rejection.invalidSnapshot }
         }
         for child in value.children {
@@ -1728,7 +1797,7 @@ public enum RCCRuntimeContract {
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
-    private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes"], ["nodes": .array(nodeShape)])
+    private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])
     private static let repairSourceShape = Shape.object(["source_root", "source_head", "source_before_head", "source_before_sha256", "protected_source_sha256", "source_before_clean", "changed_paths"])
     private static let installHandoffShape = Shape.object(["schema", "task_id", "request_sha256", "node_id", "parent_attempt_id", "source_fingerprint", "source_root", "source_head", "protected_source_sha256", "staged_intent_id", "staged_receipt_sha256", "state", "installed_receipt"])
@@ -1820,7 +1889,12 @@ public enum RCCRuntimeContract {
     }
     public static func decodeRequest(_ data: Data) throws -> Request { let x = try decode(Request.self, data: data, shape: requestShape); try validate(x); return x }
     public static func decodeCatalog(_ data: Data, request: Request? = nil) throws -> Catalog { let x = try decode(Catalog.self, data: data, shape: catalogShape); try validate(x, request: request); return x }
-    public static func decodePlan(_ data: Data, catalog: Catalog? = nil) throws -> Plan { let x = try decode(Plan.self, data: data, shape: planShape); try validate(x, catalog: catalog); return x }
+    public static func decodePlan(_ data: Data, catalog: Catalog? = nil,
+                                  context: PlanValidationContext = .authored) throws -> Plan {
+        let x = try decode(Plan.self, data: data, shape: planShape)
+        try validate(x, catalog: catalog, context: context)
+        return x
+    }
     public static func decodeTicket(_ data: Data, candidate: Candidate? = nil, request: Request? = nil) throws -> ExecutionTicket { let x = try decode(ExecutionTicket.self, data: data, shape: ticketShape); try validate(x, candidate: candidate, request: request); return x }
     public static func decodeRecord(_ data: Data, ticket: ExecutionTicket? = nil) throws -> ExecutionRecord { let x = try decode(ExecutionRecord.self, data: data, shape: recordShape); try validate(x, ticket: ticket); return x }
     public static func decodeSnapshot(_ data: Data) throws -> Snapshot { let x = try decode(Snapshot.self, data: data, shape: snapshotShape); try validate(x); return x }

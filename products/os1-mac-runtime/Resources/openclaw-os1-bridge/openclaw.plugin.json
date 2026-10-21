@@ -26,6 +26,139 @@
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false
+    "additionalProperties": false,
+    "properties": {
+      "adaptive_routing": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "mode"
+            ],
+            "properties": {
+              "schema": {
+                "const": 1
+              },
+              "mode": {
+                "const": "off"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "mode",
+              "policy_id",
+              "version",
+              "rcc_source_sha256",
+              "projection_sha256",
+              "reference_policy_sha256",
+              "allowed_workload_classes",
+              "max_nodes",
+              "max_parallel",
+              "max_plan_revisions",
+              "max_planner_calls",
+              "planner_input_bytes",
+              "planner_output_tokens",
+              "requires_live_reference_fallback",
+              "adoption_manifest_sha256"
+            ],
+            "properties": {
+              "schema": {
+                "const": 1
+              },
+              "mode": {
+                "const": "shadow"
+              },
+              "policy_id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$"
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "rcc_source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "projection_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "reference_policy_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "allowed_workload_classes": {
+                "type": "array",
+                "maxItems": 128,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$"
+                }
+              },
+              "max_nodes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8
+              },
+              "max_parallel": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4
+              },
+              "max_plan_revisions": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "max_planner_calls": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2
+              },
+              "planner_input_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 240000
+              },
+              "planner_output_tokens": {
+                "type": "integer",
+                "minimum": 256,
+                "maximum": 4096
+              },
+              "requires_live_reference_fallback": {
+                "const": true
+              },
+              "adoption_manifest_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
   }
 }

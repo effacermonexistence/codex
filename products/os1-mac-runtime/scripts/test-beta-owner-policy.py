@@ -34,8 +34,11 @@ if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0
     resources.append(('openclaw-os1-bridge/rcc-plugin.mjs', 'requires signed RCC task-runtime module'))
 if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 343):
     resources.append(('openclaw-os1-bridge/resource-usage.mjs', 'requires signed RCC resource-usage module'))
+routing_companions = ('adaptive-plan-host.mjs', 'adaptive-routing-policy.mjs', 'joint-route-selector.mjs', 'local-plan-planner.mjs', 'local-plan-proposal.mjs', 'routing-outcome.mjs', 'routing-outcome-capture.mjs')
+if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 350):
+    resources.extend(('openclaw-os1-bridge/' + name, 'requires signed RCC routing companion: ' + name) for name in routing_companions)
 for filename, missing_reason in resources:
-    for mutation in (('rename', 'content', 'symlink') if filename.endswith('/resource-usage.mjs') else ('rename', 'content')):
+    for mutation in (('rename', 'content', 'symlink') if (filename.endswith('/resource-usage.mjs') or filename.rsplit('/', 1)[-1] in routing_companions) else ('rename', 'content')):
         with tempfile.TemporaryDirectory(prefix='os1-beta-policy-') as tmp:
             root = Path(tmp)
             expanded = root / 'expanded'

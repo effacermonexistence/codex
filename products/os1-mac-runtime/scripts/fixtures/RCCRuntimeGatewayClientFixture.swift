@@ -47,7 +47,7 @@ struct RCCRuntimeGatewayClientFixture {
         let plugin = root.appendingPathComponent("plugin", isDirectory: true)
         try fm.createDirectory(at: plugin, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         var pluginHashes: [String: String] = [:]
-        for file in ["index.mjs", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "openclaw.plugin.json", "package.json"] {
+        for file in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs"] {
             let bytes = Data((file + " fake fixture bytes\n").utf8)
             try bytes.write(to: plugin.appendingPathComponent(file)); pluginHashes[file] = hash(bytes)
         }
@@ -428,6 +428,35 @@ struct RCCRuntimeGatewayClientFixture {
         let ownerReads = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("observer-reads.json"))) as! [String: Int]
         try require(ownerReads["observer_owner_mismatch"] == 1, "recovery queried a different owner")
         try require(try Data(contentsOf: privateRoot.appendingPathComponent("boots.json")) == Data("2".utf8), "recovery launched another owner")
+        func fixtureConfiguration(_ hashes: [String: String]) -> RCCRuntimeGatewayClient.Configuration {
+            .init(identity: .init(nodePath: identity.nodePath, nodeSHA256: identity.nodeSHA256,
+                entryPath: identity.entryPath, entrySHA256: identity.entrySHA256,
+                pluginDirectory: identity.pluginDirectory, pluginFileSHA256: hashes,
+                nativeOS1Path: identity.nativeOS1Path, nativeOS1SHA256: identity.nativeOS1SHA256),
+                baseConfig: configuration.baseConfig, bridgeEnvironment: configuration.bridgeEnvironment)
+        }
+        var missingCompanion = pluginHashes
+        missingCompanion.removeValue(forKey: "routing-outcome-capture.mjs")
+        var extraCompanion = pluginHashes
+        extraCompanion["unreviewed.mjs"] = hash(Data("not admitted".utf8))
+        for hashes in [missingCompanion, extraCompanion] {
+            do {
+                _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("invalid-required-module-set"),
+                    configuration: fixtureConfiguration(hashes), root: privateRoot)
+                throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "nonclosed module identity accepted"])
+            } catch RCCRuntimeGatewayClient.Failure.identityMismatch { }
+        }
+        // Each signed companion is part of the same owner identity. Hash or
+        // required-set failure happens before any fixture transport can run.
+        for name in ["adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs"] {
+            let file = plugin.appendingPathComponent(name), original = try Data(contentsOf: file)
+            try Data("mutated companion".utf8).write(to: file)
+            do {
+                _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("mutated-companion"), configuration: configuration, root: privateRoot)
+                throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "mutated companion accepted"])
+            } catch RCCRuntimeGatewayClient.Failure.identityMismatch { }
+            try original.write(to: file)
+        }
         try Data("mutated".utf8).write(to: plugin.appendingPathComponent("rcc-runtime.mjs"))
         do {
             _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("mutated"), configuration: configuration, root: privateRoot)

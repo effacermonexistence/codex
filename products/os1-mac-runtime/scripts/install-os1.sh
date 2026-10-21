@@ -142,6 +142,16 @@ verify_unnotarized_beta_package() {
     requires_rcc_resource_usage=1
   fi
 
+  # 0.9.350 (build416) adds seven exact signed routing companions.
+  # Preserve all <=415 recovery payload counts and reject companion injection.
+  local requires_rcc_adaptive_routing=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 350) )); then
+    expected_payload_files=46
+    expected_component_files=49
+    requires_rcc_adaptive_routing=1
+  fi
+
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
     return 1
@@ -226,6 +236,18 @@ verify_unnotarized_beta_package() {
       echo "OS-1 beta verification refused an RCC task-runtime module in a legacy release." >&2; return 1
     fi
   done
+  # RCC adaptive routing companion gate: exact names, never a JS wildcard.
+  for bridge_resource in adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs; do
+    if (( requires_rcc_adaptive_routing )); then
+      [[ -f "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" &&
+         ! -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]] || {
+        echo "OS-1 beta verification requires signed RCC routing companion: $bridge_resource" >&2; return 1;
+      }
+    elif [[ -e "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ||
+            -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]]; then
+      echo "OS-1 beta verification refused an RCC routing companion in a legacy release." >&2; return 1
+    fi
+  done
   if (( requires_rcc_resource_usage )); then
     [[ -f "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" &&
        ! -L "$app_path/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs" ]] || {
@@ -280,6 +302,13 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-runtime.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/rcc-plugin.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/resource-usage.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/adaptive-plan-host.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/adaptive-routing-policy.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/joint-route-selector.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/local-plan-planner.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/local-plan-proposal.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome-capture.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

@@ -158,12 +158,162 @@ func runRCCRuntimeContractFixture() throws {
     let writerCatalog = C.Catalog(taskID: request.taskID, requestSHA256: request.requestSHA256, candidates: [writer])
     var writeA = node; writeA.candidateID = writer.id; writeA.scope = .workspaceWrite; writeA.ownedPaths = ["Sources/A.swift"]
     var writeB = writeA; writeB.id = "writer-second"; writeB.ownedPaths = ["Sources"]
-    var writing = C.Plan(taskID: request.taskID, requestSHA256: request.requestSHA256, nodes: [writeA, writeB])
+    var writing = C.Plan(taskID: request.taskID, requestSHA256: request.requestSHA256, nodes: [writeA, writeB],
+                         finalNodeID: .collection)
     try reject("concurrent write overlap") { try C.validate(writing, catalog: writerCatalog) }
     writing.nodes[1].dependencies = [writeA.id]
+    writing.finalNodeID = .node(writeB.id)
     try C.validate(writing, catalog: writerCatalog); checks += 1
     writing.nodes[1].ownedPaths = ["../Outside.swift"]
     try reject("scope traversal is not authorized") { try C.validate(writing, catalog: writerCatalog) }
+
+    // Presence-aware final ownership: no omitted/null collapse and no guessed
+    // sink. Caller-only host contexts do not exist in untrusted plan JSON.
+    let legacyPlanObject = try JSONSerialization.jsonObject(with: C.encode(plan)) as! [String: Any]
+    try check(plan.finalNodeID == .absent && legacyPlanObject["final_node_id"] == nil,
+              "legacy initializer and encoding omit final ownership")
+    var independent = second; independent.dependencies = []
+    let collection = C.Plan(taskID: request.taskID, requestSHA256: request.requestSHA256,
+        nodes: [node, independent], finalNodeID: .collection)
+    let collectionBytes = try C.encode(collection)
+    let collectionObject = try JSONSerialization.jsonObject(with: collectionBytes) as! [String: Any]
+    try check(collectionObject["final_node_id"] is NSNull &&
+              C.decodePlan(collectionBytes, catalog: catalog) == collection,
+              "explicit collection null survives decode and encode")
+    var merger = node; merger.id = "final-merge"; merger.dependencies = [node.id, independent.id]
+    let finalPlan = C.Plan(taskID: request.taskID, requestSHA256: request.requestSHA256,
+        nodes: [node, independent, merger], finalNodeID: .node(merger.id))
+    try check(try C.decodePlan(C.encode(finalPlan), catalog: catalog) == finalPlan,
+              "named final ancestor closure owns every node")
+    var oneCollection = plan; oneCollection.finalNodeID = .collection
+    try check(try C.decodePlan(C.encode(oneCollection), catalog: catalog) == oneCollection && oneCollection != plan,
+              "even one-node explicit null is not absent")
+    var malformedFinal = collection; malformedFinal.finalNodeID = .absent
+    try reject("multi-node omission has no inferred collection") { try C.validate(malformedFinal, catalog: catalog) }
+    malformedFinal.nodes[1].dependencies = [node.id]
+    try reject("unique sink does not infer final ownership") { try C.validate(malformedFinal, catalog: catalog, context: .hostBound) }
+    malformedFinal = collection; malformedFinal.nodes[1].dependencies = [node.id]
+    try reject("authored collection must be independent") { try C.validate(malformedFinal, catalog: catalog) }
+    try check(try C.decodePlan(C.encode(malformedFinal), catalog: catalog, context: .hostBound) == malformedFinal,
+              "caller-bound collection preserves host safety ordering")
+    malformedFinal = finalPlan; malformedFinal.finalNodeID = .node("unknown-final")
+    try reject("unknown final ID") { try C.validate(malformedFinal, catalog: catalog) }
+    malformedFinal.finalNodeID = .node("outside/final")
+    try reject("invalid final ID syntax") { try C.validate(malformedFinal, catalog: catalog) }
+    malformedFinal = finalPlan; malformedFinal.finalNodeID = .node(node.id)
+    try reject("final ancestor closure cannot omit other workers") { try C.validate(malformedFinal, catalog: catalog) }
+    malformedFinal = finalPlan; malformedFinal.nodes[0].dependencies = [merger.id]
+    try reject("named final never hides a cycle") { try C.validate(malformedFinal, catalog: catalog, context: .hostBound) }
+    malformedFinal = collection; malformedFinal.nodes[0].dependencies = ["missing"]
+    try reject("bound collection never hides missing dependencies") { try C.validate(malformedFinal, catalog: catalog, context: .hostBound) }
+    malformedFinal = collection; malformedFinal.nodes[0].dependencies = [independent.id]
+    malformedFinal.nodes[1].dependencies = [node.id]
+    try reject("bound collection never hides a cycle") { try C.validate(malformedFinal, catalog: catalog, context: .hostBound) }
+    let wrongFinalValues: [Any] = [true, 7, [String](), ["node": node.id]]
+    for wrongFinal in wrongFinalValues {
+        var value = legacyPlanObject; value["final_node_id"] = wrongFinal
+        try reject("final ownership wire type must be null or string") {
+            _ = try C.decodePlan(JSONSerialization.data(withJSONObject: value), catalog: catalog)
+        }
+    }
+    var wrongPlanObject = collectionObject; wrongPlanObject["validation_context"] = "hostBound"
+    try reject("wire cannot assert trusted bound context") { _ = try C.decodePlan(JSONSerialization.data(withJSONObject: wrongPlanObject)) }
+    var duplicateFinal = String(decoding: collectionBytes, as: UTF8.self)
+    duplicateFinal = duplicateFinal.replacingOccurrences(of: "\"final_node_id\":null",
+        with: "\"final_node_id\":null,\"final_node_id\":null")
+    try reject("duplicate final ownership key is rejected") { _ = try C.decodePlan(Data(duplicateFinal.utf8)) }
+    var legacyExplicit = collection; legacyExplicit.finalNodeID = .absent
+    try check(try C.decodePlan(C.encode(legacyExplicit), catalog: catalog, context: .hostBoundExplicitRoutes) == legacyExplicit,
+              "trusted original explicit mode preserves legacy omitted multi-route collection")
+    try reject("ordinary host context is not explicit-routing authority") { try C.validate(legacyExplicit, catalog: catalog, context: .hostBound) }
+    legacyExplicit.nodes[1].dependencies = [node.id]
+    try reject("legacy explicit routes cannot acquire dependencies") { try C.validate(legacyExplicit, catalog: catalog, context: .hostBoundExplicitRoutes) }
+    try reject("explicit routes cannot choose one final and discard other results") { try C.validate(finalPlan, catalog: catalog, context: .hostBoundExplicitRoutes) }
+    var orderedWriters = writing; orderedWriters.nodes[1].ownedPaths = ["Sources"]
+    orderedWriters.finalNodeID = .collection
+    try check(try C.decodePlan(C.encode(orderedWriters), catalog: writerCatalog, context: .hostBound) == orderedWriters,
+              "host-serialized overlapping writers keep collection null")
+    try reject("writer safety ordering is not an authored collection") { try C.validate(orderedWriters, catalog: writerCatalog) }
+    orderedWriters.nodes[1].dependencies = []
+    try reject("host-bound context does not remove writer exclusivity") { try C.validate(orderedWriters, catalog: writerCatalog, context: .hostBound) }
+
+    // Actual Node Core emits each ownership form and today's legacy explicit
+    // fan-out. Swift preserves the bytes' semantic shape, then the actual JS
+    // ownership validator accepts the Swift-encoded result. No Core runtime,
+    // SQLite store, executor, native account or model is constructed here.
+    func purePlanJS(_ script: String, _ bytes: Data) throws -> Data {
+        let p = Process(), i = Pipe(), o = Pipe(), e = Pipe()
+        p.executableURL = process.executableURL
+        p.arguments = (p.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
+            ["--input-type=module", "-e", script, runtimeModule.path]
+        p.standardInput = i; p.standardOutput = o; p.standardError = e
+        try p.run(); try i.fileHandleForWriting.write(contentsOf: bytes); try i.fileHandleForWriting.close()
+        let result = o.fileHandleForReading.readDataToEndOfFile()
+        let error = e.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        try check(p.terminationStatus == 0 && result.count < 128_000,
+                  "REAL Node plan wire vector (error bytes \(error.count))")
+        return result
+    }
+    var wireOrdered = writing; wireOrdered.nodes[1].ownedPaths = ["Sources"]; wireOrdered.finalNodeID = .collection
+    var explicitVectorConfig = config; explicitVectorConfig.surface = .codex
+    let explicitVectorCandidate = C.Candidate(id: "codex-wire-fixture", config: explicitVectorConfig,
+        quotaRemainingFraction: nil, quotaObservedAtMS: nil, quotaValidUntilMS: nil,
+        qualityState: .policyAdmitted, estimatedCostUnits: nil, availability: .unknown,
+        availabilityObservedAtMS: nil, availabilityValidUntilMS: nil)
+    let explicitVectorCatalog = C.Catalog(taskID: request.taskID, requestSHA256: request.requestSHA256,
+                                        candidates: [explicitVectorCandidate])
+    let nodeObject = try JSONSerialization.jsonObject(with: C.encode(node))
+    let orderedObject = try JSONSerialization.jsonObject(with: C.encode(wireOrdered))
+    let wireInput = try JSONSerialization.data(withJSONObject: ["task_id": request.taskID,
+        "request_sha256": request.requestSHA256, "node": nodeObject, "ordered": orderedObject,
+        "explicit_candidate_id": explicitVectorCandidate.id])
+    let vectorScript = """
+    import{pathToFileURL}from'node:url';import{readFileSync}from'node:fs';
+    const{assertFinalOutputOwnership,hostPlan}=await import(pathToFileURL(process.argv[1]).href);
+    const x=JSON.parse(readFileSync(0,'utf8')),a=x.node,b={...a,id:'js-second',dependencies:[]};
+    const base={schema:1,task_id:x.task_id,request_sha256:x.request_sha256};
+    const task={...base,mode:'explicit_routing_test',material_refs:[],host_context:{require_read_only:true,
+      explicit_routes:[{surface:'codex',instruction:'First independent fixture'},{surface:'codex',instruction:'Second independent fixture'}]}};
+    const old=hostPlan(task,{model_tiers:{'gpt-6-astra':'frontier'}});
+    // Sole synthetic catalog row binding, not model-authored rights.
+    old.nodes=old.nodes.map(n=>({...n,candidate_id:x.explicit_candidate_id}));
+    const rows=[{name:'legacy',mode:'auto',plan:{...base,nodes:[a]}},
+      {name:'collection',mode:'auto',plan:{...base,nodes:[a,b],final_node_id:null}},
+      {name:'named',mode:'auto',plan:{...base,nodes:[a,b,{...a,id:'js-final',dependencies:[a.id,b.id]}],final_node_id:'js-final'}},
+      {name:'host-ordered',mode:'auto',plan:x.ordered},{name:'legacy-explicit',mode:'explicit_routing_test',plan:old}];
+    for(const r of rows)assertFinalOutputOwnership(r.plan,{mode:r.mode},{collectionMayBeOrdered:r.name==='host-ordered'});
+    console.log(JSON.stringify(rows));
+    """
+    let vectorBytes = try purePlanJS(vectorScript, wireInput)
+    let vectors = try JSONSerialization.jsonObject(with: vectorBytes) as! [[String: Any]]
+    var returnedVectors: [[String: Any]] = []
+    for vector in vectors {
+        let name = vector["name"] as! String
+        let context: C.PlanValidationContext = name == "host-ordered" ? .hostBound :
+            name == "legacy-explicit" ? .hostBoundExplicitRoutes : .authored
+        let rowCatalog = name == "host-ordered" ? writerCatalog :
+            name == "legacy-explicit" ? explicitVectorCatalog : catalog
+        let decoded = try C.decodePlan(JSONSerialization.data(withJSONObject: vector["plan"]!), catalog: rowCatalog, context: context)
+        let encoded = try JSONSerialization.jsonObject(with: C.encode(decoded)) as! [String: Any]
+        let original = vector["plan"] as! [String: Any]
+        try check((original["final_node_id"] == nil) == (encoded["final_node_id"] == nil) &&
+                  (original["final_node_id"] is NSNull) == (encoded["final_node_id"] is NSNull),
+                  "JS/Swift presence preserved for " + name)
+        returnedVectors.append(["name": name, "mode": vector["mode"]!, "plan": encoded])
+    }
+    let reverseScript = """
+    import{pathToFileURL}from'node:url';import{readFileSync}from'node:fs';import assert from'node:assert/strict';
+    const{assertFinalOutputOwnership}=await import(pathToFileURL(process.argv[1]).href);
+    const x=JSON.parse(readFileSync(0,'utf8'));assert.equal(x.rows.length,x.original.length);
+    for(let i=0;i<x.rows.length;i++){const r=x.rows[i];assert.deepEqual(r,x.original[i]);
+      assertFinalOutputOwnership(r.plan,{mode:r.mode},{collectionMayBeOrdered:r.name==='host-ordered'});}
+    console.log(JSON.stringify({vectors:x.rows.length,passed:true}));
+    """
+    let reverseBytes = try purePlanJS(reverseScript,
+        JSONSerialization.data(withJSONObject: ["rows": returnedVectors, "original": vectors]))
+    let reverse = try JSONSerialization.jsonObject(with: reverseBytes) as! [String: Any]
+    try check(reverse["passed"] as? Bool == true && reverse["vectors"] as? Int == 5,
+              "REAL JS-to-Swift-to-JS ownership vectors retain legacy/null/string/host ordering/explicit routes")
 
     let ticket = C.ExecutionTicket(taskID: request.taskID, nodeID: node.id, attemptID: "attempt-fixture",
         candidateID: candidate.id, requestSHA256: request.requestSHA256, policySHA256: request.policySHA256,
@@ -326,6 +476,46 @@ func runRCCRuntimeContractFixture() throws {
     try check(metered.resourceUsage?.totalTokensObserved == 121 && metered.resourceUsage?.accountingComplete == true,
               "Core resource metadata decodes without changing the answer")
     try check(try C.decodeSnapshot(C.encode(metered)) == metered, "resource usage roundtrip")
+    // The public Core reducer includes both intent and actual local planner
+    // operations in local_calls_started/settled. plan_model_calls is a subset,
+    // not a promise that all planning is forever model-free. Synthetic closed
+    // event fixture: intent16 + plan21 + native105 = total142 tokens.
+    var plannerResources = resourceObject
+    plannerResources["local_calls_started"] = 2; plannerResources["local_calls_settled"] = 2
+    plannerResources["plan_model_calls"] = 1; plannerResources["local_tokens_observed"] = 37
+    plannerResources["total_tokens_observed"] = 142
+    meteredObject["resource_usage"] = plannerResources
+    let plannerMetered = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+    try check(plannerMetered.resourceUsage?.accountingComplete == true &&
+              plannerMetered.resourceUsage?.planModelCalls == 1 &&
+              plannerMetered.resourceUsage?.localCallsStarted == 2 &&
+              plannerMetered.resourceUsage?.localCallsSettled == 2 &&
+              plannerMetered.resourceUsage?.totalTokensObserved == 142,
+              "complete resource accounting accepts observed settled local planner calls")
+    try check(try C.decodeSnapshot(C.encode(plannerMetered)) == plannerMetered,
+              "observed local planner resource summary roundtrips without becoming zero")
+    for (name, key, replacement) in [("plan exceeds local calls", "plan_model_calls", 3 as Any),
+                                     ("complete plan count unknown", "plan_model_calls", NSNull() as Any),
+                                     ("complete local operation unsettled", "local_calls_settled", 1 as Any)] {
+        var bad = plannerResources; bad[key] = replacement; meteredObject["resource_usage"] = bad
+        try reject(name) { _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject)) }
+    }
+    var activePlannerResources = plannerResources
+    activePlannerResources["accounting_complete"] = false
+    activePlannerResources["total_tokens_observed"] = NSNull()
+    activePlannerResources["local_tokens_observed"] = NSNull()
+    activePlannerResources["local_calls_settled"] = 1
+    meteredObject["resource_usage"] = activePlannerResources
+    let activePlanner = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+    try check(activePlanner.resourceUsage?.planModelCalls == 1 &&
+              activePlanner.resourceUsage?.accountingComplete == false &&
+              activePlanner.resourceUsage?.totalTokensObserved == nil,
+              "started local planner remains counted while unsettled accounting stays unknown")
+    activePlannerResources["plan_model_calls"] = 3
+    meteredObject["resource_usage"] = activePlannerResources
+    try reject("partial plan count still cannot exceed local operations") {
+        _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: meteredObject))
+    }
     for (key, value) in [("local_calls_started", -1), ("local_calls_settled", 2), ("total_tokens_observed", 120)] {
         var bad = resourceObject; bad[key] = value; meteredObject["resource_usage"] = bad
         try reject("invalid resource counter or sum: " + key) {

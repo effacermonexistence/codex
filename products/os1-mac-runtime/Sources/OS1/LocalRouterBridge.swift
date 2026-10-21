@@ -22,14 +22,21 @@ enum LocalRouterBridge {
         let old = try gatewayIdentity(resources: resources, manifest: checked.manifest, runtime: checked.runtime)
         let plugin = URL(fileURLWithPath: old.pluginDirectory)
         var hashes: [String: String] = [:]
-        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs"] {
+        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs"] {
             hashes[name] = try fileSHA256(plugin.appendingPathComponent(name))
         }
         // The module hashes below are generated from the reviewed source and
         // sealed with the app/CLI. Never take these values from the model.
         guard hashes["rcc-runtime.mjs"] == rccRuntimeModuleSHA256,
               hashes["rcc-plugin.mjs"] == rccRuntimePluginSHA256,
-              hashes["resource-usage.mjs"] == rccResourceUsageSHA256 else {
+              hashes["resource-usage.mjs"] == rccResourceUsageSHA256,
+              hashes["adaptive-plan-host.mjs"] == rccAdaptivePlanHostSHA256,
+              hashes["adaptive-routing-policy.mjs"] == rccAdaptiveRoutingPolicySHA256,
+              hashes["joint-route-selector.mjs"] == rccJointRouteSelectorSHA256,
+              hashes["local-plan-planner.mjs"] == rccLocalPlanPlannerSHA256,
+              hashes["local-plan-proposal.mjs"] == rccLocalPlanProposalSHA256,
+              hashes["routing-outcome.mjs"] == rccRoutingOutcomeSHA256,
+              hashes["routing-outcome-capture.mjs"] == rccRoutingOutcomeCaptureSHA256 else {
             throw OS1Error.message("Installed RCC task-runtime modules differ from the sealed source")
         }
         let nativeIdentity = try InstalledNativeEntry.resolve(
@@ -80,9 +87,17 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "e2dadc56a374948ebfe3f4ad8c03a1b87bfbf02f24f60b0563909f8f70480e77"
-    static let rccRuntimePluginSHA256 = "cd55302f49bc56f650e5628a4fdeb422ea916ed833de11d88b44ac721b6935e3"
-    static let rccResourceUsageSHA256 = "710a9b9cddc3f2aa9fe9ce4970537131d4cb7108d221a3ce83ff44c4dde7ccaa"
+    static let rccRuntimeModuleSHA256 = "862f1c2265de1e85a3fe9d480427d7c0f966a1322220ecd99e83c1a860a2a2d5"
+    static let rccRuntimePluginSHA256 = "ee9ab47171d8eec74edf061cdce3907d8c2330087a981a44fde11c2713d8b432"
+    static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
+    // Exact reviewed companion bytes; any resource change requires a new source pin.
+    static let rccAdaptivePlanHostSHA256 = "453c5bab6366194f7004455f2cedd6fc15f4ebdfc61c9938dff3751b32f06bcf"
+    static let rccAdaptiveRoutingPolicySHA256 = "6325511ddeae2cff899d07688e178fff026551e54a28cab8edc26fe2751c3efa"
+    static let rccJointRouteSelectorSHA256 = "6a13cbf6b1ac2a001bd641e56260cccad8e11c334a9d32fb0350c883705de326"
+    static let rccLocalPlanPlannerSHA256 = "44988cda3d609bd5808ac0fa1b20eb42ca0dbd9c5c9bff048c1871faf986c764"
+    static let rccLocalPlanProposalSHA256 = "ae18aba5f02030372fd0a99993db4e9d53a9fa79d485b5caeb3c29c2f97eef59"
+    static let rccRoutingOutcomeSHA256 = "c2ff271ef5d71204f8787232451c10733961c36b79e987c88fabdbe7edc03ec1"
+    static let rccRoutingOutcomeCaptureSHA256 = "b81b78172dceb1a80ecbd8ba54e61b4d83f58820052bf9e3b7addb2c3cfcf4b3"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"
@@ -97,7 +112,7 @@ enum LocalRouterBridge {
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
     private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
     private static let pinnedPluginIndexSHA256 = "0c1a8eb96a252e2610e4964069f069dfc344dcb2d4bf76fb77b2585222bba0a5"
-    private static let pinnedPluginManifestSHA256 = "700710ab6124eabcc945f247b13e94451fc266b956c5ce991b5eb99cc6d62af3"
+    private static let pinnedPluginManifestSHA256 = "37b549e2d01ad5ccd5b85884ea0adfed6c6246bd3c862ce0452db9bd750cc107"
     private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
     #if arch(arm64)
     private static let pinnedArchitecture = "arm64"
