@@ -28,6 +28,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--installed-native-entry-only") { try runInstalledNativeEntryFixtures(); return }
         if CommandLine.arguments.contains("--installed-resource-seal-only") { try runInstalledResourceSealFixtures(); return }
         if CommandLine.arguments.contains("--runtime-resource-presentation-only") { try runRuntimeResourcePresentationFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-bound-source-input-only") { try runRCCBoundSourceInputFixtures(); return }
         if CommandLine.arguments.contains("--rcc-core-validate-request") {
             guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--rcc-core-validate-request" else {
                 throw RCCRuntimeContract.Rejection.invalidInput
@@ -63,6 +64,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--parallel-agent-task-only") { try runParallelAgentTaskFixtures(); return }
         if CommandLine.arguments.contains("--task-quality-correction-only") { try runTaskQualityCorrectionFixtures(); return }
         if CommandLine.arguments.contains("--task-quality-only") { try runTaskQualityFixtures(); try runTaskQualityCorrectionFixtures(); return }
+        try runRCCBoundSourceInputFixtures()
         try runDesktopRelayCheckpointFixtures()
         try runInstalledNativeEntryFixtures()
         try runInstalledResourceSealFixtures()

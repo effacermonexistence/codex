@@ -495,4 +495,30 @@ check("Run file-relative tests from their actual containing directory" in staged
       "native private $TMPDIR" in staged and
       "A writable scratch capability does not expand the original task scope" in staged,
       "staged directives preserve real cwd and original task permission despite native private scratch access")
+# 415: existing typed source handoff must reach actual native input.
+source_delivery = section(MAIN, "struct RCCNativeSourceDelivery {", "func providerPrompt(current:")
+source_catalog = section(MAIN, "private func rccNativeCatalog(", "private func rccContinuationParent(")
+source_ingress = section(MAIN, "func runOpenClawRCCTask(", "let data = try RCCRuntimeContract.encode(request)")
+check("RCCBoundSourceInput.materialRefs(context: context)" in MAIN and "rccBoundSourceMaterialRefs(request: prompt, context: context)" in source_ingress,
+      "ingress includes only existing typed bound source identities beside images")
+check("RCCBoundSourceInput.prefix" in source_catalog and "== Set(bound)" in source_catalog,
+      "catalog independently prevents erased/forged bound-source presence before provider probes")
+check("RCCBoundSourceInput.selected(context: context, contextRefs: contextRefs)" in source_delivery and "loadSource(ref, store: store)" in source_delivery,
+      "source delivery resolves only the same handoff selected references using existing immutable loader")
+check("requireComplete: true" in source_delivery and 'payload.contains("Content omitted from this prompt budget.")' not in source_delivery,
+      "strict typed renderer budget, never untrusted source text, determines complete supply")
+check('leaf: "source-input-receipts"' in source_delivery and '"backend_inclusion_verified": false' in source_delivery and '"semantic_quality_verified": false' in source_delivery,
+      "private source receipt reuses native custody and attests prepared binding only")
+check("sourceDelivery.byteCount" in native and "sourceUTF8Bytes: sourceDelivery.byteCount" in native and
+      "r2Evidence: sourceDelivery.payload" in native and "preloadedR2Evidence: sourceDelivery.evidence" in native,
+      "actual source bytes count toward authorization input and reach provider source DATA and instructions")
+check("ownerAllowedSources" in native and "isSubset(of: ownerAllowedSources)" in native,
+      "native transport independently honors source detachment and narrow check-in authority")
+check("rccUsesLegacySourceOutputCheck(preloadedR2Evidence)" in MAIN and "rccUsesLegacySourceOutputCheck($0)" in MAIN and
+      "rccSnapshotOnlySource(preloadedR2Evidence) || chatLane" in MAIN,
+      "new source mode keeps ordinary readonly tools and avoids unrelated legacy R2 lexical refusal; old mode stays gated")
+check("(exactAnswer ? \"\" : SourceTransformationContract.instructions)" in MAIN and
+      'case "self-test-source-input":' in MAIN and "try rccBoundSourceDeliverySelfTest()" in MAIN,
+      "source transformation policy uses existing native instruction channel, clean exact-answer path, and actual private-store fixtures")
+
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")
