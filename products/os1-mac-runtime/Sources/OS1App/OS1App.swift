@@ -4983,10 +4983,23 @@ private func voiceStoreSendSelfTest() async throws -> Int {
     // Keep the actual production hosting view alive until its send fixture
     // completes; disposing a composer intentionally cancels active dictation.
     var renderedHosts: [NSView] = []
-    func wait(_ value: @MainActor () async -> Bool, _ message: String) async throws {
-        let end = Date().addingTimeInterval(4)
-        while !(await value()) {
-            guard Date() < end else { throw RunnerError.message("Voice store deadline: " + message) }
+    func wait(_ value: @MainActor () async -> Bool, _ message: String, timeout: TimeInterval = 4,
+              failure: (@MainActor () -> Bool)? = nil,
+              diagnostics: (@MainActor () async -> String)? = nil) async throws {
+        guard timeout.isFinite, timeout > 0, timeout <= 20 else {
+            throw RunnerError.message("Voice store observer budget invalid")
+        }
+        let end = Date().addingTimeInterval(timeout)
+        while true {
+            if failure?() == true {
+                let state = await diagnostics?() ?? ""
+                throw RunnerError.message("Voice store fixture error: " + message + state)
+            }
+            if await value() { return }
+            guard Date() < end else {
+                let state = await diagnostics?() ?? ""
+                throw RunnerError.message("Voice store deadline: " + message + state)
+            }
             try await Task.sleep(for: .milliseconds(1))
         }
     }
@@ -5104,7 +5117,26 @@ private func voiceStoreSendSelfTest() async throws -> Int {
         try await Task.sleep(for: .milliseconds(600))
         store.performPrimaryAction(); store.performPrimaryAction()
         try check(store.voiceStoreFixtureSendPending && dispatch.requests.isEmpty, "browser sent before final recorder data")
-        try await wait({ !voice.isActive && dispatch.requests.count == 1 && !store.isRunning }, "browser final dispatch")
+        // This observes the existing browser finalizer (native bound15s), not
+        // a production timeout. Other fixture waits retain their default4s.
+        try await wait({ !voice.isActive && dispatch.requests.count == 1 && !store.isRunning }, "browser final dispatch", timeout: 20,
+                       failure: { store.alertMessage != nil }, diagnostics: {
+            let phase: String
+            switch voice.phase {
+            case .idle: phase = "idle"
+            case .authorizing: phase = "authorizing"
+            case .listening: phase = "listening"
+            case .finalizing: phase = "finalizing"
+            case .transcribing: phase = "transcribing"
+            }
+            let posts = await wire.postRequests().count, connections = await wire.connectionCount()
+            // Only closed phase labels, booleans and counts. Never log the
+            // alert, composer/transcript, request/audio body or credential.
+            return " [phase=\(phase); voice_active=\(voice.isActive); store_running=\(store.isRunning); " +
+                "dispatch_count=\(dispatch.requests.count); post_count=\(posts); connection_count=\(connections); " +
+                "send_pending=\(store.voiceStoreFixtureSendPending); alert_present=\(store.alertMessage != nil); " +
+                "finalizer_present=\(voice.controllerFixtureFinalizer != nil)]"
+        })
         let posts = await wire.postRequests(), connections = await wire.connectionCount()
         try check(posts.count == 1 && connections == 0, "browser batch forced streaming or repeated provider request")
         let body = posts[0].httpBody ?? Data(), text = String(decoding: body, as: UTF8.self)
