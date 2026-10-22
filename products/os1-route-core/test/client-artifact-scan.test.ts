@@ -358,8 +358,8 @@ describe("client release artifact hygiene gate", () => {
     const fingerprint = "5f4fefa8202359ac40fe5e33b2c99063fea2f7845c4bb6b2c5aa5efa1866e99f";
     const entry = policy.publicTokenProvenance[fingerprint];
     expect(entry.tokenKind).toBe("compiler_type");
-    expect(entry.sourceRevision).toBe("ca054e4d5bf21d7364d17a66e069443fb6d57125");
-    expect(entry.sourceSHA256).toBe("95850f3ac7cac0d88bf96c154941c6fe19dfa17315e28ccfa9ab96b42a82de39");
+    expect(entry.sourceRevision).toBe("2400b375b42e4de994161eac1dc161e8c3aa6248");
+    expect(entry.sourceSHA256).toBe("24069e01bff513b7f5a092c99b836c01f1d9d9703aa21a129987a2b124706e1e");
     expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
     const source = await readFile(new URL("../../../" + entry.source, import.meta.url));
     expect(createHash("sha256").update(source).digest("hex")).toBe(entry.sourceSHA256);
