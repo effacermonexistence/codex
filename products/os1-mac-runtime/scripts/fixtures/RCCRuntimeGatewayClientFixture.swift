@@ -442,9 +442,9 @@ struct RCCRuntimeGatewayClientFixture {
         try fm.removeItem(at: unreachable)
         try require(!fm.fileExists(atPath: privateRoot.appendingPathComponent("submits.json").path),
             "readiness regression tests submitted a task")
-        // Source-default OFF; explicit fixture opt-in is confined to this
-        // temporary fake transport, never a live root or user request field.
-        try require(!RCCRuntimeGatewayClient.enableTaskReadinessWitness &&
+        // Production opt-in follows independent review. Offline entry points
+        // still default OFF; positive reuse is explicitly tested only here.
+        try require(RCCRuntimeGatewayClient.enableTaskReadinessWitness &&
             RCCRuntimeGatewayClient.taskReadinessWitnessMaximumAge == 60, "witness source gate/max-age changed")
         let witnessOwner = try JSONSerialization.jsonObject(with:
             Data(contentsOf: privateRoot.appendingPathComponent("transport-owner.json"))) as! [String: Any]
@@ -635,7 +635,7 @@ struct RCCRuntimeGatewayClientFixture {
         let witnessCounts = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
         try require(witnessCounts.filter { $0.key.hasPrefix("witness_") }.allSatisfy { $0.value == 1 },
             "negative/lost/concurrent witness path duplicated submit")
-        print("RCC readiness witness: defaultOFF, exact health callcounts, invalid/foreign preservation, explicit warm/status/cancel, sticky failure barrier, rejection/loss and concurrency PASS; synthetic transport only")
+        print("RCC readiness witness: productionON/fixtureDefaultOFF, exact health callcounts, invalid/foreign preservation, explicit warm/status/cancel, sticky failure barrier, rejection/loss and concurrency PASS; synthetic transport only")
         var progress = [String]()
         let first = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("first"), configuration: configuration, root: privateRoot,
             progress: { bytes in progress.append((try? state(bytes)) ?? "invalid") })

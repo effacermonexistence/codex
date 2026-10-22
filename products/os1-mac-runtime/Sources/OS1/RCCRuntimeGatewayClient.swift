@@ -84,7 +84,7 @@ enum RCCRuntimeGatewayClient {
     }
     /// Reviewed separately from installation. A prior positive health is only
     /// an advisory preparation witness; authenticated SUBMIT is still fresh.
-    static let enableTaskReadinessWitness = false
+    static let enableTaskReadinessWitness = true
     static let taskReadinessWitnessMaximumAge: TimeInterval = 60
     private struct ReadinessWitness: Codable {
         let schema: Int

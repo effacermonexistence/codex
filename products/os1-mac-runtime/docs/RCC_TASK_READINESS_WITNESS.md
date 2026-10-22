@@ -1,4 +1,4 @@
-# Task-submit readiness witness (source-default OFF)
+# Task-submit readiness witness
 
 The same Core owner remains the only scheduler. This optional preparation
 witness avoids one repeated health CLI bootstrap for a task submit; it is not
@@ -6,7 +6,9 @@ present connectivity, execution authority, source freshness or task success.
 The existing authenticated submit/ACK, exact task/source/hash/revision,
 unknown-effect reconciliation, cancellation and adoption paths are unchanged.
 
-`enableTaskReadinessWitness = false`. Only `runBlocking` may opt into reuse.
+`enableTaskReadinessWitness = true` after independent frozen-source review and
+zero-provider fake-transport regressions. Offline entry points retain explicit
+default-OFF fixture parameters. Only `runBlocking` may opt into reuse.
 Explicit warm/status/cancel retain fresh health; quiesce retains its existing
 authenticated fresh quiescence RPC and cannot reuse a health witness.
 The 60-second maximum age is a short advisory engineering bound, not a measured
@@ -37,6 +39,6 @@ The existing fake Gateway fixture covers exact health callcounts, default OFF,
 explicit observations, expiry/future/shape/Owner/custody faults, held-lock
 fallback, combined future-clock/held-lock failure and sticky recovery, config tampering, lost/rejected ACK, quiescence and concurrency.
 Fixtures inject opt-in only at temporary roots, with no actual model/provider.
-Latency reduction remains unmeasured until separate root adoption/installation
-and an authorized actual-path observation. Owner-policy Notes refresh is
+Source activation is not an installation or latency-benefit receipt. Actual
+latency reduction requires separate installed-path observation. Owner-policy Notes refresh is
 unchanged; no TTL-only latest-RCC shortcut or new RPC transport is introduced.
