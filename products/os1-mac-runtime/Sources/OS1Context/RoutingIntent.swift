@@ -307,79 +307,160 @@ extension RoutingIntent {
             matches(body, #"gpt-|claude-|codex|코덱스|클로드|reasoning|effort|리즈닝|추론|model\s*:"#) {
             result.state = "unresolved"; return result
         }
+        // Only control-shaped spans own settings. Provider/model/effort words
+        // inside the task argument are data, even when another span says use/run.
+        let providerToken = #"(?:codex|코덱스|claude(?:\s+code)?|클로드(?:\s*코드)?|클라우드\s*코드|chatgpt|챗\s*지?피티|gpt\s*chat|채찌피티)"#
+        let modelToken = #"(?:(?:gpt|claude)-[a-z0-9][a-z0-9.\-]*|"# +
+            familyWords.map { "(?:" + $0.pattern + ")" }.joined(separator: "|") + ")"
+        let targetToken = "(?:" + modelToken + "|" + providerToken + ")"
+        let effortValue = #"(?:max(?:imum)?|highest|high|x[\s-]?high|extra[\s-]?high|medium|low|minimal|minimum|ultra|최대|맥스|높은|높게|중간|낮은|낮게|최소|울트라)"#
+        let effortToken = "(?:" + effortValue + #"\s*(?:reasoning|effort|thinking|리즈닝|추론)|(?:reasoning|effort|thinking|리즈닝|추론)\s*"# + effortValue + ")"
+        let end = #"(?=$|\s*[,;:.!?]|\s+(?:to|for|please|with|at|and|but|without|if|unless|instead|now|today|tomorrow|first|here)(?![a-z])|\s+(?:reasoning|effort|thinking)\s*[:=]|\s+(?:(?:is|are)\s+)?not\b|\s*(?:으로|로|한테|에게|말고|빼고|쓰지|(?:사용|선택|실행)?하지\s*마|아니라|필요\s*없|원하지))"#
+        typealias SettingSpan = (range: NSRange, valueRange: NSRange, value: String, kind: String)
+        func spans(_ clause: String, _ pattern: String, kind: String) -> [SettingSpan] {
+            let ns = clause as NSString
+            return (try? NSRegularExpression(pattern: pattern))?.matches(in: clause,
+                range: NSRange(location: 0, length: ns.length)).map {
+                    ($0.range, $0.range(at: 1), ns.substring(with: $0.range(at: 1)), kind)
+                } ?? []
+        }
+        func routeSpans(_ clause: String) -> [SettingSpan] {
+            // The qualifier is inside the owned target: app screenshots/CLI
+            // logs fail the terminal gate, while "Codex CLI to ..." passes.
+            let target = "(" + targetToken + ")" + #"(?:\s+[0-9]+(?:\.[0-9]+)*)?(?:\s+(?:cli|app|model))?"#
+            return [
+                #"\b(?:use|using|via|run|execute)\s+(?:the\s+)?"# + target + end,
+                #"\b(?:run|execute|route|send)\b(?:(?!\b(?:and|but|then)\b|[,;.!?\n]).){0,120}?\b(?:on|with|to|via)\s+(?:the\s+)?"# + target + end,
+                "(" + targetToken + #")(?:\s*[0-9]+(?:\.[0-9]+)*)?\s*(?:으로|로|한테|에게)(?=\s|$|[,.!?]|돌려|설명|실행|써|사용|해|보내|맡겨)"#,
+                "(" + targetToken + #")\s+(?:써줘|사용해|돌려|실행해|맡겨|보내줘)"#,
+            ].flatMap { spans(clause, $0, kind: "target") }
+        }
+        func negative(_ clause: String, _ span: SettingSpan) -> Bool {
+            let ns = clause as NSString
+            let prefix = ns.substring(to: span.range.location)
+            let suffix = ns.substring(from: NSMaxRange(span.range))
+            return matches(prefix, #"\b(?:no|not|don't|never|avoid|except|without|instead\s+of)\s+(?:(?:use|using|run|execute|route|send|choose|select|pick|the|a|any)\s+){0,3}$"#) ||
+                matches(suffix, #"^\s*(?:(?:으로|로|은|는|을|를|이|가)\s*)?(?:말고|빼고|쓰지|(?:사용|선택|실행)?하지\s*마|아니라|필요\s*없|원하지|(?:is\s+)?not\s+(?:needed|wanted|required))"#)
+        }
+        func conditional(_ clause: String, _ span: SettingSpan) -> Bool {
+            let ns = clause as NSString
+            let prefix = ns.substring(to: span.range.location)
+            let suffix = ns.substring(from: NSMaxRange(span.range))
+            return matches(prefix, #"\b(?:if|unless)\b|만약|(?:하면|라면|일\s*경우)|\b(?:would|could)\b(?!\s+(?:you\b|like\s+you\s+to\b))"#) ||
+                matches(suffix, #"^\s+(?:if|unless)\b"#)
+        }
+        func informational(_ clause: String, _ span: SettingSpan) -> Bool {
+            let ns = clause as NSString
+            let prefix = ns.substring(to: span.range.location)
+            let suffix = ns.substring(from: NSMaxRange(span.range))
+            let own = ns.substring(with: span.range)
+            // An explicit postposed control is a separate owner span.
+            if matches(prefix, #"[,;]\s*$|\b(?:and|but|then)\s*$"#) { return false }
+            if matches(suffix, #"^\s*(?:지원해|설정이|사용법|쓰는\s*법|실행하는\s*(?:법|방법))"#) { return true }
+            let aboutPrefix = matches(prefix, #"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:explain|describe|compare|summarize|tell\s+me|what|which|why|how|does|supports?)\b"#)
+            guard aboutPrefix else { return false }
+            // Instrumental execution is not the object being explained:
+            // "explain this using X" vs "explain how to use X".
+            if span.kind == "target" && matches(own, #"^\s*(?:using|via)\b"#) {
+                return matches(prefix, #"\b(?:how|why|what|whether|means?|meaning|is|are|was|were|been)\s*(?:to\s*)?$"#)
+            }
+            return true
+        }
         var surfaces = Set<String>(), models = Set<String>(), families = Set<String>(), efforts = Set<String>()
         var ceiling = false
-        let clauses = body.components(separatedBy: CharacterSet(charactersIn: "\n;!?。"))
+        let sentences = body.replacingOccurrences(of: #"\.(?=\s|$)"#, with: "\n", options: .regularExpression)
+        let clauses = sentences.components(separatedBy: CharacterSet(charactersIn: "\n;!?。"))
         for clause in clauses where !clause.trimmingCharacters(in: .whitespaces).isEmpty {
-            // A conditional, negated or informational mention is not a pin.
-            // Compound unclear directives retain an unresolved state, rather
-            // than silently deleting a constraint from an affirmative clause.
-            let conditional = matches(clause, #"\b(if|unless|would|could)\b|만약|(?:하면|라면|일\s*경우)"#)
-            let negative = matches(clause, #"\b(not|don't|never|without|instead)\b|말고|쓰지|하지\s*마|아니라|필요\s*없|원하지"#)
-            let inquiry = matches(clause, #"\b(what|which|why|does|supports?)\b|뭐야|무엇|지원해|설정이|가격|요금"#)
-            let directive = matches(clause, #"\b(use|run|execute|route|send|model\s*:|reasoning\s*:|effort\s*:)\b|돌려|실행|라우팅|보내|맡겨|써줘|사용해|(?:코덱스|codex|클로드|claude|클라우드\s*코드)(?:\s*code|\s*코드)?(?:로|한테|에게)"#)
-            if conditional || negative {
-                if directive || matches(clause, #"\bcodex\b|\bclaude\b|코덱스|클로드|gpt-[a-z0-9]|추론|리즈닝|reasoning|effort"#) {
-                    result.state = "unresolved"
-                }
-                continue
+            let ns = clause as NSString
+            let routes = routeSpans(clause).filter { !taskArgument($0.range) && !informational(clause, $0) }
+            var settings = routes
+            let familyToken = "(?:" + familyWords.map { "(?:" + $0.pattern + ")" }.joined(separator: "|") + ")"
+            let tuple = familyToken + #"(?:\s+[0-9]+(?:\.[0-9]+)*)?\s+"# + effortValue
+            settings += spans(clause, #"^\s*("# + tuple + ")" + end, kind: "tuple") +
+                spans(clause, #"\b(?:use|using)\s+(?:the\s+)?("# + tuple + ")" + end, kind: "tuple")
+            // Assignments have their own syntax, but an assignment mentioned
+            // after "to fix/explain ..." is part of that task, not another knob.
+            let assignments = spans(clause, #"(?:model|모델)\s*[:=]\s*([^\s,;!?。]*)"#, kind: "model") +
+                spans(clause, #"(?:reasoning|effort|리즈닝|추론)\s*[:=]\s*([^\s,;!?。]*)"#, kind: "effort")
+            func taskArgument(_ range: NSRange) -> Bool {
+                let prefix = ns.substring(to: range.location)
+                if matches(prefix, #"\b(?:and|but|then)\s*$"#) { return false }
+                return matches(prefix, #"\b(?:to|for)\s+(?:fix|explain|compare|describe|review|debug|analyze|analyse|test|check|implement|write|summarize)\b[^;.!?\n]*$"#)
             }
-            if inquiry && !directive { continue }
-            if matches(clause, #"(?:chatgpt|챗\s*지?피티|gpt\s*chat|채찌피티)(?:로|한테|에게)|\b(?:use|route|send)\b.*\bchatgpt\b"#) {
-                result.state = "unresolved"; continue // Dropped surface remains dropped.
-            }
-            if directive {
-                if matches(clause, #"(?<![a-z0-9])codex(?![a-z0-9])|코덱스"#) { surfaces.insert("codex") }
-                if matches(clause, #"(?<![a-z0-9])claude(?![a-z0-9])|클로드|클라우드\s*코드"#) { surfaces.insert("claude"); surfaces.insert("claude-chat") }
+            settings += assignments.filter { !taskArgument($0.range) && !informational(clause, $0) }
+            // Legacy standalone tuple/effort syntax remains supported, but is
+            // parsed only in an owned fragment, never across task prose.
+            let effortForms = [
+                #"\b(?:use|using|with|at|run)\s+(?:the\s+)?("# + effortToken + #")(?:\s+(?:mode|level))?"# + end,
+                #"^\s*("# + effortToken + #")(?:\s+(?:mode|level))?"# + end,
+                "(" + effortToken + #")\s*(?:으로|로)(?=\s|$|해|실행|돌려)"#,
+                #"(?<![a-z])(x[\s-]?high)(?![a-z])"#,
+            ].flatMap { spans(clause, $0, kind: "effort_phrase") }.filter { !taskArgument($0.range) && !informational(clause, $0) }
+            settings += effortForms
+            settings += (spans(clause, #"(최대로)\s*(?:실행|돌려)"#, kind: "ceiling") +
+                spans(clause, #"\b(?:use|run|execute)\s+(?:the\s+)?((?:strongest|best|top|flagship)\s+model)\b"#, kind: "superlative"))
+                .filter { !taskArgument($0.range) && !informational(clause, $0) }
+            settings = settings.filter { !taskArgument($0.range) && !informational(clause, $0) }
+            // Bare exclusions/conditionals are not silently erased: the v2
+            // wire has no exclusion/conditional routing representation.
+            let mentions = spans(clause, "(" + targetToken + #")(?:\s+[0-9]+(?:\.[0-9]+)*)?(?:\s+(?:cli|app|model))?"# + end, kind: "target") +
+                spans(clause, "(" + effortToken + #")(?:\s+(?:mode|level))?"# + end, kind: "effort_phrase")
+            // Conditional mentions without a directive do not grant a pin;
+            // actual negative setting mentions remain unsupported exclusions.
+            if (settings + mentions.filter { !taskArgument($0.range) && !informational(clause, $0) }).contains(where: { candidate in
+                negative(clause, candidate) || settings.contains(where: {
+                    $0.range == candidate.range && $0.kind == candidate.kind
+                }) && conditional(clause, candidate)
+            }) { result.state = "unresolved"; continue }
+            for setting in routes {
+                let token = setting.value
+                if matches(token, #"^(?:codex|코덱스)$"#) { surfaces.insert("codex") }
+                else if matches(token, #"^(?:claude(?:\s+code)?|클로드(?:\s*코드)?|클라우드\s*코드)$"#) {
+                    surfaces.insert("claude"); surfaces.insert("claude-chat")
+                } else if matches(token, #"^(?:chatgpt|챗\s*지?피티|gpt\s*chat|채찌피티)$"#) { result.state = "unresolved" }
             }
             let quality = matches(clause, #"결과|출력|품질|\b(result|output|quality|parity)\b"#) &&
                 matches(clause, #"수준|동등|이상|같거나|똑같|최고|최상|최대|맥스|\b(match|equal|same|equivalent|highest|top|max|maximum|ultra|flagship|quality\s*target)\b"#)
             if quality {
-                result.qualityTarget = "current_host_reference" // Descriptor only; no proof/admission.
-                let comparator = matches(clause, #"수준|동등|같거나|똑같|\b(match|equal|same|equivalent|parity|target|reference|level)\b"#)
-                let executionMax = matches(clause, #"최대로\s*(?:실행|돌려)|최대\s*(?:추론|리즈닝)으로|\b(?:use|run|execute|with|using)\b.*\bmax(?:imum)?\b"#)
-                let explicitRun = matches(clause, #"\b(?:use|run|execute|route|send)\b.*(?:gpt-|claude-)|(?:gpt-|claude-)[a-z0-9.\-]+(?:으로|로|한테)|(?:model|모델|reasoning|effort)\s*[:=]"#)
-                let namedRun = knownModelIDs.contains { model in
-                    matches(clause, #"(?<![a-z0-9._:\-])"# + NSRegularExpression.escapedPattern(for: model.lowercased()) + #"(?:으로|로|한테|에게)"#)
+                result.qualityTarget = "current_host_reference"
+                // A quality descriptor cannot swallow an independently
+                // owned execution setting. Reference words in the task body
+                // produced no setting span and therefore create no conflict.
+                let executionConstraint = settings.contains { setting in
+                    setting.kind != "target" || !matches(setting.value, "^(?:" + providerToken + ")$")
                 }
-                let familyRun = namedRun || (!comparator && parse(clause).modelFamily != nil)
-                if explicitRun || familyRun || (executionMax && !comparator) { result.state = "unresolved" }
-                continue // Reference-description words are not execution pins.
+                if executionConstraint { result.state = "unresolved" }
+                continue
             }
-            guard directive || !parse(clause).isEmpty else { continue }
-            let literals = (try? NSRegularExpression(pattern: #"(?<![a-z0-9_-])(?:gpt|claude)-[a-z0-9][a-z0-9.\-]*(?![a-z0-9_-])"#))?
-                .matches(in: clause, range: NSRange(clause.startIndex..., in: clause)) ?? []
-            for span in literals {
-                let id = (clause as NSString).substring(with: span.range)
-                if let actual = knownModelIDs.first(where: { $0.lowercased() == id }) { models.insert(actual) }
-                else { result.state = "unresolved" }
+            for setting in settings {
+                switch setting.kind {
+                case "target":
+                    if matches(setting.value, "^(?:" + providerToken + ")$") { continue }
+                    if matches(setting.value, #"^(?:gpt|claude)-"#) {
+                        if let actual = knownModelIDs.first(where: { $0.lowercased() == setting.value }) { models.insert(actual) }
+                        else { result.state = "unresolved" }
+                    } else if let family = familyWords.first(where: { matches(setting.value, "^(?:" + $0.pattern + ")$") })?.family {
+                        families.insert(family)
+                    }
+                case "ceiling": ceiling = true
+                case "superlative": result.state = "unresolved"
+                case "tuple":
+                    let intent = parse(setting.value)
+                    if let family = intent.modelFamily { families.insert(family) }
+                    if let effort = intent.effort { efforts.insert(effort) }
+                case "model":
+                    if let actual = knownModelIDs.first(where: { $0.lowercased() == setting.value }) { models.insert(actual) }
+                    else { result.state = "unresolved" }
+                case "effort":
+                    if RCCRuntimeContract.Effort(rawValue: setting.value) != nil { efforts.insert(setting.value) }
+                    else { result.state = "unresolved" }
+                default:
+                    // Generic maximum is the native ceiling in either word
+                    // order. A literal `reasoning: max` is handled separately.
+                    if matches(setting.value, #"(?:최대|\bmax(?:imum)?|\bhighest)\s*(?:추론|리즈닝|reasoning|effort|thinking)|(?:추론|리즈닝|reasoning|effort|thinking)\s*(?:최대|max(?:imum)?\b|highest\b)"#) { ceiling = true }
+                    else if let effort = parse("use " + setting.value).effort { efforts.insert(effort) }
+                }
             }
-            let assignments = (try? NSRegularExpression(pattern: #"(?:model|모델)\s*[:=]\s*([a-z0-9._:\-]+)"#))?
-                .matches(in: clause, range: NSRange(clause.startIndex..., in: clause)) ?? []
-            for assignment in assignments {
-                let id = (clause as NSString).substring(with: assignment.range(at: 1))
-                if let actual = knownModelIDs.first(where: { $0.lowercased() == id }) { models.insert(actual) }
-                else { result.state = "unresolved" }
-            }
-            let parsed = parse(clause)
-            // A literal effort assignment is exact. A generic demand for the
-            // maximum asks for the native ceiling (possibly ultra), not max.
-            let literalEffort = (try? NSRegularExpression(pattern: #"(?:reasoning|effort|리즈닝|추론)\s*[:=]\s*([^\s,;!?。]+)"#))?
-                .matches(in: clause, range: NSRange(clause.startIndex..., in: clause)) ?? []
-            for match in literalEffort {
-                let token = (clause as NSString).substring(with: match.range(at: 1))
-                if RCCRuntimeContract.Effort(rawValue: token) != nil { efforts.insert(token) }
-                else { result.state = "unresolved" }
-            }
-            let effortAssignment = matches(clause, #"(?:reasoning|effort|리즈닝|추론)\s*[:=]"#)
-            if effortAssignment && literalEffort.isEmpty { result.state = "unresolved" }
-            let genericMaximum = literalEffort.isEmpty && matches(clause, #"최대로|최대\s*(?:추론|리즈닝)|\b(?:maximum|highest)\s*(?:reasoning|effort)|\bmax\s*(?:reasoning|effort)"#)
-            if genericMaximum { ceiling = true }
-            else if matches(clause, #"(?:최고|최상위|가장\s*강한)\s*모델|\b(?:best|strongest|top|flagship)\s+(?:available\s+|supported\s+)?model\b"#) {
-                result.state = "unresolved" // Model-only superlative is not an exact model or effort.
-            }
-            if !genericMaximum && literalEffort.isEmpty, let effort = parsed.effort { efforts.insert(effort) }
-            if literals.isEmpty && assignments.isEmpty, let family = parsed.modelFamily { families.insert(family) }
         }
         // A multi-provider instruction is not silently read as an intersection
         // or as a parallel plan. This migration covers ordinary one-route Auto.

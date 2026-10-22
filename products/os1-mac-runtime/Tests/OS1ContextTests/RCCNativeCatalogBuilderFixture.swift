@@ -1467,6 +1467,96 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     // capability opt-in agree. These synthetic observations grant no live gate.
     let knownV2 = Set(profiles.map(\.model))
     func v2(_ text: String) -> C.RoutingIntentV2 { RoutingIntent.parseV2(text, knownModelIDs: knownV2) }
+    // Setting ownership: task constraints/subject nouns are not routing
+    // constraints. These are pairs, not exemptions for one provider/name.
+    let ordinaryV2 = [
+        "Run the tests without changing code",
+        "If there is a bug in Codex integration, explain it",
+        "Fix Codex integration without changing authentication",
+        "Explain how Claude handles errors, not how to configure it",
+        "Fix the parser and do not touch Codex auth",
+        "Run the Claude integration tests",
+        "Use the Codex documentation to explain authentication",
+        "Run the Codex integration tests",
+        "Use the Claude documentation to explain authentication",
+        "Use the Codex app screenshots to explain authentication",
+        "Use the Claude CLI logs to explain authentication",
+        "Explain why you should never use Codex",
+        "Could you explain how to use Claude?",
+        "Explain how to use gpt-6-sol",
+        "Explain why using Codex is not needed",
+        "Explain what model: fable means",
+        "Could you explain this function",
+        "This is not a high effort task",
+        "Run this without a low effort change",
+        "Codex 오류를 고치되 인증은 바꾸지 마",
+    ]
+    for text in ordinaryV2 {
+        let parsed = v2(text)
+        try check(parsed.state == "resolved" && parsed.allowedSurfaces.isEmpty &&
+                  parsed.exactModel == nil && parsed.modelFamily == nil && parsed.effort == nil &&
+                  !parsed.requireNativeCeiling && parsed.qualityTarget == nil,
+                  "task subject/constraint does not become an execution setting: \(text)")
+    }
+    let providerV2: [(String, [String])] = [
+        ("Use Codex without changing authentication", ["codex"]),
+        ("Use Codex now", ["codex"]),
+        ("Use Claude today", ["claude", "claude-chat"]),
+        ("코덱스 써줘", ["codex"]),
+        ("클로드 사용해", ["claude", "claude-chat"]),
+        ("Use Codex to fix gpt-6-sol integration", ["codex"]),
+        ("Use Codex to compare gpt-6-sol with claude-fable-5-1", ["codex"]),
+        ("Use Codex to explain why you should never use Claude", ["codex"]),
+        ("Explain this function using Codex", ["codex"]),
+        ("Compare these models using Claude", ["claude", "claude-chat"]),
+        ("Could you explain this using Codex?", ["codex"]),
+        ("Use Codex to explain 최대 리즈닝으로 실행하는 법", ["codex"]),
+        ("Use Codex to explain why people use strongest model", ["codex"]),
+        ("코덱스로 가격을 설명해줘", ["codex"]),
+        ("Use Codex, but do not modify files", ["codex"]),
+        ("Could you use Codex to explain this function?", ["codex"]),
+        ("I would like you to use Codex to explain this function", ["codex"]),
+        ("Use Codex CLI to analyze this function", ["codex"]),
+        ("Use the Claude app to explain this function", ["claude", "claude-chat"]),
+        ("Would you use Claude to explain this function?", ["claude", "claude-chat"]),
+        ("run tests on Claude", ["claude", "claude-chat"]),
+        ("run tests on Codex", ["codex"]),
+        ("코덱스로 이 함수 설명해줘. 파일 수정은 하지 마", ["codex"]),
+        ("클로드로 이 함수 설명해줘. 파일 수정은 하지 마", ["claude", "claude-chat"]),
+    ]
+    for (text, expected) in providerV2 {
+        let parsed = v2(text)
+        try check(parsed.state == "resolved" && parsed.allowedSurfaces == expected &&
+                  parsed.exactModel == nil && parsed.modelFamily == nil && parsed.effort == nil,
+                  "actual execution-target phrase survives unrelated task prohibition: \(text)")
+    }
+    try check(v2("use opus 5.5 for this").modelFamily == "opus" &&
+              v2("opus 5.5로 리뷰해줘").modelFamily == "opus" &&
+              v2("opus max").modelFamily == "opus" && v2("opus max").effort == "max",
+              "owned family/version/tuple settings retain their original constraints")
+    let qualityAboutV2 = v2("Use Codex to explain how maximum reasoning affects output quality")
+    try check(qualityAboutV2.state == "resolved" && qualityAboutV2.allowedSurfaces == ["codex"] &&
+              qualityAboutV2.effort == nil && !qualityAboutV2.requireNativeCeiling,
+              "quality task prose cannot become an owned execution maximum")
+    try check(v2("Explain this function, reasoning: high").effort == "high" &&
+              v2("Explain this function using gpt-6-sol").exactModel == "gpt-6-sol",
+              "postposed assignment/instrument retains its own execution authority beside explanatory task")
+    let scopedExactV2 = v2("Use Codex with reasoning: high but do not modify files")
+    try check(scopedExactV2.state == "resolved" && scopedExactV2.allowedSurfaces == ["codex"] &&
+              scopedExactV2.effort == "high", "unrelated prohibition cannot erase an exact effort pin")
+    try check(v2("use gpt-6-sol reasoning:high without changing authentication").exactModel == "gpt-6-sol" &&
+              v2("use gpt-6-sol reasoning:high without changing authentication").effort == "high",
+              "exact model/effort pins preserve their meaning beside task constraints")
+    for text in ["not max reasoning", "Don't use Codex today", "Do not use high reasoning mode", "no max reasoning", "최대 리즈닝 필요 없어", "코덱스 사용하지 마", "클로드로 실행하지 마", "don't use Codex", "never use Claude", "do not run tests on Claude", "don't pick Codex", "Codex 말고 Claude로 설명해줘",
+                 "if Codex unavailable use Claude", "I could use Codex", "I would use Claude", "Use Codex if possible to explain this function",
+                 "if possible use gpt-6-sol reasoning:high", "reasoning: high if possible"] {
+        try check(v2(text).state == "unresolved", "actual negative/conditional routing needs unsupported exclusion/branch semantics: \(text)")
+    }
+    // Matched positive/negative examples protect explicit constraints while
+    // the ordinary cases above prevent fixing only the observed sentence.
+    try check(v2("use reasoning: high").effort == "high" &&
+              v2("do not use reasoning: high").state == "unresolved",
+              "negation of the actual setting still blocks adoption")
     let bareV2 = v2("Codex로 이 함수 설명해줘")
     try check(bareV2.allowedSurfaces == ["codex"] && bareV2.exactModel == nil && bareV2.effort == nil,
               "v2 bare provider constrains surface only")
@@ -1474,6 +1564,13 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(literalV2.exactModel == "gpt-6-sol" && literalV2.effort == "high" && !literalV2.requireNativeCeiling,
               "v2 exact known model and effort remain hard pins")
     try check(v2("Codex로 최대로 실행해").requireNativeCeiling, "v2 generic maximum is native ceiling not max label")
+    for text in ["최대 리즈닝으로 실행해", "리즈닝 최대로 실행해", "추론 최대로 실행해"] {
+        let parsed = v2(text)
+        try check(parsed.state == "resolved" && parsed.requireNativeCeiling && parsed.effort == nil,
+                  "same generic-maximum setting remains native ceiling in both term orders: \(text)")
+    }
+    try check(v2("reasoning: max").effort == "max" && !v2("reasoning: max").requireNativeCeiling,
+              "literal max assignment remains distinct from generic native maximum")
     let qualityV2 = v2("결과는 최고 모델 최대 추론 수준과 동등하게 해줘")
     try check(qualityV2.qualityTarget == "current_host_reference" && qualityV2.effort == nil &&
               qualityV2.exactModel == nil && !qualityV2.requireNativeCeiling, "result ceiling does not pin execution")
@@ -1536,6 +1633,22 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(try B.catalogData(B.build(migrated), taskID: migrated.taskID, requestSHA256: migrated.requestSHA256) ==
               B.catalogData(B.build({ var x = migrated; x.enableRoutingIntentV2 = false; return x }()), taskID: migrated.taskID,
                             requestSHA256: migrated.requestSHA256), "host capability alone does not reinterpret legacy request")
+    for text in ordinaryV2 {
+        var value = input(text, chat: false, readOnly: true)
+        value.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        value.enableRoutingIntentV2 = true
+        let output = try B.build(value)
+        try check(!output.candidates.isEmpty && output.intentV2?.state == "resolved" &&
+                  Set(output.candidates.compactMap { $0["surface"] as? String }) == ["codex", "claude"],
+                  "activated ordinary Auto retains both native providers instead of holding or false pinning: \(text)")
+    }
+    for text in ["don't use Codex", "if Codex unavailable use Claude", "use gpt-unobserved-new reasoning:high"] {
+        var value = input(text, chat: false, readOnly: true)
+        value.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        value.enableRoutingIntentV2 = true
+        do { _ = try B.build(value); throw NSError(domain: "R10Scope", code: 1) }
+        catch B.Failure.intentUnresolved { checks += 1 }
+    }
     print("RCC native catalog builder: \(checks) checks OK; model calls 0")
 }
 
