@@ -23,6 +23,30 @@ embedding, pretrained weight, smoothing, inferred label or remote call is used.
 This finite-stratum statistical baseline does not generalize beyond its observed
 strata. A small encoder or regression model is a later, separately tested choice.
 
+Visible-native-identity count integrity is checked separately from label quality.
+The shared `preflightFrozenRouteNativeIdentities` reads only own data descriptors
+for native/config/logical identity metadata, never grades, learning, result or
+usage fields. The producer preflights **all TRAIN cards before any TRAIN join**,
+then constructs the training model and accepts its exact frozen lock. Only then
+may it scan **all CAL native metadata before the first CAL join**. Missing,
+wrong or late locks therefore do not expose calibration-native identity checks
+or grade-derived previews. Every per-card evidence join also rejects known
+native aliases before any grade.
+
+Independence is scoped to the exact feature/arms/harness/regime stratum. An
+unchanged cached **REFERENCE** observation can support different routed-config
+strata in the same phase only when the full normalized observation is identical
+and its canonical task/request/source snapshot/native fingerprint, reference
+config/harness, regime and reference-policy/metric binding match. It cannot add
+another sample within one stratum, act as a routed sample, cross TRAIN/CAL/P8,
+or inherit permission from an approval flag. Full normalized source joins still
+verify the provisional metadata match. Known native turn reuse rejects;
+ambiguous execution-envelope reuse or a shared session-artifact hash without a
+per-turn witness remains unsupported, not proof of hidden physical duplication.
+Same session with independent turn/execution/artifact identities is allowed.
+Source consistency and absence of known aliases do not authenticate provider
+originality or prove statistical independence.
+
 The training model's identity depends only on training cases and preregistered
 policy, not calibration labels. A separate assessment measures the frozen
 training estimate against independently designated calibration cases: observed

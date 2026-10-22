@@ -59,6 +59,18 @@ metadata-only firewall compares every cost-TRAIN and P7 TRAIN/CAL request, sourc
 template and project fingerprint against **all** P8 cards before any heldout grade
 join. Quality-TRAIN and cost-TRAIN may intentionally reuse an original observation;
 neither may overlap calibration or heldout data.
+All P8 card/projection and visible-native metadata also pass globally before
+the first heldout grade join, against both P7 TRAIN/CAL and complete cost-TRAIN
+identities. An exact quality-TRAIN observation can be joined into TRAIN cost
+analysis without creating another quality sample; distinct aliased logical
+observations cannot bypass the identity gate. Exact cached REFERENCE reuse
+across different routed-config strata follows the producer's immutable
+task/source/reference-config/harness/regime contract, never a caller flag.
+Cross-phase reuse is forbidden. The existing P8 execution-window inventory is
+keyed globally by outcome ID and conservatively does not support a shared cached
+reference window across cards. That remains an unsupported P8 closure scope,
+not an assertion of duplicate/fraudulent physical execution; its inventory
+semantics are not expanded by the metadata helper.
 All other P8 blockers reject. EACH exact projected P7 stratum must have its own
 frozen heldout minimum; one pair or another feature bucket cannot qualify all cells. Review source bytes, not just approval booleans,
 are required. Timestamp assertions remain source-consistency evidence, not

@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {writeCalibratedRouteFixture} from './calibrated-route-evidence.synthetic.mjs';
 import {loadHostCalibratedRouteRegistration as reg,loadCalibratedRouteEvidence as load,readCalibratedRouteEvidence as read,isCalibratedRouteEvidence as isCap} from '../../Resources/openclaw-os1-bridge/calibrated-route-evidence.mjs';
+import {produceOfflineRouteCalibration as produce} from '../../Resources/openclaw-os1-bridge/offline-route-calibration.mjs';
 import {stableJSON,digest,RESOURCE_COMPONENTS} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';
 const H=x=>createHash('sha256').update(x).digest('hex'),enc=x=>Buffer.from(stableJSON(x));
 function fixture(t,options={}){const root=realpathSync(mkdtempSync(join(tmpdir(),'os1-qualified-route-')));t.after(()=>rmSync(root,{recursive:true,force:true}));return writeCalibratedRouteFixture({stateDir:root,...options});}
@@ -61,3 +62,66 @@ test('cost outcome aliases reject repeated session-turn identity without conflat
  });const reason=alias==='record'?'ce_whole_route_shared_native_artifact_unsupported':alias==='execution'?'ce_whole_route_execution_identity_ambiguous':'ce_whole_route_native_observation_reused';assert.equal(r.reason,reason,alias);assert.equal(r.capability,null);}});
 test('native observation reuse across a primary and another episode fallback is rejected globally',t=>{const f=fixture(t),r=repack(f,x=>{const p=x['resource-partitions.json'],a=p.episodes.find(e=>e.attempts.length===1).attempts[0],e=p.episodes.find(e=>e.attempts.length===2),n=e.attempts[1];assert.notEqual(n.outcome_id,a.outcome_id);n.native=structuredClone(a.native);n.usage=structuredClone(a.usage);rehashNative(n);e.history.native_record_sha256s=e.attempts.map(n=>n.native.record_sha256);rebindSource(p,e.history);rebindSource(p,e);});assert.equal(r.reason,'ce_whole_route_native_observation_reused');});
 test('independent native turns in the same session remain distinct source observations',t=>{const f=fixture(t),r=repack(f,x=>{const p=x['resource-partitions.json'],a=p.episodes[0].attempts[0],e=p.episodes[1],n=e.attempts[0];assert.notEqual(n.native.turn_id,a.native.turn_id);assert.notEqual(n.native.execution_id,a.native.execution_id);assert.notEqual(n.native.record_sha256,a.native.record_sha256);n.native.session_id=a.native.session_id;rehashNative(n);rebindSource(p,e);});assert.equal(r.status,'loaded_synthetic_fixture_evidence');});
+
+// A matched cached reference is not another independent native execution. It
+// may support a DIFFERENT routed-config stratum without increasing n in either.
+function cachedReferenceTrainingInput(f){const x=structuredClone(f.input);x.operation='fit';x.fit_lock=null;
+ x.evidence=x.evidence.filter(e=>e.run_card.case_manifest[0].split==='development');
+ x.samples=x.samples.filter(s=>x.evidence.some(e=>e.run_card_sha256===s.run_card_sha256));
+ x.assignment.members=x.assignment.members.filter(m=>m.role==='train');const [a,b]=x.evidence,old=b.run_card_sha256;
+ for(let i=0;i<b.run_card.case_manifest.length;i++){const ca=a.run_card.case_manifest[i],cb=b.run_card.case_manifest[i],caseID=cb.case_id,
+  ra=a.results[i],rb=b.results[i],sa=x.samples.find(s=>s.run_card_sha256===a.run_card_sha256&&s.case_id===ca.case_id),
+  sb=x.samples.find(s=>s.run_card_sha256===old&&s.case_id===caseID),ref=a.outcome_state.records.find(n=>n.outcome_id===ra.attempts.reference.outcome_id),
+  route=b.outcome_state.records.find(n=>n.outcome_id===rb.attempts.routed.outcome_id),refIndex=b.outcome_state.records.findIndex(n=>n.outcome_id===rb.attempts.reference.outcome_id);
+  Object.assign(cb,structuredClone(ca),{case_id:caseID});b.outcome_state.records[refIndex]=structuredClone(ref);rb.attempts.reference=structuredClone(ra.attempts.reference);
+  for(const k of ['task_id','node_id','request_sha256','source_fingerprint'])route.identity[k]=ref.identity[k];
+  route.outcome_id=digest({task_id:route.identity.task_id,node_id:route.identity.node_id,attempt_id:route.identity.attempt_id.toLowerCase()});rehashNative(route);
+  Object.assign(rb.attempts.routed,{outcome_id:route.outcome_id,normalized_sha256:route.normalized_sha256,task_id:route.identity.task_id,node_id:route.identity.node_id,source_fingerprint:route.identity.source_fingerprint});
+  rb.grade.task_id=ca.task_id;rb.final_lock.chosen_outcome_id=route.outcome_id;
+  sb.projection=structuredClone(sa.projection);sb.captured_at_ms=sa.captured_at_ms;sb.native_harness.reference=structuredClone(sa.native_harness.reference);sb.regime=structuredClone(sa.regime);
+  sb.resource.reference=structuredClone(sa.resource.reference);sb.resource.routed.native_outcome_id=route.outcome_id;rebindSource(x,sb.resource.routed);
+  sb.execution_windows.reference=structuredClone(sa.execution_windows.reference);
+  Object.assign(sb.execution_windows.routed,{task_id:ca.task_id,node_id:ca.node_id,outcome_id:route.outcome_id});rebindSource(x,sb.execution_windows.routed);
+  sb.feature_evidence_sha256=source(x,{schema:1,kind:'offline_preoutcome_feature_capture_v1',captured_at_ms:sb.captured_at_ms,projection:sb.projection});
+  sb.actual_task_evidence_sha256=source(x,{kind:'offline_preoutcome_task_binding_v1',case_id:caseID,task_id:ca.task_id,node_id:ca.node_id,request_sha256:ca.request_sha256,source_fingerprint:ca.source_fingerprint,projection_task_sha256:digest(sb.projection.task)});
+ }
+ const next=digest(b.run_card);b.run_card_sha256=next;for(const s of x.samples)if(s.run_card_sha256===old)s.run_card_sha256=next;for(const m of x.assignment.members)if(m.run_card_sha256===old)m.run_card_sha256=next;
+ for(const row of b.results){const l=row.final_lock;l.final_lock_sha256=digest({run_card_sha256:next,case_id:row.case_id,choice:l.choice,adoption_reason:l.adoption_reason,chosen_outcome_id:l.chosen_outcome_id,chosen_artifact_sha256:l.chosen_artifact_sha256,locked_at_ms:l.locked_at_ms});row.grade.final_lock_sha256=l.final_lock_sha256;}
+ rebindSource(x,x.assignment);return x;
+}
+test('source-bound byte-identical cached REFERENCE may support two different routed-config training strata',t=>{const f=fixture(t,{three_configs:true}),x=cachedReferenceTrainingInput(f),r=produce(x);
+ assert.equal(r.status,'synthetic_training_fit_not_efficacy',JSON.stringify(r));assert.equal(r.counts.train,12);assert.equal(r.training_model.cells.length,2);assert(r.training_model.cells.every(c=>c.train_count===6));
+ const sameCell=structuredClone(x),b=sameCell.evidence[1],a=sameCell.evidence[0];
+ // Binding a different harness does not turn a shared reference into independent evidence.
+ const sample=sameCell.samples.find(s=>s.run_card_sha256===b.run_card_sha256);sample.native_harness.reference.harness_sha256='f'.repeat(64);
+ const bad=produce(sameCell);assert(bad.blockers.includes('oc_evidence_native_shared_scope_unsupported'),JSON.stringify(bad));
+});
+function aliasHeldoutNative(packet,donor,targetCard,targetRow=0){const row=targetCard.results[targetRow],n=targetCard.outcome_state.records.find(n=>n.outcome_id===row.attempts.reference.outcome_id);
+ n.native=structuredClone(donor.native);n.usage=structuredClone(donor.usage);rehashNative(n);
+ row.attempts.reference.normalized_sha256=n.normalized_sha256;row.attempts.reference.execution_witness_sha256=n.native.record_sha256;
+ const window=packet.execution_windows.find(w=>w.outcome_id===n.outcome_id);window.native_record_sha256=n.native.record_sha256;rebindSource(packet,window);
+}
+test('P8 native aliases reject before heldout counts, including a later card with an opaque earlier grade',t=>{
+ for(const crossCard of [false,true]){const f=fixture(t,{three_configs:crossCard}),r=repack(f,x=>{const p=x['p8-evidence.json'],first=p.evidence[0],target=crossCard?p.evidence.at(-1):first,
+  donor=first.outcome_state.records.find(n=>n.outcome_id===first.results[0].attempts.reference.outcome_id);
+  aliasHeldoutNative(p,donor,target,crossCard?0:1);first.results[0].grade='OPAQUE_EARLIER_HELDOUT_GRADE';});
+  assert.equal(r.reason,crossCard?'ce_evidence_native_shared_scope_unsupported':'ce_evidence_native_observation_reused');assert.equal(r.capability,null);}
+});
+test('P8 cannot reuse known native observations from either quality TRAIN or complete cost TRAIN',t=>{
+ for(const kind of ['quality','cost']){const f=fixture(t),r=repack(f,x=>{const p=x['p8-evidence.json'],src=kind==='quality'?x['p7-input.json']:x['resource-partitions.json'],
+  donor=kind==='quality'?src.evidence.find(e=>e.run_card.case_manifest[0].split==='development').outcome_state.records[0]:src.episodes[0].attempts[0];
+  for(const h of [donor.native.record_sha256,donor.provenance.source_sha256,donor.usage.provenance_sha256]){const s=src.sources.find(s=>s.sha256===h);assert(s);if(!p.sources.some(x=>x.sha256===h))p.sources.push(s);}
+  aliasHeldoutNative(p,donor,p.evidence[0]);p.evidence[0].results[0].grade='OPAQUE_HELDOUT_GRADE';});
+  assert.equal(r.reason,'ce_evidence_native_cross_phase_reuse',kind);assert.equal(r.capability,null);}
+});
+test('an exact quality-TRAIN observation may also support TRAIN cost analysis without adding quality samples',t=>{
+ const f=fixture(t),r=repack(f,x=>{const input=x['p7-input.json'],card=input.evidence.find(e=>e.run_card.case_manifest[0].split==='development'),c=card.run_card.case_manifest[0],row=card.results[0],
+  n=card.outcome_state.records.find(n=>n.outcome_id===row.attempts.reference.outcome_id),sample=input.samples.find(s=>s.run_card_sha256===card.run_card_sha256&&s.case_id===c.case_id),p=x['resource-partitions.json'],e=p.episodes[0];
+  e.lineage=Object.fromEntries(['request_sha256','source_sha256','template_sha256','project_sha256'].map(k=>[k,c[k]]));
+  e.started_at_ms=sample.execution_windows.reference.started_at_ms;e.primary_settled_at_ms=n.provenance.observed_at_ms;e.ended_at_ms=e.primary_settled_at_ms+2;
+  e.preoutcome.captured_at_ms=sample.captured_at_ms;e.preoutcome.projection=structuredClone(sample.projection);
+  const sb=e.preoutcome.source_binding;Object.assign(sb,{task_id:c.task_id,node_id:c.node_id,request_sha256:c.request_sha256,source_snapshot_sha256:sample.projection.task.source_snapshot_sha256,source_fingerprint:c.source_fingerprint});rebindSource(p,sb);
+  e.attempts=[structuredClone(n)];Object.assign(e.checker,{primary_outcome_id:n.outcome_id,observed_at_ms:e.primary_settled_at_ms+1});rebindSource(p,e.checker);
+  Object.assign(e.history,{task_id:c.task_id,node_id:c.node_id,outcome_ids:[n.outcome_id],native_record_sha256s:[n.native.record_sha256],closed_at_ms:e.ended_at_ms});rebindSource(p,e.history);rebindSource(p,e);
+ });assert.equal(r.status,'loaded_synthetic_fixture_evidence',r.reason);assert.equal(read(r.capability,{now_ms:f.now_ms}).fit.training_cases.length,6);
+});

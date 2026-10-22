@@ -275,3 +275,33 @@ test('accepted frozen model unlocks calibration only after TRAIN join and exact 
   const r=produce(syntheticInput());assert.equal(r.status,'synthetic_fit_assessed_not_efficacy');
   assert.deepEqual(r.joined_runs.map(run=>run.role),['train','calibration']);assert.equal(r.counts.calibration,6);
 });
+
+function nativeAlias(x,donorCard,targetCard,donorRow=0,targetRow=1){
+  const donor=donorCard.outcome_state.records.find(n=>n.outcome_id===donorCard.results[donorRow].attempts.reference.outcome_id),
+    row=targetCard.results[targetRow],n=targetCard.outcome_state.records.find(n=>n.outcome_id===row.attempts.reference.outcome_id);
+  n.native=structuredClone(donor.native);n.usage=structuredClone(donor.usage);
+  const {normalized_sha256,...body}=n;n.normalized_sha256=digest(body);
+  row.attempts.reference.normalized_sha256=n.normalized_sha256;row.attempts.reference.execution_witness_sha256=n.native.record_sha256;
+  const sample=x.samples.find(s=>s.run_card_sha256===targetCard.run_card_sha256&&s.case_id===row.case_id),w=sample.execution_windows.reference;
+  for(const k of ['execution_id','session_id','turn_id'])w[k]=n.native[k];w.native_record_sha256=n.native.record_sha256;
+  {const {source_sha256,...b}=w;w.source_sha256=source(x,b);}
+}
+test('TRAIN native aliases reject before first grade/count/model rather than inflating n',()=>{
+  const x=syntheticInput();nativeAlias(x,x.evidence[0],x.evidence[0]);x.evidence[0].results[0].grade='OPAQUE_TRAIN_GRADE';
+  const r=bad(x,'oc_evidence_native_observation_reused');assert.equal(r.training_model,null);assert.deepEqual(r.joined_runs,[]);assert.equal(r.counts.train,0);
+});
+test('CAL aliases and TRAIN-to-CAL native reuse reject after accepted model lock but before any CAL grade',()=>{
+  for(const crossPhase of [false,true]){const x=syntheticInput(),cal=x.evidence[1];nativeAlias(x,crossPhase?x.evidence[0]:cal,cal);
+    cal.results[0].grade='OPAQUE_CAL_GRADE';const r=bad(x,crossPhase?'oc_evidence_native_cross_phase_reuse':'oc_evidence_native_observation_reused');
+    assert(r.training_model);assert.equal(r.counts.train,6);assertNoCalibrationPreview(r);}
+});
+test('all CAL cards native identities preflight before a grade in the first card',()=>{
+  const x=syntheticInput({trainCases:2,calibrationCases:34}),first=x.evidence[1],last=x.evidence.at(-1);
+  nativeAlias(x,first,last,0,0);first.results[0].grade='OPAQUE_FIRST_CAL_GRADE';
+  const r=bad(x,'oc_evidence_native_observation_reused');assert.equal(r.counts.train,2);assertNoCalibrationPreview(r);
+});
+test('unaccepted fit lock never opens CAL native metadata preflight',()=>{
+  const x=syntheticInput();nativeAlias(x,x.evidence[0],x.evidence[1]);validShapedWrongModelLock(x);
+  x.evidence[1].results[0].grade='OPAQUE_CAL_GRADE';const r=bad(x,'oc_training_fit_lock_absent_or_mismatched');
+  assert(r.training_model);assert.equal(r.counts.train,6);assertNoCalibrationPreview(r);
+});

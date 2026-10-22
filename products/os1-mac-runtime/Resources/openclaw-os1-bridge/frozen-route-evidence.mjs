@@ -30,6 +30,77 @@ const CASE_KEYS = ['case_id', 'split', 'origin', 'task_id', 'node_id', 'request_
 const ARM_KEYS = ['candidate_id', 'configuration_sha256', 'config_sha256', 'surface', 'transport',
   'account_id', 'model', 'effort', 'tools_sha256', 'instructions_sha256'];
 
+/** Metadata-only count-integrity preflight. Never reads grades, learning,
+ * results, usage, or hidden provider state. Prior observations must come from
+ * an already allowed phase. Hashes/visible IDs establish consistency, not source
+ * authenticity. A shared session artifact is unsupported without a turn witness.
+ */
+export function preflightFrozenRouteNativeIdentities(entries, {previous = []} = {}) {
+  const observations = [], turns = new Map(), executions = new Map(), artifacts = new Map(), logical = new Map();
+  const value = (o, k) => {const d = o && typeof o === 'object' ? Object.getOwnPropertyDescriptor(o, k) : null;
+    yes(d && Object.hasOwn(d, 'value'), 'evidence_native_identity_metadata_invalid'); return d.value;};
+  const array = a => {yes(Array.isArray(a) && a.length <= 8192, 'evidence_native_identity_metadata_invalid');
+    return Array.from({length:a.length}, (_,i)=>value(a,String(i)));};
+  const fields = ['phase','scope_sha256','role','reference_binding_sha256','outcome_id','normalized_sha256',
+    'provider','account_id','transport','execution_id','session_id','turn_id','record_sha256','immutable_identity_sha256'];
+  const add = o => {
+    yes(exact(o,fields) && ['train','calibration','heldout','evidence','cost_train'].includes(o.phase) &&
+      hash(o.scope_sha256) && ['reference','routed'].includes(o.role) &&
+      (o.role === 'reference' ? hash(o.reference_binding_sha256) : o.reference_binding_sha256 === null) &&
+      ['outcome_id','normalized_sha256','record_sha256','immutable_identity_sha256'].every(k=>hash(o[k])) &&
+      ['openai','anthropic','local'].includes(o.provider) && id(o.account_id) && id(o.transport) &&
+      ['execution_id','session_id','turn_id'].every(k=>o[k]===null||id(o[k])), 'evidence_native_identity_metadata_invalid');
+    const ns=JSON.stringify([o.provider,o.account_id,o.transport]),
+      turn=o.session_id!==null&&o.turn_id!==null?ns+':'+JSON.stringify([o.session_id,o.turn_id]):null,
+      execution=o.execution_id!==null?ns+':'+o.execution_id:null, artifact=ns+':'+o.record_sha256;
+    yes(turn!==null||execution!==null,'evidence_native_identity_unknown');
+    const sameObservation = a => ['outcome_id','normalized_sha256','provider','account_id','transport','execution_id',
+      'session_id','turn_id','record_sha256','immutable_identity_sha256'].every(k=>a[k]===o[k]);
+    const cachedReference = a => a.phase===o.phase && a.scope_sha256!==o.scope_sha256 &&
+      a.role==='reference' && o.role==='reference' && a.reference_binding_sha256===o.reference_binding_sha256 && sameObservation(a);
+    const priors=new Set([logical.get(o.outcome_id),turn===null?null:turns.get(turn),execution===null?null:executions.get(execution),artifacts.get(artifact)].filter(Boolean).flat());
+    for(const a of priors) {
+      if(cachedReference(a)) continue;
+      const sameNamespace=['provider','account_id','transport'].every(k=>a[k]===o[k]),
+        knownTurn=sameNamespace&&turn!==null&&a.session_id===o.session_id&&a.turn_id===o.turn_id,
+        knownExecution=sameNamespace&&execution!==null&&a.execution_id===o.execution_id;
+      yes(!(a.phase!==o.phase&&(knownTurn||knownExecution)),'evidence_native_cross_phase_reuse');
+      yes(!(knownTurn&&a.scope_sha256===o.scope_sha256),'evidence_native_observation_reused');
+      yes(!knownTurn,'evidence_native_shared_scope_unsupported');
+      yes(!knownExecution,'evidence_native_execution_identity_ambiguous');
+      yes(a.outcome_id!==o.outcome_id,'evidence_native_identity_conflict');
+      yes(a.record_sha256!==o.record_sha256,'evidence_native_shared_artifact_unsupported');
+    }
+    observations.push(Object.freeze({...o}));
+    // A cached reference can have multiple scope memberships. All memberships
+    // must be tested, so the maps retain arrays rather than only the last one.
+    const put=(m,k)=>{if(k!==null){const xs=m.get(k)??[];xs.push(o);m.set(k,xs);}};
+    put(logical,o.outcome_id);put(turns,turn);put(executions,execution);put(artifacts,artifact);
+  };
+  try {
+    const all=[...array(previous).map(o=>Object.fromEntries(fields.map(k=>[k,value(o,k)])))];
+    for(const entry of array(entries)) {
+      const r=value(entry,'record'), n=value(r,'native'), c=value(r,'observed_config'), ident=value(r,'identity');
+      const surface=value(c,'surface'), provider=value(n,'provider'), expected=['codex','gpt-chat'].includes(surface)?'openai':
+        ['claude','claude-chat'].includes(surface)?'anthropic':surface==='local'?'local':null;
+      yes(expected!==null&&provider===expected,'evidence_native_identity_unknown');
+      const identityFields=['task_id','node_id','attempt_id','candidate_id','request_sha256','source_fingerprint',
+        'policy_sha256','configuration_sha256','quality_contract_sha256'];
+      const identity=Object.fromEntries(identityFields.map(k=>[k,value(ident,k)]));
+      yes(identityFields.slice(0,4).every(k=>id(identity[k]))&&identityFields.slice(4).every(k=>hash(identity[k])),
+        'evidence_native_identity_metadata_invalid');
+      all.push({phase:value(entry,'phase'),scope_sha256:value(entry,'scope_sha256'),role:value(entry,'role'),
+        reference_binding_sha256:value(entry,'reference_binding_sha256'),outcome_id:value(r,'outcome_id'),
+        normalized_sha256:value(r,'normalized_sha256'),provider,account_id:value(c,'account_id'),transport:value(c,'transport'),
+        ...Object.fromEntries(['execution_id','session_id','turn_id','record_sha256'].map(k=>[k,value(n,k)])),immutable_identity_sha256:digest(identity)});
+    }
+    for(const o of all) add(o);
+    return Object.freeze({schema:1,status:'eligible_native_identity_precheck',reason:'visible_metadata_consistency_only',
+      observations:Object.freeze(observations),model_calls:0,execution_authorized:false});
+  } catch(error) {return Object.freeze({schema:1,status:'ineligible',reason:/^evidence_native_[a-z_]+$/.test(error?.code??'')?
+    error.code:'evidence_native_identity_metadata_invalid',observations:Object.freeze([]),model_calls:0,execution_authorized:false});}
+}
+
 function arm(x) {
   yes(exact(x, ARM_KEYS) && ['candidate_id', 'surface', 'transport', 'account_id', 'model', 'effort'].every(k => id(x[k])) &&
     ['configuration_sha256', 'config_sha256', 'tools_sha256', 'instructions_sha256'].every(k => hash(x[k])), 'evidence_arm_invalid');
@@ -143,6 +214,10 @@ export function evaluateFrozenRouteEvidence(input) {
       Array.isArray(input.outcome_state.records) && input.outcome_state.records.length <= 4096 &&
       Array.isArray(input.outcome_state.quarantined) && input.outcome_state.quarantined.length === 0,
     'evidence_outcome_state_invalid_or_quarantined');
+    // All visible native identities are checked before even the first grade.
+    const nativeCheck=preflightFrozenRouteNativeIdentities(input.outcome_state.records.map(record=>({record,phase:'evidence',
+      scope_sha256:input.run_card_sha256,role:'routed',reference_binding_sha256:null})));
+    yes(nativeCheck.status==='eligible_native_identity_precheck',nativeCheck.reason);
     let merged = null;
     for (const r of input.outcome_state.records) {
       const next = mergeRoutingOutcomes(merged, r);

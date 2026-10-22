@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {produceOfflineRouteCalibration,offlineCalibrationData,offlineCalibrationCanonicalJSON} from './offline-route-calibration.mjs';
 import {mergeRoutingOutcomes} from './routing-outcome.mjs';
 import {frozenRouteFeatureBucket} from './frozen-route-predictor.mjs';
-import {evaluateFrozenRouteEvidence} from './frozen-route-evidence.mjs';
+import {evaluateFrozenRouteEvidence,preflightFrozenRouteNativeIdentities} from './frozen-route-evidence.mjs';
 import {digest,stableJSON,RESOURCE_COMPONENTS} from './joint-route-selector.mjs';
 const caps=new WeakMap(),registrations=new WeakMap();
 const H=/^[a-f0-9]{64}$/, hash=x=>typeof x==='string'&&H.test(x), count=x=>Number.isSafeInteger(x)&&x>=0;
@@ -44,13 +44,13 @@ export function loadHostCalibratedRouteRegistration({stateDir,now_ms=Date.now()}
 }
 function currentRegistration(reg,now){const o=registrations.get(reg);if(!o)return null;try{directory(o.stateDir);registrationShape(reg,now);const f=read(join(o.stateDir,'calibrated-route-registration.json'),16384);need(same(f.stat,o.file.stat)&&f.sha256===o.file.sha256,'ce_registration_revoked');return o;}catch{return null;}}
 function sourceMap(values){need(Array.isArray(values)&&values.length<=8192,'ce_sources');const out=new Map();for(const s of values){need(exact(s,['sha256','utf8'])&&hash(s.sha256)&&typeof s.utf8==='string'&&Buffer.byteLength(s.utf8)<=262144&&sha(s.utf8)===s.sha256&&!out.has(s.sha256),'ce_source_integrity');out.set(s.sha256,s.utf8);}return out;}
-function p8Check(packet,fit,p7Input,review,costTrainLineages){
+function p8Check(packet,fit,p7Input,review,costProof){
  need(exact(packet,['schema','evidence','execution_windows','case_bindings','sources'])&&packet.schema===1&&Array.isArray(packet.evidence)&&packet.evidence.length>0&&packet.evidence.length<=8&&Array.isArray(packet.execution_windows)&&Array.isArray(packet.case_bindings),'ce_p8_shape');
  const sources=sourceMap(packet.sources),seen=new Set(),held=[],times=[],boundCases=new Set(),coverage=new Map();
  const prior=new Set();for(const e of p7Input.evidence)for(const c of e.run_card.case_manifest)for(const k of ['request_sha256','source_sha256','template_sha256','project_sha256'])prior.add(k+':'+c[k]);
  // All quality/cost TRAIN and quality CAL lineage is frozen before reading any P8 grade.
  // Reuse within TRAIN is allowed; neither TRAIN source may overlap CAL/heldout.
- for(const lineage of costTrainLineages)for(const k of ['request_sha256','source_sha256','template_sha256','project_sha256'])prior.add(k+':'+lineage[k]);
+ for(const lineage of costProof.train_lineages)for(const k of ['request_sha256','source_sha256','template_sha256','project_sha256'])prior.add(k+':'+lineage[k]);
  for(const e of packet.evidence){need(Array.isArray(e?.run_card?.case_manifest),'ce_p8_original_or_freeze');for(const c of e.run_card.case_manifest)for(const k of ['request_sha256','source_sha256','template_sha256','project_sha256'])need(hash(c?.[k])&&!prior.has(k+':'+c[k]),'ce_p8_overlap');}
  for(const e of packet.evidence){const c=e.run_card;
   // Validate the source-bound feature/stratum assignment before consuming any heldout grade.
@@ -60,6 +60,29 @@ function p8Check(packet,fit,p7Input,review,costTrainLineages){
   }
 need(c?.proof_mode==='candidate_goldblind'&&c.case_manifest?.length>0&&c.case_manifest.length<=32&&c.case_manifest.every(x=>x.split==='heldout'&&x.origin==='actual_execution')&&c.calibration?.status==='externally_verified'&&c.calibration.artifact_sha256===digest(fit)&&c.calibration.frozen_at_ms>=fit.assessed_at_ms&&c.reference_policy_sha256===p7Input.evidence[0].run_card.reference_policy_sha256&&c.policy_sha256===p7Input.evidence[0].run_card.policy_sha256,'ce_p8_original_or_freeze');
   need(p7Input.evidence.some(e=>stableJSON(c.arms)===stableJSON(e.run_card.arms)&&c.quality_contract_sha256===e.run_card.quality_contract_sha256&&c.candidate_pool_sha256===e.run_card.candidate_pool_sha256&&c.feature_schema_version===e.run_card.feature_schema_version),'ce_p8_pair_changed');
+  }
+ // All P8 projection/card and native metadata is preflighted before ANY heldout
+ // grade. P7 is already phase-verified, and complete TRAIN cost history checked.
+ const entries=[], priorEntries=[], priorRecords=new Map();
+ for(const e of p7Input.evidence)for(const c of e.run_card.case_manifest){const sample=p7Input.samples.find(s=>s.run_card_sha256===e.run_card_sha256&&s.case_id===c.case_id),
+  row=e.results.find(r=>r.case_id===c.case_id),phase=c.split==='development'?'train':'calibration',
+  cellCase=(phase==='train'?fit.training_cases:fit.calibration_cases).find(x=>x.run_card_sha256===e.run_card_sha256&&x.case_id===c.case_id),
+  referenceBinding=digest({projection_task:sample.projection.task,source_fingerprint:c.source_fingerprint,reference:e.run_card.arms.reference,
+    native_harness:sample.native_harness.reference,regime:sample.regime,reference_policy_sha256:e.run_card.reference_policy_sha256,quality_contract_sha256:e.run_card.quality_contract_sha256});
+  need(cellCase,'ce_p7_native_scope');for(const arm of ['reference','routed']){const record=e.outcome_state.records.find(n=>n.outcome_id===row.attempts[arm].outcome_id);priorEntries.push({record,phase,scope_sha256:cellCase.stratum_sha256,role:arm,reference_binding_sha256:arm==='reference'?referenceBinding:null});priorRecords.set(record.outcome_id,record);}}
+ for(const e of costProof.episodes)for(const record of e.attempts){const prior=priorRecords.get(record.outcome_id);
+  // An intentional exact observation join inside TRAIN does not add another
+  // quality sample. Cost episodes retain their separate no-reuse/count gate.
+  if(prior){need(stableJSON(prior)===stableJSON(record),'ce_native_training_join_conflict');
+    need(p7Input.evidence.some(ev=>ev.run_card.case_manifest[0].split==='development'&&ev.outcome_state.records.some(n=>n.outcome_id===record.outcome_id)),'ce_native_cross_phase_reuse');continue;}
+  priorEntries.push({record,phase:'train',scope_sha256:digest({kind:'whole_route_cost_support',stratum_sha256:e.stratum_sha256,config_sha256:e.config_sha256}),role:'routed',reference_binding_sha256:null});}
+ const nativePrior=preflightFrozenRouteNativeIdentities(priorEntries);need(nativePrior.status==='eligible_native_identity_precheck',`ce_${nativePrior.reason}`);
+ for(const e of packet.evidence)for(const c of e.run_card.case_manifest){const b=packet.case_bindings.find(b=>b.run_card_sha256===e.run_card_sha256&&b.case_id===c.case_id),row=e.results.find(r=>r.case_id===c.case_id),
+  referenceBinding=digest({projection_task:b.projection.task,source_fingerprint:c.source_fingerprint,reference:e.run_card.arms.reference,
+    native_harness:b.native_harness.reference,regime:b.regime,reference_policy_sha256:e.run_card.reference_policy_sha256,quality_contract_sha256:e.run_card.quality_contract_sha256});
+  need(row?.attempts&&Array.isArray(e.outcome_state?.records),'ce_p8_native_metadata');for(const arm of ['reference','routed']){const record=e.outcome_state.records.find(n=>n.outcome_id===row.attempts[arm]?.outcome_id);need(record,'ce_p8_native_metadata');entries.push({record,phase:'heldout',scope_sha256:b.stratum_sha256,role:arm,reference_binding_sha256:arm==='reference'?referenceBinding:null});}}
+ const nativeCheck=preflightFrozenRouteNativeIdentities(entries,{previous:nativePrior.observations});need(nativeCheck.status==='eligible_native_identity_precheck',`ce_${nativeCheck.reason}`);
+ for(const e of packet.evidence){const c=e.run_card;
   const j=evaluateFrozenRouteEvidence(e);need(j.counts!==null&&j.blockers.every(x=>x==='calibration_sample_insufficient')&&j.counts.heldout.cases>=c.thresholds.minimum_heldout_cases&&j.counts.heldout.accepted_B===0&&j.counts.heldout.final_failures===0&&j.counts.heldout.unknown_labels===0&&j.counts.heldout.unknown_resource_rows===0,'ce_p8_failed');
   need(sources.has(c.rights.evidence_sha256)&&sources.has(c.lineage_audit.evidence_sha256),'ce_p8_review_sources');
   for(const item of c.case_manifest){for(const k of ['request_sha256','source_sha256','template_sha256','project_sha256']){need(!prior.has(k+':'+item[k]),'ce_p8_overlap');}held.push({run_card_sha256:e.run_card_sha256,...item});}
@@ -116,7 +139,7 @@ function wholeRouteCosts(packet,input,fit,fileSHA){
   need(Number.isSafeInteger(Object.values(e.components).reduce((a,b)=>a+b,0))&&Object.values(e.components).reduce((a,b)=>a+b,0)<=1e12,'ce_whole_route_resource_overflow');const k=e.stratum_sha256+':'+e.config_sha256,g=groups.get(k)??{stratum_sha256:e.stratum_sha256,config_sha256:e.config_sha256,rows:[]};g.rows.push(e.components);groups.set(k,g);
  }
  for(const c of fit.cells)for(const arm of ['reference','routed'])need((groups.get(c.stratum_sha256+':'+c[arm].config_sha256)?.rows.length??0)>=p.minimum_episodes_per_stratum_config,'ce_whole_route_cost_coverage_missing');
- return {policy:p,train_lineages:packet.episodes.map(e=>({...e.lineage})),partitions:[...groups.values()].map(g=>({stratum_sha256:g.stratum_sha256,config_sha256:g.config_sha256,components:Object.fromEntries(RESOURCE_COMPONENTS.map(k=>[k,g.rows.reduce((s,x)=>s+x[k],0)/g.rows.length])),basis_artifact_sha256:fileSHA,basis_sample_count:g.rows.length}))};
+ return {policy:p,train_lineages:packet.episodes.map(e=>({...e.lineage})),episodes:packet.episodes,partitions:[...groups.values()].map(g=>({stratum_sha256:g.stratum_sha256,config_sha256:g.config_sha256,components:Object.fromEntries(RESOURCE_COMPONENTS.map(k=>[k,g.rows.reduce((s,x)=>s+x[k],0)/g.rows.length])),basis_artifact_sha256:fileSHA,basis_sample_count:g.rows.length}))};
 }
 
 function validate(data,manifest,reg,now){
@@ -132,7 +155,7 @@ function validate(data,manifest,reg,now){
  const pp=p.projection_policy;need(exact(pp,['point','lower','coverage_policy_sha256','uncertainty_policy_sha256','ood_policy_sha256'])&&pp.point==='training_mle_v1'&&pp.lower==='minimum_training_point_and_calibration_bound_v1'&&['coverage_policy_sha256','uncertainty_policy_sha256','ood_policy_sha256'].every(k=>hash(pp[k])),'ce_projection_policy');
  // Validate the cost model's complete TRAIN histories before heldout metadata/grade admission.
  const resourceProof=partitionsCheck(data['resource-partitions.json'],input,fit,manifest.files.find(f=>f.name==='resource-partitions.json').sha256),resource_partitions=resourceProof.partitions;
- const p8=p8Check(data['p8-evidence.json'],fit,input,r,resourceProof.train_lineages),sources=sourceMap(input.sources);for(const [h,v]of p8.sources){if(sources.has(h))need(sources.get(h)===v,'ce_source_conflict');sources.set(h,v);}
+ const p8=p8Check(data['p8-evidence.json'],fit,input,r,resourceProof),sources=sourceMap(input.sources);for(const [h,v]of p8.sources){if(sources.has(h))need(sources.get(h)===v,'ce_source_conflict');sources.set(h,v);}
  for(const k of ['rights_review_sha256','iid_review_sha256','source_review_sha256','split_audit_sha256','holdout_review_sha256'])need(hash(r[k])&&sources.has(r[k]),'ce_independent_review_source_absent');
  for(const k of ['coverage_policy_sha256','uncertainty_policy_sha256','ood_policy_sha256'])need(sources.has(pp[k]),'ce_projection_policy_source_absent');need(sources.has(b.coverage_discriminator_sha256),'ce_coverage_recipe_source_absent');
  need(r.iid_review_sha256===input.policy.iid_assumption_review_sha256,'ce_iid_review_changed');

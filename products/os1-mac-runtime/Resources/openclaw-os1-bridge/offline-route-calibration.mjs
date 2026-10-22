@@ -8,7 +8,7 @@
 import {createHash} from 'node:crypto';
 import {FROZEN_ROUTE_FEATURE_SCHEMA} from './frozen-route-artifacts.mjs';
 import {frozenRouteFeatureBucket} from './frozen-route-predictor.mjs';
-import {evaluateFrozenRouteEvidence} from './frozen-route-evidence.mjs';
+import {evaluateFrozenRouteEvidence,preflightFrozenRouteNativeIdentities} from './frozen-route-evidence.mjs';
 import {stableJSON} from './joint-route-selector.mjs';
 
 export const OFFLINE_CALIBRATION_FORMAT = 'os1_offline_stratum_bernoulli_mle_v2';
@@ -239,8 +239,28 @@ export function produceOfflineRouteCalibration(input) {
       need([...cards.entries()].filter(([runSHA])=>cardRoles.get(runSHA)==='calibration')
         .every(([,c])=>lock.locked_at_ms<c.frozen_at_ms),'oc_fit_lock_after_calibration_collection');
     }
-    const rows = new Map(), allOutcomes = new Map(), seenOutcomes = new Set();
+    const rows = new Map(), allOutcomes = new Map();let nativeObservations=[];
     const joinRole=role=>{
+    // Phase-local metadata only: ALL TRAIN before any TRAIN grade; CAL only
+    // after the exact training lock below, then ALL CAL before any CAL grade.
+    const nativeEntries=[];
+    for(const e of input.evidence){if(cardRoles.get(e.run_card_sha256)!==role)continue;
+      need(Array.isArray(e.results)&&Array.isArray(e.outcome_state?.records),'oc_evidence_join_failed');
+      for(const c of e.run_card.case_manifest){const row=e.results.find(r=>r.case_id===c.case_id),
+        s=input.samples.find(s=>s.run_card_sha256===e.run_card_sha256&&s.case_id===c.case_id);
+        need(s&&row?.attempts,'oc_evidence_join_failed');
+        const scope=digest({feature_bucket_sha256:frozenRouteFeatureBucket(s.projection.features,s.projection.task),
+          reference:e.run_card.arms.reference,routed:e.run_card.arms.routed,native_harness:s.native_harness,regime:s.regime});
+        const referenceBinding=digest({projection_task:s.projection.task,source_fingerprint:c.source_fingerprint,
+          reference:e.run_card.arms.reference,native_harness:s.native_harness.reference,regime:s.regime,
+          reference_policy_sha256:e.run_card.reference_policy_sha256,quality_contract_sha256:e.run_card.quality_contract_sha256});
+        for(const arm of ['reference','routed']){const record=e.outcome_state.records.find(n=>n.outcome_id===row.attempts[arm]?.outcome_id);
+          need(record,'oc_evidence_join_failed');nativeEntries.push({record,phase:role,scope_sha256:scope,role:arm,
+            reference_binding_sha256:arm==='reference'?referenceBinding:null});}
+      }
+    }
+    const nativeCheck=preflightFrozenRouteNativeIdentities(nativeEntries,{previous:nativeObservations});
+    need(nativeCheck.status==='eligible_native_identity_precheck',`oc_${nativeCheck.reason}`);nativeObservations=nativeCheck.observations;
     for (const e of input.evidence) {
       if(cardRoles.get(e.run_card_sha256)!==role) continue;
       evidenceCapacity(e);
@@ -250,8 +270,11 @@ export function produceOfflineRouteCalibration(input) {
       for(const blocker of joined.blockers)need(producerHandled.has(blocker),`oc_join_${blocker}`);
       report.joined_runs.push({role,run_card_sha256:e.run_card_sha256,proof_mode:e.run_card.proof_mode,
         original_counts:joined.counts,precheck_blockers:joined.blockers});
-      for(const r of e.outcome_state.records) {need(!seenOutcomes.has(r.outcome_id),'oc_cross_run_outcome_reuse');
-        seenOutcomes.add(r.outcome_id); allOutcomes.set(r.outcome_id,r);}
+      for(const r of e.outcome_state.records) {const prior=allOutcomes.get(r.outcome_id);
+        // Native preflight permits only an unchanged cached REFERENCE across
+        // distinct strata in this same phase; the real normalized join must
+        // still prove both complete records identical, not just declared hashes.
+        need(!prior||stableJSON(prior)===stableJSON(r),'oc_cross_run_outcome_reuse');allOutcomes.set(r.outcome_id,r);}
       for(const c of e.run_card.case_manifest) {
         const row=e.results.find(r=>r.case_id===c.case_id),j=joined.cases.find(r=>r.case_id===c.case_id);
         need(j,'oc_evidence_case_unjoined');rows.set(key(e.run_card_sha256,c.case_id),{c,row,j,card:e.run_card});

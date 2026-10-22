@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {digest} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';
 import {normalizeRoutingOutcome} from '../../Resources/openclaw-os1-bridge/routing-outcome.mjs';
-import {evaluateFrozenRouteEvidence as evaluate} from '../../Resources/openclaw-os1-bridge/frozen-route-evidence.mjs';
+import {evaluateFrozenRouteEvidence as evaluate,preflightFrozenRouteNativeIdentities as nativePreflight} from '../../Resources/openclaw-os1-bridge/frozen-route-evidence.mjs';
 
 const H = x => digest(`SYNTHETIC:${x}`);
 const UUID = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
@@ -211,4 +211,49 @@ test('unfrozen extra outcome, duplicate case identity and incompatible independe
   mismatch.results[0].grade.routed_task_success = false;
   mismatch.results[0].grade.final_task_success = false;
   assert(run(mismatch).blockers.includes('reference_match_conflicts_with_task_success'));
+});
+
+function aliasNative(e,donorRow=0,targetRow=1,arm='reference') {
+  const donor=e.outcome_state.records.find(n=>n.outcome_id===e.results[donorRow].attempts[arm].outcome_id),
+    row=e.results[targetRow],n=e.outcome_state.records.find(n=>n.outcome_id===row.attempts[arm].outcome_id);
+  n.native=structuredClone(donor.native);n.usage=structuredClone(donor.usage);
+  const {normalized_sha256,...body}=n;n.normalized_sha256=digest(body);
+  row.attempts[arm].normalized_sha256=n.normalized_sha256;row.attempts[arm].execution_witness_sha256=n.native.record_sha256;
+}
+test('known native aliases cannot inflate a quality denominator; metadata rejects before first grade',()=>{
+  const e=strong();aliasNative(e);e.results[0].grade='OPAQUE_GRADE_MUST_NOT_BE_JOINED';
+  const r=evaluate(e);assert.equal(r.reason,'evidence_native_observation_reused');assert.equal(r.counts,null);assert.deepEqual(r.cases,[]);
+});
+test('shared native metadata helper preserves exact cached reference only across different same-phase strata',()=>{
+  const r=strong().outcome_state.records[0],entry={record:r,phase:'train',scope_sha256:H('stratum-A'),role:'reference',reference_binding_sha256:H('same-immutable-ref-binding')},
+    second={...entry,scope_sha256:H('stratum-B')};
+  assert.equal(nativePreflight([entry,second]).status,'eligible_native_identity_precheck');
+  assert.equal(nativePreflight([entry,second,entry]).reason,'evidence_native_observation_reused');
+  assert.equal(nativePreflight([entry,{...second,phase:'calibration'}]).reason,'evidence_native_cross_phase_reuse');
+  assert.equal(nativePreflight([entry,{...second,role:'routed',reference_binding_sha256:null}]).reason,'evidence_native_shared_scope_unsupported');
+  assert.equal(nativePreflight([entry,{...second,reference_binding_sha256:H('different-harness')}]).reason,'evidence_native_shared_scope_unsupported');
+});
+test('native metadata helper never reads grades/learning/results or invokes accessors',()=>{
+  const r=structuredClone(strong().outcome_state.records[0]);let invoked=false;
+  for(const key of ['learning','result','usage'])Object.defineProperty(r,key,{get(){invoked=true;throw Error('must not inspect');}});
+  const e={record:r,phase:'train',scope_sha256:H('scope'),role:'routed',reference_binding_sha256:null};
+  assert.equal(nativePreflight([e]).status,'eligible_native_identity_precheck');assert.equal(invoked,false);
+  Object.defineProperty(r.native,'session_id',{get(){invoked=true;return 'not-readable';}});
+  assert.equal(nativePreflight([e]).reason,'evidence_native_identity_metadata_invalid');assert.equal(invoked,false);
+});
+test('same session with independent turns is not duplicate; shared artifact remains unsupported not physical-duplicate proof',()=>{
+  const records=strong().outcome_state.records.slice(0,2).map(x=>structuredClone(x));records[1].native.session_id=records[0].native.session_id;
+  const entries=records.map(record=>({record,phase:'train',scope_sha256:H('scope'),role:'routed',reference_binding_sha256:null}));
+  assert.equal(nativePreflight(entries).status,'eligible_native_identity_precheck');
+  records[1].native.record_sha256=records[0].native.record_sha256;
+  assert.equal(nativePreflight(entries).reason,'evidence_native_shared_artifact_unsupported');
+});
+test('native identity namespace and unresolved identity remain explicit rather than model/session-name heuristics',()=>{
+ const records=strong().outcome_state.records.slice(0,2).map(x=>structuredClone(x));records[1].native=structuredClone(records[0].native);
+ records[1].observed_config.account_id='separate-source-account';const entries=records.map(record=>({record,phase:'train',scope_sha256:H('scope'),role:'routed',reference_binding_sha256:null}));
+ assert.equal(nativePreflight(entries).status,'eligible_native_identity_precheck');
+ records[1].observed_config.account_id=records[0].observed_config.account_id;
+ assert.equal(nativePreflight(entries).reason,'evidence_native_observation_reused');
+ records[1].native.execution_id=null;records[1].native.session_id=null;records[1].native.turn_id=null;
+ assert.equal(nativePreflight([entries[1]]).reason,'evidence_native_identity_unknown');
 });
