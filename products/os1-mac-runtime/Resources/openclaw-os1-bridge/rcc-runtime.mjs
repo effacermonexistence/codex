@@ -419,7 +419,9 @@ function validateTask(task, {allowCoreRouting = false} = {}) {
     HASH.test(task.source_fingerprint) && ['auto', 'explicit_routing_test'].includes(task.mode),
   'task_identity_invalid');
   assert(keys(task.budget, ['max_attempts', 'max_parallel', 'max_cost_units', 'max_duration_ms',
-      ...(Object.hasOwn(task.budget ?? {}, 'max_native_dispatches') ? ['max_native_dispatches'] : [])]) &&
+      ...(Object.hasOwn(task.budget ?? {}, 'max_native_dispatches') ? ['max_native_dispatches'] : []),
+      ...(Object.hasOwn(task.budget ?? {}, 'forbid_model_generation') ? ['forbid_model_generation'] : [])]) &&
+    (!Object.hasOwn(task.budget, 'forbid_model_generation') || typeof task.budget.forbid_model_generation === 'boolean') &&
     (task.budget.max_native_dispatches == null || int(task.budget.max_native_dispatches, 1, 64)) &&
     int(task.budget.max_attempts, 1, 3) && int(task.budget.max_parallel, 1, 8) &&
     int(task.budget.max_duration_ms, 1_000, 86_400_000) &&
@@ -2484,6 +2486,16 @@ class RCCRuntime {
       snapshot.error = reason; if (result) snapshot.result = result;
     });
   }
+  /** Per-request hard zero, not a usage estimate or global switch. Original
+   * persisted authority cannot be weakened by a derived task or recovery.
+   * Never erase past/unknown attempts to make a zero-consumption claim. */
+  _allowModelGeneration(taskID) {
+    const snapshot = this._load(taskID);
+    if (snapshot?.task?.budget?.forbid_model_generation !== true &&
+        snapshot?.effective_task?.budget?.forbid_model_generation !== true) return true;
+    if (!TERMINAL.has(snapshot.state)) this._hold(taskID, 'model_generation_forbidden');
+    return false;
+  }
   _holdExplicitRoutes(taskID, reason) {
     return this._update(taskID, 'explicit_routes_held', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
@@ -3322,6 +3334,7 @@ class RCCRuntime {
   async _observeAdaptivePlan(taskID, task, catalog) {
     const policy = this.adaptivePolicy;
     if (policy.mode === 'off' || task.mode !== 'auto') return true;
+    if (!this._allowModelGeneration(taskID)) return false;
     const state = this._load(taskID);
     if (!state || state.cancel_requested || TERMINAL.has(state.state)) return false;
     if (state.adaptive_routing?.planner_invoked) {
@@ -3408,6 +3421,7 @@ class RCCRuntime {
     };
     item.promise = Promise.resolve().then(() => {
       if (controller.signal.aborted) throw controller.signal.reason;
+      if (!this._allowModelGeneration(taskID)) throw new RCCRuntimeError('model_generation_forbidden');
       return this.proposeLocalPlan({hostProjection: prepared.hostProjection,
         expectedBinding: prepared.expectedBinding, ownerPolicy: immutable(task.policy),
         projection: prepared.projection, attempt: {index: 0, revision_of: null, correction_codes: []},
@@ -3502,6 +3516,8 @@ class RCCRuntime {
   }
 
   async _resolveTaskIntent(taskID) {
+    if (!this._allowModelGeneration(taskID)) return null;
+
     const state = this._load(taskID);
     if (!state || TERMINAL.has(state.state) || state.cancel_requested) return null;
     // Exactly one persisted interpretation per original task. Restart never
@@ -3614,6 +3630,7 @@ class RCCRuntime {
         return;
       }
     }
+    if (!this._allowModelGeneration(taskID)) return;
     task = await this._resolveTaskIntent(taskID);
     if (task === null || this.closed || this.stopping || this.quiescing) return;
     if (this._load(taskID)?.intent_resolution?.kind === 'local_response' && withoutConversation(task)) {
@@ -3720,6 +3737,7 @@ class RCCRuntime {
           }
         }
       }
+      if (!this.hostAutoPlan && !this._allowModelGeneration(taskID)) return;
       const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog) :
         await this.plan({task: immutable(admitted), catalog: immutable(catalog)}));
       // Writer serialization is a safety order, not authority to manufacture
@@ -4308,6 +4326,8 @@ class RCCRuntime {
   }
 
   async _replanSubset(taskID, childID) {
+    if (!this._allowModelGeneration(taskID)) return;
+
     const snapshot = this._load(taskID);
     if (!snapshot || TERMINAL.has(snapshot.state) || snapshot.cancel_requested) return;
     const child = snapshot.children.find(c => c.id === childID);
@@ -4807,6 +4827,8 @@ class RCCRuntime {
    * the last completed output is delivered with its failed checks disclosed;
    * only a cancel or stop (or an output that cannot be delivered) holds it. */
   async _prepareQualityCorrection(taskID, node, candidate, result, parentTicket) {
+    if (!this._allowModelGeneration(taskID)) return null;
+
     const q = result.operational_quality;
     this._update(taskID, 'quality_candidate_preserved', state => {
       const child = state.children.find(c => c.id === node.id);
@@ -4903,6 +4925,8 @@ class RCCRuntime {
   }
 
   async _continueHandback(taskID, node, candidate, initialResult) {
+    if (!this._allowModelGeneration(taskID)) return;
+
     let prior = initialResult;
     let phase = prior.handback.kind === 'both' ? 'full_access_required' : prior.handback.kind;
     const reports = [{kind: 'initial', adoption: prior.handback.adoption, output: prior.output}];
@@ -5294,6 +5318,8 @@ class RCCRuntime {
    * replayed; only an undisclosable record (an unterminated turn, reported
    * effects) is held. Returns the ledger outcome. */
   async _verifyNode(taskID, node, candidate, result, {verify, family}) {
+    if (!this._allowModelGeneration(taskID)) return 'not_registered';
+
     let passed = false, timer;
     try {
       const verdict = await Promise.race([verify(immutable({schema: 1, task_id: taskID, node_id: node.id,
@@ -5469,6 +5495,8 @@ class RCCRuntime {
    * pre-execution failure and ladder exemptions never refund it. No await may
    * separate this admission from its transactional intent update. */
   _admitNativeDispatch(taskID, nodeID, candidate, event, update) {
+    if (!this._allowModelGeneration(taskID)) return false;
+
     const native = candidate.transport !== 'local';
     const current = this._load(taskID), cap = executionTask(current).budget.max_native_dispatches;
     const count = snapshot => snapshot.native_dispatches ?? snapshot.children.reduce((total, child) =>
@@ -5502,6 +5530,8 @@ class RCCRuntime {
   /** `releaseReservation` (idempotent) frees this node's worker slot and pool
    * reservation once no provider work runs for it, before a node verifier. */
   async _executeNode(taskID, node, candidate, releaseReservation = null, qualityContinuation = null) {
+    if (!this._allowModelGeneration(taskID)) return;
+
     const task = executionTask(this._load(taskID));
     const start = this._load(taskID);
     const resolver = Boolean(this._resolverNode(start, node.id));
@@ -5850,6 +5880,7 @@ class RCCRuntime {
   async _settleTask(taskID) {
     const snapshot = this._load(taskID);
     if (!snapshot || snapshot.cancel_requested || snapshot.state !== 'running') return;
+    if (!this._allowModelGeneration(taskID)) return;
     // Defense for legacy/in-memory plans: retain every child artifact but do
     // not guess a final owner or relabel intermediate outputs as the answer.
     try { assertFinalOutputOwnership(snapshot.plan, admittedTask(snapshot), {collectionMayBeOrdered: true}); }

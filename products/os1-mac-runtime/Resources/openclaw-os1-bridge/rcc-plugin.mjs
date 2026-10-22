@@ -244,6 +244,10 @@ export function routingIntentResolver({complete, native = nativeOperation,
       observe('not_needed', null, 0, 'native_probe_did_not_require_model');
       return {...probe, model_answer: null};
     }
+    // Defense for this exported resolver outside Core. Its native probe is
+    // deterministic metadata; the completion remains forbidden by this task.
+    if (task.budget?.forbid_model_generation === true)
+      throw new RCCRuntimeError('model_generation_forbidden');
     if (typeof complete !== 'function' || typeof probe.model_prompt !== 'string' ||
         Buffer.byteLength(probe.model_prompt) > 16_384 || typeof probe.model_input !== 'string' ||
         Buffer.byteLength(probe.model_input) > 8_192 || probe.model_schema?.type !== 'object' ||

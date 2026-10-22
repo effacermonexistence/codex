@@ -75,13 +75,26 @@ public enum RCCRuntimeContract {
         public var maxCostUnits: Double?
         public var maxDurationMS: Int64
         public var maxNativeDispatches: Int?
-        public init(maxAttempts: Int, maxParallel: Int, maxCostUnits: Double?, maxDurationMS: Int64, maxNativeDispatches: Int? = nil) {
+        public var forbidModelGeneration: Bool?
+        public init(maxAttempts: Int, maxParallel: Int, maxCostUnits: Double?, maxDurationMS: Int64, maxNativeDispatches: Int? = nil, forbidModelGeneration: Bool? = nil) {
             self.maxAttempts = maxAttempts; self.maxParallel = maxParallel
             self.maxCostUnits = maxCostUnits; self.maxDurationMS = maxDurationMS; self.maxNativeDispatches = maxNativeDispatches
+            self.forbidModelGeneration = forbidModelGeneration
         }
         enum CodingKeys: String, CodingKey {
             case maxAttempts = "max_attempts", maxParallel = "max_parallel"
-            case maxCostUnits = "max_cost_units", maxDurationMS = "max_duration_ms", maxNativeDispatches = "max_native_dispatches"
+            case maxCostUnits = "max_cost_units", maxDurationMS = "max_duration_ms", maxNativeDispatches = "max_native_dispatches", forbidModelGeneration = "forbid_model_generation"
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            maxAttempts = try c.decode(Int.self, forKey: .maxAttempts)
+            maxParallel = try c.decode(Int.self, forKey: .maxParallel)
+            maxCostUnits = try c.decodeIfPresent(Double.self, forKey: .maxCostUnits)
+            maxDurationMS = try c.decode(Int64.self, forKey: .maxDurationMS)
+            maxNativeDispatches = try c.decodeIfPresent(Int.self, forKey: .maxNativeDispatches)
+            // Present null/numbers/strings are not an explicit boolean policy.
+            forbidModelGeneration = c.contains(.forbidModelGeneration)
+                ? try c.decode(Bool.self, forKey: .forbidModelGeneration) : nil
         }
     }
     public struct Policy: Codable, Equatable, Sendable {
@@ -1854,7 +1867,7 @@ public enum RCCRuntimeContract {
     private static let configKeys = ["surface", "transport", "account_id", "model", "effort", "tools", "scope", "permission_profile", "quota_pool", "allowed_paths", "configuration_sha256"]
     private static let configShape = Shape.object(configKeys)
     private static let candidateShape = Shape.object(["id"] + configKeys + ["quota_remaining_fraction", "quota_observed_at_ms", "quota_valid_until_ms", "quality_state", "estimated_cost_units", "availability", "availability_observed_at_ms", "availability_valid_until_ms"])
-    private static let budgetShape = Shape.object(["max_attempts", "max_parallel", "max_cost_units", "max_duration_ms", "max_native_dispatches"])
+    private static let budgetShape = Shape.object(["max_attempts", "max_parallel", "max_cost_units", "max_duration_ms", "max_native_dispatches", "forbid_model_generation"])
     private static let policyShape = Shape.object(["source_sha256", "projection_sha256", "text"])
     private static let ownerPolicyShape = Shape.object(["schema", "sourceSHA256", "sourceFile", "projectionSHA256", "projection", "sourceID", "sourceModified", "checkedAt", "routing"])
     private static let explicitRouteShape = Shape.object(["surface", "instruction"])

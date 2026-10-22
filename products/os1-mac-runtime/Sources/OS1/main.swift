@@ -18144,6 +18144,7 @@ func usage() {
       os1 source-register scv-instagram /absolute/runtime-source.tar.gz
       os1 register
       os1 run --workspace /path/to/project --prompt "task"
+      os1 run --workspace /path/to/project --prompt "hello" --forbid-model-generation
               [--provider auto|codex|chatgpt|claude|claude-chat]
               [--codex-session-id UUID] [--claude-session-id UUID]
               [--codex-capacity 0...100] [--claude-capacity 0...100]
@@ -18600,12 +18601,15 @@ struct OS1Main {
                 var requireReadOnly = false
                 var parallelAgentChild = false
                 var parallelFanoutChild = false
+                var forbidModelGeneration = false
                 var parallelWriteGrantPath: String?
                 var rccTaskID: String?
                 var routingIntentPolicyVersion: String?
                 var index = 1
                 while index < arguments.count {
                     switch arguments[index] {
+                    case "--forbid-model-generation" where !forbidModelGeneration:
+                        forbidModelGeneration = true; index += 1
                     case "--rcc-task-id" where index + 1 < arguments.count:
                         guard rccTaskID == nil, UUID(uuidString: arguments[index + 1]) != nil else { throw OS1Error.message("Invalid RCC task identity") }
                         rccTaskID = arguments[index + 1].lowercased(); index += 2
@@ -18661,6 +18665,9 @@ struct OS1Main {
                 }
                 guard !(parallelAgentChild && parallelFanoutChild), parallelWriteGrantPath == nil || parallelAgentChild else {
                     throw OS1Error.message("Invalid parallel child capability combination")
+                }
+                guard !forbidModelGeneration || (!parallelAgentChild && !parallelFanoutChild) else {
+                    throw OS1Error.message("--forbid-model-generation requires ordinary Core-owned run; legacy child/fanout execution is unsupported")
                 }
                 var validatedWriteGrant: ParallelProjectWriteGrant?
                 if parallelAgentChild || parallelFanoutChild {
@@ -18726,6 +18733,7 @@ struct OS1Main {
                             context: try readSessionContext(contextPath), surface: surface,
                             codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
                             requireReadOnly: requireReadOnly, taskID: rccTaskID,
+                            forbidModelGeneration: forbidModelGeneration,
                             routingIntentPolicyVersion: routingIntentPolicyVersion,
                             capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)
                     } catch {
@@ -20509,7 +20517,7 @@ func rccBoundSourceMaterialRefs(request: String, context: String?) throws -> [St
 
 func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
     codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?,
-    routingIntentPolicyVersion: String? = nil,
+    forbidModelGeneration: Bool = false, routingIntentPolicyVersion: String? = nil,
     capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = [],
     interpreterRecord: InterpretedRoutingRecord? = nil) async throws -> RunSummary {
     try RCCRoutingIntentIngress.validate(routingIntentPolicyVersion, mode: .auto,
@@ -20544,7 +20552,8 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     var candidateRequest = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
         mode: .auto, materialRefs: materialRefs,
-        budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000),
+        budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000,
+            forbidModelGeneration: forbidModelGeneration ? true : nil),
         policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
     try RCCRoutingIntentIngress.bindRequest(&candidateRequest, version: routingIntentPolicyVersion,
