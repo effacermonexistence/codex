@@ -49,7 +49,13 @@ def validate_observer(source):
     assert 'Date().addingTimeInterval(timeout)' in observer
     assert section.count('timeout: 20') == 1
     assert 'try await wait({ !voice.isActive && dispatch.requests.count == 1 && !store.isRunning }, "browser final dispatch", timeout: 20,' in section
-    assert 'failure: { store.alertMessage != nil }' in browser
+    assert 'failure: { captureFailureObserved }' in browser
+    assert 'try await store.installBrowserStoreFixture(onFailureObserved: { captureFailureObserved = true })' in section
+    wrapper = source.split('func installBrowserStoreFixture(', 1)[1].split('@MainActor', 1)[0]
+    assert 'onFailureObserved: (() -> Void)? = nil' in wrapper and 'onFailureObserved?()' in wrapper
+    assert 'self?.cancelDictationSendIntent(); self?.alertMessage = message' in wrapper
+    assert 'capture_failure_observed=\\(captureFailureObserved)' in browser
+    assert 'alert_before_capture=\\(alertBeforeCapture)' in browser and 'alert_before_send=\\(alertBeforeSend)' in browser
     assert 'alert_present=\\(store.alertMessage != nil)' in browser
     assert 'controller_error=' not in browser
     assert 'if failure?() == true' in observer and 'Voice store fixture error:' in observer
@@ -69,7 +75,9 @@ for mutant in [
     source.replace('"browser final dispatch", timeout: 20,', '"browser final dispatch", timeout: 4,', 1),
     source.replace('!voice.isActive && dispatch.requests.count == 1 && !store.isRunning }, "browser final dispatch"',
                    '!voice.isActive && dispatch.requests.count >= 1 && !store.isRunning }, "browser final dispatch"', 1),
-    source.replace('failure: { store.alertMessage != nil }', 'failure: { false }', 1),
+    source.replace('failure: { captureFailureObserved }', 'failure: { false }', 1),
+    source.replace('failure: { captureFailureObserved }', 'failure: { store.alertMessage != nil }', 1),
+    source.replace('captureFailureObserved = true', 'captureFailureObserved = false', 1),
     source.replace('alert_present=\\(store.alertMessage != nil)', 'alert_present=\\(store.alertMessage)', 1),
     source.replace('Voice store fixture error:', 'Voice store controller error:', 1),
     source.replace('alert_present=', 'controller_error=', 1),
@@ -117,9 +125,20 @@ footer = r'''
     } catch RunnerError.message(let text) {
       precondition(text == "Voice store deadline: never"); checks += 1
     }
+    let unrelatedStoreAlert = true
+    var captureFailureObserved = false
+    Clock.now = 0
+    try await wait({ true }, "already-successful", timeout: 20,
+                   failure: { captureFailureObserved })
+    precondition(unrelatedStoreAlert); checks += 1
+    Clock.now = 0
+    try await wait({ Clock.now >= 5 }, "successful-capture", timeout: 20,
+                   failure: { captureFailureObserved })
+    precondition(unrelatedStoreAlert); checks += 1
+    captureFailureObserved = true
     var predicateCalls = 0
     do { try await wait({ predicateCalls += 1; return false }, "failed", timeout: 20,
-                       failure: { true }, diagnostics: { " [phase=idle; alert_present=true]" })
+                       failure: { captureFailureObserved }, diagnostics: { " [phase=idle; alert_present=true]" })
       fatalError("fixture alert did not fail early")
     } catch RunnerError.message(let text) {
       precondition(text == "Voice store fixture error: failed [phase=idle; alert_present=true]")
@@ -144,6 +163,6 @@ with tempfile.TemporaryDirectory(prefix='os1-composer-observer-') as directory:
     subprocess.run(['/usr/bin/swiftc', '-parse-as-library', str(fixture), '-o', str(executable)], check=True,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     result = subprocess.run([str(executable)], check=True, text=True, capture_output=True, timeout=10)
-    assert '9 virtual-clock checks PASS' in result.stdout
+    assert '11 virtual-clock checks PASS' in result.stdout
     print(result.stdout.strip())
-print('Composer observer source: default4/browser20/strict predicate/sanitized failure diagnostics PASS; eight unsafe mutants rejected')
+print('Composer observer source: default4/browser20/strict predicate/sanitized failure diagnostics PASS; ten unsafe mutants rejected')

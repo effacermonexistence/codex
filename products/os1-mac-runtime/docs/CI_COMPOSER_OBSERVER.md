@@ -22,8 +22,9 @@ This changes only the self-test observer:
 - Success remains exactly `!voice.isActive && dispatch.requests.count == 1 &&
   !store.isRunning`. The double-click/latch, exact final text, single POST,
   encoded Blob, fixture-auth and callback-cleanup assertions remain unchanged.
-- Fixture alert presence (`alertMessage != nil`) fails immediately. It is not
-  attributed to a controller cause: other SessionStore paths can set alerts.
+- Only the private browser fixture's actual voice `onFailure` callback sets
+  `captureFailureObserved` and fails immediately. Generic/preexisting
+  `SessionStore.alertMessage` does not determine failure; it is diagnostic only.
   The diagnostic field is `alert_present`; the error prefix is
   `Voice store fixture error:`. Deadline/error diagnostics contain a closed phase label,
   counts and booleans—not alert text, composer/transcript, audio/request body,
@@ -41,3 +42,20 @@ compiler-token source attestations after the App source is frozen. Public
 compiler tokens, anchors, entropy thresholds and scanner behavior remain fixed;
 historical unanchored provenance is not rewritten. No release version,
 installation, production UI/controller/capture path or Handy change is included.
+
+## Preserved first candidate / conditional failure repair
+
+The first frozen candidate f5e4/d992 failed its one isolated App run after2.5s
+with only generic `alert_present=true`, zero POST/dispatch, idle phase. This
+does not prove a controller/capture cause: store persistence and other actions
+can independently populate alerts, and that run did not record an alert baseline.
+Its raw failed log remains preserved. No production failure is inferred.
+
+The follow-up adds a zero-data optional observer ONLY to the existing private
+fixture installer callback. The callback still cancels the pending intent and
+sets the same store alert. The strict success predicate/all downstream checks
+remain unchanged. Closed before-capture/before-send alert booleans and the
+fixture-specific failure witness distinguish generic alert presence from that
+callback without exposing alert text or audio/request/auth data. Regression
+checks keep unrelated/preexisting alerts from rejecting an already/successfully
+completed capture; an actual fixture voice failure still fails immediately.

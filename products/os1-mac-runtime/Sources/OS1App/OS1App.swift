@@ -4956,11 +4956,13 @@ private extension SessionStore {
             failure: { [weak self] message in self?.cancelDictationSendIntent(); self?.alertMessage = message }, samples: samples)
     }
     var voiceStoreFixtureSendPending: Bool { dictationSendLatch.pending != nil }
-    func installBrowserStoreFixture() async throws {
+    func installBrowserStoreFixture(onFailureObserved: (() -> Void)? = nil) async throws {
         cancelDictationSendIntent()
         try await voiceDictation.installBrowserControllerFixture(initialText: composer,
             readComposer: { [weak self] in self?.composer ?? "" }, publish: { [weak self] in self?.composer = $0 },
-            failure: { [weak self] message in self?.cancelDictationSendIntent(); self?.alertMessage = message })
+            failure: { [weak self] message in
+                onFailureObserved?()
+                self?.cancelDictationSendIntent(); self?.alertMessage = message })
     }
 }
 @MainActor
@@ -5113,14 +5115,19 @@ private func voiceStoreSendSelfTest() async throws -> Int {
         }, voiceDictation: voice)
         defer { store.stopVoiceDictation() }
         store.composer = "보존 초안"
-        try await store.installBrowserStoreFixture()
+        // Observe this fixture's actual voice failure callback, not an unrelated
+        // SessionStore alert left by persistence or another store operation.
+        var captureFailureObserved = false
+        let alertBeforeCapture = store.alertMessage != nil
+        try await store.installBrowserStoreFixture(onFailureObserved: { captureFailureObserved = true })
         try await Task.sleep(for: .milliseconds(600))
+        let alertBeforeSend = store.alertMessage != nil
         store.performPrimaryAction(); store.performPrimaryAction()
         try check(store.voiceStoreFixtureSendPending && dispatch.requests.isEmpty, "browser sent before final recorder data")
         // This observes the existing browser finalizer (native bound15s), not
         // a production timeout. Other fixture waits retain their default4s.
         try await wait({ !voice.isActive && dispatch.requests.count == 1 && !store.isRunning }, "browser final dispatch", timeout: 20,
-                       failure: { store.alertMessage != nil }, diagnostics: {
+                       failure: { captureFailureObserved }, diagnostics: {
             let phase: String
             switch voice.phase {
             case .idle: phase = "idle"
@@ -5135,7 +5142,8 @@ private func voiceStoreSendSelfTest() async throws -> Int {
             return " [phase=\(phase); voice_active=\(voice.isActive); store_running=\(store.isRunning); " +
                 "dispatch_count=\(dispatch.requests.count); post_count=\(posts); connection_count=\(connections); " +
                 "send_pending=\(store.voiceStoreFixtureSendPending); alert_present=\(store.alertMessage != nil); " +
-                "finalizer_present=\(voice.controllerFixtureFinalizer != nil)]"
+                "alert_before_capture=\(alertBeforeCapture); alert_before_send=\(alertBeforeSend); " +
+                "capture_failure_observed=\(captureFailureObserved); finalizer_present=\(voice.controllerFixtureFinalizer != nil)]"
         })
         let posts = await wire.postRequests(), connections = await wire.connectionCount()
         try check(posts.count == 1 && connections == 0, "browser batch forced streaming or repeated provider request")
