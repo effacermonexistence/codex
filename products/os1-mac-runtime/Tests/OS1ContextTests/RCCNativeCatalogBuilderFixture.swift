@@ -1463,6 +1463,79 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     try check(onlyLocalOut.candidates.count == 1 &&
               (try C.decodeCatalog(B.catalogData(onlyLocalOut, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))).modelTiers == [:],
               "a local-only explicit test is a valid catalog with an empty tier map")
+    // R10 v2 is additive and OFF unless an immutable task marker AND host
+    // capability opt-in agree. These synthetic observations grant no live gate.
+    let knownV2 = Set(profiles.map(\.model))
+    func v2(_ text: String) -> C.RoutingIntentV2 { RoutingIntent.parseV2(text, knownModelIDs: knownV2) }
+    let bareV2 = v2("Codex로 이 함수 설명해줘")
+    try check(bareV2.allowedSurfaces == ["codex"] && bareV2.exactModel == nil && bareV2.effort == nil,
+              "v2 bare provider constrains surface only")
+    let literalV2 = v2("use gpt-6-sol reasoning:high")
+    try check(literalV2.exactModel == "gpt-6-sol" && literalV2.effort == "high" && !literalV2.requireNativeCeiling,
+              "v2 exact known model and effort remain hard pins")
+    try check(v2("Codex로 최대로 실행해").requireNativeCeiling, "v2 generic maximum is native ceiling not max label")
+    let qualityV2 = v2("결과는 최고 모델 최대 추론 수준과 동등하게 해줘")
+    try check(qualityV2.qualityTarget == "current_host_reference" && qualityV2.effort == nil &&
+              qualityV2.exactModel == nil && !qualityV2.requireNativeCeiling, "result ceiling does not pin execution")
+    try check(v2("match max reasoning result quality").qualityTarget == "current_host_reference" &&
+              !v2("match max reasoning result quality").requireNativeCeiling, "max-level result is quality target even without highest word")
+    try check(v2("use max reasoning for highest output quality").state == "unresolved", "ambiguous max execution/quality cannot silently become Auto")
+    for text in ["if possible use gpt-6-sol reasoning:high", "gpt-6-sol 말고 설명해줘",
+                 "\"use gpt-6-sol reasoning:high\"라는 예시를 설명해줘", "Codex xhigh 지원해?"] {
+        let parsed = v2(text)
+        try check(parsed.exactModel == nil && parsed.effort == nil && !parsed.requireNativeCeiling,
+                  "conditional/negation/quoted/inquiry is not an execution pin: \(text)")
+    }
+    try check(v2("use `gpt-6-sol` reasoning:high").exactModel == "gpt-6-sol", "quoted exact ID in execution directive stays pinned")
+    try check(v2("use gpt-6-sol and match highest output quality").state == "unresolved", "mixed same-clause quality/execution cannot erase exact model")
+    try check(v2("Codex 말고 Claude로 설명해줘").state == "unresolved", "negative provider cannot become unrestricted route")
+    for unknown in ["use model: not-in-inventory", "use reasoning: hyper", "use the strongest model"] {
+        try check(v2(unknown).state == "unresolved", "unknown/ambiguous explicit execution pin holds: \(unknown)")
+    }
+    try check(v2("model: fable for highest output quality").state == "unresolved" &&
+              v2("Fable로 최고 품질 결과 만들어").state == "unresolved", "quality wording cannot erase a same-clause model pin")
+    for badToken in ["high2", "low_foo", "high-low", "max:low", "ultra/code"] {
+        try check(v2("use reasoning: " + badToken).state == "unresolved", "whole unsupported effort token holds: \(badToken)")
+    }
+    for quotation in ["Explain the phrase \"use gpt-6-sol reasoning:high", "Explain `use gpt-6-sol reasoning:high", "```use gpt-6-sol reasoning:high",
+                      "Explain the phrase 'use gpt-6-sol reasoning:high"] {
+        try check(v2(quotation).state == "unresolved", "unclosed routing quotation cannot become execution pin")
+    }
+    try check(v2("Don't overcomplicate this explanation").state == "resolved", "contraction apostrophe is not unmatched quotation")
+    try check(v2("use reasoning: high, explain this").effort == "high", "legitimate effort delimiter remains exact")
+    try check(v2("use model: fable").exactModel == "fable" && v2("use model: fable").modelFamily == nil,
+              "known native alias in explicit model assignment remains exact")
+    try check(v2("use gpt-unobserved-new reasoning:high").state == "unresolved", "unknown exact model cannot become family guess")
+    try check(v2("클라우드 코드로 설명해줘").allowedSurfaces == ["claude", "claude-chat"], "bounded ASR provider repair only")
+    try check(v2("Soul로 설명해줘").modelFamily == nil, "unknown ASR entity does not become Sol")
+    try check(v2("최대 추론으로 실행해서 최고 품질 결과를 만들어").state == "unresolved", "ambiguous quality/execution remains unresolved")
+    try check(v2("ChatGPT로 보내줘").state == "unresolved", "v2 never resurrects dropped ChatGPT surface")
+    try check(v2("use gpt-6-sol; use claude-opus-5-5").state == "unresolved", "conflicting exact model pins hold")
+    var migrated = input("Codex로 이 함수 설명해줘", readOnly: true)
+    migrated.routingIntentPolicyVersion = C.RoutingIntentV2.version
+    try check(B.providersToProbe(migrated).isEmpty, "unactivated marker has zero provider probe eligibility")
+    do { _ = try B.build(migrated); throw NSError(domain: "R10", code: 1) }
+    catch B.Failure.intentPolicyUnavailable { checks += 1 }
+    migrated.enableRoutingIntentV2 = true
+    let migratedOutput = try B.build(migrated)
+    try check(!migratedOutput.candidates.isEmpty && migratedOutput.intent.isEmpty &&
+              migratedOutput.candidates.allSatisfy { ($0["surface"] as? String) == "codex" } &&
+              Set(migratedOutput.candidates.compactMap { $0["effort"] as? String }).count > 1,
+              "activated bare provider retains model/effort candidates rather than forcing max")
+    let migratedWire = try JSONSerialization.jsonObject(with: B.catalogData(migratedOutput,
+        taskID: migrated.taskID, requestSHA256: migrated.requestSHA256)) as! [String: Any]
+    try check(migratedWire["routing_intent_v2"] != nil && migratedWire["routing_intent"] == nil,
+              "v2 catalog marker is separate from legacy object")
+    migrated.request = "use gpt-6-sol reasoning:high"; migrated.requestSHA256 = C.digest(Data(migrated.request.utf8))
+    let unavailableV2 = try B.build(migrated)
+    try check(unavailableV2.candidates.isEmpty && reasons(unavailableV2).contains(where: { $0.contains("explicit_constraint_unavailable") }),
+              "unavailable signed tuple is explained hold not model/effort substitution")
+    migrated.routingIntentPolicyVersion = "future-v9"
+    try check(B.providersToProbe(migrated).isEmpty, "unknown migration version cannot probe")
+    migrated.routingIntentPolicyVersion = nil; migrated.enableRoutingIntentV2 = true
+    try check(try B.catalogData(B.build(migrated), taskID: migrated.taskID, requestSHA256: migrated.requestSHA256) ==
+              B.catalogData(B.build({ var x = migrated; x.enableRoutingIntentV2 = false; return x }()), taskID: migrated.taskID,
+                            requestSHA256: migrated.requestSHA256), "host capability alone does not reinterpret legacy request")
     print("RCC native catalog builder: \(checks) checks OK; model calls 0")
 }
 

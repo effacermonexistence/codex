@@ -686,10 +686,11 @@ final class SourceContextTests {
         var context = TaskContext(conversationID: UUID(), objective: TaskContext.Objective(requestText: "야 인스타그램 수정 좀 하자 준비해", kind: .prepare, scope: .workspaceWrite, prohibitions: ["do not change the server"]), projectID: "scv-instagram")
         context.decideSemantic("Node 20.20.2 only")
         let long = String(repeating: "USER:\n긴 대화\n\nCODEX:\n답\n\n", count: 20_000)
-        let encoded = try SessionHandoff(transcript: long, source: ref, taskContext: context).encoded()
+        let encoded = try SessionHandoff(transcript: long, source: ref, taskContext: context, priorMessageCount: 17).encoded()
         XCTAssertLessThan(encoded.utf8.count, 200_000)
         let decoded = try SessionHandoff.decode(encoded)
         XCTAssertEqual(decoded.format, SessionHandoff.currentFormat)
+        XCTAssertEqual(decoded.priorMessageCount, 17)
         XCTAssertEqual(decoded.source, ref)
         XCTAssertEqual(decoded.taskContext?.objective.prohibitions, ["do not change the server"])
         XCTAssertEqual(decoded.taskContext?.activeDecisions.map(\.text), ["Node 20.20.2 only"])
@@ -698,6 +699,10 @@ final class SourceContextTests {
         let v2 = try SessionHandoff.decode("{\"format\":\"os1-session-handoff-v2\",\"transcript\":\"hi\",\"source\":null}")
         XCTAssertEqual(v2.transcript, "hi")
         XCTAssertNil(v2.taskContext)
+        XCTAssertNil(v2.priorMessageCount)
+        XCTAssertEqual(try SessionHandoff.decode(SessionHandoff(transcript: "", source: nil, priorMessageCount: 0).encoded()).priorMessageCount, 0)
+        XCTAssertThrowsError(try SessionHandoff(transcript: "", source: nil, priorMessageCount: -1).encoded())
+        XCTAssertThrowsError(try SessionHandoff.decode("{\"format\":\"os1-session-handoff-v3\",\"transcript\":\"\",\"priorMessageCount\":-1}"))
     }
 
     func testMalformedVersionedHandoffCannotFallBackToPlainText() throws {

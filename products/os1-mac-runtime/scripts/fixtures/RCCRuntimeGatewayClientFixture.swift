@@ -24,6 +24,172 @@ struct RCCRuntimeGatewayClientFixture {
     static func require(_ condition: @autoclosure () throws -> Bool, _ note: String) throws {
         guard try condition() else { throw NSError(domain: "RCCRuntimeGatewayClientFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: note]) }
     }
+    /// Real Core public projection with a synthetic executor, then the real
+    /// Swift Gateway parser and UI contract. No OpenClaw/provider/native call.
+    static func resourceProjectionFixture(root: URL) throws {
+        let fm = FileManager.default
+        let runtimeModule = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/openclaw-os1-bridge/rcc-runtime.mjs")
+        let node = ProcessInfo.processInfo.environment["OS1_RCC_CONTRACT_NODE"] ??
+            fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1/tools/node-v24.20.0/bin/node").path
+        let destination = root.appendingPathComponent("actual-core-public.json")
+        // Actual Swift GUI-handoff encoding, passed as an opaque string to
+        // Node. Do not rebuild it with JS JSON.stringify or erase its metadata.
+        let conversation = UUID()
+        let context = TaskContext.migrated(conversationID: conversation, request: "1+1", workspace: root.path,
+            sourceContext: nil, codexSessionID: nil, claudeSessionID: nil,
+            now: Date(timeIntervalSince1970: 1_790_000_000))
+        let paging = MemoryPagingReference(conversationID: conversation.uuidString.lowercased(),
+            projectID: context.project?.projectID ?? "fixture-project", archivedMessages: 1,
+            snapshot: SourceReference(kind: .snapshot, id: UUID(), sha256: hash(Data("synthetic paging snapshot".utf8))),
+            allowedSessionIDs: [conversation.uuidString.lowercased()])
+        var retained = context
+        retained.facts.append(TaskContext.Fact(text: "1+1 denotes a retained retail offer, not a fresh arithmetic request", verified: true))
+        let variants: [(String, TaskContext, Int?)] = [("fresh", context, 0), ("prior", context, 1),
+            ("retained", retained, 0), ("missing", context, nil)]
+        let handoffs = try variants.map { name, state, prior -> [String: String] in
+            ["name": name, "conversation_id": conversation.uuidString.lowercased(),
+             "raw_context": try SessionHandoff(transcript: "", source: nil, taskContext: state,
+                memoryPaging: paging, priorMessageCount: prior).encoded()]
+        }
+        let swiftContexts = root.appendingPathComponent("actual-swift-contexts.json")
+        try JSONSerialization.data(withJSONObject: handoffs).write(to: swiftContexts)
+        let source = #"""
+        import {createRCCRuntime, hostContextFingerprint} from 'MODULE';
+        import {createHash} from 'node:crypto';
+        import {readFile,writeFile} from 'node:fs/promises';
+        const root=process.argv[1], out=process.argv[2], contextsPath=process.argv[3];
+        const timer=setTimeout(()=>process.exit(90),8000);
+        const sha=x=>createHash('sha256').update(x).digest('hex');
+        const request='SYNTHETIC_RESOURCE_PROJECTION';
+        const host={workspace:root,context:null,provider_preference:'auto',codex_session_id:null,
+          claude_session_id:null,require_read_only:true,owner_policy:null};
+        const task={schema:1,task_id:'resource_projection',request,request_sha256:sha(request),objective:request,
+          policy_sha256:sha('synthetic policy'),policy:{source_sha256:sha('synthetic source'),projection_sha256:sha('synthetic policy'),text:'synthetic policy'},
+          source_fingerprint:hostContextFingerprint(host),mode:'auto',material_refs:[],
+          budget:{max_attempts:1,max_parallel:1,max_cost_units:null,max_duration_ms:3000},host_context:host};
+        const now=Date.now();
+        const row={id:'synthetic-row',surface:'codex',transport:'codex_app_server',account_id:'synthetic-account',
+          model:'synthetic-model',effort:'low',tools:['read','execute'],scope:'read_only',permission_profile:'read_only',
+          quota_pool:'openai_codex',allowed_paths:[],configuration_sha256:sha('synthetic config'),availability:'available',
+          availability_observed_at_ms:now,availability_valid_until_ms:now+60000,quota_remaining_fraction:.5,
+          quota_observed_at_ms:now,quota_valid_until_ms:now+60000,quality_state:'policy_admitted',estimated_cost_units:null};
+        const runtime=await createRCCRuntime({hostAutoPlan:true,stateDir:root+'/fake-core',catalog:async()=>({schema:1,task_id:task.task_id,
+          request_sha256:task.request_sha256,candidates:[row]}),execute:async t=>({schema:1,task_id:t.task_id,node_id:t.node_id,
+          attempt_id:t.attempt_id,candidate_id:t.candidate_id,configuration_sha256:t.configuration_sha256,
+          selected_config:t.selected_config,acknowledged_config:t.selected_config,observed_config:null,status:'succeeded',
+          dispatch_stage:'dispatched',side_effects:'none',output:'synthetic response',execution_verified:true,
+          task_verified:false,task_quality:'execution_only',parity_state:'unverified',native_receipt:root+'/synthetic-receipt.json',
+          usage:{input_tokens:17,output_tokens:3,provider_calls:1,metric:'native_usage_observation'},native_summary:'synthetic'})});
+        try {await runtime.submit(task);const answer=await runtime.wait({schema:1,task_id:task.task_id},{timeoutMs:5000});
+          if(answer.state!=='returned_unverified'||!answer.resource_usage)throw Error('public projection absent: '+answer.state+':'+answer.error);
+          await writeFile(out,JSON.stringify(answer),{mode:0o600});
+          const localTask={...task,task_id:'resource_local_exact',request:'1+1',objective:'1+1',request_sha256:sha('1+1')};
+          const local=await createRCCRuntime({stateDir:root+'/fake-local-core',
+            catalog:async()=>{throw Error('local exact must not inspect provider catalog');},
+            execute:async()=>{throw Error('local exact must never execute a provider');}});
+          try{await local.submit(localTask);const exact=await local.wait({schema:1,task_id:localTask.task_id},{timeoutMs:3000});
+            if(exact.state!=='completed')throw Error('local exact did not complete');
+            await writeFile(out+'.local.json',JSON.stringify(exact),{mode:0o600});}
+          finally{await local.close();}
+          const variants=JSON.parse(await readFile(contextsPath,'utf8')),checks=[];
+          for(const v of variants){
+            let catalogCalls=0,executeCalls=0;
+            const h={...host,context:v.raw_context,conversation_id:v.conversation_id};
+            const input={...localTask,task_id:'swift_'+v.name,host_context:h,source_fingerprint:hostContextFingerprint(h)};
+            const core=await createRCCRuntime({stateDir:root+'/swift-'+v.name,
+              catalog:async()=>{catalogCalls++;throw Error('synthetic abstention catalog');},
+              execute:async()=>{executeCalls++;throw Error('no actual provider');}});
+            try{await core.submit(input);const answer=await core.wait({schema:1,task_id:input.task_id},{timeoutMs:3000});
+              const expected=v.name==='fresh';
+              if(expected?(answer.state!=='completed'||answer.result?.output!=='2'||catalogCalls!==0||executeCalls!==0):
+                (answer.state!=='held'||catalogCalls!==1||executeCalls!==0))throw Error('Swift handoff boundary failed: '+v.name+':'+answer.state);
+              await writeFile(out+'.swift-'+v.name+'.json',JSON.stringify(answer),{mode:0o600});
+              checks.push({name:v.name,raw_sha256:sha(v.raw_context),catalog_calls:catalogCalls,execute_calls:executeCalls,state:answer.state});
+            }finally{await core.close();}
+          }
+          await writeFile(out+'.swift-checks.json',JSON.stringify(checks),{mode:0o600});}
+        finally{await runtime.close();clearTimeout(timer);}
+        """#.replacingOccurrences(of: "MODULE", with: runtimeModule.absoluteString)
+        let process = Process(), errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = ["--input-type=module", "-e", source, root.path, destination.path, swiftContexts.path]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = errors
+        try process.run(); process.waitUntilExit()
+        let diagnostic = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        try require(process.terminationStatus == 0, "synthetic Core projection failed: " + String(diagnostic.prefix(1_024)))
+        let data = try Data(contentsOf: destination)
+        let original = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let id = original["task_id"] as! String, requestHash = original["request_sha256"] as! String
+        _ = try RCCRuntimeGatewayClient.validateSnapshotForOfflineFixture(data, id: id, requestSHA256: requestHash)
+        let typed = try RCCRuntimeContract.decodeSnapshot(data)
+        try require(typed.resourceUsage?.nativeTokensObserved == 20 && typed.resourceUsage?.localTokensObserved == 0 &&
+                    typed.resourceUsage?.accountingComplete == false && typed.resourceUsage?.totalTokensObserved == nil &&
+                    typed.resourceUsage?.issues.contains("local_resource_events_missing_or_unbounded") == true &&
+                    typed.result?.taskVerified == false,
+                    "resource observation was lost or promoted: " + String(describing: typed.resourceUsage))
+        let localData = try Data(contentsOf: URL(fileURLWithPath: destination.path + ".local.json"))
+        let localValue = try JSONSerialization.jsonObject(with: localData) as! [String: Any]
+        _ = try RCCRuntimeGatewayClient.validateSnapshotForOfflineFixture(localData,
+            id: "resource_local_exact", requestSHA256: localValue["request_sha256"] as! String)
+        let localTyped = try RCCRuntimeContract.decodeSnapshot(localData)
+        try require(localTyped.state == .completed && localTyped.result?.taskVerified == true &&
+                    localTyped.result?.nativeReceipt == nil && localTyped.resourceUsage?.accountingComplete == true &&
+                    localTyped.resourceUsage?.totalTokensObserved == 0 && localTyped.resourceUsage?.nativeAttempts == 0 &&
+                    localTyped.children.first?.selectedConfig?.transport == .local &&
+                    localTyped.children.first?.selectedConfig?.model == "none", "Core local exact public projection was rejected or promoted")
+        let crossRows = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: destination.path + ".swift-checks.json"))) as! [[String: Any]]
+        try require(crossRows.count == handoffs.count, "Swift handoff cases missing")
+        for handoff in handoffs {
+            let name = handoff["name"]!, expectedID = "swift_" + name
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: destination.path + ".swift-" + name + ".json"))
+            let typed = try RCCRuntimeContract.decodeSnapshot(bytes)
+            _ = try RCCRuntimeGatewayClient.validateSnapshotForOfflineFixture(bytes, id: expectedID, requestSHA256: hash(Data("1+1".utf8)))
+            let row = crossRows.first { $0["name"] as? String == name }
+            try require(row?["raw_sha256"] as? String == hash(Data(handoff["raw_context"]!.utf8)) && row?["execute_calls"] as? Int == 0,
+                        "Swift encoded bytes were changed or native execution occurred")
+            if name == "fresh" {
+                try require(typed.result?.output == "2" && typed.resourceUsage?.totalTokensObserved == 0 &&
+                    typed.resourceUsage?.nativeAttempts == 0 && typed.children.first?.selectedConfig?.transport == .local &&
+                    row?["catalog_calls"] as? Int == 0, "actual Swift first-turn handoff did not stay zero-model")
+            } else {
+                try require(typed.state == .held && typed.result == nil && row?["catalog_calls"] as? Int == 1,
+                            "retained/prior/unknown handoff was erased into local exact")
+            }
+        }
+        var checks = 4 + handoffs.count * 2
+        func rejects(_ label: String, _ mutate: (inout [String: Any]) -> Void) throws {
+            var value = original; mutate(&value)
+            do {
+                _ = try RCCRuntimeGatewayClient.validateSnapshotForOfflineFixture(
+                    JSONSerialization.data(withJSONObject: value), id: id, requestSHA256: requestHash)
+            } catch RCCRuntimeGatewayClient.Failure.snapshotInvalid { checks += 1; return }
+            throw NSError(domain: "resourceProjection", code: 1, userInfo: [NSLocalizedDescriptionKey: label])
+        }
+        try rejects("negative usage count") { value in
+            var usage = value["resource_usage"] as! [String: Any]; usage["native_attempts"] = -1; value["resource_usage"] = usage
+        }
+        try rejects("unknown nested field") { value in
+            var usage = value["resource_usage"] as! [String: Any]; usage["inferred_bill"] = 0; value["resource_usage"] = usage
+        }
+        try rejects("inconsistent known total") { value in
+            var usage = value["resource_usage"] as! [String: Any]; usage["total_tokens_observed"] = 19; value["resource_usage"] = usage
+        }
+        try rejects("future quota claim") { value in
+            var usage = value["resource_usage"] as! [String: Any]; usage["quota_savings"] = "free"; value["resource_usage"] = usage
+        }
+        try rejects("null is not typed resource block") { $0["resource_usage"] = NSNull() }
+        try rejects("unsupported state") { $0["state"] = "quality_proven" }
+        try rejects("unknown top-level field") { $0["made_up_field"] = true }
+        try rejects("wrong identity") { $0["task_id"] = "other-task" }
+        try rejects("revision cannot regress") { $0["revision"] = -1 }
+        var legacy = original; legacy.removeValue(forKey: "resource_usage")
+        _ = try RCCRuntimeGatewayClient.validateSnapshotForOfflineFixture(JSONSerialization.data(withJSONObject: legacy),
+            id: id, requestSHA256: requestHash)
+        checks += 1
+        print("RCC resource projection → Gateway: \(checks) strict fake integration checks PASS; actual hosted/native/model calls 0; usage counts synthetic")
+    }
     static func main() async throws {
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("os1-rcc-client-fixture-\(UUID().uuidString)", isDirectory: true)
@@ -44,6 +210,8 @@ struct RCCRuntimeGatewayClientFixture {
             if passed { try? fm.removeItem(at: root) }
             else { print("Offline fixture failure evidence preserved privately: " + root.path) }
         }
+        try resourceProjectionFixture(root: root)
+        if CommandLine.arguments.contains("--resource-projection-only") { passed = true; return }
         let plugin = root.appendingPathComponent("plugin", isDirectory: true)
         try fm.createDirectory(at: plugin, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         var pluginHashes: [String: String] = [:]

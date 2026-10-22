@@ -269,3 +269,128 @@ public struct RoutingIntent: Equatable, Sendable {
                              modelFamily: familyIntents.count == 1 ? familyIntents.first : nil)
     }
 }
+
+extension RoutingIntent {
+    /// Opt-in R10 parser. This is deliberately bounded intent extraction, not
+    /// an execution policy or quality forecast. Unknown/ambiguous directives
+    /// hold instead of choosing a favorable interpretation. Legacy parse stays
+    /// byte-for-byte unchanged. Exact model IDs come from this host's inventory.
+    public static func parseV2(_ text: String, knownModelIDs: Set<String>) -> RCCRuntimeContract.RoutingIntentV2 {
+        var result = RCCRuntimeContract.RoutingIntentV2()
+        guard text.utf8.count <= 64_000, !text.contains("\0") else { result.state = "unresolved"; return result }
+        func matches(_ value: String, _ pattern: String) -> Bool {
+            value.range(of: pattern, options: .regularExpression) != nil
+        }
+        var body = text.precomposedStringWithCanonicalMapping.lowercased()
+        // Quoted/document examples are not owner execution directives. Do not
+        // normalize a quoted reference model into an actual execution pin.
+        body = body.replacingOccurrences(of: #"```[\s\S]*?```"#, with: " ", options: .regularExpression)
+        for pattern in [#"`([^`\n]*)`"#, #"\"([^\"\n]*)\""#, #"“([^”\n]*)”"#, #"‘([^’\n]*)’"#,
+                        #"(?<![a-z])'([^'\n]*)'(?![a-z])"#] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let ns = body as NSString
+            for match in regex.matches(in: body, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let content = ns.substring(with: match.range(at: 1))
+                let prefix = ns.substring(to: match.range.location)
+                let suffix = ns.substring(from: NSMaxRange(match.range))
+                // A quoted exact ID in an actual use directive is still an
+                // exact pin. A quoted command/example remains quoted data.
+                let literalPin = knownModelIDs.contains(where: { $0.lowercased() == content }) &&
+                    (matches(prefix, #"(?:\buse|\bmodel\s*:|모델)\s*$"#) ||
+                     matches(suffix, #"^\s*(?:으로|로|한테|에게)"#))
+                body = (body as NSString).replacingCharacters(in: match.range, with: literalPin ? content : " ")
+            }
+        }
+        // Unclosed quoted routing data is ambiguous, never an execution pin.
+        // Apostrophes in contractions are intentionally not quote openers.
+        if (["\"", "`", "“", "”", "‘", "’"].contains(where: body.contains) || matches(body, #"(?<![a-z])'"#)) &&
+            matches(body, #"gpt-|claude-|codex|코덱스|클로드|reasoning|effort|리즈닝|추론|model\s*:"#) {
+            result.state = "unresolved"; return result
+        }
+        var surfaces = Set<String>(), models = Set<String>(), families = Set<String>(), efforts = Set<String>()
+        var ceiling = false
+        let clauses = body.components(separatedBy: CharacterSet(charactersIn: "\n;!?。"))
+        for clause in clauses where !clause.trimmingCharacters(in: .whitespaces).isEmpty {
+            // A conditional, negated or informational mention is not a pin.
+            // Compound unclear directives retain an unresolved state, rather
+            // than silently deleting a constraint from an affirmative clause.
+            let conditional = matches(clause, #"\b(if|unless|would|could)\b|만약|(?:하면|라면|일\s*경우)"#)
+            let negative = matches(clause, #"\b(not|don't|never|without|instead)\b|말고|쓰지|하지\s*마|아니라|필요\s*없|원하지"#)
+            let inquiry = matches(clause, #"\b(what|which|why|does|supports?)\b|뭐야|무엇|지원해|설정이|가격|요금"#)
+            let directive = matches(clause, #"\b(use|run|execute|route|send|model\s*:|reasoning\s*:|effort\s*:)\b|돌려|실행|라우팅|보내|맡겨|써줘|사용해|(?:코덱스|codex|클로드|claude|클라우드\s*코드)(?:\s*code|\s*코드)?(?:로|한테|에게)"#)
+            if conditional || negative {
+                if directive || matches(clause, #"\bcodex\b|\bclaude\b|코덱스|클로드|gpt-[a-z0-9]|추론|리즈닝|reasoning|effort"#) {
+                    result.state = "unresolved"
+                }
+                continue
+            }
+            if inquiry && !directive { continue }
+            if matches(clause, #"(?:chatgpt|챗\s*지?피티|gpt\s*chat|채찌피티)(?:로|한테|에게)|\b(?:use|route|send)\b.*\bchatgpt\b"#) {
+                result.state = "unresolved"; continue // Dropped surface remains dropped.
+            }
+            if directive {
+                if matches(clause, #"(?<![a-z0-9])codex(?![a-z0-9])|코덱스"#) { surfaces.insert("codex") }
+                if matches(clause, #"(?<![a-z0-9])claude(?![a-z0-9])|클로드|클라우드\s*코드"#) { surfaces.insert("claude"); surfaces.insert("claude-chat") }
+            }
+            let quality = matches(clause, #"결과|출력|품질|\b(result|output|quality|parity)\b"#) &&
+                matches(clause, #"수준|동등|이상|같거나|똑같|최고|최상|최대|맥스|\b(match|equal|same|equivalent|highest|top|max|maximum|ultra|flagship|quality\s*target)\b"#)
+            if quality {
+                result.qualityTarget = "current_host_reference" // Descriptor only; no proof/admission.
+                let comparator = matches(clause, #"수준|동등|같거나|똑같|\b(match|equal|same|equivalent|parity|target|reference|level)\b"#)
+                let executionMax = matches(clause, #"최대로\s*(?:실행|돌려)|최대\s*(?:추론|리즈닝)으로|\b(?:use|run|execute|with|using)\b.*\bmax(?:imum)?\b"#)
+                let explicitRun = matches(clause, #"\b(?:use|run|execute|route|send)\b.*(?:gpt-|claude-)|(?:gpt-|claude-)[a-z0-9.\-]+(?:으로|로|한테)|(?:model|모델|reasoning|effort)\s*[:=]"#)
+                let namedRun = knownModelIDs.contains { model in
+                    matches(clause, #"(?<![a-z0-9._:\-])"# + NSRegularExpression.escapedPattern(for: model.lowercased()) + #"(?:으로|로|한테|에게)"#)
+                }
+                let familyRun = namedRun || (!comparator && parse(clause).modelFamily != nil)
+                if explicitRun || familyRun || (executionMax && !comparator) { result.state = "unresolved" }
+                continue // Reference-description words are not execution pins.
+            }
+            guard directive || !parse(clause).isEmpty else { continue }
+            let literals = (try? NSRegularExpression(pattern: #"(?<![a-z0-9_-])(?:gpt|claude)-[a-z0-9][a-z0-9.\-]*(?![a-z0-9_-])"#))?
+                .matches(in: clause, range: NSRange(clause.startIndex..., in: clause)) ?? []
+            for span in literals {
+                let id = (clause as NSString).substring(with: span.range)
+                if let actual = knownModelIDs.first(where: { $0.lowercased() == id }) { models.insert(actual) }
+                else { result.state = "unresolved" }
+            }
+            let assignments = (try? NSRegularExpression(pattern: #"(?:model|모델)\s*[:=]\s*([a-z0-9._:\-]+)"#))?
+                .matches(in: clause, range: NSRange(clause.startIndex..., in: clause)) ?? []
+            for assignment in assignments {
+                let id = (clause as NSString).substring(with: assignment.range(at: 1))
+                if let actual = knownModelIDs.first(where: { $0.lowercased() == id }) { models.insert(actual) }
+                else { result.state = "unresolved" }
+            }
+            let parsed = parse(clause)
+            // A literal effort assignment is exact. A generic demand for the
+            // maximum asks for the native ceiling (possibly ultra), not max.
+            let literalEffort = (try? NSRegularExpression(pattern: #"(?:reasoning|effort|리즈닝|추론)\s*[:=]\s*([^\s,;!?。]+)"#))?
+                .matches(in: clause, range: NSRange(clause.startIndex..., in: clause)) ?? []
+            for match in literalEffort {
+                let token = (clause as NSString).substring(with: match.range(at: 1))
+                if RCCRuntimeContract.Effort(rawValue: token) != nil { efforts.insert(token) }
+                else { result.state = "unresolved" }
+            }
+            let effortAssignment = matches(clause, #"(?:reasoning|effort|리즈닝|추론)\s*[:=]"#)
+            if effortAssignment && literalEffort.isEmpty { result.state = "unresolved" }
+            let genericMaximum = literalEffort.isEmpty && matches(clause, #"최대로|최대\s*(?:추론|리즈닝)|\b(?:maximum|highest)\s*(?:reasoning|effort)|\bmax\s*(?:reasoning|effort)"#)
+            if genericMaximum { ceiling = true }
+            else if matches(clause, #"(?:최고|최상위|가장\s*강한)\s*모델|\b(?:best|strongest|top|flagship)\s+(?:available\s+|supported\s+)?model\b"#) {
+                result.state = "unresolved" // Model-only superlative is not an exact model or effort.
+            }
+            if !genericMaximum && literalEffort.isEmpty, let effort = parsed.effort { efforts.insert(effort) }
+            if literals.isEmpty && assignments.isEmpty, let family = parsed.modelFamily { families.insert(family) }
+        }
+        // A multi-provider instruction is not silently read as an intersection
+        // or as a parallel plan. This migration covers ordinary one-route Auto.
+        if surfaces.contains("codex") && surfaces.contains("claude") { result.state = "unresolved" }
+        if models.count > 1 || families.count > 1 || efforts.count > 1 ||
+            (!models.isEmpty && !families.isEmpty) || (ceiling && !efforts.isEmpty) { result.state = "unresolved" }
+        result.allowedSurfaces = surfaces.sorted()
+        result.exactModel = models.count == 1 ? models.first : nil
+        result.modelFamily = families.count == 1 ? families.first : nil
+        result.effort = efforts.count == 1 ? efforts.first : nil
+        result.requireNativeCeiling = ceiling
+        return result
+    }
+}

@@ -390,6 +390,69 @@ test('plain arithmetic is exact and zero-model; explicit routing test never shor
   assert.equal(calls, 2, 'an explicit top-level provider never takes the local fast path');
 });
 
+test('first-turn typed paging metadata is not prior history; retained or unknown state never gets erased', async t => {
+  const dir = await fixture(t), conversation = randomUUID();
+  let catalogCalls = 0, modelCalls = 0;
+  const runtime = await createRCCRuntime({stateDir: dir,
+    catalog: async () => { catalogCalls++; throw Error('fake catalog: must abstain'); },
+    execute: async () => { modelCalls++; throw Error('no native model'); }});
+  t.after(async () => { await runtime.close(); });
+  const envelope = () => ({format: 'os1-session-handoff-v3', transcript: '', priorMessageCount: 0,
+    taskContext: {schemaVersion: 1, conversationID: conversation.toUpperCase(), objectiveID: randomUUID(),
+      createdAt: '2026-10-22T00:00:00Z', updatedAt: '2026-10-22T00:00:00Z', contextRevision: 2, _semanticRevision: 2,
+      project: {projectID: 'fixture-project', workspace: dir},
+      objective: {requestText: '1+1', kind: 'other', scope: 'read_only',
+        prohibitions: [], pendingDecisions: [], completionConditions: []},
+      facts: [], sources: [], bindings: [], executions: [], decisions: [], blockers: [], nextSteps: []},
+    memoryPaging: {snapshot: {kind: 'snapshot', id: randomUUID(), sha256: sha('private fixture only')},
+      conversationID: conversation, projectID: 'fixture-project', archivedMessages: 1,
+      allowedSessionIDs: [conversation, randomUUID()]}});
+  const run = async raw => {
+    const input = task(dir, '1+1', 'auto', {context: raw, conversationID: conversation});
+    await runtime.submit(input); return {input, result: await wait(runtime, input)};
+  };
+  const raw = JSON.stringify(envelope()), ok = await run(raw);
+  assert.equal(ok.result.state, 'completed'); assert.equal(ok.result.result.output, '2');
+  assert.equal(ok.result.children.length, 1); assert.equal(ok.result.children[0].selected_config.model, 'none');
+  assert.equal(ok.result.result.parity_state, 'unverified');
+  assert.equal(runtime._load(ok.input.task_id).task.host_context.context, raw, 'original paging bytes preserved');
+  assert.equal(catalogCalls, 0); assert.equal(modelCalls, 0);
+  // Every distinct semantic risk returns to the existing route instead of
+  // dropping state, inventing history absence or silently interpreting data.
+  const changes = [x => delete x.priorMessageCount, x => x.priorMessageCount = 1,
+    x => x.format = 'os1-session-handoff-v2', x => x.transcript = 'USER: a prior price is 3500',
+    x => x.source = {kind: 'snapshot', id: randomUUID(), sha256: sha('attached source')},
+    x => x.taskContext.facts.push({text: '1+1 is a product label'}),
+    x => x.taskContext.decisions.push({text: 'Use modular arithmetic'}),
+    x => x.taskContext.objective.requestText = 'different objective',
+    x => x.taskContext.objective.completionConditions.push('Use a provider'),
+    x => x.taskContext.project.commit = 'retained baseline',
+    x => x.taskContext.futureState = 'unknown meaning',
+    x => x.memoryPaging.archivedMessages = 2,
+    x => x.memoryPaging.conversationID = randomUUID(),
+    x => x.taskContext.conversationID = 7,
+    x => x.taskContext.project.projectID = {retained: 'semantic state'},
+    x => x.memoryPaging.allowedSessionIDs = ['bad', 7],
+    x => x.memoryPaging.allowedSessionIDs = ['bad'],
+    x => x.memoryPaging.allowedSessionIDs = [randomUUID()],
+    x => x.memoryPaging.snapshot.kind = 'unknown',
+    x => x.memoryPaging.snapshot.extraState = 'retained semantics',
+    x => x.memoryPaging.snapshot.sha256 = 'unverified'];
+  for (const change of changes) {
+    const x = envelope(); change(x); const r = await run(JSON.stringify(x));
+    assert.notEqual(r.result.state, 'completed', String(change));
+  }
+  const duplicate = JSON.stringify(envelope()).replace('"priorMessageCount":0', '"priorMessageCount":3,"priorMessageCount":0');
+  assert.notEqual((await run(duplicate)).result.state, 'completed');
+  const differentObjective = task(dir, '1+1', 'auto', {context: raw, conversationID: conversation, objective: 'Retrieve the prior product price'});
+  const resumed = task(dir, '1+1', 'auto', {context: raw, conversationID: conversation});
+  resumed.native_sessions = {codex: randomUUID()};
+  for (const request of [differentObjective, resumed]) {
+    await runtime.submit(request); assert.notEqual((await wait(runtime, request)).state, 'completed');
+  }
+  assert.equal(modelCalls, 0, 'fake negative cases do not call providers');
+});
+
 // 2026-10-15: a plain Auto "1+1이 뭐야?" ran Codex gpt-6-luna/low (29K input
 // tokens) and ended returned_unverified. A wrapped exact question is the same
 // exact sum: Core answers it with no model call; anything else stays routed.

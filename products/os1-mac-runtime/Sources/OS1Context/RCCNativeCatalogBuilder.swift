@@ -123,6 +123,10 @@ public enum RCCNativeCatalogBuilder {
         /// host from the same function the executor uses.
         public var chatLaneEligible: Bool
         public var profiles: [Profile]
+        /// Host-only opt-in. No ingress/config caller enables it in this patch.
+        /// Both this capability and the immutable new-task marker are needed.
+        public var enableRoutingIntentV2 = false
+        public var routingIntentPolicyVersion: String? = nil
         public var codexModels: [CodexModel] = []
         public var claudeModels: [ClaudeModel] = []
         /// nil = not observed (treated as signed out).
@@ -190,6 +194,7 @@ public enum RCCNativeCatalogBuilder {
         public var exclusions: [RCCRuntimeContract.Exclusion]
         public var pools: [PoolRanking]
         public var intent: RoutingIntent
+        public var intentV2: RCCRuntimeContract.RoutingIntentV2? = nil
         /// Tier of every tiered model in `candidates` (`ModelTiers`).
         public var modelTiers: [String: String] = [:]
         /// Per offered model with known quota: the same pool score the pool
@@ -224,6 +229,8 @@ public enum RCCNativeCatalogBuilder {
         /// No row and no recorded reason (no configured profile for the
         /// admitted providers): a malformed configuration, not a hold reason.
         case unexplainedEmptyCatalog
+        case intentPolicyUnavailable
+        case intentUnresolved
     }
 
     // MARK: Preference
@@ -277,7 +284,15 @@ public enum RCCNativeCatalogBuilder {
     /// The owner-text intent the builder applies. An explicit route test has
     /// none: each route's payload is not a routing constraint for every route.
     public static func intent(_ input: Input) -> RoutingIntent {
-        input.explicitRouteSurfaces == nil ? RoutingIntent.parse(input.request) : RoutingIntent()
+        if input.routingIntentPolicyVersion != nil { return RoutingIntent() }
+        return input.explicitRouteSurfaces == nil ? RoutingIntent.parse(input.request) : RoutingIntent()
+    }
+    static func intentV2(_ input: Input) -> RCCRuntimeContract.RoutingIntentV2? {
+        guard input.enableRoutingIntentV2,
+              input.routingIntentPolicyVersion == RCCRuntimeContract.RoutingIntentV2.version,
+              input.explicitRouteSurfaces == nil else { return nil }
+        let known = Set(input.profiles.map(\.model) + input.codexModels.map(\.slug) + input.claudeModels.map(\.model))
+        return RoutingIntent.parseV2(input.request, knownModelIDs: known)
     }
 
     // MARK: Admission
@@ -290,7 +305,7 @@ public enum RCCNativeCatalogBuilder {
     /// cooldown do not change WHICH model is the top one, only whether it can
     /// run now.
     static func staticAdmission(_ profile: Profile, _ input: Input, _ intent: RoutingIntent,
-                                reference: Bool = false) -> Admission {
+                                reference: Bool = false, v2: RCCRuntimeContract.RoutingIntentV2? = nil) -> Admission {
         guard ["codex", "claude"].contains(profile.provider) else { return .skip }
         guard providerSurfaces(profile.provider).contains(where: { admits(preference: input.providerPreference, surface: $0) }) else { return .skip }
         if profile.provider == "codex", !input.showCodex { return .excluded("codex_hidden") }
@@ -301,6 +316,15 @@ public enum RCCNativeCatalogBuilder {
         // Unknown effort names have no ordered/executable meaning in the
         // current contract, even if a native inventory happens to echo them.
         // They never become a fabricated higher or lower reference.
+        if input.routingIntentPolicyVersion != nil {
+            guard let v2, v2.valid, v2.state == "resolved" else { return .skip }
+            if !v2.allowedSurfaces.isEmpty && !providerSurfaces(profile.provider).contains(where: v2.allowedSurfaces.contains) {
+                return .intentFiltered
+            }
+            if let model = v2.exactModel, model != profile.model { return .intentFiltered }
+            if let family = v2.modelFamily, !RoutingIntent.model(profile.model, belongsTo: family) { return .intentFiltered }
+            if !reference, let effort = v2.effort, effort != profile.effort { return .intentFiltered }
+        }
         guard effortOrder.contains(profile.effort) else { return .excluded("model_unavailable") }
         let constraint = reference ? RoutingIntent(modelFamily: intent.modelFamily) : intent
         if !constraint.admits(model: profile.model, effort: profile.effort) { return .intentFiltered }
@@ -389,13 +413,18 @@ public enum RCCNativeCatalogBuilder {
     /// Providers worth a native probe under the current preference, capacity,
     /// visibility, intent and chat gate.
     public static func providersToProbe(_ input: Input) -> Set<String> {
-        let intent = intent(input)
-        return Set(input.profiles.filter { staticAdmission($0, input, intent) == .admitted }.map(\.provider))
+        let intent = intent(input), v2 = intentV2(input)
+        return Set(input.profiles.filter { staticAdmission($0, input, intent, v2: v2) == .admitted }.map(\.provider))
     }
 
     // MARK: Build
 
     public static func build(_ input: Input) throws -> Output {
+        let v2 = intentV2(input)
+        if input.routingIntentPolicyVersion != nil {
+            guard let v2, v2.valid else { throw Failure.intentPolicyUnavailable }
+            guard v2.state == "resolved" else { throw Failure.intentUnresolved }
+        }
         let intent = intent(input)
         var excluded: [String: [String: Int]] = [:]
         var intentFiltered: [String: Int] = [:]
@@ -442,12 +471,12 @@ public enum RCCNativeCatalogBuilder {
         // quota, cooldowns and an effort word.
         var referenceProfiles: [String: Int] = [:]
         for profile in input.profiles where ModelTiers.tier(of: profile.model) == .frontier &&
-            staticAdmission(profile, input, intent, reference: true) == .admitted &&
+            staticAdmission(profile, input, intent, reference: true, v2: v2) == .admitted &&
             input.auth[profile.provider] == .subscription && nativelyAvailable(profile) {
             referenceProfiles[profile.provider, default: 0] += 1
         }
         for profile in input.profiles.sorted(by: { $0.action < $1.action }) {
-            switch staticAdmission(profile, input, intent) {
+            switch staticAdmission(profile, input, intent, v2: v2) {
             case .skip: continue
             case .excluded(let reason): exclude(profile.provider, reason); continue
             case .intentFiltered: intentFiltered[profile.provider, default: 0] += 1; continue
@@ -479,6 +508,7 @@ public enum RCCNativeCatalogBuilder {
                 let surfaces = scope == "read_only" ? providerSurfaces(profile.provider) : [profile.provider]
                 for surface in surfaces {
                     guard admits(preference: input.providerPreference, surface: surface) else { continue }
+                    if let v2, !v2.allowedSurfaces.isEmpty, !v2.allowedSurfaces.contains(surface) { continue }
                     if surface == "claude-chat", !chatAllowed { continue }
                     let tools = surface.hasSuffix("-chat") ? [] : scope == "read_only" ? ["read", "execute"] : ["read", "write", "execute"]
                     let tuple = [surface, profile.provider, account, profile.model, profile.effort, scope,
@@ -523,7 +553,7 @@ public enum RCCNativeCatalogBuilder {
             }
             guard let frontier = frontiers.first else { return false }
             let supported = nativeEfforts(provider, frontier.model)
-            guard let ceiling = intent.effort ?? nativeMaximum(provider, frontier.model),
+            guard let ceiling = v2?.effort ?? intent.effort ?? nativeMaximum(provider, frontier.model),
                   supported.contains(ceiling) else { return false }
             // Only aliases with an actual shared native row may satisfy this
             // model's ceiling; equal Codex priority is not alias evidence.
@@ -537,7 +567,7 @@ public enum RCCNativeCatalogBuilder {
         // Lower tiers remain usable for cheap work. Only automatic deep work
         // and REVAS reference escalation are held by this existing exclusion.
         // No model/effort is fabricated and candidate identities are unchanged.
-        if input.explicitRouteSurfaces == nil, intent.modelFamily == nil {
+        if input.explicitRouteSurfaces == nil, intent.modelFamily == nil, v2?.exactModel == nil, v2?.modelFamily == nil {
             for provider in ["codex", "claude"] where rows.contains(where: { $0.provider == provider }) &&
                 !referenceAvailable(provider) {
                 excluded[provider, default: [:]]["reference_unavailable", default: 0] += max(1, referenceProfiles[provider] ?? 0)
@@ -623,7 +653,7 @@ public enum RCCNativeCatalogBuilder {
         }
 
         if ["gpt-chat", "chatgpt"].contains(input.providerPreference) { exclude("codex", "gpt_dropped") }
-        if rows.isEmpty, !intent.isEmpty {
+        if rows.isEmpty, !intent.isEmpty || v2 != nil {
             for (provider, count) in intentFiltered where count > 0 && excluded[provider]?["explicit_constraint_unavailable"] == nil {
                 excluded[provider, default: [:]]["explicit_constraint_unavailable", default: 0] += count
             }
@@ -645,7 +675,7 @@ public enum RCCNativeCatalogBuilder {
                 nativeReferenceEfforts[row.provider, default: [:]][row.model] = ceiling
             }
         }
-        return Output(candidates: rows.map(\.fields) + local, exclusions: exclusions, pools: rankings, intent: intent,
+        return Output(candidates: rows.map(\.fields) + local, exclusions: exclusions, pools: rankings, intent: intent, intentV2: v2,
                       modelTiers: tiers, quotaScores: quotaScores, nativeReferenceEfforts: nativeReferenceEfforts,
                       explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents,
                       admission: admissionFacts(input))
@@ -684,6 +714,9 @@ public enum RCCNativeCatalogBuilder {
                                      "candidates": output.candidates]
         if !output.exclusions.isEmpty {
             object["exclusions"] = output.exclusions.map { ["provider": $0.provider, "reason": $0.reason, "count": $0.count] }
+        }
+        if let v2 = output.intentV2 {
+            object["routing_intent_v2"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(v2))
         }
         if !output.intent.isEmpty {
             object["routing_intent"] = ["effort": output.intent.effort.map { $0 as Any } ?? NSNull(),

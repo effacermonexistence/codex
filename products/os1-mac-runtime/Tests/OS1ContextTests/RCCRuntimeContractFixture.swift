@@ -872,5 +872,36 @@ func runRCCRuntimeContractFixture() throws {
     try reject("staged candidates cannot resume dirty native history") { try C.validate(invalidStaging) }
     invalidStaging = stagedTicket; invalidStaging.executionIsolation = nil; invalidStaging.executionIsolationSHA256 = nil
     try reject("staging needs independent native local effect isolation") { try C.validate(invalidStaging) }
+    // New intent version is immutable task data, not an edit to request SHA.
+    var newRequest = request; newRequest.routingIntentPolicyVersion = C.RoutingIntentV2.version
+    try check(try C.decodeRequest(C.encode(newRequest)) == newRequest && newRequest != request &&
+              newRequest.requestSHA256 == request.requestSHA256, "intent version binds equality without rehashing original")
+    var unknownVersion = request; unknownVersion.routingIntentPolicyVersion = "unreviewed-v99"
+    try reject("unknown intent version") { try C.validate(unknownVersion) }
+    unknownVersion = explicitRequest; unknownVersion.routingIntentPolicyVersion = C.RoutingIntentV2.version
+    try reject("v2 ordinary-auto migration cannot reinterpret fanout") { try C.validate(unknownVersion) }
+    var newCatalog = catalog; newCatalog.routingIntentV2 = C.RoutingIntentV2()
+    newCatalog.modelTiers = [candidate.model: "frontier"]
+    newCatalog.nativeReferenceEfforts = ["codex": [candidate.model: candidate.effort.rawValue]]
+    try check(try C.decodeCatalog(C.encode(newCatalog), request: newRequest) == newCatalog, "strict v2 catalog roundtrip")
+    try reject("legacy task cannot inherit new host semantics") { try C.validate(newCatalog, request: request) }
+    try reject("new task cannot reuse legacy catalog") { try C.validate(catalog, request: newRequest) }
+    var malformedV2 = newCatalog; malformedV2.routingIntentV2?.qualityTarget = "gold_proven"
+    try reject("reference descriptor cannot become quality proof") { try C.validate(malformedV2, request: newRequest) }
+    malformedV2 = newCatalog; malformedV2.routingIntentV2?.allowedSurfaces = ["chatgpt"]
+    try reject("dropped surface denied") { try C.validate(malformedV2, request: newRequest) }
+    malformedV2 = newCatalog; malformedV2.routingIntentV2?.state = "unresolved"
+    try reject("unresolved parser cannot execute") { try C.validate(malformedV2, request: newRequest) }
+    malformedV2 = newCatalog; malformedV2.routingIntentV2?.effort = "high"; malformedV2.routingIntentV2?.requireNativeCeiling = true
+    try reject("ceiling and exact effort contradictory") { try C.validate(malformedV2, request: newRequest) }
+    var objectV2 = try JSONSerialization.jsonObject(with: C.encode(newCatalog)) as! [String: Any]
+    var intentObjectV2 = objectV2["routing_intent_v2"] as! [String: Any]
+    intentObjectV2.removeValue(forKey: "exact_model"); objectV2["routing_intent_v2"] = intentObjectV2
+    try reject("required nullable key cannot disappear") { _ = try C.decodeCatalog(JSONSerialization.data(withJSONObject: objectV2), request: newRequest) }
+    var explicitNullV2 = try JSONSerialization.jsonObject(with: C.encode(catalog)) as! [String: Any]
+    explicitNullV2["routing_intent_v2"] = NSNull()
+    try reject("explicit null catalog version is not an absent legacy field") { _ = try C.decodeCatalog(JSONSerialization.data(withJSONObject: explicitNullV2), request: request) }
+    intentObjectV2["exact_model"] = NSNull(); intentObjectV2["authority"] = "self-certified"; objectV2["routing_intent_v2"] = intentObjectV2
+    try reject("unknown v2 authority field") { _ = try C.decodeCatalog(JSONSerialization.data(withJSONObject: objectV2), request: newRequest) }
     print("RCC Runtime contract: \(checks) offline identity/schema/config/DAG/state checks PASS; provider calls 0")
 }

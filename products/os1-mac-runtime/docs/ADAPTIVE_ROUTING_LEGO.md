@@ -251,3 +251,35 @@ an OS-1 performance claim:
 The joint selector separately credits Microsoft BEST-Route Algorithm 1 and
 retains its MIT notice. No hosted weights, Azure router, API entitlement or
 published research benchmark result is imported as OS-1 proof.
+
+## Build 418: actual UI transport/context regressions
+
+A new installed-417 GUI `1+1` request exposed two failures despite prior unit
+and installer passes. The durable Core returned a real Claude/fable/max result,
+but Gateway's separate top-level snapshot allowlist rejected `resource_usage`.
+The first-turn paging envelope also contained nonempty metadata, so the old
+literal-empty-context gate wrongly treated it as earlier conversation. The
+unexpected native call is retained as a failed zero-model trial, not savings,
+parity, a successful UI smoke, or another P6 comparison row.
+
+Gateway now recognizes that existing public field and uses the SAME strict
+resource-summary validator as the typed UI contract. Unknown keys/counts,
+unsupported states, identity and revision mismatches still fail. A fixture
+passes actual Core public projections (local exact and fake-native) through
+both Gateway and the typed decoder; no native provider is invoked by it.
+
+The GUI handoff records the observed message count BEFORE the current request.
+Missing historical counts remain unknown, even with an empty paged transcript.
+Core may use its existing closed arithmetic/greeting path only with no native
+bindings, the same objective, no attachments or retained semantic state, and
+an exact typed first-turn envelope. All original context, paging capabilities,
+source bytes, archives and prior turns remain intact. Unknown/new semantic
+fields, a different objective, sources, decisions or prior turns abstain. This
+is not general semantic-context compression or a new task classifier.
+
+R10's additive intent-v2 contract separates bare provider, exact model/effort,
+native ceiling and result-quality target. It remains NEW-task, host-opt-in
+(default false) and version-bound; no ingress enables it here. Unsupported
+whole effort tokens and unmatched quoted examples HOLD. A quality-target
+label supplies no quality proof, cheap admission, calibration or live scope.
+Legacy requests/replays and existing R0/verifier/staged-writer gates remain.

@@ -405,10 +405,12 @@ function validCapacityPlan(plan) {
 function validateTask(task, {allowCoreRouting = false} = {}) {
   const required = ['schema', 'task_id', 'request', 'request_sha256', 'objective', 'policy_sha256',
     'source_fingerprint', 'mode', 'material_refs', 'budget', 'host_context'];
-  const optional = ['context', 'workspace', 'native_sessions', 'provider_preference', 'policy',
+  const optional = ['context', 'workspace', 'native_sessions', 'provider_preference', 'policy', 'routing_intent_policy_version',
     ...(allowCoreRouting ? ['core_routing'] : [])];
   assert(plain(task) && required.every(key => Object.hasOwn(task, key)) &&
     Object.keys(task).every(key => required.includes(key) || optional.includes(key)), 'task_shape_invalid');
+  assert(task.routing_intent_policy_version == null ||
+    (task.routing_intent_policy_version === INTENT_V2_VERSION && task.mode === 'auto'), 'intent_policy_version_invalid');
   assert(task.schema === 1 && ID.test(task.task_id) && boundedText(task.request, 64_000) &&
     boundedText(task.objective, 8_192) && HASH.test(task.request_sha256) &&
     sha(Buffer.from(task.request)) === task.request_sha256 && HASH.test(task.policy_sha256) &&
@@ -546,7 +548,18 @@ function surfaceKind(surface) { return surface === 'local' ? 'local' : surface.e
 export function routeFamily(routeClass, scope, surface) {
   return `${routeClass ?? 'unclassified'}:${scope}:${surfaceKind(surface)}`;
 }
-function routingIntent(catalog) { return catalog?.routing_intent ?? null; }
+const INTENT_V2_VERSION = 'r10_joint_selection_v2';
+function routingIntent(catalog) { return catalog?.routing_intent_v2 ?? catalog?.routing_intent ?? null; }
+function activeIntentV2(task, catalog) {
+  return task?.routing_intent_policy_version === INTENT_V2_VERSION &&
+    validRoutingIntentV2(catalog?.routing_intent_v2) && catalog.routing_intent_v2.state === 'resolved';
+}
+function intentAdmits(candidate, intent) {
+  return !intent || ((!intent.allowed_surfaces?.length || intent.allowed_surfaces.includes(candidate.surface)) &&
+    (intent.exact_model == null || candidate.model === intent.exact_model) &&
+    (intent.model_family == null || modelInFamily(candidate.model, intent.model_family)) &&
+    (intent.effort == null || candidate.effort === intent.effort));
+}
 /** The reference effort of one model's admitted rows. An explicit owner
  * effort is exact, including when unavailable (never substitute another
  * effort). Otherwise use the highest supported catalog row BEFORE testing
@@ -562,7 +575,7 @@ function referenceEffort(rows, intent, catalog) {
   // even on a legacy catalog that also carries per-model metadata. That map
   // describes represented models, not the absent frontier. A named family
   // has its own ceiling and must not inherit another family's global hold.
-  if (!intent?.model_family && rows.some(row => (catalog?.exclusions ?? []).some(exclusion =>
+  if (!intent?.model_family && !intent?.exact_model && rows.some(row => (catalog?.exclusions ?? []).some(exclusion =>
     exclusion.provider === providerOfPool(row.quota_pool) && exclusion.reason === 'reference_unavailable'))) return null;
   // Fresh native catalogs report the ceiling of THIS exact model even when
   // its signed executable tuple is absent. The map grants no execution
@@ -592,7 +605,7 @@ function poolReferences(node, catalog, options = {}) {
   const intent = routingIntent(catalog);
   const pools = new Map();
   catalog.candidates.forEach((candidate, index) => {
-    if (!eligibleRow(candidate, node, options)) return;
+    if (!eligibleRow(candidate, node, options) || !intentAdmits(candidate, catalog?.routing_intent_v2 ?? null)) return;
     if (!pools.has(candidate.quota_pool))
       pools.set(candidate.quota_pool, {pool: candidate.quota_pool, model: candidate.model, rows: []});
     const entry = pools.get(candidate.quota_pool);
@@ -658,7 +671,8 @@ function tierRank(catalog, model) {
  * intent; an explicit route's own family word narrows the rows here (its
  * catalog is not filtered per route). */
 function tierRoutable(candidate, catalog, intent) {
-  return intent?.model_family ? modelInFamily(candidate.model, intent.model_family) :
+  return intent?.exact_model ? candidate.model === intent.exact_model :
+    intent?.model_family ? modelInFamily(candidate.model, intent.model_family) :
     tierOf(catalog, candidate.model) !== null;
 }
 /** The rows that can carry this node, per quota pool, in catalog order;
@@ -666,7 +680,7 @@ function tierRoutable(candidate, catalog, intent) {
 function poolRows(node, catalog, options = {}) {
   const pools = new Map();
   catalog.candidates.forEach((candidate, index) => {
-    if (!eligibleRow(candidate, node, options)) return;
+    if (!eligibleRow(candidate, node, options) || !intentAdmits(candidate, catalog?.routing_intent_v2 ?? null)) return;
     if (options.surface != null && candidate.surface !== options.surface) return;
     if (!pools.has(candidate.quota_pool)) pools.set(candidate.quota_pool, {pool: candidate.quota_pool, rows: []});
     pools.get(candidate.quota_pool).rows.push({candidate, index});
@@ -723,7 +737,7 @@ function tierReferenceRows(rows, catalog, intent = null) {
  * owner's effort word (or its highest admitted supported effort). Without an
  * owner constraint it is the pool's frontier reference. */
 function intentReferenceRows(rows, catalog, intent) {
-  return intent?.model_family ? entryRows(rows, {tier: null, effort: REFERENCE_EFFORT}, catalog, intent) :
+  return intent?.model_family || intent?.exact_model ? entryRows(rows, {tier: null, effort: REFERENCE_EFFORT}, catalog, intent) :
     tierReferenceRows(rows, catalog, intent);
 }
 
@@ -776,9 +790,17 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
   if (explicit && explicit.intent == null && node?.kind === 'agent' && node.scope === 'read_only' &&
       pureArithmetic(node.instruction ?? '') !== null)
     return {class: 'certified', source: 'exact', certificate_id: null};
-  if (task?.mode === 'explicit_routing_test' || routingIntent(catalog) !== null ||
-      providerChosen(task?.host_context?.provider_preference) || providerChosen(task?.provider_preference))
+  const v2 = activeIntentV2(task, catalog);
+  // A task marker is not activation/admission. Missing/mismatched host catalog
+  // never reuses legacy policy or admits an uncertified cheaper tuple.
+  if ((task?.routing_intent_policy_version != null || catalog?.routing_intent_v2 !== undefined) && !v2)
+    return reference('intent_policy_unavailable');
+  if (task?.mode === 'explicit_routing_test' ||
+      (v2 ? catalog.routing_intent_v2.require_native_ceiling : routingIntent(catalog) !== null ||
+        providerChosen(task?.host_context?.provider_preference) || providerChosen(task?.provider_preference)))
     return reference('owner_words');
+  // v2 changes owner-word semantics only. ALL R0 certifying sources below,
+  // runnable-reference requirement and post-result adoption remain unchanged.
   if (node?.kind !== 'agent') return reference('uncertified');
   if (node.scope === 'workspace_write') {
     const c = catalog?.task_contract;
@@ -825,7 +847,7 @@ function certifiedEntries(pool, admission, catalog, verifierRegistry) {
   const rows = pool.rows.filter(({candidate}) => kinds.includes(surfaceKind(candidate.surface)) &&
     (!stagedWriterContract(catalog.task_contract) || (candidate.surface === 'codex' && candidate.transport === 'codex_app_server')));
   return TIER_ROUTES[CERTIFIED_CLASS].map(([tier, effort], index) =>
-    ({index, rows: entryRows(rows, {tier, effort}, catalog, null)}));
+    ({index, rows: entryRows(rows, {tier, effort}, catalog, catalog?.routing_intent_v2 ?? null)}));
 }
 function surfaceToken(candidate) {
   return {chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(candidate.surface)] ?? 'agent_surface';
@@ -1433,6 +1455,20 @@ function validRoutingIntent(intent) {
     (intent.model_family === null || (typeof intent.model_family === 'string' && INTENT_FAMILY.test(intent.model_family))) &&
     (intent.effort !== null || intent.model_family !== null);
 }
+function validRoutingIntentV2(intent) {
+  return keys(intent, ['version', 'allowed_surfaces', 'exact_model', 'model_family', 'effort',
+    'require_native_ceiling', 'quality_target', 'state']) && intent.version === INTENT_V2_VERSION &&
+    Array.isArray(intent.allowed_surfaces) && intent.allowed_surfaces.length <= 3 &&
+    new Set(intent.allowed_surfaces).size === intent.allowed_surfaces.length &&
+    intent.allowed_surfaces.every(x => ['codex', 'claude', 'claude-chat'].includes(x)) &&
+    (intent.exact_model === null || boundedText(intent.exact_model, 256)) &&
+    (intent.model_family === null || ['fable', 'opus', 'sonnet', 'haiku', 'sol', 'luna', 'terra', 'astra', 'daybreak'].includes(intent.model_family)) &&
+    !(intent.exact_model !== null && intent.model_family !== null) &&
+    (intent.effort === null || EFFORTS.has(intent.effort)) &&
+    typeof intent.require_native_ceiling === 'boolean' && !(intent.require_native_ceiling && intent.effort !== null) &&
+    (intent.quality_target === null || intent.quality_target === 'current_host_reference') &&
+    ['resolved', 'unresolved'].includes(intent.state);
+}
 /** Optional (build 378): the provider-stated tier of each tiered model this
  * catalog offers. Possibly empty (no offered model has a tier). */
 function validModelTiers(tiers, candidates) {
@@ -1546,7 +1582,7 @@ function validClassCertificates(certificates, cls) {
 }
 function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
-  const optional = ['exclusions', 'routing_intent', 'model_tiers', 'explicit_route_intents', 'quota_scores',
+  const optional = ['exclusions', 'routing_intent', 'routing_intent_v2', 'model_tiers', 'explicit_route_intents', 'quota_scores',
     'native_reference_efforts', 'owner_scope', 'chat_lane_eligible', 'request_class', 'task_contract',
     'class_certificates', 'class_provider_pins'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
@@ -1556,6 +1592,9 @@ function validateCatalog(catalog, task) {
     catalog.candidates.length <= 256 &&
     (catalog.exclusions === undefined || validExclusions(catalog.exclusions)) &&
     (catalog.routing_intent === undefined || validRoutingIntent(catalog.routing_intent)) &&
+    (task.routing_intent_policy_version == null ? catalog.routing_intent_v2 === undefined :
+      activeIntentV2(task, catalog) && catalog.routing_intent === undefined &&
+      catalog.native_reference_efforts !== undefined && catalog.model_tiers !== undefined) &&
     (catalog.model_tiers === undefined || validModelTiers(catalog.model_tiers, catalog.candidates)) &&
     (catalog.explicit_route_intents === undefined || validExplicitRouteIntents(catalog.explicit_route_intents, task)) &&
     (catalog.quota_scores === undefined || validQuotaScores(catalog.quota_scores, catalog.candidates)) &&
@@ -1685,8 +1724,55 @@ export function exactArithmeticQuestion(request) {
  * zero-model path requires it (R1). */
 function withoutConversation(task) {
   const h = task.host_context;
-  return (task.context ?? '').trim() === '' && (h.context ?? '').trim() === '' &&
-    h.codex_session_id === null && h.claude_session_id === null;
+  const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
+  if (task.native_sessions != null && Object.keys(task.native_sessions).length !== 0) return false;
+  const empty = raw => {
+    if ((raw ?? '').trim() === '') return true;
+    // GUI paging envelopes carry bookkeeping even on the first turn. Keep
+    // those bytes intact; distinguish that metadata from retained semantics.
+    // Require the current compact host encoding. A duplicate key, alternate
+    // numeric spelling or unknown field abstains instead of erasing history.
+    let x;
+    try { x = JSON.parse(raw); } catch { return false; }
+    if (JSON.stringify(x) !== raw || !plain(x) ||
+        Object.keys(x).some(k => !['format', 'transcript', 'source', 'taskContext', 'memoryPaging', 'priorMessageCount'].includes(k)) ||
+        x.format !== 'os1-session-handoff-v3' || x.priorMessageCount !== 0 ||
+        x.transcript !== '' || x.source != null) return false;
+    const c = x.taskContext;
+    if (c != null) {
+      if (!plain(c) || c.schemaVersion !== 1 || !uuid(c.conversationID) || !uuid(c.objectiveID) ||
+          !int(c.contextRevision, 0, Number.MAX_SAFE_INTEGER) ||
+          (c._semanticRevision !== undefined && !int(c._semanticRevision, 0, Number.MAX_SAFE_INTEGER)) ||
+          !['createdAt', 'updatedAt'].every(k => typeof c[k] === 'string' && boundedText(c[k], 64)) ||
+          Object.keys(c).some(k => !['schemaVersion', 'createdAt', 'updatedAt', 'contextRevision', '_semanticRevision',
+            'conversationID', 'objectiveID', 'project', 'objective', 'facts', 'sources', 'bindings', 'executions',
+            'decisions', 'blockers', 'nextSteps'].includes(k)) ||
+          !['facts', 'sources', 'bindings', 'executions', 'decisions', 'blockers', 'nextSteps']
+            .every(k => Array.isArray(c[k]) && c[k].length === 0) ||
+          !plain(c.objective) || c.objective.requestText !== task.request ||
+          c.objective.kind !== 'other' || c.objective.scope !== 'read_only' ||
+          Object.keys(c.objective).some(k => !['requestText', 'kind', 'scope', 'prohibitions', 'pendingDecisions', 'completionConditions'].includes(k)) ||
+          !['prohibitions', 'pendingDecisions', 'completionConditions']
+            .every(k => Array.isArray(c.objective[k]) && c.objective[k].length === 0) ||
+          (c.project != null && (!plain(c.project) || Object.keys(c.project).some(k => !['projectID', 'workspace'].includes(k)) ||
+            !boundedText(c.project.projectID, 256) || typeof c.project.workspace !== 'string' || c.project.workspace !== h.workspace))) return false;
+      if (h.conversation_id != null && (typeof c.conversationID !== 'string' || c.conversationID.toLowerCase() !== h.conversation_id.toLowerCase())) return false;
+    }
+    if (x.memoryPaging != null) {
+      const m = x.memoryPaging;
+      if (!keys(m, ['snapshot', 'projectID', 'archivedMessages', 'allowedSessionIDs', 'conversationID']) ||
+          !boundedText(m.projectID, 256) || !uuid(m.conversationID) ||
+          !Array.isArray(m.allowedSessionIDs) || m.allowedSessionIDs.length > 4096 ||
+          new Set(m.allowedSessionIDs).size !== m.allowedSessionIDs.length ||
+          !m.allowedSessionIDs.every(uuid) || !m.allowedSessionIDs.some(id => id.toLowerCase() === m.conversationID.toLowerCase()) ||
+          m.archivedMessages !== 1 || !keys(m.snapshot, ['kind', 'id', 'sha256']) ||
+          m.snapshot.kind !== 'snapshot' || !uuid(m.snapshot.id) ||
+          typeof m.snapshot.sha256 !== 'string' || !HASH.test(m.snapshot.sha256) ||
+          (h.conversation_id != null && (typeof m.conversationID !== 'string' || m.conversationID.toLowerCase() !== h.conversation_id.toLowerCase()))) return false;
+    }
+    return true;
+  };
+  return empty(task.context) && empty(h.context) && h.codex_session_id === null && h.claude_session_id === null;
 }
 
 // Preserve the old exact zero-call greeting only. Liveness classification is
@@ -3225,7 +3311,7 @@ class RCCRuntime {
     // must see that context (review 2026-10-15). A wrapped question
     // ("1+1이 뭐야?") is the same exact sum: the child keeps the whole request
     // as its instruction (_completeLocalExact).
-    if (task.mode === 'auto' && task.host_context.provider_preference === 'auto' &&
+    if (task.mode === 'auto' && task.objective.trim() === task.request.trim() && task.host_context.provider_preference === 'auto' &&
         (task.provider_preference == null || task.provider_preference === 'auto') &&
         task.host_context.explicit_routes == null &&
         task.material_refs.length === 0 && withoutConversation(task)) {

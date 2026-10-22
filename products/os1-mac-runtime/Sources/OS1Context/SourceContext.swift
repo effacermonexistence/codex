@@ -24,8 +24,12 @@ public struct SessionHandoff: Codable, Sendable {
     /// all bound sources, bindings, executions). Absent on v2 handoffs.
     public let taskContext: TaskContext?
     public let memoryPaging: MemoryPagingReference?
+    /// Host-observed turns BEFORE the current request. Missing on historical
+    /// handoffs: an empty working transcript alone never proves empty history.
+    public let priorMessageCount: Int?
 
-    public init(transcript: String, source: SourceReference?, taskContext: TaskContext? = nil, memoryPaging: MemoryPagingReference? = nil) {
+    public init(transcript: String, source: SourceReference?, taskContext: TaskContext? = nil, memoryPaging: MemoryPagingReference? = nil,
+                priorMessageCount: Int? = nil) {
         format = Self.currentFormat
         // Budget bytes, not Swift characters: Korean can consume 3+ bytes each.
         var bytes = Data(transcript.utf8).suffix(150_000)
@@ -34,9 +38,11 @@ public struct SessionHandoff: Codable, Sendable {
         self.source = source
         self.taskContext = taskContext
         self.memoryPaging = memoryPaging
+        self.priorMessageCount = priorMessageCount
     }
 
     public func encoded() throws -> String {
+        guard priorMessageCount.map({ (0...1_000_000).contains($0) }) ?? true else { throw SourceContextError.invalid }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
@@ -48,7 +54,8 @@ public struct SessionHandoff: Codable, Sendable {
             // transcript shrinks.
             guard !bounded.transcript.isEmpty else { throw SourceContextError.invalid }
             bounded = SessionHandoff(transcript: String(bounded.transcript.suffix(bounded.transcript.count / 2)),
-                                     source: source, taskContext: taskContext, memoryPaging: memoryPaging)
+                                     source: source, taskContext: taskContext, memoryPaging: memoryPaging,
+                                     priorMessageCount: priorMessageCount)
         }
     }
 
@@ -63,7 +70,8 @@ public struct SessionHandoff: Codable, Sendable {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let result = try decoder.decode(Self.self, from: Data(value.utf8))
-            guard acceptedFormats.contains(result.format) else { throw SourceContextError.invalid }
+            guard acceptedFormats.contains(result.format),
+                  result.priorMessageCount.map({ (0...1_000_000).contains($0) }) ?? true else { throw SourceContextError.invalid }
             return result
         }
         return SessionHandoff(transcript: value, source: nil)

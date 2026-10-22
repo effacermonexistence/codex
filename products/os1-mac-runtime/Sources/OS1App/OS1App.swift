@@ -6150,7 +6150,9 @@ private func pagingSessionHandoff(_ session: ConversationSession, sessions: [Con
     // Original data stays in sessions.json and immutable memory. Only a bounded
     // recent window is working context; earlier dependencies are page faults.
     var working = session
+    var priorMessageCount: Int? = nil
     if let id = userMessageID, let index = session.messages.firstIndex(where: { $0.id == id }) {
+        priorMessageCount = index
         working.messages = Array(session.messages[..<index].suffix(6))
     } else { working.messages = Array(session.messages.suffix(6)) }
     let encoded = try sessionHandoff(working)
@@ -6159,9 +6161,11 @@ private func pagingSessionHandoff(_ session: ConversationSession, sessions: [Con
     guard handed.transcript.utf8.count <= config.retrievalBudgetTokens else {
         // A large most-recent turn is a paged item, not a partial fake quote.
         return try SessionHandoff(transcript: "Recent transcript is stored exactly in episodic memory; use memory_query when required.",
-            source: handed.source, taskContext: context, memoryPaging: reference).encoded()
+            source: handed.source, taskContext: context, memoryPaging: reference,
+            priorMessageCount: priorMessageCount).encoded()
     }
-    return try SessionHandoff(transcript: handed.transcript, source: handed.source, taskContext: context, memoryPaging: reference).encoded()
+    return try SessionHandoff(transcript: handed.transcript, source: handed.source, taskContext: context, memoryPaging: reference,
+                              priorMessageCount: priorMessageCount).encoded()
 }
 
 private func memoryPagingHandoffSelfTest() throws {
@@ -6183,6 +6187,7 @@ private func memoryPagingHandoffSelfTest() throws {
     let before = try stableEncoder.encode(session)
     let handoff = try SessionHandoff.decode(pagingSessionHandoff(session, sessions: [session, peer], root: root, before: request.id))
     guard handoff.transcript.utf8.count < 24_000, !handoff.transcript.contains("Historical exact record 0 "),
+          handoff.priorMessageCount == session.messages.firstIndex(where: { $0.id == request.id }),
           handoff.memoryPaging?.archivedMessages == session.messages.count,
           handoff.memoryPaging?.allowedSessionIDs.contains(peer.id.uuidString.lowercased()) == true,
           try stableEncoder.encode(session) == before else { throw RunnerError.message("Paging mutated raw session or loaded whole history") }
@@ -6195,7 +6200,15 @@ private func memoryPagingHandoffSelfTest() throws {
     guard page.hits.first?.text == first.text, page.hits.first?.item.metadata.sourceMessageID == first.id.uuidString.lowercased() else {
         throw RunnerError.message("Evicted past message did not page in with original identity")
     }
-    print("OS-1 actual GUI paging handoff/hot correction/raw preservation/exact page-in: OK (4 checks, no model calls)")
+    var fresh = ConversationSession(workspace: root.appendingPathComponent("fresh-project").path)
+    let firstRequest = ChatMessage(role: .user, text: "1+1")
+    fresh.messages = [firstRequest]
+    let firstHandoff = try SessionHandoff.decode(pagingSessionHandoff(fresh, sessions: [fresh], root: root, before: firstRequest.id))
+    guard firstHandoff.priorMessageCount == 0, firstHandoff.transcript.isEmpty,
+          firstHandoff.memoryPaging?.archivedMessages == 1 else {
+        throw RunnerError.message("First-turn paging metadata must not masquerade as prior conversation")
+    }
+    print("OS-1 actual GUI paging handoff/hot correction/raw preservation/exact page-in/first-turn identity: OK (5 checks, no model calls)")
 }
 
 private func sessionHandoff(_ session: ConversationSession, before userMessageID: UUID? = nil) throws -> String {

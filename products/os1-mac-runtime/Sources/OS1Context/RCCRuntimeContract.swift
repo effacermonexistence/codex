@@ -190,16 +190,19 @@ public enum RCCRuntimeContract {
         public var policy: Policy?
         public var hostContext: HostContext?
         public var coreRouting: CoreRouting?
+        /// Explicit host migration marker, separate from unchanged original request bytes.
+        public var routingIntentPolicyVersion: String?
         public init(schema: Int = 1, taskID: String, request: String, requestSHA256: String, objective: String,
                     policySHA256: String, sourceFingerprint: String, mode: Mode, materialRefs: [String], budget: Budget,
                     context: String? = nil, workspace: String? = nil, nativeSessions: [String: String]? = nil,
                     providerPreference: String? = nil, policy: Policy? = nil, hostContext: HostContext? = nil,
-                    coreRouting: CoreRouting? = nil) {
+                    coreRouting: CoreRouting? = nil, routingIntentPolicyVersion: String? = nil) {
             self.schema = schema; self.taskID = taskID; self.request = request; self.requestSHA256 = requestSHA256
             self.objective = objective; self.policySHA256 = policySHA256; self.sourceFingerprint = sourceFingerprint
             self.mode = mode; self.materialRefs = materialRefs; self.budget = budget; self.context = context
             self.workspace = workspace; self.nativeSessions = nativeSessions; self.providerPreference = providerPreference; self.policy = policy
             self.hostContext = hostContext; self.coreRouting = coreRouting
+            self.routingIntentPolicyVersion = routingIntentPolicyVersion
         }
         enum CodingKeys: String, CodingKey {
             case schema, request, objective, mode, budget, context, workspace, policy
@@ -207,6 +210,7 @@ public enum RCCRuntimeContract {
             case sourceFingerprint = "source_fingerprint", materialRefs = "material_refs", nativeSessions = "native_sessions"
             case providerPreference = "provider_preference"
             case hostContext = "host_context", coreRouting = "core_routing"
+            case routingIntentPolicyVersion = "routing_intent_policy_version"
         }
     }
     public struct ExactConfig: Codable, Equatable, Sendable {
@@ -313,6 +317,58 @@ public enum RCCRuntimeContract {
             try container.encode(modelFamily, forKey: .modelFamily)
         }
     }
+    /// R10 v2 is a host-opted semantic contract, not an admission certificate.
+    /// Empty allowedSurfaces means no additional surface constraint.
+    public struct RoutingIntentV2: Codable, Equatable, Sendable {
+        public static let version = "r10_joint_selection_v2"
+        public var version: String = Self.version
+        public var allowedSurfaces: [String] = []
+        public var exactModel: String? = nil
+        public var modelFamily: String? = nil
+        public var effort: String? = nil
+        public var requireNativeCeiling = false
+        public var qualityTarget: String? = nil
+        public var state = "resolved"
+        public init() {}
+        public var valid: Bool {
+            version == Self.version && ["resolved", "unresolved"].contains(state) &&
+            allowedSurfaces.count <= 3 && Set(allowedSurfaces).count == allowedSurfaces.count &&
+            Set(allowedSurfaces).isSubset(of: ["codex", "claude", "claude-chat"]) &&
+            (exactModel.map { !$0.isEmpty && $0.utf8.count <= 256 && !$0.contains("\0") } ?? true) &&
+            (modelFamily.map { RoutingIntent.families.contains($0) } ?? true) &&
+            !(exactModel != nil && modelFamily != nil) &&
+            (effort.map { Effort(rawValue: $0) != nil } ?? true) &&
+            !(requireNativeCeiling && effort != nil) &&
+            (qualityTarget == nil || qualityTarget == "current_host_reference")
+        }
+        enum CodingKeys: String, CodingKey {
+            case version, effort, state
+            case allowedSurfaces = "allowed_surfaces", exactModel = "exact_model", modelFamily = "model_family"
+            case requireNativeCeiling = "require_native_ceiling", qualityTarget = "quality_target"
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            guard [CodingKeys.version, .allowedSurfaces, .exactModel, .modelFamily, .effort,
+                   .requireNativeCeiling, .qualityTarget, .state].allSatisfy(c.contains)
+            else { throw Rejection.invalidObservation }
+            version = try c.decode(String.self, forKey: .version)
+            allowedSurfaces = try c.decode([String].self, forKey: .allowedSurfaces)
+            exactModel = try c.decodeIfPresent(String.self, forKey: .exactModel)
+            modelFamily = try c.decodeIfPresent(String.self, forKey: .modelFamily)
+            effort = try c.decodeIfPresent(String.self, forKey: .effort)
+            requireNativeCeiling = try c.decode(Bool.self, forKey: .requireNativeCeiling)
+            qualityTarget = try c.decodeIfPresent(String.self, forKey: .qualityTarget)
+            state = try c.decode(String.self, forKey: .state)
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(version, forKey: .version); try c.encode(state, forKey: .state)
+            try c.encode(allowedSurfaces, forKey: .allowedSurfaces)
+            try c.encode(exactModel, forKey: .exactModel); try c.encode(modelFamily, forKey: .modelFamily)
+            try c.encode(effort, forKey: .effort); try c.encode(requireNativeCeiling, forKey: .requireNativeCeiling)
+            try c.encode(qualityTarget, forKey: .qualityTarget)
+        }
+    }
     /// Build 407 (R0/R2/R11): the host's deterministic class of a request,
     /// computed from host predicates only (`RCCNativeCatalogBuilder.requestClass`),
     /// never from a model. It keys the signed class table.
@@ -390,6 +446,7 @@ public enum RCCRuntimeContract {
         /// candidate is routable, so an empty catalog is never opaque.
         public var exclusions: [Exclusion]?
         /// Optional (2026-10-13): present only with an explicit owner constraint.
+        public var routingIntentV2: RoutingIntentV2?
         public var routingIntent: RoutingIntentConstraint?
         /// Optional (build 378): the provider-stated tier (`ModelTiers`) of each
         /// tiered model in `candidates`, keyed by exact model name. Absent in
@@ -428,8 +485,9 @@ public enum RCCRuntimeContract {
                     quotaScores: [String: Int]? = nil, nativeReferenceEfforts: [String: [String: String]]? = nil,
                     ownerScope: Scope? = nil, chatLaneEligible: Bool? = nil, requestClass: RequestClass? = nil,
                     taskContract: TaskContractFact? = nil, classCertificates: [String: ClassCertificate]? = nil,
-                    classProviderPins: [String: String]? = nil) {
+                    classProviderPins: [String: String]? = nil, routingIntentV2: RoutingIntentV2? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
+            self.routingIntentV2 = routingIntentV2
             self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
             self.explicitRouteIntents = explicitRouteIntents; self.quotaScores = quotaScores
             self.nativeReferenceEfforts = nativeReferenceEfforts
@@ -439,7 +497,7 @@ public enum RCCRuntimeContract {
         }
         enum CodingKeys: String, CodingKey {
             case schema, candidates, exclusions, taskID = "task_id", requestSHA256 = "request_sha256"
-            case routingIntent = "routing_intent", modelTiers = "model_tiers"
+            case routingIntent = "routing_intent", modelTiers = "model_tiers", routingIntentV2 = "routing_intent_v2"
             case explicitRouteIntents = "explicit_route_intents", quotaScores = "quota_scores"
             case nativeReferenceEfforts = "native_reference_efforts"
             case ownerScope = "owner_scope", chatLaneEligible = "chat_lane_eligible", requestClass = "request_class"
@@ -454,6 +512,8 @@ public enum RCCRuntimeContract {
             candidates = try c.decode([Candidate].self, forKey: .candidates)
             exclusions = try c.decodeIfPresent([Exclusion].self, forKey: .exclusions)
             routingIntent = try c.decodeIfPresent(RoutingIntentConstraint.self, forKey: .routingIntent)
+            routingIntentV2 = c.contains(.routingIntentV2)
+                ? try c.decode(RoutingIntentV2.self, forKey: .routingIntentV2) : nil
             modelTiers = try c.decodeIfPresent([String: String].self, forKey: .modelTiers)
             explicitRouteIntents = try c.decodeIfPresent([RoutingIntentConstraint?].self, forKey: .explicitRouteIntents)
             quotaScores = try c.decodeIfPresent([String: Int].self, forKey: .quotaScores)
@@ -1137,6 +1197,9 @@ public enum RCCRuntimeContract {
     }
     public static func validate(_ value: Request) throws {
         guard value.schema == schema else { throw Rejection.invalidSchema }
+        guard value.routingIntentPolicyVersion == nil ||
+            (value.routingIntentPolicyVersion == RoutingIntentV2.version && value.mode == .auto)
+            else { throw Rejection.invalidConfiguration }
         guard id(value.taskID) else { throw Rejection.invalidIdentity }
         guard isHash(value.requestSHA256), value.requestSHA256 == digest(Data(value.request.utf8)),
               isHash(value.policySHA256), isHash(value.sourceFingerprint) else { throw Rejection.invalidHash }
@@ -1257,6 +1320,12 @@ public enum RCCRuntimeContract {
                 (intent.effort.map({ RoutingIntentConstraint.efforts.contains($0) }) ?? true) &&
                 (intent.modelFamily.map({ $0.range(of: "^[a-z][a-z0-9]{1,31}$", options: .regularExpression) != nil }) ?? true)
         }
+        if let v2 = value.routingIntentV2 {
+            guard v2.valid, v2.state == "resolved", value.routingIntent == nil,
+                  value.nativeReferenceEfforts != nil, value.modelTiers != nil,
+                  request.map({ $0.mode == .auto && $0.routingIntentPolicyVersion == RoutingIntentV2.version }) ?? false
+            else { throw Rejection.invalidObservation }
+        } else if request?.routingIntentPolicyVersion != nil { throw Rejection.invalidObservation }
         if let intent = value.routingIntent, !validIntent(intent) { throw Rejection.invalidObservation }
         if let intents = value.explicitRouteIntents {
             // One entry per route of the explicit route test (at most 8).
@@ -1639,6 +1708,24 @@ public enum RCCRuntimeContract {
                   usage.costUnits == nil || usage.metric.map({ text($0, max: 64) }) == true else { throw Rejection.invalidObservation }
         }
     }
+    /// Same strict observation contract at transport and UI boundaries.
+    public static func validate(_ usage: ResourceUsageSummary) throws {
+        let counts = [usage.totalTokensObserved, usage.localTokensObserved, usage.nativeTokensObserved,
+                      usage.planModelCalls, usage.localCallsStarted, usage.localCallsSettled,
+                      usage.localWorkerAttempts, usage.nativeAttempts]
+        guard usage.schema == 1, counts.allSatisfy({ $0.map { (0...9_007_199_254_740_991).contains($0) } ?? true }),
+              usage.localCallsSettled <= usage.localCallsStarted,
+              usage.planModelCalls.map({ $0 <= usage.localCallsStarted }) ?? true,
+              usage.issues.count <= 64, usage.issues.allSatisfy({ text($0, max: 256) }),
+              usage.quotaSavings == "not_measured", usage.cashCost == "not_measured",
+              usage.accountingScope == "observed_attempts_as_of_snapshot_not_future_cost" else { throw Rejection.invalidSnapshot }
+        if usage.accountingComplete {
+            guard usage.issues.isEmpty, let total = usage.totalTokensObserved,
+                  let local = usage.localTokensObserved, let native = usage.nativeTokensObserved,
+                  total == local + native, usage.planModelCalls != nil,
+                  usage.localCallsSettled == usage.localCallsStarted else { throw Rejection.invalidSnapshot }
+        } else if usage.totalTokensObserved != nil { throw Rejection.invalidSnapshot }
+    }
     public static func validate(_ value: Snapshot) throws {
         guard value.schema == schema else { throw Rejection.invalidSchema }
         guard id(value.taskID), isHash(value.requestSHA256), value.revision >= 0, value.children.count <= maximumNodes,
@@ -1648,23 +1735,7 @@ public enum RCCRuntimeContract {
                   intent.reason.map({ text($0, max: 4_096) }) ?? true,
                   intent.resolutionSHA256.map(isHash) ?? true else { throw Rejection.invalidSnapshot }
         }
-        if let usage = value.resourceUsage {
-            let counts = [usage.totalTokensObserved, usage.localTokensObserved, usage.nativeTokensObserved,
-                          usage.planModelCalls, usage.localCallsStarted, usage.localCallsSettled,
-                          usage.localWorkerAttempts, usage.nativeAttempts]
-            guard usage.schema == 1, counts.allSatisfy({ $0.map { (0...9_007_199_254_740_991).contains($0) } ?? true }),
-                  usage.localCallsSettled <= usage.localCallsStarted,
-                  usage.planModelCalls.map({ $0 <= usage.localCallsStarted }) ?? true,
-                  usage.issues.count <= 64, usage.issues.allSatisfy({ text($0, max: 256) }),
-                  usage.quotaSavings == "not_measured", usage.cashCost == "not_measured",
-                  usage.accountingScope == "observed_attempts_as_of_snapshot_not_future_cost" else { throw Rejection.invalidSnapshot }
-            if usage.accountingComplete {
-                guard usage.issues.isEmpty, let total = usage.totalTokensObserved,
-                      let local = usage.localTokensObserved, let native = usage.nativeTokensObserved,
-                      total == local + native, usage.planModelCalls != nil,
-                      usage.localCallsSettled == usage.localCallsStarted else { throw Rejection.invalidSnapshot }
-            } else if usage.totalTokensObserved != nil { throw Rejection.invalidSnapshot }
-        }
+        if let usage = value.resourceUsage { try validate(usage) }
         for child in value.children {
             guard id(child.id), child.attemptID.map(id) ?? true, child.candidateID.map(id) ?? true,
                   child.state != .running || (child.attemptID != nil && child.candidateID != nil) else { throw Rejection.invalidSnapshot }
@@ -1790,12 +1861,13 @@ public enum RCCRuntimeContract {
     private static let capacityPlanShape = Shape.object(["codex", "claude"])
     private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id", "capacity_plan", "explicit_routes_best_effort"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape), "capacity_plan": capacityPlanShape])
     private static let coreRoutingShape = Shape.object(["schema", "original_source_fingerprint", "original_mode", "original_provider_preference", "original_require_read_only", "resolution_sha256", "model_answer"])
-    private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
+    private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing", "routing_intent_policy_version"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
+    private static let routingIntentV2Shape = Shape.object(["version", "allowed_surfaces", "exact_model", "model_family", "effort", "require_native_ceiling", "quality_target", "state"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
     private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256"])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])
@@ -1897,6 +1969,10 @@ public enum RCCRuntimeContract {
     }
     public static func decodeTicket(_ data: Data, candidate: Candidate? = nil, request: Request? = nil) throws -> ExecutionTicket { let x = try decode(ExecutionTicket.self, data: data, shape: ticketShape); try validate(x, candidate: candidate, request: request); return x }
     public static func decodeRecord(_ data: Data, ticket: ExecutionTicket? = nil) throws -> ExecutionRecord { let x = try decode(ExecutionRecord.self, data: data, shape: recordShape); try validate(x, ticket: ticket); return x }
+    public static func decodeResourceUsageSummary(_ data: Data) throws -> ResourceUsageSummary {
+        let x = try decode(ResourceUsageSummary.self, data: data, shape: resourceUsageShape)
+        try validate(x); return x
+    }
     public static func decodeSnapshot(_ data: Data) throws -> Snapshot { let x = try decode(Snapshot.self, data: data, shape: snapshotShape); try validate(x); return x }
     public static func decodeEvent(_ data: Data) throws -> Event { let x = try decode(Event.self, data: data, shape: eventShape); try validate(x); return x }
     /// For mechanical envelopes: apply the same duplicate-key/size gate before

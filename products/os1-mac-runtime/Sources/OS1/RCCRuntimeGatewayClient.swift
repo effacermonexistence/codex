@@ -490,11 +490,18 @@ enum RCCRuntimeGatewayClient {
         return (id, hash, Double(milliseconds) / 1000, source, policy, sha256(bytes))
     }
 
+    #if RCC_CLIENT_STANDALONE
+    /// Offline integration fixture reaches the SAME parser, never a live RPC.
+    static func validateSnapshotForOfflineFixture(_ data: Data, id: String, requestSHA256: String,
+                                                  minimumRevision: Int = 0) throws -> Data {
+        try snapshot(data, id: id, requestSHA256: requestSHA256, minimumRevision: minimumRevision).data
+    }
+    #endif
     private static func snapshot(_ data: Data, id: String, requestSHA256: String, minimumRevision: Int) throws -> Snapshot {
         guard data.count > 2, data.count <= maximumResponseBytes,
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(value.keys).isSubset(of: ["schema", "task_id", "request_sha256", "state", "revision", "children",
-                  "result", "error", "install_handoff", "routing_intent", "skipped_routes"]),
+                  "result", "error", "install_handoff", "routing_intent", "skipped_routes", "resource_usage"]),
               value["schema"] as? Int == 1, value["task_id"] as? String == id,
               value["request_sha256"] as? String == requestSHA256,
               let revision = value["revision"] as? Int, revision >= minimumRevision,
@@ -503,6 +510,12 @@ enum RCCRuntimeGatewayClient {
               let children = value["children"] as? [[String: Any]], children.count <= 64,
               children.allSatisfy({ ($0["id"] as? String).map { !$0.isEmpty && $0.utf8.count <= 128 } == true }),
               Set(children.compactMap { $0["id"] as? String }).count == children.count else { throw Failure.snapshotInvalid }
+        if let resource = value["resource_usage"] {
+            do {
+                _ = try RCCRuntimeContract.decodeResourceUsageSummary(
+                    JSONSerialization.data(withJSONObject: resource, options: [.fragmentsAllowed]))
+            } catch { throw Failure.snapshotInvalid }
+        }
         if state == "completed" || state == "returned_unverified" {
             guard let result = value["result"] as? [String: Any], result["output"] is String,
                   result["execution_verified"] is Bool, result["task_verified"] is Bool,
