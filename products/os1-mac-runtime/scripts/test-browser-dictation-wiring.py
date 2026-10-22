@@ -18,7 +18,7 @@ def validate_app(source):
     assert 'browserCaptureEnabled = browserMicrophone != nil || fixtureFlags.isDisjoint' in controller
     assert 'nativeStreamingFeatureState' in controller and 'native batch branch used' in controller
     assert 'CodexMicrophoneDocumentView(webView: webView)' in source
-    assert 'store.installBrowserStoreFixture()' in source
+    assert 'store.installBrowserStoreFixture(onFailureObserved: { captureFailureObserved = true })' in source
     assert 'browser batch forced streaming or repeated provider request' in source
 
 validate_app(app)

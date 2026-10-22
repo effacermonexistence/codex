@@ -492,9 +492,9 @@
       "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63328routeLanesCompletionSelfTestFzZT_T_L_4Gate",
       "demangledPublicType": "Gate #1 in OS1App.(routeLanesCompletionSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()",
       "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
-      "sourceRevision": "f5e4d1c2596cfe4819401f2d3c362f1fb6744cdf",
-      "sourceSHA256": "377f3d6716b0266967baba4960db85c4a772a50068a9a722d903cb9efb6bb4bd",
-      "sourceURL": "https://github.com/effacermonexistence/codex/blob/f5e4d1c2596cfe4819401f2d3c362f1fb6744cdf/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "0e0fe1d3312499bde58ad8457f2bbed7194c2cd6",
+      "sourceSHA256": "aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/0e0fe1d3312499bde58ad8457f2bbed7194c2cd6/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
       "sourceAnchor": "private func routeLanesCompletionSelfTest() async throws",
       "localTypeAnchor": "final class Gate { var continuation: CheckedContinuation<Void, Never>?; var calls = 0 }"
     },
@@ -504,9 +504,9 @@
       "publicToken": "_TtCF6OS1AppP33_E4338E7CE7A60E44AE4AAB89C865B63327rccIntentIngressAppSelfTestFzZT_T_L_7Control",
       "demangledPublicType": "Control #1 in OS1App.(rccIntentIngressAppSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()",
       "source": "products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
-      "sourceRevision": "f5e4d1c2596cfe4819401f2d3c362f1fb6744cdf",
-      "sourceSHA256": "377f3d6716b0266967baba4960db85c4a772a50068a9a722d903cb9efb6bb4bd",
-      "sourceURL": "https://github.com/effacermonexistence/codex/blob/f5e4d1c2596cfe4819401f2d3c362f1fb6744cdf/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
+      "sourceRevision": "0e0fe1d3312499bde58ad8457f2bbed7194c2cd6",
+      "sourceSHA256": "aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66",
+      "sourceURL": "https://github.com/effacermonexistence/codex/blob/0e0fe1d3312499bde58ad8457f2bbed7194c2cd6/products/os1-mac-runtime/Sources/OS1App/OS1App.swift",
       "sourceAnchor": "private func rccIntentIngressAppSelfTest() async throws",
       "localTypeAnchor": "@MainActor final class Control {"
     }
