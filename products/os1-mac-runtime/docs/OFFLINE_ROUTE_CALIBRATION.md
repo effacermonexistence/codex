@@ -2,8 +2,11 @@
 
 This adds an **offline producer and recomputing artifact verifier**, not a runtime
 predictor, forecast, selector registration, admission path or quality certificate.
-No production module imports it. The existing DEV loader/predictor and route stay
-unchanged; the App's sealed resource inventory is deliberately not extended.
+The qualified host evidence loader may import it solely to recompute original
+proof artifacts. This algorithm itself grants no authority; a separate private
+registration, independent review, P8 originals and current-host checks are still
+required. The existing DEV loader/predictor is not promoted. Bundling the proof
+recomputation dependency is distinct from production registration or qualification.
 
 ## Smallest estimable baseline
 

@@ -1,4 +1,5 @@
-/** P7 OFFLINE statistical baseline. No imports by Core, forecasts, admission,
+/** P7 OFFLINE statistical baseline. Reused by the qualified host loader for
+ * proof recomputation only; not itself Core forecasts or admission. No
  * model calls or production capability. Source byte identity is NOT source
  * authenticity. A fitted artifact is a reproducible analysis, not a certificate.
  * Independent implementation: stratum Bernoulli MLE + a preregistered held-
