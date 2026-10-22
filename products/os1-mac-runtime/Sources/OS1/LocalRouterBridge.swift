@@ -89,11 +89,11 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "0ba0676074bd797f28ec61435e8e38dd4b9cf92da59e33eec21aa7ad6dc5abfe"
-    static let rccRuntimePluginSHA256 = "2549d6376c654f130b1d87140d5f6ad66dc33e1d4c5f8f4942fcfce1e893bd99"
+    static let rccRuntimeModuleSHA256 = "e03ccd126c3651dd239decdbf72f211ca0a66d3230c6b4db9f751b572f4636d6"
+    static let rccRuntimePluginSHA256 = "98d8d3afdd75397f4c998fea087e926e0264da636ac80769d3954d387e10bf61"
     static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
-    static let rccAdaptivePlanHostSHA256 = "453c5bab6366194f7004455f2cedd6fc15f4ebdfc61c9938dff3751b32f06bcf"
+    static let rccAdaptivePlanHostSHA256 = "c17457e2530e044f536bed02ab9a66ab2971e5d1e59e9a758f0b49eb6f972971"
     static let rccAdaptiveRoutingPolicySHA256 = "6325511ddeae2cff899d07688e178fff026551e54a28cab8edc26fe2751c3efa"
     static let rccJointRouteSelectorSHA256 = "6a13cbf6b1ac2a001bd641e56260cccad8e11c334a9d32fb0350c883705de326"
     static let rccLocalPlanPlannerSHA256 = "21cdfa3c636d932498ee4c01d1035a229ebb1677f5042aae5e93ca7351e63f7a"
@@ -116,7 +116,7 @@ enum LocalRouterBridge {
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
     private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
     private static let pinnedPluginIndexSHA256 = "0c1a8eb96a252e2610e4964069f069dfc344dcb2d4bf76fb77b2585222bba0a5"
-    private static let pinnedPluginManifestSHA256 = "f18c8bb93cc411b6cefaa620217158f181ec250c6494fb078758565ea88fc795"
+    private static let pinnedPluginManifestSHA256 = "88225cf848505c070bbc0c6f771e665f8a7be991e76f51794d61272959bf56c3"
     private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
     #if arch(arm64)
     private static let pinnedArchitecture = "arm64"

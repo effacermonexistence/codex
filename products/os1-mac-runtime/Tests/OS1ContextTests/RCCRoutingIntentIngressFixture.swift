@@ -17,8 +17,11 @@ func runRCCRoutingIntentIngressFixtures() throws {
     try check(try I.acceptCLIOption(version, previous: nil) == version, "typed CLI version is accepted exactly")
     try rejects(.duplicateOption) { _ = try I.acceptCLIOption(version, previous: version) }
     try rejects(.unsupportedVersion) { _ = try I.acceptCLIOption("future-v9", previous: nil) }
-    try check(!I.enableRoutingIntentV2, "this branch must not activate R10 for live requests")
-    try check(I.versionForNewSubmission(provider: "auto", request: "Explain this function") == nil, "new Auto stays legacy before owner adoption")
+    try check(I.enableRoutingIntentV2, "reviewed host adoption is compiled into this source version")
+    try check(I.versionForNewSubmission(provider: "auto", request: "Explain this function") == version,
+              "new configured-Auto receives the adopted typed version")
+    try check(I.versionForNewSubmission(provider: "auto", request: "Explain this function", hostEnabled: false) == nil,
+              "disabled host capability still cannot be enabled by request wording")
     try check(I.versionForNewSubmission(provider: "auto", request: "Explain this function", hostEnabled: true) == version,
               "only a reviewed host switch stamps a new Auto")
     try check(I.versionForNewSubmission(provider: "codex", request: "Explain this function", hostEnabled: true) == nil,

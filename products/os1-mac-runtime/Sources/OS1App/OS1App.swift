@@ -8973,7 +8973,7 @@ private enum OS1Runner {
 }
 
 /// App persistence and argument forwarding with a fake run only. The fixture
-/// switch cannot affect the live store or the compiled-off production gate.
+/// switch cannot affect the live store or the compiled production gate.
 @MainActor
 private func rccIntentIngressAppSelfTest() async throws {
     func check(_ condition: Bool, _ label: String) throws {
@@ -9609,7 +9609,7 @@ private final class SessionStore: ObservableObject {
         accountBook = storageRoot == nil ? BackendAccounts.load() : BackendAccounts.normalized(BackendAccountBook())
         self.sourceAdmissionCheck = sourceAdmissionCheck
         self.routingIntentHostEnabled = storageRoot == nil ? RCCRoutingIntentIngress.enableRoutingIntentV2
-            : (routingIntentHostEnabled ?? RCCRoutingIntentIngress.enableRoutingIntentV2)
+            : (routingIntentHostEnabled ?? false)
         self.sourceAdmissionFixture = storageRoot == nil ? nil : sourceAdmissionFixture
         self.nativeSessionOpener = nativeSessionOpener
         self.nativePinOperation = nativePinOperation

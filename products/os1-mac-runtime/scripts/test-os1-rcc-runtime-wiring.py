@@ -485,11 +485,24 @@ check(registration.count("api.runtime.llm.complete(") == 3 and
       "...adaptiveRuntimeOptions({pluginConfig: api.pluginConfig" in registration and
       "purpose: 'os1.rcc.internal-routing-intent'" in PLUGIN,
       "same tool-free local service supplies intent, explicit local route and bounded shadow proposal")
-check("policy.mode !== 'shadow'" in PLUGIN and "adaptive_live_policy_not_registered" in PLUGIN and
-      "proposeLocalPlan: createLocalPlanPlanner" in PLUGIN and "compileFreshPlannerProposal(raw" in RUNTIME and
+check("proposeLocalPlan: createLocalPlanPlanner" in PLUGIN and "compileFreshPlannerProposal(raw" in RUNTIME and
       "shadow_proposal_validated_not_executed" in RUNTIME and "live_plan_changed: false" in RUNTIME and
       "quality_certificate: false" in RUNTIME and registration.count("api.registerService({") == 1,
-      "shadow proposal stays unbound/non-authoritative; config cannot create another runtime or live parity")
+      "shadow proposal stays unbound/non-authoritative and retains one runtime owner")
+live_options = section(PLUGIN, "if (policy.mode === 'covered_live') {", "// Registration is host configuration")
+check("loadLivePlanCapability({stateDir, policy," in live_options and
+      "live_plan_capability ?? null" in live_options and "capability === null ? {}" in live_options and
+      "max_nodes: 1, max_workers: 1, max_revisions: 0" in live_options,
+      "live configuration alone cannot invoke planner without private host capability")
+live_context = section(RUNTIME, "function livePlannerContext(", "export function admitLivePlannerPlan(")
+check("isLivePlanCapability(capability, now)" in live_context and "activeIntentV2(task, catalog)" in live_context and
+      "catalog.owner_scope === 'read_only'" in live_context and "withoutConversation(task)" in live_context and
+      "contract.coverage === 'full'" in live_context and "contract.context_sha256" in live_context and
+      "live_r0_full_contract_required" in live_context and "live_reference_fallback_unavailable" in live_context,
+      "bounded live seam rechecks current custody, fresh Auto scope, original metadata and full native R0 floor")
+check('node --test "$script_dir/fixtures/openclaw-rcc-live-plan-adoption.test.mjs"' in RELEASE and
+      (ROOT / "scripts/fixtures/openclaw-rcc-live-plan-adoption.test.mjs").is_file(),
+      "release executes live-capability revocation, reachability and full-checker fallback fixtures")
 for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rcc-reference-floor"):
     check(f'node --test "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
           (ROOT / f"scripts/fixtures/{fixture}.test.mjs").is_file(),
@@ -547,8 +560,9 @@ check("assertLocalModelCompletion(response, 'intent_local_model_receipt_invalid'
       "Core's candidate is independently compiled and bound before native execution")
 check("try await routingOrderInterpreterHostSelfTest()" in MAIN and "try RoutingOrderInterpreter.selfTest()" in MAIN,
       "the interpreter's gate and host wiring run in os1 self-test with canned answers")
-check("RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil" in APP and
-      "RouteAllIntent.recognizes(request)" not in APP,
+app_route_selection = section(APP, "private func requestedProvider(", "/// The owner's explicit retry")
+check("RouteAllIntent.plan(request, available: RouteAllIntent.surfaceOrder) != nil" in app_route_selection and
+      "RouteAllIntent.recognizes(request)" not in app_route_selection,
       "the app runs a supported route-all order on Auto; a held one keeps its tile")
 check("if (signals.some(value => value.aborted)) record.error = 'local_model_completion_aborted';" in PLUGIN and
       "'local_model_completion_failed'" in PLUGIN and "'native_outcome_uncertain_preserved'" not in

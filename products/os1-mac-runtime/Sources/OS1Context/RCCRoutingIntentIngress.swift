@@ -1,10 +1,11 @@
 import Foundation
 
-/// The reviewed host switch for *new* Auto submissions. It is deliberately
-/// off in this source revision: neither a caller marker nor request wording
-/// can turn on R10 without a later, separately adopted host change.
+/// Reviewed host adoption for *new* configured-Auto owner submissions.
+/// Persisted nil/legacy requests never acquire this version on replay.
+/// This enables intent transport, not a cheap-route quality certificate:
+/// existing R0/checker/reference and native permission gates still decide.
 public enum RCCRoutingIntentIngress {
-    public static let enableRoutingIntentV2 = false
+    public static let enableRoutingIntentV2 = true
 
     public enum Failure: Error, Equatable {
         case unsupportedVersion

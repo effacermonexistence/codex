@@ -105,6 +105,7 @@ node --test "$script_dir/fixtures/openclaw-rcc-adaptive-joint-shadow.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-routing-outcome-capture.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-prompt-views.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-artifacts.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-evidence.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-predictor.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-runtime.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-resource-observation.test.mjs"
@@ -397,6 +398,7 @@ bundle_build="$(plutil -extract CFBundleVersion raw -o - "$stage_dir/Application
 [[ "$("$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/os1" version)" == "$runtime_version" ]]
 "$stage_dir/usr/local/bin/os1" self-test
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test
+"$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-rcc-intent-ingress
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-sidebar-queue
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-queue-fork
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-composer

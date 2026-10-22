@@ -334,3 +334,45 @@ first-turn rule now accepts those two known derived kinds only; unknown/action
 kinds still abstain. Bare and EN/KO wrapped sums pass the controlled offline
 Swift→Core checks with zero catalog/executor calls. This is not a new installed
 UI result or quality-parity claim. The aborted418 build/log remains preserved.
+
+## Build 420 source adoption: typed new-Auto ingress
+
+This section supersedes the historical 418/419 statement that R10 had no
+ingress. It describes the source configuration; installation and visible
+execution require separate receipts.
+
+The reviewed host switch now stamps **new configured-Auto, ordinary
+single-route owner submissions** with `r10_joint_selection_v2`. The marker is
+persisted with the task ID and carried through App arguments, CLI validation,
+the immutable Core request and the independently enabled native catalog.
+The App no longer preselects a provider from a bare Codex/Claude word on this
+path. The catalog resolves owned provider/model/effort setting spans instead
+of treating task subjects, quotations or unrelated prohibitions as settings.
+Generic maximum reasoning resolves to the model's observed native ceiling;
+literal `reasoning: max` remains a literal setting. Unknown/conditional or
+unsupported explicit settings remain unresolved rather than substituting a
+different tuple. This is a bounded deterministic intent parser, not a claim of
+perfect natural-language interpretation or a trained routing policy.
+
+Legacy/nil-marker tasks, retries, readback, steering, explicit tiles and
+route-all/fanout/local tests retain their existing semantics. A marked queued
+task cannot be edited into another execution mode while retaining its
+identity: the incompatible edit is rejected visibly before mutation, leaving
+the original pending request and its position intact. Private App fixtures
+default to the legacy gate unless explicitly testing v2; a fixture override
+cannot change the live store's compiled host capability.
+
+Intent activation **does not alter R0 quality admission**. A provider word
+constrains the surface, not the strongest model. Supported descent still
+requires the existing complete checker/contract evidence and runnable native
+reference fallback. A quality-target phrase alone creates no certificate.
+The independent `adaptive_routing` option remains OFF by default; no production
+P9 capability or calibrated P7 artifact is shipped. The bounded P9 seam is not
+generic model-selected DAG/tuple adoption and does not establish savings.
+
+`frozen-route-evidence.mjs` is an **offline-only** exact-attempt evidence join.
+It separates task success, reference match, both-wrong, accepted_B/C, fallback
+and unknown resource observations. It is not imported by production Core or
+bundled as an executable router. Even a structurally eligible review result
+returns no calibration validation, confidence bound, live authority or quality
+certificate. Current two-case DEV results remain ineligible for promotion.
