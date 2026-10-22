@@ -5,12 +5,14 @@ import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
 import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usage.mjs';
 import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adaptive-routing-policy.mjs';
 import { createPlannerHostProjection, compileFreshPlannerProposal, isLivePlanCapability } from './adaptive-plan-host.mjs';
 import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector.mjs';
 import { captureRoutingOutcome } from './routing-outcome-capture.mjs';
 import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
+import { isCalibratedRoutePredictor, isCalibratedRouteInference } from './calibrated-route-predictor.mjs';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
 // The pinned OpenClaw plugin must call this module from its long-lived Gateway
@@ -2306,7 +2308,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, hostAutoPlan = false, ledgerLog = null,
                                          adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null,
-                                         frozenRoutePredictor = null, livePlanCapability = null} = {}) {
+                                         frozenRoutePredictor = null, livePlanCapability = null, calibratedRoutePredictor = null,
+                                         calibratedRouteFixtureExecutor = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
@@ -2320,6 +2323,10 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   assert(jointRouteEvidence === null || typeof jointRouteEvidence === 'function', 'adaptive_joint_evidence_invalid');
   assert(frozenRoutePredictor === null || isFrozenRoutePredictor(frozenRoutePredictor),
     'adaptive_frozen_predictor_not_host_factory');
+  assert(calibratedRoutePredictor === null || isCalibratedRoutePredictor(calibratedRoutePredictor),
+    'calibrated_predictor_not_host_factory');
+  assert(calibratedRouteFixtureExecutor === null || typeof calibratedRouteFixtureExecutor === 'function' &&
+    calibratedRouteFixtureExecutor === execute && calibratedRoutePredictor !== null, 'calibrated_fixture_executor_invalid');
   assert(adaptivePolicy.mode !== 'shadow' || typeof proposeLocalPlan === 'function', 'adaptive_planner_missing');
   assert(livePlanCapability === null || isLivePlanCapability(livePlanCapability), 'adaptive_live_capability_not_host_loaded');
   assert(livePlanCapability === null || adaptivePolicy.mode === 'covered_live', 'adaptive_live_capability_mode_invalid');
@@ -2338,6 +2345,11 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   assert(decideOperationalQuality === undefined || typeof decideOperationalQuality === 'function', 'quality_decider_invalid');
   await mkdir(stateDir, {recursive: true, mode: 0o700});
   const directory = await lstat(stateDir);
+  if (calibratedRouteFixtureExecutor !== null) {
+    const canonical = realpathSync(stateDir), root = realpathSync(tmpdir()), child = relative(root, canonical);
+    assert(canonical === stateDir && child !== '' && !isAbsolute(child) && child !== '..' && !child.startsWith('../'),
+      'calibrated_fixture_not_private_temporary');
+  }
   assert(directory.isDirectory() && !directory.isSymbolicLink() &&
     (directory.mode & 0o077) === 0 && directory.uid === process.getuid(), 'state_dir_not_private');
   const file = join(stateDir, 'rcc-runtime.sqlite');
@@ -2381,7 +2393,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, hostAutoPlan, ledger, ledgerLog,
-                                 adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability});
+                                 adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
+                                 calibratedRoutePredictor, calibratedRouteFixture: calibratedRouteFixtureExecutor !== null});
   runtime.reconcileRestart();
   runtime.reconcileLedger();
   runtime.startQueued();
@@ -2392,7 +2405,8 @@ class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, ledger,
-               ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability}) {
+               ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
+               calibratedRoutePredictor, calibratedRouteFixture}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -2407,6 +2421,8 @@ class RCCRuntime {
     this.jointRouteEvidence = jointRouteEvidence;
     this.frozenRoutePredictor = frozenRoutePredictor;
     this.livePlanCapability = livePlanCapability;
+    this.calibratedRoutePredictor = calibratedRoutePredictor;
+    this.calibratedRouteFixture = calibratedRouteFixture;
     this.ledger = ledger; this.ledgerLog = ledgerLog;
     // Dispatched attempts whose ledger record is not written yet, with the
     // route facts fixed at dispatch: an attempt that settles after stop is
@@ -3091,6 +3107,166 @@ class RCCRuntime {
     }
   }
 
+  /** Optional statistical evidence never becomes a new R0 certifying source.
+   * Only the current full original-task contract admits these native entries;
+   * qualification may rank them, while the ordinary checker/reference ladder
+   * still governs the actual answer. No task flag can supply this provider. */
+  _calibratedContext(task, baseline, catalog, now) {
+    assert(this.hostAutoPlan && task.mode === 'auto' && activeIntentV2(task, catalog) &&
+      task.host_context.provider_preference === 'auto' &&
+      (task.provider_preference == null || task.provider_preference === 'auto') &&
+      task.host_context.explicit_routes == null && task.material_refs.length === 0 &&
+      task.objective === task.request && withoutConversation(task), 'calibrated_task_scope');
+    // The ordinary R0 contract can certify a source-bearing task too; that
+    // does not place it in this first source-free statistical cohort. Never
+    // reinterpret a preserved source identity as an empty material list.
+    assert(catalog.task_contract?.source_sha256 === null, 'calibrated_external_source_present_or_unknown');
+    const current = this._load(task.task_id), cap = task.budget.max_native_dispatches;
+    // A runnable row is insufficient when the task cannot afford the one
+    // primary plus optional reference attempt covered by this resource scope.
+    // Never raise a budget or refund an already committed dispatch intent.
+    assert(current && int(current.native_dispatches, 0, Number.MAX_SAFE_INTEGER) &&
+      task.budget.max_attempts >= 2 &&
+      (cap == null || cap - current.native_dispatches >= 2), 'calibrated_reference_headroom_unavailable');
+    // Empty legacy context is not independently observed first-turn metadata.
+    assert([task.context, task.host_context.context].some(raw => {
+      try { const x = JSON.parse(raw); return x?.format === 'os1-session-handoff-v3' && x.priorMessageCount === 0; }
+      catch { return false; }
+    }), 'calibrated_first_turn_unknown');
+    const intent = catalog.routing_intent_v2;
+    assert(intent.allowed_surfaces.length === 0 && intent.exact_model === null && intent.model_family === null &&
+      intent.effort === null && intent.require_native_ceiling === false && intent.quality_target === null,
+    'calibrated_owner_constraint');
+    const plan = baseline.plan, node = plan?.nodes?.[0];
+    assert(plan.nodes.length === 1 && plan.final_node_id === node.id && node.kind === 'agent' &&
+      node.scope === 'read_only' && node.instruction === task.request && node.dependencies.length === 0 &&
+      node.owned_paths.length === 0 && node.context_refs.length === 0 && catalog.owner_scope === 'read_only',
+    'calibrated_plan_scope');
+    const admission = admittedRoute(node, task, catalog, now, {verifierRegistry: this.verifierRegistry});
+    assert(admission.class === 'certified' && admission.source === 'contract', 'calibrated_r0_full_contract_required');
+    const baselineCandidate = catalog.candidates.find(c => c.id === node.candidate_id);
+    const reference = selectRouteCandidate(node, task, catalog, now,
+      {referenceOnly: true, verifierRegistry: this.verifierRegistry}).candidate;
+    assert(baselineCandidate && dispatchable(baselineCandidate, task, now) &&
+      reference && dispatchable(reference, task, now) && reference.scope === 'read_only', 'calibrated_reference_unavailable');
+    return {task, node, baseline_plan: plan, catalog, baseline_candidate: baselineCandidate,
+      reference_candidate: reference, now_ms: now};
+  }
+
+  _calibratedChoice(task, baseline, catalog, now) {
+    if (this.calibratedRoutePredictor === null) return null;
+    try {
+      assert(isCalibratedRoutePredictor(this.calibratedRoutePredictor), 'calibrated_predictor_not_host_factory');
+      const context = this._calibratedContext(task, baseline, catalog, now);
+      const observed = this.calibratedRoutePredictor(immutable(context));
+      assert(plain(observed) && isCalibratedRouteInference(observed) && !observed.then && Buffer.byteLength(stable(observed)) <= 240000 &&
+        (observed.status === 'qualified' && observed.data_mode === 'actual_evidence' ||
+          this.calibratedRouteFixture && observed.status === 'qualified_synthetic_fixture' && observed.data_mode === 'synthetic_fixture') &&
+        observed.execution_authorized === false && observed.live_route_change_authorized === false &&
+        observed.quality_certificate === false, 'calibrated_evidence_unqualified');
+      const input = observed.selector_input, {node, baseline_candidate: floor, reference_candidate: reference} = context;
+      assert(plain(input) && input.task?.id === task.task_id && input.task.node_id === node.id &&
+        input.task.request_sha256 === task.request_sha256 && input.task.source_snapshot_sha256 === task.source_fingerprint &&
+        input.task.policy_sha256 === task.policy_sha256 && input.task.instructions_sha256 === task.policy_sha256 &&
+        input.task.plan_sha256 === sha(Buffer.from(stable(baseline.plan))) && input.task.scope === 'read_only' &&
+        input.execution_fallback?.candidate_id === reference.id &&
+        input.execution_fallback.config_sha256 === exactConfigFingerprint(exactConfig(reference)) &&
+        Array.isArray(input.candidates) && input.candidates.length <= 256 && input.candidates.every(c =>
+          catalog.candidates.some(current => current.id === c.id && stable(c.config) === stable(exactConfig(current)))),
+      'calibrated_current_binding');
+      const selection = selectJointRoute({...input, now_ms: now});
+      assert(selection.decision === 'candidate_proposal' && selection.selected?.resource?.known === true,
+        'calibrated_selector_preserved');
+      const candidate = catalog.candidates.find(c => c.id === selection.selected.candidate_id);
+      const original = observed.receipt?.original_r0;
+      assert(original?.candidate_id === floor.id && original.config_sha256 === exactConfigFingerprint(exactConfig(floor)) &&
+        Number.isFinite(original.resource_total) && original.resource_total >= 0 &&
+        selection.selected.resource.total < original.resource_total, 'calibrated_no_r0_resource_improvement');
+      assert(candidate && candidate.id !== floor.id && candidate.id !== reference.id &&
+        stable(selection.selected.config) === stable(exactConfig(candidate)) && dispatchable(candidate, task, now),
+      'calibrated_selected_unavailable');
+      // No permission/tool/account/transport migration in this initial cohort.
+      for (const field of ['surface', 'transport', 'account_id', 'quota_pool', 'tools', 'scope', 'permission_profile', 'allowed_paths'])
+        assert(stable(candidate[field]) === stable(floor[field]) && stable(candidate[field]) === stable(reference[field]),
+          'calibrated_cohort_changed');
+      const admission = admittedRoute(node, task, catalog, now, {verifierRegistry: this.verifierRegistry});
+      const eligible = poolRows(node, catalog).flatMap(pool => certifiedEntries(pool, admission, catalog, this.verifierRegistry))
+        .flatMap(entry => entry.rows).some(row => row.candidate.id === candidate.id);
+      assert(eligible && admission.source === 'contract', 'calibrated_selected_not_r0_eligible');
+      const ladder = {source: 'tier', admitted_by: 'contract', certificate_id: null, format_check: null,
+        cheap_model: candidate.model, cheap_effort: candidate.effort, reference_model: reference.model,
+        reference_effort: reference.effort, reference_candidate_id: reference.id};
+      const next = {...baseline.plan, nodes: [{...node, candidate_id: candidate.id}]};
+      assertFinalOutputOwnership(next, task); validatePlan(next, task, catalog);
+      const decision = routingDecision(CERTIFIED_CLASS, candidate,
+        'host_calibrated_original_v1;admitted_certified_contract;' + surfaceToken(candidate), ladder, tierOf(catalog, candidate.model));
+      return {plan: next, decisions: {[node.id]: decision},
+        routes: {[node.id]: {kind: 'tier', reference_effort: reference.effort, ladder}},
+        record: {schema: 1, state: 'pending_dispatch', node_id: node.id,
+          selected_config_sha256: exactConfigFingerprint(exactConfig(candidate)), reference_candidate_id: reference.id,
+          baseline: JSON.parse(stable(baseline)),
+          baseline_bound_rows: boundRows({nodes: [node, {candidate_id: reference.id}]}, catalog),
+          receipt_sha256: sha(Buffer.from(stable(observed.receipt))),
+          baseline_plan_sha256: sha(Buffer.from(stable(baseline.plan))), adopted_plan_sha256: sha(Buffer.from(stable(next))),
+          admission_binding_sha256: sha(Buffer.from(stable({owner_scope: catalog.owner_scope,
+            chat_lane_eligible: catalog.chat_lane_eligible, request_class: catalog.request_class,
+            task_contract: Object.fromEntries(Object.entries(catalog.task_contract).filter(([key]) => key !== 'valid_until_ms'))}))),
+          data_mode: observed.data_mode}};
+    } catch { return null; } // Optional evidence never fails or redirects R0.
+  }
+
+  _restoreCalibratedR0(taskID, reason, resolved, {saved = false} = {}) {
+    const snapshot = this._load(taskID), task = executionTask(snapshot), prior = snapshot.calibrated_route;
+    const child = snapshot.children.find(c => c.id === prior?.node_id);
+    assert(prior?.state === 'pending_dispatch' && child?.state === 'queued' && child.attempts === 0 &&
+      child.attempt_id === null && child.dispatched_at_ms === null, 'calibrated_restore_after_dispatch_forbidden');
+    // On loss of the runnable reference, restore the previously validated
+    // floor for truthful trace custody only, then let the caller's original
+    // readiness error HOLD. Saved rows are never a fresh dispatch authority.
+    if (saved) assert(sha(Buffer.from(stable(resolved.plan))) === prior.baseline_plan_sha256,
+      'calibrated_saved_floor_identity_changed');
+    const plan = saved ? immutable(resolved.plan) :
+      validatePlan(lockIndivisibleInstruction(resolved.plan, task).plan, task, snapshot.catalog);
+    assert(plan.nodes.length === 1 && plan.nodes[0].id === child.id && plan.nodes[0].instruction === task.request &&
+      plan.nodes[0].scope === 'read_only' && plan.nodes[0].dependencies.length === 0 &&
+      plan.nodes[0].owned_paths.length === 0 && plan.nodes[0].context_refs.length === 0,
+      'calibrated_restore_original_changed');
+    this._update(taskID, 'calibrated_route_restored_r0', state => {
+      const target = state.children[0], route = resolved.routes[target.id];
+      state.plan = plan; state.plan_provenance = prior.floor_provenance;
+      state.calibrated_route = {...prior, state: 'restored_r0', reason, current_r0_runnable: !saved};
+      Object.assign(target, {candidate_id: plan.nodes[0].candidate_id, routing_decision: resolved.decisions[target.id],
+        route_kind: route.kind, reference_effort: route.reference_effort,
+        ladder: route.ladder ? {...route.ladder, escalated: false} : null});
+      state.bound_rows = saved ? immutable(prior.baseline_bound_rows) : boundRows(plan, state.catalog);
+      const reference = route.ladder && state.catalog.candidates.find(c => c.id === route.ladder.reference_candidate_id);
+      if (!saved && reference) state.bound_rows[reference.id] = immutable(reference);
+    });
+  }
+
+  _recheckCalibratedRoute(taskID) {
+    const snapshot = this._load(taskID), prior = snapshot?.calibrated_route;
+    if (prior?.state !== 'pending_dispatch') return true;
+    const child = snapshot.children.find(c => c.id === prior.node_id);
+    if (!child || child.state !== 'queued' || child.attempts !== 0) return true;
+    const task = executionTask(snapshot);
+    let baseline;
+    try { baseline = resolveRoutePlan(hostPlan(task, snapshot.catalog), task, snapshot.catalog, Date.now(),
+      {verifierRegistry: this.verifierRegistry}); }
+    catch (error) {
+      this._restoreCalibratedR0(taskID, 'current_r0_unavailable', prior.baseline, {saved: true});
+      throw error;
+    }
+    const checked = this._calibratedChoice(task, baseline, snapshot.catalog, Date.now());
+    if (checked && stable(checked.plan) === stable(snapshot.plan) &&
+        checked.record.selected_config_sha256 === prior.selected_config_sha256 &&
+        checked.record.reference_candidate_id === prior.reference_candidate_id &&
+        checked.record.admission_binding_sha256 === prior.admission_binding_sha256 &&
+        checked.record.baseline_plan_sha256 === prior.baseline_plan_sha256) return true;
+    this._restoreCalibratedR0(taskID, 'qualification_or_current_binding_lost', baseline);
+    return false;
+  }
+
   /** P2/P4 shadow path inside this same durable owner. The model can propose
    * a graph; no graph or candidate from it is executed until a separate,
    * versioned host adoption policy passes. A failed observation preserves the
@@ -3567,6 +3743,9 @@ class RCCRuntime {
       return;
     }
     if (this._load(taskID).cancel_requested) { this._markCancelled(taskID); return; }
+    const baseline = {plan, decisions, routes};
+    const calibrated = !liveAdopted ? this._calibratedChoice(admitted, baseline, catalog, Date.now()) : null;
+    if (calibrated) { plan = calibrated.plan; decisions = calibrated.decisions; routes = calibrated.routes; }
     const jointShadow = this._jointRouteShadow(admitted, plan, catalog);
     state = this._update(taskID, 'plan_admitted', snapshot => {
       snapshot.plan = plan; snapshot.state = 'running';
@@ -3575,6 +3754,10 @@ class RCCRuntime {
         ? this.adaptivePolicy.mode === 'shadow' && snapshot.adaptive_routing?.planner_invoked ?
           'host_exact_request_shadow' : 'host_exact_request'
         : 'external_plan_callback';
+      if (calibrated) {
+        snapshot.calibrated_route = {...calibrated.record, floor_provenance: snapshot.plan_provenance};
+        snapshot.plan_provenance = 'host_calibrated_original_v1';
+      }
       if (liveAdopted) snapshot.adaptive_routing = {...snapshot.adaptive_routing,
         host_bound_compilation: null, live_plan_adopted: true,
         live_plan_changed: false, quality_certificate: false};
@@ -3708,6 +3891,10 @@ class RCCRuntime {
     const reason = /^[a-z0-9_]{1,64}$/.test(failure) ? failure : 'pre_dispatch_failure';
     this._update(taskID, 'candidate_re_resolved', state => {
       assert(!state.cancel_requested && !TERMINAL.has(state.state), 're_resolution_raced_cancel');
+      if (state.calibrated_route?.state === 'pending_dispatch') {
+        state.plan_provenance = state.calibrated_route.floor_provenance;
+        state.calibrated_route = {...state.calibrated_route, state: 'restored_r0', reason: 'existing_r0_re_resolution'};
+      }
       state.plan = plan;
       state.bound_rows = boundRows({nodes: [{candidate_id: choice.candidate.id}]}, fresh, state.bound_rows);
       const target = state.children.find(c => c.id === nodeID);
@@ -4349,6 +4536,7 @@ class RCCRuntime {
             await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
           current = this._load(taskID);
           if (!admissionCurrent(current)) { reResolved = true; break; }
+          if (!this._recheckCalibratedRoute(taskID)) { reResolved = true; break; }
           candidate = this._candidate(executionTask(current), fresh, node);
           if (!reusable) readyWave = this._readyWaveEligible(current, node, candidate) ?
             {ids: readyIDs, binding: this._readyWaveBinding(current)} : null;
@@ -5337,6 +5525,13 @@ class RCCRuntime {
           candidate.estimated_cost_units > task.budget.max_cost_units) {
         this._hold(taskID, 'task_cost_budget_exhausted'); return;
       }
+      if (!qualityContinuation && !this._recheckCalibratedRoute(taskID)) return;
+      const calibratedPending = this._load(taskID).calibrated_route;
+      if (calibratedPending?.state === 'pending_dispatch') {
+        const currentNode = this._load(taskID).plan.nodes.find(n => n.id === node.id);
+        assert(currentNode?.candidate_id === candidate.id && currentNode.instruction === node.instruction,
+          'calibrated_dispatch_plan_changed_before_intent');
+      }
       const attemptID = randomUUID();
       const ticket = this._ticket(before, node, candidate, attemptID);
       if (qualityContinuation) {
@@ -5350,6 +5545,8 @@ class RCCRuntime {
       const dispatchAdmitted = this._admitNativeDispatch(taskID, node.id, candidate, qualityContinuation ? 'quality_dispatch_started' : 'dispatch_started', snapshot => {
         const child = snapshot.children.find(c => c.id === node.id);
         child.state = 'running'; child.attempt_id = attemptID; child.attempts += 1;
+        if (snapshot.calibrated_route?.state === 'pending_dispatch' && snapshot.calibrated_route.node_id === node.id)
+          snapshot.calibrated_route = {...snapshot.calibrated_route, state: 'dispatched'};
         child.dispatched_at_ms = Date.now();
         child.started_at_ms ??= child.dispatched_at_ms;
         if (qualityContinuation) child.quality_continuation.state = 'dispatched';
