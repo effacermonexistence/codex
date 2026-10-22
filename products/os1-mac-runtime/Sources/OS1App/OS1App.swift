@@ -9132,6 +9132,61 @@ private func rccIntentIngressAppSelfTest() async throws {
     while control.untrustedPromptSubmission == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
     try check(control.untrustedPromptSubmission?.routingIntentPolicyVersion == nil,
               "user prompt text cannot stamp the host-owned migration marker")
+    // A marked queued task cannot change execution mode while retaining its
+    // identity/version. Reject before mutation, including the on-disk bytes.
+    let modeChangingEdits = ["1+1 Codex한테. 2+2 Claude Code한테.",
+                             "다 라우팅 해봐. 1+1", "로컬한테 1+1 시켜봐"]
+    let queueEncoder = JSONEncoder(); queueEncoder.outputFormatting = [.sortedKeys]
+    for marker in [String?(version), nil] {
+        let editRoot = root.appendingPathComponent("edit-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: editRoot, withIntermediateDirectories: true)
+        let session = ConversationSession(workspace: editRoot.path, provider: .auto, messages: [])
+        var first = PendingSubmission(sessionID: session.id, userMessageID: UUID(),
+            request: "Codex로 첫 번째 함수를 설명해줘", provider: .auto, workspace: editRoot.path,
+            codexCapacity: 100, claudeCapacity: 100)
+        first.configuredProvider = .auto; first.routingIntentPolicyVersion = marker
+        var second = PendingSubmission(sessionID: session.id, userMessageID: UUID(),
+            request: "Explain the next function", provider: .auto, workspace: editRoot.path,
+            codexCapacity: 100, claudeCapacity: 100)
+        second.configuredProvider = .auto; second.routingIntentPolicyVersion = marker
+        let disk = editRoot.appendingPathComponent("sessions.json")
+        try queueEncoder.encode(SessionEnvelope(schema: 4, sessions: [session], queued: [first, second])).write(to: disk)
+        let editControl = Control()
+        let editStore = SessionStore(storageRoot: editRoot, runOperation: { submission, _, _, _, _ in
+            editControl.captured = submission
+            return AppRunSummary(status: "complete", steps: [])
+        }, routingIntentHostEnabled: true)
+        let original = editStore.queuedSubmissions
+        let originalBytes = try queueEncoder.encode(original)
+        let originalDiskBytes = try Data(contentsOf: disk)
+        try check(editStore.beginQueueEdit(first.id), "actual queued edit begins")
+        for proposed in modeChangingEdits {
+            let accepted = editStore.updateQueued(first.id, request: proposed)
+            if marker != nil {
+                try check(!accepted && editStore.statusText.contains("v2"),
+                          "marked mode-changing edit is rejected with visible status")
+                try check(editStore.queuedSubmissions == original &&
+                          (try queueEncoder.encode(editStore.queuedSubmissions)) == originalBytes &&
+                          (try Data(contentsOf: disk)) == originalDiskBytes,
+                          "rejected edit preserves complete items, ID/order, marker and persisted bytes")
+            } else {
+                try check(accepted && editStore.queuedSubmissions[0].request == proposed &&
+                          editStore.queuedSubmissions[0].provider == requestedProvider(for: proposed, configured: .auto) &&
+                          editStore.queuedSubmissions[0].routingIntentPolicyVersion == nil &&
+                          editStore.queuedSubmissions.map(\.id) == original.map(\.id),
+                          "legacy nil mode-changing edits retain original behavior and task identities")
+            }
+        }
+        let ordinaryEdit = "Claude로 수정한 함수를 설명해줘"
+        try check(editStore.updateQueued(first.id, request: ordinaryEdit),
+                  "compatible single-route edit is still accepted")
+        try check(editStore.queuedSubmissions[0].routingIntentPolicyVersion == marker &&
+                  editStore.queuedSubmissions[0].provider == (marker == nil
+                    ? requestedProvider(for: ordinaryEdit, configured: .auto) : .auto) &&
+                  editStore.queuedSubmissions.map(\.id) == original.map(\.id) &&
+                  editControl.captured == nil && editStore.activeRuns.isEmpty,
+                  "compatible edit preserves routing semantics and never dispatches or replays a task")
+    }
     print("RCC routing intent App ingress: fake App→CLI→Request→Catalog PASS; provider/model calls 0")
 }
 
@@ -13588,6 +13643,13 @@ private final class SessionStore: ObservableObject {
         let request = request.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !request.isEmpty, editingQueueIDs.contains(id),
               let index = queuedSubmissions.firstIndex(where: { $0.id == id }) else { return false }
+        if queuedSubmissions[index].routingIntentPolicyVersion != nil,
+           routesPerPart(request) || RouteFanout.requestsProviderFanout(request) ||
+            RouteAllIntent.recognizes(request) || RouteAllIntent.namesLocalRoute(request) {
+            statusText = os1Tr("편집을 저장하지 않았습니다 · v2 대기 작업은 병렬·전체·로컬 경로 테스트로 바꿀 수 없습니다. 원래 작업은 보존됩니다.",
+                               "Edit not saved · a v2 queued task cannot become a fan-out, route-all or local route test. The original task is preserved.")
+            return false
+        }
         queuedSubmissions[index].request = request
         if let preference = queuedSubmissions[index].configuredProvider {
             queuedSubmissions[index].provider = queuedSubmissions[index].routingIntentPolicyVersion == nil
