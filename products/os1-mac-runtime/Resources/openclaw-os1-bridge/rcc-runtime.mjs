@@ -1750,7 +1750,7 @@ function withoutConversation(task) {
           !['facts', 'sources', 'bindings', 'executions', 'decisions', 'blockers', 'nextSteps']
             .every(k => Array.isArray(c[k]) && c[k].length === 0) ||
           !plain(c.objective) || c.objective.requestText !== task.request ||
-          c.objective.kind !== 'other' || c.objective.scope !== 'read_only' ||
+          !['other', 'explain'].includes(c.objective.kind) || c.objective.scope !== 'read_only' ||
           Object.keys(c.objective).some(k => !['requestText', 'kind', 'scope', 'prohibitions', 'pendingDecisions', 'completionConditions'].includes(k)) ||
           !['prohibitions', 'pendingDecisions', 'completionConditions']
             .every(k => Array.isArray(c.objective[k]) && c.objective[k].length === 0) ||

@@ -283,3 +283,10 @@ native ceiling and result-quality target. It remains NEW-task, host-opt-in
 whole effort tokens and unmatched quoted examples HOLD. A quality-target
 label supplies no quality proof, cheap admission, calibration or live scope.
 Legacy requests/replays and existing R0/verifier/staged-writer gates remain.
+
+The uninstalled418 candidate was superseded: actual Swift handoff tests showed
+that a CLOSED wrapped sum is classified `explain`, not `other`. The same
+first-turn rule now accepts those two known derived kinds only; unknown/action
+kinds still abstain. Bare and EN/KO wrapped sums pass the controlled offline
+Swift→Core checks with zero catalog/executor calls. This is not a new installed
+UI result or quality-parity claim. The aborted418 build/log remains preserved.

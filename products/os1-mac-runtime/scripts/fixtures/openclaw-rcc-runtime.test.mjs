@@ -407,8 +407,8 @@ test('first-turn typed paging metadata is not prior history; retained or unknown
     memoryPaging: {snapshot: {kind: 'snapshot', id: randomUUID(), sha256: sha('private fixture only')},
       conversationID: conversation, projectID: 'fixture-project', archivedMessages: 1,
       allowedSessionIDs: [conversation, randomUUID()]}});
-  const run = async raw => {
-    const input = task(dir, '1+1', 'auto', {context: raw, conversationID: conversation});
+  const run = async (raw, request = '1+1') => {
+    const input = task(dir, request, 'auto', {context: raw, conversationID: conversation});
     await runtime.submit(input); return {input, result: await wait(runtime, input)};
   };
   const raw = JSON.stringify(envelope()), ok = await run(raw);
@@ -417,6 +417,24 @@ test('first-turn typed paging metadata is not prior history; retained or unknown
   assert.equal(ok.result.result.parity_state, 'unverified');
   assert.equal(runtime._load(ok.input.task_id).task.host_context.context, raw, 'original paging bytes preserved');
   assert.equal(catalogCalls, 0); assert.equal(modelCalls, 0);
+  // Actual TaskContext.migrated classifies these CLOSED arithmetic wrappers
+  // as explain (separately verified through the real Swift encoder -> Core).
+  // That coarse annotation is not retained state or a request to call a model.
+  for (const request of ['what is 1+1?', '1+1이 뭐야?']) {
+    const x = envelope(); x.taskContext.objective.requestText = request;
+    x.taskContext.objective.kind = 'explain';
+    const rawWrapped = JSON.stringify(x), wrapped = await run(rawWrapped, request);
+    assert.equal(wrapped.result.state, 'completed'); assert.equal(wrapped.result.result.output, '2');
+    assert.equal(wrapped.result.children[0].selected_config.model, 'none');
+    assert.equal(runtime._load(wrapped.input.task_id).task.host_context.context, rawWrapped);
+    for (const mutate of [y => y.priorMessageCount = 1,
+      y => delete y.priorMessageCount,
+      y => y.taskContext.facts.push({text: '1+1 is a product label'})]) {
+      const retained = structuredClone(x); mutate(retained);
+      assert.notEqual((await run(JSON.stringify(retained), request)).result.state, 'completed');
+    }
+  }
+  assert.equal(modelCalls, 0);
   // Every distinct semantic risk returns to the existing route instead of
   // dropping state, inventing history absence or silently interpreting data.
   const changes = [x => delete x.priorMessageCount, x => x.priorMessageCount = 1,
