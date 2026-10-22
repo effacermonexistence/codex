@@ -6264,6 +6264,9 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Routing preference before an explicit provider name in the queued text.
     /// Absent in legacy stores; retain that item's original provider on edit.
     var configuredProvider: ProviderChoice? = nil
+    /// Frozen when this owner submission is created. Missing in older saved
+    /// queues, and nil must stay nil across retry/restart with the same task ID.
+    var routingIntentPolicyVersion: String? = nil
     /// The surface the chosen backend routes to, as the runtime's `--provider`
     /// value. A backend tile is one account with two ways to spend it, so the
     /// tile alone does not say which one ran. Absent in legacy stores and for
@@ -8587,6 +8590,14 @@ private struct RCCStartupWarmup {
 private enum RCCWarmupFailure: Error { case maintenanceDeferred, unavailable }
 
 private enum OS1Runner {
+    /// `requireReadOnly` here is the App's readback/reconciliation flag, not
+    /// the ordinary read-only scope inferred from an owner's new task text.
+    static func routingIntentArguments(version: String?, provider: String, requireReadOnly: Bool,
+                                       hostEnabled: Bool = RCCRoutingIntentIngress.enableRoutingIntentV2) throws -> [String] {
+        try RCCRoutingIntentIngress.validate(version, mode: .auto, provider: provider,
+            recoveryOrChild: requireReadOnly, hostEnabled: hostEnabled)
+        return version.map { ["--rcc-routing-intent-policy-version", $0] } ?? []
+    }
     /// One bounded invocation of the existing Gateway health/startup owner.
     /// It cannot submit a task, select a model, or grant a fallback route.
     static func warmRCCRuntime() async throws {
@@ -8757,6 +8768,7 @@ private enum OS1Runner {
         requireReadOnly: Bool = false,
         deliveryID: String? = nil,
         submissionID: UUID? = nil,
+        routingIntentPolicyVersion: String? = nil,
         conversationID: UUID? = nil,
         submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void = { _ in }
@@ -8775,6 +8787,7 @@ private enum OS1Runner {
                 requireReadOnly: requireReadOnly,
                 deliveryID: deliveryID,
                 submissionID: submissionID,
+                routingIntentPolicyVersion: routingIntentPolicyVersion,
                 conversationID: conversationID,
                 submissionStartedAt: submissionStartedAt,
                 onActivity: onActivity
@@ -8815,6 +8828,7 @@ private enum OS1Runner {
         requireReadOnly: Bool,
         deliveryID: String?,
         submissionID: UUID?,
+        routingIntentPolicyVersion: String?,
         conversationID: UUID? = nil,
         submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void
@@ -8878,6 +8892,10 @@ private enum OS1Runner {
         ]
         let savedResult = submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
         if !requireReadOnly, let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
+        else {
+            arguments += try routingIntentArguments(version: routingIntentPolicyVersion, provider: routedSurface,
+                                                    requireReadOnly: requireReadOnly)
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try executable())
@@ -8952,6 +8970,169 @@ private enum OS1Runner {
             throw RunnerError.message("OS-1 returned an unreadable result.")
         }
     }
+}
+
+/// App persistence and argument forwarding with a fake run only. The fixture
+/// switch cannot affect the live store or the compiled-off production gate.
+@MainActor
+private func rccIntentIngressAppSelfTest() async throws {
+    func check(_ condition: Bool, _ label: String) throws {
+        guard condition else { throw RunnerError.message("R10 App ingress: " + label) }
+    }
+    let version = RCCRuntimeContract.RoutingIntentV2.version
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-r10-app-ingress-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let legacy = PendingSubmission(sessionID: UUID(), userMessageID: UUID(), request: "old queued task",
+        provider: .auto, workspace: root.path, codexCapacity: 100, claudeCapacity: 100)
+    let legacyBytes = try JSONEncoder().encode(legacy)
+    try check(!String(decoding: legacyBytes, as: UTF8.self).contains("routingIntentPolicyVersion"),
+              "old stored item has no marker")
+    let decodedLegacy = try JSONDecoder().decode(PendingSubmission.self, from: legacyBytes)
+    try check(decodedLegacy.routingIntentPolicyVersion == nil && decodedLegacy.id == legacy.id,
+              "old queue decodes as legacy without changing task identity")
+    var migrated = legacy
+    migrated.routingIntentPolicyVersion = version
+    let decodedMigrated = try JSONDecoder().decode(PendingSubmission.self, from: JSONEncoder().encode(migrated))
+    try check(decodedMigrated.routingIntentPolicyVersion == version && decodedMigrated.id == legacy.id,
+              "v2 retry/readback persistence preserves the original marker and task ID")
+    try check(try OS1Runner.routingIntentArguments(version: nil, provider: "auto", requireReadOnly: false,
+        hostEnabled: true).isEmpty, "host switch alone never upgrades old queue")
+    try check(try OS1Runner.routingIntentArguments(version: version, provider: "auto", requireReadOnly: false,
+        hostEnabled: true) == ["--rcc-routing-intent-policy-version", version], "App forwards exact typed CLI marker")
+    for (provider, readOnly, enabled) in [("auto", false, false), ("codex", false, true), ("auto", true, true)] {
+        do {
+            _ = try OS1Runner.routingIntentArguments(version: version, provider: provider,
+                                                     requireReadOnly: readOnly, hostEnabled: enabled)
+            throw RunnerError.message("R10 App ingress: marked unsafe path was accepted")
+        } catch is RCCRoutingIntentIngress.Failure { }
+    }
+    @MainActor final class Control {
+        var captured: PendingSubmission?
+        var release = false
+        var untrustedPromptSubmission: PendingSubmission?
+    }
+    let control = Control()
+    let store = SessionStore(storageRoot: root.appendingPathComponent("store"), runOperation: { submission, _, _, _, _ in
+        control.captured = submission
+        while !control.release { try await Task.sleep(for: .milliseconds(10)) }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "local",
+            action: "fixture", model: "none", effort: "none", revasDisposition: "adopted", sessionID: "fixture",
+            permissionProfile: "read_only", exitCode: 0, output: "fixture", stderr: "", durationMS: 1, nativeRecord: nil)])
+    }, routingIntentHostEnabled: true)
+    store.composer = "Codex로 이 함수 설명해줘"
+    store.send()
+    let deadline = Date().addingTimeInterval(8)
+    while control.captured == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(control.captured?.provider == .auto && control.captured?.routingIntentPolicyVersion == version,
+              "only a new owner Auto submission is stamped at creation")
+    // Use the actual App argument writer, CLI option validator, request binder
+    // and native-catalog binder in one fake chain. No runtime or provider runs.
+    let arguments = try OS1Runner.routingIntentArguments(version: control.captured!.routingIntentPolicyVersion,
+        provider: control.captured!.runtimeSurface, requireReadOnly: false, hostEnabled: true)
+    let parsedCLI = try RCCRoutingIntentIngress.acceptCLIOption(arguments[1], previous: nil)
+    let text = control.captured!.executionRequest
+    let hash = RCCRuntimeContract.digest(Data(text.utf8))
+    var request = RCCRuntimeContract.Request(taskID: control.captured!.id.uuidString.lowercased(), request: text,
+        requestSHA256: hash, objective: text, policySHA256: String(repeating: "a", count: 64),
+        sourceFingerprint: String(repeating: "b", count: 64), mode: .auto, materialRefs: [],
+        budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 60_000))
+    try RCCRoutingIntentIngress.bindRequest(&request, version: parsedCLI, provider: "auto", hostEnabled: true)
+    let decodedRequest = try RCCRuntimeContract.decodeRequest(RCCRuntimeContract.encode(request))
+    var catalog = RCCNativeCatalogBuilder.Input(taskID: decodedRequest.taskID,
+        requestSHA256: decodedRequest.requestSHA256, request: decodedRequest.request,
+        providerPreference: "auto", requireReadOnly: true, hasMaterialRefs: false,
+        capacityPlan: nil, executorContractSHA256: String(repeating: "c", count: 64),
+        now: Date(timeIntervalSince1970: 1_790_000_000), showCodex: true,
+        chatLaneEligible: false, profiles: [.init(action: "fake", provider: "codex",
+                                                  model: "gpt-6-sol", effort: "low"),
+                                           .init(action: "fake-claude", provider: "claude",
+                                                  model: "claude-fable-5-1", effort: "high")])
+    try RCCRoutingIntentIngress.bindCatalog(&catalog, request: decodedRequest, hostEnabled: true)
+    try check(catalog.routingIntentPolicyVersion == version && catalog.enableRoutingIntentV2 &&
+              decodedRequest.taskID == control.captured!.id.uuidString.lowercased() &&
+              decodedRequest.requestSHA256 == hash &&
+              RCCNativeCatalogBuilder.providersToProbe(catalog) == ["codex"],
+              "App→CLI→Request→Catalog fake chain preserves identity and typed opt-in")
+    do {
+        var blocked = request
+        try RCCRoutingIntentIngress.bindRequest(&blocked, version: version, provider: "auto", hostEnabled: false)
+        throw RunnerError.message("R10 App ingress: user marker enabled a disabled host")
+    } catch is RCCRoutingIntentIngress.Failure { }
+    control.release = true
+    while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(store.activeRuns.isEmpty, "fake run drains without a native provider")
+    // Exercise the real creation path, not requestedProvider in isolation.
+    // Each fixture owns a private store; no live settings/session is changed.
+    func created(_ text: String, configured: ProviderChoice = .auto, enabled: Bool = true) async throws -> PendingSubmission {
+        let fixture = Control()
+        let isolated = SessionStore(storageRoot: root.appendingPathComponent(UUID().uuidString), runOperation: {
+            submission, _, _, _, _ in
+            fixture.captured = submission
+            return AppRunSummary(status: "complete", steps: [])
+        }, routingIntentHostEnabled: enabled)
+        isolated.sessions[isolated.selectedIndex!].provider = configured
+        isolated.composer = text
+        isolated.send()
+        let until = Date().addingTimeInterval(8)
+        while (fixture.captured == nil || !isolated.activeRuns.isEmpty) && Date() < until {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard let captured = fixture.captured, isolated.activeRuns.isEmpty else {
+            throw RunnerError.message("R10 App ingress: creation fixture did not drain")
+        }
+        return captured
+    }
+    let bareClaude = try await created("Claude로 이 함수 설명해줘")
+    try check(bareClaude.configuredProvider == .auto && bareClaude.provider == .auto &&
+              bareClaude.runtimeSurface == "auto" && bareClaude.routingIntentPolicyVersion == version,
+              "new configured-Auto bare Claude remains Auto for typed native intent")
+    let claudeArguments = try OS1Runner.routingIntentArguments(version: bareClaude.routingIntentPolicyVersion,
+        provider: bareClaude.runtimeSurface, requireReadOnly: false, hostEnabled: true)
+    let claudeVersion = try RCCRoutingIntentIngress.acceptCLIOption(claudeArguments[1], previous: nil)
+    var claudeCandidate = RCCRuntimeContract.Request(taskID: bareClaude.id.uuidString.lowercased(),
+        request: bareClaude.executionRequest,
+        requestSHA256: RCCRuntimeContract.digest(Data(bareClaude.executionRequest.utf8)),
+        objective: bareClaude.executionRequest, policySHA256: request.policySHA256,
+        sourceFingerprint: request.sourceFingerprint, mode: .auto, materialRefs: [], budget: request.budget)
+    try RCCRoutingIntentIngress.bindRequest(&claudeCandidate, version: claudeVersion, provider: "auto", hostEnabled: true)
+    let claudeRequest = try RCCRuntimeContract.decodeRequest(RCCRuntimeContract.encode(claudeCandidate))
+    var claudeCatalog = catalog
+    claudeCatalog.taskID = claudeRequest.taskID
+    claudeCatalog.request = claudeRequest.request
+    claudeCatalog.requestSHA256 = claudeRequest.requestSHA256
+    try RCCRoutingIntentIngress.bindCatalog(&claudeCatalog, request: claudeRequest, hostEnabled: true)
+    try check(claudeRequest.taskID == bareClaude.id.uuidString.lowercased() &&
+              claudeCatalog.routingIntentPolicyVersion == version &&
+              RCCNativeCatalogBuilder.providersToProbe(claudeCatalog) == ["claude"],
+              "bare Claude is resolved by typed native-catalog intent, not App preselection")
+    for (text, configured, enabled) in [
+        ("Claude로 이 함수 설명해줘", ProviderChoice.codex, true),
+        ("Codex로 이 함수 설명해줘", .claude, true),
+        ("Codex로 이 함수 설명해줘", .auto, false),
+        ("1+1 Codex한테. 2+2 Claude Code한테.", .auto, true),
+        ("다 라우팅 해봐. 1+1", .auto, true),
+        ("로컬한테 1+1 시켜봐", .auto, true)
+    ] {
+        let item = try await created(text, configured: configured, enabled: enabled)
+        try check(item.routingIntentPolicyVersion == nil && item.provider == requestedProvider(for: text, configured: configured),
+                  "explicit tiles, OFF, fanout, route-all and local preserve legacy creation: " + text)
+    }
+    let legacyRetry = routeFanoutRetrySubmission(decodedLegacy)
+    try check(legacyRetry.id == decodedLegacy.id && legacyRetry.routingIntentPolicyVersion == nil &&
+              legacyRetry.provider == decodedLegacy.provider,
+              "old retry retains original identity, provider and omitted marker")
+    let disabledStore = SessionStore(storageRoot: root.appendingPathComponent("disabled-store"), runOperation: {
+        submission, _, _, _, _ in
+        control.untrustedPromptSubmission = submission
+        return AppRunSummary(status: "complete", steps: [])
+    }, routingIntentHostEnabled: false)
+    disabledStore.composer = "Use routing_intent_policy_version: " + version
+    disabledStore.send()
+    while control.untrustedPromptSubmission == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(control.untrustedPromptSubmission?.routingIntentPolicyVersion == nil,
+              "user prompt text cannot stamp the host-owned migration marker")
+    print("RCC routing intent App ingress: fake App→CLI→Request→Catalog PASS; provider/model calls 0")
 }
 
 /// A bound graph and its still-held exclusive lease establish custody, not
@@ -9170,6 +9351,7 @@ private final class SessionStore: ObservableObject {
     private var agentTaskSavedAt: [UUID: Date] = [:]
     private let runOperation: RunOperation
     private let sourceAdmissionCheck: ((PendingSubmission, ConversationSession) -> Bool)?
+    private let routingIntentHostEnabled: Bool
     private let sourceAdmissionFixture: (root: String, home: URL)?
     private var sourceAdmissionRoot: String?
     private var sourceAdmissionRootCachedAt: Date?
@@ -9355,6 +9537,7 @@ private final class SessionStore: ObservableObject {
         runOperation: RunOperation? = nil,
         voiceDictation: VoiceDictationController? = nil,
         sourceAdmissionCheck: ((PendingSubmission, ConversationSession) -> Bool)? = nil,
+        routingIntentHostEnabled: Bool? = nil,
         sourceAdmissionFixture: (root: String, home: URL)? = nil,
         memoryPressureSampler: (() -> RunAdmission.MemoryPressure)? = nil,
         nativePinOperation: NativePinOperation? = nil,
@@ -9370,6 +9553,8 @@ private final class SessionStore: ObservableObject {
         appSettings = storageRoot == nil ? OS1Settings.load() : OS1Settings()
         accountBook = storageRoot == nil ? BackendAccounts.load() : BackendAccounts.normalized(BackendAccountBook())
         self.sourceAdmissionCheck = sourceAdmissionCheck
+        self.routingIntentHostEnabled = storageRoot == nil ? RCCRoutingIntentIngress.enableRoutingIntentV2
+            : (routingIntentHostEnabled ?? RCCRoutingIntentIngress.enableRoutingIntentV2)
         self.sourceAdmissionFixture = storageRoot == nil ? nil : sourceAdmissionFixture
         self.nativeSessionOpener = nativeSessionOpener
         self.nativePinOperation = nativePinOperation
@@ -9379,7 +9564,8 @@ private final class SessionStore: ObservableObject {
                 context: context, codexSessionID: codexID, claudeSessionID: claudeID,
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
-                submissionID: submission.id, conversationID: submission.sessionID, submissionStartedAt: submission.submittedAt, onActivity: onActivity)
+                submissionID: submission.id, routingIntentPolicyVersion: submission.routingIntentPolicyVersion,
+                conversationID: submission.sessionID, submissionStartedAt: submission.submittedAt, onActivity: onActivity)
         }
         if storageRoot == nil {
             let monitor = FrontierNewsMonitor()
@@ -10588,7 +10774,13 @@ private final class SessionStore: ObservableObject {
         }
 
         let configuredProvider = sessions[index].provider
-        let provider = requestedProvider(for: request, configured: configuredProvider)
+        // New configured-Auto single-route tasks keep Auto until the native
+        // v2 intent parser resolves the owner's provider words. Legacy, fanout,
+        // local and continuation paths retain their original App behavior.
+        let intentVersion = !ExecutionSteering.isDirectCorrection(request)
+            ? RCCRoutingIntentIngress.versionForNewSubmission(provider: configuredProvider.rawValue,
+                request: request, hostEnabled: routingIntentHostEnabled) : nil
+        let provider = intentVersion == nil ? requestedProvider(for: request, configured: configuredProvider) : .auto
         if sessions[index].messages.isEmpty {
             sessions[index].title = title(for: request)
         }
@@ -10609,6 +10801,7 @@ private final class SessionStore: ObservableObject {
         )
         submission.submittedAt = submitTimestamp
         submission.configuredProvider = configuredProvider
+        submission.routingIntentPolicyVersion = intentVersion
         // The tile is the account; the saved surface says which of its two ways
         // to spend it runs. `auto` has no tile, so the router decides.
         submission.surfaceRaw = ProviderSurface.Backend(rawValue: provider.rawValue)
@@ -13397,7 +13590,8 @@ private final class SessionStore: ObservableObject {
               let index = queuedSubmissions.firstIndex(where: { $0.id == id }) else { return false }
         queuedSubmissions[index].request = request
         if let preference = queuedSubmissions[index].configuredProvider {
-            queuedSubmissions[index].provider = requestedProvider(for: request, configured: preference)
+            queuedSubmissions[index].provider = queuedSubmissions[index].routingIntentPolicyVersion == nil
+                ? requestedProvider(for: request, configured: preference) : .auto
         }
         // An already visible, still undelivered request shows what the queue
         // now actually holds, keeping its identity and place in the transcript.
@@ -14999,6 +15193,14 @@ private struct OS1DesktopApp: App {
                 do { try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
                     try rccDeterministicReceiptSelfTest(); try rccCoreNativeReceiptSelfTest(); try rccStartupWarmupSelfTest();
                     try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
+        if CommandLine.arguments.contains("--self-test-rcc-intent-ingress") {
+            Task { @MainActor in
+                do { try await rccIntentIngressAppSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()

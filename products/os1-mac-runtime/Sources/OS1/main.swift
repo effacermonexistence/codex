@@ -18602,12 +18602,16 @@ struct OS1Main {
                 var parallelFanoutChild = false
                 var parallelWriteGrantPath: String?
                 var rccTaskID: String?
+                var routingIntentPolicyVersion: String?
                 var index = 1
                 while index < arguments.count {
                     switch arguments[index] {
                     case "--rcc-task-id" where index + 1 < arguments.count:
                         guard rccTaskID == nil, UUID(uuidString: arguments[index + 1]) != nil else { throw OS1Error.message("Invalid RCC task identity") }
                         rccTaskID = arguments[index + 1].lowercased(); index += 2
+                    case "--rcc-routing-intent-policy-version" where index + 1 < arguments.count:
+                        routingIntentPolicyVersion = try RCCRoutingIntentIngress.acceptCLIOption(
+                            arguments[index + 1], previous: routingIntentPolicyVersion); index += 2
                     case "--workspace" where index + 1 < arguments.count:
                         workspace = arguments[index + 1]; index += 2
                     case "--prompt" where index + 1 < arguments.count:
@@ -18696,6 +18700,14 @@ struct OS1Main {
                 if parallelFanoutChild, ![ProviderSurface.gptChat, .codex, .claude, .claudeChat, .chatgpt].contains(surface) {
                     throw OS1Error.message("Fan-out child requires an executable native surface")
                 }
+                // A version is not a request-text hint. Reject a marked task
+                // without the independently reviewed host capability, before
+                // policy, catalog metadata or any native model can be touched.
+                try RCCRoutingIntentIngress.validate(routingIntentPolicyVersion, mode: .auto,
+                    provider: surface.rawValue,
+                    recoveryOrChild: requireReadOnly || parallelAgentChild || parallelFanoutChild ||
+                        RouteFanout.plan(prompt) != nil || RouteFanout.requestsProviderFanout(prompt) || RouteAllIntent.recognizes(prompt) ||
+                        RouteAllIntent.namesLocalRoute(prompt))
                 // This is the owner dispatch boundary. The UI/CLI are clients,
                 // not a second scheduler. Legacy child/reconciliation executors
                 // remain libraries and never become an automatic fallback.
@@ -18714,6 +18726,7 @@ struct OS1Main {
                             context: try readSessionContext(contextPath), surface: surface,
                             codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
                             requireReadOnly: requireReadOnly, taskID: rccTaskID,
+                            routingIntentPolicyVersion: routingIntentPolicyVersion,
                             capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)
                     } catch {
                         // Transport/policy failure is NOT permission for an old
@@ -18943,6 +18956,8 @@ func rccPrivateInput(_ path: String) throws -> Data {
 private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     let request = try RCCRuntimeContract.decodeRequest(bytes)
     guard let host = request.hostContext else { throw OS1Error.message("RCC host context missing") }
+    try RCCRoutingIntentIngress.validate(request.routingIntentPolicyVersion, mode: request.mode,
+        provider: host.providerPreference)
     // Same typed-source projection as ordinary ingress. A caller may not
     // erase source presence or smuggle a global source locator into a plan.
     let bound = try rccBoundSourceMaterialRefs(request: request.request, context: host.context)
@@ -18974,6 +18989,7 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         chatLaneEligible: chatEligible,
         profiles: (config.executionProfiles ?? [:]).map { .init(action: $0.key, provider: $0.value.provider,
             model: $0.value.model, effort: $0.value.effort) })
+    try RCCRoutingIntentIngress.bindCatalog(&input, request: request)
     // Build 407 admission facts (R0, R2): the owner scope, and an owner
     // contract re-bound now; the signed class table is compiled in (empty).
     input.ownerScope = RCCCatalogFacts.ownerScope(request)
@@ -20493,8 +20509,11 @@ func rccBoundSourceMaterialRefs(request: String, context: String?) throws -> [St
 
 func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
     codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?,
+    routingIntentPolicyVersion: String? = nil,
     capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = [],
     interpreterRecord: InterpretedRoutingRecord? = nil) async throws -> RunSummary {
+    try RCCRoutingIntentIngress.validate(routingIntentPolicyVersion, mode: .auto,
+        provider: requestedSurface.rawValue)
     let owner = try loadCurrentOwnerPolicy(), cfg = try RuntimeConfig.load()
     let text = owner.map { $0.routing + "\n" + $0.projection } ?? cfg.executorContract.directives.joined(separator: "\n")
     var routingNotices = priorNotices
@@ -20522,12 +20541,15 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         requireReadOnly: requireReadOnly, ownerPolicy: owner, explicitRoutes: nil,
         conversationID: conversationID.uuidString, submissionID: submissionID.uuidString, capacityPlan: capacityPlan,
         explicitRoutesBestEffort: nil)
-    let request = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
+    var candidateRequest = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
         mode: .auto, materialRefs: materialRefs,
         budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000),
         policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
+    try RCCRoutingIntentIngress.bindRequest(&candidateRequest, version: routingIntentPolicyVersion,
+        provider: surface.rawValue)
+    let request = candidateRequest
     let data = try RCCRuntimeContract.encode(request)
     _ = try RCCRuntimeContract.decodeRequest(data)
     let configuration = try await OwnerPolicyContext.$snapshot.withValue(owner) { try await LocalRouterBridge.rccRuntimeConfiguration() }
