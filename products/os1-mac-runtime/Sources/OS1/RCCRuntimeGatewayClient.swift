@@ -62,7 +62,7 @@ enum RCCRuntimeGatewayClient {
         var state: URL { root.appendingPathComponent("openclaw-state", isDirectory: true) }
         var workspace: URL { root.appendingPathComponent("workspace", isDirectory: true) }
     }
-    private struct Owner: Codable {
+    private struct Owner: Codable, Equatable {
         let schema: Int
         let pid: Int32
         let startedAt: Double
@@ -81,6 +81,18 @@ enum RCCRuntimeGatewayClient {
         // must release this CLI/UI observer so the existing installer can
         // drain; the original task remains durable in the same core.
         var deliverable: Bool { ["held", "completed", "returned_unverified", "awaiting_install", "cancelled", "effects_uncertain", "failed"].contains(state) }
+    }
+    /// Reviewed separately from installation. A prior positive health is only
+    /// an advisory preparation witness; authenticated SUBMIT is still fresh.
+    static let enableTaskReadinessWitness = false
+    static let taskReadinessWitnessMaximumAge: TimeInterval = 60
+    private struct ReadinessWitness: Codable {
+        let schema: Int
+        let owner: Owner
+        let observedUptime: Double
+        let observedUnix: Double
+        let healthOK: Bool
+        let notStarting: Bool
     }
     /// Startup readiness is an independent transport budget. It does not
     /// shorten, extend, or otherwise change a model/task execution timeout.
@@ -149,20 +161,24 @@ enum RCCRuntimeGatewayClient {
     }
 
     static func warmForOfflineFixture(configuration: Configuration, root: URL,
-                                      readinessTimeout: TimeInterval = 3) throws -> ReadinessReceipt {
+                                      readinessTimeout: TimeInterval = 3,
+                                      readinessWitnessEnabled: Bool = false) throws -> ReadinessReceipt {
         guard root.standardizedFileURL.path.hasPrefix(NSTemporaryDirectory()),
               readinessTimeout > 0, readinessTimeout <= startupReadinessBudget else { throw Failure.privateStateInvalid }
         return try warmBlocking(configuration: configuration, root: root,
-            limits: Limits(rpc: 1, ready: readinessTimeout, poll: 0.03, observe: 5), fixture: true, cancelled: { false })
+            limits: Limits(rpc: 1, ready: readinessTimeout, poll: 0.03, observe: 5), fixture: true,
+            readinessWitnessEnabled: readinessWitnessEnabled, cancelled: { false })
     }
 
     private static func warmBlocking(configuration: Configuration, root: URL, limits: Limits,
-                                     fixture: Bool, cancelled: () -> Bool) throws -> ReadinessReceipt {
+                                     fixture: Bool, readinessWitnessEnabled: Bool = enableTaskReadinessWitness,
+                                     cancelled: () -> Bool) throws -> ReadinessReceipt {
         // Warmup cannot be used to race or bypass a verified installation.
         // The isolated fixture uses its own maintenance marker, never HOME.
         try checkInstallerMaintenance(root: root)
         let owner = try ensureGateway(configuration: configuration, paths: Paths(root: root),
-            limits: limits, fixture: fixture, cancelled: cancelled)
+            limits: limits, fixture: fixture, readinessWitnessEnabled: readinessWitnessEnabled,
+            cancelled: cancelled)
         try checkInstallerMaintenance(root: root)
         return ReadinessReceipt(ownerPID: owner.pid, startedAt: owner.startedAt,
             identitySHA256: owner.identitySHA256, configurationSHA256: owner.configurationSHA256,
@@ -295,6 +311,7 @@ enum RCCRuntimeGatewayClient {
             // the next core owner's job, not a fabricated quiescence assertion.
             return UpgradeReceipt(schema: 1, hadGateway: false, requestID: nil, ownerPID: nil, queuedTasks: nil, receiptPath: nil)
         }
+        invalidateReadinessWitness(owner)
         let requestID = UUID().uuidString.lowercased()
         let payload = try JSONSerialization.data(withJSONObject: ["schema": 1, "request_id": requestID], options: [.sortedKeys])
         let raw = try rpc("os1.rcc.quiesce", parameters: payload, owner: owner,
@@ -346,13 +363,14 @@ enum RCCRuntimeGatewayClient {
 
     /// Isolated fake-binary fixture only: no live home, provider, app or model.
     static func runForOfflineFixture(request: Data, configuration: Configuration, root: URL,
+                                    readinessWitnessEnabled: Bool = false,
                                     cancelled: @escaping () -> Bool = { false },
                                     progress: @escaping (Data) -> Void = { _ in }) throws -> Data {
         guard root.standardizedFileURL.path.hasPrefix(NSTemporaryDirectory()),
               !root.standardizedFileURL.path.contains("/../") else { throw Failure.privateStateInvalid }
         return try runBlocking(request: request, configuration: configuration, root: root,
             limits: Limits(rpc: 1, ready: 3, poll: 0.03, observe: 5), fixture: true,
-            cancellation: cancelled, progress: progress)
+            readinessWitnessEnabled: readinessWitnessEnabled, cancellation: cancelled, progress: progress)
     }
 
     static func checkMaintenanceForOfflineFixture(root: URL) throws {
@@ -362,13 +380,15 @@ enum RCCRuntimeGatewayClient {
 
     private static func runBlocking(request: Data, configuration: Configuration, root: URL,
                                     limits: Limits, fixture: Bool,
+                                    readinessWitnessEnabled: Bool = enableTaskReadinessWitness,
                                     cancellation: () -> Bool, progress: (Data) -> Void) throws -> Data {
         let binding = try requestBinding(request)
         guard !cancellation() else { throw CancellationError() }
         let paths = Paths(root: root)
         if !fixture { try checkInstallerMaintenance(root: root) }
         let owner = try ensureGateway(configuration: configuration, paths: paths, limits: limits,
-                                      fixture: fixture, cancelled: cancellation)
+                                      fixture: fixture, readinessWitnessEnabled: readinessWitnessEnabled,
+                                      allowTaskWitnessReuse: true, cancelled: cancellation)
         let query = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": binding.id], options: [.sortedKeys])
         var last: Snapshot?
         var sourceAcknowledged = false
@@ -383,6 +403,7 @@ enum RCCRuntimeGatewayClient {
             // Status has no public source fields: never invent that evidence.
             sourceAcknowledged = binding.source != nil && binding.policy != nil
         } catch {
+            invalidateReadinessWitness(owner)
             // An authenticated negative acknowledgement is NOT ambiguous. In
             // particular an idempotency conflict must not return an older task
             // with the same request text but different source/policy context.
@@ -532,7 +553,9 @@ enum RCCRuntimeGatewayClient {
     }
 
     private static func ensureGateway(configuration: Configuration, paths: Paths, limits: Limits,
-                                      fixture: Bool, cancelled: () -> Bool) throws -> Owner {
+                                      fixture: Bool, readinessWitnessEnabled: Bool = enableTaskReadinessWitness,
+                                      allowTaskWitnessReuse: Bool = false,
+                                      cancelled: () -> Bool) throws -> Owner {
         // Lock contention, owner launch and every health observer share ONE
         // readiness ceiling; taking the lock must not restart the clock.
         let readinessDeadline = Date().addingTimeInterval(limits.ready)
@@ -565,10 +588,22 @@ enum RCCRuntimeGatewayClient {
                 guard previous.identitySHA256 == identityHash, previous.configurationSHA256 == configurationHash else {
                     throw Failure.gatewayIdentityChanged // live tasks may exist: never replace this owner
                 }
+                // All existing identity/PID/start-time/path/maintenance checks
+                // above still run. Reuse also rehashes the actual private full
+                // config before consulting this optional host-only witness.
+                if readinessWitnessEnabled && allowTaskWitnessReuse,
+                   !FileManager.default.fileExists(atPath: paths.startupIntent.path) {
+                    guard sha256(try readPrivate(URL(fileURLWithPath: previous.directory)
+                        .appendingPathComponent("config.json"), maximum: 262_144)) == previous.configSHA256 else {
+                        throw Failure.privateStateInvalid
+                    }
+                    if reusableReadinessWitness(previous) { return previous }
+                }
                 // A prior observer may have ended while this exact owner was
                 // still starting. Wait for its readiness, never spawn another.
                 try awaitReadiness(previous, configuration: configuration, paths: paths,
-                    limits: limits, deadline: readinessDeadline, fixture: fixture, cancelled: cancelled, existing: true)
+                    limits: limits, deadline: readinessDeadline, fixture: fixture, cancelled: cancelled, existing: true,
+                    recordWitness: readinessWitnessEnabled)
                 return previous
             }
             // Only a proved-dead PID permits a replacement. A PID reused by an
@@ -635,13 +670,14 @@ enum RCCRuntimeGatewayClient {
             throw error
         }
         try awaitReadiness(owner, configuration: configuration, paths: paths,
-            limits: limits, deadline: readinessDeadline, fixture: fixture, cancelled: cancelled, existing: false)
+            limits: limits, deadline: readinessDeadline, fixture: fixture, cancelled: cancelled, existing: false,
+            recordWitness: readinessWitnessEnabled)
         return owner
     }
 
     private static func awaitReadiness(_ owner: Owner, configuration: Configuration, paths: Paths,
                                        limits: Limits, deadline: Date, fixture: Bool, cancelled: () -> Bool,
-                                       existing: Bool) throws {
+                                       existing: Bool, recordWitness: Bool = false) throws {
         var retryDelay: TimeInterval = 0.25
         while Date() < deadline {
             guard !cancelled() else { throw CancellationError() }
@@ -651,8 +687,13 @@ enum RCCRuntimeGatewayClient {
             do {
                 if try health(owner, configuration: configuration, paths: paths,
                     timeout: min(3, limits.rpc), readinessDeadline: deadline,
-                    fixture: fixture, cancelled: cancelled), Date() < deadline { return }
+                    fixture: fixture, cancelled: cancelled), Date() < deadline {
+                    if recordWitness { recordReadinessWitness(owner) }
+                    return
+                }
+                invalidateReadinessWitness(owner)
             } catch let failure as Failure {
+                invalidateReadinessWitness(owner)
                 // Temporary connection refusal is a readiness observation.
                 // Custody/identity failures remain precise terminal failures.
                 guard [.rpcFailed, .rpcTimeout].contains(failure) else { throw failure }
@@ -733,6 +774,8 @@ enum RCCRuntimeGatewayClient {
                             configuration: Configuration, paths: Paths, timeout: TimeInterval, fixture: Bool,
                             cliBootstrapAllowance: TimeInterval = 0, hardDeadline: Date? = nil,
                             cancelled: () -> Bool = { false }) throws -> Data {
+        var transportReturned = false
+        defer { if !transportReturned { invalidateReadinessWitness(owner) } }
         let boundedObserverDeadline = hardDeadline.map {
             min(Date().addingTimeInterval(cliBootstrapAllowance + timeout + 2), $0)
         }
@@ -783,7 +826,131 @@ enum RCCRuntimeGatewayClient {
         // Keep failed/uncertain RPC payloads for reconciliation; successful RPC
         // params can be removed once their returned snapshot is captured.
         try? FileManager.default.removeItem(at: params)
+        transportReturned = true
         return result
+    }
+
+    private static func readinessWitnessURL(_ owner: Owner) -> URL {
+        URL(fileURLWithPath: owner.directory).appendingPathComponent("last-successful-health.json")
+    }
+    private static func readinessFailureBarrierURL(_ owner: Owner) -> URL {
+        URL(fileURLWithPath: owner.directory).appendingPathComponent("health-witness-owner-disabled")
+    }
+    /// Presence alone disables this optional cache for the owner generation.
+    /// Unknown existing barrier state is never overwritten or cleared.
+    private static func readinessFailureBarrierExists(_ owner: Owner) -> Bool {
+        var info = stat()
+        return lstat(readinessFailureBarrierURL(owner).path, &info) == 0 || errno != ENOENT
+    }
+    /// Separate from the start lock: no network/model work occurs while this
+    /// lock is held. Lock order is start→witness, never witness→start.
+    private static func withReadinessWitnessLock<T>(_ owner: Owner, _ body: () throws -> T) throws -> T {
+        let directory = URL(fileURLWithPath: owner.directory)
+        try checkPrivateDirectory(directory)
+        let path = directory.appendingPathComponent("health-witness.lock")
+        let fd = open(path.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)
+        guard fd >= 0 else { throw Failure.privateStateInvalid }
+        defer { _ = flock(fd, LOCK_UN); _ = close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              (info.st_mode & 0o777) == 0o600, info.st_uid == getuid(), info.st_nlink == 1,
+              flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw Failure.privateStateInvalid }
+        return try body()
+    }
+    /// An optional witness is not authority from arbitrary private JSON. Only
+    /// the bounded, exact-owner, positive host shape can be reused/refreshed or
+    /// retired; malformed/foreign files are left untouched and mean cache miss.
+    private static func readReadinessWitness(_ owner: Owner, allowExpired: Bool = false,
+                                              requireCurrentClock: Bool = true) -> ReadinessWitness? {
+        let path = readinessWitnessURL(owner)
+        let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { _ = close(fd) }
+        var before = stat()
+        guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
+              (before.st_mode & 0o777) == 0o600, before.st_uid == getuid(), before.st_nlink == 1,
+              before.st_size > 0, before.st_size <= 4096,
+              let bytes = try? FileHandle(fileDescriptor: fd, closeOnDealloc: false).read(upToCount: 4097),
+              bytes.count == before.st_size else { return nil }
+        var after = stat(), named = stat()
+        guard fstat(fd, &after) == 0, lstat(path.path, &named) == 0,
+              (named.st_mode & S_IFMT) == S_IFREG,
+              named.st_dev == before.st_dev, named.st_ino == before.st_ino,
+              after.st_size == before.st_size,
+              after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec,
+              after.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec,
+              after.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec,
+              let object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              Set(object.keys) == Set(["schema", "owner", "observedUptime", "observedUnix", "healthOK", "notStarting"]),
+              let bound = object["owner"] as? [String: Any],
+              Set(bound.keys) == Set(["schema", "pid", "startedAt", "executable", "port", "identitySHA256",
+                                      "configurationSHA256", "directory", "configSHA256"]),
+              let witness = try? JSONDecoder().decode(ReadinessWitness.self, from: bytes),
+              witness.schema == 1, witness.owner == owner, witness.healthOK, witness.notStarting,
+              witness.observedUptime.isFinite, witness.observedUnix.isFinite,
+              witness.observedUptime > 0, witness.observedUnix > 0 else { return nil }
+        // Failure retirement recognizes the exact-owner positive shape even
+        // after clock rollback. Otherwise it could revive when time catches
+        // up. This exception NEVER permits reuse or positive refresh.
+        if !requireCurrentClock { return witness }
+        let uptimeAge = ProcessInfo.processInfo.systemUptime - witness.observedUptime
+        let wallAge = Date().timeIntervalSince1970 - witness.observedUnix
+        guard witness.observedUnix >= owner.startedAt, uptimeAge >= 0, wallAge >= 0,
+              allowExpired || (uptimeAge <= taskReadinessWitnessMaximumAge && wallAge <= taskReadinessWitnessMaximumAge)
+        else { return nil }
+        return witness
+    }
+    private static func reusableReadinessWitness(_ owner: Owner) -> Bool {
+        guard !readinessFailureBarrierExists(owner) else { return false }
+        return (try? withReadinessWitnessLock(owner) {
+            !readinessFailureBarrierExists(owner) && readReadinessWitness(owner) != nil
+        }) == true
+    }
+    private static func recordReadinessWitness(_ owner: Owner) {
+        guard !readinessFailureBarrierExists(owner) else { return }
+        try? withReadinessWitnessLock(owner) {
+            guard !readinessFailureBarrierExists(owner) else { return }
+            let path = readinessWitnessURL(owner)
+            var named = stat()
+            if lstat(path.path, &named) == 0 {
+                // Do not overwrite malformed/foreign/link/clock-invalid state.
+                guard readReadinessWitness(owner, allowExpired: true) != nil else { return }
+            } else if errno != ENOENT { return }
+            guard Date().timeIntervalSince1970 >= owner.startedAt else { return }
+            let witness = ReadinessWitness(schema: 1, owner: owner,
+                observedUptime: ProcessInfo.processInfo.systemUptime,
+                observedUnix: Date().timeIntervalSince1970, healthOK: true, notStarting: true)
+            let temporary = path.deletingLastPathComponent()
+                .appendingPathComponent(".health-witness-" + UUID().uuidString.lowercased())
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try writePrivate(try JSONEncoder().encode(witness), to: temporary)
+            guard rename(temporary.path, path.path) == 0 else { throw Failure.privateStateInvalid }
+        }
+    }
+    private static func invalidateReadinessWitness(_ owner: Owner) {
+        // OFF/missing means no new witness/lock artifact. A known positive
+        // witness is archived, never a task/queue/result or unknown file.
+        var named = stat()
+        guard lstat(readinessWitnessURL(owner).path, &named) == 0,
+              readReadinessWitness(owner, allowExpired: true, requireCurrentClock: false) != nil else { return }
+        // This revocation does not depend on the advisory lock: a held lock
+        // plus clock recovery must not revive a failed positive observation.
+        // Creation is exclusive/nonblocking; even an unknown existing marker
+        // disables reuse. Fresh health never clears it or starts a new owner.
+        let barrier = open(readinessFailureBarrierURL(owner).path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0o600)
+        if barrier >= 0 {
+            let bytes = Data("readiness reuse disabled for this owner generation\n".utf8)
+            try? FileHandle(fileDescriptor: barrier, closeOnDealloc: false).write(contentsOf: bytes)
+            _ = fsync(barrier); _ = close(barrier)
+        }
+        try? withReadinessWitnessLock(owner) {
+            guard readReadinessWitness(owner, allowExpired: true, requireCurrentClock: false) != nil else { return }
+            let retired = URL(fileURLWithPath: owner.directory)
+                .appendingPathComponent("health-witness-revoked-" + UUID().uuidString.lowercased() + ".json")
+            try FileManager.default.moveItem(at: readinessWitnessURL(owner), to: retired)
+        }
     }
 
     private static func verifyInstalled(_ identity: InstalledIdentity) throws {

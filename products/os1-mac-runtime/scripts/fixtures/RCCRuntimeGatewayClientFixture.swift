@@ -250,14 +250,17 @@ struct RCCRuntimeGatewayClientFixture {
         if method=='os1.rcc.submit':
             counts=read(counter) if counter.exists() else {}; counts[params['task_id']]=counts.get(params['task_id'],0)+1; write(counter,counts)
             name=params['task_id']; state='running'; revision=3
-            if name=='rejected':
+            if name in ['rejected','witness_rejected','witness_clock_rejected','witness_unknown_rejected']:
                 print(json.dumps({'ok':False,'error':{'type':'gateway_request_error','code':'INVALID_REQUEST','message':'idempotency_conflict','retryable':False}})); sys.exit(1)
             obj={'schema':1,'task_id':name,'request_sha256':params['request_sha256'],'state':state,'revision':revision,'children':[],'result':None,'error':None}
+            if name.startswith('witness_'):
+                obj['state']='returned_unverified'
+                obj['result']={'output':'2','execution_verified':True,'task_verified':False,'parity_state':'unverified','native_receipt':None}
             if name=='awaiting_install':
                 obj['state']='awaiting_install'
                 obj['install_handoff']={'schema':1,'task_id':name,'request_sha256':params['request_sha256'],'node_id':'writer','parent_attempt_id':'attempt','source_fingerprint':'a'*64,'source_root':'/tmp/fixture','source_head':'b'*40,'protected_source_sha256':'c'*64,'staged_intent_id':'fixture-intent','staged_receipt_sha256':'d'*64,'state':'staged','installed_receipt':None}
             write(task,obj)
-            if name=='lost_ack': sys.exit(2)
+            if name in ['lost_ack','witness_lost_ack']: sys.exit(2)
             if name=='wrong_binding': obj['request_sha256']='0'*64; write(task,obj)
         else:
             obj=read(task)
@@ -439,6 +442,200 @@ struct RCCRuntimeGatewayClientFixture {
         try fm.removeItem(at: unreachable)
         try require(!fm.fileExists(atPath: privateRoot.appendingPathComponent("submits.json").path),
             "readiness regression tests submitted a task")
+        // Source-default OFF; explicit fixture opt-in is confined to this
+        // temporary fake transport, never a live root or user request field.
+        try require(!RCCRuntimeGatewayClient.enableTaskReadinessWitness &&
+            RCCRuntimeGatewayClient.taskReadinessWitnessMaximumAge == 60, "witness source gate/max-age changed")
+        let witnessOwner = try JSONSerialization.jsonObject(with:
+            Data(contentsOf: privateRoot.appendingPathComponent("transport-owner.json"))) as! [String: Any]
+        let witnessDirectory = URL(fileURLWithPath: witnessOwner["directory"] as! String)
+        let witnessPath = witnessDirectory.appendingPathComponent("last-successful-health.json")
+        func healthCount() throws -> Int {
+            try JSONDecoder().decode(Int.self, from: Data(contentsOf: privateRoot.appendingPathComponent("health-probes.json")))
+        }
+        func runWitness(_ id: String, expectedHealth: Int, enabled: Bool = true) throws {
+            let before = try healthCount()
+            let answer = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request(id),
+                configuration: configuration, root: privateRoot, readinessWitnessEnabled: enabled)
+            try require(try state(answer) == "returned_unverified" && healthCount() == before + expectedHealth,
+                        "witness health callcount/result mismatch: " + id)
+        }
+        func refreshWitness() throws {
+            _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration,
+                root: privateRoot, readinessWitnessEnabled: true)
+            try require(fm.fileExists(atPath: witnessPath.path), "positive health did not record a witness")
+        }
+        func writeWitness(_ value: [String: Any]) throws {
+            try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]).write(to: witnessPath)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: witnessPath.path)
+        }
+        try runWitness("witness_default_off", expectedHealth: 1, enabled: false)
+        try require(!fm.fileExists(atPath: witnessPath.path) &&
+            !fm.fileExists(atPath: witnessDirectory.appendingPathComponent("health-witness.lock").path),
+            "default OFF created witness artifacts")
+        try runWitness("witness_first", expectedHealth: 1)
+        try runWitness("witness_reused", expectedHealth: 0)
+        let warmHealth = try healthCount()
+        try refreshWitness()
+        try require(try healthCount() == warmHealth + 1, "explicit warm reused stale health")
+        let statusHealth = try healthCount()
+        _ = try RCCRuntimeGatewayClient.statusForOfflineFixture(taskID: "witness_first",
+            requestSHA256: hash(Data("SENSITIVE_FIXTURE_REQUEST_DO_NOT_EXPOSE".utf8)), configuration: configuration, root: privateRoot)
+        try require(try healthCount() == statusHealth + 1, "explicit status skipped fresh health")
+        let cancelHealth = try healthCount()
+        _ = try RCCRuntimeGatewayClient.statusForOfflineFixture(taskID: "witness_first",
+            requestSHA256: hash(Data("SENSITIVE_FIXTURE_REQUEST_DO_NOT_EXPOSE".utf8)), configuration: configuration,
+            root: privateRoot, cancelling: true)
+        try require(try healthCount() == cancelHealth + 1, "explicit cancel skipped fresh health")
+        let witnessLock = open(witnessDirectory.appendingPathComponent("health-witness.lock").path, O_RDWR | O_NOFOLLOW)
+        try require(witnessLock >= 0 && flock(witnessLock, LOCK_EX | LOCK_NB) == 0, "fixture witness lock unavailable")
+        let lockStarted = Date()
+        try runWitness("witness_held_lock", expectedHealth: 1)
+        try require(Date().timeIntervalSince(lockStarted) < 3, "held advisory lock blocked original fresh-readiness fallback")
+        _ = flock(witnessLock, LOCK_UN); _ = close(witnessLock)
+        var stale = try JSONSerialization.jsonObject(with: Data(contentsOf: witnessPath)) as! [String: Any]
+        // Exercise the uptime-age bound independently. Moving wall time61s
+        // back in this young fake owner would instead be a before-owner
+        // invalid/foreign fixture, which is deliberately preserved below.
+        stale["observedUptime"] = (stale["observedUptime"] as! Double) - 61
+        try writeWitness(stale)
+        try runWitness("witness_expired", expectedHealth: 1)
+        try runWitness("witness_refreshed_after_expiry", expectedHealth: 0)
+        let badWitnesses: [(String, (inout [String: Any]) -> Void)] = [
+            ("future", { $0["observedUptime"] = ProcessInfo.processInfo.systemUptime + 60 }),
+            ("wall_future", { $0["observedUnix"] = Date().timeIntervalSince1970 + 60 }),
+            ("before_owner", { $0["observedUnix"] = (witnessOwner["startedAt"] as! Double) - 1 }),
+            ("schema", { $0["schema"] = 9 }), ("nonpositive", { $0["healthOK"] = false }),
+            ("starting", { $0["notStarting"] = false }), ("unknown_field", { $0["untrusted"] = true }),
+            ("numeric_bool", { $0["healthOK"] = 1 }),
+            ("owner_pid", { var o = $0["owner"] as! [String: Any]; o["pid"] = 1; $0["owner"] = o }),
+            ("owner_start", { var o = $0["owner"] as! [String: Any]; o["startedAt"] = 1.0; $0["owner"] = o }),
+            ("owner_executable", { var o = $0["owner"] as! [String: Any]; o["executable"] = "/untrusted"; $0["owner"] = o }),
+            ("owner_port", { var o = $0["owner"] as! [String: Any]; o["port"] = 1; $0["owner"] = o }),
+            ("owner_directory", { var o = $0["owner"] as! [String: Any]; o["directory"] = "/untrusted"; $0["owner"] = o }),
+            ("owner_identity", { var o = $0["owner"] as! [String: Any]; o["identitySHA256"] = String(repeating: "0", count: 64); $0["owner"] = o }),
+            ("owner_config", { var o = $0["owner"] as! [String: Any]; o["configurationSHA256"] = String(repeating: "0", count: 64); $0["owner"] = o }),
+            ("owner_full_config", { var o = $0["owner"] as! [String: Any]; o["configSHA256"] = String(repeating: "0", count: 64); $0["owner"] = o }),
+        ]
+        for (name, mutate) in badWitnesses {
+            var value = try JSONSerialization.jsonObject(with: Data(contentsOf: witnessPath)) as! [String: Any]
+            mutate(&value); try writeWitness(value)
+            let original = try Data(contentsOf: witnessPath)
+            try runWitness("witness_bad_" + name, expectedHealth: 1)
+            try require(try Data(contentsOf: witnessPath) == original, "foreign/invalid witness overwritten: " + name)
+            try fm.removeItem(at: witnessPath); try refreshWitness()
+        }
+        for name in ["malformed", "oversize", "public_mode", "hardlink", "symlink"] {
+            let alias = witnessDirectory.appendingPathComponent("fixture-foreign-" + name)
+            if name == "malformed" { try Data("{".utf8).write(to: witnessPath) }
+            if name == "oversize" { try Data(repeating: 32, count: 4097).write(to: witnessPath) }
+            if name == "public_mode" { try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: witnessPath.path) }
+            if name == "hardlink" { try require(link(witnessPath.path, alias.path) == 0, "fixture hardlink failed") }
+            if name == "symlink" {
+                try fm.moveItem(at: witnessPath, to: alias)
+                try fm.createSymbolicLink(at: witnessPath, withDestinationURL: alias)
+            }
+            let original = try Data(contentsOf: witnessPath)
+            try runWitness("witness_custody_" + name, expectedHealth: 1)
+            try require(try Data(contentsOf: witnessPath) == original, "unknown custody witness modified: " + name)
+            if name == "symlink" { try require(try fm.destinationOfSymbolicLink(atPath: witnessPath.path) == alias.path, "foreign symlink replaced") }
+            try fm.removeItem(at: witnessPath)
+            if fm.fileExists(atPath: alias.path) { try fm.removeItem(at: alias) }
+            try refreshWitness()
+        }
+        // Reject special files before attempting a blocking payload read.
+        try fm.removeItem(at: witnessPath)
+        try require(mkfifo(witnessPath.path, 0o600) == 0, "fixture FIFO unavailable")
+        let fifoStarted = Date()
+        try runWitness("witness_fifo", expectedHealth: 1)
+        var fifoInfo = stat(); try require(lstat(witnessPath.path, &fifoInfo) == 0 &&
+            (fifoInfo.st_mode & S_IFMT) == S_IFIFO && Date().timeIntervalSince(fifoStarted) < 3,
+            "foreign FIFO blocked readiness or was replaced")
+        try fm.removeItem(at: witnessPath); try refreshWitness()
+        // Unknown witness bytes are not authority for failure revocation.
+        // Negative ACK still preserves the existing rejection/no-replay path.
+        let malformedWitness = Data("{".utf8)
+        try malformedWitness.write(to: witnessPath)
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("witness_unknown_rejected"),
+                configuration: configuration, root: privateRoot, readinessWitnessEnabled: true)
+            throw NSError(domain: "fixture", code: 1)
+        } catch RCCRuntimeGatewayClient.Failure.rpcRejected { }
+        try require(try Data(contentsOf: witnessPath) == malformedWitness &&
+            !fm.fileExists(atPath: witnessDirectory.appendingPathComponent("health-witness-owner-disabled").path),
+            "unknown witness failure mutated optional generation state")
+        try fm.removeItem(at: witnessPath); try refreshWitness()
+        // Revoke even if clock rollback rejects reuse AND another observer
+        // holds the optional lock. Failure must not revive on time recovery.
+        let barrierPath = witnessDirectory.appendingPathComponent("health-witness-owner-disabled")
+        var clockFuture = try JSONSerialization.jsonObject(with: Data(contentsOf: witnessPath)) as! [String: Any]
+        let recoverUptime = ProcessInfo.processInfo.systemUptime + 3
+        clockFuture["observedUptime"] = recoverUptime
+        clockFuture["observedUnix"] = Date().timeIntervalSince1970 + 3
+        try writeWitness(clockFuture)
+        let futureBytes = try Data(contentsOf: witnessPath)
+        let failureLock = open(witnessDirectory.appendingPathComponent("health-witness.lock").path, O_RDWR | O_NOFOLLOW)
+        try require(failureLock >= 0 && flock(failureLock, LOCK_EX | LOCK_NB) == 0, "fixture failure lock unavailable")
+        let beforeClockFailure = try healthCount(), failureStarted = Date()
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("witness_clock_rejected"),
+                configuration: configuration, root: privateRoot, readinessWitnessEnabled: true)
+            throw NSError(domain: "fixture", code: 1)
+        } catch RCCRuntimeGatewayClient.Failure.rpcRejected { }
+        try require(try healthCount() == beforeClockFailure + 1 && Data(contentsOf: witnessPath) == futureBytes &&
+            fm.fileExists(atPath: barrierPath.path) && Date().timeIntervalSince(failureStarted) < 3,
+            "held-lock/future-clock failure stalled or failed to disable owner reuse")
+        _ = flock(failureLock, LOCK_UN); _ = close(failureLock)
+        let barrierBytes = try Data(contentsOf: barrierPath)
+        try await Task.sleep(for: .seconds(max(0, recoverUptime - ProcessInfo.processInfo.systemUptime + 0.05)))
+        try runWitness("witness_clock_recovered", expectedHealth: 1)
+        try runWitness("witness_clock_sticky", expectedHealth: 1)
+        try require(try Data(contentsOf: witnessPath) == futureBytes && Data(contentsOf: barrierPath) == barrierBytes,
+            "fresh health cleared sticky barrier or refreshed the failed owner witness")
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("witness_rejected"),
+                configuration: configuration, root: privateRoot, readinessWitnessEnabled: true)
+            throw NSError(domain: "fixture", code: 1)
+        } catch RCCRuntimeGatewayClient.Failure.rpcRejected { }
+        try require(!fm.fileExists(atPath: witnessPath.path), "negative ACK did not archive known witness")
+        // A barrier with unknown content still denies caching and is never
+        // overwritten or cleared by fresh health or failure invalidation.
+        let unknownBarrier = Data("unknown pre-existing generation barrier".utf8)
+        try unknownBarrier.write(to: barrierPath)
+        _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration,
+            root: privateRoot, readinessWitnessEnabled: true)
+        try runWitness("witness_lost_ack", expectedHealth: 1)
+        try runWitness("witness_unknown_barrier", expectedHealth: 1)
+        try require(!fm.fileExists(atPath: witnessPath.path) && (try Data(contentsOf: barrierPath)) == unknownBarrier,
+            "unknown barrier was cleared/overwritten or failed generation witness reissued")
+        // Reuse never skips the current private full-config digest check.
+        let currentConfig = witnessDirectory.appendingPathComponent("config.json")
+        let originalConfig = try Data(contentsOf: currentConfig)
+        let beforeConfigTamper = try healthCount()
+        try Data("{}".utf8).write(to: currentConfig)
+        do {
+            _ = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("witness_live_config_tamper"),
+                configuration: configuration, root: privateRoot, readinessWitnessEnabled: true)
+            throw NSError(domain: "fixture", code: 1)
+        } catch RCCRuntimeGatewayClient.Failure.privateStateInvalid { }
+        try originalConfig.write(to: currentConfig)
+        try require(try healthCount() == beforeConfigTamper, "current config mismatch sent a health/submit")
+        let concurrentHealth = try healthCount()
+        let witnessConcurrentRequest = try request("witness_concurrent")
+        let witnessWarmTask = Task.detached {
+            try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration, root: privateRoot,
+                readinessWitnessEnabled: true)
+        }
+        let witnessRunTask = Task.detached {
+            try RCCRuntimeGatewayClient.runForOfflineFixture(request: witnessConcurrentRequest,
+                configuration: configuration, root: privateRoot, readinessWitnessEnabled: true)
+        }
+        _ = try await witnessWarmTask.value; _ = try await witnessRunTask.value
+        try require(try healthCount() == concurrentHealth + 2, "sticky generation skipped fresh health during concurrent warm/task")
+        let witnessCounts = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("submits.json"))) as! [String: Int]
+        try require(witnessCounts.filter { $0.key.hasPrefix("witness_") }.allSatisfy { $0.value == 1 },
+            "negative/lost/concurrent witness path duplicated submit")
+        print("RCC readiness witness: defaultOFF, exact health callcounts, invalid/foreign preservation, explicit warm/status/cancel, sticky failure barrier, rejection/loss and concurrency PASS; synthetic transport only")
         var progress = [String]()
         let first = try RCCRuntimeGatewayClient.runForOfflineFixture(request: request("first"), configuration: configuration, root: privateRoot,
             progress: { bytes in progress.append((try? state(bytes)) ?? "invalid") })
@@ -557,11 +754,16 @@ struct RCCRuntimeGatewayClientFixture {
             subagent["allowedModels"] as? [String] == ["ollama/qwen3.5:4b"], "background planner authority was not exact local-only")
         let configAttributes = try fm.attributesOfItem(atPath: ownerDirectory.appendingPathComponent("config.json").path)
         try require((configAttributes[.posixPermissions] as! NSNumber).intValue & 0o077 == 0, "token config not private")
+        _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration,
+            root: privateRoot, readinessWitnessEnabled: true)
+        try require(fm.fileExists(atPath: barrierPath.path) && !fm.fileExists(atPath: witnessPath.path),
+            "fresh warm cleared disabled owner generation")
         try Data("busy".utf8).write(to: privateRoot.appendingPathComponent("busy"))
         do {
             _ = try RCCRuntimeGatewayClient.quiesceForOfflineFixture(configuration: configuration, root: privateRoot)
             throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "active Gateway stopped"])
         } catch RCCRuntimeGatewayClient.Failure.upgradeNotQuiescent { }
+        try require(!fm.fileExists(atPath: witnessPath.path), "quiesce recreated disabled readiness witness")
         try require(kill(ownedPID!, 0) == 0, "active owner was signalled")
         try fm.removeItem(at: privateRoot.appendingPathComponent("busy"))
         let upgrade = try RCCRuntimeGatewayClient.quiesceForOfflineFixture(configuration: configuration, root: privateRoot)
@@ -587,6 +789,28 @@ struct RCCRuntimeGatewayClientFixture {
         try require(concurrentCounts["after_upgrade"] == 1, "concurrent warmup duplicated task submit")
         let oldTask = try JSONSerialization.jsonObject(with: Data(contentsOf: privateRoot.appendingPathComponent("first.json"))) as! [String: Any]
         try require(oldTask["state"] as? String == "returned_unverified", "upgrade discarded durable task state")
+        // Only actual retirement/replacement creates a different generation.
+        // Its fresh positive health may issue/reuse its own private witness;
+        // the previous generation's unknown barrier remains unchanged.
+        let newWitnessDirectory = URL(fileURLWithPath: newOwner["directory"] as! String)
+        let newWitnessPath = newWitnessDirectory.appendingPathComponent("last-successful-health.json")
+        try require(newWitnessDirectory != witnessDirectory, "owner generation directory was reused")
+        _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration,
+            root: privateRoot, readinessWitnessEnabled: true)
+        try require(fm.fileExists(atPath: newWitnessPath.path) &&
+            !fm.fileExists(atPath: newWitnessDirectory.appendingPathComponent("health-witness-owner-disabled").path),
+            "new owner inherited disabled cache generation")
+        try runWitness("witness_new_generation", expectedHealth: 0)
+        try require(try Data(contentsOf: barrierPath) == unknownBarrier, "retirement deleted unknown old-generation barrier")
+        try Data("busy".utf8).write(to: privateRoot.appendingPathComponent("busy"))
+        do {
+            _ = try RCCRuntimeGatewayClient.quiesceForOfflineFixture(configuration: configuration, root: privateRoot)
+            throw NSError(domain: "fixture", code: 1)
+        } catch RCCRuntimeGatewayClient.Failure.upgradeNotQuiescent { }
+        try require(!fm.fileExists(atPath: newWitnessPath.path) &&
+            fm.fileExists(atPath: newWitnessDirectory.appendingPathComponent("health-witness-owner-disabled").path) &&
+            kill(ownedPID!, 0) == 0, "quiescence failed to revoke positive witness or signalled busy owner")
+        try fm.removeItem(at: privateRoot.appendingPathComponent("busy"))
         // A dead/replaced original owner is not a reason to start another
         // owner during recovery. This is the fixture's own isolated PID only.
         do {
