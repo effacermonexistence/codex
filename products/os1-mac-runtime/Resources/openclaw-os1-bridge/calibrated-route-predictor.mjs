@@ -4,6 +4,7 @@
  * harness/capacity observations; native model names never fill missing fields.
  * The arithmetic projection is pure after that source/custody boundary.
  */
+import {createHash} from 'node:crypto';
 import {readCalibratedRouteEvidence} from './calibrated-route-evidence.mjs';
 import {frozenRouteData} from './frozen-route-artifacts.mjs';
 import {frozenRouteFeatureBucket} from './frozen-route-predictor.mjs';
@@ -31,8 +32,56 @@ const BINDING_KEYS = ['rcc_source_sha256', 'policy_sha256', 'environment_sha256'
   'reference_descriptor_sha256', 'candidate_pool_sha256', 'coverage_discriminator_sha256',
   'projection_instructions_sha256', 'workload_class', 'feature_schema_version', 'scope', 'native_harnesses'];
 const CURRENT_KEYS = ['rcc_source_sha256', 'coverage_discriminator_sha256', 'native_harnesses'];
+const WHOLE_ROUTE_SCOPE = 'single_primary_with_optional_verified_reference_fallback_plus_disjoint_host_overheads_v1';
+const WHOLE_ROUTE_KEYS = ['schema','kind','scope','method','role','frozen_at_ms','minimum_episodes_per_stratum_config',
+  'verifier_sha256','reference_descriptor_sha256','source_sha256'];
 const configOf = c => Object.fromEntries(CONFIG_KEYS.map(k => [k, c[k]]));
 const configHash = c => exactConfigFingerprint(configOf(c));
+
+/** Validate raw host data WITHOUT cloning engine/owner-policy bodies. The raw
+ * string ceiling is Core's existing 1,000,000-byte task/catalog envelope, not
+ * an enlarged DEV JSON limit. Full Core history/rights/admission validation
+ * still precedes this call. Accessors are rejected before reading ANY value or
+ * invoking a custom preparer. Only the small explicit projection is copied.
+ */
+function projectContext(raw) {
+  let nodes=0,bytes=0;const active=new Set();
+  const inspect=(x,depth)=>{
+    need(++nodes<=30000&&depth<=24,'cp_host_context_bound');
+    if(x===null||typeof x==='boolean')return;
+    if(typeof x==='string'){const n=Buffer.byteLength(x);bytes+=n;
+      need(n<=1000000&&bytes<=3000000&&!x.includes('\0'),'cp_host_context_string_bound');return;}
+    if(typeof x==='number'){need(Number.isFinite(x),'cp_host_context_nonfinite');return;}
+    need(x&&typeof x==='object'&&(Array.isArray(x)||[Object.prototype,null].includes(Object.getPrototypeOf(x)))&&
+      !active.has(x),'cp_host_context_plain_data_required');active.add(x);
+    const descriptors=Object.getOwnPropertyDescriptors(x),keys=Reflect.ownKeys(x);
+    need(keys.every(k=>typeof k==='string'&&Object.hasOwn(descriptors[k],'value'))&&
+      !keys.some(k=>['__proto__','constructor','prototype'].includes(k)),'cp_host_context_accessor_or_key');
+    if(Array.isArray(x))need(x.length<=4096&&keys.length===x.length+1&&
+      Array.from({length:x.length},(_,i)=>Object.hasOwn(x,i)).every(Boolean),'cp_host_context_dense_array');
+    for(const k of keys){bytes+=Buffer.byteLength(k);need(bytes<=3000000,'cp_host_context_string_bound');inspect(descriptors[k].value,depth+1);}
+    active.delete(x);
+  };
+  inspect(raw,0);
+  need(exact(raw,['task','node','baseline_plan','catalog','baseline_candidate','reference_candidate','now_ms']),
+    'cp_host_context_shape');
+  const task=raw.task,node=raw.node;
+  need(plain(task)&&plain(node)&&plain(task.policy)&&plain(raw.catalog)&&Array.isArray(raw.catalog.candidates)&&
+    raw.catalog.candidates.length<=32&&typeof task.request==='string'&&Buffer.byteLength(task.request)<=64000&&
+    task.objective===task.request&&createHash('sha256').update(task.request).digest('hex')===task.request_sha256,
+  'cp_original_request_not_bound');
+  const pick=(x,keys)=>Object.fromEntries(keys.map(k=>[k,x[k]]));
+  // Request/instruction and the FULL baseline plan remain byte/hash checked.
+  // The actual task, engine and execution prompt are never rewritten.
+  return frozenRouteData({
+    task:{...pick(task,['task_id','mode','request','request_sha256','source_fingerprint','policy_sha256','material_refs']),
+      policy:{source_sha256:task.policy.source_sha256}},
+    node:pick(node,['id','candidate_id','scope','instruction','owned_paths','dependencies']),
+    baseline_plan:raw.baseline_plan,catalog:{candidates:raw.catalog.candidates.map(c=>({id:c.id,...configOf(c)}))},
+    baseline_candidate:{id:raw.baseline_candidate.id,...configOf(raw.baseline_candidate)},
+    reference_candidate:{id:raw.reference_candidate.id,...configOf(raw.reference_candidate)},now_ms:raw.now_ms,
+  });
+}
 
 function contextBinding(prepared, context) {
   need(exact(prepared, PREPARED_KEYS) && exact(prepared.selector_input, INPUT_KEYS), 'cp_prepared_record_shape');
@@ -91,7 +140,7 @@ function prepareFromBundle(bundle, context) {
  * Missing records are a normal R0-preserving result. */
 export function prepareCalibratedRouteRequest(evidence, context) {
   try {
-    context = frozenRouteData(context);
+    context = projectContext(context);
     const bundle = readCalibratedRouteEvidence(evidence, {now_ms:context.now_ms});
     if (bundle === null) return null;
     return prepareFromBundle(bundle, context);
@@ -106,10 +155,12 @@ function partition(bundle, cell, config, task, now) {
   const p = rows[0];
   need(exact(p, ['stratum_sha256','config_sha256','components','basis_artifact_sha256','basis_sample_count']) &&
     exact(p.components, RESOURCE_COMPONENTS) && RESOURCE_COMPONENTS.every(k => Number.isFinite(p.components[k]) && p.components[k] >= 0) &&
-    hash(p.basis_artifact_sha256) && count(p.basis_sample_count) && p.basis_sample_count > 0,
+    hash(p.basis_artifact_sha256) && count(p.basis_sample_count) &&
+    p.basis_sample_count >= bundle.whole_route_policy.minimum_episodes_per_stratum_config,
   'cp_resource_partition_invalid');
-  // No allocation from the P7 scalar total, not even a presumed zero. These
-  // complete component means were independently source-checked by the loader.
+  // No allocation from the P7 single-attempt scalar, not even a presumed zero.
+  // These means cover independently verified complete TRAIN route episodes,
+  // including each observed checker-rejected primary + optional REF fallback.
   const estimate = {unit:RESOURCE_UNIT,basis:'observed_history',accounting_scope:'disjoint_remaining_node_total_v1',
     basis_artifact_sha256:p.basis_artifact_sha256,basis_sample_count:p.basis_sample_count,
     config_sha256:config,task_sha256:digest(task),observed_at_ms:bundle.fit.assessed_at_ms,
@@ -135,6 +186,13 @@ function projection(bundle, prepared, context) {
     new Set(b.native_harnesses.map(h=>h.config_sha256)).size === b.native_harnesses.length,
   'cp_current_native_or_source_binding');
   const t=q.task, reference=q.quality_reference, pool=candidatePoolFingerprint(q.candidates), referenceHash=digest(reference);
+  const whole=bundle.whole_route_policy;
+  need(exact(whole,WHOLE_ROUTE_KEYS) && whole.schema===1 && whole.kind==='whole_route_resource_policy_v1' &&
+    whole.scope===WHOLE_ROUTE_SCOPE && whole.method==='empirical_mean_complete_train_route_episodes_v1' && whole.role==='train' &&
+    count(whole.frozen_at_ms) && whole.frozen_at_ms<=bundle.fit.fit_at_ms &&
+    count(whole.minimum_episodes_per_stratum_config) && whole.minimum_episodes_per_stratum_config>0 &&
+    whole.verifier_sha256===b.verifier_sha256 && whole.reference_descriptor_sha256===referenceHash && hash(whole.source_sha256),
+  'cp_whole_route_resource_policy_missing_or_unsupported');
   need(t.policy_sha256 === b.policy_sha256 && t.environment_sha256 === b.environment_sha256 &&
     t.verifier_sha256 === b.verifier_sha256 && t.instructions_sha256 === b.projection_instructions_sha256 &&
     t.workload_class === b.workload_class && t.scope === b.scope && t.feature_schema_version === b.feature_schema_version &&
@@ -222,7 +280,8 @@ function projection(bundle, prepared, context) {
     original_r0:{...prepared.original_r0,resource_total:r0.total},
     frontier:{candidate_id:q.execution_fallback.candidate_id,config_sha256:reference.config_sha256,resource_total:frontier.total},
     score_semantics:'frozen_exact_stratum_empirical_estimate_not_per_task_guarantee',
-    resource_scope:'single_native_attempt_including_children_plus_disjoint_host_overheads_v1',
+    resource_scope:whole.scope,resource_estimation_method:whole.method,resource_support_role:whole.role,
+    whole_route_resource_policy_sha256:digest(whole),
     cell_assessments:cells.filter(c=>rows.some(r=>r.config_sha256===c.routed.config_sha256)).map(c=>({
       stratum_sha256:c.stratum_sha256,config_sha256:c.routed.config_sha256,
       task_success_mle:c.fitted_bernoulli_mle.success,task_success_lower_bound:c.calibration_assessment.success.one_sided_lower_bound,
@@ -258,11 +317,11 @@ export function createCalibratedRoutePredictor(options={}) {
       selection:data?.selection??null,receipt:data?.receipt??null,predictor_inference_observed:data!==null,
       execution_authorized:false,live_route_change_authorized:false,quality_certificate:false,model_calls:0});
     try {
-      context=frozenRouteData(context);
+      const originalContext=context;context=projectContext(context);
       const bundle=readCalibratedRouteEvidence(evidence,{now_ms:context.now_ms});
       need(bundle!==null,'cp_evidence_not_registered_or_fresh');
       need(prepare===null || typeof prepare==='function','cp_host_prepare_not_callable');
-      const raw=prepare===null?prepareFromBundle(bundle,context):prepare(context);
+      const raw=prepare===null?prepareFromBundle(bundle,context):prepare(originalContext);
       need(raw!==null && !raw?.then,'cp_host_preoutcome_record_missing');
       const prepared=frozenRouteData(raw);
       // Even a trusted callback cannot substitute an unregistered record.

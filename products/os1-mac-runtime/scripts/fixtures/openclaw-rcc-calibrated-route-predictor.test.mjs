@@ -1,15 +1,17 @@
 // SYNTHETIC SOFTWARE CONTRACTS ONLY. No provider/model execution, real training
 // result, production promotion, quota saving or externally certified quality.
 import test from 'node:test';
+import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {writeCalibratedRouteFixture} from './calibrated-route-evidence.synthetic.mjs';
-import {readCalibratedRouteEvidence} from '../../Resources/openclaw-os1-bridge/calibrated-route-evidence.mjs';
+import {readCalibratedRouteEvidence,loadHostCalibratedRouteRegistration,loadCalibratedRouteEvidence}
+  from '../../Resources/openclaw-os1-bridge/calibrated-route-evidence.mjs';
 import {createCalibratedRoutePredictor,prepareCalibratedRouteRequest,isCalibratedRoutePredictor,isCalibratedRouteInference}
   from '../../Resources/openclaw-os1-bridge/calibrated-route-predictor.mjs';
-import {digest,exactConfigFingerprint,RESOURCE_UNIT,selectJointRoute} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';
+import {digest,stableJSON,exactConfigFingerprint,RESOURCE_UNIT,selectJointRoute} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';
 import {frozenRouteFeatureBucket} from '../../Resources/openclaw-os1-bridge/frozen-route-predictor.mjs';
 
 const NOW=100_000, H=x=>digest('SYNTHETIC:'+x), copy=x=>structuredClone(x);
@@ -31,12 +33,12 @@ function fixture(t,{three_configs=true,recordChange=()=>{},contextChange=()=>{},
         config_sha256:exactConfigFingerprint(config),observation_sha256:H('available-'+config.model),...fresh},
       quota:{state:'sufficient',account_id:config.account_id,quota_pool:config.quota_pool,observation_sha256:H('quota'),...fresh}}));
     const original={task_id:'SYNTHETIC-current-task',mode:'auto',request:'SYNTHETIC original request',
-      request_sha256:H('current-request'),source_fingerprint:H('current-source'),policy_sha256:b.policy_sha256,
+      request_sha256:createHash('sha256').update('SYNTHETIC original request').digest('hex'),objective:'SYNTHETIC original request',source_fingerprint:H('current-source'),policy_sha256:b.policy_sha256,
       material_refs:[],policy:{source_sha256:b.rcc_source_sha256}};
     const node={id:'SYNTHETIC-current-node',kind:'agent',candidate_id:idFor(baselineConfig),instruction:original.request,
       scope:'read_only',owned_paths:[],dependencies:[]};
     const baseline_plan={schema:1,nodes:[node]};
-    context={task:original,node,baseline_plan,catalog:{candidates:candidates.map(c=>({id:c.id,...c.config}))},
+    context={task:original,node,baseline_plan,catalog:{request_class:b.workload_class,candidates:candidates.map(c=>({id:c.id,...c.config}))},
       baseline_candidate:{id:idFor(baselineConfig),...baselineConfig},reference_candidate:{id:idFor(referenceConfig),...referenceConfig},now_ms:NOW};
     const task={...copy(required),id:original.task_id,node_id:node.id,request_sha256:original.request_sha256,
       source_snapshot_sha256:original.source_fingerprint,plan_sha256:digest(baseline_plan),instructions_sha256:b.projection_instructions_sha256};
@@ -89,8 +91,19 @@ test('real default preparation -> protected synthetic capability -> nonnull fore
   assert.notEqual(again.selected.candidate_id,r.receipt.frontier.candidate_id);
   assert(again.selected.resource.total<r.receipt.original_r0.resource_total);
   assert(again.selected.resource.total<r.receipt.frontier.resource_total);
+  const stratum=r.receipt.cell_assessments.find(c=>c.config_sha256===exactConfigFingerprint(again.selected.config)).stratum_sha256;
+  const episodes=f.files['resource-partitions.json'].episodes.filter(e=>e.stratum_sha256===stratum&&e.config_sha256===exactConfigFingerprint(again.selected.config));
+  const completeMean=episodes.reduce((sum,e)=>sum+Object.values(e.components).reduce((a,b)=>a+b,0),0)/episodes.length;
+  assert.equal(again.selected.resource.total,completeMean);
+  assert.equal(again.selected.resource.basis_artifact_sha256,digest(f.files['resource-partitions.json']));
+  assert.equal(r.selector_input.forecasts.rows[0].resource_estimate.basis_sample_count,episodes.length);
+  assert(episodes.some(e=>e.attempts.length===2&&e.checker.verdict==='rejected'));
+  assert(r.selector_input.forecasts.rows[0].resource_estimate.components.retry_reserve_tokens>0);
   assert.equal(again.selected.samples,1);assert.equal(again.predictor_executed,false);
   for(const row of r.selector_input.forecasts.rows)assert(row.uncertainty.lower_bound<=row.match_probability);
+  assert.equal(r.receipt.resource_scope,'single_primary_with_optional_verified_reference_fallback_plus_disjoint_host_overheads_v1');
+  assert.equal(r.receipt.resource_estimation_method,'empirical_mean_complete_train_route_episodes_v1');
+  assert.equal(r.receipt.resource_support_role,'train');
   assert.equal(r.receipt.score_semantics,'frozen_exact_stratum_empirical_estimate_not_per_task_guarantee');
   assert(r.receipt.cell_assessments.every(x=>x.calibration_accepted_B===0));
   assert.equal(r.model_calls,0);assert(Object.isFrozen(r.selector_input.forecasts.rows[0]));
@@ -132,7 +145,6 @@ for(const [name,change] of [
 });
 for(const [name,change] of [
   ['source unknown',p=>p.features.source_state='unknown'],
-  ['post-outcome forged calibration',p=>p.selector_input.calibration={status:'calibrated'}],
   ['multi-sample',p=>p.task_boundary.samples=2],
   ['future turn',p=>p.task_boundary.turn_index=1],
   ['native harness changed',p=>p.current_bindings.native_harnesses[0].native_binary_sha256=H('foreign-binary')],
@@ -176,4 +188,60 @@ test('conservative projection clips a calibration bound above the frozen trainin
   assert(cell);const point=cell.fitted_bernoulli_mle.match,cal=cell.calibration_assessment.match.one_sided_lower_bound;
   assert(cal>point);assert.equal(r.selection.selected.predicted_match,point);
   assert.equal(r.selection.selected.predicted_lower_bound,point);
+});
+
+// Re-pin a SYNTHETIC reviewer/manifest/registration so these negatives exercise
+// the semantic whole-route gate, not merely stale bytes. This is not an actual
+// independent review or a production artifact-authoring facility.
+function requalifyResourceMutation(f,change){
+  const files=copy(f.files);change(files['resource-partitions.json']);
+  const review=files['promotion-review.json'];review.resource_partitions_sha256=digest(files['resource-partitions.json']);
+  const manifest=copy(f.manifest);manifest.files=Object.entries(files).map(([name,x])=>
+    ({name,sha256:digest(x),bytes:Buffer.byteLength(stableJSON(x))}));
+  const manifest_sha256=digest(manifest),next=join(f.stateDir,'calibrated-route-evidence',manifest_sha256);
+  fs.mkdirSync(next,{mode:0o700});
+  for(const [name,x]of Object.entries({...files,'manifest.json':manifest}))
+    fs.writeFileSync(join(next,name),stableJSON(x),{mode:0o600,flag:'wx'});
+  const reg=copy(f.registrationData);reg.manifest_sha256=manifest_sha256;reg.manifest_bytes=Buffer.byteLength(stableJSON(manifest));
+  reg.review_sha256=digest(review);fs.writeFileSync(join(f.stateDir,'calibrated-route-registration.json'),stableJSON(reg),{mode:0o600});
+  const registration=loadHostCalibratedRouteRegistration({stateDir:f.stateDir,now_ms:f.context.now_ms});
+  return loadCalibratedRouteEvidence({stateDir:f.stateDir,registration,now_ms:f.context.now_ms});
+}
+test('re-pinned source packet without whole-route episodes cannot qualify or manufacture cost savings',t=>{
+  const f=fixture(t),loaded=requalifyResourceMutation(f,p=>{p.episodes=[];});
+  assert.equal(loaded.status,'not_registered');assert.equal(loaded.reason,'ce_whole_route_history_absent');
+  preserved(createCalibratedRoutePredictor({evidence:loaded.capability})(f.context));
+});
+test('old single-attempt scope cannot be re-labelled as complete remaining-route resources',t=>{
+  const f=fixture(t),loaded=requalifyResourceMutation(f,p=>{
+    p.whole_route_policy.scope='single_native_attempt_including_children_plus_disjoint_host_overheads_v1';
+  });
+  assert.equal(loaded.status,'not_registered');assert.equal(loaded.reason,'ce_whole_route_policy_missing_or_invalid');
+  preserved(createCalibratedRoutePredictor({evidence:loaded.capability})(f.context));
+});
+
+test('post-outcome record is rejected by loader before any forecast projection',t=>{
+  assert.throws(()=>fixture(t,{recordChange:p=>p.selector_input.calibration={status:'calibrated'}}),/ce_preoutcome_record_binding/);
+});
+test('large full engine/owner-policy metadata is not copied into bounded predictor context or removed from actual task',t=>{
+  const f=fixture(t),context=copy(f.context),engine='SYNTHETIC ENGINE '.repeat(1000);
+  context.task.policy.text=engine;context.task.host_context={owner_policy:{projection:engine}};
+  const original=copy(context);const r=f.predictor(context);
+  assert.equal(r.status,'qualified_synthetic_fixture',r.reason);assert.deepEqual(context,original);
+  assert.equal(context.task.policy.text,engine);assert.equal(context.task.host_context.owner_policy.projection,engine);
+  assert(!JSON.stringify(r).includes('SYNTHETIC ENGINE'));assert(r.selector_input.calibration);
+  const prepared=prepareCalibratedRouteRequest(f.capability,context);assert(prepared);
+  const custom=createCalibratedRoutePredictor({evidence:f.capability,prepare:full=>{
+    assert.equal(full.task.policy.text,engine);return f.prepared;
+  }});assert.equal(custom(context).status,'qualified_synthetic_fixture');
+});
+test('raw context guard rejects hidden getters/symbols/prototypes/sparse arrays before preparer side effects',t=>{
+  const f=fixture(t);let getters=0,prepares=0;
+  const predictor=createCalibratedRoutePredictor({evidence:f.capability,prepare:()=>{prepares++;return f.prepared;}});
+  const getter=copy(f.context);Object.defineProperty(getter.task.policy,'text',{get(){getters++;return 'PRIVATE';}});
+  const symbol=copy(f.context);symbol.task.policy[Symbol('private')]='value';
+  const prototype=copy(f.context);Object.setPrototypeOf(prototype.task.policy,{unknown:true});
+  const sparse=copy(f.context);sparse.catalog.candidates=new Array(3);
+  for(const context of [getter,symbol,prototype,sparse])preserved(predictor(context));
+  assert.equal(getters,0);assert.equal(prepares,0);
 });
