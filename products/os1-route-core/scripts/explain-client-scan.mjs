@@ -24,6 +24,18 @@ for (const [fingerprint, provenance] of Object.entries(policy.publicTokenProvena
       provenance.sourceAnchor === 'private func routeLanesCompletionSelfTest() async throws' &&
       provenance.localTypeAnchor === 'final class Gate { var continuation: CheckedContinuation<Void, Never>?; var calls = 0 }'
     )) throw new Error('Invalid exact function-local compiler provenance');
+    // Exactly one source-audited function-local Control introduced by the
+    // R10 App ingress fixture. This guards the exact hash row only; it does
+    // not expand scanner syntax, entropy thresholds or Mach-O exemptions.
+    if (fingerprint === 'a6819f685bc5915b2dea314240fe8f94fed970e5a303cb91432dcef97b413f3a' && !(
+      provenance.demangledPublicType === 'Control #1 in OS1App.(rccIntentIngressAppSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()' &&
+      provenance.source === 'products/os1-mac-runtime/Sources/OS1App/OS1App.swift' &&
+      provenance.sourceRevision === 'f0cb0374a63b6eab1cee62258870ec2eeb845024' &&
+      provenance.sourceSHA256 === '24069e01bff513b7f5a092c99b836c01f1d9d9703aa21a129987a2b124706e1e' &&
+      provenance.sourceURL === `https://github.com/effacermonexistence/codex/blob/${provenance.sourceRevision}/${provenance.source}` &&
+      provenance.sourceAnchor === 'private func rccIntentIngressAppSelfTest() async throws' &&
+      provenance.localTypeAnchor === '@MainActor final class Control {'
+    )) throw new Error('Invalid exact R10 ingress compiler provenance');
     // One source-audited static-function-local class uses Swift's Z marker.
     // This is diagnostic classification of an already exact-hash policy row,
     // not a scanner prefix/section exception or a broader mangling grammar.

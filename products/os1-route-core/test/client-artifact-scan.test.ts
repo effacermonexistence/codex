@@ -431,6 +431,87 @@ describe("client release artifact hygiene gate", () => {
     expect(unreviewed.stderr.includes(unknown)).toBe(false);
   });
 
+  it("allows only the source-verified build420 ingress Control in either universal cstring slice", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-build420-ingress-control-"));
+    temporaryDirectories.push(directory);
+    const file = join(directory, "client.bin");
+    const policy = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprint = "a6819f685bc5915b2dea314240fe8f94fed970e5a303cb91432dcef97b413f3a";
+    const entry = policy.publicTokenProvenance[fingerprint];
+    expect(entry.tokenKind).toBe("compiler_type");
+    expect(entry.sourceRevision).toBe("f0cb0374a63b6eab1cee62258870ec2eeb845024");
+    expect(entry.sourceSHA256).toBe("24069e01bff513b7f5a092c99b836c01f1d9d9703aa21a129987a2b124706e1e");
+    expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
+    const source = await readFile(new URL("../../../" + entry.source, import.meta.url));
+    expect(createHash("sha256").update(source).digest("hex")).toBe(entry.sourceSHA256);
+    const text = source.toString("utf8"), functionStart = text.indexOf(entry.sourceAnchor);
+    expect(functionStart >= 0).toBe(true);
+    expect(text.indexOf(entry.localTypeAnchor, functionStart) > functionStart).toBe(true);
+    expect(createHash("sha256").update(entry.publicToken).digest("hex")).toBe(fingerprint);
+    expect(policy.entropy.allowedTokenSha256.filter((value: string) => value === fingerprint)).toHaveLength(1);
+    expect(policy.entropy.minimumLength).toBe(48);
+    expect(policy.entropy.minimumBitsPerCharacter).toBe(4.7);
+    if (process.platform === "darwin") {
+      const demangled = spawnSync("xcrun", ["swift-demangle", "--compact"], {input: entry.publicToken + "\n", encoding: "utf8"});
+      expect(demangled.status).toBe(0);
+      expect(demangled.stdout.trim() === entry.demangledPublicType).toBe(true);
+    }
+    await writeFile(file, universalMachOCStringFixture([entry.publicToken, entry.publicToken]));
+    expect((await scanClientArtifacts([file])).findings).toEqual([]);
+    const altered = entry.publicToken.slice(0, -1) + "X";
+    for (const values of [[altered, entry.publicToken], [entry.publicToken, altered]]) {
+      await writeFile(file, universalMachOCStringFixture(values));
+      const result = await scanClientArtifacts([file]);
+      expect(result.findings.filter(item => item.kind === "high_entropy").map(item => item.fingerprint))
+        .toEqual([createHash("sha256").update(altered).digest("hex")]);
+    }
+    const canary = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/";
+    const mutants = [altered, entry.publicToken + "Extra", entry.publicToken + canary, canary + entry.publicToken, canary];
+    await writeFile(file, universalMachOCStringFixture([entry.publicToken, mutants.join("\0") + "\0private routing prompt"]));
+    const result = await scanClientArtifacts([file]);
+    const rejected = new Set(result.findings.filter(item => item.kind === "high_entropy").map(item => item.fingerprint));
+    for (const token of mutants) expect(rejected.has(createHash("sha256").update(token).digest("hex"))).toBe(true);
+    expect(result.findings.some(item => item.kind === "forbidden_content")).toBe(true);
+    expect(JSON.stringify(result).includes(canary)).toBe(false);
+    expect(JSON.stringify(result).includes(entry.publicToken)).toBe(false);
+  });
+
+  it("classifies only the exact build420 ingress Control with immutable function/class provenance and no raw token output", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os1-build420-control-proof-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "scripts")); await mkdir(join(directory, "security"));
+    const helper = join(directory, "scripts", "explain-client-scan.mjs");
+    await writeFile(helper, await readFile(new URL("../scripts/explain-client-scan.mjs", import.meta.url)));
+    const original = JSON.parse(await readFile(new URL("../security/client-artifact-scan-policy.json", import.meta.url), "utf8"));
+    const fingerprint = "a6819f685bc5915b2dea314240fe8f94fed970e5a303cb91432dcef97b413f3a", entry = original.publicTokenProvenance[fingerprint];
+    const input = join(directory, "client.bin"), policyPath = join(directory, "security", "client-artifact-scan-policy.json");
+    await writeFile(input, universalMachOCStringFixture([entry.publicToken, entry.publicToken]));
+    await writeFile(policyPath, JSON.stringify(original));
+    const valid = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+    expect(valid.status).toBe(0);
+    const rows = valid.stdout.trim().split("\n").map(line => JSON.parse(line));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({fingerprint, length: 94, tokenKind: "compiler_type",
+      publicCompilerType: process.platform === "darwin" ? entry.demangledPublicType : null, source: entry.source});
+    expect(valid.stdout.includes(entry.publicToken)).toBe(false);
+    for (const delta of [{publicToken: entry.publicToken + "Extra"}, {tokenKind: "diagnostic_source_path"},
+      {demangledPublicType: "Wrong public type"}, {source: "products/os1-mac-runtime/Sources/OS1App/Different.swift"},
+      {sourceRevision: "0".repeat(40)}, {sourceSHA256: "0".repeat(64)}, {sourceURL: "https://example.invalid/not-reviewed"},
+      {sourceAnchor: "private func anotherTest() async throws"}, {localTypeAnchor: "struct Control {}"}]) {
+      const policy = structuredClone(original); Object.assign(policy.publicTokenProvenance[fingerprint], delta);
+      await writeFile(policyPath, JSON.stringify(policy));
+      const diagnostic = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+      expect(diagnostic.status !== 0).toBe(true); expect(diagnostic.stdout).toBe("");
+      expect(diagnostic.stderr.includes(entry.publicToken)).toBe(false);
+    }
+    await writeFile(policyPath, JSON.stringify(original));
+    const unknown = entry.publicToken + "Extra";
+    await writeFile(input, universalMachOCStringFixture([unknown, unknown]));
+    const unreviewed = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
+    expect(unreviewed.status).toBe(0); expect(unreviewed.stdout).toBe("");
+    expect(unreviewed.stderr.includes(unknown)).toBe(false);
+  });
+
   it("allows exact audited public compiler type tokens, never a general binary exemption", async () => {
     const directory = await mkdtemp(join(tmpdir(), "os1-public-types-"));
     temporaryDirectories.push(directory);
