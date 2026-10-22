@@ -7,7 +7,7 @@ import { closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, open
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usage.mjs';
 import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adaptive-routing-policy.mjs';
-import { createPlannerHostProjection, compileFreshPlannerProposal } from './adaptive-plan-host.mjs';
+import { createPlannerHostProjection, compileFreshPlannerProposal, isLivePlanCapability } from './adaptive-plan-host.mjs';
 import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector.mjs';
 import { captureRoutingOutcome } from './routing-outcome-capture.mjs';
 import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
@@ -1209,6 +1209,87 @@ export function hostPlan(task, catalog) {
     effective.includes(route) ? [node(explicitRouteNodeID(index), route.instruction)] : [])};
 }
 
+/** The first covered-live seam does NOT adopt decompositions or model-selected
+ * rows. Only the original read-only request, with no external material and a
+ * current R0 full task contract, can be compiled. The model's candidate hint
+ * must agree with the exact row Core independently selected; a certified
+ * descent retains R0's runnable prebound reference and native full checker.
+ * The manifest is loaded by the host, never by a task or proposal. */
+function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
+  assert(isLivePlanCapability(capability, now) && capability.valid_until_ms > now &&
+    task?.mode === 'auto' && activeIntentV2(task, catalog) &&
+    catalog.owner_scope === 'read_only' && hostScope(task, catalog) === 'read_only' &&
+    task.objective === task.request &&
+    typeof task.host_context?.require_read_only === 'boolean' &&
+    withoutConversation(task) &&
+    catalog.request_class === capability.family.workload_class &&
+    task.policy?.source_sha256 === capability.bindings.rcc_source_sha256 &&
+    task.policy_sha256 === capability.bindings.projection_sha256 &&
+    catalog.task_contract?.reference_policy_sha256 === capability.bindings.reference_policy_sha256 &&
+    task.material_refs?.length === 0, 'live_capability_or_source_unavailable');
+  const contract = catalog.task_contract;
+  assert(contract.coverage === 'full' && contract.scope === 'read_only' &&
+    contract.bindings_checked === true && contract.objective_sha256 === task.request_sha256 &&
+    contract.valid_until_ms > now && contract.source_sha256 == null &&
+    contract.context_sha256 === sha(Buffer.from(task.host_context?.context ?? '')),
+  'live_full_task_contract_unavailable');
+  // Ordinary new Auto uses require_read_only:false: it means no extra host
+  // restriction, not permission to write. Current host catalog + R0 contract
+  // independently establish read-only authority; legacy/recovery tasks never
+  // borrow this live seam. Resolve its runnable floor before any planner call.
+  const original = hostPlan(task, catalog);
+  assert(original.nodes.length === 1 && admittedRoute(original.nodes[0], task, catalog, now,
+    {verifierRegistry}).source === 'contract', 'live_r0_full_contract_required');
+  const reference = resolveRoutePlan(original, task, catalog, now, {verifierRegistry});
+  const route = reference.routes[original.nodes[0].id];
+  assert(route?.kind === 'reference' || route?.kind === 'tier' &&
+    route.ladder?.admitted_by === 'contract' &&
+    catalog.candidates.some(c => c.id === route.ladder.reference_candidate_id && dispatchable(c, task, now)),
+  'live_reference_fallback_unavailable');
+  return reference;
+}
+export function admitLivePlannerPlan(compiled, task, catalog, capability, now = Date.now(), verifierRegistry = null) {
+  const reference = livePlannerContext(task, catalog, capability, now, verifierRegistry);
+  assert(compiled?.provenance === 'host_unbound_plan' && compiled.execution_authorized === false &&
+    compiled.quality_parity_verified === false && compiled.binding?.task_id === task.task_id &&
+    compiled.binding.request_sha256 === task.request_sha256 &&
+    compiled.binding.source_fingerprint === task.source_fingerprint &&
+    compiled.binding.policy_sha256 === task.policy_sha256 &&
+    compiled.binding.catalog_sha256 === sha(Buffer.from(stable(catalog))) &&
+    compiled.original_objective?.request === task.request &&
+    compiled.original_objective?.objective === task.objective &&
+    compiled.plan?.nodes?.length === 1 && compiled.node_obligations?.length === 1 &&
+    compiled.candidate_preferences?.length === 1,
+  'live_proposal_binding_or_shape_invalid');
+  const node = compiled.plan.nodes[0], obligation = compiled.node_obligations[0];
+  assert(node.id === obligation.node_id && node.instruction === task.request &&
+    node.kind === 'agent' && node.scope === 'read_only' && node.dependencies.length === 0 &&
+    node.owned_paths.length === 0 && node.context_refs.length === 0 &&
+    compiled.plan.final_node_id === node.id &&
+    obligation.requirement_refs.length === 1 && obligation.requirement_refs[0] === 'owner_objective' &&
+    obligation.check_refs.length === 0 && !Object.hasOwn(node, 'candidate_id'),
+  'live_proposal_not_exact_original');
+  assertFinalOutputOwnership(compiled.plan, task);
+  const admission = admittedRoute(node, task, catalog, now, {verifierRegistry});
+  assert(admission.class === 'certified' && admission.source === 'contract',
+    'live_r0_full_contract_required');
+  const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry});
+  const plan = validatePlan(lockIndivisibleInstruction(resolved.plan, task).plan, task, catalog);
+  const chosen = plan.nodes[0].candidate_id;
+  assert(chosen === reference.plan.nodes[0].candidate_id,
+    'live_candidate_not_independent_r0_choice');
+  assert(compiled.candidate_preferences[0].node_id === node.id &&
+    (compiled.candidate_preferences[0].proposed_candidate_id === null ||
+      compiled.candidate_preferences[0].proposed_candidate_id === chosen),
+  'live_candidate_hint_not_r0_choice');
+  const route = resolved.routes[node.id];
+  assert(route?.kind === 'reference' || route?.kind === 'tier' &&
+    route.ladder?.admitted_by === 'contract' &&
+    catalog.candidates.some(c => c.id === route.ladder.reference_candidate_id && dispatchable(c, task, now)),
+  'live_reference_fallback_unavailable');
+  return {plan, decisions: resolved.decisions, routes: resolved.routes};
+}
+
 /** The private, bounded routing ledger in the Core state directory: one
  * append-only JSONL record per settled attempt, in an owner-only directory
  * (0700) and files (0600), opened without following links or blocking on a
@@ -2225,7 +2306,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, hostAutoPlan = false, ledgerLog = null,
                                          adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null,
-                                         frozenRoutePredictor = null} = {}) {
+                                         frozenRoutePredictor = null, livePlanCapability = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
@@ -2240,9 +2321,18 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   assert(frozenRoutePredictor === null || isFrozenRoutePredictor(frozenRoutePredictor),
     'adaptive_frozen_predictor_not_host_factory');
   assert(adaptivePolicy.mode !== 'shadow' || typeof proposeLocalPlan === 'function', 'adaptive_planner_missing');
-  // Descriptor-shaped input cannot register calibrated authority. Until the
-  // separate host artifact/admission rollout exists, never activate it by flag.
-  assert(adaptivePolicy.mode !== 'covered_live', 'adaptive_live_policy_not_registered');
+  assert(livePlanCapability === null || isLivePlanCapability(livePlanCapability), 'adaptive_live_capability_not_host_loaded');
+  assert(livePlanCapability === null || adaptivePolicy.mode === 'covered_live', 'adaptive_live_capability_mode_invalid');
+  // A covered_live flag without exact private host bytes is inert. It never
+  // promotes P7 DEVELOPMENT data and never starts a planner by itself.
+  assert(adaptivePolicy.mode !== 'covered_live' || livePlanCapability === null ||
+    (hostAutoPlan && typeof proposeLocalPlan === 'function' &&
+      livePlanCapability.manifest_sha256 === adaptivePolicy.adoption_manifest_sha256 &&
+      livePlanCapability.bindings.rcc_source_sha256 === adaptivePolicy.rcc_source_sha256 &&
+      livePlanCapability.bindings.projection_sha256 === adaptivePolicy.projection_sha256 &&
+      livePlanCapability.bindings.reference_policy_sha256 === adaptivePolicy.reference_policy_sha256 &&
+      adaptivePolicy.allowed_workload_classes.includes(livePlanCapability.family.workload_class)),
+  'adaptive_live_registration_invalid');
   assert(ledgerLog === null || typeof ledgerLog === 'function', 'ledger_log_invalid');
   assert(resolveIntent === undefined || typeof resolveIntent === 'function', 'intent_resolver_invalid');
   assert(decideOperationalQuality === undefined || typeof decideOperationalQuality === 'function', 'quality_decider_invalid');
@@ -2291,7 +2381,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                  stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, hostAutoPlan, ledger, ledgerLog,
-                                 adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor});
+                                 adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability});
   runtime.reconcileRestart();
   runtime.reconcileLedger();
   runtime.startQueued();
@@ -2302,7 +2392,7 @@ class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, ledger,
-               ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor}) {
+               ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -2316,6 +2406,7 @@ class RCCRuntime {
     this.adaptivePolicy = adaptivePolicy; this.proposeLocalPlan = proposeLocalPlan;
     this.jointRouteEvidence = jointRouteEvidence;
     this.frozenRoutePredictor = frozenRoutePredictor;
+    this.livePlanCapability = livePlanCapability;
     this.ledger = ledger; this.ledgerLog = ledgerLog;
     // Dispatched attempts whose ledger record is not written yet, with the
     // route facts fixed at dispatch: an attempt that settles after stop is
@@ -3005,7 +3096,7 @@ class RCCRuntime {
    * versioned host adoption policy passes. A failed observation preserves the
    * existing route, never a model-selected adapter_bound shortcut. */
   _jointRouteShadow(task, plan, catalog) {
-    if (this.adaptivePolicy.mode === 'off') return null;
+    if (this.adaptivePolicy.mode !== 'shadow') return null;
     const byID = new Map(catalog.candidates.map(c => [c.id, c]));
     return plan.nodes.map(node => {
       const base = {schema: 1, node_id: node.id, advisory_only: true,
@@ -3066,7 +3157,17 @@ class RCCRuntime {
     // No fabricated quality-reference descriptor. Unknown reference is allowed
     // only for shadow observations; it cannot qualify a cheap live route.
     let disposition;
-    if (typeof workload !== 'string' || scope !== 'read_only') {
+    if (policy.mode === 'covered_live') {
+      try {
+        // Test R0 and the exact source/rights/calibration family BEFORE a local
+        // model call. A partial or unknown task contract is not an invitation
+        // to ask the model to certify itself.
+        assert(this.livePlanCapability?.manifest_sha256 === policy.adoption_manifest_sha256,
+          'live_capability_unavailable');
+        livePlannerContext(task, catalog, this.livePlanCapability, Date.now(), this.verifierRegistry);
+        disposition = {plan_proposals_enabled: true, reason: 'live_host_capability_bound'};
+      } catch { disposition = {plan_proposals_enabled: false, reason: 'live_capability_or_full_contract_unavailable'}; }
+    } else if (typeof workload !== 'string' || scope !== 'read_only') {
       disposition = {plan_proposals_enabled: false, reason: 'adaptive_readonly_workload_unavailable'};
     } else {
       disposition = adaptivePolicyDisposition(policy, {
@@ -3089,8 +3190,9 @@ class RCCRuntime {
     const prepared = createPlannerHostProjection({task, catalog, scope, nonce});
     this._update(taskID, 'adaptive_plan_started', snapshot => {
       assert(!snapshot.cancel_requested && !TERMINAL.has(snapshot.state), 'adaptive_plan_not_active');
-      snapshot.state = 'planning'; snapshot.plan_provenance = 'host_exact_request_shadow';
-      snapshot.adaptive_routing = {schema: 1, mode: 'shadow', state: 'started', planner_invoked: true,
+      snapshot.state = 'planning'; snapshot.plan_provenance = policy.mode === 'shadow' ?
+        'host_exact_request_shadow' : 'host_exact_request';
+      snapshot.adaptive_routing = {schema: 1, mode: policy.mode, state: 'started', planner_invoked: true,
         policy_id: policy.policy_id, policy_version: policy.version, binding: prepared.expectedBinding,
         callback_pending: true, backend_completion_unknown: true,
         live_plan_changed: false, quality_certificate: false};
@@ -3165,13 +3267,19 @@ class RCCRuntime {
         const fresh = createPlannerHostProjection({task: freshTask, catalog: freshCatalog,
           scope: hostScope(freshTask, freshCatalog), nonce});
         compiled = compileFreshPlannerProposal(raw, prepared, fresh, policy);
-        reason = 'shadow_proposal_validated_not_executed';
+        if (policy.mode === 'covered_live') {
+          admitLivePlannerPlan(compiled, freshTask, freshCatalog, this.livePlanCapability,
+            Date.now(), this.verifierRegistry);
+          reason = 'live_host_checked_proposal';
+        } else reason = 'shadow_proposal_validated_not_executed';
       }
       this._update(taskID, 'adaptive_plan_observed', snapshot => {
         snapshot.adaptive_routing = {...snapshot.adaptive_routing, state: 'observed', reason,
           proposed_unbound_plan: compiled?.plan ?? null,
           candidate_preferences: compiled?.candidate_preferences ?? [],
           node_obligations: compiled?.node_obligations ?? [],
+          ...(policy.mode === 'covered_live' && reason === 'live_host_checked_proposal' ?
+            {host_bound_compilation: compiled} : {}),
           semantic_coverage_verified: false, live_plan_changed: false, quality_certificate: false};
       });
       return true;
@@ -3197,10 +3305,15 @@ class RCCRuntime {
       }
       this._update(taskID, 'adaptive_plan_rejected', snapshot => {
         snapshot.adaptive_routing = {...snapshot.adaptive_routing, state: 'observed',
-          reason: !settled ? 'shadow_callback_pending_original_route_preserved' :
-            error?.code === 'adaptive_plan_completion_unknown' ? 'shadow_backend_unknown_original_route_preserved' :
-            controller.signal.aborted ? 'shadow_observer_timeout_original_route_preserved' :
-              'shadow_proposal_invalid_original_route_preserved',
+          reason: policy.mode === 'covered_live' ?
+            !settled ? 'live_callback_pending_host_reference_preserved' :
+              error?.code === 'adaptive_plan_completion_unknown' ? 'live_backend_unknown_host_reference_preserved' :
+                controller.signal.aborted ? 'live_observer_timeout_host_reference_preserved' :
+                  'live_proposal_unadmitted_host_reference_preserved' :
+            !settled ? 'shadow_callback_pending_original_route_preserved' :
+              error?.code === 'adaptive_plan_completion_unknown' ? 'shadow_backend_unknown_original_route_preserved' :
+              controller.signal.aborted ? 'shadow_observer_timeout_original_route_preserved' :
+                'shadow_proposal_invalid_original_route_preserved',
           callback_pending: !settled,
           proposed_unbound_plan: null, candidate_preferences: [], node_obligations: [],
           semantic_coverage_verified: false,
@@ -3406,24 +3519,44 @@ class RCCRuntime {
       else this._hold(taskID, 'planner_unavailable');
       return;
     }
-    let plan, decisions, routes, lockedID = null;
+    let plan, decisions, routes, lockedID = null, liveAdopted = false;
     try {
       if (!await this._observeAdaptivePlan(taskID, admitted, catalog)) return;
       // R7: the host builds the plan itself (hostPlan); no model plans or
       // grades it. An injected plan (fixtures) receives the immutable host
       // state, never a model-authored replacement for that state, and the
       // host then binds exact rows by the same admission law.
-      const proposed = this.hostAutoPlan ? hostPlan(admitted, catalog) :
-        await this.plan({task: immutable(admitted), catalog: immutable(catalog)});
+      let accepted = null;
+      if (this.hostAutoPlan && this.adaptivePolicy.mode === 'covered_live') {
+        const observed = this._load(taskID)?.adaptive_routing;
+        if (observed?.reason === 'live_host_checked_proposal' && observed.host_bound_compilation) {
+          try {
+            accepted = admitLivePlannerPlan(observed.host_bound_compilation, admitted, catalog,
+              this.livePlanCapability, Date.now(), this.verifierRegistry);
+          } catch {
+            // A task/catalog/contract change after the model reply restores
+            // the host plan. Never repair a stale proposal by recomputing its
+            // own hash or retaining the model's candidate hint.
+            this._update(taskID, 'live_plan_admission_lost', snapshot => {
+              snapshot.adaptive_routing.reason = 'live_recheck_failed_host_reference_preserved';
+              delete snapshot.adaptive_routing.host_bound_compilation;
+            });
+          }
+        }
+      }
+      const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog) :
+        await this.plan({task: immutable(admitted), catalog: immutable(catalog)}));
       // Writer serialization is a safety order, not authority to manufacture
       // the planner's final-output dependency coverage.
       assertFinalOutputOwnership(proposed, admitted);
-      const resolved = resolveRoutePlan(proposed, admitted, catalog, boundAt, {verifierRegistry: this.verifierRegistry});
+      const resolved = accepted ?? resolveRoutePlan(proposed, admitted, catalog, boundAt,
+        {verifierRegistry: this.verifierRegistry});
       // One indivisible task runs the owner's own words, never a planner
       // paraphrase (lockIndivisibleInstruction); the decision says so.
       const locked = lockIndivisibleInstruction(resolved.plan, admitted);
       plan = validatePlan(locked.plan, admitted, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
+      liveAdopted = accepted !== null;
       lockedID = locked.changed ? plan.nodes[0].id : null;
       if (lockedID !== null && decisions[lockedID])
         decisions[lockedID] = withInstructionLock({instruction_host_locked: true}, decisions[lockedID]);
@@ -3438,9 +3571,13 @@ class RCCRuntime {
     state = this._update(taskID, 'plan_admitted', snapshot => {
       snapshot.plan = plan; snapshot.state = 'running';
       if (jointShadow !== null) snapshot.joint_route_shadow = jointShadow;
-      snapshot.plan_provenance = this.hostAutoPlan
-        ? snapshot.adaptive_routing?.planner_invoked ? 'host_exact_request_shadow' : 'host_exact_request'
+      snapshot.plan_provenance = liveAdopted ? 'host_checked_local_proposal_v1' : this.hostAutoPlan
+        ? this.adaptivePolicy.mode === 'shadow' && snapshot.adaptive_routing?.planner_invoked ?
+          'host_exact_request_shadow' : 'host_exact_request'
         : 'external_plan_callback';
+      if (liveAdopted) snapshot.adaptive_routing = {...snapshot.adaptive_routing,
+        host_bound_compilation: null, live_plan_adopted: true,
+        live_plan_changed: false, quality_certificate: false};
       snapshot.bound_rows = boundRows(plan, catalog);
       // A certified descent is admitted with its reference row too: a
       // sibling's later catalog refresh may drop that row, and the escalation

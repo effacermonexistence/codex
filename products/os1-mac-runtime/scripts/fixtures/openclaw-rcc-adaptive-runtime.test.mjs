@@ -136,12 +136,14 @@ test('hash-only failed reply metadata survives fallback without invented raw con
   assert.equal(s.adaptive_routing.raw_proposal, null); assert.equal(s.adaptive_routing.raw_reply_complete, false);
   assert.equal(s.adaptive_routing.raw_capture_status, 'oversize_hash_only');
 });
-test('a covered-live hash/flag cannot register its own calibration authority', async t => {
+test('a covered-live hash/flag cannot register its own calibration authority or call a planner', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'os1-adaptive-reject-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
-  await assert.rejects(createRCCRuntime({stateDir: directory,
+  const runtime = await createRCCRuntime({stateDir: directory,
     adaptiveRoutingPolicy: adaptive({mode: 'covered_live', reference_policy_sha256: H('ref'),
-      adoption_manifest_sha256: H('not-an-artifact')})}), /adaptive_live_policy_not_registered/);
+      adoption_manifest_sha256: H('not-an-artifact')})});
+  t.after(() => runtime.close());
+  assert.equal(runtime.livePlanCapability, null);
 });
 test('actual Core settlement reads one exact private adapter receipt; raw ledger gets only a bounded pointer', async t => {
   let h;

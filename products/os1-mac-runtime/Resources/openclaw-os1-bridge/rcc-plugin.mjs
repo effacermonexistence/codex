@@ -10,6 +10,7 @@ import {decodeAdaptiveRoutingPolicy} from './adaptive-routing-policy.mjs';
 import {createLocalPlanPlanner, LOCAL_PLAN_LIMITS} from './local-plan-planner.mjs';
 import {loadFrozenRouteArtifacts} from './frozen-route-artifacts.mjs';
 import {createFrozenRoutePredictor} from './frozen-route-predictor.mjs';
+import {loadLivePlanCapability} from './adaptive-plan-host.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -499,13 +500,23 @@ export async function verifyExactExplicitArithmetic({task, plan, children}, {sta
 export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, stateDir}) {
   if (pluginConfig != null && (typeof pluginConfig !== 'object' || Array.isArray(pluginConfig) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(pluginConfig)) ||
-      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts'].includes(k)) ||
+      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts', 'live_plan_capability'].includes(k)) ||
       Object.values(Object.getOwnPropertyDescriptors(pluginConfig)).some(d => !Object.hasOwn(d, 'value'))))
     throw new RCCRuntimeError('adaptive_plugin_config_invalid');
   const policy = decodeAdaptiveRoutingPolicy(pluginConfig?.adaptive_routing);
   if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy};
-  // A manifest hash in config does not register a calibrated host artifact.
-  if (policy.mode !== 'shadow') throw new RCCRuntimeError('adaptive_live_policy_not_registered');
+  if (policy.mode === 'covered_live') {
+    // No current production manifest is shipped. Bad/missing registration is
+    // inert, not an invented live grant or a reason to fail the user's host
+    // reference route. P7 DEV artifacts are never opened on this path.
+    const capability = loadLivePlanCapability({stateDir, policy,
+      registration: pluginConfig?.live_plan_capability ?? null});
+    return {adaptiveRoutingPolicy: policy, livePlanCapability: capability,
+      ...(capability === null ? {} : {proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
+        limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
+          max_tokens: Math.min(policy.planner_output_tokens, LOCAL_PLAN_LIMITS.max_tokens),
+          max_nodes: 1, max_workers: 1, max_revisions: 0}})})};
+  }
   // Registration is host configuration, never task/proposal JSON. Optional
   // failures quarantine its bytes; they do not fail the user's original task.
   const registration = pluginConfig?.frozen_route_artifacts ?? null;

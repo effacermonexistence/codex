@@ -79,11 +79,12 @@ test('null-prototype own host policy is still valid, not an inherited policy', (
   const pluginConfig = Object.assign(Object.create(null), {adaptive_routing: {schema: 1, mode: 'off'}});
   assert.equal(adaptiveRuntimeOptions({pluginConfig}).adaptiveRoutingPolicy.mode, 'off');
 });
-test('covered_live config hash cannot register a live calibrated policy or make a call', () => {
+test('covered_live config hash alone is inert and cannot make a call', () => {
   let calls = 0;
-  assert.throws(() => adaptiveRuntimeOptions({pluginConfig: {adaptive_routing: policy({mode: 'covered_live',
-    adoption_manifest_sha256: sha('synthetic-not-authority')})}, complete: () => { calls++; }}),
-  {code: 'adaptive_live_policy_not_registered'});
+  const result = adaptiveRuntimeOptions({pluginConfig: {adaptive_routing: policy({mode: 'covered_live',
+    adoption_manifest_sha256: sha('synthetic-not-authority')})}, complete: () => { calls++; }});
+  assert.equal(result.livePlanCapability, null);
+  assert.equal(result.proposeLocalPlan, undefined);
   assert.equal(calls, 0);
 });
 test('malformed policy remains fail-closed before callback construction', () => {
@@ -132,15 +133,21 @@ test('explicit zero-revision policy forbids another completion after invalid res
   const second = await f.run({...i, attempt: {index: 1, revision_of: first.output_sha256, correction_codes: ['proposal_json']}});
   assert.equal(second.reason, 'planner_attempt_invalid'); assert.equal(f.requests.length, 1);
 });
-test('manifest declares OFF/shadow only and forbids extra plugin or policy keys', () => {
+test('manifest declares strict OFF/shadow plus covered-live requiring separate private capability registration', () => {
   const manifest = JSON.parse(readFileSync(new URL('../../Resources/openclaw-os1-bridge/openclaw.plugin.json', import.meta.url), 'utf8'));
   assert.equal(manifest.configSchema.type, 'object'); assert.equal(manifest.configSchema.additionalProperties, false);
   const choices = manifest.configSchema.properties.adaptive_routing.oneOf;
-  assert.deepEqual(choices.map(x => x.properties.mode.const), ['off', 'shadow']);
+  assert.deepEqual(choices.map(x => x.properties.mode.const), ['off', 'shadow', 'covered_live']);
   for (const choice of choices) assert.equal(choice.additionalProperties, false);
   const shadow = choices[1];
   assert.equal(shadow.properties.requires_live_reference_fallback.const, true);
   for (const field of Object.keys(policy())) assert.ok(shadow.required.includes(field), field);
+  const live = choices[2];
+  assert.equal(live.properties.reference_policy_sha256.type, 'string');
+  assert.equal(live.properties.adoption_manifest_sha256.type, 'string');
+  assert.equal(live.properties.allowed_workload_classes.minItems, 1);
+  assert.deepEqual(manifest.configSchema.properties.live_plan_capability.anyOf[1].required,
+    ['schema', 'manifest_sha256', 'manifest_bytes', 'loader_sha256', 'runtime_sha256']);
 });
 test('registration forwards actual official pluginConfig to same service-scope factory', () => {
   const src = readFileSync(new URL('../../Resources/openclaw-os1-bridge/rcc-plugin.mjs', import.meta.url), 'utf8');

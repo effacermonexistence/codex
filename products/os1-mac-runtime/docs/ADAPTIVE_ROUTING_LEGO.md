@@ -1,6 +1,6 @@
 # Adaptive routing LEGO: prompt views and evidence boundaries
 
-**Status: source implementation and offline fixtures; default OFF, shadow-only.**
+**Status: source implementation and offline fixtures; default OFF.**
 This document is not a release/install receipt, live routing activation,
 calibration artifact, quality-parity result or quota-savings measurement.
 `covered_live` cannot be activated by a configuration flag or hash-shaped JSON.
@@ -8,6 +8,50 @@ P6 has a separately recorded six-parent, two-case **development component**
 comparison, not Auto/live/full-task parity. P7 adds development-only artifact
 loading and finite inference plumbing, not learned calibration. Fresh/held-out
 evaluation and bounded live-family promotion are **not done by this change**.
+
+### Bounded host-only live-plan admission seam (2026-10-22 source branch)
+
+The optional `covered_live` path reads a **private, content-pinned,
+closed-inventory** `live-plan-capabilities/<manifest SHA>/manifest.json` under
+the Core state directory. Registration binds the actual `adaptive-plan-host.mjs`
+and `rcc-runtime.mjs` code hashes, policy/source/projection/reference hashes,
+time window, workload class and explicit source/data/rights/calibration states.
+The capability rechecks those exact bytes, current private custody and bound
+code on admission; removal, replacement or permission drift revokes it.
+Missing, stale, mismatched, development, synthetic-scored, or unsupported
+registration returns no capability and does not call the optional planner.
+There is no shipped production capability manifest in this source change.
+
+Version 1 admits only a **fresh R10v2 Auto, read-only, no-external-material, single-node
+original request byte-exact** proposal. The host compares the whole current
+task/catalog/nonce binding after the local reply; it checks original objective,
+all material refs (empty in this family), final-node ownership, no dependencies,
+scope/permissions, and a current R0 full task contract before independently
+selecting the native tuple. A model candidate hint must equal that R0 choice;
+it cannot select the route. Any lower-than-reference route must retain R0's
+prebound runnable reference and the existing native full-contract checker;
+failure discards the cheaper answer and escalates once under existing Core
+rules. Invalid proposals, changed bindings or missing evidence use the host
+plan. Multi-node, source-bearing, writer, partial-checker and calibrated
+statistical families remain ineligible. OFF and SHADOW behavior is unchanged.
+Read-only authority comes from the independently bound current host catalog
+and full R0 contract, not the proposal or a UI flag: ordinary fresh Auto's
+`require_read_only:false` merely omits an extra restriction, while legacy,
+continuation/session and recovery paths remain outside this seam. The same
+full-context gate and runnable R0 fallback are checked before any planner call.
+The existing strict `withoutConversation` check permits canonical first-turn
+App paging bookkeeping only (empty transcript, zero prior messages, no source
+or retained semantic state, current exact objective). Raw context bytes stay
+unchanged and the full native contract binds their actual hash; unknown fields,
+noncanonical encoding, source/history or native sessions do not qualify.
+
+The synthetic fixture `openclaw-rcc-live-plan-adoption.test.mjs` exercises
+the loader, positive exact-contract path, negative bindings and native fallback
+with canned replies. That fixture is **not** a production capability, a
+measured native result, a calibration set or a deployment receipt. Before a
+real family is registered, independently validate its source/rights/contract
+evidence and exact native full-checker behavior; P7 development tables cannot
+be promoted by this manifest.
 
 The objective remains quality/completeness under a frozen reference policy,
 then minimum supported total resources. Neither every node on the strongest
