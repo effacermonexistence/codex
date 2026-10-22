@@ -54,6 +54,11 @@ final lock, complete resources, zero accepted_B/task failures and disjoint
 train/calibration/heldout request/source/template/project fingerprints. A
 heldout-only source card's `calibration_sample_insufficient` precheck is resolved
 by the independently recomputed P7 calibration, not by relabelling heldout rows.
+The complete cost-TRAIN history proof is verified before heldout processing. A
+metadata-only firewall compares every cost-TRAIN and P7 TRAIN/CAL request, source,
+template and project fingerprint against **all** P8 cards before any heldout grade
+join. Quality-TRAIN and cost-TRAIN may intentionally reuse an original observation;
+neither may overlap calibration or heldout data.
 All other P8 blockers reject. EACH exact projected P7 stratum must have its own
 frozen heldout minimum; one pair or another feature bucket cannot qualify all cells. Review source bytes, not just approval booleans,
 are required. Timestamp assertions remain source-consistency evidence, not
@@ -77,6 +82,16 @@ binds its pre-outcome feature/regime/harness stratum, normalized primary and
 zero/one actual reference fallback after a source-bound registered-checker
 rejection, ordered closed original history and explicit disjoint host overheads.
 Unknown usage, omitted rejection fallback or missing tuple coverage rejects.
+Distinct logical outcome IDs do not establish independent native observations.
+Across all cost episodes/attempts, provider/account/transport namespaced repeated
+session+turn identity rejects as observation reuse. Repeated execution identity
+with distinct claimed turns is unsupported/ambiguous: the execution ID may name
+an adapter envelope, not a provider execution. A shared record SHA identifies an
+artifact, possibly an entire session; it does not prove turn duplication. This
+initial scope conservatively rejects shared-artifact cases until a separately
+verified per-turn witness is available. Same session with independent turn,
+execution and artifact identities remains supported. These checks are source
+consistency gates, not authentication of a provider's hidden physical execution.
 Only those complete TRAIN-history episode means enter normalized cost rows,
 with original resource-file hash and episode count; P8 is never used to fit or
 tune costs. Retry-reserve estimates include observed fallback attempt usage.
