@@ -72,8 +72,9 @@ The wire test Swift-compiles the actual production `Budget` source and checks
 absent/false/true encoding plus malformed rejection. It inspects actual CLI
 flag/carry/child-rejection source and Swift-parses main.swift; that is not a full
 CLI typecheck or installed execution. Root-owned build, exact source pins,
-installation and actual hard0 CLI observation are separate later gates. Installed
-422/a454 is not changed by this source-only branch.
+installation and actual hard0 CLI observation require separate receipts. At the
+source-only ed0436d6 review, installed 422/a454 was untouched. A later source
+integration/version number does not itself prove installation or execution.
 
 Relevant abstracts actually inspected during this repair sequence were
 [ReAct](https://arxiv.org/abs/2210.03629) and
