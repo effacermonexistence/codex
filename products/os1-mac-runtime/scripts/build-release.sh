@@ -107,6 +107,10 @@ node --test "$script_dir/fixtures/openclaw-rcc-adaptive-prompt-views.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-artifacts.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-evidence.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-offline-route-calibration.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-calibrated-plugin.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-calibrated-route-evidence.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-calibrated-route-predictor.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-calibrated-admission.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-predictor.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-runtime.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-resource-observation.test.mjs"
@@ -263,14 +267,14 @@ for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDict
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
 mkdir -p "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge"
-for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs; do
+for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs offline-route-calibration.mjs frozen-route-evidence.mjs calibrated-route-evidence.mjs calibrated-route-predictor.mjs; do
   install -m 0644 "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource"
 done
 # Source/packaged module identity is separate from the dependency acquisition
-# contract. Only the exact fifteen bridge resources are allowed, never a directory
+# contract. Only the exact nineteen bridge resources are allowed, never a directory
 # exemption for all JavaScript or a wildcard recursive copy.
-for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs; do
+for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs offline-route-calibration.mjs frozen-route-evidence.mjs calibrated-route-evidence.mjs calibrated-route-predictor.mjs; do
   cmp "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
       "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource" || {
     echo "Staged controller bridge differs from source: $resource" >&2; exit 1;
@@ -330,6 +334,10 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome-capture.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-artifacts.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-predictor.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/offline-route-calibration.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-evidence.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/calibrated-route-evidence.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/calibrated-route-predictor.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\
@@ -443,7 +451,7 @@ fi
 
 pkgutil --expand-full "$final_pkg" "$audit_dir/expanded"
 expanded_payload="$audit_dir/expanded/OS-1-component.pkg/Payload"
-for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs; do
+for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs offline-route-calibration.mjs frozen-route-evidence.mjs calibrated-route-evidence.mjs calibrated-route-predictor.mjs; do
   cmp "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
       "$expanded_payload/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/$resource" || {
     echo "Packaged controller bridge differs from source: $resource" >&2; exit 1;
@@ -486,6 +494,10 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome-capture.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-artifacts.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-predictor.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/offline-route-calibration.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-evidence.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/calibrated-route-evidence.mjs"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/calibrated-route-predictor.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

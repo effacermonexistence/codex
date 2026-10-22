@@ -110,7 +110,7 @@ for name in ("local-router-config.template.json", "local-controller-sources.json
              "provision-local-controller.sh", "provision-local-controller.mjs"):
     check(release.count('Contents/Resources/' + name) >= 2, "staged and expanded release allowlist: " + name)
     check(('Contents/Resources/' + name) in installer, "installer allowlist: " + name)
-for name in ("index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs"):
+for name in ("index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs", "offline-route-calibration.mjs", "frozen-route-evidence.mjs", "calibrated-route-evidence.mjs", "calibrated-route-predictor.mjs"):
     relative = "openclaw-os1-bridge/" + name
     check(release.count('Contents/Resources/' + relative) >= 2, "signed plugin staged and allowed: " + relative)
     check(('Contents/Resources/' + relative) in installer, "installer signed plugin allowlist: " + relative)
@@ -124,6 +124,9 @@ check("release_patch >= 350" in installer and "expected_payload_files=46" in ins
 check("release_patch >= 351" in installer and "expected_payload_files=48" in installer and
       "expected_component_files=51" in installer and "requires_rcc_frozen_routes=1" in installer,
       "417 frozen source modules have exact new counts;416 remains46/49")
+check("release_patch >= 356" in installer and "expected_payload_files=52" in installer and
+      "expected_component_files=55" in installer and "requires_rcc_calibrated_routes=1" in installer,
+      "422 qualified source modules have a distinct gate; <=421 counts remain unchanged")
 check(app.index("SelfUpdate.isInstalledApp") < app.index("provision-local-controller.sh"), "installed GUI only")
 check('process.environment = ["HOME":' in app and 'FileHandle.nullDevice' in app,
       "clean non-interactive provisioning child")

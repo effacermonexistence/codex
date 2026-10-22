@@ -40,8 +40,11 @@ if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0
 frozen_companions = ('frozen-route-artifacts.mjs', 'frozen-route-predictor.mjs')
 if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 351):
     resources.extend(('openclaw-os1-bridge/' + name, 'requires signed RCC frozen route companion: ' + name) for name in frozen_companions)
+calibrated_companions = ('offline-route-calibration.mjs', 'frozen-route-evidence.mjs', 'calibrated-route-evidence.mjs', 'calibrated-route-predictor.mjs')
+if tuple(map(int, json.loads(manifest.read_text())['version'].split('.'))) >= (0, 9, 356):
+    resources.extend(('openclaw-os1-bridge/' + name, 'requires signed RCC calibrated route companion: ' + name) for name in calibrated_companions)
 for filename, missing_reason in resources:
-    for mutation in (('rename', 'content', 'symlink') if (filename.endswith('/resource-usage.mjs') or filename.rsplit('/', 1)[-1] in routing_companions + frozen_companions) else ('rename', 'content')):
+    for mutation in (('rename', 'content', 'symlink') if (filename.endswith('/resource-usage.mjs') or filename.rsplit('/', 1)[-1] in routing_companions + frozen_companions + calibrated_companions) else ('rename', 'content')):
         with tempfile.TemporaryDirectory(prefix='os1-beta-policy-') as tmp:
             root = Path(tmp)
             expanded = root / 'expanded'

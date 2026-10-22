@@ -11,6 +11,8 @@ import {createLocalPlanPlanner, LOCAL_PLAN_LIMITS} from './local-plan-planner.mj
 import {loadFrozenRouteArtifacts} from './frozen-route-artifacts.mjs';
 import {createFrozenRoutePredictor} from './frozen-route-predictor.mjs';
 import {loadLivePlanCapability} from './adaptive-plan-host.mjs';
+import {loadHostCalibratedRouteRegistration, loadCalibratedRouteEvidence} from './calibrated-route-evidence.mjs';
+import {createCalibratedRoutePredictor} from './calibrated-route-predictor.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -494,6 +496,26 @@ export async function verifyExactExplicitArithmetic({task, plan, children}, {sta
   return verdict(true, output, 'exact_explicit_route_arithmetic_receipts');
 }
 
+/** Optional host-local qualified calibration. This is independent of the P9
+ * planner mode: a task/model cannot enable it or supply a registry locator.
+ * The fixed private registration reader mints authority, and only actual
+ * independently qualified evidence reaches production. Synthetic fixtures,
+ * malformed/private-missing bytes and stale/revoked sources preserve R0.
+ */
+export function calibratedRuntimeOptions({stateDir, now_ms = Date.now()} = {}) {
+  try {
+    const registration = loadHostCalibratedRouteRegistration({stateDir, now_ms});
+    if (registration === null) return {};
+    const loaded = loadCalibratedRouteEvidence({stateDir, registration, now_ms});
+    if (loaded?.status !== 'loaded_qualified_evidence' || loaded.capability == null) return {};
+    return {calibratedRoutePredictor: createCalibratedRoutePredictor({evidence: loaded.capability})};
+  } catch {
+    // This optional evidence path cannot fail the original user's task or
+    // reactivate an unqualified source by falling back to another registry.
+    return {};
+  }
+}
+
 /** Host configuration only, no model-authored settings. Factory limits are
  * the intersection of the frozen policy and the pinned local helper bounds;
  * a small declared budget can fail BEFORE generation, never be ignored. */
@@ -504,14 +526,15 @@ export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, 
       Object.values(Object.getOwnPropertyDescriptors(pluginConfig)).some(d => !Object.hasOwn(d, 'value'))))
     throw new RCCRuntimeError('adaptive_plugin_config_invalid');
   const policy = decodeAdaptiveRoutingPolicy(pluginConfig?.adaptive_routing);
-  if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy};
+  const calibrated = calibratedRuntimeOptions({stateDir});
+  if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy, ...calibrated};
   if (policy.mode === 'covered_live') {
     // No current production manifest is shipped. Bad/missing registration is
     // inert, not an invented live grant or a reason to fail the user's host
     // reference route. P7 DEV artifacts are never opened on this path.
     const capability = loadLivePlanCapability({stateDir, policy,
       registration: pluginConfig?.live_plan_capability ?? null});
-    return {adaptiveRoutingPolicy: policy, livePlanCapability: capability,
+    return {adaptiveRoutingPolicy: policy, ...calibrated, livePlanCapability: capability,
       ...(capability === null ? {} : {proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
         limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
           max_tokens: Math.min(policy.planner_output_tokens, LOCAL_PLAN_LIMITS.max_tokens),
@@ -521,7 +544,7 @@ export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, 
   // failures quarantine its bytes; they do not fail the user's original task.
   const registration = pluginConfig?.frozen_route_artifacts ?? null;
   const loaded = registration === null ? null : loadFrozenRouteArtifacts({stateDir, mode: 'shadow', registration});
-  return {adaptiveRoutingPolicy: policy,
+  return {adaptiveRoutingPolicy: policy, ...calibrated,
     frozenRoutePredictor: loaded === null ? null : createFrozenRoutePredictor({artifacts: loaded.artifacts}),
     proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
     limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),

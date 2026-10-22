@@ -22,7 +22,7 @@ enum LocalRouterBridge {
         let old = try gatewayIdentity(resources: resources, manifest: checked.manifest, runtime: checked.runtime)
         let plugin = URL(fileURLWithPath: old.pluginDirectory)
         var hashes: [String: String] = [:]
-        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs"] {
+        for name in ["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs", "offline-route-calibration.mjs", "frozen-route-evidence.mjs", "calibrated-route-evidence.mjs", "calibrated-route-predictor.mjs"] {
             hashes[name] = try fileSHA256(plugin.appendingPathComponent(name))
         }
         // The module hashes below are generated from the reviewed source and
@@ -38,7 +38,11 @@ enum LocalRouterBridge {
               hashes["routing-outcome.mjs"] == rccRoutingOutcomeSHA256,
               hashes["routing-outcome-capture.mjs"] == rccRoutingOutcomeCaptureSHA256,
               hashes["frozen-route-artifacts.mjs"] == rccFrozenRouteArtifactsSHA256,
-              hashes["frozen-route-predictor.mjs"] == rccFrozenRoutePredictorSHA256 else {
+              hashes["frozen-route-predictor.mjs"] == rccFrozenRoutePredictorSHA256,
+              hashes["offline-route-calibration.mjs"] == rccOfflineRouteCalibrationSHA256,
+              hashes["frozen-route-evidence.mjs"] == rccFrozenRouteEvidenceSHA256,
+              hashes["calibrated-route-evidence.mjs"] == rccCalibratedRouteEvidenceSHA256,
+              hashes["calibrated-route-predictor.mjs"] == rccCalibratedRoutePredictorSHA256 else {
             throw OS1Error.message("Installed RCC task-runtime modules differ from the sealed source")
         }
         let nativeIdentity = try InstalledNativeEntry.resolve(
@@ -89,8 +93,8 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "e03ccd126c3651dd239decdbf72f211ca0a66d3230c6b4db9f751b572f4636d6"
-    static let rccRuntimePluginSHA256 = "98d8d3afdd75397f4c998fea087e926e0264da636ac80769d3954d387e10bf61"
+    static let rccRuntimeModuleSHA256 = "ab4d8a0224b037e8d0eb22ca9f898ff9db65b2a399934f89a589c2cd002f4041"
+    static let rccRuntimePluginSHA256 = "e599e6213723278ee57f7318a2566484fdcafc9fa0332b40f7f09127fbe72ebd"
     static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
     static let rccAdaptivePlanHostSHA256 = "c17457e2530e044f536bed02ab9a66ab2971e5d1e59e9a758f0b49eb6f972971"
@@ -102,6 +106,10 @@ enum LocalRouterBridge {
     static let rccRoutingOutcomeCaptureSHA256 = "b81b78172dceb1a80ecbd8ba54e61b4d83f58820052bf9e3b7addb2c3cfcf4b3"
     static let rccFrozenRouteArtifactsSHA256 = "87bbc5b0b6d7671bd88a727cd8f257b828a4c80d725632aec2362848bdb6bb93"
     static let rccFrozenRoutePredictorSHA256 = "3269bcc3ba23786cf3f4da01a80a41d063a238c30d5043099b4f7208fce14827"
+    static let rccOfflineRouteCalibrationSHA256 = "daea7cbd2614c6b892eccba850c90ca5924252e1d907930bf2b7606d730b1659"
+    static let rccFrozenRouteEvidenceSHA256 = "5ea8d8607be472c96a3768d53007a3ca4a9cc8c9bb1519c01f6cd2d19c99d199"
+    static let rccCalibratedRouteEvidenceSHA256 = "e4915212a2a91ee122f9edb77fd389345c4d10218f104cbe70d0d4f5bd08ec64"
+    static let rccCalibratedRoutePredictorSHA256 = "70ee6c773ac55306f2d650ce6576a8ae7e7b8432381c853711f9e6b17b2adeb2"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
     static let model = "qwen3.5:4b"

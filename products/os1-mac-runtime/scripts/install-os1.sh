@@ -162,6 +162,16 @@ verify_unnotarized_beta_package() {
     requires_rcc_frozen_routes=1
   fi
 
+  # 0.9.356 (build422) adds four exact qualified-calibration source companions.
+  # Keep every <=421 recovery inventory unchanged; no private datasets ship.
+  local requires_rcc_calibrated_routes=0
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 356) )); then
+    expected_payload_files=52
+    expected_component_files=55
+    requires_rcc_calibrated_routes=1
+  fi
+
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
     return 1
@@ -279,6 +289,18 @@ verify_unnotarized_beta_package() {
       echo "OS-1 beta verification refused an RCC frozen route companion in a legacy release." >&2; return 1
     fi
   done
+  # RCC calibrated route companion gate: reviewed code, never a capability/data grant.
+  for bridge_resource in offline-route-calibration.mjs frozen-route-evidence.mjs calibrated-route-evidence.mjs calibrated-route-predictor.mjs; do
+    if (( requires_rcc_calibrated_routes )); then
+      [[ -f "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" &&
+         ! -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]] || {
+        echo "OS-1 beta verification requires signed RCC calibrated route companion: $bridge_resource" >&2; return 1;
+      }
+    elif [[ -e "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ||
+            -L "$app_path/Contents/Resources/openclaw-os1-bridge/$bridge_resource" ]]; then
+      echo "OS-1 beta verification refused an RCC calibrated route companion in a legacy release." >&2; return 1
+    fi
+  done
   [[ "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@identifier)' "$package_info")" == "com.omaragi.os1" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@version)' "$package_info")" == "$manifest_version" &&
      "$(/usr/bin/xmllint --xpath 'string(/pkg-info/@install-location)' "$package_info")" == "/" &&
@@ -333,6 +355,10 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/routing-outcome-capture.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-artifacts.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-predictor.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/offline-route-calibration.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/frozen-route-evidence.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/calibrated-route-evidence.mjs"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/calibrated-route-predictor.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/openclaw.plugin.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge/package.json"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/OmarAGI.icns"|\

@@ -954,8 +954,8 @@ enum RCCRuntimeGatewayClient {
     }
 
     private static func verifyInstalled(_ identity: InstalledIdentity) throws {
-        guard Set(identity.pluginFileSHA256.keys) == Set(["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs"]),
-              identity.pluginFileSHA256.count <= 16 else { throw Failure.identityMismatch }
+        guard Set(identity.pluginFileSHA256.keys) == Set(["index.mjs", "openclaw.plugin.json", "package.json", "rcc-runtime.mjs", "rcc-plugin.mjs", "resource-usage.mjs", "adaptive-plan-host.mjs", "adaptive-routing-policy.mjs", "joint-route-selector.mjs", "local-plan-planner.mjs", "local-plan-proposal.mjs", "routing-outcome.mjs", "routing-outcome-capture.mjs", "frozen-route-artifacts.mjs", "frozen-route-predictor.mjs", "offline-route-calibration.mjs", "frozen-route-evidence.mjs", "calibrated-route-evidence.mjs", "calibrated-route-predictor.mjs"]),
+              identity.pluginFileSHA256.count == 19 else { throw Failure.identityMismatch }
         var files = [(identity.nodePath, identity.nodeSHA256), (identity.entryPath, identity.entrySHA256),
                      (identity.nativeOS1Path, identity.nativeOS1SHA256)]
         for (relative, hash) in identity.pluginFileSHA256 {

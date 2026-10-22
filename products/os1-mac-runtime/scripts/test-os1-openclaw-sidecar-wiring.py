@@ -106,6 +106,10 @@ PIN_SYMBOLS = {
     "rcc-plugin.mjs": "rccRuntimePluginSHA256",
     "frozen-route-artifacts.mjs": "rccFrozenRouteArtifactsSHA256",
     "frozen-route-predictor.mjs": "rccFrozenRoutePredictorSHA256",
+    'offline-route-calibration.mjs': 'rccOfflineRouteCalibrationSHA256',
+    'frozen-route-evidence.mjs': 'rccFrozenRouteEvidenceSHA256',
+    'calibrated-route-evidence.mjs': 'rccCalibratedRouteEvidenceSHA256',
+    'calibrated-route-predictor.mjs': 'rccCalibratedRoutePredictorSHA256',
 }
 for name, symbol in PIN_SYMBOLS.items():
     match = re.search(r"(?:private )?static let " + re.escape(symbol) + r' = "([a-f0-9]{64})"', BRIDGE)
