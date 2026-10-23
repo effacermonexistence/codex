@@ -4,6 +4,137 @@ import CoreFoundation
 import OS1Context
 import Darwin
 
+/// Optional owner-published successor for a NEW, unissued read-only task.
+/// The legacy envelope remains immutable. A pointer does not renew an issued
+/// ticket: execution isolation continues to bind the exact selected bytes.
+enum TaskQualityContractSource {
+    struct Acquired {
+        let bytes: Data
+        let envelope: PreparedTaskQuality.Envelope
+    }
+    enum Failure: Error { case custody, pointer, successor }
+    private struct FileSnapshot { let bytes: Data; let identity: stat }
+    private static func hash(_ value: String) -> Bool {
+        value.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+    }
+    private static func same(_ a: stat, _ b: stat) -> Bool {
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode &&
+        a.st_uid == b.st_uid && a.st_nlink == b.st_nlink && a.st_size == b.st_size &&
+        a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+        a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
+    }
+    private static func privateDirectory(_ url: URL) throws -> stat {
+        guard url.path == url.standardizedFileURL.path,
+              url.resolvingSymlinksInPath().path == url.path else { throw Failure.custody }
+        var st = stat()
+        guard lstat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR,
+              st.st_uid == getuid(), st.st_mode & 0o7777 == 0o700 else { throw Failure.custody }
+        return st
+    }
+    private static func privateFile(_ url: URL, maximum: Int) throws -> FileSnapshot {
+        guard url.path == url.standardizedFileURL.path,
+              url.resolvingSymlinksInPath().path == url.path else { throw Failure.custody }
+        var named = stat()
+        guard lstat(url.path, &named) == 0, named.st_mode & S_IFMT == S_IFREG,
+              named.st_uid == getuid(), named.st_mode & 0o7777 == 0o600,
+              named.st_nlink == 1, named.st_size > 0, named.st_size <= maximum else { throw Failure.custody }
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw Failure.custody }; defer { close(fd) }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0, same(named, opened) else { throw Failure.custody }
+        // Bound the READ, not only the initial stat: a concurrent append must
+        // not allocate an arbitrarily growing file before stability rejects it.
+        let bytes = try FileHandle(fileDescriptor: fd, closeOnDealloc: false).read(upToCount: maximum + 1) ?? Data()
+        var after = stat(), current = stat()
+        guard fstat(fd, &after) == 0, lstat(url.path, &current) == 0,
+              same(opened, after), same(after, current), bytes.count <= maximum,
+              bytes.count == opened.st_size else { throw Failure.custody }
+        return .init(bytes: bytes, identity: after)
+    }
+    private static func decode(_ bytes: Data) throws -> PreparedTaskQuality.Envelope {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+        return try decoder.decode(PreparedTaskQuality.Envelope.self, from: bytes)
+    }
+    private static func eligible(_ envelope: PreparedTaskQuality.Envelope) -> Bool {
+        let c = envelope.contract
+        return c.schema == 1 && c.basis == .declaredTrustedContract && c.scope == .readOnly && c.fullCoverage &&
+            envelope.localEffectsOnly && envelope.ownerCollection == nil && c.reference == nil && c.referenceProfiles.isEmpty &&
+            envelope.publicRegressionSnapshot == nil && envelope.stagedWriterBaseSHA256 == nil
+    }
+    /// Compare the COMPLETE JSON objects, not a hand-picked field subset.
+    /// Only the two contract validity fields may differ; unknown fields,
+    /// conditions, checker IDs and optional-field presence are preserved too.
+    private static func withoutValidity(_ bytes: Data) throws -> Data {
+        var object = try RCCRuntimeContract.checkedObject(bytes)
+        guard var contract = object["contract"] as? [String: Any] else { throw Failure.successor }
+        for name in ["issuedAt", "validUntil"] {
+            guard let n = contract[name] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+                  n.doubleValue.isFinite, n.doubleValue >= 0 else { throw Failure.successor }
+            contract.removeValue(forKey: name)
+        }
+        object["contract"] = contract
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+    static func acquire(objectiveSHA256: String, rootURL: URL, now: Date = Date()) throws -> Acquired? {
+        guard hash(objectiveSHA256) else { throw Failure.pointer }
+        let fm = FileManager.default, contracts = rootURL.appendingPathComponent("contracts", isDirectory: true)
+        let legacy = contracts.appendingPathComponent(objectiveSHA256 + ".json")
+        let current = contracts.appendingPathComponent("current", isDirectory: true)
+        let pointer = current.appendingPathComponent(objectiveSHA256 + ".json")
+        var pointerStat = stat()
+        if lstat(pointer.path, &pointerStat) != 0 {
+            guard errno == ENOENT else { throw Failure.custody }
+            // No pointer: preserve the legacy acquisition contract exactly.
+            guard fm.fileExists(atPath: legacy.path) else { return nil }
+            guard legacy.resolvingSymlinksInPath().path == legacy.standardizedFileURL.path else { throw Failure.custody }
+            let a = try fm.attributesOfItem(atPath: legacy.path)
+            guard (a[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+                  ((a[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
+                  a[.type] as? FileAttributeType == .typeRegular,
+                  (a[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000 else { throw Failure.custody }
+            let bytes = try Data(contentsOf: legacy)
+            return .init(bytes: bytes, envelope: try decode(bytes))
+        }
+        let versions = contracts.appendingPathComponent("versions", isDirectory: true)
+        let versionDirectory = versions.appendingPathComponent(objectiveSHA256, isDirectory: true)
+        let parents = [rootURL, contracts, current, versions, versionDirectory]
+        let directoryIdentities = try parents.map { try privateDirectory($0) }
+        let selected = try privateFile(pointer, maximum: 4_096)
+        let p = try RCCRuntimeContract.checkedObject(selected.bytes)
+        guard Set(p.keys) == ["schema", "objective_sha256", "envelope_sha256", "predecessor_envelope_sha256"],
+              let schema = p["schema"] as? NSNumber, CFGetTypeID(schema) != CFBooleanGetTypeID(), schema.doubleValue == 1,
+              p["objective_sha256"] as? String == objectiveSHA256,
+              let envelopeSHA = p["envelope_sha256"] as? String, hash(envelopeSHA),
+              let predecessorSHA = p["predecessor_envelope_sha256"] as? String, hash(predecessorSHA),
+              envelopeSHA != predecessorSHA else { throw Failure.pointer }
+        // The legacy path is the only predecessor. Callers cannot supply a
+        // path, chain another successor or select a checker/model at runtime.
+        let old = try privateFile(legacy, maximum: 128_000)
+        let versionPath = versionDirectory.appendingPathComponent(envelopeSHA + ".json")
+        let version = try privateFile(versionPath, maximum: 128_000)
+        guard TaskQualityEvidence.digest(old.bytes) == predecessorSHA,
+              TaskQualityEvidence.digest(version.bytes) == envelopeSHA else { throw Failure.successor }
+        let before = try decode(old.bytes), after = try decode(version.bytes)
+        let a = before.contract, b = after.contract
+        guard eligible(before), eligible(after), a.objectiveSHA256 == objectiveSHA256, b.objectiveSHA256 == objectiveSHA256,
+              a.issuedAt.timeIntervalSince1970.isFinite, a.validUntil.timeIntervalSince1970.isFinite,
+              b.issuedAt.timeIntervalSince1970.isFinite, b.validUntil.timeIntervalSince1970.isFinite,
+              a.validUntil > a.issuedAt, b.issuedAt >= a.validUntil, b.validUntil > b.issuedAt,
+              b.issuedAt <= now, now < b.validUntil,
+              try withoutValidity(old.bytes) == withoutValidity(version.bytes) else { throw Failure.successor }
+        // Re-read every selected object and every directory identity before
+        // returning. Same bytes under a swapped inode are not a stable read.
+        for (url, first) in [(pointer, selected), (legacy, old), (versionPath, version)] {
+            let again = try privateFile(url, maximum: url == pointer ? 4_096 : 128_000)
+            guard same(first.identity, again.identity), first.bytes == again.bytes else { throw Failure.custody }
+        }
+        for (index, url) in parents.enumerated() {
+            guard same(directoryIdentities[index], try privateDirectory(url)) else { throw Failure.custody }
+        }
+        return .init(bytes: version.bytes, envelope: after)
+    }
+}
+
 /// The existing execution flow consumes an owner-custodied task checker, not
 /// a second benchmark service or a model-authored 'tests passed' assertion.
 /// A missing contract is an explicit unresolved quality state.
@@ -70,8 +201,7 @@ struct PreparedTaskQuality {
                         frozenRegression: PythonRegressionSnapshot? = nil, allowRegressionAcquisition: Bool = true,
                         rootURL: URL = Self.root) throws -> PreparedTaskQuality? {
         let objectiveSHA = TaskQualityEvidence.digest(Data(objective.utf8))
-        let path = rootURL.appendingPathComponent("contracts", isDirectory: true).appendingPathComponent(objectiveSHA + ".json")
-        guard FileManager.default.fileExists(atPath: path.path) else {
+        guard let acquired = try TaskQualityContractSource.acquire(objectiveSHA256: objectiveSHA, rootURL: rootURL) else {
             if scope == .readOnly {
                 return try ResourceScheduleSupplement.attach(nil, objective: objective, contextSHA256: contextSHA256,
                     sourceSHA256: sourceSHA256, startTreeSHA256: startTreeSHA256, scope: scope,
@@ -96,13 +226,7 @@ struct PreparedTaskQuality {
                 workspacePaths: snapshot.allowedRoots, publicRegressionSnapshot: snapshot), checkerBytes: checker,
                 referencePolicySHA256: referencePolicySHA256, partialRegression: snapshot)
         }
-        guard path.resolvingSymlinksInPath().path == path.standardizedFileURL.path else { throw OS1Error.message("Task-quality contract source is not canonical") }
-        let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
-        guard (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(), ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
-              attrs[.type] as? FileAttributeType == .typeRegular,
-              (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000 else { throw OS1Error.message("Task-quality contract is not a bounded regular file") }
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
-        let envelope = try decoder.decode(Envelope.self, from: Data(contentsOf: path))
+        let envelope = acquired.envelope
         let c = envelope.contract
         guard c.objectiveSHA256 == objectiveSHA, c.contextSHA256 == contextSHA256,
               c.sourceSHA256 == sourceSHA256, c.startTreeSHA256 == startTreeSHA256, c.scope == scope,
@@ -1435,15 +1559,8 @@ enum RCCOperationalQuality {
         guard C.digest(Data(original.utf8)) == requestSHA256, !objective.isEmpty,
             C.digest(try C.encode(host)) == sourceFingerprint else { throw Failure.binding }
         let objectiveSHA = C.digest(Data(original.utf8))
-        let path = rootURL.appendingPathComponent("contracts", isDirectory: true).appendingPathComponent(objectiveSHA + ".json")
-        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
-        let canonical = path.standardizedFileURL
-        guard canonical.resolvingSymlinksInPath().path == canonical.path else { throw Failure.custody }
-        let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
-        guard attrs[.type] as? FileAttributeType == .typeRegular,
-            (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(), ((attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
-            (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 128_000 else { throw Failure.custody }
-        let data = try Data(contentsOf: path), envelope = try decode(PreparedTaskQuality.Envelope.self, data), c = envelope.contract
+        guard let acquired = try TaskQualityContractSource.acquire(objectiveSHA256: objectiveSHA, rootURL: rootURL) else { return nil }
+        let data = acquired.bytes, envelope = acquired.envelope, c = envelope.contract
         guard envelope.localEffectsOnly else { return nil }
         let source = (try? SessionHandoff.decode(host.context)).flatMap { $0.source?.sha256 }
         guard c.objectiveSHA256 == objectiveSHA, c.contextSHA256 == C.digest(Data((host.context ?? "").utf8)),
