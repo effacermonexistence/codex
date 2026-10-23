@@ -330,11 +330,124 @@ enum RCCOwnerCollection {
               try retainedFile(installURL.path, parent: installURL.deletingLastPathComponent(), expected: h.install_receipt_sha256) == installBytes else { throw Failure.custody }
     }
 
+    /// A NEW, current authenticated operator-write adoption scope. This never
+    /// renews an old execution contract or permits dispatch. The gateway binds
+    /// the exact held snapshot before forwarding this permit to the pinned host.
+    struct AdoptionPermit: Decodable {
+        struct Child: Decodable {
+            let id: String, attempt_id: String, native_receipt_sha256: String, witness_sha256: String
+            let contract_sha256: String, verifier_sha256: String
+        }
+        let schema: Int, kind: String, permit_id: String, task_id: String, request_sha256: String
+        let expected_revision: Int, expected_fingerprint: String, expected_snapshot_sha256: String
+        let issued_at_ms: Int64, expires_at_ms: Int64
+        let parent_contract_sha256: String, parent_checker_sha256: String, context_sha256: String
+        let start_tree_sha256: String, reference_policy_sha256: String, source_fingerprint: String
+        let owner_policy_source_sha256: String?, owner_policy_projection_sha256: String?
+        let collection_manifest_sha256: String, historical_runtime_sha256: String
+        let native_generation_calls: Int, dispatch_calls: Int, retry_calls: Int, parity_state: String
+        let children: [Child]
+        func current(_ now: Date = Date()) throws {
+            let ms = now.timeIntervalSince1970 * 1000
+            guard ms.isFinite, Double(issued_at_ms) <= ms, ms < Double(expires_at_ms),
+                expires_at_ms > issued_at_ms, expires_at_ms - issued_at_ms <= 300_000 else { throw Failure.binding }
+        }
+    }
+    static func adoptionPermit(_ raw: Any) throws -> AdoptionPermit {
+        let required: Set<String> = ["schema", "kind", "permit_id", "task_id", "request_sha256", "expected_revision",
+            "expected_fingerprint", "expected_snapshot_sha256", "issued_at_ms", "expires_at_ms", "parent_contract_sha256",
+            "parent_checker_sha256", "context_sha256", "start_tree_sha256", "reference_policy_sha256", "source_fingerprint",
+            "owner_policy_source_sha256", "owner_policy_projection_sha256", "collection_manifest_sha256", "historical_runtime_sha256",
+            "native_generation_calls", "dispatch_calls", "retry_calls", "parity_state", "children"]
+        guard let x = raw as? [String: Any], Set(x.keys) == required,
+            let rows = x["children"] as? [[String: Any]], (2...8).contains(rows.count),
+            rows.allSatisfy({ Set($0.keys) == ["id", "attempt_id", "native_receipt_sha256", "witness_sha256", "contract_sha256", "verifier_sha256"] }) else { throw Failure.binding }
+        let value = try JSONDecoder().decode(AdoptionPermit.self, from: JSONSerialization.data(withJSONObject: x, options: [.sortedKeys]))
+        func id(_ s: String) -> Bool { s.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil }
+        guard value.schema == 1, value.kind == "retained_owner_collection_adoption_only", id(value.permit_id), id(value.task_id),
+            value.expected_revision > 0, value.issued_at_ms > 0, value.expires_at_ms > 0,
+            value.issued_at_ms <= 9_007_199_254_740_991, value.expires_at_ms <= 9_007_199_254_740_991,
+            value.native_generation_calls == 0, value.dispatch_calls == 0, value.retry_calls == 0, value.parity_state == "unverified",
+            [value.request_sha256, value.expected_fingerprint, value.expected_snapshot_sha256, value.parent_contract_sha256,
+             value.parent_checker_sha256, value.context_sha256, value.start_tree_sha256, value.reference_policy_sha256,
+             value.source_fingerprint, value.collection_manifest_sha256, value.historical_runtime_sha256].allSatisfy(C.isHash),
+            value.owner_policy_source_sha256.map(C.isHash) ?? true,
+            value.owner_policy_projection_sha256.map(C.isHash) ?? true,
+            Set(value.children.map(\.attempt_id)).count == value.children.count,
+            value.children.enumerated().allSatisfy({ i, c in c.id == "owner_\(i)" && id(c.attempt_id) &&
+                [c.native_receipt_sha256, c.witness_sha256, c.contract_sha256, c.verifier_sha256].allSatisfy(C.isHash) }) else { throw Failure.binding }
+        return value
+    }
+    static func validateAdoptionPermit(_ permit: AdoptionPermit, task: C.Request, prepared: PreparedTaskQuality,
+                                       historical: Any, now: Date = Date()) throws {
+        try permit.current(now)
+        guard let h = task.hostContext, let spec = prepared.envelope.ownerCollection,
+            permit.task_id == task.taskID, permit.request_sha256 == task.requestSHA256,
+            permit.source_fingerprint == task.sourceFingerprint,
+            permit.parent_contract_sha256 == prepared.envelope.contract.sha256,
+            permit.parent_checker_sha256 == prepared.envelope.checkerSHA256,
+            permit.context_sha256 == prepared.envelope.contract.contextSHA256,
+            permit.start_tree_sha256 == prepared.envelope.contract.startTreeSHA256,
+            permit.reference_policy_sha256 == task.policySHA256,
+            permit.owner_policy_source_sha256 == h.ownerPolicy?.sourceSHA256,
+            permit.owner_policy_projection_sha256 == h.ownerPolicy?.projectionSHA256,
+            permit.collection_manifest_sha256 == C.digest(try RCCOperationalQuality.encoded(spec)),
+            permit.historical_runtime_sha256 == C.digest(try JSONSerialization.data(withJSONObject: historical, options: [.sortedKeys, .withoutEscapingSlashes])),
+            permit.children.count == spec.obligations.count else { throw Failure.binding }
+    }
+    /// Temporal evidence comes ONLY from the original configured-input witness
+    /// and checker receipt, not a caller-supplied historical clock. The current
+    /// permit controls adoption now; the old lease controls the original run.
+    static func historicalEpoch(_ permit: AdoptionPermit, record: C.ExecutionRecord,
+                                witness w: RCCOperationalQuality.StoredWitness,
+                                parent: TaskQualityEvidence.Contract, now: Date = Date()) throws -> Date {
+        try permit.current(now)
+        guard let input = record.configuredInputObservation, let receipt = w.receipt,
+            let pin = permit.children.first(where: { $0.id == record.nodeID }),
+            pin.attempt_id == record.attemptID, pin.contract_sha256 == w.contract.sha256,
+            pin.verifier_sha256 == w.contract.verifierCodeSHA256,
+            pin.witness_sha256 == record.operationalQuality?.witnessSHA256 else { throw Failure.binding }
+        try input.validate(ticket: w.ticket, record: record)
+        let prepared = Date(timeIntervalSince1970: Double(input.preparedAtMS) / 1000), observed = receipt.observedAt
+        guard prepared.timeIntervalSince1970.isFinite, observed.timeIntervalSince1970.isFinite,
+            parent.issuedAt <= prepared, prepared <= observed, observed < parent.validUntil,
+            w.contract.issuedAt <= prepared, observed < w.contract.validUntil, observed <= now,
+            TaskQualityEvidence.evaluate(contract: w.contract, receipt: receipt, artifact: w.observedArtifact,
+                currentReferencePolicySHA256: permit.reference_policy_sha256, now: observed).taskCompletionVerified else { throw Failure.binding }
+        return observed
+    }
+    /// Only current verification authority is refreshed, in memory. Original
+    /// bindings/obligations/checker stay byte-for-byte semantically identical.
+    /// This contract is NEVER put in the registry/catalog or used to dispatch.
+    static func retrospectiveVerificationContract(_ original: TaskQualityEvidence.Contract,
+                                                  permit: AdoptionPermit, now: Date = Date()) throws -> TaskQualityEvidence.Contract {
+        try permit.current(now)
+        guard original.sha256 == permit.parent_contract_sha256, original.scope == .readOnly,
+            original.fullCoverage, original.reference == nil, original.referenceProfiles.isEmpty else { throw Failure.binding }
+        var fresh = original
+        fresh.issuedAt = Date(timeIntervalSince1970: Double(permit.issued_at_ms) / 1000)
+        fresh.validUntil = Date(timeIntervalSince1970: Double(permit.expires_at_ms) / 1000)
+        return fresh
+    }
+    static func retainedCollectionFact(task: C.Request, prepared: PreparedTaskQuality, permit: AdoptionPermit?,
+                                       historicalEpoch: Date?, rootURL: URL = PreparedTaskQuality.root,
+                                       startTree: (String) -> String = workspaceHash) throws -> C.OwnerCollectionFact? {
+        guard let permit else { return try fact(request: task, prepared: prepared, rootURL: rootURL, startTree: startTree) }
+        try permit.current()
+        guard let historicalEpoch else { throw Failure.binding }
+        let result = try fact(request: task, prepared: prepared, now: historicalEpoch, rootURL: rootURL, startTree: startTree)
+        guard let result, result.manifestSHA256 == permit.collection_manifest_sha256,
+            result.obligations.count == permit.children.count,
+            result.obligations.enumerated().allSatisfy({ i, o in o.contractSHA256 == permit.children[i].contract_sha256 &&
+                o.verifierSHA256 == permit.children[i].verifier_sha256 }) else { throw Failure.binding }
+        return result
+    }
+
     /// Re-read a pre-existing FULL native result. No ticket synthesis, SDK,
     /// planner, adapter, retry, new generation, result rewrite or refund.
     static func retainedChildControl(_ data: Data) throws -> Data {
         guard let x = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            Set(x.keys) == ["task", "child_id", "expected_native_receipt", "expected_native_receipt_sha256", "expected_witness_sha256", "historical_runtime"],
+            Set(x.keys).subtracting(["adoption_permit"]) == ["task", "child_id", "expected_native_receipt", "expected_native_receipt_sha256", "expected_witness_sha256", "historical_runtime"],
             let taskObject = x["task"], let id = x["child_id"] as? String,
             let path = x["expected_native_receipt"] as? String,
             let receiptSHA = x["expected_native_receipt_sha256"] as? String, C.isHash(receiptSHA),
@@ -342,15 +455,15 @@ enum RCCOwnerCollection {
             let historical = x["historical_runtime"] else { throw Failure.binding }
         let task = try C.decodeRequest(JSONSerialization.data(withJSONObject: taskObject, options: [.sortedKeys]))
         let archive = try historicalRuntime(historical)
+        let permit = try x["adoption_permit"].map(adoptionPermit)
         guard let host = task.hostContext, task.mode == .auto, task.request == task.objective,
             try currentPolicyMatches(task) else { throw Failure.binding }
         try host.ownerPolicy?.verifyOriginal()
         let tree = workspaceHash(host.workspace), context = C.digest(Data((host.context ?? "").utf8))
         let source = (try? SessionHandoff.decode(host.context)).flatMap { $0.source?.sha256 }
         guard let prepared = try PreparedTaskQuality.prepare(objective: task.request, contextSHA256: context, sourceSHA256: source,
-            startTreeSHA256: tree, scope: .readOnly, referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false),
-            let collection = try fact(request: task, prepared: prepared),
-            let index = (0..<collection.obligations.count).first(where: { id == "owner_\($0)" }) else { throw Failure.binding }
+            startTreeSHA256: tree, scope: .readOnly, referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false) else { throw Failure.binding }
+        if let permit { try validateAdoptionPermit(permit, task: task, prepared: prepared, historical: historical) }
         let records = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts")
         let bytes = try retainedFile(path, parent: records, expected: receiptSHA)
         let record = try C.decodeRecord(bytes)
@@ -367,6 +480,12 @@ enum RCCOwnerCollection {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
         let w = try decoder.decode(RCCOperationalQuality.StoredWitness.self, from: witnessBytes), ticket = w.ticket
         try C.validate(ticket, request: task); try C.validate(record, ticket: ticket)
+        let epoch = try permit.map { try historicalEpoch($0, record: record, witness: w, parent: prepared.envelope.contract) }
+        guard let collection = try retainedCollectionFact(task: task, prepared: prepared, permit: permit, historicalEpoch: epoch),
+            let index = (0..<collection.obligations.count).first(where: { id == "owner_\($0)" }) else { throw Failure.binding }
+        if let pin = permit?.children[index] {
+            guard pin.native_receipt_sha256 == receiptSHA, pin.witness_sha256 == witnessSHA else { throw Failure.binding }
+        }
         let o = collection.obligations[index]
         guard ticket.nodeID == id, ticket.attemptID == record.attemptID, ticket.candidateID == record.candidateID,
             ticket.instruction == o.instruction, ticket.originalRequest == task.request, ticket.originalObjective == task.objective,
@@ -395,7 +514,7 @@ enum RCCOwnerCollection {
             w.observedArtifact.binding.artifactSHA256 == q.artifactSHA256,
             w.observedArtifact.binding.outputSHA256 == C.digest(Data((record.output ?? "").utf8)),
             TaskQualityEvidence.evaluate(contract: w.contract, receipt: w.receipt, artifact: w.observedArtifact,
-                currentReferencePolicySHA256: task.policySHA256, now: Date()).taskCompletionVerified else { throw Failure.binding }
+                currentReferencePolicySHA256: task.policySHA256, now: epoch ?? Date()).taskCompletionVerified else { throw Failure.binding }
         try verifyHistoricalRuntime(archive, witness: w, record: record)
         let control = try verifyChildControl(JSONSerialization.data(withJSONObject: ["ticket": try JSONSerialization.jsonObject(with: C.encode(ticket)),
             "record": try JSONSerialization.jsonObject(with: C.encode(record))], options: [.sortedKeys]))
@@ -409,7 +528,8 @@ enum RCCOwnerCollection {
             let fresh = try PreparedTaskQuality.prepare(objective: task.request, contextSHA256: context, sourceSHA256: source,
                 startTreeSHA256: tree, scope: .readOnly, referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false),
             try RCCOperationalQuality.encoded(fresh.envelope) == RCCOperationalQuality.encoded(prepared.envelope), fresh.checkerBytes == prepared.checkerBytes,
-            try fact(request: task, prepared: fresh) == collection else { throw Failure.custody }
+            try retainedCollectionFact(task: task, prepared: fresh, permit: permit, historicalEpoch: epoch) == collection else { throw Failure.custody }
+        if let permit { try validateAdoptionPermit(permit, task: task, prepared: fresh, historical: historical) }
         return try JSONSerialization.data(withJSONObject: ["schema": 1,
             "record": try JSONSerialization.jsonObject(with: C.encode(record)), "control": try JSONSerialization.jsonObject(with: control)], options: [.sortedKeys])
     }
@@ -420,11 +540,13 @@ enum RCCOwnerCollection {
     static func verify(_ data: Data, rootURL: URL = PreparedTaskQuality.root,
                        receiptRoot: URL? = nil, startTree: (String) -> String = workspaceHash) throws -> Data {
         guard let x = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            (Set(x.keys) == ["task", "plan", "children"] || Set(x.keys) == ["task", "plan", "children", "historical_runtime"]),
+            (Set(x.keys).subtracting(["adoption_permit"]) == ["task", "plan", "children"] || Set(x.keys).subtracting(["adoption_permit"]) == ["task", "plan", "children", "historical_runtime"]),
             let taskObject = x["task"], let planObject = x["plan"], let children = x["children"] as? [[String: Any]] else { throw Failure.binding }
         let task = try C.decodeRequest(JSONSerialization.data(withJSONObject: taskObject, options: [.sortedKeys]))
         let historical: HistoricalRuntime?
         if let raw = x["historical_runtime"] { historical = try historicalRuntime(raw) } else { historical = nil }
+        let permit = try x["adoption_permit"].map(adoptionPermit)
+        guard permit == nil || historical != nil else { throw Failure.binding }
         guard let h = task.hostContext else { throw Failure.binding }
         let activePolicy = try OwnerPolicySnapshot.load(root: OwnerPolicySnapshot.defaultRoot)
         guard h.ownerPolicy.map({ activePolicy?.sourceSHA256 == $0.sourceSHA256 &&
@@ -436,8 +558,22 @@ enum RCCOwnerCollection {
         let tree = startTree(h.workspace)
         guard let prepared = try PreparedTaskQuality.prepare(objective: task.request, contextSHA256: context,
             sourceSHA256: source, startTreeSHA256: tree, scope: .readOnly, referencePolicySHA256: task.policySHA256,
-            workspace: nil, allowRegressionAcquisition: false, rootURL: rootURL),
-            let collection = try fact(request: task, prepared: prepared, rootURL: rootURL, startTree: startTree),
+            workspace: nil, allowRegressionAcquisition: false, rootURL: rootURL) else { throw Failure.binding }
+        var epoch: Date?
+        if let permit, let raw = x["historical_runtime"] {
+            try validateAdoptionPermit(permit, task: task, prepared: prepared, historical: raw)
+            guard let pin = permit.children.first,
+                let first = children.first(where: { $0["id"] as? String == pin.id }),
+                let path = first["native_receipt"] as? String else { throw Failure.binding }
+            let records = (receiptRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts")).resolvingSymlinksInPath().standardizedFileURL
+            let record = try C.decodeRecord(retainedFile(path, parent: records, expected: pin.native_receipt_sha256))
+            guard let q = record.operationalQuality, record.taskID == task.taskID, record.nodeID == pin.id,
+                record.attemptID == pin.attempt_id, q.witnessSHA256 == pin.witness_sha256 else { throw Failure.binding }
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+            let w = try decoder.decode(RCCOperationalQuality.StoredWitness.self, from: retainedFile(q.witnessPath, parent: RCCOperationalQuality.root, expected: pin.witness_sha256))
+            epoch = try historicalEpoch(permit, record: record, witness: w, parent: prepared.envelope.contract)
+        }
+        guard let collection = try retainedCollectionFact(task: task, prepared: prepared, permit: permit, historicalEpoch: epoch, rootURL: rootURL, startTree: startTree),
             plan.taskID == task.taskID, plan.requestSHA256 == task.requestSHA256,
             plan.nodes.count == collection.obligations.count, children.count == plan.nodes.count,
             Set(children.compactMap { $0["id"] as? String }).count == children.count else { throw Failure.binding }
@@ -473,6 +609,12 @@ enum RCCOwnerCollection {
             guard C.digest(witnessBytes) == q.witnessSHA256 else { throw Failure.custody }
             let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
             let w = try decoder.decode(RCCOperationalQuality.StoredWitness.self, from: witnessBytes)
+            let childEpoch = try permit.map { p -> Date in
+                let pin = p.children[i]
+                guard pin.id == id, pin.attempt_id == r.attemptID, pin.native_receipt_sha256 == C.digest(bytes),
+                    pin.witness_sha256 == q.witnessSHA256 else { throw Failure.binding }
+                return try historicalEpoch(p, record: r, witness: w, parent: prepared.envelope.contract)
+            }
             guard w.ticket.taskID == task.taskID, w.ticket.nodeID == id, w.ticket.attemptID == r.attemptID,
                 w.ticket.instruction == o.instruction, w.ticket.requestSHA256 == task.requestSHA256,
                 w.ticket.sourceFingerprint == task.sourceFingerprint, w.ticket.policySHA256 == task.policySHA256,
@@ -483,7 +625,7 @@ enum RCCOwnerCollection {
                 w.contract.requiredCheckIDs == o.requiredCheckIDs,
                 w.artifact.output == output, w.observedArtifact.binding.outputSHA256 == C.digest(Data(output.utf8)),
                 TaskQualityEvidence.evaluate(contract: w.contract, receipt: w.receipt,
-                    artifact: w.observedArtifact, currentReferencePolicySHA256: task.policySHA256, now: Date()).taskCompletionVerified
+                    artifact: w.observedArtifact, currentReferencePolicySHA256: task.policySHA256, now: childEpoch ?? Date()).taskCompletionVerified
             else { throw Failure.binding }
             if let historical { try verifyHistoricalRuntime(historical, witness: w, record: r) }
             let control = try observeControl(record: r, witness: w)
@@ -504,7 +646,8 @@ enum RCCOwnerCollection {
             "request_sha256": task.requestSHA256, "source_fingerprint": task.sourceFingerprint,
             "collection_manifest_sha256": collection.manifestSHA256, "child_receipt_sha256s": receiptHashes, "native_control_observations": controls,
             "output_sha256": C.digest(Data(output.utf8)), "start_tree_sha256": tree]
-        let payload: [String: Any] = ["contract": try JSONSerialization.jsonObject(with: encoder.encode(prepared.envelope.contract)),
+        let verificationContract = try permit.map { try retrospectiveVerificationContract(prepared.envelope.contract, permit: $0) } ?? prepared.envelope.contract
+        let payload: [String: Any] = ["contract": try JSONSerialization.jsonObject(with: encoder.encode(verificationContract)),
             "binding": binding, "workspace": root.path, "output": output]
         try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]).write(to: input, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
@@ -541,10 +684,23 @@ enum RCCOwnerCollection {
                 referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false, rootURL: rootURL),
             try encoder.encode(fresh.envelope) == encoder.encode(prepared.envelope),
             fresh.checkerBytes == prepared.checkerBytes,
-            try fact(request: task, prepared: fresh, rootURL: rootURL, startTree: startTree) == collection else { throw Failure.binding }
-        let receipt: [String: Any] = ["schema": 1, "kind": "core_owner_collection_checker_v1", "task_id": task.taskID,
+            try retainedCollectionFact(task: task, prepared: fresh, permit: permit, historicalEpoch: epoch, rootURL: rootURL, startTree: startTree) == collection else { throw Failure.binding }
+        let proofObservedAt = Date()
+        if let permit, let raw = x["historical_runtime"] {
+            try validateAdoptionPermit(permit, task: task, prepared: fresh, historical: raw, now: proofObservedAt)
+        }
+        var receipt: [String: Any] = ["schema": 1, "kind": "core_owner_collection_checker_v1", "task_id": task.taskID,
             "binding": binding, "checker_sha256": C.digest(prepared.checkerBytes),
             "checker_stdout_sha256": C.digest(result.1), "passed": passed, "native_generation_calls": 0]
+        if let permit, let raw = x["adoption_permit"] {
+            receipt["retrospective_adoption"] = ["kind": permit.kind, "permit_id": permit.permit_id,
+                "adoption_permit_sha256": C.digest(try JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys, .withoutEscapingSlashes])),
+                "original_contract_sha256": prepared.envelope.contract.sha256,
+                "verification_contract_sha256": verificationContract.sha256,
+                "verification_contract": try JSONSerialization.jsonObject(with: encoder.encode(verificationContract)),
+                "observed_at_ms": proofObservedAt.timeIntervalSince1970 * 1000, "parity_state": "unverified",
+                "dispatch_calls": 0, "retry_calls": 0]
+        }
         try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]).write(to: root.appendingPathComponent("receipt.json"))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: root.appendingPathComponent("receipt.json").path)
         return try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": task.taskID,

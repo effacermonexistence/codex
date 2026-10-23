@@ -1715,6 +1715,42 @@ export function ownerCollectionFor(task, catalog, now = Date.now()) {
   }
   return c;
 }
+/** A current proof-only adoption scope, not a renewal of catalog/dispatch
+ * authority. Called only by the authenticated operator-write retained endpoint.
+ * The host independently binds checker bytes and derives historical time from
+ * original native/checker receipts. A caller-supplied old `now` never enters it. */
+export function retainedAdoptionPermit(value, snapshot, now = Date.now()) {
+  if (!Object.hasOwn(value, 'adoption_permit')) return null;
+  const p = value.adoption_permit, task = admittedTask(snapshot), c = snapshot.catalog?.task_contract;
+  const owner = task.host_context?.owner_policy, collection = c?.owner_collection;
+  assert(keys(p, ['schema','kind','permit_id','task_id','request_sha256','expected_revision','expected_fingerprint',
+    'expected_snapshot_sha256','issued_at_ms','expires_at_ms','parent_contract_sha256','parent_checker_sha256',
+    'context_sha256','start_tree_sha256','reference_policy_sha256','source_fingerprint','owner_policy_source_sha256',
+    'owner_policy_projection_sha256','collection_manifest_sha256','historical_runtime_sha256','native_generation_calls',
+    'dispatch_calls','retry_calls','parity_state','children']) && p.schema === 1 &&
+    p.kind === 'retained_owner_collection_adoption_only' && p.permit_id === value.recovery_id &&
+    p.task_id === value.task_id && p.request_sha256 === value.request_sha256 &&
+    p.expected_revision === value.expected_revision && p.expected_fingerprint === value.expected_fingerprint &&
+    p.expected_snapshot_sha256 === value.expected_snapshot_sha256 &&
+    int(p.issued_at_ms,1,Number.MAX_SAFE_INTEGER) && int(p.expires_at_ms,1,Number.MAX_SAFE_INTEGER) &&
+    p.issued_at_ms <= now && now < p.expires_at_ms && p.expires_at_ms > p.issued_at_ms &&
+    p.expires_at_ms - p.issued_at_ms <= 300_000 &&
+    p.native_generation_calls === 0 && p.dispatch_calls === 0 && p.retry_calls === 0 && p.parity_state === 'unverified' &&
+    p.parent_contract_sha256 === c?.contract_sha256 && HASH.test(p.parent_checker_sha256 ?? '') &&
+    p.context_sha256 === c?.context_sha256 && p.start_tree_sha256 === c?.start_tree_sha256 &&
+    p.reference_policy_sha256 === task.policy_sha256 && p.source_fingerprint === task.source_fingerprint &&
+    p.owner_policy_source_sha256 === (owner?.sourceSHA256 ?? null) &&
+    p.owner_policy_projection_sha256 === (owner?.projectionSHA256 ?? null) &&
+    p.collection_manifest_sha256 === collection?.manifest_sha256 &&
+    p.historical_runtime_sha256 === sha(Buffer.from(stable(value.historical_runtime))) &&
+    Array.isArray(p.children) && p.children.length === value.children.length && p.children.length === collection?.obligations?.length &&
+    p.children.every((row,i) => keys(row,['id','attempt_id','native_receipt_sha256','witness_sha256','contract_sha256','verifier_sha256']) &&
+      row.id === value.children[i].id && row.attempt_id === value.children[i].attempt_id &&
+      row.native_receipt_sha256 === value.children[i].native_receipt_sha256 && row.witness_sha256 === value.children[i].witness_sha256 &&
+      row.contract_sha256 === collection.obligations[i].contract_sha256 && row.verifier_sha256 === collection.obligations[i].verifier_sha256),
+  'owner_control_adoption_permit_invalid');
+  return p;
+}
 function ownerCollectionPlanEligible(task, collection) {
   return collection !== null && task.budget.max_parallel >= 2 && task.budget.max_attempts >= 2 &&
     (task.budget.max_native_dispatches == null || task.budget.max_native_dispatches >= collection.obligations.length * 2);
@@ -2665,7 +2701,10 @@ class RCCRuntime {
       snapshot.error === 'owner_collection_control_unverified' && snapshot.cancel_requested === false &&
       snapshot.result === null && !snapshot.install_handoff && !snapshot.owner_control_recovery,
     'owner_control_recovery_state_invalid');
-    const collection = ownerCollectionFor(executionTask(snapshot), snapshot.catalog);
+    const permit = retainedAdoptionPermit(value, snapshot);
+    // Structure only under a NEW current permit. Historical validity is proven
+    // by the host from the saved receipts; dispatch still uses Date.now().
+    const collection = ownerCollectionFor(executionTask(snapshot), snapshot.catalog, permit ? 0 : Date.now());
     assert(collection && stable(collection) === stable(snapshot.owner_collection) &&
       snapshot.children.length === value.children.length && snapshot.plan?.nodes?.length === value.children.length,
     'owner_control_recovery_authority_changed');
@@ -2678,7 +2717,7 @@ class RCCRuntime {
       ![...this.ledgerInflight.values()].some(x => x.taskID === value.task_id), 'owner_control_recovery_unsettled');
     for (const [i, expected] of value.children.entries()) {
       const node = snapshot.plan.nodes[i], child = snapshot.children.find(c => c.id === expected.id);
-      assert(node.id === expected.id && ownerCollectionObligation(node, executionTask(snapshot), snapshot.catalog) && child &&
+      assert(node.id === expected.id && ownerCollectionObligation(node, executionTask(snapshot), snapshot.catalog, permit ? 0 : Date.now()) && child &&
         child.state === 'held' && child.hold_reason === 'owner_collection_control_unverified' &&
         child.attempt_id === expected.attempt_id && child.native_receipt === expected.native_receipt &&
         child.selected_config?.scope === 'read_only' && child.selected_config.surface === 'codex' &&
@@ -2707,8 +2746,10 @@ class RCCRuntime {
    * to the host verifier, never into the original task or ticket. */
   async recoverOwnerControl(input) {
     assert(!this.closed, 'runtime_closed');
-    assert(keys(input, ['schema', 'recovery_id', 'task_id', 'request_sha256', 'expected_revision',
-      'expected_fingerprint', 'expected_snapshot_sha256', 'children', 'historical_runtime']) && input.schema === 1 &&
+    assert((keys(input, ['schema', 'recovery_id', 'task_id', 'request_sha256', 'expected_revision',
+      'expected_fingerprint', 'expected_snapshot_sha256', 'children', 'historical_runtime']) ||
+      keys(input, ['schema', 'recovery_id', 'task_id', 'request_sha256', 'expected_revision',
+      'expected_fingerprint', 'expected_snapshot_sha256', 'children', 'historical_runtime', 'adoption_permit'])) && input.schema === 1 &&
       ID.test(input.recovery_id ?? '') && ID.test(input.task_id ?? '') && HASH.test(input.request_sha256 ?? '') &&
       int(input.expected_revision, 1, Number.MAX_SAFE_INTEGER) && HASH.test(input.expected_fingerprint ?? '') &&
       HASH.test(input.expected_snapshot_sha256 ?? '') && Array.isArray(input.children) &&
@@ -2747,7 +2788,8 @@ class RCCRuntime {
           const child = snapshot.children.find(c => c.id === expected.id), node = snapshot.plan.nodes[i];
           const proof = await this.verifyRetainedOwnerControl(immutable({task, child_id: expected.id,
             expected_native_receipt: expected.native_receipt, expected_native_receipt_sha256: expected.native_receipt_sha256,
-            expected_witness_sha256: expected.witness_sha256, historical_runtime: value.historical_runtime}), active.controller.signal);
+            expected_witness_sha256: expected.witness_sha256, historical_runtime: value.historical_runtime,
+            ...(Object.hasOwn(value, 'adoption_permit') ? {adoption_permit: value.adoption_permit} : {})}), active.controller.signal);
           checkActive(); this._retainedRecoverySnapshot(value);
           assert(keys(proof, ['schema', 'record', 'control']) && proof.schema === 1,
             'owner_control_recovery_proof_invalid');
@@ -2781,7 +2823,8 @@ class RCCRuntime {
         }
         const output = ownerCollectionOutput(snapshot.plan, recovered);
         const verdict = await this.verifyTask({task: immutable(task), plan: immutable(snapshot.plan), children: immutable(recovered),
-          historical_runtime: immutable(value.historical_runtime)},
+          historical_runtime: immutable(value.historical_runtime),
+          ...(Object.hasOwn(value, 'adoption_permit') ? {adoption_permit: immutable(value.adoption_permit)} : {})},
           active.controller.signal);
         checkActive(); this._retainedRecoverySnapshot(value);
         assert(keys(verdict, ['schema', 'task_id', 'task_verified', 'output', 'parity_state', 'reason']) && verdict.schema === 1 &&
@@ -2809,7 +2852,10 @@ class RCCRuntime {
             original_request_sha256: value.request_sha256,
             prior_revision: value.expected_revision, prior_snapshot_sha256: value.expected_snapshot_sha256,
             prior_reason: 'owner_collection_control_unverified', native_generation_calls: 0, controls,
-            parent_verdict_sha256: sha(Buffer.from(stable(verdict))), recovered_at_ms: Date.now()};
+            parent_verdict_sha256: sha(Buffer.from(stable(verdict))), recovered_at_ms: Date.now(),
+            ...(Object.hasOwn(value, 'adoption_permit') ? {adoption_permit_sha256: sha(Buffer.from(stable(value.adoption_permit))),
+              adoption_kind: 'retained_owner_collection_adoption_only', original_contract_sha256: value.adoption_permit.parent_contract_sha256,
+              dispatch_calls: 0, retry_calls: 0, parity_state: 'unverified'} : {})};
         });
         return this._public(value.task_id);
       })();

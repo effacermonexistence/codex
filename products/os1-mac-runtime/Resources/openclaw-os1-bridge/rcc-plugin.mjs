@@ -658,7 +658,8 @@ export function registerRCCRuntime(api) {
             const projected = {task: evidence.task, plan, children: evidence.children.map(child => ({
               id: child.id, state: child.state, candidate_id: child.candidate_id, instruction: child.instruction,
               attempt_id: child.attempt_id, native_receipt: child.native_receipt, output: child.output})),
-              ...(Object.hasOwn(evidence, 'historical_runtime') ? {historical_runtime: evidence.historical_runtime} : {})};
+              ...(Object.hasOwn(evidence, 'historical_runtime') ? {historical_runtime: evidence.historical_runtime} : {}),
+              ...(Object.hasOwn(evidence, 'adoption_permit') ? {adoption_permit: evidence.adoption_permit} : {})};
             if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > 1_048_576)
               throw Error('owner_collection_verifier_input_oversize');
             return nativeOperation('rcc-task-verify', projected);

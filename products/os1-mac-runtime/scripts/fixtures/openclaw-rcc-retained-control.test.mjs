@@ -6,7 +6,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp,chmod,mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createRCCRuntime,hostContextFingerprint,ownerCollectionOutput}
+import {createRCCRuntime,hostContextFingerprint,ownerCollectionOutput,ownerCollectionFor}
  from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {registerRCCRuntime} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 const H=x=>createHash('sha256').update(x).digest('hex');
@@ -38,8 +38,8 @@ async function fixture(t,{controlPatch=null,parentPatch=null,controlWait=null,pa
  await writeFile(path,JSON.stringify(record),{mode:0o600});originals.set(ticket.node_id,record);
  return{...record,task_verified:false,task_quality:'unverified',error:'owner_collection_control_unverified',operational_quality:{...record.operational_quality,assessment_state:'unverified'}};},
  executeContinuation:forbidden,decideOperationalQuality:forbidden,stageSelfUpdate:forbidden,
- verifyRetainedOwnerControl:async request=>{calls.control++;assert.deepEqual(Object.keys(request).sort(),['task','child_id','expected_native_receipt','expected_native_receipt_sha256','expected_witness_sha256','historical_runtime'].sort());if(controlWait)await controlWait(request);const record=clone(originals.get(request.child_id));const control={schema:1,task_id:q.task_id,node_id:request.child_id,attempt_id:record.attempt_id,request_sha256:q.request_sha256,output_sha256:H(record.output),control_verified:true,observation:{sourceKind:'codex_owned_turn_rollout_v1',sourceSHA256:H('synthetic owned log'),turnID:'turn-'+record.attempt_id,completed:true,toolRequests:0}};const result={schema:1,record,control};if(controlPatch)controlPatch(result,request);return result;},
- emit,verifyTask:async evidence=>{calls.parent++;assert.deepEqual(evidence.historical_runtime,input.historical_runtime);if(parentWait)await parentWait(evidence);const result={schema:1,task_id:q.task_id,task_verified:true,output:canonical(JSON.parse(ownerCollectionOutput(evidence.plan,evidence.children))),parity_state:'unverified',reason:'synthetic full parent checker'};if(parentPatch)parentPatch(result);return result;}});
+ verifyRetainedOwnerControl:async request=>{calls.control++;assert.deepEqual(Object.keys(request).sort(),['task','child_id','expected_native_receipt','expected_native_receipt_sha256','expected_witness_sha256','historical_runtime',...(Object.hasOwn(request,'adoption_permit')?['adoption_permit']:[])].sort());if(controlWait)await controlWait(request);const record=clone(originals.get(request.child_id));const control={schema:1,task_id:q.task_id,node_id:request.child_id,attempt_id:record.attempt_id,request_sha256:q.request_sha256,output_sha256:H(record.output),control_verified:true,observation:{sourceKind:'codex_owned_turn_rollout_v1',sourceSHA256:H('synthetic owned log'),turnID:'turn-'+record.attempt_id,completed:true,toolRequests:0}};const result={schema:1,record,control};if(controlPatch)controlPatch(result,request);return result;},
+ emit,verifyTask:async evidence=>{calls.parent++;assert.deepEqual(evidence.historical_runtime,input.historical_runtime);assert.deepEqual(evidence.adoption_permit,input.adoption_permit);if(parentWait)await parentWait(evidence);const result={schema:1,task_id:q.task_id,task_verified:true,output:canonical(JSON.parse(ownerCollectionOutput(evidence.plan,evidence.children))),parity_state:'unverified',reason:'synthetic full parent checker'};if(parentPatch)parentPatch(result);return result;}});
  t.after(async()=>{await runtime.close();await rm(root,{recursive:true,force:true});});await runtime.submit(q);const held=await runtime.wait({schema:1,task_id:q.task_id},{timeoutMs:6000});assert.equal(held.state,'held');assert.equal(calls.execute,2);while(runtime.runningTasks.has(q.task_id))await new Promise(r=>setTimeout(r,5));sealed=true;
  const storedRow=runtime.db.prepare('SELECT fingerprint,snapshot FROM tasks WHERE task_id=?').get(q.task_id),snapshot=JSON.parse(storedRow.snapshot);
  const input={schema:1,recovery_id:randomUUID(),task_id:q.task_id,request_sha256:q.request_sha256,expected_revision:snapshot.revision,expected_fingerprint:storedRow.fingerprint,expected_snapshot_sha256:H(storedRow.snapshot),historical_runtime:{app_path:join(root,'historical.app'),bundle_inventory_receipt:join(root,'inventory.json'),bundle_inventory_receipt_sha256:H('inventory'),install_receipt:join(root,'install.json'),install_receipt_sha256:H('install'),cli_sha256:H('historical CLI')},children:[]};
@@ -88,3 +88,72 @@ for(const literal of ['9007199254740993','9007199254740991.1','0.999999999999999
 test('safe integer values are accepted, but a different safe parent value is not',async t=>{for(const rewrite of [false,true]){const r=await fixture(t,{parentPatch:v=>{if(rewrite)v.output=v.output.replace('9007199254740991','9007199254740990');}});await reboundSyntheticOutput(r,'{"n":9007199254740991,"zero":0,"negative":-12}');if(rewrite)await assert.rejects(r.runtime.recoverOwnerControl(r.input),/parent_unverified/);else assert.equal((await r.runtime.recoverOwnerControl(r.input)).state,'completed');assert.equal(r.calls.execute,2);}});
 
 test('proof recovery gateway is operator.write and registration alone dispatches nothing',async()=>{const methods=new Map();registerRCCRuntime({on(){},registerService(){},registerGatewayMethod(name,handler,options){methods.set(name,{handler,options});}});const method=methods.get('os1.rcc.recoverOwnerControl');assert.deepEqual(method.options,{scope:'operator.write',profileAccess:'independent'});let reply;await method.handler({params:{},respond(...args){reply=args;}});assert.equal(reply[0],false);assert.equal(reply[2].message,'rcc_request_rejected');});
+
+// Retrospective tests exercise Core's transactional permit boundary with fake
+// host proofs. The Swift extracted tests independently cover saved-time/lease
+// validation. No real expired contract, SDK, model, or registry is touched.
+function adoptionPermitFor(r, now=Date.now()) {
+ const p=r.c.task_contract,owner=r.q.host_context.owner_policy;
+ return {schema:1,kind:'retained_owner_collection_adoption_only',permit_id:r.input.recovery_id,
+ task_id:r.input.task_id,request_sha256:r.input.request_sha256,expected_revision:r.input.expected_revision,
+ expected_fingerprint:r.input.expected_fingerprint,expected_snapshot_sha256:r.input.expected_snapshot_sha256,
+ issued_at_ms:now-1,expires_at_ms:now+120000,parent_contract_sha256:p.contract_sha256,
+ parent_checker_sha256:H('parent-checker'),context_sha256:p.context_sha256,start_tree_sha256:p.start_tree_sha256,
+ reference_policy_sha256:r.q.policy_sha256,source_fingerprint:r.q.source_fingerprint,
+ owner_policy_source_sha256:owner?.sourceSHA256??null,owner_policy_projection_sha256:owner?.projectionSHA256??null,
+ collection_manifest_sha256:p.owner_collection.manifest_sha256,historical_runtime_sha256:H(canonical(r.input.historical_runtime)),
+ native_generation_calls:0,dispatch_calls:0,retry_calls:0,parity_state:'unverified',
+ children:r.input.children.map((row,i)=>({id:row.id,attempt_id:row.attempt_id,native_receipt_sha256:row.native_receipt_sha256,
+ witness_sha256:row.witness_sha256,contract_sha256:p.owner_collection.obligations[i].contract_sha256,
+ verifier_sha256:p.owner_collection.obligations[i].verifier_sha256}))};
+}
+async function expiredClock(body) {
+ const original=Date.now,now=original()+120000;
+ Date.now=()=>now;
+ try{return await body(now, original);}finally{Date.now=original;}
+}
+test('expired original collection plus fresh exact operator adoption permit can recover with no generation',async t=>{
+ const r=await fixture(t);const originalContracts=clone(r.before.catalog.task_contract);
+ await expiredClock(async now=>{
+  r.input.adoption_permit=adoptionPermitFor(r,now);
+  const v=await r.runtime.recoverOwnerControl(r.input);
+  assert.equal(v.state,'completed');assert.equal(v.result.parity_state,'unverified');
+  const s=r.runtime._load(r.q.task_id);assert.deepEqual(s.catalog.task_contract,originalContracts);
+  assert.equal(s.native_dispatches,2);assert.equal(s.owner_control_recovery.native_generation_calls,0);
+  assert.equal(s.owner_control_recovery.dispatch_calls,0);assert.equal(s.owner_control_recovery.retry_calls,0);
+  assert.equal(s.owner_control_recovery.adoption_permit_sha256,H(canonical(r.input.adoption_permit)));
+  assert.equal(r.calls.control,2);assert.equal(r.calls.parent,1);assert.equal(r.calls.execute,2);
+ });
+});
+test('expired original without a fresh adoption permit stays held before any host proof',async t=>{
+ const r=await fixture(t);await expiredClock(async()=>{await assert.rejects(r.runtime.recoverOwnerControl(r.input));});
+ await assertUnchanged(r);assert.equal(r.calls.control,0);assert.equal(r.calls.parent,0);
+});
+for(const [name,change]of Object.entries({
+ expired:p=>p.expires_at_ms=p.issued_at_ms, future:p=>{p.issued_at_ms+=10000;p.expires_at_ms+=10000;},
+ tooLong:p=>p.expires_at_ms=p.issued_at_ms+300001, wrongID:p=>p.permit_id=randomUUID(),
+ task:p=>p.task_id=randomUUID(), revision:p=>p.expected_revision++, request:p=>p.request_sha256=H('other'),
+ fingerprint:p=>p.expected_fingerprint=H('other'), snapshot:p=>p.expected_snapshot_sha256=H('other'),
+ contract:p=>p.parent_contract_sha256=H('other'), context:p=>p.context_sha256=H('other'),
+ tree:p=>p.start_tree_sha256=H('other'), policy:p=>p.reference_policy_sha256=H('other'),
+ source:p=>p.source_fingerprint=H('other'), owner:p=>p.owner_policy_source_sha256=H('other'),
+ manifest:p=>p.collection_manifest_sha256=H('other'), archive:p=>p.historical_runtime_sha256=H('other'),
+ child:p=>p.children[0].contract_sha256=H('other'), checker:p=>p.children[0].verifier_sha256=H('other'),
+ receipt:p=>p.children[0].native_receipt_sha256=H('other'), witness:p=>p.children[0].witness_sha256=H('other'),
+ generation:p=>p.native_generation_calls=1, dispatch:p=>p.dispatch_calls=1,retry:p=>p.retry_calls=1,
+ parity:p=>p.parity_state='reference_equivalent', boolean:p=>p.issued_at_ms=true,extra:p=>p.approved=true,
+ missing:p=>delete p.parent_checker_sha256
+}))test(`retrospective permit ${name} is rejected without any host/model operation`,async t=>{
+ const r=await fixture(t);await expiredClock(async now=>{r.input.adoption_permit=adoptionPermitFor(r,now);change(r.input.adoption_permit);await assert.rejects(r.runtime.recoverOwnerControl(r.input),/adoption_permit_invalid/);});
+ await assertUnchanged(r);assert.equal(r.calls.control,0);assert.equal(r.calls.parent,0);
+});
+test('permit expiring during parent verification blocks final CAS without partial adoption',async t=>{
+ let now=Date.now()+120000;const original=Date.now,wait=deferred(),entered=deferred();
+ const r=await fixture(t,{parentWait:async()=>{entered.resolve();await wait.promise;}});Date.now=()=>now;
+ try{r.input.adoption_permit=adoptionPermitFor(r,now);const pending=r.runtime.recoverOwnerControl(r.input);const rejection=assert.rejects(pending,/adoption_permit_invalid/);await entered.promise;now=r.input.adoption_permit.expires_at_ms;wait.resolve();await rejection;}finally{Date.now=original;}
+ await assertUnchanged(r);assert.equal(r.calls.parent,1);
+});
+test('ordinary current execution collection remains expired even while retrospective permit exists',async t=>{
+ const r=await fixture(t);await expiredClock(async now=>{r.input.adoption_permit=adoptionPermitFor(r,now);assert.equal(ownerCollectionFor(r.q,r.c),null);assert.equal(ownerCollectionFor(r.q,r.c,now),null);});
+ await assertUnchanged(r);assert.equal(r.calls.control,0);
+});

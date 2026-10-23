@@ -263,7 +263,7 @@ enum RCCRuntimeGatewayClient {
         }
         guard input.count > 2, input.count <= 1_048_576,
             let x = try JSONSerialization.jsonObject(with: input) as? [String: Any],
-            Set(x.keys) == ["schema", "recovery_id", "task_id", "request_sha256", "expected_revision", "expected_fingerprint", "expected_snapshot_sha256", "children", "historical_runtime"],
+            Set(x.keys).subtracting(["adoption_permit"]) == ["schema", "recovery_id", "task_id", "request_sha256", "expected_revision", "expected_fingerprint", "expected_snapshot_sha256", "children", "historical_runtime"],
             integer(x["schema"]) == 1, id(x["recovery_id"]), id(x["task_id"]), hash(x["request_sha256"]),
             let revision = integer(x["expected_revision"]), hash(x["expected_fingerprint"]), hash(x["expected_snapshot_sha256"]),
             let children = x["children"] as? [[String: Any]], (2...8).contains(children.count),
@@ -277,6 +277,19 @@ enum RCCRuntimeGatewayClient {
             path(history["app_path"]), path(history["bundle_inventory_receipt"]), path(history["install_receipt"]),
             hash(history["bundle_inventory_receipt_sha256"]), hash(history["install_receipt_sha256"]), hash(history["cli_sha256"])
         else { throw Failure.invalidRequest }
+        if let raw = x["adoption_permit"] {
+            let p = try RCCOwnerCollection.adoptionPermit(raw)
+            try p.current()
+            guard p.permit_id == x["recovery_id"] as? String, p.task_id == x["task_id"] as? String,
+                p.request_sha256 == x["request_sha256"] as? String, p.expected_revision == revision,
+                p.expected_fingerprint == x["expected_fingerprint"] as? String,
+                p.expected_snapshot_sha256 == x["expected_snapshot_sha256"] as? String,
+                p.historical_runtime_sha256 == RCCRuntimeContract.digest(try JSONSerialization.data(withJSONObject: history, options: [.sortedKeys, .withoutEscapingSlashes])),
+                p.children.count == children.count,
+                p.children.enumerated().allSatisfy({ i, c in c.id == children[i]["id"] as? String &&
+                    c.attempt_id == children[i]["attempt_id"] as? String && c.native_receipt_sha256 == children[i]["native_receipt_sha256"] as? String &&
+                    c.witness_sha256 == children[i]["witness_sha256"] as? String }) else { throw Failure.invalidRequest }
+        }
         return (x["task_id"] as! String, x["request_sha256"] as! String, revision)
     }
 

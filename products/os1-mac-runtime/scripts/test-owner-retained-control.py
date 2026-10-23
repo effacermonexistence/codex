@@ -6,7 +6,7 @@ R=Path(__file__).resolve().parents[1]
 s=(R/'Sources/OS1/RCCOwnerCollection.swift').read_text();g=(R/'Sources/OS1/RCCRuntimeGatewayClient.swift').read_text();main=(R/'Sources/OS1/main.swift').read_text()
 def fragment(text,start,end):
  a=text.index(start);return text[a:text.index(end,a)]
-parts=[fragment(s,'    static func persistControlObservation(','    struct HistoricalRuntime:'),fragment(s,'    struct HistoricalRuntime:','    static func currentPolicyMatches('),fragment(s,'    static func retainedInteger(','    /// Original artifacts only.')]
+parts=[fragment(s,'    struct AdoptionPermit:','    static func validateAdoptionPermit('),fragment(s,'    static func persistControlObservation(','    struct HistoricalRuntime:'),fragment(s,'    struct HistoricalRuntime:','    static func currentPolicyMatches('),fragment(s,'    static func retainedInteger(','    /// Original artifacts only.')]
 transport=fragment(g,'    static func validateOwnerControlRecovery(','    /// Cancellation remains')
 retained=fragment(s,'    static func retainedChildControl(','    /// Parent checker observes')
 assert 'verifyNativeProfile' not in retained
@@ -32,7 +32,7 @@ import CryptoKit
 import Darwin
 enum RCCRuntimeContract {static func isHash(_ x:String)->Bool{x.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil};static func digest(_ b:Data)->String{SHA256.hash(data:b).map{String(format:"%02x",$0)}.joined()}}
 enum Host {typealias C=RCCRuntimeContract;enum Failure:Error{case custody,binding}
-'''+''.join(parts)+'}\nenum Transport {enum Failure:Error{case invalidRequest}\n'+transport+'}\n'
+'''+''.join(parts)+'}\ntypealias RCCOwnerCollection=Host\nenum Transport {enum Failure:Error{case invalidRequest}\n'+transport+'}\n'
 program+=r'''
 @main enum Test {
  static func main()throws {
@@ -83,6 +83,14 @@ program+=r'''
   let request:[String:Any]=["schema":1,"recovery_id":"recover-1","task_id":"task-1","request_sha256":H,"expected_revision":2,"expected_fingerprint":H,"expected_snapshot_sha256":H,"children":[child,second],"historical_runtime":history]
   func encoded(_ x:[String:Any])throws->Data{try JSONSerialization.data(withJSONObject:x,options:.sortedKeys)}
   try check(try Transport.validateOwnerControlRecovery(encoded(request)).revision==2)
+  var withPermit=request
+  let now=Int64(Date().timeIntervalSince1970*1000)
+  var permit:[String:Any]=["schema":1,"kind":"retained_owner_collection_adoption_only","permit_id":"recover-1","task_id":"task-1","request_sha256":H,"expected_revision":2,"expected_fingerprint":H,"expected_snapshot_sha256":H,"issued_at_ms":now-1000,"expires_at_ms":now+60000,"parent_contract_sha256":H,"parent_checker_sha256":H,"context_sha256":H,"start_tree_sha256":H,"reference_policy_sha256":H,"source_fingerprint":H,"owner_policy_source_sha256":NSNull(),"owner_policy_projection_sha256":NSNull(),"collection_manifest_sha256":H,"historical_runtime_sha256":RCCRuntimeContract.digest(try JSONSerialization.data(withJSONObject:history,options:[.sortedKeys,.withoutEscapingSlashes])),"native_generation_calls":0,"dispatch_calls":0,"retry_calls":0,"parity_state":"unverified","children":[["id":"owner_0","attempt_id":"a0","native_receipt_sha256":H,"witness_sha256":H,"contract_sha256":H,"verifier_sha256":H],["id":"owner_1","attempt_id":"a1","native_receipt_sha256":H,"witness_sha256":H,"contract_sha256":H,"verifier_sha256":H]]]
+  withPermit["adoption_permit"]=permit
+  try check(try Transport.validateOwnerControlRecovery(encoded(withPermit)).revision==2)
+  for key in permit.keys {var badPermit=permit;badPermit.removeValue(forKey:key);var bad=withPermit;bad["adoption_permit"]=badPermit;try rejects{_ = try Transport.validateOwnerControlRecovery(encoded(bad))}}
+  for key in ["permit_id","task_id","request_sha256","expected_fingerprint","expected_snapshot_sha256","historical_runtime_sha256"] {var badPermit=permit;badPermit[key]="wrong";var bad=withPermit;bad["adoption_permit"]=badPermit;try rejects{_ = try Transport.validateOwnerControlRecovery(encoded(bad))}}
+  permit["expires_at_ms"]=now-1;withPermit["adoption_permit"]=permit;try rejects{_ = try Transport.validateOwnerControlRecovery(encoded(withPermit))}
   for key in request.keys{var bad=request;bad.removeValue(forKey:key);try rejects{_ = try Transport.validateOwnerControlRecovery(encoded(bad))}}
   for key in ["schema","expected_revision"]{for value:Any in [true,false,NSNull(),"2",-1,0,1.5]{var bad=request;bad[key]=value;try rejects{_ = try Transport.validateOwnerControlRecovery(encoded(bad))}}}
   var bad=request;bad["children"]=[child,child];try rejects{_ = try Transport.validateOwnerControlRecovery(encoded(bad))}
