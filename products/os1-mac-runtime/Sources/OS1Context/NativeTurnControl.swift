@@ -158,7 +158,7 @@ public enum NativeTurnControl {
             b.providerInputSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
             (1...8_388_608).contains(b.providerInputUTF8Bytes), !b.model.isEmpty, b.model.utf8.count <= 256,
             ["minimal", "low", "medium", "high", "max", "ultra", "xhigh"].contains(b.effort) else { throw Failure.binding }
-        var session = 0, starts = 0, finishes = 0, worlds = 0, contexts = 0, settings = 0, rawUsers = 0, users = 0
+        var session = 0, preStartSettings = 0, starts = 0, finishes = 0, worlds = 0, contexts = 0, settings = 0, rawUsers = 0, users = 0
         var active = false, ended = false
         var rawReasoning = Set<String>(), eventReasoning = Set<String>()
         var rawAgents: [String: String] = [:], eventAgents: [String: String] = [:]
@@ -195,6 +195,24 @@ public enum NativeTurnControl {
                 session += 1; continue
             }
             guard session == 1, !ended else { throw Failure.binding }
+            // The same current CLI may persist one session-settings snapshot
+            // immediately after session_meta, before any turn starts. It is
+            // typed metadata, not a turn/action; never satisfy `settings` with
+            // it. The bound in-turn snapshot below remains mandatory.
+            if !active, starts == 0, type == "event_msg", p["type"] as? String == "thread_settings_applied" {
+                guard index == 1, preStartSettings == 0,
+                    Set(x.keys).isSubset(of: ["timestamp", "ordinal", "type", "payload"]),
+                    x["timestamp"] == nil || x["timestamp"] is String,
+                    Set(p.keys) == ["type", "thread_id", "thread_settings"], p["thread_id"] as? String == b.threadID,
+                    let s = p["thread_settings"] as? [String: Any], Set(s.keys).isSubset(of: settingsKeys),
+                    s["model"] as? String == b.model, s["reasoning_effort"] as? String == b.effort,
+                    s["model_provider_id"] as? String == "openai" else { throw Failure.binding }
+                if let ordinal = x["ordinal"] {
+                    guard let n = ordinal as? NSNumber, ["i", "q"].contains(String(cString: n.objCType)),
+                        n.int64Value == Int64(index) else { throw Failure.binding }
+                }
+                preStartSettings += 1; continue
+            }
             if type == "event_msg", p["type"] as? String == "task_started" {
                 guard !active, starts == 0, p["turn_id"] as? String == turnID,
                     p["root_turn_id"] == nil || p["root_turn_id"] as? String == turnID else { throw Failure.binding }
