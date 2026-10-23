@@ -25,7 +25,7 @@ func runRCCConfiguredInputObservationFixtures() throws {
                      catalogAt: Int64 = 800, channel: String = "codex_developer") throws -> RCCConfiguredInputObservation {
         try .init(ticket: ticket, delegatedInput: delegated, providerInput: input, instructions: "Actual synthetic developer instructions",
             baseInstructions: "Actual synthetic base projection", channel: channel, sessionState: "new", harnessSHA256: hash,
-            nativeBinarySHA256: hash, executionConfigurationSHA256: hash, catalogSHA256: hash, catalogObservedAtMS: catalogAt, preparedAtMS: at)
+            launchEntrySHA256: hash, executionConfigurationSHA256: hash, catalogSHA256: hash, catalogObservedAtMS: catalogAt, preparedAtMS: at)
     }
     let prepared = try observation(), raw = try C.encode(prepared)
     let decoded = try JSONDecoder().decode(RCCConfiguredInputObservation.self, from: raw)
@@ -33,7 +33,7 @@ func runRCCConfiguredInputObservationFixtures() throws {
     try decoded.validate(ticket: ticket)
     let obj = try JSONSerialization.jsonObject(with: raw) as! [String: Any]
     try check(obj["model_answer"] == nil, "source identity does not masquerade as CoreRouting and inject model_answer")
-    for key in ["input_tokens", "context_window_tokens", "tokenizer_id", "family", "capacity_upper_bound"] {
+    for key in ["input_tokens", "context_window_tokens", "tokenizer_id", "family", "capacity_upper_bound", "native_binary_sha256"] {
         try check(obj[key] is NSNull, "unknown stays explicit null: " + key)
     }
     try check(prepared.delegatedInput.sha256 == C.digest(Data(delegated.utf8)) && prepared.delegatedInput.utf8Bytes == delegated.utf8.count,
@@ -53,7 +53,7 @@ func runRCCConfiguredInputObservationFixtures() throws {
     foreign = ticket; foreign.originalRequest = "invented request"
     try reject("original request independently hashed") { _ = try observation(foreign) }
     for (key, value) in [("input_tokens", 100 as Any), ("context_window_tokens", 272000 as Any), ("family", "summary" as Any),
-                         ("tokenizer_id", "assumed" as Any), ("capacity_upper_bound", 42 as Any),
+                         ("native_binary_sha256", hash as Any), ("tokenizer_id", "assumed" as Any), ("capacity_upper_bound", 42 as Any),
                          ("quality_certified", true as Any), ("backend_inclusion_verified", true as Any), ("execution_authorized", true as Any)] {
         var modified = obj; modified[key] = value
         try reject("no invented hidden state " + key) { _ = try JSONDecoder().decode(RCCConfiguredInputObservation.self,

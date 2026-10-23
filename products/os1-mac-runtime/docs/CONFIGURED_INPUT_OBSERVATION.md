@@ -7,9 +7,9 @@ It does not enable cheaper routing or activate the unmerged dynamic witness.
 ## Executed source path
 
 1. The selected native adapter reads its provider's typed current inventory.
-   It hashes that exact typed inventory and records the observation time before
+   It hashes that exact typed inventory (possibly retained/cache metadata) and records the adapter read time before
    authorization. This is **not** the full Core candidate catalog, raw provider
-   transport JSON, an entitlement proof or a quota measurement.
+   transport JSON, a provider creation/fetch timestamp, an entitlement proof or a quota measurement.
 2. The adapter constructs the actual `RCCDelegatedEnvelope.prompt`, then the
    actual `providerPrompt` with bound source/history. These exact string values
    enter the ordinary `execute` call, unchanged.
@@ -53,6 +53,8 @@ preparation components. No complete provider-input count is claimed.
 
 These values remain explicit JSON null:
 
+- actual downstream native/backend image SHA (the known argv/launch artifact is
+  separately `launch_entry_sha256`, and may itself be a wrapper);
 - tokenizer ID;
 - input-token count;
 - model context-window token count;
@@ -66,9 +68,12 @@ remain independently unverified. Catalog/preparation/dispatch/return timestamps
 are separate objects. No exact internal classification or causal latency is
 inferred from a visible timestamp.
 
-The actual executable hash is its preparation-time read identity, not proof of
+`native_binary_sha256` remains null and `native_binary_basis` is always
+`backend_image_not_observed`. This producer does not parse arbitrary scripts or
+claim a launcher hash establishes the backend image. The launch-entry hash is
+its preparation-time read identity, not proof of
 which image a provider later loaded. The local read checks size, type, inode,
-mtime and ctime while hashing; normal executor authorization, budget, permissions,
+mtime and ctime while hashing, with a finite512MiB streaming read bound; normal executor authorization, budget, permissions,
 model/effort support and cancellation gates remain the same.
 
 ## Source repair found by the fixture

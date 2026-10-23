@@ -24,7 +24,7 @@ struct RCCNativeConfiguredInput {
         let native = try Self.executableSHA256(nativeExecutable)
         return try .init(ticket: ticket, delegatedInput: delegated, providerInput: prompt,
             instructions: instructions, baseInstructions: baseInstructions, channel: channel, sessionState: sessionState,
-            harnessSHA256: harness, nativeBinarySHA256: native,
+            harnessSHA256: harness, launchEntrySHA256: native,
             executionConfigurationSHA256: RCCRuntimeContract.digest(executionConfiguration),
             catalogSHA256: RCCRuntimeContract.digest(catalog), catalogObservedAtMS: catalogObservedAtMS,
             preparedAtMS: Int64(Date().timeIntervalSince1970 * 1000))
@@ -43,6 +43,8 @@ struct RCCNativeConfiguredInput {
 
     /// Bounded descriptor read of only the executor-selected file. This is
     /// its preparation-time identity, NOT proof of which image the OS loaded.
+    static let maximumExecutableBytes: Int64 = 512 * 1024 * 1024
+
     static func executableSHA256(_ path: String) throws -> String {
         guard path.hasPrefix("/"), !path.contains("\0") else { throw RCCConfiguredInputObservation.Failure.binding }
         let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
@@ -51,7 +53,7 @@ struct RCCNativeConfiguredInput {
         defer { Darwin.close(fd) }
         var before = stat()
         guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
-              before.st_size > 0, before.st_size <= 200_000_000 else { throw RCCConfiguredInputObservation.Failure.bounds }
+              before.st_size > 0, before.st_size <= maximumExecutableBytes else { throw RCCConfiguredInputObservation.Failure.bounds }
         var digest = SHA256(), buffer = [UInt8](repeating: 0, count: 65_536), total: Int64 = 0
         while true {
             let n = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!, $0.count) }

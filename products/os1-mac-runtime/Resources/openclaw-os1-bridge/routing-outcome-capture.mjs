@@ -108,25 +108,26 @@ function nativeSummaryIDs(result, config) {
 // validator never invokes a predictor or changes any selection/adoption result.
 const INPUT_OBSERVATION_KEYS = ['schema', 'kind', 'task_id', 'node_id', 'attempt_id', 'candidate_id',
   'request_sha256', 'source_fingerprint', 'original_source_fingerprint', 'policy_sha256', 'policy_source_sha256', 'configuration_sha256',
-  'selected_config_sha256', 'renderer_id', 'harness_sha256', 'native_binary_sha256', 'catalog_sha256',
+  'selected_config_sha256', 'renderer_id', 'harness_sha256', 'launch_entry_sha256', 'catalog_sha256',
   'catalog_observed_at_ms', 'prepared_at_ms', 'catalog_basis', 'channel', 'session_state', 'delegated_input',
   'provider_input', 'instructions', 'base_instructions', 'execution_configuration_sha256', 'execution_configuration_basis', 'input_coverage', 'capture_state',
   'backend_inclusion_verified', 'quality_certified', 'execution_authorized', 'tokenizer_id', 'input_tokens',
-  'context_window_tokens', 'family', 'capacity_upper_bound'];
+  'context_window_tokens', 'family', 'capacity_upper_bound', 'native_binary_sha256', 'native_binary_basis'];
 export function validateConfiguredInputObservation(x, {identity, selectedConfig, now_ms = null} = {}) {
   need(exact(x, INPUT_OBSERVATION_KEYS) && x.schema === 1 && x.kind === 'native_configured_input_observation_v1' &&
     x.renderer_id === 'rcc_delegated_envelope_provider_prompt_native_channels_v1' &&
     x.input_coverage === 'os1_explicit_channels_only_provider_hidden_defaults_unobserved' &&
+    x.native_binary_basis === 'backend_image_not_observed' &&
     x.execution_configuration_basis === (x.channel === 'codex_developer' ? 'codex_app_server_overrides_only' : 'claude_cli_final_arguments_only') &&
     x.capture_state === 'prepared_before_native_turn' && x.backend_inclusion_verified === false &&
     x.quality_certified === false && x.execution_authorized === false &&
     x.catalog_basis === 'selected_provider_inventory_before_authorization_not_core_candidate_catalog' &&
     ['new', 'resumed'].includes(x.session_state) &&
     ['request_sha256', 'source_fingerprint', 'original_source_fingerprint', 'policy_sha256', 'policy_source_sha256', 'configuration_sha256',
-      'selected_config_sha256', 'harness_sha256', 'native_binary_sha256', 'catalog_sha256',
+      'selected_config_sha256', 'harness_sha256', 'launch_entry_sha256', 'catalog_sha256',
       'execution_configuration_sha256'].every(k => hash(x[k])) &&
     ['task_id', 'node_id', 'attempt_id', 'candidate_id'].every(k => id(x[k])) &&
-    ['tokenizer_id', 'input_tokens', 'context_window_tokens', 'family', 'capacity_upper_bound'].every(k => x[k] === null) &&
+    ['tokenizer_id', 'input_tokens', 'context_window_tokens', 'family', 'capacity_upper_bound', 'native_binary_sha256'].every(k => x[k] === null) &&
     count(x.catalog_observed_at_ms) && count(x.prepared_at_ms) && x.catalog_observed_at_ms <= x.prepared_at_ms &&
     (now_ms === null || count(now_ms) && x.prepared_at_ms <= now_ms), 'capture_configured_input_invalid');
   const bytes = v => exact(v, ['sha256', 'utf8_bytes']) && hash(v.sha256) && count(v.utf8_bytes) &&

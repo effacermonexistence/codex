@@ -19445,8 +19445,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         timing.mark(.inventoryReady)
         // Fresh selected-provider support metadata used by this attempt, not the old catalog or a model-name estimate.
         let configuredInventoryAtMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let configuredInventory = provider == "codex"
-            ? try? RCCRuntimeContract.encode(codex.models) : try? RCCRuntimeContract.encode(claude)
+        let configuredInventory: Data?
+        if provider == "codex" { configuredInventory = try? RCCRuntimeContract.encode(codex.models) }
+        else { configuredInventory = try? RCCRuntimeContract.encode(claude) }
         let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
             : claude.contains { $0.model == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
         guard supported else {

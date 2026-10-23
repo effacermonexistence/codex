@@ -11,6 +11,8 @@ helper=ROOT/'Sources/OS1/RCCNativeConfiguredInput.swift'
 body=helper.read_text()
 assert '_NSGetExecutablePath' in body and 'currentOS1Executable()' not in body and 'Bundle.main' not in body
 assert 'O_RDONLY | O_NOFOLLOW | O_CLOEXEC' in body
+assert 'maximumExecutableBytes: Int64 = 512 * 1024 * 1024' in body
+assert body.index('before.st_size <= maximumExecutableBytes') < body.index('while true {')
 assert 'onConfiguredInput: ((RCCNativeConfiguredInput) -> Void)? = nil' in main
 codex=main[main.index('            if appServer.ownsThreadWriter {\n                executedDesktopVisibility'):main.index('        } catch {\n            // No alternate turn',main.index('            if appServer.ownsThreadWriter {\n                executedDesktopVisibility'))]
 assert codex.index('onConfiguredInput?') < codex.index('turn = try appServer.runTurn(')
@@ -52,7 +54,7 @@ import OS1Context
   let result=try prepared.observation(ticket:ticket,delegated:"DELEGATED",catalog:Data("typed native inventory".utf8),catalogObservedAtMS:0)
   check(result.providerInput.utf8Bytes=="원문🙂".utf8.count,"UTF8 byte count is exact, not character/token count")
   check(result.providerInput.sha256==RCCRuntimeContract.digest(Data("원문🙂".utf8)),"actual provider input digest")
-  check(result.nativeBinarySHA256==RCCRuntimeContract.digest(bytes),"selected fake native bytes read, not path/name guess")
+  check(result.launchEntrySHA256==RCCRuntimeContract.digest(bytes),"selected fake launch bytes read, not backend image")
   check(result.harnessSHA256==RCCRuntimeContract.digest(try Data(contentsOf:Bundle.main.executableURL!)),"actual current helper harness, not stable installed os1")
   check(result.baseInstructions==nil && !result.backendInclusionVerified && !result.qualityCertified && !result.executionAuthorized,"no hidden-state upgrades")
   let unavailable=RCCNativeConfiguredInput(channel:"codex_developer",prompt:"fixture",instructions:"fixture",baseInstructions:nil,
@@ -63,10 +65,20 @@ import OS1Context
   }
   let empty=root.appendingPathComponent("empty"); try Data().write(to:empty)
   do { _=try RCCNativeConfiguredInput.executableSHA256(empty.path); fatalError("empty file accepted") } catch {}
-  print("ACTUAL_NATIVE_CONFIGURED_INPUT_HELPER_PASS: 9 checks; native/model calls 0; no provider channel-consumption claim")
+  let large=root.appendingPathComponent("sparse-256MiB"), maxPlus=root.appendingPathComponent("sparse-over512MiB")
+  FileManager.default.createFile(atPath:large.path,contents:Data())
+  var file=try FileHandle(forWritingTo:large); try file.truncate(atOffset:268435456); try file.close()
+  check(try RCCNativeConfiguredInput.executableSHA256(large.path)=="SPARSE256SHA","current >200MB native launch entries fit bounded512MiB read")
+  FileManager.default.createFile(atPath:maxPlus.path,contents:Data())
+  file=try FileHandle(forWritingTo:maxPlus); try file.truncate(atOffset:UInt64(RCCNativeConfiguredInput.maximumExecutableBytes)+1); try file.close()
+  do { _=try RCCNativeConfiguredInput.executableSHA256(maxPlus.path); fatalError("over512MiB accepted") } catch {}
+  print("ACTUAL_NATIVE_CONFIGURED_INPUT_HELPER_PASS: 11 checks; native/model calls 0; no provider channel-consumption claim")
  }
 }
 '''
+zeros=hashlib.sha256()
+for _ in range(256): zeros.update(bytes(1024*1024))
+program=program.replace('SPARSE256SHA',zeros.hexdigest())
 with tempfile.TemporaryDirectory(prefix='os1-input-helper-wire-') as d:
  p=Path(d);source=p/'Fixture.swift';source.write_text(program);binary=p/'fixture'
  subprocess.run(['swiftc','-parse-as-library',str(helper),str(source),'-I',str(build/'Modules'),'-Xcc','-fmodule-map-file='+str(build/'OS1System.build/module.modulemap'),'-Xcc','-I'+str(ROOT/'Sources/OS1System/include'),*[str(o) for o in objects],'-o',str(binary)],check=True)
