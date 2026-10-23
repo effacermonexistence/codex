@@ -20677,7 +20677,7 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         }
     }
     let graph = try? RCCRuntimeProjection.project(result, conversationID: conversationID, submissionID: submissionID,
-        objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,
+        objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256,
         nativeReceipts: RCCNativeDisplayReceipts.load(result))
     var summary = RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
         steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)

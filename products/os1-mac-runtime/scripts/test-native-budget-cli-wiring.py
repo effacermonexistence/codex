@@ -15,6 +15,11 @@ assert 'maxNativeDispatches: Int? = nil, maxParallel: Int? = nil' in fn
 assert 'maxParallel: maxParallel ?? 4, maxCostUnits: nil' in fn
 assert 'maxNativeDispatches: maxNativeDispatches, forbidModelGeneration: forbidModelGeneration ? true : nil' in fn
 assert 'maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256' in fn
+progress=fn[fn.index('RCCRuntimeGatewayClient.run(request:'):fn.index('let result = try RCCRuntimeContract.decodeSnapshot(terminal)')]
+terminal=fn[fn.index('let graph = try? RCCRuntimeProjection.project(result,'):fn.index('var summary = RunSummary(status: result.state')]
+for projection in [progress,terminal]:
+ assert 'maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256' in projection
+ assert 'maxParallelism: 4, expectedRequestSHA256: request.requestSHA256' not in projection
 assert fn.index('maxNativeDispatches: maxNativeDispatches, forbidModelGeneration:')<fn.index('RCCRuntimeContract.encode(request)')
 raw=(R/'Sources/OS1Context/RCCRuntimeContract.swift').read_text();a=raw.index('    public struct Budget:');b=raw.index('    public struct Policy:',a)
 program=helper.read_text()+'\nenum C {\n'+raw[a:b]+'}\n'+r'''
