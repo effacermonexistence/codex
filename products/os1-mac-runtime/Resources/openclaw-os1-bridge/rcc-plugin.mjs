@@ -5,7 +5,7 @@ import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 import { createRCCRuntime, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
-  localWorkerRow, ownerCollectionOutput, RCCRuntimeError } from './rcc-runtime.mjs';
+  localWorkerRow, ownerCollectionOutput, OWNER_CONTROL_SOURCE_KINDS, RCCRuntimeError } from './rcc-runtime.mjs';
 import {decodeAdaptiveRoutingPolicy} from './adaptive-routing-policy.mjs';
 import {createLocalPlanPlanner, LOCAL_PLAN_LIMITS} from './local-plan-planner.mjs';
 import {loadFrozenRouteArtifacts} from './frozen-route-artifacts.mjs';
@@ -36,7 +36,8 @@ async function verifyNative() {
 export async function nativeOperation(operation, payload, signal,
                                       {cancelGraceMs = 6_000, cancelKillMs = 2_000} = {}) {
   if (!['rcc-intent', 'rcc-catalog', 'rcc-adapter', 'rcc-stage', 'rcc-install-status',
-    'rcc-install-cancel', 'rcc-quality-decision', 'rcc-task-verify', 'rcc-owner-control'].includes(operation)) throw Error('native_operation_denied');
+    'rcc-install-cancel', 'rcc-quality-decision', 'rcc-task-verify', 'rcc-owner-control',
+    'rcc-owner-control-retained'].includes(operation)) throw Error('native_operation_denied');
   if (!Number.isSafeInteger(cancelGraceMs) || cancelGraceMs < 100 || cancelGraceMs > 30_000 ||
       !Number.isSafeInteger(cancelKillMs) || cancelKillMs < 100 || cancelKillMs > 10_000)
     throw Error('native_cancel_bounds_invalid');
@@ -463,7 +464,7 @@ export async function executeOwnerCollectionChild(ticket, signal, {operation = n
         typeof turn !== 'string' || control.observation?.turnID !== turn) throw Error('owner_collection_control_binding_mismatch');
     if (control?.schema !== 1 || control.task_id !== ticket.task_id || control.node_id !== ticket.node_id ||
         control.attempt_id !== ticket.attempt_id || control.control_verified !== true ||
-        control.observation?.sourceKind !== 'codex_owned_turn_rollout_v1' || control.observation.turnID == null ||
+        !OWNER_CONTROL_SOURCE_KINDS.includes(control.observation?.sourceKind) || control.observation.turnID == null ||
         control.observation.completed !== true || control.observation.toolRequests !== 0 ||
         !HASH.test(control.observation.sourceSHA256 ?? '')) throw Error('owner_collection_control_unverified');
     return result;
@@ -639,6 +640,14 @@ export function registerRCCRuntime(api) {
         stageSelfUpdate: (request, signal) => nativeOperation('rcc-stage', request, signal),
         reconcileInstallation: request => nativeOperation('rcc-install-status', request),
         cancelInstallation: request => nativeOperation('rcc-install-cancel', request),
+        // Proof of an already-returned exact attempt only. The native host
+        // loads the original witness.ticket; no execution ticket is minted.
+        verifyRetainedOwnerControl: async (request, signal) => {
+          policy(request.task);
+          const proof = await nativeOperation('rcc-owner-control-retained', request, signal);
+          policy(request.task);
+          return proof;
+        },
         verifyTask: async evidence => {
           // No new model or scheduler: the original Core deterministically
           // collects the exact owner-obligation outputs; native host runs the
@@ -648,7 +657,8 @@ export function registerRCCRuntime(api) {
             ownerCollectionOutput(plan, evidence.children); // Shape check before native operation.
             const projected = {task: evidence.task, plan, children: evidence.children.map(child => ({
               id: child.id, state: child.state, candidate_id: child.candidate_id, instruction: child.instruction,
-              attempt_id: child.attempt_id, native_receipt: child.native_receipt, output: child.output}))};
+              attempt_id: child.attempt_id, native_receipt: child.native_receipt, output: child.output})),
+              ...(Object.hasOwn(evidence, 'historical_runtime') ? {historical_runtime: evidence.historical_runtime} : {})};
             if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > 1_048_576)
               throw Error('owner_collection_verifier_input_oversize');
             return nativeOperation('rcc-task-verify', projected);
@@ -665,14 +675,15 @@ export function registerRCCRuntime(api) {
       plannerScope?.emitDestroy(); plannerScope = undefined;
     },
   });
-  for (const name of ['submit', 'status', 'cancel', 'quiesce']) {
+  for (const name of ['submit', 'status', 'cancel', 'quiesce', 'recoverOwnerControl']) {
     api.registerGatewayMethod('os1.rcc.' + name, async ({ params, respond }) => {
       try {
         if (!runtime && starting) await starting;
         if (!runtime) throw Error('rcc_runtime_unavailable');
         const result = name === 'submit' ? await runtime.submit(params) : name === 'status'
           ? await runtime.statusWithInstallation(params) : name === 'cancel'
-          ? await runtime.cancelWithInstallation(params) : await runtime.quiesce(params);
+          ? await runtime.cancelWithInstallation(params) : name === 'recoverOwnerControl'
+          ? await runtime.recoverOwnerControl(params) : await runtime.quiesce(params);
         respond(true, result);
       } catch (error) { respond(false, undefined, { code: 'INVALID_REQUEST', message: error?.code ?? 'rcc_request_rejected' }); }
     }, { scope: 'operator.write', profileAccess: 'independent' });

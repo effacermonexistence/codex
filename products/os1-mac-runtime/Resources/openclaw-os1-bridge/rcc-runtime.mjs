@@ -19,6 +19,24 @@ import { isCalibratedRoutePredictor, isCalibratedRouteInference } from './calibr
 // service; importing it alone does not activate a route, tool, or provider.
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH = /^[a-f0-9]{64}$/;
+// Only the two strict native parser implementations currently supported.
+// A new provider grammar needs its own source review, never a prefix match.
+export const OWNER_CONTROL_SOURCE_KINDS = Object.freeze(['codex_owned_turn_rollout_v1', 'codex_owned_turn_rollout_9394_v1']);
+// Recovery compares ordered JSON values without changing raw child bytes.
+// JS cannot attest arbitrary JSON numeric precision. Until a lossless codec
+// is implemented, only exact safe-integer *lexemes* are supported here;
+// checking the parsed Number alone would already have rounded large values.
+function retainedJSON(text) {
+  assert(boundedText(text, MAX_OUTPUT_BYTES), 'owner_control_recovery_json_invalid');
+  return JSON.parse(text, (_key, value, context) => {
+    if (typeof value === 'number') {
+      const source = context?.source;
+      assert(typeof source === 'string' && source.length <= 17 && /^-?(0|[1-9][0-9]*)$/.test(source) &&
+        Number.isSafeInteger(value) && BigInt(source) === BigInt(value), 'owner_control_recovery_number_unproven');
+    }
+    return value;
+  });
+}
 const TERMINAL = new Set(['completed', 'returned_unverified', 'awaiting_install', 'held', 'failed', 'cancelled', 'effects_uncertain']);
 const QUALITY = new Set(['policy_admitted', 'exact_domain_verified', 'reference_equivalent', 'reference_above', 'unverified', 'mismatch']);
 const PARITY = new Set(['unverified', 'reference_equivalent', 'reference_above', 'mismatch']);
@@ -2377,7 +2395,7 @@ function alive(pid) {
  * plans (`plan`) remain for fixtures. `ledgerLog` receives a ledger write
  * failure code, which never fails or holds a task. */
 export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
-                                         stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
+                                         stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, hostAutoPlan = false, ledgerLog = null,
                                          adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null,
@@ -2416,6 +2434,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   assert(ledgerLog === null || typeof ledgerLog === 'function', 'ledger_log_invalid');
   assert(resolveIntent === undefined || typeof resolveIntent === 'function', 'intent_resolver_invalid');
   assert(decideOperationalQuality === undefined || typeof decideOperationalQuality === 'function', 'quality_decider_invalid');
+  assert(verifyRetainedOwnerControl === undefined || typeof verifyRetainedOwnerControl === 'function', 'retained_owner_control_verifier_invalid');
   await mkdir(stateDir, {recursive: true, mode: 0o700});
   const directory = await lstat(stateDir);
   if (calibratedRouteFixtureExecutor !== null) {
@@ -2463,7 +2482,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 
   const ledger = openRoutingLedger(stateDir);
   const runtime = new RCCRuntime({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
-                                 stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
+                                 stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, hostAutoPlan, ledger, ledgerLog,
                                  adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
@@ -2476,7 +2495,7 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
 
 class RCCRuntime {
   constructor({db, token, stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
-               stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, emit,
+               stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, ledger,
                ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
                calibratedRoutePredictor, calibratedRouteFixture}) {
@@ -2488,7 +2507,7 @@ class RCCRuntime {
     this.stageSelfUpdate = stageSelfUpdate;
     this.reconcileInstallation = reconcileInstallation;
     this.cancelInstallation = cancelInstallation;
-    this.verifyTask = verifyTask; this.emit = emit;
+    this.verifyTask = verifyTask; this.verifyRetainedOwnerControl = verifyRetainedOwnerControl; this.emit = emit;
     this.verifierRegistry = verifierRegistry; this.hostAutoPlan = hostAutoPlan;
     this.adaptivePolicy = adaptivePolicy; this.proposeLocalPlan = proposeLocalPlan;
     this.jointRouteEvidence = jointRouteEvidence;
@@ -2512,6 +2531,9 @@ class RCCRuntime {
     // settles, even when a timeout has already held the task.
     this.intentControllers = new Map();
     this.installationObservations = new Map();
+    // Only proof of already-finished attempts. Never queued, scheduled or
+    // dispatched; separate from workers and their token/accounting state.
+    this.ownerControlRecoveries = new Map();
     this.poolReservations = new Set(); this.readPoolReservations = new Map(); this.claimReservations = new Map();
     this.maximumReadWorkersPerPool = maximumReadWorkersPerPool; this.activeWriteWorkspaces = new Set();
     // Per task: the catalog bind instant a pool spread already re-probed.
@@ -2606,6 +2628,195 @@ class RCCRuntime {
     return this._serializeInstallation(value.task_id, () => this._observeInstallation(value, true));
   }
 
+  /** Exact private retained evidence, not a path supplied by a model. This
+   * synchronous bounded reread also runs inside the final task CAS. */
+  _retainedEvidence(path, directory, expectedSHA, maximumBytes) {
+    assert(typeof path === 'string' && dirname(path) === join(this.stateDir, directory) &&
+      /^[a-f0-9-]{36}\.json$/.test(basename(path)) && HASH.test(expectedSHA ?? ''),
+    'owner_control_recovery_evidence_path');
+    const parent = lstatSync(dirname(path));
+    assert(parent.isDirectory() && !parent.isSymbolicLink() && parent.uid === process.getuid() &&
+      (parent.mode & 0o077) === 0 && realpathSync(dirname(path)) === join(realpathSync(this.stateDir), directory),
+    'owner_control_recovery_evidence_custody');
+    const before = lstatSync(path);
+    const same = (a, b) => ['dev', 'ino', 'uid', 'gid', 'mode', 'nlink', 'size', 'mtimeMs', 'ctimeMs'].every(k => a[k] === b[k]);
+    let fd;
+    try {
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const opened = fstatSync(fd);
+      assert(before.isFile() && opened.isFile() && same(before, opened) && opened.uid === process.getuid() &&
+        opened.nlink === 1 && (opened.mode & 0o777) === 0o600 && opened.size >= 2 && opened.size <= maximumBytes,
+      'owner_control_recovery_evidence_custody');
+      const bytes = readFileSync(fd);
+      assert(bytes.length === opened.size && same(opened, fstatSync(fd)) && same(opened, lstatSync(path)) &&
+        sha(bytes) === expectedSHA, 'owner_control_recovery_evidence_changed');
+      return JSON.parse(bytes.toString('utf8'));
+    } finally { if (fd !== undefined) closeSync(fd); }
+  }
+
+  _retainedRecoverySnapshot(value) {
+    const row = this.db.prepare('SELECT fingerprint,snapshot FROM tasks WHERE task_id=?').get(value.task_id);
+    assert(row && row.fingerprint === value.expected_fingerprint && sha(Buffer.from(row.snapshot)) === value.expected_snapshot_sha256,
+      'owner_control_recovery_snapshot_changed');
+    const snapshot = JSON.parse(row.snapshot), task = admittedTask(snapshot);
+    assert(snapshot.revision === value.expected_revision && snapshot.fingerprint === value.expected_fingerprint &&
+      sha(Buffer.from(stable(snapshot.task))) === value.expected_fingerprint &&
+      task.request_sha256 === value.request_sha256 && snapshot.state === 'held' &&
+      snapshot.error === 'owner_collection_control_unverified' && snapshot.cancel_requested === false &&
+      snapshot.result === null && !snapshot.install_handoff && !snapshot.owner_control_recovery,
+    'owner_control_recovery_state_invalid');
+    const collection = ownerCollectionFor(executionTask(snapshot), snapshot.catalog);
+    assert(collection && stable(collection) === stable(snapshot.owner_collection) &&
+      snapshot.children.length === value.children.length && snapshot.plan?.nodes?.length === value.children.length,
+    'owner_control_recovery_authority_changed');
+    assertFinalOutputOwnership(snapshot.plan, task, {collectionMayBeOrdered: true});
+    for (const table of ['write_leases', 'quota_leases', 'pool_claims', 'ledger_pending'])
+      assert(this.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE task_id=?`).get(value.task_id).n === 0,
+        'owner_control_recovery_unsettled');
+    assert(!this.runningTasks.has(value.task_id) && !this.controllersHasTask(value.task_id) &&
+      !this.intentControllers.has(value.task_id) && !this.installationObservations.has(value.task_id) &&
+      ![...this.ledgerInflight.values()].some(x => x.taskID === value.task_id), 'owner_control_recovery_unsettled');
+    for (const [i, expected] of value.children.entries()) {
+      const node = snapshot.plan.nodes[i], child = snapshot.children.find(c => c.id === expected.id);
+      assert(node.id === expected.id && ownerCollectionObligation(node, executionTask(snapshot), snapshot.catalog) && child &&
+        child.state === 'held' && child.hold_reason === 'owner_collection_control_unverified' &&
+        child.attempt_id === expected.attempt_id && child.native_receipt === expected.native_receipt &&
+        child.selected_config?.scope === 'read_only' && child.selected_config.surface === 'codex' &&
+        child.execution_verified === true && typeof child.output === 'string' &&
+        child.task_quality === 'unverified' && child.parity_state === 'unverified' &&
+        child.operational_quality?.witness_sha256 === expected.witness_sha256 &&
+        !child.repair_needed && !child.stage && !child.continuation && !child.quality_continuation &&
+        child.attempt_history?.at(-1)?.attempt_id === expected.attempt_id &&
+        child.attempt_history.at(-1).state === 'completed' && settledReadOnly(child) &&
+        child.attempt_history.every(a => !UNSETTLED_ATTEMPT_STATES.has(a.state)),
+      'owner_control_recovery_child_invalid');
+      this._retainedEvidence(expected.native_receipt, 'native-receipts', expected.native_receipt_sha256, 1_000_000);
+      this._retainedEvidence(join(this.stateDir, 'quality-witnesses', expected.attempt_id + '.json'),
+        'quality-witnesses', expected.witness_sha256, 16_000_000);
+    }
+    return snapshot;
+  }
+
+  controllersHasTask(taskID) {
+    return [...this.controllers.values()].some(item => item.taskID === taskID);
+  }
+
+  /** Proof-only recovery of the SAME finished owner collection. No task
+   * requeue, generation permission check, dispatch, planning or execution
+   * callback is reachable here. Historical runtime identity is passed only
+   * to the host verifier, never into the original task or ticket. */
+  async recoverOwnerControl(input) {
+    assert(!this.closed, 'runtime_closed');
+    assert(keys(input, ['schema', 'recovery_id', 'task_id', 'request_sha256', 'expected_revision',
+      'expected_fingerprint', 'expected_snapshot_sha256', 'children', 'historical_runtime']) && input.schema === 1 &&
+      ID.test(input.recovery_id ?? '') && ID.test(input.task_id ?? '') && HASH.test(input.request_sha256 ?? '') &&
+      int(input.expected_revision, 1, Number.MAX_SAFE_INTEGER) && HASH.test(input.expected_fingerprint ?? '') &&
+      HASH.test(input.expected_snapshot_sha256 ?? '') && Array.isArray(input.children) &&
+      input.children.length >= 2 && input.children.length <= 8 && input.children.every((c, i) =>
+        keys(c, ['id', 'attempt_id', 'native_receipt', 'native_receipt_sha256', 'witness_sha256']) &&
+        c.id === `owner_${i}` && ID.test(c.attempt_id ?? '') && isAbsolute(c.native_receipt ?? '') &&
+        HASH.test(c.native_receipt_sha256 ?? '') && HASH.test(c.witness_sha256 ?? '')) &&
+      new Set(input.children.map(c => c.attempt_id)).size === input.children.length,
+    'owner_control_recovery_request_invalid');
+    const historical = input.historical_runtime;
+    assert(keys(historical, ['app_path', 'bundle_inventory_receipt', 'bundle_inventory_receipt_sha256',
+      'install_receipt', 'install_receipt_sha256', 'cli_sha256']) &&
+      ['app_path', 'bundle_inventory_receipt', 'install_receipt'].every(k => boundedText(historical[k], 4096) && isAbsolute(historical[k])) &&
+      ['bundle_inventory_receipt_sha256', 'install_receipt_sha256', 'cli_sha256'].every(k => HASH.test(historical[k] ?? '')),
+    'owner_control_recovery_historical_binding_invalid');
+    const value = immutable(input), requestSHA = sha(Buffer.from(stable(value))), prior = this._load(value.task_id);
+    if (prior?.owner_control_recovery?.recovery_id === value.recovery_id) {
+      assert(prior.state === 'completed' && prior.owner_control_recovery.recovery_request_sha256 === requestSHA,
+        'owner_control_recovery_idempotency_conflict');
+      return this._public(value.task_id);
+    }
+    assert(!this.stopping && !this.quiescing && !this.ownerControlRecoveries.has(value.task_id),
+      'owner_control_recovery_unavailable');
+    assert(typeof this.verifyRetainedOwnerControl === 'function' && typeof this.verifyTask === 'function',
+      'owner_control_recovery_verifier_unavailable');
+    const active = {controller: new AbortController(), promise: null};
+    this.ownerControlRecoveries.set(value.task_id, active);
+    const checkActive = () => assert(!this.closed && !this.stopping && !this.quiescing && !active.controller.signal.aborted,
+      'owner_control_recovery_cancelled');
+    try {
+      active.promise = (async () => {
+        checkActive(); const snapshot = this._retainedRecoverySnapshot(value), task = admittedTask(snapshot);
+        const recovered = [], controls = [];
+        for (const [i, expected] of value.children.entries()) {
+          checkActive(); this._retainedRecoverySnapshot(value);
+          const child = snapshot.children.find(c => c.id === expected.id), node = snapshot.plan.nodes[i];
+          const proof = await this.verifyRetainedOwnerControl(immutable({task, child_id: expected.id,
+            expected_native_receipt: expected.native_receipt, expected_native_receipt_sha256: expected.native_receipt_sha256,
+            expected_witness_sha256: expected.witness_sha256, historical_runtime: value.historical_runtime}), active.controller.signal);
+          checkActive(); this._retainedRecoverySnapshot(value);
+          assert(keys(proof, ['schema', 'record', 'control']) && proof.schema === 1,
+            'owner_control_recovery_proof_invalid');
+          const record = proof.record, control = proof.control, obligation = snapshot.owner_collection.obligations[i];
+          const original = this._retainedEvidence(expected.native_receipt, 'native-receipts', expected.native_receipt_sha256, 1_000_000);
+          assert(stable(original) === stable(record) && record.task_id === value.task_id && record.node_id === expected.id &&
+            record.attempt_id === expected.attempt_id && record.candidate_id === child.candidate_id && record.candidate_id === node.candidate_id &&
+            record.native_receipt === expected.native_receipt && stable(record.selected_config) === stable(child.selected_config) &&
+            stable(record.acknowledged_config) === stable(child.selected_config) && record.status === 'succeeded' &&
+            record.dispatch_stage === 'dispatched' && record.side_effects === 'none' && record.native_turn_terminated === true &&
+            record.execution_verified === true && record.task_verified === true && record.task_quality === 'task_verified' &&
+            record.parity_state === 'unverified' && record.output === child.output && record.native_summary === child.native_summary &&
+            stable(record.usage ?? null) === stable(child.usage ?? null) && record.handback == null && record.repair_source == null &&
+            record.operational_quality?.coverage === 'full' && record.operational_quality.assessment_state === 'task_contract_verified' &&
+            record.operational_quality.local_only_verified === true && record.operational_quality.contract_sha256 === obligation.contract_sha256 &&
+            record.operational_quality.witness_sha256 === expected.witness_sha256 &&
+            record.operational_quality.failed_check_ids?.length === 0, 'owner_control_recovery_original_invalid');
+          const summary = JSON.parse(record.native_summary), turn = summary.steps?.length === 1 ? summary.steps[0].native_record?.turn_id : null;
+          retainedJSON(record.output); // Fail closed before any lossy JS collection/equality.
+          assert(control?.schema === 1 && control.task_id === value.task_id && control.node_id === expected.id &&
+            control.attempt_id === expected.attempt_id && control.request_sha256 === value.request_sha256 &&
+            control.output_sha256 === sha(Buffer.from(record.output)) && control.control_verified === true &&
+            typeof turn === 'string' && control.observation?.turnID === turn &&
+            OWNER_CONTROL_SOURCE_KINDS.includes(control.observation.sourceKind) && control.observation.completed === true &&
+            control.observation.toolRequests === 0 && HASH.test(control.observation.sourceSHA256 ?? ''),
+          'owner_control_recovery_control_unverified');
+          recovered.push({...immutable(child), state: 'completed', task_quality: 'task_verified', parity_state: 'unverified',
+            operational_quality: immutable(record.operational_quality)});
+          controls.push({id: child.id, attempt_id: expected.attempt_id, native_receipt_sha256: expected.native_receipt_sha256,
+            witness_sha256: expected.witness_sha256, control_sha256: sha(Buffer.from(stable(control)))});
+        }
+        const output = ownerCollectionOutput(snapshot.plan, recovered);
+        const verdict = await this.verifyTask({task: immutable(task), plan: immutable(snapshot.plan), children: immutable(recovered),
+          historical_runtime: immutable(value.historical_runtime)},
+          active.controller.signal);
+        checkActive(); this._retainedRecoverySnapshot(value);
+        assert(keys(verdict, ['schema', 'task_id', 'task_verified', 'output', 'parity_state', 'reason']) && verdict.schema === 1 &&
+          verdict.task_id === value.task_id && verdict.task_verified === true && boundedText(verdict.output, MAX_OUTPUT_BYTES) &&
+          stable(retainedJSON(verdict.output)) === stable(retainedJSON(output)) &&
+          verdict.parity_state === 'unverified' && boundedText(verdict.reason, 1024), 'owner_control_recovery_parent_unverified');
+        // The existing native collector canonically orders object keys. That
+        // is not a model rewrite: the exact ordered values must still match
+        // every retained child, whose raw output bytes stay unchanged.
+        const finalOutput = verdict.output;
+        const aggregate = await this._aggregateReceipt(value.task_id, recovered, finalOutput);
+        checkActive(); this._retainedRecoverySnapshot(value);
+        this._update(value.task_id, 'owner_control_recovery_adopted', current => {
+          checkActive(); this._retainedRecoverySnapshot(value); // Same transaction/owner/CAS; never requeue.
+          for (const restored of recovered) {
+            const child = current.children.find(c => c.id === restored.id);
+            child.state = 'completed'; child.task_quality = 'task_verified'; child.parity_state = 'unverified';
+            child.operational_quality = immutable(restored.operational_quality); delete child.hold_reason;
+          }
+          current.state = 'completed'; current.error = null;
+          current.result = {output: finalOutput, execution_verified: true, task_verified: true, task_quality: 'task_verified',
+            parity_state: 'unverified', native_receipt: aggregate, native_summary: null,
+            native_summaries: recovered.flatMap(c => c.native_summaries ?? (c.native_summary ? [c.native_summary] : []))};
+          current.owner_control_recovery = {schema: 1, recovery_id: value.recovery_id, recovery_request_sha256: requestSHA,
+            original_request_sha256: value.request_sha256,
+            prior_revision: value.expected_revision, prior_snapshot_sha256: value.expected_snapshot_sha256,
+            prior_reason: 'owner_collection_control_unverified', native_generation_calls: 0, controls,
+            parent_verdict_sha256: sha(Buffer.from(stable(verdict))), recovered_at_ms: Date.now()};
+        });
+        return this._public(value.task_id);
+      })();
+      return await active.promise;
+    } finally { if (this.ownerControlRecoveries.get(value.task_id) === active) this.ownerControlRecoveries.delete(value.task_id); }
+  }
+
   _serializeInstallation(taskID, operation) {
     const prior = this.installationObservations.get(taskID) ?? Promise.resolve();
     const job = prior.catch(() => {}).then(operation);
@@ -2696,6 +2907,11 @@ class RCCRuntime {
     assert(keys(value, ['schema', 'task_id']) && value.schema === 1 && ID.test(value.task_id),
       'cancel_request_invalid');
     const snapshot = this._update(value.task_id, 'cancel_requested', state => {
+      if (this.ownerControlRecoveries.has(value.task_id) && state.state === 'held' &&
+          state.error === 'owner_collection_control_unverified') {
+        state.cancel_requested = true; state.state = 'cancelled'; state.error = 'cancelled_during_proof_recovery';
+        return;
+      }
       if (TERMINAL.has(state.state)) return;
       state.cancel_requested = true;
       const active = state.children.some(child => child.state === 'running' && child.dispatched_at_ms !== null);
@@ -2710,6 +2926,7 @@ class RCCRuntime {
     for (const [attemptID, item] of this.controllers) if (item.taskID === value.task_id)
       item.controller.abort(new RCCRuntimeError('cancel_requested'));
     this.intentControllers.get(value.task_id)?.controller.abort(new RCCRuntimeError('cancel_requested'));
+    this.ownerControlRecoveries.get(value.task_id)?.controller.abort(new RCCRuntimeError('cancel_requested'));
     if (snapshot.state === 'cancelling') {
       const timer = setTimeout(() => {
         if (this.closed) return;
@@ -2766,20 +2983,22 @@ class RCCRuntime {
     this.quiescing = true;
     for (const item of this.intentControllers.values())
       item.controller.abort(new RCCRuntimeError('intent_resolution_quiesced'));
+    for (const item of this.ownerControlRecoveries.values())
+      item.controller.abort(new RCCRuntimeError('owner_control_recovery_quiesced'));
     const rows = this.transaction(() => this.db.prepare('SELECT snapshot FROM tasks').all()
       .map(row => JSON.parse(row.snapshot)));
     const active = rows.reduce((count, snapshot) => count + snapshot.children.filter(child =>
       child.state === 'running' && child.dispatched_at_ms !== null).length, 0);
     const inProgress = rows.some(snapshot => ['planning', 'running', 'cancelling'].includes(snapshot.state));
     return {schema: 1, request_id: value.request_id, owner_pid: process.pid,
-      active_dispatches: Math.max(active, this.controllers.size) + this.installationObservations.size + this.intentControllers.size,
+      active_dispatches: Math.max(active, this.controllers.size) + this.installationObservations.size + this.intentControllers.size + this.ownerControlRecoveries.size,
       queued_preserved: true, queued_tasks: rows.filter(snapshot => snapshot.state === 'queued').length,
       accepting_submissions: false,
       // A prior terminal effects_uncertain row remains durable and unreplayed;
       // it is not evidence that this owner still has a live child process.
       safe_to_stop: !inProgress && this.runningTasks.size === 0 &&
         this.controllers.size === 0 && this.intentControllers.size === 0 &&
-        this.activeWorkers === 0 && this.installationObservations.size === 0};
+        this.activeWorkers === 0 && this.installationObservations.size === 0 && this.ownerControlRecoveries.size === 0};
   }
 
   reconcileRestart() {
@@ -6082,8 +6301,10 @@ class RCCRuntime {
     this.stopping = true;
     for (const item of this.controllers.values()) item.controller.abort(new RCCRuntimeError('runtime_closing'));
     for (const item of this.intentControllers.values()) item.controller.abort(new RCCRuntimeError('runtime_closing'));
+    for (const item of this.ownerControlRecoveries.values()) item.controller.abort(new RCCRuntimeError('runtime_closing'));
     await Promise.race([Promise.allSettled([...this.runningTasks.values(), ...this.installationObservations.values(),
-      ...[...this.intentControllers.values()].map(item => item.promise)]),
+      ...[...this.intentControllers.values()].map(item => item.promise),
+      ...[...this.ownerControlRecoveries.values()].map(item => item.promise)]),
       new Promise(resolve => setTimeout(resolve, timeoutMs))]);
     const rows = this.transaction(() => this.db.prepare('SELECT task_id,snapshot FROM tasks').all());
     for (const row of rows) {

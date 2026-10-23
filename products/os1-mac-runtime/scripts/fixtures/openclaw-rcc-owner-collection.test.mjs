@@ -135,3 +135,12 @@ test('unknown native control protocol holds with output preserved and no referen
  assert.deepEqual(reopened._load(q.task_id).children,before.children);assert.equal(reopened.ledger.attemptIDs().size,calls);
 
 });
+
+test('normal owner child gate shares closed legacy/current parser kinds; unknown future grammars remain held',async()=>{
+ const ticket={task_id:'synthetic-task',node_id:'owner_0',attempt_id:'synthetic-attempt',request_sha256:H('source')};
+ const output='{"source":"synthetic"}',result={status:'succeeded',execution_verified:true,task_verified:true,task_quality:'task_verified',parity_state:'unverified',output,native_summary:JSON.stringify({steps:[{native_record:{turn_id:'owned-turn'}}]})};
+ for(const [kind,pass]of [['codex_owned_turn_rollout_v1',true],['codex_owned_turn_rollout_9394_v1',true],['codex_owned_turn_rollout_9394_v1_extra',false],['codex_owned_turn_rollout_future_v1',false]]){
+  const control={schema:1,task_id:ticket.task_id,node_id:ticket.node_id,attempt_id:ticket.attempt_id,request_sha256:ticket.request_sha256,output_sha256:H(output),control_verified:true,observation:{sourceKind:kind,sourceSHA256:H('synthetic log'),turnID:'owned-turn',completed:true,toolRequests:0}};
+  const got=await executeOwnerCollectionChild(ticket,null,{operation:async name=>name==='rcc-adapter'?result:control});assert.equal(got.task_verified,pass,kind);
+ }
+});
