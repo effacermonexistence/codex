@@ -63,6 +63,7 @@ PY
 fi
 python3 "$script_dir/test-release-version-identity.py" --self-test
 python3 "$script_dir/test-release-version-identity.py" --verify-current --expected-version "${OS1_VERSION:-}"
+python3 "$script_dir/test-os1-context-helper-dispatch.py" --source-only
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-composer-viewport.py"
 python3 "$script_dir/test-task-quality-wiring.py"
@@ -418,6 +419,7 @@ bundle_build="$(plutil -extract CFBundleVersion raw -o - "$stage_dir/Application
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-composer
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-steering
 "$checkout_app/Contents/MacOS/OS1Checkout" --self-test
+python3 "$script_dir/test-os1-context-helper-dispatch.py" --binary "$arm64_build_dir/arm64-apple-macosx/release/OS1ContextTests"
 "$arm64_build_dir/arm64-apple-macosx/release/OS1ContextTests"
 OS1_CONTEXT_TEST_BUILD_ROOT="$arm64_build_dir/arm64-apple-macosx/release" python3 "$script_dir/test-os1-configured-input-wire.py"
 "$arm64_build_dir/arm64-apple-macosx/release/FrontierMonitorTests"
