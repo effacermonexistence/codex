@@ -920,13 +920,16 @@ public enum RCCRuntimeContract {
         public var nativeTurnTerminated: Bool?
         public var operationalQuality: OperationalQuality?
         public var stagedWriter: StagedWriter?
+        /// Actual host-prepared input metadata, never a token/quality/admission certificate.
+        public var configuredInputObservation: RCCConfiguredInputObservation?
         public init(schema: Int = 1, taskID: String, nodeID: String, attemptID: String, candidateID: String,
                     configurationSHA256: String, selectedConfig: ExactConfig, acknowledgedConfig: ExactConfig?,
                     observedConfig: ExactConfig?, status: ExecutionStatus, output: String?, executionVerified: Bool,
                     taskVerified: Bool, taskQuality: TaskQuality, parityState: Parity, nativeReceipt: String?,
                     sideEffects: SideEffects, usage: Usage?, error: String? = nil,
                     dispatchStage: DispatchStage = .unknown, nativeSummary: String? = nil, handback: Handback? = nil,
-                    repairSource: RepairSource? = nil, nativeTurnTerminated: Bool? = nil, operationalQuality: OperationalQuality? = nil, stagedWriter: StagedWriter? = nil) {
+                    repairSource: RepairSource? = nil, nativeTurnTerminated: Bool? = nil, operationalQuality: OperationalQuality? = nil, stagedWriter: StagedWriter? = nil,
+                    configuredInputObservation: RCCConfiguredInputObservation? = nil) {
             self.schema = schema; self.taskID = taskID; self.nodeID = nodeID; self.attemptID = attemptID
             self.candidateID = candidateID; self.configurationSHA256 = configurationSHA256; self.selectedConfig = selectedConfig
             self.acknowledgedConfig = acknowledgedConfig; self.observedConfig = observedConfig; self.status = status
@@ -938,6 +941,7 @@ public enum RCCRuntimeContract {
             self.handback = handback
             self.repairSource = repairSource
             self.nativeTurnTerminated = nativeTurnTerminated; self.operationalQuality = operationalQuality; self.stagedWriter = stagedWriter
+            self.configuredInputObservation = configuredInputObservation
         }
         enum CodingKeys: String, CodingKey {
             case schema, status, output, usage, error, handback
@@ -948,6 +952,7 @@ public enum RCCRuntimeContract {
             case executionVerified = "execution_verified", taskVerified = "task_verified", taskQuality = "task_quality"
             case parityState = "parity_state", nativeReceipt = "native_receipt", sideEffects = "side_effects"
             case dispatchStage = "dispatch_stage", nativeSummary = "native_summary"
+            case configuredInputObservation = "configured_input_observation"
         }
     }
     /// Why the OpenClaw Core host bound this exact row (2026-10-13). The local
@@ -1625,6 +1630,7 @@ public enum RCCRuntimeContract {
               value.nativeReceipt.map({ text($0, max: 4_096) }) ?? true,
               value.nativeSummary.map({ $0.utf8.count <= 512_000 && !$0.contains("\0") }) ?? true,
               value.error.map({ text($0, max: 8_192) }) ?? true else { throw Rejection.invalidExecutionRecord }
+        try value.configuredInputObservation?.validate(ticket: ticket, record: value)
         if let staged = value.stagedWriter {
             guard value.selectedConfig.surface == .codex, value.selectedConfig.scope == .workspaceWrite,
                   text(staged.receiptPath, max: 4_096), staged.receiptPath.hasPrefix("/"), isHash(staged.receiptSHA256),
@@ -1892,7 +1898,9 @@ public enum RCCRuntimeContract {
     private static let ticketShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "policy_sha256", "policy_source_sha256", "source_fingerprint", "configuration_sha256", "selected_config", "objective", "instruction", "context_refs", "owned_paths", "original_request", "original_objective", "host_context", "native_resume_session_id", "continuation", "core_routing", "quality_continuation", "allow_native_subagents", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256"], ["selected_config": configShape, "host_context": hostShape, "continuation": continuationShape, "core_routing": coreRoutingShape, "quality_continuation": qualityContinuationShape])
     private static let usageShape = Shape.object(["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "provider_calls", "duration_ms", "cost_units", "metric"])
     private static let stagedWriterShape = Shape.object(["state", "receipt_path", "receipt_sha256"])
-    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated", "operational_quality", "staged_writer"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape, "operational_quality": operationalQualityShape, "staged_writer": stagedWriterShape])
+    private static let configuredBytesShape = Shape.object(["sha256", "utf8_bytes"])
+    private static let configuredInputShape = Shape.object(["schema", "kind", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "source_fingerprint", "original_source_fingerprint", "policy_sha256", "policy_source_sha256", "configuration_sha256", "selected_config_sha256", "renderer_id", "harness_sha256", "native_binary_sha256", "catalog_sha256", "catalog_observed_at_ms", "prepared_at_ms", "catalog_basis", "channel", "session_state", "delegated_input", "provider_input", "instructions", "base_instructions", "execution_configuration_sha256", "execution_configuration_basis", "input_coverage", "capture_state", "backend_inclusion_verified", "quality_certified", "execution_authorized", "tokenizer_id", "input_tokens", "context_window_tokens", "family", "capacity_upper_bound"], ["delegated_input": configuredBytesShape, "provider_input": configuredBytesShape, "instructions": configuredBytesShape, "base_instructions": configuredBytesShape])
+    private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated", "operational_quality", "staged_writer", "configured_input_observation"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape, "operational_quality": operationalQualityShape, "staged_writer": stagedWriterShape, "configured_input_observation": configuredInputShape])
     private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
     private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
     private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])
@@ -2007,7 +2015,7 @@ public enum RCCRuntimeContract {
             guard var dictionary = item as? [String: Any] else { return item }
             var optional: [String] = []
             if dictionary["max_attempts"] != nil { optional += ["max_cost_units"] }
-            if dictionary["original_source_fingerprint"] != nil { optional += ["model_answer"] }
+            if dictionary["original_source_fingerprint"] != nil && dictionary["resolution_sha256"] != nil { optional += ["model_answer"] }
             if dictionary["require_read_only"] != nil { optional += ["context", "codex_session_id", "claude_session_id", "owner_policy", "explicit_routes"] }
             if dictionary["quality_state"] != nil { optional += ["quota_remaining_fraction", "quota_observed_at_ms", "quota_valid_until_ms", "estimated_cost_units", "availability_observed_at_ms", "availability_valid_until_ms"] }
             if dictionary["context_refs"] != nil && dictionary["selected_config"] != nil { optional += ["native_resume_session_id", "continuation"] }

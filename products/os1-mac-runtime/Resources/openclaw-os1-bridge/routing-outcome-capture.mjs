@@ -14,7 +14,7 @@ const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
 const REQUIRED = ['schema', 'task_id', 'node_id', 'attempt_id', 'candidate_id', 'configuration_sha256',
   'selected_config', 'status', 'dispatch_stage', 'side_effects', 'execution_verified', 'task_verified', 'task_quality', 'parity_state'];
 const OPTIONAL = ['acknowledged_config', 'observed_config', 'output', 'native_receipt', 'usage', 'error',
-  'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality', 'staged_writer'];
+  'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality', 'staged_writer', 'configured_input_observation'];
 const CONFIG = ['surface', 'transport', 'account_id', 'model', 'effort', 'tools', 'scope', 'permission_profile',
   'quota_pool', 'allowed_paths', 'configuration_sha256'];
 const IDENTITY = ['task_id', 'node_id', 'attempt_id', 'candidate_id', 'request_sha256', 'source_fingerprint',
@@ -103,6 +103,48 @@ function nativeSummaryIDs(result, config) {
     basis: 'explicit_single_matching_native_summary_step_adapter_report_not_provider_readback'};
 }
 
+// A byte/hash preparation observation is deliberately separate from P7 features,
+// token counts, provider inclusion, task success and execution authority. This
+// validator never invokes a predictor or changes any selection/adoption result.
+const INPUT_OBSERVATION_KEYS = ['schema', 'kind', 'task_id', 'node_id', 'attempt_id', 'candidate_id',
+  'request_sha256', 'source_fingerprint', 'original_source_fingerprint', 'policy_sha256', 'policy_source_sha256', 'configuration_sha256',
+  'selected_config_sha256', 'renderer_id', 'harness_sha256', 'native_binary_sha256', 'catalog_sha256',
+  'catalog_observed_at_ms', 'prepared_at_ms', 'catalog_basis', 'channel', 'session_state', 'delegated_input',
+  'provider_input', 'instructions', 'base_instructions', 'execution_configuration_sha256', 'execution_configuration_basis', 'input_coverage', 'capture_state',
+  'backend_inclusion_verified', 'quality_certified', 'execution_authorized', 'tokenizer_id', 'input_tokens',
+  'context_window_tokens', 'family', 'capacity_upper_bound'];
+export function validateConfiguredInputObservation(x, {identity, selectedConfig, now_ms = null} = {}) {
+  need(exact(x, INPUT_OBSERVATION_KEYS) && x.schema === 1 && x.kind === 'native_configured_input_observation_v1' &&
+    x.renderer_id === 'rcc_delegated_envelope_provider_prompt_native_channels_v1' &&
+    x.input_coverage === 'os1_explicit_channels_only_provider_hidden_defaults_unobserved' &&
+    x.execution_configuration_basis === (x.channel === 'codex_developer' ? 'codex_app_server_overrides_only' : 'claude_cli_final_arguments_only') &&
+    x.capture_state === 'prepared_before_native_turn' && x.backend_inclusion_verified === false &&
+    x.quality_certified === false && x.execution_authorized === false &&
+    x.catalog_basis === 'selected_provider_inventory_before_authorization_not_core_candidate_catalog' &&
+    ['new', 'resumed'].includes(x.session_state) &&
+    ['request_sha256', 'source_fingerprint', 'original_source_fingerprint', 'policy_sha256', 'policy_source_sha256', 'configuration_sha256',
+      'selected_config_sha256', 'harness_sha256', 'native_binary_sha256', 'catalog_sha256',
+      'execution_configuration_sha256'].every(k => hash(x[k])) &&
+    ['task_id', 'node_id', 'attempt_id', 'candidate_id'].every(k => id(x[k])) &&
+    ['tokenizer_id', 'input_tokens', 'context_window_tokens', 'family', 'capacity_upper_bound'].every(k => x[k] === null) &&
+    count(x.catalog_observed_at_ms) && count(x.prepared_at_ms) && x.catalog_observed_at_ms <= x.prepared_at_ms &&
+    (now_ms === null || count(now_ms) && x.prepared_at_ms <= now_ms), 'capture_configured_input_invalid');
+  const bytes = v => exact(v, ['sha256', 'utf8_bytes']) && hash(v.sha256) && count(v.utf8_bytes) &&
+    v.utf8_bytes > 0 && v.utf8_bytes <= 8388608;
+  need(['delegated_input', 'provider_input', 'instructions'].every(k => bytes(x[k])) &&
+    (x.base_instructions === null || bytes(x.base_instructions)), 'capture_configured_input_bytes_invalid');
+  need(exact(selectedConfig, CONFIG) && x.configuration_sha256 === selectedConfig.configuration_sha256 &&
+    x.selected_config_sha256 === objectSHA(selectedConfig) && x.channel ===
+      (selectedConfig.transport === 'codex_app_server' ? 'codex_developer' :
+       selectedConfig.transport === 'claude_cli' ? 'claude_append_system' : 'unsupported') &&
+    ['task_id', 'node_id', 'attempt_id', 'candidate_id', 'request_sha256', 'source_fingerprint', 'policy_sha256',
+      'configuration_sha256'].every(k => x[k] === identity?.[k]) &&
+    (identity.policy_source_sha256 === undefined || x.original_source_fingerprint === (identity.core_routing?.original_source_fingerprint ?? identity.source_fingerprint)) &&
+    (identity.policy_source_sha256 === undefined || identity.policy_source_sha256 === x.policy_source_sha256),
+    'capture_configured_input_binding_invalid');
+  return freeze(copy(x));
+}
+
 /** Read one exact private adapter receipt and project it. Parent source/policy
  * hashes remain frozen CORE-supplied identity, NOT newly discovered file facts.
  * Initial checker/usage/adoption are unknown; no filename, summary, metric name
@@ -132,6 +174,12 @@ export function captureRoutingOutcome({stateDir, identity, selectedConfig, resul
     capture = {...capture, adapter_receipt_path: read.path, adapter_receipt_sha256: read.sha256,
       adapter_receipt_bytes: read.bytes, frozen_identity_basis: 'core_supplied_request_source_policy_plus_receipt_task_node_attempt_config'};
     need(stableJSON(read.receipt) === stableJSON(result), 'capture_receipt_result_mismatch');
+    // Same exact task/attempt receipt read; no sidecar scan or stale protected
+    // host-record substitution. Kept in Core's durable routing_outcome capture.
+    capture.configured_input_observation = read.receipt.configured_input_observation == null ? null :
+      validateConfiguredInputObservation(read.receipt.configured_input_observation, {identity, selectedConfig, now_ms});
+    capture.configured_input_basis = capture.configured_input_observation === null ? 'not_captured' :
+      'actual_adapter_prepared_hashes_not_provider_inclusion_or_token_measurement';
     const ids = nativeSummaryIDs(read.receipt, selectedConfig);
     capture.native_identity_basis = 'adapter_execution_envelope_attempt_id_not_provider_execution_id';
     capture.summary_identity_basis = ids.basis;

@@ -10,7 +10,7 @@ import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usag
 import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adaptive-routing-policy.mjs';
 import { createPlannerHostProjection, compileFreshPlannerProposal, isLivePlanCapability } from './adaptive-plan-host.mjs';
 import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector.mjs';
-import { captureRoutingOutcome } from './routing-outcome-capture.mjs';
+import { captureRoutingOutcome, validateConfiguredInputObservation } from './routing-outcome-capture.mjs';
 import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
 import { isCalibratedRoutePredictor, isCalibratedRouteInference } from './calibrated-route-predictor.mjs';
 
@@ -4680,7 +4680,7 @@ class RCCRuntime {
       'configuration_sha256', 'selected_config', 'status', 'dispatch_stage', 'side_effects',
       'execution_verified', 'task_verified', 'task_quality', 'parity_state'];
     const optional = ['acknowledged_config', 'observed_config', 'output', 'native_receipt',
-      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality', 'staged_writer'];
+      'usage', 'error', 'native_summary', 'handback', 'repair_source', 'native_turn_terminated', 'operational_quality', 'staged_writer', 'configured_input_observation'];
     assert(plain(result) && required.every(key => Object.hasOwn(result, key)) &&
       Object.keys(result).every(key => required.includes(key) || optional.includes(key)) &&
       result.schema === 1 &&
@@ -4703,6 +4703,8 @@ class RCCRuntime {
       (result.native_summary == null || boundedText(result.native_summary, MAX_NATIVE_SUMMARY_BYTES)) &&
       (result.native_turn_terminated == null || typeof result.native_turn_terminated === 'boolean'),
     'execution_receipt_invalid');
+    if (result.configured_input_observation != null)
+      validateConfiguredInputObservation(result.configured_input_observation, {identity: ticket, selectedConfig: ticket.selected_config});
     if (result.status === 'succeeded' && result.task_verified)
       assert(boundedText(result.output, MAX_OUTPUT_BYTES), 'verified_empty_output');
     // A write is never re-dispatched on a provider's word: the reason is valid

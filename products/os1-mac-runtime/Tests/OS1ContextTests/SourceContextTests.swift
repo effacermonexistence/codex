@@ -46,6 +46,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-routing-intent-ingress-only") { try runRCCRoutingIntentIngressFixtures(); return }
         if CommandLine.arguments.contains("--rcc-admission-facts-only") { try runRCCAdmissionFactsFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
+        if CommandLine.arguments.contains("--rcc-configured-input-only") { try runRCCConfiguredInputObservationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-preparation-only") { try runRCCNativePreparationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-delegated-envelope-only") { try runRCCDelegatedEnvelopeFixtures(); return }
         if CommandLine.arguments.contains("--codex-turn-rejection-only") { try runCodexTurnRejectionFixtures(); return }
@@ -81,6 +82,7 @@ final class SourceContextTests {
         try runRCCAdmissionFactsFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
         try runRCCNativePreparationFixtures()
+        try runRCCConfiguredInputObservationFixtures()
         try runRCCDelegatedEnvelopeFixtures()
         try runCodexTurnRejectionFixtures()
         try runRCCRuntimeProjectionFixtures()
