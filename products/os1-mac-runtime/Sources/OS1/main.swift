@@ -8300,6 +8300,7 @@ private func execute(
     onDispatch: ((String?) -> Void)? = nil,
     onInstructions: ((String) -> Void)? = nil,
     onPreDispatchReceipt: ((String) -> Void)? = nil,
+    onConfiguredInput: ((RCCNativeConfiguredInput) -> Void)? = nil,
     memoryTurn: MemoryExecutionManifest? = nil,
     quotaContext: ProviderQuotaContext? = nil,
     surfaceChoiceReceipt: String? = nil,
@@ -8545,6 +8546,12 @@ private func execute(
         do {
             if appServer.ownsThreadWriter {
                 executedDesktopVisibility = codexExecutionDesktopVisibility(ownsThreadWriter: true)
+                // Capture the FINAL owned writer inputs, not an estimate assembled before native configuration.
+                // A Desktop-owned/resumed foreign writer has no such preparation authority and is not captured here.
+                onConfiguredInput?(.init(channel: "codex_developer", prompt: prompt, instructions: codexInstructions,
+                    baseInstructions: projectionInBase && expectedSessionID == nil ? OwnerPolicyContext.snapshot?.projection : nil,
+                    nativeExecutable: codex, sessionState: actualSessionID == previousID ? "resumed" : "new",
+                    executionConfiguration: try? RCCRuntimeContract.encode(codexConfigOverrides)))
                 turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
                     workspace: codexWorkspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, deadline: deadline,
@@ -8834,10 +8841,13 @@ private func execute(
               arguments.indices.contains(systemIndex + 1) else {
             throw OS1Error.message("Claude pre-dispatch system-prompt channel is absent; no executor was called")
         }
+        // Keep the exact channel value, not its ordinal: later safe-mode/MCP
+        // argument prepends move this index without changing the system text.
+        let configuredSystemInstructions = arguments[systemIndex + 1]
         preDispatchGovernanceReceipt = try recordPreDispatchGovernance(
             ticket: ticket, model: model, effort: effort, objective: lockedObjective, input: prompt,
             contractSHA256: executorContract.sha256, channel: "claude_append_system",
-            instructions: arguments[systemIndex + 1],
+            instructions: configuredSystemInstructions,
             driftState: driftApplication == nil ? "unavailable_base_contract_retained" : "applied",
             routeAdmission: admissionPath)
         onPreDispatchReceipt?(preDispatchGovernanceReceipt!)
@@ -8856,6 +8866,10 @@ private func execute(
         var relayedResultCount = 0
         let raw: (Int32, Data, Data)
         let launch = try fullAccessPaths.isEmpty ? (claude, arguments) : fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: fullAccessPaths)
+        onConfiguredInput?(.init(channel: "claude_append_system", prompt: prompt,
+            instructions: configuredSystemInstructions, baseInstructions: nil,
+            nativeExecutable: claude, sessionState: startsNewSession ? "new" : "resumed",
+            executionConfiguration: try? RCCRuntimeContract.encode(arguments)))
         do { raw = try commandOutput(
             launch.0,
             launch.1,
@@ -19440,6 +19454,11 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let codex = observations.codex ?? ActiveCodexCatalog(models: [], source: "not_selected")
         let claude = observations.claude?.models ?? []
         timing.mark(.inventoryReady)
+        // Fresh selected-provider support metadata used by this attempt, not the old catalog or a model-name estimate.
+        let configuredInventoryAtMS = Int64(Date().timeIntervalSince1970 * 1000)
+        let configuredInventory: Data?
+        if provider == "codex" { configuredInventory = try? RCCRuntimeContract.encode(codex.models) }
+        else { configuredInventory = try? RCCRuntimeContract.encode(claude) }
         let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
             : claude.contains { $0.model == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
         guard supported else {
@@ -19614,7 +19633,14 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 exactAnswerOnly: answerOnly,
                 preloadedR2Evidence: sourceDelivery.evidence,
                 sourceUseRequired: sourceDelivery.evidence != nil,
-                onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true }, quotaContext: input.providerQuota,
+                onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true },
+                onConfiguredInput: { prepared in
+                    // Optional observation failures cannot reroute, authorize, retry, or alter the original outcome.
+                    if let configuredInventory {
+                        record.configuredInputObservation = try? prepared.observation(ticket: t, delegated: delegated,
+                            catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAtMS)
+                    }
+                }, quotaContext: input.providerQuota,
                 surfaceOverride: surface, workspaceOverride: workspace,
                 // Only a side session that never becomes the conversation's
                 // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
