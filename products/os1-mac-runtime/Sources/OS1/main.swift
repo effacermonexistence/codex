@@ -19357,6 +19357,21 @@ private func rccNativeExactAnswerInstructionsSelfTest() throws {
                   .replacingOccurrences(of: HumanOutputContract.instructions(for: "1+1", provider: provider),
                                         with: HumanOutputContract.exactAnswerInstructions) == exact,
                   provider + ": only the answer contract and explicit non-exact source policy differ")
+        for request in ["Return only one JSON object. No explanation or Markdown.",
+                        "Return code only: one TypeScript function.",
+                        "JSON이 무엇인지 설명하고 예시를 줘."] {
+            let machine = base + nativePresentationDirective(objective: request, provider: provider,
+                exactAnswer: false, hasPreloadedSource: false)
+            try check(machine.contains("Follow the current task's requested output format") &&
+                      machine.contains("If the current task explicitly requests machine/code output only") &&
+                      machine.contains("no persona header, natural-language lead, headings, explanation or Markdown fences unless that wrapper is itself requested") &&
+                      !machine.contains("Lead with the result in natural language") && !machine.contains("give a lead sentence"),
+                      provider + ": actual native channel preserves conditional machine-only format without a prose lead")
+            try check(machine.contains("If the task requests explanation or discussion, provide it") &&
+                      machine.contains(SourceTransformationContract.instructions) && machine.hasPrefix(base) &&
+                      machine.contains(UnifiedExecution.instructions) && !machine.contains(HumanOutputContract.exactAnswerInstructions),
+                      provider + ": format discussion, source/execution guards and non-exact proof status survive")
+        }
     }
     print("RCC native exact-answer instructions: \(checks) checks PASS; model calls 0")
 }
