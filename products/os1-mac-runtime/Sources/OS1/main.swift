@@ -18145,6 +18145,7 @@ func usage() {
       os1 register
       os1 run --workspace /path/to/project --prompt "task"
       os1 run --workspace /path/to/project --prompt "hello" --forbid-model-generation
+      os1 run --workspace /path/to/project --request-file task.txt --max-native-dispatches 4 --max-parallel 2
               [--provider auto|codex|chatgpt|claude|claude-chat]
               [--codex-session-id UUID] [--claude-session-id UUID]
               [--codex-capacity 0...100] [--claude-capacity 0...100]
@@ -18602,6 +18603,8 @@ struct OS1Main {
                 var parallelAgentChild = false
                 var parallelFanoutChild = false
                 var forbidModelGeneration = false
+                var maxNativeDispatches: Int?
+                var maxParallel: Int?
                 var parallelWriteGrantPath: String?
                 var rccTaskID: String?
                 var routingIntentPolicyVersion: String?
@@ -18610,6 +18613,10 @@ struct OS1Main {
                     switch arguments[index] {
                     case "--forbid-model-generation" where !forbidModelGeneration:
                         forbidModelGeneration = true; index += 1
+                    case "--max-native-dispatches" where index + 1 < arguments.count && maxNativeDispatches == nil:
+                        maxNativeDispatches = try RCCRunBudgetOptions.nativeDispatches(arguments[index + 1]); index += 2
+                    case "--max-parallel" where index + 1 < arguments.count && maxParallel == nil:
+                        maxParallel = try RCCRunBudgetOptions.parallelism(arguments[index + 1]); index += 2
                     case "--rcc-task-id" where index + 1 < arguments.count:
                         guard rccTaskID == nil, UUID(uuidString: arguments[index + 1]) != nil else { throw OS1Error.message("Invalid RCC task identity") }
                         rccTaskID = arguments[index + 1].lowercased(); index += 2
@@ -18668,6 +18675,9 @@ struct OS1Main {
                 }
                 guard !forbidModelGeneration || (!parallelAgentChild && !parallelFanoutChild) else {
                     throw OS1Error.message("--forbid-model-generation requires ordinary Core-owned run; legacy child/fanout execution is unsupported")
+                }
+                guard (maxNativeDispatches == nil && maxParallel == nil) || (!parallelAgentChild && !parallelFanoutChild) else {
+                    throw OS1Error.message("Task resource limits require ordinary Core-owned run; legacy child/fanout execution is unsupported")
                 }
                 var validatedWriteGrant: ParallelProjectWriteGrant?
                 if parallelAgentChild || parallelFanoutChild {
@@ -18734,6 +18744,7 @@ struct OS1Main {
                             codexSessionID: codexSessionID, claudeSessionID: claudeSessionID,
                             requireReadOnly: requireReadOnly, taskID: rccTaskID,
                             forbidModelGeneration: forbidModelGeneration,
+                            maxNativeDispatches: maxNativeDispatches, maxParallel: maxParallel,
                             routingIntentPolicyVersion: routingIntentPolicyVersion,
                             capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)
                     } catch {
@@ -20517,7 +20528,8 @@ func rccBoundSourceMaterialRefs(request: String, context: String?) throws -> [St
 
 func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
     codexSessionID: String?, claudeSessionID: String?, requireReadOnly: Bool, taskID: String?,
-    forbidModelGeneration: Bool = false, routingIntentPolicyVersion: String? = nil,
+    forbidModelGeneration: Bool = false, maxNativeDispatches: Int? = nil, maxParallel: Int? = nil,
+    routingIntentPolicyVersion: String? = nil,
     capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = [],
     interpreterRecord: InterpretedRoutingRecord? = nil) async throws -> RunSummary {
     try RCCRoutingIntentIngress.validate(routingIntentPolicyVersion, mode: .auto,
@@ -20552,8 +20564,8 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     var candidateRequest = RCCRuntimeContract.Request(taskID: id, request: prompt, requestSHA256: sha256Hex(Data(prompt.utf8)),
         objective: prompt, policySHA256: sha256Hex(Data(text.utf8)), sourceFingerprint: sha256Hex(try RCCRuntimeContract.encode(host)),
         mode: .auto, materialRefs: materialRefs,
-        budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 3_600_000,
-            forbidModelGeneration: forbidModelGeneration ? true : nil),
+        budget: .init(maxAttempts: 2, maxParallel: maxParallel ?? 4, maxCostUnits: nil, maxDurationMS: 3_600_000,
+            maxNativeDispatches: maxNativeDispatches, forbidModelGeneration: forbidModelGeneration ? true : nil),
         policy: .init(sourceSHA256: owner?.sourceSHA256 ?? cfg.executorContract.sha256,
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
     try RCCRoutingIntentIngress.bindRequest(&candidateRequest, version: routingIntentPolicyVersion,
@@ -20576,7 +20588,7 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         }
         if let graph = try? RCCRuntimeProjection.project(state, conversationID: conversationID,
             submissionID: submissionID, objective: prompt, observedAt: Date(), firstObservedAt: observed,
-            maxParallelism: 4, expectedRequestSHA256: request.requestSHA256,
+            maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256,
             nativeReceipts: RCCNativeDisplayReceipts.load(state)) {
             if let path = ProcessInfo.processInfo.environment["OS1_AGENT_TASK_FILE"] {
                 try? ParallelAgentTask.saveBound(graph, path: path)
