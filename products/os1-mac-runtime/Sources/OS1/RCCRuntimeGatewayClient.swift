@@ -108,7 +108,7 @@ enum RCCRuntimeGatewayClient {
     }
     private static let maximumResponseBytes = 8_388_608
     private static let maximumRequestBytes = 8_388_608
-    private static let methodSet: Set<String> = ["health", "os1.rcc.submit", "os1.rcc.status", "os1.rcc.cancel", "os1.rcc.quiesce"]
+    private static let methodSet: Set<String> = ["health", "os1.rcc.submit", "os1.rcc.status", "os1.rcc.cancel", "os1.rcc.quiesce", "os1.rcc.recoverOwnerControl"]
     // Params are read privately and put in the official CLI's in-memory argv.
     // Neither request material nor the gateway token enters kernel argv.
     private static let rpcShim = """
@@ -207,6 +207,77 @@ enum RCCRuntimeGatewayClient {
                 root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime"),
                 limits: Limits(), fixture: false)
         }.value
+    }
+
+    /// Proof reconciliation only: original task and original native outputs.
+    /// A timeout never falls back to submit, an adapter, or a second recovery.
+    static func recoverOwnerControl(_ input: Data, configuration: Configuration) async throws -> Data {
+        let identity = try validateOwnerControlRecovery(input)
+        return try await Task.detached(priority: .utility) {
+            let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime")
+            try checkInstallerMaintenance(root: root)
+            let paths = Paths(root: root), limits = Limits()
+            // Do not supervise/start/replace the owner: startup may dispatch
+            // unrelated queued work. Root must bring up the owner separately.
+            let owner = try existingProofOwner(configuration: configuration, paths: paths, limits: limits)
+            try checkInstallerMaintenance(root: root)
+            let raw = try rpc("os1.rcc.recoverOwnerControl", parameters: input, owner: owner,
+                configuration: configuration, paths: paths, timeout: 300, fixture: false)
+            return try snapshot(raw, id: identity.taskID, requestSHA256: identity.requestSHA256,
+                minimumRevision: identity.revision).data
+        }.value
+    }
+    private static func existingProofOwner(configuration: Configuration, paths: Paths, limits: Limits) throws -> Owner {
+        try verifyInstalled(configuration.identity)
+        try checkPrivateDirectory(paths.root)
+        guard !FileManager.default.fileExists(atPath: paths.startupIntent.path),
+            FileManager.default.fileExists(atPath: paths.metadata.path),
+            configuration.bridgeEnvironment["OS1_RCC_RUNTIME"] == "1",
+            configuration.bridgeEnvironment["OS1_RCC_NATIVE_PATH"] == configuration.identity.nativeOS1Path,
+            configuration.bridgeEnvironment["OS1_RCC_NATIVE_SHA256"] == configuration.identity.nativeOS1SHA256 else { throw Failure.existingGatewayUnavailable }
+        let bytes = try readPrivate(paths.metadata, maximum: 16_384)
+        let owner = try JSONDecoder().decode(Owner.self, from: bytes)
+        try validateOwnerPath(owner, paths: paths)
+        guard owner.identitySHA256 == (try identitySHA256(configuration.identity)),
+            owner.configurationSHA256 == sha256(configuration.baseConfig + (try JSONSerialization.data(withJSONObject: configuration.bridgeEnvironment, options: [.sortedKeys]))),
+            processMatches(owner, nodePath: configuration.identity.nodePath, fixture: false) else { throw Failure.gatewayIdentityChanged }
+        guard try health(owner, configuration: configuration, paths: paths, timeout: limits.rpc,
+            readinessDeadline: Date().addingTimeInterval(limits.rpc + readinessCLIBootstrapAllowance + 2), fixture: false, cancelled: { false }),
+            try readPrivate(paths.metadata, maximum: 16_384) == bytes,
+            processMatches(owner, nodePath: configuration.identity.nodePath, fixture: false) else { throw Failure.existingGatewayUnavailable }
+        return owner
+    }
+    /// Pure closed transport schema. Core still owns exact snapshot CAS and
+    /// retained host proof; these fields never become execution permission.
+    static func validateOwnerControlRecovery(_ input: Data) throws -> (taskID: String, requestSHA256: String, revision: Int) {
+        func id(_ x: Any?) -> Bool { (x as? String)?.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil }
+        func hash(_ x: Any?) -> Bool { (x as? String).map(RCCRuntimeContract.isHash) ?? false }
+        func integer(_ x: Any?) -> Int? {
+            guard let n = x as? NSNumber, String(cString: n.objCType) != "c", n.doubleValue.isFinite,
+                  n.doubleValue >= 1, n.doubleValue <= 9_007_199_254_740_991, n.doubleValue.rounded(.down) == n.doubleValue else { return nil }
+            return n.intValue
+        }
+        func path(_ x: Any?) -> Bool {
+            guard let s = x as? String, s.utf8.count <= 4096, s.hasPrefix("/"), !s.contains("\0") else { return false }
+            return URL(fileURLWithPath: s).standardizedFileURL.path == s
+        }
+        guard input.count > 2, input.count <= 1_048_576,
+            let x = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+            Set(x.keys) == ["schema", "recovery_id", "task_id", "request_sha256", "expected_revision", "expected_fingerprint", "expected_snapshot_sha256", "children", "historical_runtime"],
+            integer(x["schema"]) == 1, id(x["recovery_id"]), id(x["task_id"]), hash(x["request_sha256"]),
+            let revision = integer(x["expected_revision"]), hash(x["expected_fingerprint"]), hash(x["expected_snapshot_sha256"]),
+            let children = x["children"] as? [[String: Any]], (2...8).contains(children.count),
+            Set(children.compactMap { $0["id"] as? String }).count == children.count,
+            Set(children.compactMap { $0["attempt_id"] as? String }).count == children.count,
+            children.allSatisfy({ row in Set(row.keys) == ["id", "attempt_id", "native_receipt", "native_receipt_sha256", "witness_sha256"] &&
+                (row["id"] as? String)?.range(of: "^owner_[0-7]$", options: .regularExpression) != nil && id(row["attempt_id"]) &&
+                path(row["native_receipt"]) && hash(row["native_receipt_sha256"]) && hash(row["witness_sha256"]) }),
+            let history = x["historical_runtime"] as? [String: Any],
+            Set(history.keys) == ["app_path", "bundle_inventory_receipt", "bundle_inventory_receipt_sha256", "install_receipt", "install_receipt_sha256", "cli_sha256"],
+            path(history["app_path"]), path(history["bundle_inventory_receipt"]), path(history["install_receipt"]),
+            hash(history["bundle_inventory_receipt_sha256"]), hash(history["install_receipt_sha256"]), hash(history["cli_sha256"])
+        else { throw Failure.invalidRequest }
+        return (x["task_id"] as! String, x["request_sha256"] as! String, revision)
     }
 
     /// Cancellation remains an idempotent intent owned by the original core.

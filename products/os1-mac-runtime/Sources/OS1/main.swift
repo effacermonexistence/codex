@@ -18390,6 +18390,16 @@ struct OS1Main {
                     throw OS1Error.message("RCC owner control verifier accepts one private bound input")
                 }
                 print(String(decoding: try RCCOwnerCollection.verifyChildControl(rccPrivateInput(arguments[2])), as: UTF8.self))
+            case "rcc-owner-control-retained":
+                guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOwnerCollection.Failure.binding }
+                print(String(decoding: try RCCOwnerCollection.retainedChildControl(rccPrivateInput(arguments[2])), as: UTF8.self))
+            case "rcc-reconcile-owner-collection":
+                guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOwnerCollection.Failure.binding }
+                let input = try rccPrivateInput(arguments[2])
+                _ = try RCCRuntimeGatewayClient.validateOwnerControlRecovery(input)
+                let owner = try loadCurrentOwnerPolicy()
+                let configuration = try await OwnerPolicyContext.$snapshot.withValue(owner) { try await LocalRouterBridge.rccRuntimeConfiguration() }
+                print(String(decoding: try await RCCRuntimeGatewayClient.recoverOwnerControl(input, configuration: configuration), as: UTF8.self))
             case "rcc-task-verify":
                 guard arguments.count == 3, arguments[1] == "--request-file" else {
                     throw OS1Error.message("RCC collection verifier accepts one private bound input")

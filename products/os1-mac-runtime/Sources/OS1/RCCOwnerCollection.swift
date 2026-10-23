@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import OS1Context
 
 /// A deliberately narrow, non-statistical R0 extension. Only pre-registered
@@ -149,11 +150,268 @@ enum RCCOwnerCollection {
             "output_sha256": C.digest(Data((stored.output ?? "").utf8)), "control_verified": true,
             "observation": try JSONSerialization.jsonObject(with: JSONEncoder().encode(control))]
         let result = try JSONSerialization.data(withJSONObject: reply, options: [.sortedKeys])
-        let file = root.appendingPathComponent(ticket.attemptID + ".json")
-        guard !FileManager.default.fileExists(atPath: file.path) else { throw Failure.custody }
-        try result.write(to: file, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        return try persistControlObservation(result, attemptID: ticket.attemptID, root: root)
+    }
+
+    static func persistControlObservation(_ result: Data, attemptID: String, root: URL) throws -> Data {
+        guard attemptID.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
+            !result.isEmpty, result.count <= 1_048_576 else { throw Failure.binding }
+        try retainedPrivateDirectory(root)
+        let file = root.appendingPathComponent(attemptID + ".json")
+        let fd = open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if fd < 0 {
+            guard errno == EEXIST, try retainedFile(file.path, parent: root) == result else { throw Failure.custody }
+            return result // exact same observation only; never overwrite a conflict
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do { try handle.write(contentsOf: result); try handle.synchronize(); try handle.close() }
+        catch { try? handle.close(); throw error }
+        guard try retainedFile(file.path, parent: root) == result else { throw Failure.custody }
         return result
+    }
+
+    struct HistoricalRuntime: Decodable {
+        let app_path: String, bundle_inventory_receipt: String, bundle_inventory_receipt_sha256: String
+        let install_receipt: String, install_receipt_sha256: String, cli_sha256: String
+    }
+    static func historicalRuntime(_ raw: Any) throws -> HistoricalRuntime {
+        guard let x = raw as? [String: Any], Set(x.keys) == ["app_path", "bundle_inventory_receipt", "bundle_inventory_receipt_sha256", "install_receipt", "install_receipt_sha256", "cli_sha256"] else { throw Failure.binding }
+        let value = try JSONDecoder().decode(HistoricalRuntime.self, from: JSONSerialization.data(withJSONObject: x))
+        guard [value.cli_sha256, value.bundle_inventory_receipt_sha256, value.install_receipt_sha256].allSatisfy(C.isHash) else { throw Failure.binding }
+        return value
+    }
+    /// Stable owned evidence read, never execution of the retained artifact.
+    static func retainedFile(_ path: String, parent: URL, expected: String? = nil,
+                             privateFile: Bool = true, maximum: Int = 8_000_000) throws -> Data {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.path == path, url.deletingLastPathComponent().path == parent.path,
+              url.resolvingSymlinksInPath().path == path, parent.resolvingSymlinksInPath().path == parent.path else { throw Failure.custody }
+        let directory = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw Failure.custody }; defer { close(directory) }
+        var parentBefore = stat()
+        guard fstat(directory, &parentBefore) == 0, parentBefore.st_mode & S_IFMT == S_IFDIR,
+            parentBefore.st_mode & (privateFile ? 0o077 : 0o022) == 0,
+            parentBefore.st_uid == getuid() || (!privateFile && parentBefore.st_uid == 0) else { throw Failure.custody }
+        let fd = openat(directory, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw Failure.custody }; defer { close(fd) }
+        var a = stat(); guard fstat(fd, &a) == 0, a.st_mode & S_IFMT == S_IFREG,
+            a.st_uid == getuid() || (!privateFile && a.st_uid == 0), a.st_nlink == 1,
+            a.st_size > 0, a.st_size <= maximum, a.st_mode & (privateFile ? 0o077 : 0o022) == 0 else { throw Failure.custody }
+        let data = try FileHandle(fileDescriptor: fd, closeOnDealloc: false).read(upToCount: maximum + 1) ?? Data()
+        guard data.count <= maximum else { throw Failure.custody }
+        var b = stat(), n = stat(), parentNamed = stat()
+        guard fstat(fd, &b) == 0, fstatat(directory, url.lastPathComponent, &n, AT_SYMLINK_NOFOLLOW) == 0,
+            lstat(parent.path, &parentNamed) == 0, parentBefore.st_dev == parentNamed.st_dev,
+            parentBefore.st_ino == parentNamed.st_ino, parent.resolvingSymlinksInPath().path == parent.path,
+            a.st_dev == b.st_dev, a.st_ino == b.st_ino,
+            a.st_size == b.st_size, a.st_size == data.count, a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec,
+            a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec, a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec,
+            a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec, b.st_dev == n.st_dev, b.st_ino == n.st_ino, b.st_size == n.st_size,
+            b.st_mtimespec.tv_sec == n.st_mtimespec.tv_sec, b.st_mtimespec.tv_nsec == n.st_mtimespec.tv_nsec,
+            b.st_ctimespec.tv_sec == n.st_ctimespec.tv_sec, b.st_ctimespec.tv_nsec == n.st_ctimespec.tv_nsec,
+            expected.map({ C.digest(data) == $0 }) ?? true else { throw Failure.custody }
+        return data
+    }
+    static func currentPolicyMatches(_ task: C.Request) throws -> Bool {
+        let active = try OwnerPolicySnapshot.load(root: OwnerPolicySnapshot.defaultRoot)
+        return task.hostContext?.ownerPolicy.map { active?.sourceSHA256 == $0.sourceSHA256 && active?.projectionSHA256 == $0.projectionSHA256 } ?? (active == nil)
+    }
+    static func currentAccountMatches(_ config: C.ExactConfig) -> Bool {
+        BackendAccounts.active(provider: config.surface == .codex ? "codex" : "claude", in: BackendAccounts.load()).id == config.accountID
+    }
+    static func retainedInteger(_ value: Any?) -> Int? {
+        guard let n = value as? NSNumber, String(cString: n.objCType) != "c", n.doubleValue.isFinite,
+            n.doubleValue >= 0, n.doubleValue <= 9_007_199_254_740_991, n.doubleValue.rounded(.down) == n.doubleValue else { return nil }
+        return n.intValue
+    }
+    static func retainedPrivateDirectory(_ url: URL) throws {
+        var value = stat()
+        guard url.path == url.standardizedFileURL.path, url.resolvingSymlinksInPath().path == url.path,
+            lstat(url.path, &value) == 0, value.st_mode & S_IFMT == S_IFDIR, value.st_uid == getuid(), value.st_mode & 0o077 == 0 else { throw Failure.custody }
+    }
+    /// Original artifacts only. This deliberately does not weaken the current
+    /// execution profile verifier or make the old CLI executable/dispatchable.
+    static func verifyHistoricalRuntime(_ h: HistoricalRuntime, witness w: RCCOperationalQuality.StoredWitness,
+                                        record r: C.ExecutionRecord) throws {
+        let app = URL(fileURLWithPath: h.app_path).standardizedFileURL, fm = FileManager.default
+        guard app.path == h.app_path, app.resolvingSymlinksInPath().path == app.path,
+              let input = r.configuredInputObservation, input.harnessSHA256 == h.cli_sha256 else { throw Failure.binding }
+        try input.validate(ticket: w.ticket, record: r)
+        let manifestURL = URL(fileURLWithPath: h.bundle_inventory_receipt), installURL = URL(fileURLWithPath: h.install_receipt)
+        try retainedPrivateDirectory(manifestURL.deletingLastPathComponent())
+        try retainedPrivateDirectory(installURL.deletingLastPathComponent())
+        guard app.path.hasPrefix(manifestURL.deletingLastPathComponent().path + "/") else { throw Failure.custody }
+        let manifestBytes = try retainedFile(manifestURL.path, parent: manifestURL.deletingLastPathComponent(), expected: h.bundle_inventory_receipt_sha256, privateFile: false)
+        let installBytes = try retainedFile(installURL.path, parent: installURL.deletingLastPathComponent(), expected: h.install_receipt_sha256)
+        guard let manifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any],
+              let installation = try JSONSerialization.jsonObject(with: installBytes) as? [String: Any],
+              let rows = manifest["bundle_inventory"] as? [[String: Any]], !rows.isEmpty, rows.count <= 1024,
+              let build = retainedInteger(manifest["build"]), build > 0, let version = manifest["version"] as? String,
+              let source = manifest["source_commit"] as? String, source.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil,
+              retainedInteger(manifest["schema"]) == 1, retainedInteger(manifest["release_exit"]) == 0, retainedInteger(manifest["scanner_findings"]) == 0,
+              installation["build"] as? String == String(build), installation["stagedCLIHash"] as? String == h.cli_sha256,
+              let checks = installation["checks"] as? [String], checks.count >= 14,
+              checks.allSatisfy({ $0.contains(": PASS") && !$0.contains("FAIL") }),
+              let completed = installation["completedAt"] as? String else { throw Failure.binding }
+        let timestamp = ISO8601DateFormatter(); timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let installedAt = timestamp.date(from: completed),
+            installedAt.timeIntervalSince1970 * 1000 <= Double(input.preparedAtMS),
+            w.receipt.map({ $0.observedAt >= installedAt }) == true else { throw Failure.binding }
+        let installedApp = SelfUpdate.installedAppURL().resolvingSymlinksInPath().standardizedFileURL
+        guard installation["app"] as? String == installedApp.path else { throw Failure.binding }
+        var names = Set<String>(), total = 0, hashes: [String: String] = [:]
+        for row in rows {
+            guard Set(row.keys) == ["path", "kind", "bytes", "sha256"], row["kind"] as? String == "file",
+                let name = row["path"] as? String, !name.hasPrefix("/"), !name.contains("\\"), !name.contains("\0"),
+                !name.split(separator: "/", omittingEmptySubsequences: false).contains(where: { ["", ".", ".."].contains(String($0)) }),
+                names.insert(name).inserted, let bytes = retainedInteger(row["bytes"]), bytes > 0, bytes <= 256_000_000,
+                let hash = row["sha256"] as? String, C.isHash(hash) else { throw Failure.custody }
+            total += bytes; guard total <= 512_000_000 else { throw Failure.custody }
+            let file = app.appendingPathComponent(name).standardizedFileURL
+            let data = try retainedFile(file.path, parent: file.deletingLastPathComponent(), expected: hash, privateFile: false, maximum: 256_000_000)
+            guard data.count == bytes else { throw Failure.custody }; hashes[name] = hash
+        }
+        guard hashes["Contents/Resources/os1"] == h.cli_sha256,
+              hashes["Contents/MacOS/OS1App"] == installation["stagedAppHash"] as? String,
+              let enumerator = fm.enumerator(at: app, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { throw Failure.custody }
+        var actual = Set<String>(), visited = 0
+        for case let file as URL in enumerator {
+            visited += 1; guard visited <= 4096, file.path.hasPrefix(app.path + "/") else { throw Failure.custody }
+            let v = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard v.isSymbolicLink != true else { throw Failure.custody }
+            if v.isRegularFile == true { actual.insert(String(file.path.dropFirst(app.path.count + 1))); guard actual.count <= 1024 else { throw Failure.custody } }
+        }
+        guard actual == names,
+              let info = try PropertyListSerialization.propertyList(from: retainedFile(app.appendingPathComponent("Contents/Info.plist").path,
+                parent: app.appendingPathComponent("Contents"), privateFile: false), format: nil) as? [String: Any],
+              info["CFBundleVersion"] as? String == String(build), info["CFBundleShortVersionString"] as? String == version,
+              info["OS1SourceCommit"] as? String == source, info["OS1SourceRepository"] as? String == "effacermonexistence/codex" else { throw Failure.binding }
+        func requirement(_ url: URL) throws -> String {
+            let output = try commandOutput("/usr/bin/codesign", ["--display", "--requirements", "-", url.path], timeout: 30)
+            guard output.0 == 0, let line = String(decoding: output.1 + output.2, as: UTF8.self).split(separator: "\n").first(where: { $0.hasPrefix("designated => ") }) else { throw Failure.custody }
+            return String(line)
+        }
+        guard try commandOutput("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], timeout: 60).0 == 0,
+              try commandOutput("/usr/bin/codesign", ["--verify", "--strict", installedApp.path], timeout: 60).0 == 0 else { throw Failure.custody }
+        let designated = try requirement(app)
+        guard designated == (try requirement(installedApp)), installation["sourceRequirement"] as? String == designated,
+              installation["previousRequirement"] as? String == designated, installation["signerRotation"] as? Bool == false else { throw Failure.binding }
+        guard w.localOnlyVerified, let profileSHA = w.nativeProfileSHA256, C.isHash(profileSHA) else { throw Failure.binding }
+        let root = RCCOperationalQuality.root.deletingLastPathComponent().appendingPathComponent("local-quality-profiles")
+        let profileBytes = try retainedFile(root.appendingPathComponent(w.ticket.attemptID + ".json").path, parent: root, expected: profileSHA)
+        guard let profile = try JSONSerialization.jsonObject(with: profileBytes) as? [String: Any],
+              retainedInteger(profile["schema"]) == 1, profile["task_id"] as? String == w.ticket.taskID,
+              profile["node_id"] as? String == w.ticket.nodeID, profile["attempt_id"] as? String == w.ticket.attemptID,
+              profile["configuration_sha256"] as? String == w.ticket.configurationSHA256,
+              profile["source_fingerprint"] as? String == w.ticket.sourceFingerprint,
+              profile["policy_sha256"] as? String == w.ticket.policySHA256,
+              profile["workspace"] as? String == w.ticket.hostContext?.workspace,
+              profile["profile"] as? String == RCCNativeLocalQualityProfile.profileID,
+              profile["local_only_attestation"] as? Bool == true,
+              let sources = profile["source_hashes"] as? [String: String], !sources.isEmpty, sources.count <= 256 else { throw Failure.binding }
+        let historicalPaths = Set([installedApp.appendingPathComponent("Contents/Resources/os1").path,
+            fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/os1").path])
+        guard sources[installedApp.appendingPathComponent("Contents/Resources/os1").path] == h.cli_sha256,
+            sources.values.contains(input.launchEntrySHA256) else { throw Failure.binding }
+        for (path, hash) in sources {
+            guard C.isHash(hash) else { throw Failure.binding }
+            if historicalPaths.contains(path) { guard hash == h.cli_sha256 else { throw Failure.binding }; continue }
+            let url = URL(fileURLWithPath: path)
+            _ = try retainedFile(path, parent: url.deletingLastPathComponent(), expected: hash, privateFile: false, maximum: 256_000_000)
+        }
+        // Rehash every archived byte after static signature tools; a mutable
+        // archive is not made authoritative by a prior successful signature.
+        for (name, hash) in hashes {
+            let file = app.appendingPathComponent(name)
+            _ = try retainedFile(file.path, parent: file.deletingLastPathComponent(), expected: hash, privateFile: false, maximum: 256_000_000)
+        }
+        // Re-read authority after static signature tools, never execute the archive.
+        guard try retainedFile(manifestURL.path, parent: manifestURL.deletingLastPathComponent(), expected: h.bundle_inventory_receipt_sha256, privateFile: false) == manifestBytes,
+              try retainedFile(installURL.path, parent: installURL.deletingLastPathComponent(), expected: h.install_receipt_sha256) == installBytes else { throw Failure.custody }
+    }
+
+    /// Re-read a pre-existing FULL native result. No ticket synthesis, SDK,
+    /// planner, adapter, retry, new generation, result rewrite or refund.
+    static func retainedChildControl(_ data: Data) throws -> Data {
+        guard let x = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            Set(x.keys) == ["task", "child_id", "expected_native_receipt", "expected_native_receipt_sha256", "expected_witness_sha256", "historical_runtime"],
+            let taskObject = x["task"], let id = x["child_id"] as? String,
+            let path = x["expected_native_receipt"] as? String,
+            let receiptSHA = x["expected_native_receipt_sha256"] as? String, C.isHash(receiptSHA),
+            let witnessSHA = x["expected_witness_sha256"] as? String, C.isHash(witnessSHA),
+            let historical = x["historical_runtime"] else { throw Failure.binding }
+        let task = try C.decodeRequest(JSONSerialization.data(withJSONObject: taskObject, options: [.sortedKeys]))
+        let archive = try historicalRuntime(historical)
+        guard let host = task.hostContext, task.mode == .auto, task.request == task.objective,
+            try currentPolicyMatches(task) else { throw Failure.binding }
+        try host.ownerPolicy?.verifyOriginal()
+        let tree = workspaceHash(host.workspace), context = C.digest(Data((host.context ?? "").utf8))
+        let source = (try? SessionHandoff.decode(host.context)).flatMap { $0.source?.sha256 }
+        guard let prepared = try PreparedTaskQuality.prepare(objective: task.request, contextSHA256: context, sourceSHA256: source,
+            startTreeSHA256: tree, scope: .readOnly, referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false),
+            let collection = try fact(request: task, prepared: prepared),
+            let index = (0..<collection.obligations.count).first(where: { id == "owner_\($0)" }) else { throw Failure.binding }
+        let records = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime/native-receipts")
+        let bytes = try retainedFile(path, parent: records, expected: receiptSHA)
+        let record = try C.decodeRecord(bytes)
+        guard record.nativeReceipt == path, record.nodeID == id, record.taskID == task.taskID,
+            record.status == .succeeded, record.dispatchStage == .dispatched, record.executionVerified,
+            record.nativeTurnTerminated == true, record.sideEffects == .none, record.taskVerified,
+            record.taskQuality == .taskVerified, record.handback == nil, record.repairSource == nil,
+            record.selectedConfig.surface == .codex, record.selectedConfig.transport == .codexAppServer,
+            record.selectedConfig.scope == .readOnly, record.selectedConfig == record.acknowledgedConfig,
+            currentAccountMatches(record.selectedConfig), let q = record.operationalQuality,
+            q.coverage == .full, q.localOnlyVerified, q.assessmentState == .taskContractVerified,
+            q.witnessSHA256 == witnessSHA else { throw Failure.binding }
+        let witnessBytes = try retainedFile(q.witnessPath, parent: RCCOperationalQuality.root, expected: witnessSHA)
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+        let w = try decoder.decode(RCCOperationalQuality.StoredWitness.self, from: witnessBytes), ticket = w.ticket
+        try C.validate(ticket, request: task); try C.validate(record, ticket: ticket)
+        let o = collection.obligations[index]
+        guard ticket.nodeID == id, ticket.attemptID == record.attemptID, ticket.candidateID == record.candidateID,
+            ticket.instruction == o.instruction, ticket.originalRequest == task.request, ticket.originalObjective == task.objective,
+            ticket.contextRefs == task.materialRefs, ticket.ownedPaths.isEmpty, ticket.nativeResumeSessionID == nil,
+            ticket.continuation == nil, ticket.qualityContinuation == nil, ticket.allowNativeSubagents != true,
+            w.schema == 1, w.localOnlyVerified, w.before != nil, w.after == w.before,
+            w.correctiveAttempts == 0, q.correctiveAttempts == w.correctiveAttempts,
+            q.contractSHA256 == w.contract.sha256, q.failedCheckIDs == w.assessment.failedCheckIDs,
+            q.workspaceAfterSHA256 == w.after?.sha256,
+            w.assessment == RCCOperationalQuality.operationalAssessment(TaskQualityEvidence.evaluate(contract: w.contract,
+                receipt: w.receipt, artifact: w.observedArtifact, currentReferencePolicySHA256: w.prepared.referencePolicySHA256,
+                now: w.receipt?.observedAt ?? w.contract.issuedAt)),
+            w.originalInstructionSHA256 == C.digest(Data(ticket.instruction.utf8)), w.originalRequestSHA256 == task.requestSHA256,
+            w.originalObjectiveSHA256 == C.digest(Data(task.objective.utf8)),
+            w.contract.sha256 == o.contractSHA256, w.contract.verifierCodeSHA256 == o.verifierSHA256,
+            w.contract.fullCoverage, w.contract.requiredCheckIDs == o.requiredCheckIDs,
+            w.contract.objectiveSHA256 == w.originalInstructionSHA256,
+            w.contract.contextSHA256 == RCCOperationalQuality.contextSHA(ticket),
+            w.contract.sourceSHA256 == RCCOperationalQuality.sourceSHA(ticket),
+            w.contract.startTreeSHA256 == w.artifact.workspaceBeforeHash,
+            w.prepared.envelope.contract == w.contract, C.digest(w.prepared.checkerBytes) == o.verifierSHA256,
+            w.prepared.referencePolicySHA256 == task.policySHA256,
+            w.artifact.output == record.output, w.artifact.model == record.selectedConfig.model,
+            w.artifact.effort == record.selectedConfig.effort.rawValue,
+            C.digest(try RCCOperationalQuality.encoded(w.artifact)) == q.artifactSHA256,
+            w.observedArtifact.binding.artifactSHA256 == q.artifactSHA256,
+            w.observedArtifact.binding.outputSHA256 == C.digest(Data((record.output ?? "").utf8)),
+            TaskQualityEvidence.evaluate(contract: w.contract, receipt: w.receipt, artifact: w.observedArtifact,
+                currentReferencePolicySHA256: task.policySHA256, now: Date()).taskCompletionVerified else { throw Failure.binding }
+        try verifyHistoricalRuntime(archive, witness: w, record: record)
+        let control = try verifyChildControl(JSONSerialization.data(withJSONObject: ["ticket": try JSONSerialization.jsonObject(with: C.encode(ticket)),
+            "record": try JSONSerialization.jsonObject(with: C.encode(record))], options: [.sortedKeys]))
+        try verifyHistoricalRuntime(archive, witness: w, record: record)
+        guard let reply = try JSONSerialization.jsonObject(with: control) as? [String: Any], let observation = reply["observation"],
+            let expectedControl = try? JSONDecoder().decode(NativeTurnControl.Observation.self, from: JSONSerialization.data(withJSONObject: observation)),
+            try observeControl(record: record, witness: w) == expectedControl,
+            try retainedFile(path, parent: records, expected: receiptSHA) == bytes,
+            try retainedFile(q.witnessPath, parent: RCCOperationalQuality.root, expected: witnessSHA) == witnessBytes,
+            workspaceHash(host.workspace) == tree, try currentPolicyMatches(task), currentAccountMatches(record.selectedConfig),
+            let fresh = try PreparedTaskQuality.prepare(objective: task.request, contextSHA256: context, sourceSHA256: source,
+                startTreeSHA256: tree, scope: .readOnly, referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false),
+            try RCCOperationalQuality.encoded(fresh.envelope) == RCCOperationalQuality.encoded(prepared.envelope), fresh.checkerBytes == prepared.checkerBytes,
+            try fact(request: task, prepared: fresh) == collection else { throw Failure.custody }
+        return try JSONSerialization.data(withJSONObject: ["schema": 1,
+            "record": try JSONSerialization.jsonObject(with: C.encode(record)), "control": try JSONSerialization.jsonObject(with: control)], options: [.sortedKeys])
     }
 
     /// Parent checker observes a Core collection, NOT a fabricated native turn.
@@ -162,9 +420,11 @@ enum RCCOwnerCollection {
     static func verify(_ data: Data, rootURL: URL = PreparedTaskQuality.root,
                        receiptRoot: URL? = nil, startTree: (String) -> String = workspaceHash) throws -> Data {
         guard let x = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            Set(x.keys) == ["task", "plan", "children"],
+            (Set(x.keys) == ["task", "plan", "children"] || Set(x.keys) == ["task", "plan", "children", "historical_runtime"]),
             let taskObject = x["task"], let planObject = x["plan"], let children = x["children"] as? [[String: Any]] else { throw Failure.binding }
         let task = try C.decodeRequest(JSONSerialization.data(withJSONObject: taskObject, options: [.sortedKeys]))
+        let historical: HistoricalRuntime?
+        if let raw = x["historical_runtime"] { historical = try historicalRuntime(raw) } else { historical = nil }
         guard let h = task.hostContext else { throw Failure.binding }
         let activePolicy = try OwnerPolicySnapshot.load(root: OwnerPolicySnapshot.defaultRoot)
         guard h.ownerPolicy.map({ activePolicy?.sourceSHA256 == $0.sourceSHA256 &&
@@ -183,7 +443,8 @@ enum RCCOwnerCollection {
             Set(children.compactMap { $0["id"] as? String }).count == children.count else { throw Failure.binding }
         let recordsRoot = (receiptRoot ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".os1/rcc-runtime/native-receipts")).resolvingSymlinksInPath().standardizedFileURL
-        var objects: [[String: Any]] = [], receiptHashes: [String] = [], controls: [[String: Any]] = []
+        var objects: [[String: Any]] = [], receiptHashes: [String] = [], controls: [[String: Any]] = [], retainedConfigs: [C.ExactConfig] = []
+        var retainedPairs: [(C.ExecutionRecord, RCCOperationalQuality.StoredWitness, String, NativeTurnControl.Observation)] = []
         for (i, o) in collection.obligations.enumerated() {
             let n = plan.nodes[i], id = "owner_\(i)"
             guard n.id == id, n.instruction == o.instruction, n.kind == .agent, n.scope == .readOnly,
@@ -224,9 +485,11 @@ enum RCCOwnerCollection {
                 TaskQualityEvidence.evaluate(contract: w.contract, receipt: w.receipt,
                     artifact: w.observedArtifact, currentReferencePolicySHA256: task.policySHA256, now: Date()).taskCompletionVerified
             else { throw Failure.binding }
+            if let historical { try verifyHistoricalRuntime(historical, witness: w, record: r) }
             let control = try observeControl(record: r, witness: w)
+            retainedPairs.append((r, w, C.digest(bytes), control))
             controls.append(try JSONSerialization.jsonObject(with: JSONEncoder().encode(control)) as! [String: Any])
-            objects.append(object); receiptHashes.append(C.digest(bytes))
+            objects.append(object); receiptHashes.append(C.digest(bytes)); retainedConfigs.append(r.selectedConfig)
         }
         let output = String(decoding: try JSONSerialization.data(withJSONObject: objects, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -259,8 +522,20 @@ enum RCCOwnerCollection {
         let required = prepared.envelope.contract.requiredCheckIDs
         let passed = checks.map { checks in Set(checks.map(\.checkID)).count == checks.count &&
             Set(checks.map(\.checkID)) == Set(required) && checks.allSatisfy { $0.status == .passed } } ?? false
+        // Recovery's archived runtime and current native/hook sources must
+        // remain unchanged after the external checker too. No second model or
+        // control dispatch occurs; the original raw receipts are only read.
+        if let historical {
+            for (record, witness, digest, expectedControl) in retainedPairs {
+                guard let path = record.nativeReceipt, let quality = record.operationalQuality else { throw Failure.binding }
+                _ = try retainedFile(path, parent: recordsRoot, expected: digest)
+                _ = try retainedFile(quality.witnessPath, parent: RCCOperationalQuality.root, expected: quality.witnessSHA256)
+                try verifyHistoricalRuntime(historical, witness: witness, record: record)
+                guard try observeControl(record: record, witness: witness) == expectedControl else { throw Failure.custody }
+            }
+        }
         // Recheck mutable authority/source after awaited external execution.
-        guard startTree(h.workspace) == tree,
+        guard startTree(h.workspace) == tree, try currentPolicyMatches(task), retainedConfigs.allSatisfy(currentAccountMatches),
             let fresh = try PreparedTaskQuality.prepare(objective: task.request, contextSHA256: context,
                 sourceSHA256: source, startTreeSHA256: tree, scope: .readOnly,
                 referencePolicySHA256: task.policySHA256, workspace: nil, allowRegressionAcquisition: false, rootURL: rootURL),
