@@ -1964,7 +1964,7 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
         if value == nil || value is NSNull { return true }
         if let a = value as? [Any] { return a.isEmpty }; if let a = value as? [String: Any] { return a.isEmpty }; return false
     }
-    func bindFile(_ path: String, expected: String? = nil) throws {
+    func bindFile(_ path: String, expected: String? = nil, expectedAny: Set<String>? = nil) throws {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard url.path == path, url.resolvingSymlinksInPath() == url else { throw RCCOperationalQuality.Failure.custody }
         var before = stat(); guard lstat(path, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
@@ -1977,7 +1977,8 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
             before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
             before.st_ino == named.st_ino, before.st_size == named.st_size else { throw RCCOperationalQuality.Failure.custody }
         let hash = TaskQualityEvidence.digest(data)
-        guard expected.map({ $0 == hash }) ?? true, sourceHashes[path].map({ $0 == hash }) ?? true else { throw RCCOperationalQuality.Failure.custody }
+        guard expected.map({ $0 == hash }) ?? true, expectedAny.map({ $0.contains(hash) }) ?? true,
+            sourceHashes[path].map({ $0 == hash }) ?? true else { throw RCCOperationalQuality.Failure.custody }
         sourceHashes[path] = hash
     }
     /// Exact audited commands are either early-bypassed or inactive under the
@@ -2015,6 +2016,15 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
         guard hooksDigest.map({ $0 == digest }) ?? true else { throw RCCOperationalQuality.Failure.custody }
         hooksDigest = digest
     }
+    // Closed, per-name reviewed manifest bytes. Both generations contain only
+    // the same fixed native turn_ended cleanup handlers. Unknown future bytes
+    // still fail; neither a vendor name nor a version string grants authority.
+    // Provenance: docs/NATIVE_CLEANUP_MANIFESTS.md.
+    static let cleanupManifestHashes: [String: Set<String>] = [
+        "browser": ["188f075c18e33ff9ac5ea55bc5ac463ff385cbdf283b8afd5a45015586c8859f", "dc57e56fe6d9377479e2cfc8e3898908682a543ffb323b04fd1622a355f4005a"],
+        "chrome": ["4c985d7ed75fdffab590c59fa1da639595381a1c9327a4b9cd9d09e003eb8656", "249fd81494e73350cfbc30b788c63c43e47076387e3ed56f6d3c21e792ae241e"],
+        "unified-computer-use": ["39d5b863cc3ba6705b65ba5177bca8929e789ee6203a5e50dffcd331367a4abd", "4de0b181599745fdf004bb38a7804fb60f0a631937c03ccd9bce03f3eb31851a"],
+    ]
     func pluginOverrides(_ plugins: [[String: Any]], mcp: [[String: Any]], config: [String: Any]) throws -> [String] {
         var overrides = Set<String>()
         if let roots = config["mcp_servers"] as? [String: Any] {
@@ -2027,9 +2037,6 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
                 overrides.insert("plugins.\(id).mcp_servers.\(name).enabled=false")
             } else { overrides.insert("mcp_servers.\(name).enabled=false") }
         }
-        // Exact 26.1013.40934 manifests: byte-identical to the signed vendor
-        // bundle; fixed turn_ended cleanup only. Future versions need review.
-        let cleanupHashes = ["browser": "188f075c18e33ff9ac5ea55bc5ac463ff385cbdf283b8afd5a45015586c8859f", "chrome": "4c985d7ed75fdffab590c59fa1da639595381a1c9327a4b9cd9d09e003eb8656", "unified-computer-use": "39d5b863cc3ba6705b65ba5177bca8929e789ee6203a5e50dffcd331367a4abd"]
         guard plugins.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
         for plugin in plugins {
             guard let summary = plugin["summary"] as? [String: Any], let id = summary["id"] as? String, Self.key(id) else { throw RCCOperationalQuality.Failure.unavailable }
@@ -2042,14 +2049,14 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
                 let servers = plugin["mcpServers"] as? [String], servers.count <= 128 else { throw RCCOperationalQuality.Failure.unavailable }
             for server in servers { guard Self.key(server) else { throw RCCOperationalQuality.Failure.unavailable }; overrides.insert("plugins.\(id).mcp_servers.\(server).enabled=false") }
             if !hooks.isEmpty {
-                guard hooks.count == 3, let name = summary["name"] as? String, let expected = cleanupHashes[name],
+                guard hooks.count == 3, let name = summary["name"] as? String, let expected = Self.cleanupManifestHashes[name],
                     let source = summary["source"] as? [String: Any], source["type"] as? String == "local",
                     let root = source["path"] as? String,
                     Set(hooks.compactMap { $0["eventName"] as? String }) == Set(["stop", "interrupt", "subagentStop"]) else { throw RCCOperationalQuality.Failure.unavailable }
                 let base = URL(fileURLWithPath: root).standardizedFileURL
                 guard base.path == root, base.resolvingSymlinksInPath().path == base.path else { throw RCCOperationalQuality.Failure.custody }
                 let manifest = base.appendingPathComponent(".codex-plugin/plugin.json")
-                try bindFile(manifest.path, expected: expected)
+                try bindFile(manifest.path, expectedAny: expected)
             }
         }
         return overrides.sorted()
@@ -2269,6 +2276,59 @@ func rccNativeLocalQualityProfileSelfTest() throws {
     try reject("unknown remote trusted namespace cannot become inert") { try profile.bindTrustState(granted) }
     let local = ["summary": ["id": "browser@openai-bundled", "source": ["type": "local", "path": workspace.path]], "unavailable": true] as [String: Any]
     try reject("local/builtin failed definition cannot use remote exception") { _ = try profile.pluginOverrides([local], mcp: [], config: [:]) }
+    func cleanupPlugin(_ name: String, _ bytes: Data,
+                       events: [String] = ["stop", "interrupt", "subagentStop"]) throws -> [String: Any] {
+        let root = workspace.appendingPathComponent("cleanup-fixture-" + UUID().uuidString)
+        try fm.createDirectory(at: root.appendingPathComponent(".codex-plugin"), withIntermediateDirectories: true,
+                              attributes: [.posixPermissions: 0o700])
+        try bytes.write(to: root.appendingPathComponent(".codex-plugin/plugin.json"))
+        return ["summary": ["id": name + "@openai-bundled", "name": name,
+                            "source": ["type": "local", "path": root.path]],
+                "hooks": events.map { ["eventName": $0] },
+                "mcpServers": name == "unified-computer-use" ? ["cua_repl"] : []]
+    }
+    try check(Set(RCCNativeLocalQualityProfile.cleanupManifestHashes.keys) == Set(["browser", "chrome", "unified-computer-use"]) &&
+              RCCNativeLocalQualityProfile.cleanupManifestHashes.values.allSatisfy({ $0.count == 2 }),
+              "only the two exact reviewed generations of three cleanup manifests are eligible")
+    for (name, current) in NativeCleanupManifestFixtures.reviewed.sorted(by: { $0.key < $1.key }) {
+        let currentText = String(decoding: current, as: UTF8.self)
+        for version in ["26.1013.40934", "26.1016.61520"] {
+            let bytes = Data(currentText.replacingOccurrences(of: "26.1016.61520", with: version).utf8)
+            try check(RCCNativeLocalQualityProfile.cleanupManifestHashes[name]?.contains(TaskQualityEvidence.digest(bytes)) == true,
+                      "exact reconstructed/actual \(name) \(version) fixture SHA is pinned")
+            let manifest = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+            let hooks = (manifest["hooks"] as! [String: Any])["hooks"] as! [String: [[String: Any]]]
+            try check(Set(hooks.keys) == Set(["Stop", "Interrupt", "SubagentStop"]), "fixed cleanup events only")
+            for (event, rows) in hooks {
+                guard rows.count == 1, let items = rows[0]["hooks"] as? [[String: Any]], items.count == 1 else {
+                    throw OS1Error.message("Native cleanup fixture has unexpected handler count")
+                }
+                let handler = items[0], input = handler["input"] as? [String: String]
+                try check(Set(handler.keys) == Set(["type", "server", "tool", "input"]) &&
+                          handler["type"] as? String == "mcp_tool" && handler["tool"] as? String == "turn_ended" &&
+                          handler["server"] as? String == (name == "unified-computer-use" ? "cua_repl" : "node_repl") &&
+                          input == ["hook_event_name": "${hook_event_name}", "session_id": event == "SubagentStop" ? "${agent_id}" : "${session_id}", "turn_id": "${turn_id}"],
+                          "only the fixed native cleanup call is present, not a command hook")
+            }
+            let overrides = try profile.pluginOverrides([cleanupPlugin(name, bytes)], mcp: [], config: [:])
+            try check(name == "unified-computer-use" ? overrides == ["plugins.unified-computer-use@openai-bundled.mcp_servers.cua_repl.enabled=false"] : overrides.isEmpty,
+                      "reviewed manifest does not grant tools or disable hooks")
+        }
+        for malformed in ["", "not-a-hash", String(repeating: "a", count: 63), String(repeating: "A", count: 64)] {
+            try check(RCCNativeLocalQualityProfile.cleanupManifestHashes[name]?.contains(malformed) == false,
+                      "malformed hash is never a version/name fallback")
+        }
+        let future = Data(currentText.replacingOccurrences(of: "26.1016.61520", with: "99.0.0").utf8)
+        try reject("unreviewed future bytes remain rejected") { _ = try profile.pluginOverrides([cleanupPlugin(name, future)], mcp: [], config: [:]) }
+        try reject("same semantic JSON with changed bytes is not approved") { _ = try profile.pluginOverrides([cleanupPlugin(name, current + Data([10]))], mcp: [], config: [:]) }
+        let other = name == "browser" ? "chrome" : "browser"
+        try reject("another reviewed name cannot borrow this manifest hash") { _ = try profile.pluginOverrides([cleanupPlugin(other, current)], mcp: [], config: [:]) }
+        try reject("approved bytes do not wash unsupported hook events") { _ = try profile.pluginOverrides([cleanupPlugin(name, current, events: ["stop", "interrupt", "unknown"])], mcp: [], config: [:]) }
+    }
+    try reject("unknown cleanup name cannot inherit a known vendor hash") {
+        _ = try profile.pluginOverrides([cleanupPlugin("unknown-cleanup", NativeCleanupManifestFixtures.reviewed["browser"]!)], mcp: [], config: [:])
+    }
+    try check(!profile.localOnlyVerified, "manifest eligibility alone does not attest a native execution profile")
     ticket.selectedConfig.scope = .readOnly; ticket.selectedConfig.permissionProfile = .readOnly
     let read = try RCCNativeLocalQualityProfile(ticket: ticket, workspace: workspace.path)
     defer { try? fm.removeItem(atPath: read.scratch) }
