@@ -19139,7 +19139,7 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     let data = try RCCNativeCatalogBuilder.catalogData(output, taskID: request.taskID, requestSHA256: request.requestSHA256)
     let admitted = try RCCOperationalQuality.constrainCatalogData(data, request: request,
         sourceBound: OS1SourceWatch.containedRoot(workspace: host.workspace) != nil)
-    _ = try RCCRuntimeContract.decodeCatalog(admitted)
+    _ = try RCCRuntimeContract.decodeCatalog(admitted, request: request)
     return admitted
 }
 

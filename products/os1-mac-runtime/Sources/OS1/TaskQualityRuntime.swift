@@ -1491,7 +1491,7 @@ enum RCCOperationalQuality {
     static func constrainCatalogData(_ data: Data, request: C.Request, sourceBound: Bool,
         rootURL: URL = PreparedTaskQuality.root) throws -> Data {
         guard let boundary = try localEffectsBoundary(request: request, rootURL: rootURL) else { return data }
-        var catalog = try C.decodeCatalog(data)
+        var catalog = try C.decodeCatalog(data, request: request)
         var removed: [String: Int] = [:]
         catalog.candidates = catalog.candidates.filter { row in
             let scopeAllowed = (boundary.scope == .workspaceWrite && request.hostContext?.requireReadOnly != true) || row.scope == .readOnly
@@ -2463,6 +2463,37 @@ func rccLocalEffectsAdmissionSelfTest() throws {
     try save(envelope(scope: .readOnly))
     let read = try C.decodeCatalog(Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base))
     try check(read.candidates == [cheap, frontier], "parent read ceiling never offers writer")
+    // R10 needs the same validated Request at BOTH admission decodes. Neither
+    // the local-effect filter nor the final host decode may drop its identity.
+    var r10Request = request; r10Request.routingIntentPolicyVersion = C.RoutingIntentV2.version
+    var r10Catalog = catalog; r10Catalog.routingIntentV2 = C.RoutingIntentV2()
+    let r10Bytes = try C.encode(r10Catalog)
+    func r10Admit(_ data: Data, _ input: C.Request) throws -> C.Catalog {
+        let boundRequest = try C.decodeRequest(C.encode(input))
+        let admitted = try Q.constrainCatalogData(data, request: boundRequest, sourceBound: false, rootURL: base)
+        return try C.decodeCatalog(admitted, request: boundRequest)
+    }
+    let r10Read = try r10Admit(r10Bytes, r10Request)
+    try check(r10Read.candidates == [cheap, frontier] && r10Read.routingIntentV2 == r10Catalog.routingIntentV2,
+        "R10 request survives filter and final decode without widening read scope")
+    try save(envelope(scope: .workspaceWrite))
+    try check(try r10Admit(r10Bytes, r10Request).candidates == [cheap, frontier, writer],
+        "R10 retains eligible Codex rows and existing writer ceiling")
+    try reject("R10 catalog still rejects missing request") { _ = try C.decodeCatalog(r10Bytes) }
+    try reject("R10 catalog cannot inherit legacy request") { _ = try r10Admit(r10Bytes, request) }
+    try reject("R10 request cannot inherit legacy catalog") { _ = try r10Admit(bytes, r10Request) }
+    var wrongR10 = r10Request; wrongR10.taskID = "foreign-task"
+    try reject("R10 rejects wrong task identity") { _ = try r10Admit(r10Bytes, wrongR10) }
+    wrongR10 = r10Request; wrongR10.policySHA256 = C.digest(Data("foreign policy".utf8))
+    try reject("R10 keeps original owner policy boundary") { _ = try r10Admit(r10Bytes, wrongR10) }
+    var badR10Catalog = r10Catalog; badR10Catalog.requestSHA256 = C.digest(Data("foreign request".utf8))
+    try reject("R10 rejects wrong catalog request hash") { _ = try r10Admit(C.encode(badR10Catalog), r10Request) }
+    badR10Catalog = r10Catalog; badR10Catalog.candidates.append(cheap)
+    try reject("R10 rejects duplicate candidate identity") { _ = try r10Admit(C.encode(badR10Catalog), r10Request) }
+    badR10Catalog = r10Catalog; badR10Catalog.candidates[0].permissionProfile = .workspaceWrite
+    try reject("R10 cannot turn request propagation into a scope bypass") { _ = try r10Admit(C.encode(badR10Catalog), r10Request) }
+    wrongR10 = r10Request; wrongR10.routingIntentPolicyVersion = "unreviewed-v99"
+    try reject("R10 rejects unknown policy version") { _ = try r10Admit(r10Bytes, wrongR10) }
     try save(envelope(scope: .workspaceWrite, expires: Date().addingTimeInterval(-1)))
     try reject("expired declaration is not silently omitted") { _ = try Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base) }
     try save(envelope(scope: .workspaceWrite, context: hash))
