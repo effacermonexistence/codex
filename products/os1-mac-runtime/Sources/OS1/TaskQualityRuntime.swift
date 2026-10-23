@@ -2112,10 +2112,18 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
     // tuple, not permission to trust arbitrary future signed SDKs.
     static let qualifiedNativeLauncherSHA256 = "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8"
     static let qualifiedNativeBackendSHA256 = "1afb28c01d7d49e892bd75f11076b10f1451e34e0ee308a95e5ab7f69f9c84fe"
+    // Exact subsequent tuple independently exercised by the same zero-model
+    // command/exec read/write canary, including actual network/outside-read
+    // negative controls. See docs/NATIVE_LOCAL_QUALIFICATION.md. This does not
+    // qualify other binaries, LLM tools, current plugin state or task quality.
+    static let qualifiedCurrentNativeBackendSHA256 = "9394a943e3fce54f998ecc150eb0b7d6e22ce0da48e5063c59b4883e80aeaecd"
     static func qualifiedNativeVersion(launcherSHA256: String, backendSHA256: String) -> String? {
-        guard launcherSHA256 == qualifiedNativeLauncherSHA256,
-            backendSHA256 == qualifiedNativeBackendSHA256 else { return nil }
-        return "codex-cli 0.163.0-alpha.10.2"
+        guard launcherSHA256 == qualifiedNativeLauncherSHA256 else { return nil }
+        switch backendSHA256 {
+        case qualifiedNativeBackendSHA256: return "codex-cli 0.163.0-alpha.10.2"
+        case qualifiedCurrentNativeBackendSHA256: return "codex-cli 0.163.0-alpha.11.1"
+        default: return nil
+        }
     }
     func bindNative(executable: String) throws {
         let wrapper = URL(fileURLWithPath: executable).resolvingSymlinksInPath().standardizedFileURL
@@ -2124,7 +2132,11 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
         // binaries must be revalidated, not silently inherit this canary.
         try bindFile(wrapper.path, expected: Self.qualifiedNativeLauncherSHA256)
         let binary = wrapper.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("CodexCLI.app/Contents/MacOS/codex")
-        try bindFile(binary.path, expected: Self.qualifiedNativeBackendSHA256)
+        try bindFile(binary.path)
+        guard let launcherHash = sourceHashes[wrapper.path], let backendHash = sourceHashes[binary.path],
+            Self.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: backendHash) != nil else {
+            throw RCCOperationalQuality.Failure.unavailable
+        }
         nativeExecutable = binary.path
     }
     func verifyRunningNative(pid: Int32) throws {
@@ -2188,6 +2200,11 @@ func rccNativeLocalQualityProfileSelfTest() throws {
     let launcherHash = RCCNativeLocalQualityProfile.qualifiedNativeLauncherSHA256
     let backendHash = RCCNativeLocalQualityProfile.qualifiedNativeBackendSHA256
     try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: backendHash) == "codex-cli 0.163.0-alpha.10.2", "qualified exact tuple has truthful version")
+    let currentBackendHash = RCCNativeLocalQualityProfile.qualifiedCurrentNativeBackendSHA256
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: currentBackendHash) == "codex-cli 0.163.0-alpha.11.1", "subsequent measured tuple has its own truthful version")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: currentBackendHash) != "codex-cli 0.163.0-alpha.10.2", "new tuple cannot claim old measured version")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: backendHash) != "codex-cli 0.163.0-alpha.11.1", "old tuple cannot claim new measured version")
+    try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: currentBackendHash, backendSHA256: launcherHash) == nil, "subsequent tuple cannot be reversed")
     try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: backendHash, backendSHA256: launcherHash) == nil, "swapped tuple is not equivalent")
     try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: h, backendSHA256: backendHash) == nil, "unknown launcher cannot inherit qualification")
     try check(RCCNativeLocalQualityProfile.qualifiedNativeVersion(launcherSHA256: launcherHash, backendSHA256: h) == nil, "unknown backend cannot inherit qualification")
