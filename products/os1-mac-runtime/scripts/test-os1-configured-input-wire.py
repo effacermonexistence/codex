@@ -24,6 +24,9 @@ adapter=main[main.index('private func rccNativeAdapter('):]
 assert adapter.index('let delegated = RCCDelegatedEnvelope.prompt(') < adapter.index('let nativePrompt = try providerPrompt(') < adapter.index('onConfiguredInput: { prepared in')
 assert 'record.configuredInputObservation = try? prepared.observation(ticket: t, delegated: delegated,' in adapter
 assert 'catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAtMS' in adapter
+assert 'if let configuredInventory {' in adapter
+assert 'executionConfiguration: try? RCCRuntimeContract.encode(codexConfigOverrides)' in codex
+assert 'executionConfiguration: try? RCCRuntimeContract.encode(arguments)' in claude
 build=ROOT/'.build/debug'
 objects=list((build/'OS1Context.build').glob('*.o'))+list((build/'OS1System.build').glob('*.o'))
 assert objects, 'Build OS1ContextTests first; do not substitute preinstalled module objects'
@@ -52,12 +55,15 @@ import OS1Context
   check(result.nativeBinarySHA256==RCCRuntimeContract.digest(bytes),"selected fake native bytes read, not path/name guess")
   check(result.harnessSHA256==RCCRuntimeContract.digest(try Data(contentsOf:Bundle.main.executableURL!)),"actual current helper harness, not stable installed os1")
   check(result.baseInstructions==nil && !result.backendInclusionVerified && !result.qualityCertified && !result.executionAuthorized,"no hidden-state upgrades")
+  let unavailable=RCCNativeConfiguredInput(channel:"codex_developer",prompt:"fixture",instructions:"fixture",baseInstructions:nil,
+    nativeExecutable:native.path,sessionState:"new",executionConfiguration:nil)
+  do { _=try unavailable.observation(ticket:ticket,delegated:"DELEGATED",catalog:Data("catalog".utf8),catalogObservedAtMS:0); fatalError("unknown config became observed") } catch {}
   for path in [root.path, root.appendingPathComponent("missing").path] {
     do { _=try RCCNativeConfiguredInput.executableSHA256(path); fatalError("non-file accepted") } catch {}
   }
   let empty=root.appendingPathComponent("empty"); try Data().write(to:empty)
   do { _=try RCCNativeConfiguredInput.executableSHA256(empty.path); fatalError("empty file accepted") } catch {}
-  print("ACTUAL_NATIVE_CONFIGURED_INPUT_HELPER_PASS: 8 checks; native/model calls 0; no provider channel-consumption claim")
+  print("ACTUAL_NATIVE_CONFIGURED_INPUT_HELPER_PASS: 9 checks; native/model calls 0; no provider channel-consumption claim")
  }
 }
 '''

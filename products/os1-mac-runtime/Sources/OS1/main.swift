@@ -8551,7 +8551,7 @@ private func execute(
                 onConfiguredInput?(.init(channel: "codex_developer", prompt: prompt, instructions: codexInstructions,
                     baseInstructions: projectionInBase && expectedSessionID == nil ? OwnerPolicyContext.snapshot?.projection : nil,
                     nativeExecutable: codex, sessionState: actualSessionID == previousID ? "resumed" : "new",
-                    executionConfiguration: try RCCRuntimeContract.encode(codexConfigOverrides)))
+                    executionConfiguration: try? RCCRuntimeContract.encode(codexConfigOverrides)))
                 turn = try appServer.runTurn(threadID: actualSessionID, prompt: prompt,
                     workspace: codexWorkspace, model: model, effort: effort,
                     permissionProfile: ticket.permissionProfile, deadline: deadline,
@@ -8869,7 +8869,7 @@ private func execute(
         onConfiguredInput?(.init(channel: "claude_append_system", prompt: prompt,
             instructions: configuredSystemInstructions, baseInstructions: nil,
             nativeExecutable: claude, sessionState: startsNewSession ? "new" : "resumed",
-            executionConfiguration: try RCCRuntimeContract.encode(arguments)))
+            executionConfiguration: try? RCCRuntimeContract.encode(arguments)))
         do { raw = try commandOutput(
             launch.0,
             launch.1,
@@ -19446,7 +19446,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // Fresh selected-provider support metadata used by this attempt, not the old catalog or a model-name estimate.
         let configuredInventoryAtMS = Int64(Date().timeIntervalSince1970 * 1000)
         let configuredInventory = provider == "codex"
-            ? try RCCRuntimeContract.encode(codex.models) : try RCCRuntimeContract.encode(claude)
+            ? try? RCCRuntimeContract.encode(codex.models) : try? RCCRuntimeContract.encode(claude)
         let supported = provider == "codex" ? codex.models.contains { $0.slug == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
             : claude.contains { $0.model == t.selectedConfig.model && $0.supportedEfforts.contains(t.selectedConfig.effort.rawValue) }
         guard supported else {
@@ -19624,8 +19624,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true },
                 onConfiguredInput: { prepared in
                     // Optional observation failures cannot reroute, authorize, retry, or alter the original outcome.
-                    record.configuredInputObservation = try? prepared.observation(ticket: t, delegated: delegated,
-                        catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAtMS)
+                    if let configuredInventory {
+                        record.configuredInputObservation = try? prepared.observation(ticket: t, delegated: delegated,
+                            catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAtMS)
+                    }
                 }, quotaContext: input.providerQuota,
                 surfaceOverride: surface, workspaceOverride: workspace,
                 // Only a side session that never becomes the conversation's

@@ -13,10 +13,11 @@ struct RCCNativeConfiguredInput {
     let baseInstructions: String?
     let nativeExecutable: String
     let sessionState: String
-    let executionConfiguration: Data
+    let executionConfiguration: Data?
 
     func observation(ticket: RCCRuntimeContract.ExecutionTicket, delegated: String,
                      catalog: Data, catalogObservedAtMS: Int64) throws -> RCCConfiguredInputObservation {
+        guard let executionConfiguration else { throw RCCConfiguredInputObservation.Failure.binding }
         // The actual current harness and selected executable, not paths claimed
         // by a model, old package, environment alias or training record.
         let harness = try Self.executableSHA256(Self.runningExecutablePath())
