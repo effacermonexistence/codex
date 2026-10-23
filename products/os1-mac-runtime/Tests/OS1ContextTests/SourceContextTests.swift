@@ -19,6 +19,7 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 @main
 final class SourceContextTests {
     static func main() throws {
+        try nativeTurnControlFixture()
         codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
         if try memoryWriteTransactionChildIfRequested() { return }

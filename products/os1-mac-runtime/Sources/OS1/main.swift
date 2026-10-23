@@ -18370,6 +18370,16 @@ struct OS1Main {
             case "rcc-native-local-preflight":
                 guard arguments.count == 3, arguments[1] == "--request-file" else { throw RCCOperationalQuality.Failure.binding }
                 print(String(decoding: try rccNativeLocalPreflight(rccPrivateInput(arguments[2])), as: UTF8.self))
+            case "rcc-owner-control":
+                guard arguments.count == 3, arguments[1] == "--request-file" else {
+                    throw OS1Error.message("RCC owner control verifier accepts one private bound input")
+                }
+                print(String(decoding: try RCCOwnerCollection.verifyChildControl(rccPrivateInput(arguments[2])), as: UTF8.self))
+            case "rcc-task-verify":
+                guard arguments.count == 3, arguments[1] == "--request-file" else {
+                    throw OS1Error.message("RCC collection verifier accepts one private bound input")
+                }
+                print(String(decoding: try RCCOwnerCollection.verify(rccPrivateInput(arguments[2])), as: UTF8.self))
             case "rcc-quality-decision":
                 guard arguments.count == 3, arguments[1] == "--request-file" else {
                     throw OS1Error.message("RCC quality decision accepts one private bound input")
@@ -18437,6 +18447,9 @@ struct OS1Main {
             case "self-test-source-input":
                 LiveRunEnvironment.detachCurrentProcess()
                 try rccBoundSourceDeliverySelfTest()
+            case "self-test-owner-collection":
+                LiveRunEnvironment.detachCurrentProcess()
+                try rccOwnerCollectionSelfTest()
             case "self-test-task-quality":
                 LiveRunEnvironment.detachCurrentProcess()
                 try taskQualityRuntimeSelfTest()
@@ -18456,6 +18469,7 @@ struct OS1Main {
                 try rccNativeDirectorySelfTest()
                 try rccNativeExactAnswerInstructionsSelfTest()
                 try rccCatalogFactsSelfTest()
+                try rccOwnerCollectionSelfTest()
                 try await fullAccessHandBackSelfTest()
                 try await parallelAgentCoordinatorSelfTest()
                 try await concurrentRouteFanoutSelfTest()

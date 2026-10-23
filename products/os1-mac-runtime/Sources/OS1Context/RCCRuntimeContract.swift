@@ -413,6 +413,45 @@ public enum RCCRuntimeContract {
             case measurementSHA256 = "measurement_sha256"
         }
     }
+    /// Host-read, exact owner spans and independently FULL checked child contracts.
+    /// This is a bounded non-statistical R0 capability, not trained/P7 evidence.
+    public struct OwnerCollectionFact: Codable, Equatable, Sendable {
+        public var schema: Int = 1
+        public var kind: String = "independent_readonly_json_v1"
+        public var manifestSHA256: String
+        public var obligations: [Obligation]
+        public struct Obligation: Codable, Equatable, Sendable {
+            public var id: String
+            public var instruction: String
+            public var requestUTF8Start: Int
+            public var requestUTF8End: Int
+            public var sourcePaths: [String]
+            public var sourceSHA256s: [String]
+            public var contractSHA256: String
+            public var verifierSHA256: String
+            public var requiredCheckIDs: [String]
+            public var validUntilMS: Int64
+            public init(id: String, instruction: String, requestUTF8Start: Int, requestUTF8End: Int,
+                        sourcePaths: [String], sourceSHA256s: [String], contractSHA256: String,
+                        verifierSHA256: String, requiredCheckIDs: [String], validUntilMS: Int64) {
+                self.id = id; self.instruction = instruction; self.requestUTF8Start = requestUTF8Start
+                self.requestUTF8End = requestUTF8End; self.sourcePaths = sourcePaths; self.sourceSHA256s = sourceSHA256s
+                self.contractSHA256 = contractSHA256; self.verifierSHA256 = verifierSHA256
+                self.requiredCheckIDs = requiredCheckIDs; self.validUntilMS = validUntilMS
+            }
+            enum CodingKeys: String, CodingKey {
+                case id, instruction, requestUTF8Start = "request_utf8_start", requestUTF8End = "request_utf8_end"
+                case sourcePaths = "source_paths", sourceSHA256s = "source_sha256s", contractSHA256 = "contract_sha256"
+                case verifierSHA256 = "verifier_sha256", requiredCheckIDs = "required_check_ids", validUntilMS = "valid_until_ms"
+            }
+        }
+        public init(manifestSHA256: String, obligations: [Obligation]) {
+            self.manifestSHA256 = manifestSHA256; self.obligations = obligations
+        }
+        enum CodingKeys: String, CodingKey {
+            case schema, kind, manifestSHA256 = "manifest_sha256", obligations
+        }
+    }
     /// Build 407 (R0(a)): an owner task contract the host found for exactly
     /// this request text and re-checked at catalog time with the predicate
     /// `PreparedTaskQuality.prepare` enforces (objective, context, source,
@@ -433,9 +472,11 @@ public enum RCCRuntimeContract {
         public var executionIsolationSHA256: String?
         public var stagedWriterEnvelopeSHA256: String?
         public var stagedWriterBaseSHA256: String?
+        public var ownerCollection: OwnerCollectionFact?
         public init(coverage: OperationalQuality.Coverage, scope: Scope, objectiveSHA256: String, contractSHA256: String,
                     contextSHA256: String, sourceSHA256: String?, startTreeSHA256: String, referencePolicySHA256: String,
-                    validUntilMS: Int64, bindingsChecked: Bool = true, executionIsolation: String? = nil, executionIsolationSHA256: String? = nil, stagedWriterEnvelopeSHA256: String? = nil, stagedWriterBaseSHA256: String? = nil) {
+                    validUntilMS: Int64, bindingsChecked: Bool = true, executionIsolation: String? = nil, executionIsolationSHA256: String? = nil, stagedWriterEnvelopeSHA256: String? = nil, stagedWriterBaseSHA256: String? = nil, ownerCollection: OwnerCollectionFact? = nil) {
+            self.ownerCollection = ownerCollection
             self.coverage = coverage; self.scope = scope; self.objectiveSHA256 = objectiveSHA256
             self.contractSHA256 = contractSHA256; self.contextSHA256 = contextSHA256; self.sourceSHA256 = sourceSHA256
             self.startTreeSHA256 = startTreeSHA256; self.referencePolicySHA256 = referencePolicySHA256
@@ -448,6 +489,7 @@ public enum RCCRuntimeContract {
             case referencePolicySHA256 = "reference_policy_sha256", validUntilMS = "valid_until_ms"
             case bindingsChecked = "bindings_checked", executionIsolation = "execution_isolation", executionIsolationSHA256 = "execution_isolation_sha256"
             case stagedWriterEnvelopeSHA256 = "staged_writer_envelope_sha256", stagedWriterBaseSHA256 = "staged_writer_base_sha256"
+            case ownerCollection = "owner_collection"
         }
     }
     public struct Catalog: Codable, Equatable, Sendable {
@@ -1426,6 +1468,31 @@ public enum RCCRuntimeContract {
                     contract.scope == .workspaceWrite && contract.sourceSHA256 == nil &&
                     contract.executionIsolation == "codex_fresh_local_effects_v1" &&
                     contract.stagedWriterEnvelopeSHA256 == contract.executionIsolationSHA256) else { throw Rejection.invalidObservation }
+            if let collection = contract.ownerCollection {
+                guard contract.coverage == .full, contract.scope == .readOnly, collection.schema == 1,
+                    collection.kind == "independent_readonly_json_v1", isHash(collection.manifestSHA256),
+                    (2...8).contains(collection.obligations.count),
+                    unique(collection.obligations.map(\.id)), unique(collection.obligations.map(\.instruction)),
+                    collection.obligations.allSatisfy({ o in
+                        id(o.id) && text(o.instruction, max: 12_000) && o.requestUTF8Start >= 0 &&
+                        o.requestUTF8End > o.requestUTF8Start && o.sourcePaths.count == o.sourceSHA256s.count &&
+                        !o.sourcePaths.isEmpty && o.sourcePaths.count <= 128 && unique(o.sourcePaths) &&
+                        o.sourcePaths.allSatisfy({ text($0, max: 4_096) && !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") && !$0.split(separator: "/").contains(".") }) && o.sourceSHA256s.allSatisfy(isHash) &&
+                        isHash(o.contractSHA256) && isHash(o.verifierSHA256) && !o.requiredCheckIDs.isEmpty &&
+                        o.requiredCheckIDs.count <= 64 && unique(o.requiredCheckIDs) &&
+                        o.requiredCheckIDs.allSatisfy({ text($0, max: 128) }) && o.validUntilMS > 0
+                    }) else { throw Rejection.invalidObservation }
+                if let request {
+                    let bytes = Data(request.request.utf8)
+                    var end = 0
+                    for o in collection.obligations {
+                        guard o.requestUTF8Start >= end, o.requestUTF8End <= bytes.count,
+                              Data(bytes[o.requestUTF8Start..<o.requestUTF8End]) == Data(o.instruction.utf8)
+                        else { throw Rejection.invalidObservation }
+                        end = o.requestUTF8End
+                    }
+                }
+            }
             if let request {
                 guard contract.referencePolicySHA256 == request.policySHA256,
                       contract.contextSHA256 == digest(Data((request.hostContext?.context ?? "").utf8)),
@@ -1878,7 +1945,9 @@ public enum RCCRuntimeContract {
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentV2Shape = Shape.object(["version", "allowed_surfaces", "exact_model", "model_family", "effort", "require_native_ceiling", "quality_target", "state"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
-    private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256"])
+    private static let collectionObligationShape = Shape.object(["id", "instruction", "request_utf8_start", "request_utf8_end", "source_paths", "source_sha256s", "contract_sha256", "verifier_sha256", "required_check_ids", "valid_until_ms"])
+    private static let collectionShape = Shape.object(["schema", "kind", "manifest_sha256", "obligations"], ["obligations": .array(collectionObligationShape)])
+    private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256", "owner_collection"], ["owner_collection": collectionShape])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])

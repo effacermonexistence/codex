@@ -813,6 +813,8 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
       {class: 'certified', source: 'contract', certificate_id: null} : reference('uncertified');
   }
   if (node.scope !== 'read_only') return reference('uncertified');
+  const collection = ownerCollectionObligation(node, task, catalog, now);
+  if (collection) return {class: 'certified', source: 'contract', certificate_id: null};
   const own = node.instruction === task.request;
   const contract = catalog?.task_contract;
   if (own && plain(contract) && contract.coverage === 'full' && contract.scope === 'read_only' &&
@@ -1206,6 +1208,8 @@ export function hostPlan(task, catalog) {
   const node = (id, instruction) => ({id, instruction, dependencies: [], kind: 'agent', scope,
     owned_paths: scope === 'workspace_write' ? ['**'] : [], context_refs: [...task.material_refs]});
   const base = {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256};
+  const collection = ownerCollectionFor(task, catalog);
+  if (ownerCollectionPlanEligible(task, collection)) return {...base, nodes: collection.obligations.map((o, i) => node(`owner_${i}`, o.instruction)), final_node_id: null};
   if (task.mode !== 'explicit_routing_test') return {...base, nodes: [node('node_0', task.request)], final_node_id: 'node_0'};
   assert(modelTiers(catalog) !== null, 'explicit_route_catalog_untiered');
   const effective = effectiveExplicitRoutes(task);
@@ -1641,7 +1645,7 @@ function validTaskContract(contract, catalog, task) {
   const required = ['coverage', 'scope', 'objective_sha256', 'contract_sha256', 'context_sha256',
     'start_tree_sha256', 'reference_policy_sha256', 'valid_until_ms', 'bindings_checked'];
   return plain(contract) && required.every(key => Object.hasOwn(contract, key)) &&
-    Object.keys(contract).every(key => required.includes(key) || ['source_sha256', 'execution_isolation', 'execution_isolation_sha256', 'staged_writer_envelope_sha256', 'staged_writer_base_sha256'].includes(key)) &&
+    Object.keys(contract).every(key => required.includes(key) || ['source_sha256', 'execution_isolation', 'execution_isolation_sha256', 'staged_writer_envelope_sha256', 'staged_writer_base_sha256', 'owner_collection'].includes(key)) &&
     ((contract.execution_isolation == null && contract.execution_isolation_sha256 == null) ||
       (contract.execution_isolation === 'codex_fresh_local_effects_v1' && HASH.test(contract.execution_isolation_sha256 ?? '') && contract.source_sha256 == null)) &&
     ((contract.staged_writer_envelope_sha256 == null && contract.staged_writer_base_sha256 == null) || stagedWriterContract(contract)) &&
@@ -1652,7 +1656,69 @@ function validTaskContract(contract, catalog, task) {
     (contract.source_sha256 == null || (typeof contract.source_sha256 === 'string' && HASH.test(contract.source_sha256))) &&
     int(contract.valid_until_ms, 1, Number.MAX_SAFE_INTEGER) &&
     contract.reference_policy_sha256 === task.policy_sha256 &&
-    contract.context_sha256 === sha(Buffer.from(task.host_context?.context ?? ''));
+    contract.context_sha256 === sha(Buffer.from(task.host_context?.context ?? '')) &&
+    (contract.owner_collection == null || ownerCollectionFor(task, catalog, 0) !== null);
+}
+/** Exact source-bound owner collection. Its existence is observed by the
+ * native private contract loader, never inferred from local-model plans.
+ * FULL independently checked children retain their own R0 reference fallback.
+ * This finite capability does not establish generic semantic decomposition. */
+export function ownerCollectionFor(task, catalog, now = Date.now()) {
+  const parent = catalog?.task_contract, c = parent?.owner_collection;
+  if (c == null) return null;
+  const h = task?.host_context, original = Buffer.from(task?.request ?? '', 'utf8');
+  if (!(task?.mode === 'auto' && task.objective === task.request && h &&
+    h.codex_session_id === null && h.claude_session_id === null &&
+    (task.native_sessions == null || Object.keys(task.native_sessions).length === 0) &&
+    parent.coverage === 'full' && parent.scope === 'read_only' && parent.bindings_checked === true &&
+    parent.execution_isolation === 'codex_fresh_local_effects_v1' && HASH.test(parent.execution_isolation_sha256 ?? '') &&
+    parent.objective_sha256 === task.request_sha256 && parent.reference_policy_sha256 === task.policy_sha256 &&
+    parent.context_sha256 === sha(Buffer.from(h.context ?? '')) && parent.valid_until_ms > now &&
+    keys(c, ['schema', 'kind', 'manifest_sha256', 'obligations']) && c.schema === 1 &&
+    c.kind === 'independent_readonly_json_v1' && HASH.test(c.manifest_sha256 ?? '') &&
+    Array.isArray(c.obligations) && c.obligations.length >= 2 && c.obligations.length <= 8)) return null;
+  let end = 0; const ids = new Set(), instructions = new Set();
+  for (const o of c.obligations) {
+    if (!(keys(o, ['id', 'instruction', 'request_utf8_start', 'request_utf8_end', 'source_paths',
+      'source_sha256s', 'contract_sha256', 'verifier_sha256', 'required_check_ids', 'valid_until_ms']) &&
+      ID.test(o.id ?? '') && !ids.has(o.id) && boundedText(o.instruction, 12_000) && !instructions.has(o.instruction) &&
+      int(o.request_utf8_start, end, original.length) && int(o.request_utf8_end, o.request_utf8_start + 1, original.length) &&
+      original.subarray(o.request_utf8_start, o.request_utf8_end).equals(Buffer.from(o.instruction, 'utf8')) &&
+      Array.isArray(o.source_paths) && o.source_paths.length > 0 && o.source_paths.length <= 128 &&
+      new Set(o.source_paths).size === o.source_paths.length && o.source_paths.every(p => typeof p === 'string' &&
+        p.length <= 4096 && !p.includes('\\') && !p.includes('\0') && !p.startsWith('/') &&
+        p.split('/').every(part => !['', '.', '..'].includes(part))) &&
+      Array.isArray(o.source_sha256s) && o.source_sha256s.length === o.source_paths.length && o.source_sha256s.every(x => HASH.test(x ?? '')) &&
+      HASH.test(o.contract_sha256 ?? '') && HASH.test(o.verifier_sha256 ?? '') &&
+      Array.isArray(o.required_check_ids) && o.required_check_ids.length > 0 && o.required_check_ids.length <= 64 &&
+      new Set(o.required_check_ids).size === o.required_check_ids.length && o.required_check_ids.every(x => boundedText(x, 128)) &&
+      int(o.valid_until_ms, now + 1, Number.MAX_SAFE_INTEGER))) return null;
+    end = o.request_utf8_end; ids.add(o.id); instructions.add(o.instruction);
+  }
+  return c;
+}
+function ownerCollectionPlanEligible(task, collection) {
+  return collection !== null && task.budget.max_parallel >= 2 && task.budget.max_attempts >= 2 &&
+    (task.budget.max_native_dispatches == null || task.budget.max_native_dispatches >= collection.obligations.length * 2);
+}
+function ownerCollectionObligation(node, task, catalog, now = Date.now()) {
+  const c = ownerCollectionFor(task, catalog, now);
+  if (!c) return null;
+  const index = c.obligations.findIndex((o, i) => node?.id === `owner_${i}` && node.instruction === o.instruction);
+  return index >= 0 && node.kind === 'agent' && node.scope === 'read_only' &&
+    node.dependencies?.length === 0 && node.owned_paths?.length === 0 &&
+    stable(node.context_refs) === stable(task.material_refs) ? c.obligations[index] : null;
+}
+export function ownerCollectionOutput(plan, children) {
+  assert(plan?.final_node_id === null && Array.isArray(plan.nodes) && Array.isArray(children), 'owner_collection_output_shape');
+  const byID = new Map(children.map(c => [c.id, c]));
+  assert(byID.size === plan.nodes.length && children.length === plan.nodes.length, 'owner_collection_output_coverage');
+  const objects = plan.nodes.map(n => {
+    const child = byID.get(n.id); assert(child?.state === 'completed' && typeof child.output === 'string', 'owner_collection_output_missing');
+    const object = JSON.parse(child.output); assert(plain(object), 'owner_collection_output_not_object');
+    return object;
+  });
+  return JSON.stringify(objects);
 }
 /** The signed class table's certificate for this request's class only (R0(c)). */
 function validClassCertificates(certificates, cls) {
@@ -1990,6 +2056,11 @@ function validatePlan(plan, task, catalog) {
     assert(!overlap || ancestor(writes[a], writes[b].id) || ancestor(writes[b], writes[a].id),
       'plan_write_conflict');
   }
+  const collection = ownerCollectionFor(task, catalog);
+  if (collection && plan.nodes.some(n => n.id.startsWith('owner_'))) assert(
+    ownerCollectionPlanEligible(task, collection) && plan.final_node_id === null && plan.nodes.length === collection.obligations.length &&
+    plan.nodes.every((n, i) => n.id === `owner_${i}` && ownerCollectionObligation(n, task, catalog) !== null),
+  'owner_collection_plan_mismatch');
   // Planner independence was checked before host writer serialization.
   // Candidate-only rebindings preserve the admitted graph/ownership.
   assertFinalOutputOwnership(plan, task, {collectionMayBeOrdered: true});
@@ -3333,6 +3404,12 @@ class RCCRuntime {
 
   async _observeAdaptivePlan(taskID, task, catalog) {
     const policy = this.adaptivePolicy;
+    if (ownerCollectionFor(task, catalog)) {
+      this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
+        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_supplied_independent_partition'});
+      return true; // Actual host partition, not inferred zero-cost history.
+    }
     if (policy.mode === 'off' || task.mode !== 'auto') return true;
     if (!this._allowModelGeneration(taskID)) return false;
     const state = this._load(taskID);
@@ -3767,11 +3844,18 @@ class RCCRuntime {
     const jointShadow = this._jointRouteShadow(admitted, plan, catalog);
     state = this._update(taskID, 'plan_admitted', snapshot => {
       snapshot.plan = plan; snapshot.state = 'running';
+      const collection = ownerCollectionFor(admitted, catalog);
+      if (collection && plan.nodes.length === collection.obligations.length && plan.nodes.every((n, i) => n.id === `owner_${i}`)) {
+        snapshot.owner_collection = immutable(collection);
+        snapshot.owner_collection_alternative = {kind: 'single_original_reference', instruction_sha256: admitted.request_sha256,
+          reason: 'preregistered_independent_collection_not_measured_resource_saving'};
+      }
       if (jointShadow !== null) snapshot.joint_route_shadow = jointShadow;
       snapshot.plan_provenance = liveAdopted ? 'host_checked_local_proposal_v1' : this.hostAutoPlan
         ? this.adaptivePolicy.mode === 'shadow' && snapshot.adaptive_routing?.planner_invoked ?
           'host_exact_request_shadow' : 'host_exact_request'
         : 'external_plan_callback';
+      if (snapshot.owner_collection) snapshot.plan_provenance = 'host_owner_collection_v1';
       if (calibrated) {
         snapshot.calibrated_route = {...calibrated.record, floor_provenance: snapshot.plan_provenance};
         snapshot.plan_provenance = 'host_calibrated_original_v1';
@@ -4023,6 +4107,8 @@ class RCCRuntime {
     let fresh;
     try { fresh = validateCatalog(await this.catalog(immutable(executionTask(prior))), executionTask(prior)); }
     catch (error) { throw new RCCRuntimeError(error.code ?? 'catalog_refresh_failed'); }
+    if (prior.owner_collection) assert(stable(ownerCollectionFor(executionTask(prior), fresh)) === stable(prior.owner_collection),
+      'owner_collection_authority_changed');
     // A row a node was admitted with keeps its exact configuration even after
     // it left and re-entered the catalog.
     const oldRows = new Map([...Object.entries(prior.bound_rows ?? {}),
@@ -4492,6 +4578,10 @@ class RCCRuntime {
           const reason = snapshot.children.find(c => c.state === 'held' && typeof c.hold_reason === 'string')
             ?.hold_reason ?? 'child_task_quality_unverified';
           const returned = snapshot.children.filter(c => c.output !== null);
+          // A protocol/control unknown is an actual HOLD, not a delivered
+          // unverified answer and never a reason to replay a model. Every raw
+          // child output/receipt remains in the same durable task/inspector.
+          if (reason === 'owner_collection_control_unverified') { this._hold(taskID, reason); return; }
           try { this._hold(taskID, reason, await this._partialResult(taskID, returned)); }
           catch (error) { this._hold(taskID, error.code ?? 'aggregate_receipt_unavailable'); }
         }
@@ -5534,6 +5624,10 @@ class RCCRuntime {
 
     const task = executionTask(this._load(taskID));
     const start = this._load(taskID);
+    if (start.owner_collection && (stable(ownerCollectionFor(task, start.catalog)) !== stable(start.owner_collection) ||
+        ownerCollectionObligation(node, task, start.catalog) === null)) {
+      this._hold(taskID, 'owner_collection_authority_unavailable'); return;
+    }
     const resolver = Boolean(this._resolverNode(start, node.id));
     // One dispatch per call: every path below returns. The budget counts
     // charged attempts, so an uncharged pre-execution quota rejection never
@@ -5723,6 +5817,22 @@ class RCCRuntime {
           await this._stageSourceAfterExecution(taskID, node, candidate, result, ticket);
           return;
         }
+        if (current.owner_collection && result.error === 'owner_collection_control_unverified') {
+          attemptState = 'owner_collection_control_unverified'; verifierOutcome = 'unverified_control';
+          this._update(taskID, 'owner_collection_control_unverified', snapshot => {
+            const child = snapshot.children.find(c => c.id === node.id);
+            child.state = 'held'; child.hold_reason = 'owner_collection_control_unverified';
+            child.output = result.output; child.execution_verified = result.execution_verified;
+            child.task_quality = 'unverified'; child.parity_state = 'unverified';
+            child.operational_quality = result.operational_quality ?? null;
+            child.native_receipt = result.native_receipt; child.native_summary = result.native_summary ?? null;
+            child.usage = result.usage ?? null; child.finished_at_ms = Date.now();
+            const attempt = child.attempt_history.at(-1);
+            attempt.state = 'completed'; attempt.native_receipt = result.native_receipt;
+            recordTurnSettlement(attempt, result); attempt.usage = result.usage ?? null;
+          });
+          return; // Protocol unknown is not model-quality evidence: NO retry/escalation.
+        }
         if (result.status === 'succeeded') {
           // A registered family verifier runs before the child is deliverable:
           // the child waits (not completed) so the task cannot settle on an
@@ -5732,7 +5842,12 @@ class RCCRuntime {
           // admitted it accepts THIS answer (certifiedAnswer); anything else
           // (empty, error, partial, mismatch, unverified) is discarded, never
           // held for return, and the node runs once at its reference.
-          const deliverable = result.execution_verified &&
+          const collectionObligation = current.owner_collection?.obligations?.[current.plan.nodes.findIndex(n => n.id === node.id)];
+          const collectionChecked = !collectionObligation || result.task_verified === true &&
+            result.operational_quality?.coverage === 'full' &&
+            result.operational_quality?.assessment_state === 'task_contract_verified' &&
+            result.operational_quality?.contract_sha256 === collectionObligation.contract_sha256;
+          const deliverable = collectionChecked && result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
             boundedText(result.output, MAX_OUTPUT_BYTES) && (!descent || certifiedAnswer(recorded.ladder, result));
           const discard = !deliverable && descent;
@@ -5891,9 +6006,13 @@ class RCCRuntime {
     // label: exact-output tasks (including "Reply with hello only") must
     // preserve the returned bytes. Explicit routes or an admitted null Core
     // collection emit every labelled result; other DAGs have one final owner.
-    const candidateOutput = snapshot.plan.final_node_id ? byID.get(snapshot.plan.final_node_id)?.output :
-      ordered.length === 1 ? ordered[0].output :
-        ordered.map(c => `${c.id}: ${c.output}`).join('\n\n');
+    let candidateOutput;
+    try {
+      candidateOutput = snapshot.owner_collection ? ownerCollectionOutput(snapshot.plan, snapshot.children) :
+        snapshot.plan.final_node_id ? byID.get(snapshot.plan.final_node_id)?.output :
+        ordered.length === 1 ? ordered[0].output :
+          ordered.map(c => `${c.id}: ${c.output}`).join('\n\n');
+    } catch { this._hold(taskID, 'owner_collection_output_invalid'); return; }
     const output = candidateOutput ?? '';
     if (!boundedText(output, MAX_OUTPUT_BYTES)) {
       this._hold(taskID, 'combined_output_empty_or_oversize'); return;
