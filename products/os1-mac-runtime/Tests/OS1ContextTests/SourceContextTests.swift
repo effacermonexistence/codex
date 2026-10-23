@@ -445,6 +445,7 @@ final class SourceContextTests {
     }
     func testHumanOutputContract() {
         runHumanLiteralOutputFixtures()
+        runHumanMachineFormatFixtures()
         let arithmeticRequest = "도구 호출이나 파일 변경 없이 2 곱하기 3을 한 줄로 답해"
         for answer in [#"\(2 \times 3 = 6\)"#, #"\[\frac{1}{2}=0.5\]"#, #"$$\sqrt{4}=2$$"#, "$6$", "6"] {
             XCTAssertTrue(HumanOutputContract.issues(in: answer, request: arithmeticRequest).isEmpty)
