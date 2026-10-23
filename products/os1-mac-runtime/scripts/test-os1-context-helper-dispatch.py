@@ -10,6 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = b"Native turn control: 26 synthetic grammar checks PASS; model/provider calls 0\n"
+CURRENT_9394_CONTROL = b"Native current9394 turn control: 52 synthetic binding/grammar checks PASS; provider/model calls 0\n"
 
 
 def require(value, label):
@@ -69,12 +70,13 @@ def inspect(binary, request, *, before=False):
             "before/after exact metadata JSON stdout")
     if not before:
         grammar = run(binary, ["--native-turn-control-only"])
-        require(grammar.returncode == 0 and grammar.stdout == CONTROL and grammar.stderr == b"",
-                "all 26 grammar checks still run in isolated branch")
+        require(grammar.returncode == 0 and grammar.stdout == CONTROL + CURRENT_9394_CONTROL and grammar.stderr == b"",
+                "all legacy26 and current9394 52 grammar checks run once in the isolated branch")
     return {"binary_sha256": sha(binary.read_bytes()), "voice_stdout_bytes": len(voice.stdout),
             "voice_stderr_bytes": len(voice.stderr), "voice_stdout_sha256": sha(voice.stdout),
             "metadata_stdout_bytes": len(metadata.stdout), "metadata_stdout_sha256": sha(metadata.stdout),
-            "expected_contamination_observed": before, "isolated_26_checks_verified": not before}
+            "expected_contamination_observed": before, "isolated_26_checks_verified": not before,
+            "isolated_9394_52_checks_verified": not before}
 
 
 def main():
