@@ -2152,11 +2152,18 @@ final class RCCNativeLocalQualityProfile: @unchecked Sendable {
             let expected = nativeExecutable,
             URL(fileURLWithPath: String(cString: bytes)).resolvingSymlinksInPath().path == expected else { throw RCCOperationalQuality.Failure.custody }
     }
+    // Exact compatibility proposal; vendor-source review and a fresh zero-turn
+    // native metadata preflight are required before release adoption. A name,
+    // signature or arbitrary future notification binary is not sufficient.
+    static let maintenanceNotifyHashes: Set<String> = [
+        "4861d29eb73f6f71a5a82dc94fc7c696d34e8cd6493f1932f6ba7b51f6448cf5",
+        "2f8ac721dcadb98745c545b6fd0d37f38d48e892d929a7a3b41476838d6a66d5",
+    ]
     func verifyMaintenanceNotify(_ config: [String: Any]) throws {
         if Self.rowsEmpty(config["notify"]) { return }
         guard let values = config["notify"] as? [String], values.count == 2, values[1] == "turn-ended",
             values[0].hasSuffix("/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient") else { throw RCCOperationalQuality.Failure.unavailable }
-        try bindFile(values[0], expected: "4861d29eb73f6f71a5a82dc94fc7c696d34e8cd6493f1932f6ba7b51f6448cf5")
+        try bindFile(values[0], expectedAny: Self.maintenanceNotifyHashes)
     }
     func recordVerified(executable: String) throws {
         try bindNative(executable: executable)

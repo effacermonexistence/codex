@@ -91,3 +91,26 @@ actual config/hooks/trust/plugin/thread metadata. `metadataOnly: true` sends no
 model turn. A real execution still rechecks those gates and the running native
 process identity. The original request, original/final source fingerprints,
 exact selected configuration and owner contract remain independently bound.
+
+## Maintenance notification compatibility proposal (not yet adopted)
+
+This source candidate preserves the fixed two-argument notification shape:
+`<canonical .../SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient>`
+followed by exactly `turn-ended`. Empty notification configuration retains its
+previous behavior. All canonical-path, no-follow, bounded stable-read and
+previously-bound-byte checks still run through the same `bindFile` function.
+
+The exact hash set retains the original
+`4861d29eb73f6f71a5a82dc94fc7c696d34e8cd6493f1932f6ba7b51f6448cf5`
+and proposes the observed newer binary
+`2f8ac721dcadb98745c545b6fd0d37f38d48e892d929a7a3b41476838d6a66d5`.
+That observation alone is not permission to trust a new vendor artifact. The
+candidate requires independent first-party artifact/protocol review and a new
+root-owned zero-turn metadata preflight before release adoption. Neither a
+signature, filename nor version string admits any other hash.
+
+The component test exercises the actual notify guard with canned hash
+observations and the unchanged actual file binder with private fake files.
+These are not actual vendor qualification, SDK execution, native canaries,
+Core execution, quality proof, an installed release, or permission to replay a
+held request. Hook/plugin/MCP/filesystem/network/trust controls are unchanged.
