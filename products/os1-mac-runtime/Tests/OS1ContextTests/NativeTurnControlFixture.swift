@@ -49,4 +49,5 @@ func nativeTurnControlFixture() throws {
         try check(rejected, "malformed/duplicate JSON must reject")
     }
     print("Native turn control: \(count) synthetic grammar checks PASS; model/provider calls 0")
+    try nativeTurnControl9394Fixture()
 }

@@ -98,7 +98,15 @@ enum RCCOwnerCollection {
         (before[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
         (before[.size] as? NSNumber)?.intValue ?? Int.max <= 64_000_000 else { throw Failure.custody }
     let log = try Data(contentsOf: logURL)
-    let control = try NativeTurnControl.inspect(log, provider: "codex", turnID: native.turnID, finalOutput: r.output ?? "")
+    var binding: NativeTurnControl.CurrentBinding?
+    if let input = r.configuredInputObservation {
+        try input.validate(ticket: witness.ticket, record: r)
+        guard input.sessionState == "new", input.channel == "codex_developer" else { throw Failure.binding }
+        binding = .init(threadID: summary.steps[0].sessionID,
+            providerInputSHA256: input.providerInput.sha256, providerInputUTF8Bytes: input.providerInput.utf8Bytes,
+            model: r.selectedConfig.model, effort: r.selectedConfig.effort.rawValue)
+    }
+    let control = try NativeTurnControl.inspect(log, provider: "codex", turnID: native.turnID, finalOutput: r.output ?? "", binding: binding)
     let after = try FileManager.default.attributesOfItem(atPath: path)
     guard before[.systemFileNumber] as? NSNumber == after[.systemFileNumber] as? NSNumber,
         before[.size] as? NSNumber == after[.size] as? NSNumber,
