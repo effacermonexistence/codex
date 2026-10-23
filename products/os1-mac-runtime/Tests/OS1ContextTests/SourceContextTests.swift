@@ -19,10 +19,10 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 @main
 final class SourceContextTests {
     static func main() throws {
-        try nativeTurnControlFixture()
         codexDictationAuthorizationChildIfRequested()
         voiceProcessChildIfRequested()
         if try memoryWriteTransactionChildIfRequested() { return }
+        if CommandLine.arguments.contains("--native-turn-control-only") { try nativeTurnControlFixture(); return }
         if CommandLine.arguments.contains("--memory-write-transaction-only") { try runMemoryWriteTransactionFixtures(); return }
         if CommandLine.arguments.contains("--memory-write-transaction-benchmark") { try runMemoryWriteTransactionFixtures(largeBenchmark: true); return }
         if CommandLine.arguments.contains("--desktop-relay-checkpoint-only") { try runDesktopRelayCheckpointFixtures(); return }
@@ -188,6 +188,9 @@ final class SourceContextTests {
         }
         try runOwnerPolicyFixtures()
         if CommandLine.arguments.contains("--owner-policy-only") { return }
+        // A normal fixture prints diagnostics. Keep it after every helper,
+        // protocol and targeted early return so their stdout stays exact.
+        try nativeTurnControlFixture()
         try runExecutionWorkspaceFixtures()
         let suite = SourceContextTests()
         try suite.testSnapshotRoundTripAndRestart()
