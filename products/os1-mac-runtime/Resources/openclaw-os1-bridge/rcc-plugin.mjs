@@ -5,7 +5,7 @@ import { join, dirname, basename, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { AsyncResource } from 'node:async_hooks';
 import { createRCCRuntime, effectiveExplicitRoutes, explicitRouteNodeID, explicitTierRouting,
-  localWorkerRow, RCCRuntimeError } from './rcc-runtime.mjs';
+  localWorkerRow, ownerCollectionOutput, RCCRuntimeError } from './rcc-runtime.mjs';
 import {decodeAdaptiveRoutingPolicy} from './adaptive-routing-policy.mjs';
 import {createLocalPlanPlanner, LOCAL_PLAN_LIMITS} from './local-plan-planner.mjs';
 import {loadFrozenRouteArtifacts} from './frozen-route-artifacts.mjs';
@@ -36,7 +36,7 @@ async function verifyNative() {
 export async function nativeOperation(operation, payload, signal,
                                       {cancelGraceMs = 6_000, cancelKillMs = 2_000} = {}) {
   if (!['rcc-intent', 'rcc-catalog', 'rcc-adapter', 'rcc-stage', 'rcc-install-status',
-    'rcc-install-cancel', 'rcc-quality-decision'].includes(operation)) throw Error('native_operation_denied');
+    'rcc-install-cancel', 'rcc-quality-decision', 'rcc-task-verify', 'rcc-owner-control'].includes(operation)) throw Error('native_operation_denied');
   if (!Number.isSafeInteger(cancelGraceMs) || cancelGraceMs < 100 || cancelGraceMs > 30_000 ||
       !Number.isSafeInteger(cancelKillMs) || cancelKillMs < 100 || cancelKillMs > 10_000)
     throw Error('native_cancel_bounds_invalid');
@@ -448,6 +448,32 @@ async function readExactNativeReceipt(path, stateDir) {
   } catch { return null; }
   finally { await handle?.close().catch(() => {}); }
 }
+/** Same adapter, same Core. Only the NEW source-bound owner_N family
+ * requires this no-generation control receipt before public child adoption.
+ * A failed/unknown protocol preserves the raw native output and holds without
+ * replay; it is not evidence that a stronger model would solve the protocol. */
+export async function executeOwnerCollectionChild(ticket, signal, {operation = nativeOperation} = {}) {
+  const result = await operation('rcc-adapter', ticket, signal);
+  if (!/^owner_[0-7]$/.test(ticket.node_id ?? '') || result?.status !== 'succeeded' || !result.execution_verified) return result;
+  try {
+    const control = await operation('rcc-owner-control', {ticket, record: result}, signal);
+    const summary = JSON.parse(result.native_summary);
+    const turn = summary?.steps?.length === 1 ? summary.steps[0].native_record?.turn_id : null;
+    if (control?.request_sha256 !== ticket.request_sha256 || control.output_sha256 !== sha(Buffer.from(result.output ?? '')) ||
+        typeof turn !== 'string' || control.observation?.turnID !== turn) throw Error('owner_collection_control_binding_mismatch');
+    if (control?.schema !== 1 || control.task_id !== ticket.task_id || control.node_id !== ticket.node_id ||
+        control.attempt_id !== ticket.attempt_id || control.control_verified !== true ||
+        control.observation?.sourceKind !== 'codex_owned_turn_rollout_v1' || control.observation.turnID == null ||
+        control.observation.completed !== true || control.observation.toolRequests !== 0 ||
+        !HASH.test(control.observation.sourceSHA256 ?? '')) throw Error('owner_collection_control_unverified');
+    return result;
+  } catch {
+    return {...result, task_verified: false, task_quality: 'unverified', parity_state: 'unverified',
+      error: 'owner_collection_control_unverified',
+      ...(result.operational_quality ? {operational_quality: {...result.operational_quality,
+        assessment_state: 'unverified', failed_check_ids: []}} : {})};
+  }
+}
 export async function verifyExactExplicitArithmetic({task, plan, children}, {stateDir} = {}) {
   const verdict = (verified, output, reason) => ({schema: 1, task_id: task.task_id,
     task_verified: verified, output, parity_state: 'unverified', reason});
@@ -603,7 +629,7 @@ export function registerRCCRuntime(api) {
         // owner, but cannot change a live plan or register parity by config.
         hostAutoPlan: true,
         execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal) :
-          nativeOperation('rcc-adapter', ticket, signal),
+          executeOwnerCollectionChild(ticket, signal),
         // Same pinned native adapter and task owner. A typed, receipt-bound
         // continuation never chooses another route; the local surface has no
         // continuation and refuses one.
@@ -613,7 +639,22 @@ export function registerRCCRuntime(api) {
         stageSelfUpdate: (request, signal) => nativeOperation('rcc-stage', request, signal),
         reconcileInstallation: request => nativeOperation('rcc-install-status', request),
         cancelInstallation: request => nativeOperation('rcc-install-cancel', request),
-        verifyTask: evidence => verifyExactExplicitArithmetic(evidence, {stateDir}),
+        verifyTask: async evidence => {
+          // No new model or scheduler: the original Core deterministically
+          // collects the exact owner-obligation outputs; native host runs the
+          // independently frozen FULL parent checker and rereads child receipts.
+          const plan = evidence.plan;
+          if (plan?.nodes?.length >= 2 && plan.nodes.every((n, i) => n.id === `owner_${i}`)) {
+            ownerCollectionOutput(plan, evidence.children); // Shape check before native operation.
+            const projected = {task: evidence.task, plan, children: evidence.children.map(child => ({
+              id: child.id, state: child.state, candidate_id: child.candidate_id, instruction: child.instruction,
+              attempt_id: child.attempt_id, native_receipt: child.native_receipt, output: child.output}))};
+            if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > 1_048_576)
+              throw Error('owner_collection_verifier_input_oversize');
+            return nativeOperation('rcc-task-verify', projected);
+          }
+          return verifyExactExplicitArithmetic(evidence, {stateDir});
+        },
       });
       runtime = await starting;
       await runtime.startQueued();

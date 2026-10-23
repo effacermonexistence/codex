@@ -63,6 +63,31 @@ public enum TaskQualityEvidence {
             self.validUntil = validUntil; self.proofMode = proofMode
         }
     }
+    /// Optional trusted-owner decomposition, never inferred from model output.
+    /// Each instruction is an exact UTF-8 span of the ORIGINAL owner request.
+    /// Source paths name read-only evidence, not additional execution rights.
+    public struct OwnerCollection: Codable, Equatable, Sendable {
+        public var schema: Int
+        public var kind: String
+        public var obligations: [Obligation]
+        public struct Obligation: Codable, Equatable, Sendable {
+            public var id: String
+            public var instruction: String
+            public var requestUTF8Start: Int
+            public var requestUTF8End: Int
+            public var sourcePaths: [String]
+            public var sourceSHA256s: [String]
+            public init(id: String, instruction: String, requestUTF8Start: Int, requestUTF8End: Int,
+                        sourcePaths: [String], sourceSHA256s: [String]) {
+                self.id = id; self.instruction = instruction; self.requestUTF8Start = requestUTF8Start
+                self.requestUTF8End = requestUTF8End; self.sourcePaths = sourcePaths; self.sourceSHA256s = sourceSHA256s
+            }
+        }
+        public init(schema: Int = 1, kind: String = "independent_readonly_json_v1", obligations: [Obligation]) {
+            self.schema = schema; self.kind = kind; self.obligations = obligations
+        }
+    }
+
     /// Locked before dispatch. fullCoverage must be explicitly declared by
     /// the trusted contract owner; it is deliberately not a default or a model
     /// estimate inferred from a generic test-suite pass.

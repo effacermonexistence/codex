@@ -28,12 +28,14 @@ struct PreparedTaskQuality {
         /// Optional exact content base declared by the owner BEFORE routing.
         /// Absence retains legacy checks but never admits speculative writers.
         let stagedWriterBaseSHA256: String?
-        init(contract: TaskQualityEvidence.Contract, checkerSHA256: String, timeoutSeconds: Int, workspacePaths: [String], localEffectsOnly: Bool = false, publicRegressionSnapshot: PythonRegressionSnapshot? = nil, stagedWriterBaseSHA256: String? = nil) {
+        let ownerCollection: TaskQualityEvidence.OwnerCollection?
+        init(contract: TaskQualityEvidence.Contract, checkerSHA256: String, timeoutSeconds: Int, workspacePaths: [String], localEffectsOnly: Bool = false, publicRegressionSnapshot: PythonRegressionSnapshot? = nil, stagedWriterBaseSHA256: String? = nil, ownerCollection: TaskQualityEvidence.OwnerCollection? = nil) {
+            self.ownerCollection = ownerCollection
             self.contract = contract; self.checkerSHA256 = checkerSHA256; self.timeoutSeconds = timeoutSeconds
             self.workspacePaths = workspacePaths; self.localEffectsOnly = localEffectsOnly; self.publicRegressionSnapshot = publicRegressionSnapshot
             self.stagedWriterBaseSHA256 = stagedWriterBaseSHA256
         }
-        enum CodingKeys: String, CodingKey { case contract, checkerSHA256, timeoutSeconds, workspacePaths, localEffectsOnly, publicRegressionSnapshot, stagedWriterBaseSHA256 }
+        enum CodingKeys: String, CodingKey { case contract, checkerSHA256, timeoutSeconds, workspacePaths, localEffectsOnly, publicRegressionSnapshot, stagedWriterBaseSHA256, ownerCollection }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             contract = try c.decode(TaskQualityEvidence.Contract.self, forKey: .contract)
@@ -42,6 +44,7 @@ struct PreparedTaskQuality {
             localEffectsOnly = try c.decodeIfPresent(Bool.self, forKey: .localEffectsOnly) ?? false
             publicRegressionSnapshot = try c.decodeIfPresent(PythonRegressionSnapshot.self, forKey: .publicRegressionSnapshot)
             stagedWriterBaseSHA256 = try c.decodeIfPresent(String.self, forKey: .stagedWriterBaseSHA256)
+            ownerCollection = try c.decodeIfPresent(TaskQualityEvidence.OwnerCollection.self, forKey: .ownerCollection)
         }
     }
     let envelope: Envelope
@@ -141,7 +144,7 @@ struct PreparedTaskQuality {
         contract.startTreeSHA256 = startTreeSHA256
         return Self(envelope: Envelope(contract: contract, checkerSHA256: envelope.checkerSHA256,
             timeoutSeconds: envelope.timeoutSeconds, workspacePaths: envelope.workspacePaths, localEffectsOnly: envelope.localEffectsOnly, publicRegressionSnapshot: envelope.publicRegressionSnapshot,
-            stagedWriterBaseSHA256: envelope.stagedWriterBaseSHA256),
+            stagedWriterBaseSHA256: envelope.stagedWriterBaseSHA256, ownerCollection: envelope.ownerCollection),
             checkerBytes: checkerBytes, referencePolicySHA256: referencePolicySHA256, partialRegression: partialRegression, resourceScheduleSnapshot: resourceScheduleSnapshot)
     }
 

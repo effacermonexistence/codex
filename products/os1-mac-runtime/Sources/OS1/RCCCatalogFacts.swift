@@ -56,7 +56,9 @@ enum RCCCatalogFacts {
                 validUntilMS: Int64(untilMS.rounded(.down)),
                 executionIsolation: isolatedBoundary == nil ? nil : "codex_fresh_local_effects_v1",
                 executionIsolationSHA256: isolatedBoundary?.envelopeSHA256,
-                stagedWriterEnvelopeSHA256: staged?.envelopeSHA256, stagedWriterBaseSHA256: staged?.baseSHA256)
+                stagedWriterEnvelopeSHA256: staged?.envelopeSHA256, stagedWriterBaseSHA256: staged?.baseSHA256,
+                ownerCollection: isolatedBoundary == nil ? nil : try? RCCOwnerCollection.fact(request: request, prepared: prepared, now: now,
+                    rootURL: rootURL, startTree: startTree))
         }
         return nil
     }
