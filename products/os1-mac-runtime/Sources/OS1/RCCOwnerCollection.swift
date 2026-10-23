@@ -10,6 +10,14 @@ enum RCCOwnerCollection {
     typealias C = RCCRuntimeContract
     enum Failure: Error { case binding, custody, checker }
 
+    /// The collection identity predates retrospective adoption. Preserve its
+    /// exact sorted-key JSONEncoder bytes, including escaped forward slashes.
+    /// Operational witness encoding has another format and is NOT this identity.
+    static func collectionManifestSHA256(_ spec: TaskQualityEvidence.OwnerCollection) throws -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return C.digest(try encoder.encode(spec))
+    }
+
     static func fact(request: C.Request, prepared: PreparedTaskQuality, now: Date = Date(),
                      rootURL: URL = PreparedTaskQuality.root,
                      startTree: (String) -> String = workspaceHash) throws -> C.OwnerCollectionFact? {
@@ -57,8 +65,7 @@ enum RCCOwnerCollection {
                 requiredCheckIDs: c.requiredCheckIDs, validUntilMS: Int64(untilMS.rounded(.down))))
             end = o.requestUTF8End
         }
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return .init(manifestSHA256: C.digest(try encoder.encode(spec)), obligations: rows)
+        return .init(manifestSHA256: try collectionManifestSHA256(spec), obligations: rows)
     }
 
     static func verifySources(_ paths: [String], hashes: [String], workspace: String) throws {
@@ -391,7 +398,7 @@ enum RCCOwnerCollection {
             permit.reference_policy_sha256 == task.policySHA256,
             permit.owner_policy_source_sha256 == h.ownerPolicy?.sourceSHA256,
             permit.owner_policy_projection_sha256 == h.ownerPolicy?.projectionSHA256,
-            permit.collection_manifest_sha256 == C.digest(try RCCOperationalQuality.encoded(spec)),
+            permit.collection_manifest_sha256 == (try collectionManifestSHA256(spec)),
             permit.historical_runtime_sha256 == C.digest(try JSONSerialization.data(withJSONObject: historical, options: [.sortedKeys, .withoutEscapingSlashes])),
             permit.children.count == spec.obligations.count else { throw Failure.binding }
     }

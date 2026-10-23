@@ -7,10 +7,12 @@ import subprocess,tempfile,json,hashlib
 R=Path(__file__).resolve().parents[1];s=(R/'Sources/OS1/RCCOwnerCollection.swift').read_text();quality=(R/'Sources/OS1Context/TaskQuality.swift').read_text()
 def fragment(start,end):
  a=s.index(start);return s[a:s.index(end,a)]
-parts=fragment('    struct AdoptionPermit:','    static func validateAdoptionPermit(')+fragment('    static func historicalEpoch(','    static func retainedCollectionFact(')
+parts=fragment('    static func collectionManifestSHA256(', '    static func fact(')+fragment('    struct AdoptionPermit:','    static func historicalEpoch(')+fragment('    static func historicalEpoch(','    static func retainedCollectionFact(')
 assert 'now: Date = Date()'in s[s.index('    static func fact('):s.index('    static func verifySources(')]
 assert 'contract.issuedAt <= now, now <= contract.validUntil' in quality
 assert 'now: epoch ?? Date()'in s and 'now: childEpoch ?? Date()'in s
+assert s.count('try collectionManifestSHA256(spec)')==2
+assert 'permit.collection_manifest_sha256 == C.digest(try RCCOperationalQuality.encoded(spec))' not in s
 assert 'verificationContract' in s and '"observed_at_ms": proofObservedAt' in s
 assert 'try validateAdoptionPermit(permit, task: task, prepared: fresh' in s
 program=r'''import Foundation
@@ -19,12 +21,18 @@ public enum TaskContext {public enum Scope:String,Codable,Sendable{case readOnly
 enum RCCRuntimeContract {
  static func isHash(_ x:String)->Bool{x.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil}
  static func digest(_ d:Data)->String{SHA256.hash(data:d).map{String(format:"%02x",$0)}.joined()}
+ struct OwnerPolicy {var sourceSHA256:String;var projectionSHA256:String}
+ struct HostContext {var ownerPolicy:OwnerPolicy?}
+ struct Request {var taskID:String;var requestSHA256:String;var sourceFingerprint:String;var policySHA256:String;var hostContext:HostContext?}
  struct Ticket {}
  struct Input {var preparedAtMS:Int64;var valid=true;func validate(ticket:Ticket,record:ExecutionRecord)throws{if !valid{throw Host.Failure.binding}}}
  struct Quality {var witnessSHA256:String}
  struct ExecutionRecord {var configuredInputObservation:Input?;var nodeID:String;var attemptID:String;var operationalQuality:Quality?}
 }
-enum RCCOperationalQuality {struct StoredWitness {var ticket:RCCRuntimeContract.Ticket;var receipt:TaskQualityEvidence.Receipt?;var contract:TaskQualityEvidence.Contract;var observedArtifact:TaskQualityEvidence.ObservedArtifact}}
+struct PreparedTaskQuality {struct Envelope {var contract:TaskQualityEvidence.Contract;var checkerSHA256:String;var ownerCollection:TaskQualityEvidence.OwnerCollection?};var envelope:Envelope}
+enum RCCOperationalQuality {
+ static func encoded<T:Encodable>(_ value:T)throws->Data {let e=JSONEncoder();e.outputFormatting=[.sortedKeys,.withoutEscapingSlashes];e.dateEncodingStrategy = .millisecondsSince1970;return try e.encode(value)}
+ struct StoredWitness {var ticket:RCCRuntimeContract.Ticket;var receipt:TaskQualityEvidence.Receipt?;var contract:TaskQualityEvidence.Contract;var observedArtifact:TaskQualityEvidence.ObservedArtifact}}
 enum Host {typealias C=RCCRuntimeContract;enum Failure:Error{case binding,custody,checker}
 '''+parts+r'''}
 @main enum Test {
@@ -44,7 +52,47 @@ enum Host {typealias C=RCCRuntimeContract;enum Failure:Error{case binding,custod
  let canonicalHistory=try JSONSerialization.data(withJSONObject:history,options:[.sortedKeys,.withoutEscapingSlashes])
  try check(String(decoding:canonicalHistory,as:UTF8.self).contains("/private/한글 App.app/Contents/a/b"))
  var raw:[String:Any] = ["schema":1,"kind":"retained_owner_collection_adoption_only","permit_id":"recover","task_id":"task","request_sha256":H("request"),"expected_revision":14,"expected_fingerprint":H("fingerprint"),"expected_snapshot_sha256":H("snapshot"),"issued_at_ms":Int64(now.addingTimeInterval(-1).timeIntervalSince1970*1000),"expires_at_ms":Int64(now.addingTimeInterval(60).timeIntervalSince1970*1000),"parent_contract_sha256":original.sha256,"parent_checker_sha256":original.verifierCodeSHA256,"context_sha256":original.contextSHA256,"start_tree_sha256":original.startTreeSHA256,"reference_policy_sha256":original.referencePolicySHA256,"source_fingerprint":H("sources"),"owner_policy_source_sha256":NSNull(),"owner_policy_projection_sha256":NSNull(),"collection_manifest_sha256":H("manifest"),"historical_runtime_sha256":H(String(decoding:canonicalHistory,as:UTF8.self)),"native_generation_calls":0,"dispatch_calls":0,"retry_calls":0,"parity_state":"unverified","children":[["id":"owner_0","attempt_id":"a0","native_receipt_sha256":H("r0"),"witness_sha256":H("witness0"),"contract_sha256":original.sha256,"verifier_sha256":original.verifierCodeSHA256],["id":"owner_1","attempt_id":"a1","native_receipt_sha256":H("r1"),"witness_sha256":H("witness1"),"contract_sha256":H("c1"),"verifier_sha256":H("v1")]]]
+ let spec=TaskQualityEvidence.OwnerCollection(obligations:[.init(id:"one",instruction:"Read S/M \\ path 한글 🦊 /a",requestUTF8Start:0,requestUTF8End:1,sourcePaths:["one.txt"],sourceSHA256s:[H("one")]),.init(id:"two",instruction:"Keep slash / and quote \\\" intact",requestUTF8Start:2,requestUTF8End:3,sourcePaths:["two.txt"],sourceSHA256s:[H("two")])])
+ let legacy=JSONEncoder();legacy.outputFormatting=[.sortedKeys]
+ let originalManifest=RCCRuntimeContract.digest(try legacy.encode(spec)),operationalManifest=RCCRuntimeContract.digest(try RCCOperationalQuality.encoded(spec))
+ try check(originalManifest != operationalManifest)
+ raw["collection_manifest_sha256"]=originalManifest
  let p=try Host.adoptionPermit(raw);try p.current(now);n+=1
+ let request=RCCRuntimeContract.Request(taskID:"task",requestSHA256:H("request"),sourceFingerprint:H("sources"),policySHA256:H("policy"),hostContext:.init(ownerPolicy:nil))
+ let prepared=PreparedTaskQuality(envelope:.init(contract:original,checkerSHA256:original.verifierCodeSHA256,ownerCollection:spec))
+ try Host.validateAdoptionPermit(p,task:request,prepared:prepared,historical:history,now:now);n+=1
+ try check(try Host.collectionManifestSHA256(spec)==originalManifest)
+ var wrong=raw;wrong["collection_manifest_sha256"]=operationalManifest
+ try rejects{try Host.validateAdoptionPermit(Host.adoptionPermit(wrong),task:request,prepared:prepared,historical:history,now:now)}
+ var changed=spec;changed.obligations[0].instruction += " changed"
+ var wrongPrepared=prepared;wrongPrepared.envelope.ownerCollection=changed
+ try rejects{try Host.validateAdoptionPermit(p,task:request,prepared:wrongPrepared,historical:history,now:now)}
+ // Nil-vs-explicit-null historical Contract metadata decodes to the SAME typed
+ // identity; this cannot change which collection encoding is authoritative.
+ let ce=JSONEncoder();ce.outputFormatting=[.sortedKeys];ce.dateEncodingStrategy = .millisecondsSince1970
+ var nullable=try JSONSerialization.jsonObject(with:ce.encode(original))as![String:Any]
+ nullable["reference"]=NSNull();nullable["sourceSHA256"]=NSNull()
+ let cd=JSONDecoder();cd.dateDecodingStrategy = .millisecondsSince1970
+ let fromNull=try cd.decode(TaskQualityEvidence.Contract.self,from:JSONSerialization.data(withJSONObject:nullable))
+ try check(fromNull==original && fromNull.sha256==original.sha256)
+ // Grammar-independent identity variants. Only the OLD exact manifest format
+ // is accepted; this is not a dual-hash migration or Unicode normalization.
+ for text in ["plain", "/", "\\", "한글 🦊", "quote\" line\n", "\\/", "e\u{0301}", "\u{00E9}"] {
+  var variant=spec;variant.obligations[0].instruction=text
+  let oldHash=RCCRuntimeContract.digest(try legacy.encode(variant)),otherHash=RCCRuntimeContract.digest(try RCCOperationalQuality.encoded(variant))
+  try check(try Host.collectionManifestSHA256(variant)==oldHash)
+  var variantRaw=raw;variantRaw["collection_manifest_sha256"]=oldHash
+  var variantPrepared=prepared;variantPrepared.envelope.ownerCollection=variant
+  try Host.validateAdoptionPermit(Host.adoptionPermit(variantRaw),task:request,prepared:variantPrepared,historical:history,now:now);n+=1
+  // The second obligation also has a slash, ensuring a true format difference
+  // even when the first tested token has none.
+  try check(oldHash != otherHash)
+  variantRaw["collection_manifest_sha256"]=otherHash
+  try rejects{try Host.validateAdoptionPermit(Host.adoptionPermit(variantRaw),task:request,prepared:variantPrepared,historical:history,now:now)}
+ }
+ var decomposed=spec;decomposed.obligations[0].instruction="e\u{0301}"
+ var precomposed=spec;precomposed.obligations[0].instruction="\u{00E9}"
+ try check(try Host.collectionManifestSHA256(decomposed) != Host.collectionManifestSHA256(precomposed))
  try check(try Host.historicalEpoch(p,record:r,witness:w,parent:original,now:now)==observed)
  // The ordinary current evaluator MUST still reject the same expired lease.
  try check(!TaskQualityEvidence.evaluate(contract:original,receipt:receipt,artifact:artifact,currentReferencePolicySHA256:H("policy"),now:now).taskCompletionVerified)

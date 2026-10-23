@@ -105,7 +105,7 @@ Executed locally with synthetic material only:
   binding/mode/time cases, expiry during awaited parent proof, and ordinary
   expired execution still denied. Fake host results are explicitly not proof of
   real historical filesystem/native control.
-- `python3 scripts/test-owner-retrospective-permit.py`: 94 extracted-source
+- `python3 scripts/test-owner-retrospective-permit.py`: 133 extracted-source
   temporal/shape/lease checks using the real unchanged TaskQualityEvidence
   evaluator; includes invalid original timing, C1 failure, original/current
   evaluator distinction, unchanged semantic fields and slash/Unicode hash.
@@ -117,3 +117,25 @@ This is not an actual Core recovery receipt. Root must review, integrate and
 qualify the installed artifacts, then issue the real fresh narrow permit through
 the existing authenticated owner. Actual candidate final-lock, external grading,
 resource comparison and product completion remain separate gates.
+
+## Legacy collection-manifest identity bridge
+
+A real429 proof-only recovery was rejected because its new permit validator used
+operational-witness JSON encoding (unescaped `/`) to recompute an OLD collection
+manifest, whose `fact` encoder used sorted keys with escaped `/`. These are two
+separate identity domains. The original request/catalog/contract manifest was
+correct and remains unchanged; the rejected/expired permit is not revived.
+
+Both `fact` and permit validation now call the one
+`collectionManifestSHA256` helper, which preserves the exact original sorted-key
+JSONEncoder format. No second/alternative manifest hash is accepted. Operational
+witness encoding and cross-language permit/historical-runtime canonicalization
+are unchanged. Required old obligations, source guards, current permit lease,
+historical execution lease, custody and adoption checks are not weakened.
+
+The former temporal94 component harness did not execute the actual
+`validateAdoptionPermit` body. The extended133-check harness now invokes that
+body with the real OwnerCollection type, slash/backslash/quote/Unicode variants,
+original-versus-operational hashes, changed-spec rejection, and nullable Contract
+encoding separation. It explicitly rejects the alternative manifest rather than
+migrating source data. Synthetic tests do not constitute actual recovery proof.
