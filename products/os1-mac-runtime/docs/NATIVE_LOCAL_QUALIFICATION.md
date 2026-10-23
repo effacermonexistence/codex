@@ -114,3 +114,25 @@ observations and the unchanged actual file binder with private fake files.
 These are not actual vendor qualification, SDK execution, native canaries,
 Core execution, quality proof, an installed release, or permission to replay a
 held request. Hook/plugin/MCP/filesystem/network/trust controls are unchanged.
+
+
+### Candidate-install qualification sequence
+
+Independent local review established that the exact `2f8ac721…6a66d5`
+artifact is byte-identical to the helper in the currently installed official
+ChatGPT distribution, with strict signatures and the same OpenAI certificate
+chain (Team `2DC432GLL2`). This is a narrow rotation of the existing fixed
+maintenance TCB, not proof of its entire behavior, equivalence to unavailable
+old bytes, zero IPC, or permission to admit future vendor updates.
+
+A private diagnostic CLI does not replace the installed app/CLI identity.
+When the actual workspace exposes the existing EXO hook, its exact installed
+CLI-byte check correctly rejects the different diagnostic executable. Do not
+weaken that gate or treat an earlier workspace's hook list as current evidence.
+
+Therefore a normally built, signed and rollback-capable *candidate* may be
+installed for qualification. Only that actual installed CLI may perform a fresh
+zero-turn metadata preflight under the unchanged hook/plugin/trust/filesystem
+and network gates. Installation alone is not runtime qualification. Model
+generation remains held until the installed preflight passes; a failure is
+retained and investigated without replaying the previous held task.
