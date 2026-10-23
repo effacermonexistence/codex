@@ -4,7 +4,7 @@ Requires the OS1ContextTests product to have been built in this worktree. The
 main.swift check is source wiring, not proof a provider consumed its channels.
 """
 from pathlib import Path
-import subprocess, tempfile, json, hashlib
+import subprocess, tempfile, json, hashlib, os
 ROOT=Path(__file__).resolve().parents[1]
 main=(ROOT/'Sources/OS1/main.swift').read_text()
 helper=ROOT/'Sources/OS1/RCCNativeConfiguredInput.swift'
@@ -29,7 +29,7 @@ assert 'catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAt
 assert 'if let configuredInventory {' in adapter
 assert 'executionConfiguration: try? RCCRuntimeContract.encode(codexConfigOverrides)' in codex
 assert 'executionConfiguration: try? RCCRuntimeContract.encode(arguments)' in claude
-build=ROOT/'.build/debug'
+build=Path(os.environ.get('OS1_CONTEXT_TEST_BUILD_ROOT', str(ROOT/'.build/debug'))).resolve()
 objects=list((build/'OS1Context.build').glob('*.o'))+list((build/'OS1System.build').glob('*.o'))
 assert objects, 'Build OS1ContextTests first; do not substitute preinstalled module objects'
 program=r'''

@@ -106,6 +106,7 @@ node --test "$script_dir/fixtures/openclaw-rcc-live-plan-adoption.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-plugin.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-joint-shadow.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-routing-outcome-capture.test.mjs"
+node --test "$script_dir/fixtures/openclaw-rcc-owner-collection.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-prompt-views.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-artifacts.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-frozen-route-evidence.test.mjs"
@@ -417,6 +418,7 @@ bundle_build="$(plutil -extract CFBundleVersion raw -o - "$stage_dir/Application
 "$stage_dir/Applications/OS-1 CLODEX.app/Contents/MacOS/OS1App" --self-test-steering
 "$checkout_app/Contents/MacOS/OS1Checkout" --self-test
 "$arm64_build_dir/arm64-apple-macosx/release/OS1ContextTests"
+OS1_CONTEXT_TEST_BUILD_ROOT="$arm64_build_dir/arm64-apple-macosx/release" python3 "$script_dir/test-os1-configured-input-wire.py"
 "$arm64_build_dir/arm64-apple-macosx/release/FrontierMonitorTests"
 "$arm64_build_dir/arm64-apple-macosx/release/OS1HookSupportTests"
 "$arm64_build_dir/arm64-apple-macosx/release/RetrievalRelevanceTests"

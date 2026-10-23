@@ -114,8 +114,11 @@ check('provider: provider, codex: {' in preparation and '}, claude: {' in prepar
 check("providerQuotaContext(codex: observations.codex?.quotaSnapshot, claude: observations.claude?.quota," in native and
       native.count("ModelAvailability.claudeQuota(") == 1 and native.count("ModelAvailability.codexCatalog(") == 1,
       "native admission keeps fresh selected quota without an unrelated provider re-probe")
+# Only non-authorizing diagnostic serialization may abstain. Metadata and any
+# future added preparation helper must still throw; don't whitelist all try?.
+metadata_preparation = preparation.replace("try? RCCRuntimeContract.encode(codex.models)", "").replace("try? RCCRuntimeContract.encode(claude)", "")
 check("try ModelAvailability.codexCatalog(" in preparation and "try ModelAvailability.claudeCatalogs(" in preparation and
-      "try?" not in preparation and 'source: "unavailable"' not in preparation and
+      "try?" not in metadata_preparation and 'source: "unavailable"' not in preparation and
       "inventoryObserved: !catalogs.configured.isEmpty" in preparation and
       native.count("catalogProvedUnavailable = observations.codex != nil || observations.claude?.inventoryObserved == true") == 1,
       "metadata failures propagate; only observed catalog evidence, not Claude's empty cooldown shortcut, proves tuple absence")
