@@ -4137,7 +4137,18 @@ class RCCRuntime {
       }
     } else {
       // Nothing that could run now: say why per pool, before a planner call.
-      const blocked = noDispatchableReason(task, catalog, boundAt);
+      // Execution-only planning does not claim reference parity and must not
+      // require frontier access merely to start ordinary authorized work.
+      // Certified/FULL/explicit-ceiling paths retain the original R0 gate.
+      let boundedAvailable = false;
+      if (this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' &&
+          this.verifierRegistry.size === 0 && boundedAutoEligible(admitted, catalog)) {
+        const scope = hostScope(admitted, catalog);
+        try { executionPolicyChoice({kind: 'agent', scope,
+          owned_paths: scope === 'workspace_write' ? ['**'] : []}, admitted, catalog, boundAt);
+          boundedAvailable = true; } catch { /* Keep exact current availability failure. */ }
+      }
+      const blocked = boundedAvailable ? null : noDispatchableReason(task, catalog, boundAt);
       if (blocked) { this._hold(taskID, blocked); return; }
     }
     if (!this.hostAutoPlan && typeof this.plan !== 'function') {

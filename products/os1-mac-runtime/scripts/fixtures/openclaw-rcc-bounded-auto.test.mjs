@@ -179,3 +179,11 @@ test('Core independently rejects forged writer permission profile and missing wr
     assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
   }
 });
+
+test('ordinary bounded Auto can run an authorized cheap row when frontier reference is unavailable',async t=>{
+  const h=await harness(t,{boundedAutoPlanning:true,
+    catalog:async q=>{const c=catalog(q);c.candidates[0].model='gpt-6-luna';c.candidates[0].effort='low';c.model_tiers={'gpt-6-luna':'fast'};c.exclusions=[{provider:'codex',reason:'reference_unavailable',count:1}];return c;},
+    proposeLocalPlan:async()=>({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false})}),q=task(h.directory);
+  const done=await h.run(q);assert.equal(done.state,'returned_unverified',JSON.stringify(done));assert.equal(h.tickets.length,2);
+  assert(h.tickets.every(x=>x.selected_config.model==='gpt-6-luna'&&x.selected_config.effort==='low'));
+});
