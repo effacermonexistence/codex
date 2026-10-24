@@ -38,6 +38,7 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
     private var finishContinuation: CheckedContinuation<CodexBrowserRecording, Error>?
     private var startupDeadline: Task<Void, Never>?
     private var finishDeadline: Task<Void, Never>?
+    private var fixtureDiagnostic: VoiceFixtureDiagnostic?
 
     init(html: String) {
         let proxy = CodexBrowserMessageProxy()
@@ -78,6 +79,7 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
     private func begin(synthetic: Bool, onLevel: @escaping (CGFloat) -> Void) async throws {
         guard !Task.isCancelled else { throw CodexDictationError.cancelled }
         guard phase == .idle, !documentFailed else { throw CodexDictationError.invalidState }
+        fixtureDiagnostic = CommandLine.arguments.contains("--self-test-composer") ? VoiceFixtureDiagnostic() : nil
         generation += 1
         let epoch = generation
         nonce = UUID().uuidString
@@ -116,6 +118,7 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
         guard phase == .recording else { throw CodexDictationError.invalidState }
         let epoch = generation
         phase = .finishing
+        observeFixture(.finishRequested)
         let recording: CodexBrowserRecording = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 finishContinuation = continuation
@@ -145,12 +148,14 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
         }
         webView.evaluateJavaScript(script) { [weak self] _, error in
             guard error != nil else { return }
-            self?.fail(epoch: epoch, with: .invalidAudio)
+            self?.fail(epoch: epoch, with: .invalidAudio, fixtureOrigin: .evaluation)
         }
     }
 
-    private func fail(epoch: Int, with error: CodexDictationError) {
+    private func fail(epoch: Int, with error: CodexDictationError,
+                      fixtureOrigin: VoiceFixtureDiagnostic.Origin = .nativeAdapter) {
         guard generation == epoch else { return }
+        if phase != .idle { fixtureDiagnostic?.failed(origin: fixtureOrigin, error: Self.fixtureError(error)) }
         if documentReady, Self.isOwnURL(webView.url) {
             // Only this adapter's own capture is stopped. Late results are rejected
             // by both the native epoch and the document's run-identity checks.
@@ -193,6 +198,7 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
                 fail(epoch: epoch, with: .invalidResponse); return
             }
             readySampleRate = rate; phase = .recording
+            observeFixture(.ready)
             startupDeadline?.cancel(); startupDeadline = nil
             let continuation = startContinuation; startContinuation = nil
             continuation?.resume()
@@ -201,6 +207,8 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
                   let value = payload["value"] as? Double, value.isFinite else { return }
             onLevel?(CGFloat(min(1, max(0, value))))
         case "finished":
+            observeFixture(.finishedEnvelope)
+            if let contentType = payload["contentType"] as? String { fixtureDiagnostic?.observedMIME(contentType) }
             guard phase == .finishing,
                   let text = payload["base64"] as? String, !text.isEmpty,
                   text.utf8.count <= Self.base64Limit,
@@ -215,10 +223,12 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
             }
             let recording = CodexBrowserRecording(data: data, contentType: contentType,
                                                   sampleRate: rate, metadata: metadata)
+            observeFixture(.finishedEnvelopeAccepted)
             let continuation = finishContinuation
             clearRun()
             continuation?.resume(returning: recording)
         case "error":
+            fixtureDiagnostic?.javaScriptFailed(payload["code"])
             let error: CodexDictationError
             switch payload["code"] as? String {
             case "cancelled", "capture_cancelled": error = .cancelled
@@ -230,6 +240,40 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
             }
             fail(epoch: epoch, with: error)
         default: break
+        }
+    }
+
+    // Data-only, closed fixture observations. They do not alter the recording,
+    // request, error, success predicate, retry or cancellation behavior.
+    func observeFixture(_ stage: VoiceFixtureDiagnostic.Stage) {
+        guard CommandLine.arguments.contains("--self-test-composer") else { return }
+        fixtureDiagnostic?.reached(stage)
+    }
+
+    func observeControllerFixtureFailure(_ error: CodexDictationError) {
+        guard CommandLine.arguments.contains("--self-test-composer") else { return }
+        fixtureDiagnostic?.failed(origin: .controller, error: Self.fixtureError(error))
+    }
+
+    var fixtureDiagnosticDescription: String {
+        guard CommandLine.arguments.contains("--self-test-composer") else { return "fixture_observer=disabled" }
+        return fixtureDiagnostic?.closedDescription ?? "fixture_observer=not_started"
+    }
+
+    private static func fixtureError(_ error: CodexDictationError) -> VoiceFixtureDiagnostic.NativeError {
+        switch error {
+        case .credentialUnavailable: .credentialUnavailable
+        case .invalidCredential: .invalidCredential
+        case .invalidAudio: .invalidAudio
+        case .invalidRequest: .invalidRequest
+        case .invalidState: .invalidState
+        case .cancelled: .cancelled
+        case .timedOut: .timedOut
+        case .transportFailed: .transportFailed
+        case .serverRejected: .serverRejected
+        case .invalidResponse: .invalidResponse
+        case .messageTooLarge: .messageTooLarge
+        case .emptyTranscript: .emptyTranscript
         }
     }
 
@@ -296,16 +340,16 @@ final class CodexBrowserMicrophone: NSObject, WKNavigationDelegate, WKUIDelegate
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        documentFailed = true; fail(epoch: generation, with: .invalidAudio)
+        documentFailed = true; fail(epoch: generation, with: .invalidAudio, fixtureOrigin: .navigation)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        documentFailed = true; fail(epoch: generation, with: .invalidAudio)
+        documentFailed = true; fail(epoch: generation, with: .invalidAudio, fixtureOrigin: .navigation)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         documentReady = false; documentFailed = true
-        fail(epoch: generation, with: .invalidAudio)
+        fail(epoch: generation, with: .invalidAudio, fixtureOrigin: .contentProcess)
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,

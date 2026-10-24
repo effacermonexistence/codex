@@ -4468,19 +4468,26 @@ private final class VoiceDictationController: ObservableObject {
             finishTask = Task { [weak self] in
                 do {
                     let recording = try await browser.finish()
+                    browser.observeFixture(.captureReturned)
                     let bearer = try await auth.value
+                    browser.observeFixture(.credentialReady)
                     try Task.checkCancellation()
+                    browser.observeFixture(.transcriptionPreflight)
                     let text = try await CodexNativeDictation.transcribe(audio: recording.data,
                         contentType: recording.contentType, credential: { bearer }, transport: transport)
+                    browser.observeFixture(.transcriptReturned)
                     try Task.checkCancellation()
                     guard let self, self.generation == epoch, self.phase == .transcribing else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CodexDictationError.emptyTranscript }
                     self.currentTranscript = text
+                    browser.observeFixture(.publishingTranscript)
                     guard self.publishTranscript() else { return }
+                    browser.observeFixture(.finalizationReady)
                     self.saveBrowserCaptureReceipt(recording: recording, characters: text.count)
                     self.completeFinalization()
                 } catch {
                     guard let self, self.generation == epoch, self.isActive else { return }
+                    browser.observeControllerFixtureFailure(error as? CodexDictationError ?? .transportFailed)
                     self.fail((error as? CodexDictationError ?? .transportFailed).localizedDescription)
                 }
             }
@@ -5143,7 +5150,8 @@ private func voiceStoreSendSelfTest() async throws -> Int {
                 "dispatch_count=\(dispatch.requests.count); post_count=\(posts); connection_count=\(connections); " +
                 "send_pending=\(store.voiceStoreFixtureSendPending); alert_present=\(store.alertMessage != nil); " +
                 "alert_before_capture=\(alertBeforeCapture); alert_before_send=\(alertBeforeSend); " +
-                "capture_failure_observed=\(captureFailureObserved); finalizer_present=\(voice.controllerFixtureFinalizer != nil)]"
+                "capture_failure_observed=\(captureFailureObserved); finalizer_present=\(voice.controllerFixtureFinalizer != nil); " +
+                browser.fixtureDiagnosticDescription + "]"
         })
         let posts = await wire.postRequests(), connections = await wire.connectionCount()
         try check(posts.count == 1 && connections == 0, "browser batch forced streaming or repeated provider request")
