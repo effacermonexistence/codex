@@ -1,4 +1,4 @@
-# Bounded live Auto — build 431 source integration
+# Bounded live Auto — build 432 source integration
 
 This is an execution policy, not a quality certificate. The pre-existing covered-live/FULL verifier policy remains separate.
 
@@ -21,3 +21,9 @@ The existing cards/tree/child windows consume exact-attempt private native-displ
 ## Evidence boundary
 
 Pure SQLite/transport fixtures are not native execution or installed UI proof. Source integration and build identity do not prove general flagship quality, quota savings, trained optimal routing or zero drift. Installation and real App-owned model/parallel/writer/resource evidence are separate completion gates. Older scored development comparisons remain frozen and are not reused as fresh proof.
+
+## Installed431 failure and432 source repair
+
+The actual App diagnostic on431 used a workspace-write owner capability ceiling for a read-only lookup. Strict equality with the effective task scope skipped planning entirely and selected one Astra/ultra worker.432 uses independently derived effective scope within the unchanged owner ceiling; it does not mutate the signed catalog or permit read-to-write escalation. Local planning, prompt limits, candidate metadata checks and finalizer admission use that effective scope consistently. The old failed task and its output are retained.
+
+Provider-native owned0644 logs use a separate bounded stable metadata reader; private OS-1 receipt/sidecar0600 custody is unchanged. Actual source-observed model/reasoning may then be displayed without substituting selected configuration. Source/pure-test success is not installed432 runtime evidence.
