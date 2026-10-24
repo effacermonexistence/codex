@@ -28,3 +28,15 @@ read-only rows. No native/model call is required by these fixtures.
 This is a classification repair, not proof that a native backend enforces its
 ticket or that a workspace writer respects a one-file instruction. Those are
 separate executed-path gates. It does not replay any previous task.
+
+## Corrective gate after independent review
+
+The initial valid-match count failed to reject a second unparsed/absolute/edit
+clause and a later approval condition. The corrected exemption now requires
+one closed valid file directive AND no other unresolved mutation clause. An
+invalid absolute target is a rejection, not an ignored match. Additional
+rename/copy/repair actions invalidate the exemption; existing complete
+preservation clauses do not become positive actions. Authorization-language
+conditions anywhere in the request conservatively refuse this exemption.
+These are bounded syntax gates, not a universal natural-language permission
+claim. The original failure and earlier source commit remain preserved.

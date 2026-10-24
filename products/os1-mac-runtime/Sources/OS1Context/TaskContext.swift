@@ -1345,14 +1345,22 @@ public struct ScopeResolution: Equatable, Sendable {
     // closed relative-file edit. It never creates positive authority, guesses
     // a filename from a data label, or alters the original executor request.
     private static func inputValuePreservationView(_ source: String) -> (text: String, prohibitions: [String]) {
-        let condition = #"(?i)\b(?:if|unless|provided|assuming)\b|\b(?:pending|without|before)\s+(?:an?\s+)?(?:approval|permission)\b|\b(?:approval|permission)\s+(?:is\s+)?(?:pending|required|needed)\b|(?:허락|승인)[^.!?;\n]{0,32}(?:받으면|되면|받은\s*(?:후|뒤)(?:에만)?|전(?:에|까지)?|대기)"#
+        // Refuse this small exemption on unresolved authority language,
+        // including conditions AFTER the edit. This is not a universal NL parser.
+        let condition = #"(?i)\b(?:if|unless|provided|assuming|approval|permission|authorization|authorisation|consent|approve|approved|approves)\b|\bonly\s+(?:after|once|when)\b|승인|허락|허가|(?:받은|완료된)\s*(?:뒤|후)에만"#
         guard source.range(of: condition, options: .regularExpression) == nil else { return (source, []) }
         let koreanEdit = #"^(?:(?:그|이|현재|작업)\s*폴더(?:\s*안)?의\s*)?("# + concretePathPattern + #")(?:\s*파일)?\s*(?:하나\s*)?만\s*(?:고쳐(?:\s*줘|주세요|라)?|(?:수정|변경|편집)\s*(?:해(?:\s*줘|주세요|라)?|하세요|하십시오))$"#
         let dataFence = #"(?i)^(?:(?:do\s+not|don't|never)\s+(?:mutate|modify|change|alter)\s+(?:the\s+)?input\s+(?:lists?|arrays?|collections?|dictionaries|dictionary|arguments?|objects?|values?)|입력\s*(?:리스트|배열|컬렉션|사전|인수|객체|값)(?:은|는|을|를)?\s*(?:수정|변경|변형)\s*하지\s*마(?:세요|십시오)?)$"#
         guard let english = try? NSRegularExpression(pattern: singleFileEditPattern),
               let korean = try? NSRegularExpression(pattern: koreanEdit),
               let fence = try? NSRegularExpression(pattern: dataFence) else { return (source, []) }
-        var clauses: [(Range<String.Index>, String)] = [], fileEdits = 0
+        func mutationClause(_ clause: String) -> Bool {
+            clause.range(of: #"(?i)\b(?:fix|repair|modify|edit|update|implement|create|write|save|delete|remove|rename|move|copy|change|alter|add|append|overwrite)\b"#, options: .regularExpression) != nil ||
+                positiveEdit.contains { $0.range(of: #"[가-힣]"#, options: .regularExpression) != nil && clause.contains($0) } ||
+                positiveFileEditPatterns.contains { clause.range(of: $0, options: .regularExpression) != nil } ||
+                clause.range(of: concretePathPattern + #"[^.!?;\n]{0,96}(?:수정|변경|편집|삭제|고쳐|바꿔|복사|이동|작성|생성)"#, options: .regularExpression) != nil
+        }
+        var clauses: [(Range<String.Index>, String)] = [], fileEdits = 0, unresolvedAction = false
         var cursor = source.startIndex
         while cursor < source.endIndex {
             let end = clauseEnd(source, from: cursor)
@@ -1360,22 +1368,38 @@ public struct ScopeResolution: Equatable, Sendable {
             if end == source.endIndex || source[end] != "?" {
                 clauses.append((cursor..<end, clause))
                 let normalized = boundedFileDirectiveView(clause).trimmingCharacters(in: .whitespacesAndNewlines)
+                var closedEdit = false
                 for (value, regex) in [(normalized, english), (clause, korean)] {
                     let whole = NSRange(value.startIndex..<value.endIndex, in: value)
                     if let match = regex.firstMatch(in: value, range: whole), match.range == whole,
                        let operand = Range(match.range(at: 1), in: value) {
+                        closedEdit = true
                         let target = String(value[operand])
                         if !target.hasPrefix("/"), !target.hasPrefix("~"),
                            !target.contains(where: { "\"“”'‘’`\\*?[]{}".contains($0) }),
                            target.split(separator: "/", omittingEmptySubsequences: false)
                             .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) { fileEdits += 1 }
+                        else { unresolvedAction = true }
                     }
                 }
+                if !closedEdit {
+                    let preservation = [namedTargetFencePattern, relativeTargetFencePattern,
+                        existingResourceFencePattern, koreanRelativeTargetFencePattern,
+                        enumeratedProhibitionPattern].contains {
+                            clause.range(of: $0, options: .regularExpression) == clause.startIndex..<clause.endIndex
+                        } || fence.firstMatch(in: clause, range: NSRange(clause.startIndex..<clause.endIndex, in: clause))?.range
+                            == NSRange(clause.startIndex..<clause.endIndex, in: clause)
+                    if !preservation && mutationClause(clause) { unresolvedAction = true }
+                }
+            } else if mutationClause(clause) {
+                // A benefactive edit question may be an additional request;
+                // it cannot be ignored to certify a ONE-file exemption.
+                unresolvedAction = true
             }
             guard end < source.endIndex else { break }
             cursor = source.index(after: end)
         }
-        guard fileEdits == 1 else { return (source, []) }
+        guard fileEdits == 1 && !unresolvedAction else { return (source, []) }
         var view = source, prohibitions: [String] = []
         for (range, clause) in clauses.reversed() {
             let whole = NSRange(clause.startIndex..<clause.endIndex, in: clause)
