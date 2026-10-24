@@ -76,6 +76,9 @@ export function deriveExplicitParallelOwnerContract(request, options = {}) {
     const prefix = request.slice(0, headers[0].index), view = prefix.normalize('NFC');
     if (/["“”`]|(?:^|\s)'[^'\n]+'|‘[^’\n]+’/.test(view) || /[?？]/.test(view) ||
         /\b(?:quote|quoted|example|sample|transcript|citation|reported|said|says|wrote|describe|explain|definition|translate|summari[sz]e|proofread)\b|예시|예문|인용|대화\s*기록|전사|번역|요약|설명(?:해|하|해줘)/i.test(view)) return null;
+    // Do not turn an unresolved conditional owner instruction into an
+    // unconditional execution partition. Leave it with the original route.
+    if (/\b(?:if|unless|provided|assuming|approval|permission|authorization|authorisation|consent|approve|approved)\b|\bonly\s+(?:after|once|when)\b|승인|허락|허가|(?:받은|완료된)\s*(?:뒤|후)에만/i.test(view)) return null;
     const parallel = /\b(?:parallel|concurrent(?:ly)?|simultaneous(?:ly)?)\b|병렬|동시/i;
     const independent = /\b(?:independent|separate)\s+(?:tasks?|work(?:ers?|items?)?|units?|requests?|subtasks?)\b|\b(?:tasks?|work|units?|requests?)\b[^.!?\n]{0,64}\bindependent(?:ly)?\b|서로\s*독립|독립(?:된|적인|적|으로)?\s*(?:작업|요청|태스크)|각각\s*(?:별도|따로)\s*(?:하위\s*)?(?:작업|요청|태스크)/i;
     const directive = /\b(?:run|process|handle|execute|perform|do)\b|(?:처리|수행|진행)(?:해|하|합시다)|나눠|분리해/i;
@@ -114,6 +117,15 @@ export function deriveExplicitParallelOwnerContract(request, options = {}) {
         exact_instruction: request.slice(h.index, end), source_span: span(h.index, end)};
     });
     if (units.some(unit => unit === null)) return null;
+    // Recognized cross-unit dependence contradicts an independent partition.
+    // This is a closed syntax refusal, not a semantic dependency proof.
+    const label = '(?:' + labels.join('|') + ')';
+    const dependency = new RegExp('(?:[Aa]fter|[Oo]nce|[Ww]hen)\\s+(?:(?:task|unit|step|section)\\s+)?' + label +
+      '\\s+(?:completes?|finishes?|returns?|is\\s+(?:complete|finished|done))\\b|' +
+      '(?:[Uu]se|[Uu]sing|[Cc]onsume|[Bb]ased\\s+on)\\s+(?:the\\s+)?' + label + "(?:'s|’s)?\\s+(?:result|output)\\b|" +
+      '(?:[Uu]se|[Uu]sing|[Cc]onsume)\\s+(?:the\\s+)?(?:result|output)\\s+(?:from|of)\\s+' + label + '(?![A-Za-z0-9_])|' +
+      label + '(?:가|이)?\\s*(?:끝나|끝난|완료|종료|반환)|' + label + '(?:의)?\\s*(?:결과|출력)[^.!?\\n]{0,24}(?:사용|이용|받아|기반)');
+    if (units.some(unit => dependency.test(unit.exact_instruction))) return null;
     return freeze({schema: 1, kind: 'owner_explicit_parallel_contract', request_sha256: sha(request),
       scope: 'read_only', global_prefix: {text: prefix, source_span: span(0, headers[0].index)}, units,
       final_output: {mode: 'ordered_collection', unit_ids: units.map(unit => unit.id)},

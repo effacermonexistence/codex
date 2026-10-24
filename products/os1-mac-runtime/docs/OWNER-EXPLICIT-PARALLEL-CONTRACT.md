@@ -17,7 +17,8 @@ descriptor. Concatenating prefix and sections reconstructs the original request
 byte-for-byte. No source strings are rewritten or normalized in the result.
 
 Unknown forms return `null`: absent/negated parallel intent, dependent or serial
-prefix, missing/duplicate/conflicting labels, quoted/reporting/data prefix,
+prefix, unresolved prefix approval/authority conditions, recognized cross-unit
+completion/result dependencies, missing/duplicate/conflicting labels, quoted/reporting/data prefix,
 fenced or blockquoted input, an ambiguous/mixed filesystem mutation, more than
 the host's two-to-four node bound, or any effective scope other than read-only.
 These conservative gates are not a universal natural-language parser. Returning
@@ -40,3 +41,9 @@ two-unit owner instruction; the actual final output did contain both requested
 parts. This repair targets plan/topology coverage, not a proven lost answer.
 Derived cross-domain/negative tests are development fixtures, not new natural
 failures, held-out parity evidence, or proof of actual parallel execution.
+
+The first source candidate's independent review exposed approval conditions and
+known-label result dependencies that the initial extraction had not rejected.
+That candidate is preserved as unapproved history. The follow-up refuses those
+recognized forms instead of minting an unconditional independent graph. It does
+not claim to decide arbitrary natural-language conditions or dependencies.
