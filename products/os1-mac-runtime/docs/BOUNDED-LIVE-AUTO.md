@@ -1,4 +1,4 @@
-# Bounded live Auto — build 433 source integration
+# Bounded live Auto — build 434 source integration
 
 This is an execution policy, not a quality certificate. The pre-existing covered-live/FULL verifier policy remains separate.
 
@@ -39,3 +39,17 @@ Both bounded Core and helper allow up to120s within the unchanged total task lif
 The native display reader may use optional provider-native Claude assistant effort/perTurnEffort only on the exact current output/session/time witness. Missing/conflicting/unsupported data stays unknown; selected settings are not execution readback.
 
 New source fixtures are included in the full release preflight. Actual installed433 App decomposition, parallel/native metadata and writer effects remain separate qualification gates until execution receipts exist. No general flagship parity, quota percentage or whole-product completion follows from these source fixes.
+
+## Installed433 contract failures and434 bounded source repair
+
+A3 on installed433 completed its real local generation but proposed two node IDs under `direct_child`; unchanged P1 rejected `final_cardinality`, and only one Fable/max fallback actually executed. Source434 constrains generation to three complete disjoint final-mode objects, each with its exact node cardinality. Host-owned candidate scope, closed paths/references and node bounds also constrain generation; P1 still verifies independently. Failed raw proposals remain unchanged.
+
+The actual433 writer changed the requested labels.py correctly, but input-list immutability was misclassified as a global filesystem ban. Its selected/readback read-only ticket still wrote through Bash: merged user approval settings and the vendor sandbox's writable cwd did not enforce the intended workspace boundary. Functional code checks did not qualify that route.
+
+434 preserves the data-value fence and original executor request while allowing only an independently established single closed relative file edit to retain writable scope. Extra/unparsed edits, approval conditions, absolute targets, global read-only and ambiguous code-output requests do not inherit that exemption. This is a bounded classifier repair, not universal natural-language authorization.
+
+Tool-enabled read-only Claude launches require immutable per-attempt canonical workspace/source protection, an inherited OS write guard and explicit native write-tool denies; genuinely closed tool-free safe mode remains separate. A real zero-model outer/inner sandbox probe failed with EPERM, so only this mandatory-outer-guarded profile disables the redundant inner vendor sandbox. Its vendor network fields are inactive and are explicitly recorded as not enforced; this is filesystem protection, not global network/no-effect proof or new network authority. Unsupported explicit network-policy fields remain rejected by the closed host contract. HOME/provider-state overlap, including verified Data-volume aliases, fails before model dispatch rather than silently weakening the guard or copying credentials. Positive bounded workspace changes are held with effects recorded, not relabelled no-effect or replayed. Neither equal nor missing fingerprints certify global absence of effects.
+
+The composer observer adds closed first-failure stage/code diagnostics without changing capture/production deadlines or success predicates. Historical CI433 capture failure remains a failure; source instrumentation alone does not identify its cause or waive it.
+
+These repairs require a fresh full434 release, preservation-aware installation and actual App parallel/writer qualification. Existing scored case reuse is internal development, not fresh public proof. No latest-best, quota percentage, generic flagship parity or whole-product completion claim follows from this source section.

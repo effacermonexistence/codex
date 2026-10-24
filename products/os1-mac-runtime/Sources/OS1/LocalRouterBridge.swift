@@ -109,7 +109,7 @@ enum LocalRouterBridge {
     static let rccAdaptivePlanHostSHA256 = "c17457e2530e044f536bed02ab9a66ab2971e5d1e59e9a758f0b49eb6f972971"
     static let rccAdaptiveRoutingPolicySHA256 = "6325511ddeae2cff899d07688e178fff026551e54a28cab8edc26fe2751c3efa"
     static let rccJointRouteSelectorSHA256 = "6a13cbf6b1ac2a001bd641e56260cccad8e11c334a9d32fb0350c883705de326"
-    static let rccLocalPlanPlannerSHA256 = "bc7112aa27a52ebbb7be82de654f93afecde41bb1c21c01b9848fad90a3dd2f1"
+    static let rccLocalPlanPlannerSHA256 = "acc2da4dbf228d835fa694338bf557b81bd7d437c344e380ad11514f70241b67"
     static let rccLocalPlanProposalSHA256 = "68e8807f4d5d95b1fceb623b81990135eedea8d781a0cbbb8e849d0cee662afd"
     static let rccRoutingOutcomeSHA256 = "c2ff271ef5d71204f8787232451c10733961c36b79e987c88fabdbe7edc03ec1"
     static let rccRoutingOutcomeCaptureSHA256 = "6beb1dbdd0914c3f3d695912b949143f52b2b6c7089184bf5d90b2907f26c5aa"
