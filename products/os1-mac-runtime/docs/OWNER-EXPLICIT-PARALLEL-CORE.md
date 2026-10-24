@@ -70,8 +70,11 @@ availability still govern it. Real concurrency must be observed separately.
 
 ## Output and evidence
 
-Core revalidates the exact owner graph during plan validation and final
-collection, then labels each completed child's raw output with the corresponding
+Core activates this contract through its explicit bounded feature/source path,
+not by recognizing a node-name prefix. Legacy/FULL/cert/explicit/feature-off plans
+using the same spelling retain prior behavior. The newly admitted contract is
+then recorded as Core-owned snapshot metadata and revalidated before every
+actual native ticket and final collection, then labels each completed child's raw output with the corresponding
 owner label in source order. It does not summarize the children through another
 LLM or promote execution-only output into task/quality/parity certification.
 
@@ -95,3 +98,12 @@ support using external source/structural checks instead of model agreement as
 adoption evidence. These are design inputs, not proof that this implementation
 works. Local pure tests and later executed runtime receipts provide that proof
 at their respective scopes.
+
+## Corrective review history
+
+The first Core candidate used a name-prefix test during generic plan validation.
+Independent review found that an old custom plan could legitimately use that
+name without the new feature. That candidate is preserved but not approved
+alone. Its corrective commit removes prefix-as-provenance, uses the explicit
+Core activation path plus stored source-contract metadata, and adds legacy,
+FULL and certificate compatibility and actual ticket-boundary mutation tests.

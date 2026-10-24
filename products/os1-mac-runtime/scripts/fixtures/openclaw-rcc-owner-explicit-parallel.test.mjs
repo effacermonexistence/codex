@@ -46,3 +46,18 @@ for(const mutate of [p=>p.nodes.pop(),p=>p.final_node_id=p.nodes[0].id,p=>p.node
 test('a terminal failed owner unit preserves the completed sibling without pretending all-unit completion or retrying',async t=>{let h;h=await harness(t,{execute:async ticket=>{h.tickets.push(ticket);return ticket.node_id==='owner_parallel_0'?result(ticket):{...result(ticket),status:'failed',dispatch_stage:'not_dispatched',output:'FAILURE_NOT_AN_ANSWER',error:'synthetic_outage',execution_verified:false,task_quality:'failed'};}});const q=task(h.dir);const done=await h.run(q),saved=h.rt._load(q.task_id);assertOwnerGraph(saved,q);assert.equal(h.tickets.length,2);assert.notEqual(done.state,'completed');assert.equal(saved.children[0].output,'raw-owner_parallel_0-🙂\n');assert(saved.result.output.includes('raw-owner_parallel_0-🙂'));assert(!saved.result.output.includes('FAILURE_NOT_AN_ANSWER'));assert.equal(saved.result.task_verified,false);});
 
 test('cancel during one planner callback does not authorize source partition dispatch or a local replay',async t=>{let ready,finish,calls=0;const began=new Promise(r=>ready=r),pending=new Promise(r=>finish=r);const h=await harness(t,{proposeLocalPlan:async()=>{calls++;ready();return pending;}}),q=task(h.dir);await h.rt.submit(q);await began;h.rt.cancel({schema:1,task_id:q.task_id});finish({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false});await new Promise(r=>setTimeout(r,50));const done=await h.rt.wait({schema:1,task_id:q.task_id},{timeoutMs:500});assert.equal(done.state,'cancelled');assert.equal(h.tickets.length,0);assert.equal(calls,1);await h.rt.submit(q);assert.equal(calls,1);});
+
+test('an old owner_parallel_ name is not provenance: feature-off/FULL/cert custom plans keep prior behavior',async t=>{
+ for(const kind of ['legacy','full','cert']){
+  const h=await harness(t,{hostAutoPlan:false,boundedAutoPlanning:false,
+   catalog:async q=>{const c=catalog(q);if(kind==='full')c.task_contract={coverage:'full',scope:'read_only',objective_sha256:q.request_sha256,contract_sha256:H('contract'),context_sha256:H(''),start_tree_sha256:H('tree'),reference_policy_sha256:q.policy_sha256,valid_until_ms:Date.now()+60000,bindings_checked:true};if(kind==='cert')c.class_certificates={readonly_lookup:{certificate_id:'fixture_cert',provider:'codex',model:'gpt-6-luna',effort:'low',format_check:'plain_text',measurement_sha256:H('measurement')}};return c;},
+   plan:async({task:q})=>({schema:1,task_id:q.task_id,request_sha256:q.request_sha256,nodes:[{id:'owner_parallel_0',instruction:q.request,dependencies:[],kind:'agent',candidate_id:'reference',scope:'read_only',owned_paths:[],context_refs:[]}],final_node_id:'owner_parallel_0'})});
+  const q=task(h.dir);await h.run(q);const s=h.rt._load(q.task_id);assert.equal(h.tickets.length,1,kind);assert.equal(s.owner_explicit_parallel,undefined,kind);assert.equal(s.plan.nodes[0].id,'owner_parallel_0');assert.equal(s.plan.nodes[0].instruction,q.request);
+ }
+});
+
+test('actual ticket preparation rechecks Core-owned source contract, not a coincidental node prefix',async t=>{
+ const h=await harness(t),q=task(h.dir);await h.run(q);const saved=h.rt._load(q.task_id),node=saved.plan.nodes[0],candidate=saved.catalog.candidates.find(c=>c.id===node.candidate_id);
+ for(const mutate of [s=>s.plan.nodes.pop(),s=>s.plan.nodes[0].instruction='foreign instruction',s=>s.owner_explicit_parallel.contract.request_sha256=H('other')]){const tampered=structuredClone(saved);mutate(tampered);assert.throws(()=>h.rt._ticket(tampered,node,candidate,randomUUID()),e=>['owner_explicit_parallel_contract_mismatch','owner_explicit_parallel_source_changed'].includes(e.code));}
+ assert.equal(h.tickets.length,2,'pure rejected ticket checks did not dispatch');
+});

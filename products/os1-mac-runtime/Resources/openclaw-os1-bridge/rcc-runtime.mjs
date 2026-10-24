@@ -1362,6 +1362,7 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
     routes[node.id] = {kind: choice.kind, reference_effort: null, ladder: null};
     return {...checked, candidate_id: choice.candidate.id};
   });
+  if (ownerParallel) assertOwnerExplicitParallelPlan({...proposed, nodes}, task, catalog);
   const plan = validatePlan({...proposed, nodes}, task, catalog);
   return {plan, decisions, routes};
 }
@@ -2247,8 +2248,6 @@ function validatePlan(plan, task, catalog) {
     ownerCollectionPlanEligible(task, collection) && plan.final_node_id === null && plan.nodes.length === collection.obligations.length &&
     plan.nodes.every((n, i) => n.id === `owner_${i}` && ownerCollectionObligation(n, task, catalog) !== null),
   'owner_collection_plan_mismatch');
-  if (plan.nodes.some(node => node.id.startsWith('owner_parallel_')))
-    assertOwnerExplicitParallelPlan(plan, task, catalog);
   // Planner independence was checked before host writer serialization.
   // Candidate-only rebindings preserve the admitted graph/ownership.
   assertFinalOutputOwnership(plan, task, {collectionMayBeOrdered: true});
@@ -4211,6 +4210,9 @@ class RCCRuntime {
       return;
     }
     let plan, decisions, routes, lockedID = null, liveAdopted = false;
+    const ownerPartitionEnabled = this.hostAutoPlan && this.boundedAutoPlanning &&
+      this.adaptivePolicy.mode === 'off' && this.verifierRegistry.size === 0;
+    const ownerPartition = ownerPartitionEnabled ? ownerExplicitParallelFor(admitted, catalog) : null;
     try {
       if (!await this._observeAdaptivePlan(taskID, admitted, catalog)) return;
       // R7: the host builds the plan itself (hostPlan); no model plans or
@@ -4239,7 +4241,7 @@ class RCCRuntime {
       }
       if (!this.hostAutoPlan && !this._allowModelGeneration(taskID)) return;
       const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog,
-        {ownerExplicitParallel: this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' && this.verifierRegistry.size === 0}) :
+        {ownerExplicitParallel: ownerPartitionEnabled}) :
         await this.plan({task: immutable(admitted), catalog: immutable(catalog)}));
       // Writer serialization is a safety order, not authority to manufacture
       // the planner's final-output dependency coverage.
@@ -4250,6 +4252,7 @@ class RCCRuntime {
       // paraphrase (lockIndivisibleInstruction); the decision says so.
       const locked = lockIndivisibleInstruction(resolved.plan, admitted);
       plan = validatePlan(locked.plan, admitted, catalog);
+      if (ownerPartition) assertOwnerExplicitParallelPlan(plan, admitted, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
       liveAdopted = accepted !== null;
       lockedID = locked.changed ? plan.nodes[0].id : null;
@@ -4281,7 +4284,7 @@ class RCCRuntime {
           'host_exact_request_shadow' : 'host_exact_request'
         : 'external_plan_callback';
       if (snapshot.owner_collection) snapshot.plan_provenance = 'host_owner_collection_v1';
-      if (plan.nodes.some(node => node.id.startsWith('owner_parallel_'))) {
+      if (ownerPartition) {
         const contract = assertOwnerExplicitParallelPlan(plan, admitted, catalog);
         snapshot.owner_explicit_parallel = {schema: 1, contract: immutable(contract),
           structural_owner_unit_coverage_verified: true, semantic_coverage_verified: false,
@@ -5159,6 +5162,11 @@ class RCCRuntime {
   }
 
   _ticket(snapshot, node, candidate, attemptID) {
+    if (snapshot.owner_explicit_parallel) {
+      const contract = assertOwnerExplicitParallelPlan(snapshot.plan, executionTask(snapshot), snapshot.catalog);
+      assert(stable(contract) === stable(snapshot.owner_explicit_parallel.contract),
+        'owner_explicit_parallel_source_changed');
+    }
     const policySource = executionTask(snapshot).host_context.owner_policy;
     const sourceSHA = policySource?.sourceSHA256 ?? policySource?.source_sha256 ?? executionTask(snapshot).policy?.source_sha256;
     assert(HASH.test(sourceSHA ?? ''), 'policy_source_unavailable');
