@@ -7,6 +7,11 @@ public let journalRotationBytes = 8_000_000
 public let activityStepBudgetBytes = 140_000
 
 public struct RuntimeActivity: Codable, Equatable, Sendable {
+    /// Scoped native-attempt observation, not a second activity owner. The
+    /// sink receives only this event (no inherited route or public text).
+    public enum Observation {
+        @TaskLocal public static var sink: (@Sendable (RuntimeActivity) -> Void)?
+    }
     public enum Phase: String, Codable, Sendable { case preparing, waitingForSource, source, authorizing, routing, executing, verifying, syncing, recovering }
     public enum PublicTextOrigin: String, Codable, Sendable { case nativeAssistant, systemStatus }
     public let phase: Phase
@@ -133,6 +138,11 @@ public struct RuntimeActivity: Codable, Equatable, Sendable {
         }
     }
     public static func emit(_ phase: Phase, provider: String? = nil, surface: String? = nil, model: String? = nil, effort: String? = nil, publicText: String? = nil, tool: String? = nil, nativeSessionID: String? = nil, progress: NativeExecutionProgress? = nil, publicTextOrigin: PublicTextOrigin = .systemStatus, agentTask: ParallelAgentTask.Snapshot? = nil) {
+        // A Core native child intentionally has no parent activity-file
+        // permission. Its scoped sink still observes bounded lifecycle data.
+        // Requested/ACK model+effort and assistant prose are NOT forwarded.
+        Observation.sink?(Self(phase, provider: provider, surface: surface,
+            tool: tool, nativeSessionID: nativeSessionID, progress: progress))
         guard let path = ProcessInfo.processInfo.environment["OS1_ACTIVITY_FILE"] else { return }
         let routeDecoder = JSONDecoder()
         routeDecoder.userInfo[routeOnlyKey] = true

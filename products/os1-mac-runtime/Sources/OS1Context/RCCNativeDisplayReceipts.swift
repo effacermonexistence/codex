@@ -28,7 +28,9 @@ public enum RCCNativeDisplayReceipts {
             parentFD = fd
         }
         let root = home.appendingPathComponent(".os1/rcc-runtime/native-receipts", isDirectory: true)
-        var receipts: [String: Data] = [:]
+        // Current attempt-indexed display metadata is independent of the
+        // terminal receipt. It cannot create children or certify execution.
+        var receipts = RCCNativeDisplayStore.load(snapshot, homeDirectory: homeDirectory)
         for child in snapshot.children {
             guard let path = child.nativeReceipt, receipts[path] == nil else { continue }
             let file = URL(fileURLWithPath: path)

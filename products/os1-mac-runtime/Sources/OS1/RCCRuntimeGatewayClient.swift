@@ -499,6 +499,7 @@ enum RCCRuntimeGatewayClient {
             last = try snapshot(raw, id: binding.id, requestSHA256: binding.hash, minimumRevision: 0)
         }
         var emittedRevision = -1
+        var displayObservedAt: Date?
         let observationDeadline = Date().addingTimeInterval(min(limits.observe, binding.duration + 120))
         var cancellationSent = false
         var cancellationDeadline: Date?
@@ -549,7 +550,11 @@ enum RCCRuntimeGatewayClient {
             }
         }
         while let current = last {
-            if current.revision > emittedRevision { progress(current.data); emittedRevision = current.revision }
+            let displayNow = Date()
+            if RCCRuntimeProjection.shouldRefreshDisplay(previousRevision: emittedRevision, previousAt: displayObservedAt,
+                revision: current.revision, now: displayNow) {
+                progress(current.data); emittedRevision = current.revision; displayObservedAt = displayNow
+            }
             if current.deliverable { return current.data }
             if cancellation(), !cancellationSent {
                 // Cancel is idempotent task intent; failure is followed by status,

@@ -275,5 +275,6 @@ func runRCCRuntimeProjectionFixtures() throws {
     claudeRecord.nativeSummary = try summary(provider: "claude", surface: "claude", turn: nil)
     try check(try graph(claudeRecord, core: claudeCore).nodes.last?.provider == nil,
               "Claude native record must have exact session filename, not Codex-style suffix")
+    try runRCCNativeDisplayObservationFixtures()
     print("RCC Runtime UI projection: \(checks) deterministic checks PASS; no scheduling/provider/model calls")
 }

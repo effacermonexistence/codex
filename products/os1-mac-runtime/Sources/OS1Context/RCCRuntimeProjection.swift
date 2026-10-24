@@ -5,6 +5,15 @@ import Foundation
 /// schedule, retry, grant a route or certify output. There are no invented
 /// planner/join workers: one real child is still a recorded one-child tree.
 public enum RCCRuntimeProjection {
+    /// Refresh optional native display evidence on EXISTING authenticated
+    /// status polls even when Core's semantic revision has not changed.
+    /// This grants no liveness/execution authority and requests no extra RPC.
+    public static func shouldRefreshDisplay(previousRevision: Int, previousAt: Date?, revision: Int, now: Date) -> Bool {
+        guard revision >= previousRevision, now.timeIntervalSince1970.isFinite else { return false }
+        if revision > previousRevision { return true }
+        guard let previousAt, previousAt.timeIntervalSince1970.isFinite else { return true }
+        return now.timeIntervalSince(previousAt) >= 1
+    }
     public enum Rejection: String, Error, Sendable {
         case invalidBinding, invalidClock, unsupportedDisplaySize, invalidDependency
     }
@@ -97,6 +106,41 @@ public enum RCCRuntimeProjection {
         }
         let witnessCounts = Dictionary(grouping: witnesses, by: { $0.1.identity }).mapValues(\.count)
         let nativeByChild = Dictionary(uniqueKeysWithValues: witnesses.filter { witnessCounts[$0.1.identity] == 1 })
+        let observations = core.children.compactMap { child -> (String, RCCNativeDisplayObservation)? in
+            guard let attempt = child.attemptID,
+                  let bytes = nativeReceipts[RCCNativeDisplayObservation.key(attempt)],
+                  let value = RCCNativeDisplayObservation.decode(bytes),
+                  let config = child.selectedConfig,
+                  value.taskID == core.taskID, value.requestSHA256 == core.requestSHA256,
+                  value.nodeID == child.id, value.attemptID == attempt,
+                  value.candidateID == child.candidateID, value.configurationSHA256 == config.configurationSHA256,
+                  value.surface == config.surface.rawValue,
+                  (config.transport == .codexAppServer ? value.provider == "codex" :
+                    config.transport == .claudeCLI && value.provider == "claude"),
+                  value.sessionID != nil, value.observedAt <= observedAt,
+                  child.startedAtMS.map({ value.attemptStartedAt.timeIntervalSince1970 * 1000 >= Double($0) }) ?? true,
+                  child.nativeReceipt.map({ $0 == value.nativeReceipt }) ?? true else { return nil }
+            if let receiptSHA = value.receiptSHA256 {
+                // Terminal settings cannot borrow an old/foreign/missing
+                // native receipt. A live progress observation has no such SHA.
+                guard child.nativeReceipt == value.nativeReceipt,
+                      let receipt = nativeReceipts[value.nativeReceipt],
+                      RCCRuntimeContract.digest(receipt) == receiptSHA,
+                      let native = nativeByChild[child.id], native.sessionID == value.sessionID,
+                      native.turnID == value.turnID else { return nil }
+                if value.provider == "claude", value.model != nil {
+                    guard let bound = try? RCCRuntimeContract.decodeRecord(receipt), let output = bound.output,
+                        value.settingsOutputSHA256 == RCCRuntimeContract.digest(Data(output.utf8)) else { return nil }
+                }
+            } else if value.model != nil || value.effort != nil || child.state != .running { return nil }
+            return (child.id, value)
+        }
+        let observationCounts = Dictionary(grouping: observations, by: {
+            [$0.1.provider, $0.1.sessionID ?? "", $0.1.turnID ?? ""].joined(separator: "\0")
+        }).mapValues(\.count)
+        let displayByChild = Dictionary(uniqueKeysWithValues: observations.filter {
+            observationCounts[[$0.1.provider, $0.1.sessionID ?? "", $0.1.turnID ?? ""].joined(separator: "\0")] == 1
+        })
         var knownTimes = [firstObservedAt]
         for child in core.children {
             for milliseconds in [child.startedAtMS, child.finishedAtMS].compactMap({ $0 }) {
@@ -168,17 +212,21 @@ public enum RCCRuntimeProjection {
                 description += " · selected " + selected.surface.rawValue + " / " + selected.model + " / " + selected.effort.rawValue
             } else { description += " · execution configuration not exposed" }
             let native = nativeByChild[child.id]
+            let display = displayByChild[child.id]
             if let native { description += " · native " + native.provider + " execution verified" }
+            if let display, let model = display.model {
+                description += " · observed " + model + " / " + (display.effort ?? "reasoning not exposed")
+            } else if display != nil { description += " · native progress observed; model/reasoning not exposed" }
             if state != .pending, child.startedAtMS == nil {
                 description += " · clock is first observation, not native start"
             }
             nodes.append(ParallelAgentTask.Node(id: id, parentID: rootID,
                 dependencies: dependencyNames.compactMap { childIDs[$0] },
                 title: childTitle(child, index: index), role: .worker, state: state,
-                // Native receipt provenance can identify a real executor and
-                // session. Selected/ACK model and effort remain NOT observed.
-                provider: native?.provider, surface: native?.surface,
-                model: nil, effort: nil, nativeSessionID: native?.sessionID,
+                // Exact current-attempt observation only. Selected/ACK
+                // model and effort remain separate, never relabelled actual.
+                provider: native?.provider ?? display?.provider, surface: native?.surface ?? display?.surface,
+                model: display?.model, effort: display?.effort, nativeSessionID: native?.sessionID ?? display?.sessionID,
                 workerSubmissionID: identifier(core.taskID, "submission:" + child.id),
                 startedAt: start, finishedAt: finish,
                 progressText: ParallelAgentTask.publicText(description, maximum: 500),
@@ -186,6 +234,7 @@ public enum RCCRuntimeProjection {
                 failureSummary: child.state == .effectsUncertain ? "Side effects uncertain; automatic replay is not authorized." :
                     ([.held, .failed].contains(child.state) ? "Core child did not complete; evidence retained." : nil),
                 scope: child.selectedConfig.map { $0.scope == .workspaceWrite ? .workspaceWrite : .readOnly },
+                workspace: display?.workspace, ownedPaths: display?.ownedPaths, nativeProgress: display?.progress,
                 // Only THIS validated Core child's already-public fields. Never
                 // inherit a prior attempt's output or read native-summary output.
                 publicOutputSummary: child.outputSummary.flatMap { ParallelAgentTask.publicText($0, maximum: 1_000) },

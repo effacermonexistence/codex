@@ -19459,6 +19459,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         configurationSHA256: t.configurationSHA256, sourceFingerprint: t.sourceFingerprint, provider: provider)
     var stagedTransaction: RCCStagedWriterTransaction.Transaction?
     var receiptPersisted = false
+    var nativeDisplay: RCCNativeDisplayStore.Publisher?
     defer {
         // This is a separate optional diagnostic, never execution/adoption
         // authority. A failed timing write cannot turn a failed attempt into
@@ -19656,7 +19657,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             sourceBeforeClean = rccSourceIsVerifiedClean(protectedRoot)
         }
         timing.mark(.executeStarted)
-        let execution = try await RCCNativeLocalQualityProfile.Context.$current.withValue(localQualityProfile) {
+        let display = RCCNativeDisplayStore.Publisher(ticket: t, nativeReceipt: receipt.path, workspace: workspace)
+        nativeDisplay = display
+        let execution = try await RuntimeActivity.Observation.$sink.withValue({ display.activity($0) }) {
+        try await RCCNativeLocalQualityProfile.Context.$current.withValue(localQualityProfile) {
         try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
         try await OS1FullAccessContinuation.$protectedPaths.withValue(isFullAccess ? protected : []) {
         try await OS1ChangeEscalation.$available.withValue(!h.requireReadOnly && t.selectedConfig.scope == .workspaceWrite && sourceRoot != nil) {
@@ -19672,7 +19676,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 exactAnswerOnly: answerOnly,
                 preloadedR2Evidence: sourceDelivery.evidence,
                 sourceUseRequired: sourceDelivery.evidence != nil,
-                onUsage: { measuredUsage = $0 }, onDispatch: { _ in dispatched = true },
+                onUsage: { measuredUsage = $0 }, onDispatch: { session in dispatched = true; display.session(session) },
                 onConfiguredInput: { prepared in
                     // Optional observation failures cannot reroute, authorize, retry, or alter the original outcome.
                     if let configuredInventory {
@@ -19687,6 +19691,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                     conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
                     continuing: t.continuation != nil, chatLane: surface.forcesChatLane),
                 delegatedChild: true)
+        }
         }
         }
         }
@@ -20005,6 +20010,16 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     try data.write(to: receipt, options: [.atomic]); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receipt.path)
     guard try Data(contentsOf: receipt) == data else { throw OS1Error.message("RCC native receipt readback failed") }
     receiptPersisted = true
+    // Same typed terminal step and exact persisted receipt bytes. Native
+    // settings are read from the verified own-session record, never artifact
+    // model/effort (which are the requested values). Optional failure is UI-only.
+    if let raw = record.nativeSummary,
+       let summary = try? JSONDecoder().decode(RunSummary.self, from: Data(raw.utf8)),
+       summary.steps.count == 1, let step = summary.steps.first {
+        nativeDisplay?.finish(sessionID: step.sessionID, turnID: step.nativeRecord?.turnID,
+            nativePath: step.nativeRecord?.recordPath, persistence: step.nativeRecord?.persistence ?? "unknown", receipt: data,
+            finalOutputSHA256: record.output.map { RCCRuntimeContract.digest(Data($0.utf8)) })
+    }
     timing.mark(.receiptPersisted)
     return data
 }
