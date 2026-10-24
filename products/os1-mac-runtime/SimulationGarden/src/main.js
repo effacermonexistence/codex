@@ -5,6 +5,7 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const glyph = (type) => ({worker:'♙',new:'＋',chat:'↗',focus:'⌖',close:'×',arrow:'→',stop:'■'}[type]);
 let data = { sessions: [], selectedID: null, selectedOutput: '', notice: '', total: 0 }, page = 0, query = '', filter = 'all', scene;
 const drafts = new Map();
+let pendingOrder = null;
 $('#app').innerHTML = `<section class="garden"><div id="scene"></div><div class="vignette"></div><header><div class="garden-brand"><span class="brand-mark">⬡</span><div><span class="eyebrow">OS1 · YOUR SESSIONS, ALIVE</span><h1>시뮬레이션<span>.</span></h1></div></div><div class="metrics"><div><b id="total">0</b><span>SESSIONS</span></div><div><i></i><b id="working">0</b><span>WORKING</span></div><button id="close" title="채팅으로 돌아가기">채팅으로 <span>↗</span></button></div></header>
 <aside class="roster"><div class="roster-head"><span>SESSION FLEET</span><span id="shown"></span></div><label class="search"><span>⌕</span><input id="search" placeholder="세션 이름 검색…" aria-label="세션 이름 검색"></label><div class="filters"><button data-filter="all" class="active">전체</button><button data-filter="working">작업 중</button><button data-filter="idle">대기</button></div><div id="units" role="list" aria-label="실제 OS1 세션"></div><div class="pager"><button id="prev" aria-label="이전 세션">←</button><span id="page"></span><button id="next" aria-label="다음 세션">→</button></div><button id="new">＋ 새 SCV <span>새 OS1 세션</span></button></aside>
 <div class="field-title"><span class="eyebrow">SECTOR 01 / THE MEADOW</span><h2>A little space<br>for big ideas.</h2><p>잔디 위의 모든 SCV가<br>실제 OS1 세션입니다.</p></div><div class="field-controls"><button id="zoom-out" aria-label="축소">−</button><button id="zoom-in" aria-label="확대">＋</button><button id="focus" title="선택한 SCV 보기">⌖</button></div><div class="field-bottom"><span><i></i> OS1 LIVE STATE · NO SEPARATE ENGINE</span><span>클릭 선택 · 휠 확대 · 우클릭 이동</span></div>
@@ -39,6 +40,13 @@ window.os1SimulationUpdate = snapshot => {
   const changed = data.selectedID !== snapshot.selectedID;
   if (changed) drafts.set(data.selectedID, $('#prompt').value);
   data = snapshot; if (scene) scene.enabled = snapshot.visible;
+  if (pendingOrder) {
+    const unit = data.sessions.find(s => s.id === pendingOrder.id);
+    if (unit && ['working', 'queued'].includes(unit.status)) {
+      if (data.selectedID === pendingOrder.id && $('#prompt').value === pendingOrder.text) $('#prompt').value = '';
+      drafts.set(pendingOrder.id, ''); pendingOrder = null;
+    } else if (data.notice) { pendingOrder = null; } // Rejected drafts stay visible.
+  }
   if (changed) { $('#prompt').value = drafts.get(data.selectedID) || ''; const index = matches().findIndex(s => s.id === data.selectedID); if (index >= 0) page = Math.floor(index / 24); }
   render();
 };
@@ -49,7 +57,7 @@ $('#prev').onclick = () => { page--; render(); }; $('#next').onclick = () => { p
 $('#new').onclick = () => post('new'); $('#close').onclick = () => post('close');
 $('#open-chat').onclick = $('#result-chat').onclick = () => data.selectedID && post('open', { id: data.selectedID });
 $('#zoom-in').onclick = () => scene?.setZoom(scene.zoom * 1.15); $('#zoom-out').onclick = () => scene?.setZoom(scene.zoom / 1.15); $('#focus').onclick = () => scene?.focus(data.selectedID);
-$('#order-form').onsubmit = e => { e.preventDefault(); const text = $('#prompt').value.trim(); if (!text || !selected() || selected().status === 'working') return; post('order', { id: data.selectedID, text }); drafts.set(data.selectedID, ''); $('#prompt').value = ''; };
+$('#order-form').onsubmit = e => { e.preventDefault(); const text = $('#prompt').value.trim(); if (!text || !selected() || selected().status === 'working') return; pendingOrder = { id: data.selectedID, text }; post('order', { id: data.selectedID, text }); };
 $('#stop').onclick = () => data.selectedID && post('stop', { id: data.selectedID });
 $('#prompt').oninput = () => drafts.set(data.selectedID, $('#prompt').value);
 $('#prompt').onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $('#order-form').requestSubmit(); } };
