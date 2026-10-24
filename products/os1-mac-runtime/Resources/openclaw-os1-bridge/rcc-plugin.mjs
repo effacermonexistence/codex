@@ -566,7 +566,7 @@ export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, 
     const writerPreparation = createLocalPlanPlanner({complete, lifetimeSignal,
       limits: {max_nodes: 3, max_workers: 3, max_revisions: 0}});
     return {adaptiveRoutingPolicy: policy, ...calibrated, boundedAutoPlanning: true,
-      proposeLocalPlan: request => request.candidateCatalog?.owner_scope === 'workspace_write' ?
+      proposeLocalPlan: request => (request.executionScope ?? request.candidateCatalog?.owner_scope) === 'workspace_write' ?
         writerPreparation(request) : reader(request)};
   }
   if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy, ...calibrated};

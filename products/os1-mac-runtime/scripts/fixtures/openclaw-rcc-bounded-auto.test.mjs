@@ -8,7 +8,8 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createRCCRuntime, hostContextFingerprint, RCCRuntimeError, admitBoundedAutoPlan} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {createPlannerHostProjection, compileFreshPlannerProposal} from '../../Resources/openclaw-os1-bridge/adaptive-plan-host.mjs';
-import {createLocalPlanPlanner} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
+import {adaptiveRuntimeOptions} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
+import {createLocalPlanPlanner, projectLocalPlannerCandidates} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
 const H = s => createHash('sha256').update(s).digest('hex');
 const policyText = 'Preserve the original objective and source. Proposal is not execution authority.';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -186,4 +187,56 @@ test('ordinary bounded Auto can run an authorized cheap row when frontier refere
     proposeLocalPlan:async()=>({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false})}),q=task(h.directory);
   const done=await h.run(q);assert.equal(done.state,'returned_unverified',JSON.stringify(done));assert.equal(h.tickets.length,2);
   assert(h.tickets.every(x=>x.selected_config.model==='gpt-6-luna'&&x.selected_config.effort==='low'));
+});
+
+test('App-shaped write ceiling/read-only class reaches real local compiler and two overlapping cheap readers', async t => {
+  let calls=0, running=0, overlap=false, release;
+  const barrier=new Promise(resolve=>release=resolve);
+  const options=adaptiveRuntimeOptions({pluginConfig:{bounded_auto:true},complete:async request=>{
+    calls++;
+    const input=JSON.parse(request.messages[0].content);
+    assert.equal(input.candidate_metadata.owner_scope,'workspace_write','catalog authority ceiling retained');
+    assert.equal(input.candidate_metadata.effective_scope,'read_only','separate host-derived effective scope');
+    assert.equal(Object.hasOwn(input,'host_finalizer'),false,'read task is not writer preparation');
+    const raw=JSON.parse(proposal());for(const n of raw.nodes)n.proposed_candidate_id='cheap';
+    return {provider:'ollama',model:'qwen3.5:4b',responseModel:'qwen3.5:4b',stopReason:'stop',
+      execution:{mode:'direct-provider',owner:{kind:'provider',id:'ollama'}},text:JSON.stringify(raw)};
+  }});
+  const h=await harness(t,{...options,maximumWorkers:4,maximumReadWorkersPerPool:4,
+    catalog:async q=>{const c=catalog(q);c.owner_scope='workspace_write';c.candidates[0].estimated_cost_units=2;
+      c.candidates.push({...c.candidates[0],id:'cheap',model:'gpt-6-luna',effort:'low',estimated_cost_units:1,configuration_sha256:H('cheap')});c.model_tiers['gpt-6-luna']='fast';return c;},
+    execute:async ticket=>{h.tickets.push(ticket);running++;if(running===2){overlap=true;release();}
+      await Promise.race([barrier,sleep(1000).then(()=>{throw Error('read branches did not overlap');})]);return completed(ticket);}});
+  const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
+  const original=JSON.stringify(q),done=await h.run(q),saved=h.runtime._load(q.task_id);
+  assert.equal(calls,1);assert.equal(overlap,true);assert.equal(done.state,'returned_unverified');
+  assert.equal(h.tickets.length,2);assert.equal(saved.plan_provenance,'host_checked_execution_plan_v1');
+  assert.equal(saved.adaptive_routing.reason,'bounded_host_checked_proposal');assert.equal(saved.adaptive_routing.quality_certificate,false);
+  assert(h.tickets.every(x=>x.selected_config.scope==='read_only'&&x.selected_config.model==='gpt-6-luna'&&x.selected_config.effort==='low'));
+  assert(h.tickets.every(x=>x.original_request===q.request&&x.original_objective===q.objective));
+  assert.equal(JSON.stringify(q),original,'original task/policy/source unchanged');assert(!saved.plan.nodes.some(x=>x.id==='host_finalize'));
+});
+
+test('effective scope is contained by owner ceiling and cannot create a final writer hint',()=>{
+  const q=task('/private/test'),c=catalog(q),prep=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
+  assert.throws(()=>projectLocalPlannerCandidates({catalog:c,hostProjection:prep.hostProjection,expectedBinding:prep.expectedBinding,now_ms:Date.now(),executionScope:'workspace_write'}),{code:'planner_effective_scope_not_owner_admitted'});
+  c.owner_scope='workspace_write';const wide=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
+  const view=projectLocalPlannerCandidates({catalog:c,hostProjection:wide.hostProjection,expectedBinding:wide.expectedBinding,now_ms:Date.now(),executionScope:'read_only'});
+  assert.equal(view.owner_scope,'workspace_write');assert.equal(view.effective_scope,'read_only');
+  assert.equal(view.catalog_sha256,wide.expectedBinding.catalog_sha256,'catalog hash not rewritten to hide capability/effective distinction');
+});
+
+test('write ceiling never enables a model finalizer hint for an effective read task',async t=>{
+  const options=adaptiveRuntimeOptions({pluginConfig:{bounded_auto:true},complete:async()=>{
+    const raw=JSON.parse(proposal());raw.final_output_proposal.host_finalizer_candidate_id='writer_hint';
+    return {provider:'ollama',model:'qwen3.5:4b',responseModel:'qwen3.5:4b',stopReason:'stop',
+      execution:{mode:'direct-provider',owner:{kind:'provider',id:'ollama'}},text:JSON.stringify(raw)};
+  }});
+  const h=await harness(t,{...options,catalog:async q=>{const c=catalog(q);c.owner_scope='workspace_write';
+    c.candidates.push({...c.candidates[0],id:'writer_hint',scope:'workspace_write',permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**'],configuration_sha256:H('writer_hint')});return c;}});
+  const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
+  const done=await h.run(q),saved=h.runtime._load(q.task_id);
+  assert.equal(done.state,'returned_unverified');assert.equal(h.tickets.length,1,'rejected hint preserves exact host fallback');
+  assert(h.tickets.every(x=>x.selected_config.scope==='read_only'));assert.equal(saved.plan_provenance,'host_exact_request');
+  assert.equal(saved.adaptive_routing.live_plan_changed,false);assert.equal(saved.adaptive_routing.quality_certificate,false);
 });

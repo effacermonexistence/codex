@@ -1240,7 +1240,9 @@ export function hostPlan(task, catalog) {
  * requests keep their original R0/checker path. Unknown quality stays unknown. */
 function boundedAutoEligible(task, catalog) {
   return task?.mode === 'auto' && task.objective === task.request &&
-    ['read_only', 'workspace_write'].includes(hostScope(task, catalog)) && catalog.owner_scope === hostScope(task, catalog) &&
+    ['read_only', 'workspace_write'].includes(hostScope(task, catalog)) &&
+    (catalog.owner_scope === hostScope(task, catalog) ||
+      catalog.owner_scope === 'workspace_write' && hostScope(task, catalog) === 'read_only') &&
     (hostScope(task, catalog) !== 'workspace_write' || task.host_context.require_read_only === false) &&
     !ownerCollectionFor(task, catalog) && catalog.task_contract == null &&
     Object.keys(catalog.class_certificates ?? {}).length === 0 && routingIntent(catalog)?.require_native_ceiling !== true &&
@@ -3854,6 +3856,7 @@ class RCCRuntime {
       if (!this._allowModelGeneration(taskID)) throw new RCCRuntimeError('model_generation_forbidden');
       return this.proposeLocalPlan({hostProjection: prepared.hostProjection,
         expectedBinding: prepared.expectedBinding, candidateCatalog: immutable(catalog), ownerPolicy: immutable(task.policy),
+        ...(bounded ? {executionScope: scope} : {}),
         projection: prepared.projection, attempt: {index: 0, revision_of: null, correction_codes: []},
         signal: controller.signal,
         observeResourceUsage: event => this._recordResourceUsage(taskID, event)});
