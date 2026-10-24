@@ -358,8 +358,8 @@ describe("client release artifact hygiene gate", () => {
     const fingerprint = "5f4fefa8202359ac40fe5e33b2c99063fea2f7845c4bb6b2c5aa5efa1866e99f";
     const entry = policy.publicTokenProvenance[fingerprint];
     expect(entry.tokenKind).toBe("compiler_type");
-    expect(entry.sourceRevision).toBe("0e0fe1d3312499bde58ad8457f2bbed7194c2cd6");
-    expect(entry.sourceSHA256).toBe("aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66");
+    expect(entry.sourceRevision).toBe("1958c236745c854435e5ab3b5cb25de912d96be8");
+    expect(entry.sourceSHA256).toBe("8c9f3c1cf527c01d0c8292b2b5521a1755c32ff30c15233adc577d5b0bc3caf1");
     expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
     const source = await readFile(new URL("../../../" + entry.source, import.meta.url));
     expect(createHash("sha256").update(source).digest("hex")).toBe(entry.sourceSHA256);
@@ -416,7 +416,11 @@ describe("client release artifact hygiene gate", () => {
     for (const delta of [{publicToken: entry.publicToken + "Extra"}, {tokenKind: "diagnostic_source_path"},
       {demangledPublicType: "Wrong public type"}, {source: "products/os1-mac-runtime/Sources/OS1App/Different.swift"},
       {sourceRevision: "0".repeat(40)}, {sourceSHA256: "0".repeat(64)}, {sourceURL: "https://example.invalid/not-reviewed"},
-      {sourceAnchor: "private func anotherTest() async throws"}, {localTypeAnchor: "struct Gate {}"}]) {
+      {sourceAnchor: "private func anotherTest() async throws"}, {localTypeAnchor: "struct Gate {}"},
+      // A coherent but stale former snapshot is not current source evidence.
+      {sourceRevision: "0e0fe1d3312499bde58ad8457f2bbed7194c2cd6",
+        sourceSHA256: "aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66",
+        sourceURL: "https://github.com/effacermonexistence/codex/blob/0e0fe1d3312499bde58ad8457f2bbed7194c2cd6/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"}]) {
       const policy = structuredClone(original); Object.assign(policy.publicTokenProvenance[fingerprint], delta);
       await writeFile(policyPath, JSON.stringify(policy));
       const diagnostic = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });
@@ -439,8 +443,8 @@ describe("client release artifact hygiene gate", () => {
     const fingerprint = "a6819f685bc5915b2dea314240fe8f94fed970e5a303cb91432dcef97b413f3a";
     const entry = policy.publicTokenProvenance[fingerprint];
     expect(entry.tokenKind).toBe("compiler_type");
-    expect(entry.sourceRevision).toBe("0e0fe1d3312499bde58ad8457f2bbed7194c2cd6");
-    expect(entry.sourceSHA256).toBe("aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66");
+    expect(entry.sourceRevision).toBe("1958c236745c854435e5ab3b5cb25de912d96be8");
+    expect(entry.sourceSHA256).toBe("8c9f3c1cf527c01d0c8292b2b5521a1755c32ff30c15233adc577d5b0bc3caf1");
     expect(entry.sourceURL).toBe(`https://github.com/effacermonexistence/codex/blob/${entry.sourceRevision}/${entry.source}`);
     const source = await readFile(new URL("../../../" + entry.source, import.meta.url));
     expect(createHash("sha256").update(source).digest("hex")).toBe(entry.sourceSHA256);
@@ -497,7 +501,11 @@ describe("client release artifact hygiene gate", () => {
     for (const delta of [{publicToken: entry.publicToken + "Extra"}, {tokenKind: "diagnostic_source_path"},
       {demangledPublicType: "Wrong public type"}, {source: "products/os1-mac-runtime/Sources/OS1App/Different.swift"},
       {sourceRevision: "0".repeat(40)}, {sourceSHA256: "0".repeat(64)}, {sourceURL: "https://example.invalid/not-reviewed"},
-      {sourceAnchor: "private func anotherTest() async throws"}, {localTypeAnchor: "struct Control {}"}]) {
+      {sourceAnchor: "private func anotherTest() async throws"}, {localTypeAnchor: "struct Control {}"},
+      // Keep immutable-source validation strict after an admitted source change.
+      {sourceRevision: "0e0fe1d3312499bde58ad8457f2bbed7194c2cd6",
+        sourceSHA256: "aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66",
+        sourceURL: "https://github.com/effacermonexistence/codex/blob/0e0fe1d3312499bde58ad8457f2bbed7194c2cd6/products/os1-mac-runtime/Sources/OS1App/OS1App.swift"}]) {
       const policy = structuredClone(original); Object.assign(policy.publicTokenProvenance[fingerprint], delta);
       await writeFile(policyPath, JSON.stringify(policy));
       const diagnostic = spawnSync(process.execPath, [helper, input], { encoding: "utf8" });

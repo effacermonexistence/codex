@@ -18,8 +18,8 @@ for (const [fingerprint, provenance] of Object.entries(policy.publicTokenProvena
     if (fingerprint === "5f4fefa8202359ac40fe5e33b2c99063fea2f7845c4bb6b2c5aa5efa1866e99f" && !(
       provenance.demangledPublicType === 'Gate #1 in OS1App.(routeLanesCompletionSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()' &&
       provenance.source === 'products/os1-mac-runtime/Sources/OS1App/OS1App.swift' &&
-      provenance.sourceRevision === '0e0fe1d3312499bde58ad8457f2bbed7194c2cd6' &&
-      provenance.sourceSHA256 === 'aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66' &&
+      provenance.sourceRevision === '1958c236745c854435e5ab3b5cb25de912d96be8' &&
+      provenance.sourceSHA256 === '8c9f3c1cf527c01d0c8292b2b5521a1755c32ff30c15233adc577d5b0bc3caf1' &&
       provenance.sourceURL === `https://github.com/effacermonexistence/codex/blob/${provenance.sourceRevision}/${provenance.source}` &&
       provenance.sourceAnchor === 'private func routeLanesCompletionSelfTest() async throws' &&
       provenance.localTypeAnchor === 'final class Gate { var continuation: CheckedContinuation<Void, Never>?; var calls = 0 }'
@@ -30,8 +30,8 @@ for (const [fingerprint, provenance] of Object.entries(policy.publicTokenProvena
     if (fingerprint === 'a6819f685bc5915b2dea314240fe8f94fed970e5a303cb91432dcef97b413f3a' && !(
       provenance.demangledPublicType === 'Control #1 in OS1App.(rccIntentIngressAppSelfTest in _E4338E7CE7A60E44AE4AAB89C865B633)() async throws -> ()' &&
       provenance.source === 'products/os1-mac-runtime/Sources/OS1App/OS1App.swift' &&
-      provenance.sourceRevision === '0e0fe1d3312499bde58ad8457f2bbed7194c2cd6' &&
-      provenance.sourceSHA256 === 'aa49d11e8978ec807617da5ae0b9ea6cdb2c6fff44d29607d38cbbbbe91cdc66' &&
+      provenance.sourceRevision === '1958c236745c854435e5ab3b5cb25de912d96be8' &&
+      provenance.sourceSHA256 === '8c9f3c1cf527c01d0c8292b2b5521a1755c32ff30c15233adc577d5b0bc3caf1' &&
       provenance.sourceURL === `https://github.com/effacermonexistence/codex/blob/${provenance.sourceRevision}/${provenance.source}` &&
       provenance.sourceAnchor === 'private func rccIntentIngressAppSelfTest() async throws' &&
       provenance.localTypeAnchor === '@MainActor final class Control {'
