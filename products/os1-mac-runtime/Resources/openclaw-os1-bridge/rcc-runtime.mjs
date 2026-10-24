@@ -5166,6 +5166,14 @@ class RCCRuntime {
       const contract = assertOwnerExplicitParallelPlan(snapshot.plan, executionTask(snapshot), snapshot.catalog);
       assert(stable(contract) === stable(snapshot.owner_explicit_parallel.contract),
         'owner_explicit_parallel_source_changed');
+      // Validate the object actually becoming a native payload, not merely
+      // the intended plan in its snapshot. Candidate-only route rebinding
+      // remains legal; source-owned unit fields may never drift with it.
+      const canonical = snapshot.plan.nodes.find(unit => unit.id === node?.id);
+      const fields = ['id', 'instruction', 'kind', 'scope', 'dependencies', 'owned_paths', 'context_refs'];
+      assert(canonical && fields.every(key => stable(node[key]) === stable(canonical[key])) &&
+        candidate.scope === canonical.scope && candidate.permission_profile === 'read_only',
+        'owner_explicit_parallel_ticket_node_mismatch');
     }
     const policySource = executionTask(snapshot).host_context.owner_policy;
     const sourceSHA = policySource?.sourceSHA256 ?? policySource?.source_sha256 ?? executionTask(snapshot).policy?.source_sha256;

@@ -107,3 +107,11 @@ name without the new feature. That candidate is preserved but not approved
 alone. Its corrective commit removes prefix-as-provenance, uses the explicit
 Core activation path plus stored source-contract metadata, and adds legacy,
 FULL and certificate compatibility and actual ticket-boundary mutation tests.
+
+A subsequent payload-boundary review found that validating the stored plan alone
+was insufficient: a caller could pass a different actual node object to ticket
+preparation. The next corrective commit compares actual source-owned node
+fields with the canonical current unit (and preserves read-only authority),
+while still allowing legitimate candidate-only rebinding. The original plan
+and earlier review receipts remain preserved; new negative fixtures keep the
+snapshot unchanged and mutate only the actual ticket argument.

@@ -61,3 +61,12 @@ test('actual ticket preparation rechecks Core-owned source contract, not a coinc
  for(const mutate of [s=>s.plan.nodes.pop(),s=>s.plan.nodes[0].instruction='foreign instruction',s=>s.owner_explicit_parallel.contract.request_sha256=H('other')]){const tampered=structuredClone(saved);mutate(tampered);assert.throws(()=>h.rt._ticket(tampered,node,candidate,randomUUID()),e=>['owner_explicit_parallel_contract_mismatch','owner_explicit_parallel_source_changed'].includes(e.code));}
  assert.equal(h.tickets.length,2,'pure rejected ticket checks did not dispatch');
 });
+
+
+test('actual node arguments cannot replace source-owned ticket fields while candidate-only rebind remains valid',async t=>{
+ const h=await harness(t),q=task(h.dir);await h.run(q);const snapshot=h.rt._load(q.task_id),node=snapshot.plan.nodes[0],candidate=snapshot.catalog.candidates.find(c=>c.id===node.candidate_id),saved=JSON.stringify(snapshot);
+ const valid=h.rt._ticket(snapshot,node,candidate,randomUUID());assert.equal(valid.instruction,node.instruction);
+ for(const mutate of [n=>n.instruction='FOREIGN_INSTRUCTION_NOT_OWNER_UNIT',n=>n.scope='workspace_write',n=>n.kind='deterministic',n=>n.dependencies=[snapshot.plan.nodes[1].id],n=>n.owned_paths=['foreign.txt'],n=>n.context_refs=['foreign:source'],n=>n.id='foreign_unit']){const actual=structuredClone(node);mutate(actual);assert.throws(()=>h.rt._ticket(snapshot,actual,candidate,randomUUID()),{code:'owner_explicit_parallel_ticket_node_mismatch'});}
+ for(const patch of [{scope:'workspace_write'},{permission_profile:'workspace_write'}])assert.throws(()=>h.rt._ticket(snapshot,node,{...candidate,...patch},randomUUID()),{code:'owner_explicit_parallel_ticket_node_mismatch'});
+ const rebound=snapshot.catalog.candidates.find(c=>c.id!==candidate.id),ticket=h.rt._ticket(snapshot,{...node,candidate_id:rebound.id},rebound,randomUUID());assert.equal(ticket.candidate_id,rebound.id);assert.equal(ticket.instruction,node.instruction);assert.equal(ticket.original_request,q.request);assert.equal(ticket.original_objective,q.objective);assert.equal(JSON.stringify(snapshot),saved);assert.equal(h.tickets.length,2,'pure ticket checks cannot dispatch or mutate the snapshot');
+});
