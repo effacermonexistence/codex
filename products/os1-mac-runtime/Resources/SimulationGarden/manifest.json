@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "source": "products/os1-mac-runtime/SimulationGarden",
+  "files": [
+    {
+      "path": "THREE-LICENSE.txt",
+      "bytes": 1081,
+      "sha256": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601"
+    },
+    {
+      "path": "assets/index-CcAANrVk.css",
+      "bytes": 8581,
+      "sha256": "7af6fc4c7ef70c9badffcaf9ec224b6f939e96a432b43837f0850b24370d2433"
+    },
+    {
+      "path": "assets/index-zASV2GRT.js",
+      "bytes": 524085,
+      "sha256": "a9218faf404fdeb9643d067cfb8dca9acc62cdcc5fa9a5c92a3c8975181fe88b"
+    },
+    {
+      "path": "index.html",
+      "bytes": 571,
+      "sha256": "d626ec056dea86f88f71d870eecd3af6309fa765bc794e6b30861f8953cdcc11"
+    }
+  ]
+}

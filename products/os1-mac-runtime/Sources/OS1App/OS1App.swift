@@ -10249,6 +10249,17 @@ private final class SessionStore: ObservableObject {
         }
     }
 
+    fileprivate var simulationGardenRows: [OS1GardenSession] {
+        orderedSessions.filter { $0.archived != true }.map { session in
+            let running = isSessionRunning(session.id)
+            let queued = queuedSubmissions.contains { $0.sessionID == session.id }
+            let status = running ? "working" : queued ? "queued" : session.lastFailure != nil ? "failed" : session.lastCompletedAt != nil ? "completed" : "idle"
+            return OS1GardenSession(id: session.id.uuidString, name: session.title,
+                engine: session.lastProvider ?? session.provider.title, status: status,
+                activity: running ? (publicRunProgress(session.id) ?? "OS1 작업 실행 중") : queued ? "기존 큐는 그대로 보존됩니다." : "같은 세션에 이어서 작업할 수 있어요.")
+        }
+    }
+
     var filteredSessions: [ConversationSession] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return orderedSessions.filter {
@@ -16906,10 +16917,43 @@ private struct RootView: View {
     @StateObject private var browser = OS1BrowserWorkspace()
     private var browserKey: String { store.selectedSessionID?.uuidString ?? "native-\(store.surface.rawValue)" }
     @State private var windowDropTargeted = false
+    @State private var simulationVisible = false
+    @State private var simulationTick = 0
+    @State private var simulationNotice = ""
+
+    private var gardenSnapshot: OS1GardenSnapshot {
+        let _ = simulationTick
+        let rows = store.simulationGardenRows
+        let output = store.selectedSession?.messages.last(where: { $0.role == .assistant })?.text ?? ""
+        return OS1GardenSnapshot(sessions: rows, selectedID: store.selectedSessionID?.uuidString,
+            selectedOutput: String(output.prefix(6000)), notice: simulationNotice, visible: simulationVisible)
+    }
+
+    private func gardenAction(_ action: String, _ rawID: String?, _ text: String?) {
+        simulationNotice = ""
+        if action == "close" { simulationVisible = false; return }
+        if action == "new" { store.createSession(); return }
+        guard let rawID, let id = UUID(uuidString: rawID),
+              store.sessions.contains(where: { $0.id == id && $0.archived != true }) else { return }
+        store.select(id)
+        if action == "open" { store.showClodexHome(); simulationVisible = false }
+        else if action == "stop" { store.cancelSelectedRun() }
+        else if action == "order", let text {
+            guard !store.isSessionRunning(id) else { simulationNotice = "이미 실행 중인 SCV입니다. 새 작업은 종료 후 보내 주세요."; return }
+            guard store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                simulationNotice = "이 세션에 기존 채팅 초안이 있습니다. 채팅에서 확인해 주세요. 초안은 덮어쓰지 않았습니다."; return
+            }
+            // The exact existing send path retains provider routing, approvals,
+            // queues, recovery holds and native thread continuity.
+            store.composer = text
+            store.send()
+        }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
-            ProviderRail(store: store, governanceOpen: $profileNavigation.governanceOpen, identity: identity, usage: profileUsage) { destination in
+            ProviderRail(store: store, governanceOpen: $profileNavigation.governanceOpen, simulationVisible: $simulationVisible, identity: identity, usage: profileUsage) { destination in
+                simulationVisible = false
                 profileNavigation.select(destination)
             }
             Rectangle().fill(Theme.border).frame(width: 1)
@@ -16929,9 +16973,13 @@ private struct RootView: View {
                             browserVisible: browser.visible, toggleBrowser: { browser.visible.toggle() })
                     }
                 }
-                .opacity(profileNavigation.governanceOpen ? 0 : 1)
-                .allowsHitTesting(!profileNavigation.governanceOpen)
-                .accessibilityHidden(profileNavigation.governanceOpen)
+                .opacity(profileNavigation.governanceOpen || simulationVisible ? 0 : 1)
+                .allowsHitTesting(!profileNavigation.governanceOpen && !simulationVisible)
+                .accessibilityHidden(profileNavigation.governanceOpen || simulationVisible)
+                OS1SimulationGarden(snapshot: gardenSnapshot, onAction: gardenAction)
+                    .opacity(simulationVisible ? 1 : 0)
+                    .allowsHitTesting(simulationVisible)
+                    .accessibilityHidden(!simulationVisible)
                 if profileNavigation.governanceOpen {
                     GovernanceMonitorView(active: store.activeRuns.map { id, run in
                         ExecutionRoutePresentation(activity: run.activity, lanes: store.liveRouteLanes(id)).governanceLine
@@ -16940,11 +16988,14 @@ private struct RootView: View {
                 }
             }
             .frame(minWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
-            if browser.visible {
+            if browser.visible && !simulationVisible {
                 OS1BrowserPanel(page: browser.page(browserKey), close: { browser.visible = false })
                     .id(browserKey)
             }
             }
+        }
+        .onReceive(Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()) { _ in
+            if simulationVisible { simulationTick &+= 1 }
         }
         .sheet(isPresented: $store.accountsOpen) { BackendAccountsView(store: store) }
         .sheet(item: $profileNavigation.sheet) { destination in
@@ -17130,16 +17181,18 @@ private enum ProviderRailLayout {
 private struct ProviderRail: View {
     @ObservedObject var store: SessionStore
     @Binding var governanceOpen: Bool
+    @Binding var simulationVisible: Bool
     @ObservedObject var identity: OS1IdentityModel
     @ObservedObject var usage: ProfileUsageModel
     var selectProfileDestination: (ProfileDestination) -> Void
     @State private var profileMenuOpen = false
 
     init(store: SessionStore, governanceOpen: Binding<Bool> = .constant(false),
-         identity: OS1IdentityModel? = nil, usage: ProfileUsageModel? = nil,
+         simulationVisible: Binding<Bool> = .constant(false), identity: OS1IdentityModel? = nil, usage: ProfileUsageModel? = nil,
          selectProfileDestination: @escaping (ProfileDestination) -> Void = { _ in }) {
         self.store = store
         self._governanceOpen = governanceOpen
+        self._simulationVisible = simulationVisible
         self.identity = identity ?? OS1IdentityModel()
         self.usage = usage ?? ProfileUsageModel()
         self.selectProfileDestination = selectProfileDestination
@@ -17161,6 +17214,7 @@ private struct ProviderRail: View {
 
             Spacer()
 
+            simulationButton
             profileControls
         }
         .padding(.top, ProviderRailLayout.railTopPadding)
@@ -17176,8 +17230,8 @@ private struct ProviderRail: View {
     }
 
     private var homeButton: some View {
-        let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto, linked: true)
-        return Button { store.showClodexHome() } label: {
+        let homeAppearance = RailItemAppearance.resolve(selected: store.surface == .auto && !simulationVisible, linked: true)
+        return Button { simulationVisible = false; store.showClodexHome() } label: {
             // No plate behind the logo (owner 2026-10-05): the ring fills the
             // tile and the rail shows through it; selection reads from content
             // strength alone. 55 + 3 + the label stays inside homeHeight, so
@@ -17196,7 +17250,7 @@ private struct ProviderRail: View {
         .buttonStyle(.plain)
         .help("Clodex home")
         .accessibilityLabel("Clodex home")
-        .accessibilityValue(store.surface == .auto ? os1Tr("선택됨", "Selected") : os1Tr("선택 안 됨", "Not selected"))
+        .accessibilityValue(store.surface == .auto && !simulationVisible ? os1Tr("선택됨", "Selected") : os1Tr("선택 안 됨", "Not selected"))
         // Only OS-1 moves; Codex and Claude stay on the reference grid.
         .padding(.top, ProviderRailLayout.homeTopPadding)
     }
@@ -17211,7 +17265,7 @@ private struct ProviderRail: View {
             : store.selectedSession?.claudeSessionID != nil
         return BackendStatus(
             provider: provider,
-            selected: store.surface == provider,
+            selected: store.surface == provider && !simulationVisible,
             active: store.selectedSession?.lastProvider == provider.rawValue,
             linked: linked,
             signedIn: verified,
@@ -17220,6 +17274,7 @@ private struct ProviderRail: View {
             surfaceBadge: store.routedSurface(for: provider)?.railBadge,
             disabled: false
         ) {
+            simulationVisible = false
             // A signed-out backend cannot run anything, so the tile
             // offers the sign-in instead of an empty session list.
             if let status = store.backendSetup?.providers.first(where: { $0.provider == provider.rawValue }),
@@ -17268,6 +17323,28 @@ private struct ProviderRail: View {
         }
         Divider()
         Button(os1Tr("\(provider.title) 계정…", "\(provider.title) accounts…")) { store.accountsOpen = true }
+    }
+
+    private var simulationButton: some View {
+        Button {
+            governanceOpen = false
+            simulationVisible.toggle()
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: "leaf.fill").font(.system(size: 21, weight: .medium))
+                Text("시뮬레이션").font(.system(size: 7, weight: .semibold))
+            }
+            .foregroundStyle(simulationVisible ? Color(red: 0.79, green: 0.91, blue: 0.57) : Color.white.opacity(0.62))
+            .frame(width: 58, height: 52)
+            .background(simulationVisible ? Color.green.opacity(0.13) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 11))
+            .contentShape(RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(.plain)
+        .help("시뮬레이션 · 실제 OS1 세션을 SCV로 보기")
+        .accessibilityLabel("시뮬레이션")
+        .accessibilityIdentifier("os1.rail.simulation")
+        .accessibilityValue(simulationVisible ? "선택됨" : "선택 안 됨")
     }
 
     private var profileControls: some View {

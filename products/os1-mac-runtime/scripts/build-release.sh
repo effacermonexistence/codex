@@ -66,6 +66,7 @@ python3 "$script_dir/test-release-version-identity.py" --verify-current --expect
 python3 "$script_dir/test-os1-context-helper-dispatch.py" --source-only
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-composer-viewport.py"
+node "$script_dir/test-simulation-garden.mjs"
 python3 "$script_dir/test-task-quality-wiring.py"
 python3 "$script_dir/test-rcc-native-display-observation-wiring.py"
 python3 "$script_dir/test-native-metadata-custody.py"
@@ -286,6 +287,8 @@ for resource in OmarAGI.png Codex.png ClaudeCode.png Constellation.png CodexDict
   install -m 0644 "$runtime_root/Resources/$resource" \
     "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/$resource"
 done
+# Self-contained, source-hashed garden. No npm installation or remote UI at startup.
+cp -R "$runtime_root/Resources/SimulationGarden" "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden"
 mkdir -p "$stage_dir/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge"
 for resource in index.mjs openclaw.plugin.json package.json rcc-runtime.mjs rcc-plugin.mjs resource-usage.mjs adaptive-plan-host.mjs adaptive-routing-policy.mjs joint-route-selector.mjs local-plan-planner.mjs local-plan-proposal.mjs routing-outcome.mjs routing-outcome-capture.mjs frozen-route-artifacts.mjs frozen-route-predictor.mjs offline-route-calibration.mjs frozen-route-evidence.mjs calibrated-route-evidence.mjs calibrated-route-predictor.mjs; do
   install -m 0644 "$runtime_root/Resources/openclaw-os1-bridge/$resource" \
@@ -330,6 +333,11 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/index.html"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/manifest.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
@@ -493,6 +501,11 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/index.html"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/manifest.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
