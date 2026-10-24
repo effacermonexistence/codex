@@ -294,7 +294,7 @@ test('hidden reasoning tags/fields are hash-only even in failed raw capture', as
 
 test('compact v2 contract bounds routing prose without changing compiler keys or kernel identity', async () => {
   const f = setup(), r = await f.run(input()), call = f.requests[0], s = call.responseFormat;
-  assert.equal(LOCAL_PLAN_LIMITS.timeout_ms, 30000); assert.equal(LOCAL_PLAN_LIMITS.max_tokens, 1536);
+  assert.equal(LOCAL_PLAN_LIMITS.timeout_ms, 120000); assert.equal(LOCAL_PLAN_LIMITS.max_tokens, 1536);
   assert.equal(LOCAL_PLAN_LIMITS.output_bytes, 4096); assert.equal(LOCAL_PLAN_LIMITS.max_nodes, 8);
   assert.equal(s.properties.schema.const, 2); assert.equal(s.properties.nodes.maxItems, 8);
   assert.equal(s.properties.nodes.items.additionalProperties, false);

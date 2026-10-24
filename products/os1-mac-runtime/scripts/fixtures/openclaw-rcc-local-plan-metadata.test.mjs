@@ -3,11 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {createLocalPlanPlanner, projectLocalPlannerCandidates, compactLocalPlannerCandidates, LOCAL_PLAN_KERNEL,
+import {createLocalPlanPlanner, projectLocalPlannerCandidates, compactLocalPlannerCandidates, expandLocalPlannerInputV4, LOCAL_PLAN_KERNEL,
   LOCAL_PLAN_CANDIDATE_METADATA_VERSION} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
 import {stableJSON, exactConfigFingerprint} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';
 const sha = x => createHash('sha256').update(x).digest('hex');
 const NOW = 1800000000000;
+const expandedInput = raw => { const wire = JSON.parse(raw); return wire.schema === 4 ? expandLocalPlannerInputV4(wire) : wire; };
 // Exact current RCCNativeCatalogBuilder emitted row shape, synthetic values.
 const row = (id = 'cfg-luna', overrides = {}) => ({id, surface: 'codex', transport: 'codex_app_server',
   account_id: 'codex-default', model: 'gpt-6-luna', effort: 'low', tools: ['read', 'execute'], scope: 'read_only',
@@ -62,8 +63,10 @@ test('actual native row shape yields bound full tuple/quota, not fabricated perf
   assert.equal(c.exact_config_sha256, exactConfigFingerprint(config));
   assert.equal(Object.hasOwn(c, 'allowed_paths'), false);
 });
-test('informed V3 request carries data; exact candidate ID remains proposal v2 without dispatch authority', async () => {
-  const f = fixture(), r = run(f), answer = await r.result, q = JSON.parse(r.requests[0].messages[0].content);
+test('informed V4 lossless wire expands exact data; candidate ID remains proposal v2 without authority', async () => {
+  const f = fixture(), r = run(f), answer = await r.result, q = expandedInput(r.requests[0].messages[0].content);
+  const wire = JSON.parse(r.requests[0].messages[0].content); assert.equal(wire.schema, 4);
+  assert.equal(wire.kind, 'OS1_LOCAL_PLAN_INPUT_V4'); assert.ok(Array.isArray(wire.candidate_metadata.candidates[0]));
   assert.equal(q.schema, 3); assert.equal(q.kind, 'OS1_LOCAL_PLAN_INPUT_V3'); assert.equal(q.output_schema_version, 2);
   assert.deepEqual(q.candidate_ids, f.hostProjection.candidate_ids); assert.deepEqual(q.candidate_metadata, compactLocalPlannerCandidates(project(f)));
   assert.equal(answer.status, 'proposal'); assert.equal(answer.proposal.nodes[0].proposed_candidate_id, 'cfg-luna');
@@ -73,7 +76,7 @@ test('informed V3 request carries data; exact candidate ID remains proposal v2 w
 });
 test('legacy optional omission remains V2 IDs-only and is honestly labeled', async () => {
   const f = fixture(); delete f.candidateCatalog; const r = run(f), answer = await r.result;
-  const q = JSON.parse(r.requests[0].messages[0].content); assert.equal(q.schema, 2); assert.equal(q.kind, 'OS1_LOCAL_PLAN_INPUT_V2');
+  const q = expandedInput(r.requests[0].messages[0].content); assert.equal(q.schema, 2); assert.equal(q.kind, 'OS1_LOCAL_PLAN_INPUT_V2');
   assert.equal(Object.hasOwn(q, 'candidate_metadata'), false); assert.equal(answer.candidate_view.mode, 'legacy_ids_only');
   assert.equal(answer.candidate_view.informed_metadata_supplied, false);
 });
@@ -228,7 +231,7 @@ test('full-size 18554B policy +1825B objective +46 native rows fits existing 655
   f.candidateCatalog.request_sha256 = sha(request); f.projection.requirements[0].text = request; rebind(f);
   const r = run(f, proposal(null)), answer = await r.result;
   assert.equal(answer.status, 'proposal'); assert.equal(r.calls(), 1);
-  const call = r.requests[0], data = JSON.parse(call.messages[0].content);
+  const call = r.requests[0], data = expandedInput(call.messages[0].content);
   assert.equal(data.candidate_metadata.candidates.length, 46); assert.equal(data.candidate_metadata.profiles.length, 1);
   assert.deepEqual(data.candidate_metadata.candidates.map(c => c.candidate_id), f.hostProjection.candidate_ids);
   const bytes = Buffer.byteLength(call.systemPrompt) + Buffer.byteLength(call.messages[0].content) +
@@ -251,7 +254,7 @@ function finalizerProposal(hint = 'cfg-writer', count = 1) {
 test('writer owner supplies explicit host-owned writer context, separate current exact writer tuple hint', async () => {
   const f = writerFixture(), p = finalizerProposal(), r = run(f, p), result = await r.result;
   assert.equal(result.status, 'proposal'); assert.equal(result.execution_authorized, false);
-  const input = JSON.parse(r.requests[0].messages[0].content);
+  const input = expandedInput(r.requests[0].messages[0].content);
   assert.deepEqual(input.host_finalizer, {kind: 'host_original_request_writer_v1', finalizer_count: 1,
     original_request_sha256: f.expectedBinding.request_sha256, preparation_scope: 'read_only', max_preparation_nodes: 3,
     model_writer_nodes_allowed: false});
@@ -284,7 +287,7 @@ test('legacy IDs-only call rejects non-null host writer hint, omission/null rema
   assert.equal((await run(f, finalizerProposal()).result).reason, 'planner_host_finalizer_not_available');
   const n = run(f, finalizerProposal(null)), a = await n.result;
   assert.equal(a.status, 'proposal'); assert.equal(a.candidate_view.informed_metadata_supplied, false);
-  const input = JSON.parse(n.requests[0].messages[0].content);
+  const input = expandedInput(n.requests[0].messages[0].content);
   assert.equal(input.schema, 2); assert.equal(Object.hasOwn(input, 'host_finalizer'), false);
 });
 test('writer context caps local read-only preparations at three and never creates its final writer', async () => {
@@ -327,7 +330,7 @@ test('large writer envelope preserves 46read+46write tuples, three-read prep bud
   f.projection.requirements[0].text=request;rebind(f);
   const p=finalizerProposal('cfg-write-0',3);for(const n of p.nodes)n.proposed_candidate_id='cfg-read-0';
   const r=run(f,p),answer=await r.result;assert.equal(answer.status,'proposal');assert.equal(r.calls(),1);
-  const call=r.requests[0],data=JSON.parse(call.messages[0].content);
+  const call=r.requests[0],data=expandedInput(call.messages[0].content);
   assert.equal(data.candidate_metadata.candidates.length,92);assert.equal(data.candidate_metadata.profiles.length,2);
   assert.equal(data.budget.max_nodes,3);assert.equal(answer.proposal.final_output_proposal.host_finalizer_candidate_id,'cfg-write-0');
   const bytes=Buffer.byteLength(call.systemPrompt)+Buffer.byteLength(call.messages[0].content)+Buffer.byteLength(JSON.stringify(call.responseFormat));

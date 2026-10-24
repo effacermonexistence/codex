@@ -8,7 +8,7 @@ import {stableJSON, exactConfigFingerprint} from './joint-route-selector.mjs';
 // run in the existing tool-free OpenClaw service/lifetime scope.
 export const LOCAL_PLAN_MODEL = 'ollama/qwen3.5:4b';
 export const LOCAL_PLAN_PURPOSE = 'os1.rcc.local-plan-proposal';
-export const LOCAL_PLAN_KERNEL_VERSION = 'rcc-local-plan-kernel-v2';
+export const LOCAL_PLAN_KERNEL_VERSION = 'rcc-local-plan-kernel-v3';
 export const LOCAL_PLAN_KERNEL = `You propose bounded execution plans for the SINGLE OS-1 OpenClaw RCC task.
 The exact original objective, owner constraints, supplied state and unknowns are the floor.
 Preserve identity, provenance, time, negation, conditions, quantities and scope.
@@ -26,6 +26,12 @@ Use supported tools/scope and current availability/quota observations, not names
 Unknown cost, performance or quota stays unknown; policy_admitted is NOT measured quality parity.
 Do not prefer the strongest tuple by default or pretend unmeasured cheaper tuples are equivalent.
 A stale/future/unavailable/mismatched row cannot be proposed; leave the hint null if none is justified.
+Informed INPUT_V4 uses LOSSLESS HOST REFERENCES, not shortened task evidence.
+An objective/requirement text {exact_text_ref:"original_request"} means the exact original_request string;
+a plain string is distinct and must be preserved. candidate_ids {exact_ids_ref:"candidate_metadata"}
+means every candidate_id in the table. No other reference path or model-authored alias is valid.
+candidate_metadata.candidate_columns names the exact columns of each candidate array, in order.
+Read every row with those column names; a row index or profile ID is not an execution candidate.
 Compact candidate_metadata lists profiles plus candidates. Each candidate inherits exactly its profile_id's
 provider/surface/account/pool/tools/scope/availability/quota/unknown cost and performance fields. Its model,
 effort and exact ID stay on that candidate row. A shared profile is not an alternate candidate or permission.
@@ -54,7 +60,7 @@ an upper bound, not a request to fill it. Keep instruction <=192 UTF-8 bytes, re
 If a faithful graph cannot fit, do not drop constraints or claim a usable plan.`;
 export const LOCAL_PLAN_COMPACT_PROMPT_SHA256 = sha(COMPACT_PROMPT);
 export const LOCAL_PLAN_LIMITS = Object.freeze({input_bytes: 65536, output_bytes: 4096,
-  policy_bytes: 32768, max_tokens: 1536, timeout_ms: 30000, max_nodes: 8, max_workers: 4, max_revisions: 1});
+  policy_bytes: 32768, max_tokens: 1536, timeout_ms: 120000, max_nodes: 8, max_workers: 4, max_revisions: 1});
 const idSchema = {type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$'};
 const idsSchema = max => ({type: 'array', maxItems: max, uniqueItems: true, items: idSchema});
 // Generation-only schema: use the converter's JSON-string + length branch.
@@ -97,7 +103,7 @@ const dense = x => Array.isArray(x) && x.length <= 128 &&
 const keyOf = b => b.task_id;
 const bindingOf = b => JSON.stringify(['task_id', 'request_sha256', 'source_fingerprint', 'policy_sha256', 'catalog_sha256', 'nonce'].map(k => b[k]));
 
-function normalizeUsage(usage) {
+function normalizeUsage(usage, uncertainZero = false) {
   if (usage == null) return {usage: null, usage_state: 'unknown'};
   const counts = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTokens'];
   if (!plain(usage) || Object.keys(usage).some(k => ![...counts, 'costUsd'].includes(k)) ||
@@ -107,13 +113,17 @@ function normalizeUsage(usage) {
   const sum = known.reduce((n, k) => n + usage[k], 0);
   if (!Number.isSafeInteger(sum) || usage.totalTokens !== undefined &&
       (sum > usage.totalTokens || known.length === 4 && sum !== usage.totalTokens)) return {usage: null, usage_state: 'invalid'};
+  // Aborted/error placeholders may report all zeros despite real prefill.
+  // Positive origin-bound observations remain usable; zeros alone never prove zero consumption.
+  if (uncertainZero && !Object.entries(usage).some(([k, v]) => k !== 'costUsd' && v > 0))
+    return {usage: null, usage_state: 'unknown'};
   return {usage: copy(usage), usage_state: usage.totalTokens !== undefined || known.length === 4 ? 'observed_complete' : 'observed_partial'};
 }
-function responseMetadata(response) {
+function responseMetadata(response, uncertainZero = false) {
   const stringOrNull = x => text(x, 256) ? x : null;
   return {provider_observed: stringOrNull(response?.provider), model_observed: stringOrNull(response?.model),
     response_model_observed: stringOrNull(response?.responseModel), stop_reason_observed: stringOrNull(response?.stopReason),
-    ...normalizeUsage(response?.usage)};
+    ...normalizeUsage(response?.usage, uncertainZero)};
 }
 function localOrigin(response) {
   const model = x => [LOCAL_PLAN_MODEL, 'qwen3.5:4b'].includes(x);
@@ -172,7 +182,7 @@ function checkProposalRepresentation(host, materials, limits) {
 }
 function proposalBudget(limits) {
   return {version: LOCAL_PLAN_COMPACT_BUDGET.version, prompt_sha256: LOCAL_PLAN_COMPACT_PROMPT_SHA256,
-    max_output_tokens: limits.max_tokens, max_output_bytes: limits.output_bytes,
+    max_output_tokens: limits.max_tokens, max_output_bytes: limits.output_bytes, max_time_ms: limits.timeout_ms,
     max_nodes: limits.max_nodes, structural_fit_only: true, token_fit_verified: false, latency_guaranteed: false};
 }
 function checkCompactProposal(proposal) {
@@ -333,6 +343,88 @@ export function compactLocalPlannerCandidates(view) {
     ...(view.effective_scope === undefined ? {} : {effective_scope: view.effective_scope}), source: view.source, execution_authorized: false, quality_certificate: false,
     profiles, candidates});
 }
+export const LOCAL_PLAN_INPUT_REPRESENTATION = 'lossless-host-refs-v1';
+const TABLE_VERSION = 'shared-candidate-profiles-v3';
+const CANDIDATE_COLUMNS = Object.freeze(['candidate_id', 'profile_id', 'model', 'effort',
+  'configuration_sha256', 'exact_config_sha256']);
+const TEXT_REF = Object.freeze({exact_text_ref: 'original_request'});
+const IDS_REF = Object.freeze({exact_ids_ref: 'candidate_metadata'});
+const V4_FIELDS = ['schema', 'kind', 'task_id', 'original_request', 'objective', 'request_sha256',
+  'scope', 'allowed_owned_paths', 'requirements', 'materials', 'candidate_ids', 'check_ids',
+  'output_schema_version', 'candidate_metadata', 'budget', 'revision', 'representation_version'];
+/** Pure roundtrip verifier for the host-created V4 wire view, NEVER a model
+ * reply parser or an authority/admission path. Only two closed aliases exist;
+ * original_request is always literal text, never recursively interpreted. */
+export function expandLocalPlannerInputV4(value) {
+  const v = catalogCopy(value);
+  requireValue(plain(v) && V4_FIELDS.every(k => Object.hasOwn(v, k)) &&
+    Object.keys(v).every(k => V4_FIELDS.includes(k) || k === 'host_finalizer') &&
+    v.schema === 4 && v.kind === 'OS1_LOCAL_PLAN_INPUT_V4' &&
+    v.representation_version === LOCAL_PLAN_INPUT_REPRESENTATION && text(v.original_request, 262144) &&
+    exact(v.candidate_ids, ['exact_ids_ref']) && v.candidate_ids.exact_ids_ref === 'candidate_metadata',
+    'planner_input_v4_shape_invalid');
+  const resolveText = x => {
+    if (typeof x === 'string') return x;
+    requireValue(exact(x, ['exact_text_ref']) && x.exact_text_ref === 'original_request',
+      'planner_input_v4_alias_invalid');
+    return v.original_request;
+  };
+  const m = v.candidate_metadata, fields = ['schema', 'version', 'catalog_sha256', 'assessed_at_ms',
+    'owner_scope', 'source', 'execution_authorized', 'quality_certificate', 'profiles', 'candidates', 'candidate_columns'];
+  requireValue(plain(m) && fields.every(k => Object.hasOwn(m, k)) &&
+    Object.keys(m).every(k => fields.includes(k) || k === 'effective_scope') && m.schema === 1 &&
+    m.version === TABLE_VERSION && m.source === 'host_catalog_projection' &&
+    m.execution_authorized === false && m.quality_certificate === false && HASH.test(m.catalog_sha256 ?? '') &&
+    stableJSON(m.candidate_columns) === stableJSON(CANDIDATE_COLUMNS) &&
+    Array.isArray(m.profiles) && m.profiles.length > 0 && m.profiles.length <= 256 &&
+    Array.isArray(m.candidates) && m.candidates.length > 0 && m.candidates.length <= 256,
+    'planner_input_v4_table_invalid');
+  const profileIDs = new Set();
+  for (const profile of m.profiles) {
+    requireValue(exact(profile, ['profile_id', 'provider', 'surface', 'transport', 'account_id', 'quota_pool',
+      'tools', 'scope', 'permission_profile', 'availability', 'quota', 'cost', 'performance']) &&
+      typeof profile.profile_id === 'string' && !profileIDs.has(profile.profile_id) &&
+      exact(profile.availability, ['state', 'time_state', 'observed_at_ms', 'valid_until_ms']) &&
+      exact(profile.quota, ['state', 'remaining_fraction', 'observed_at_ms', 'valid_until_ms']) &&
+      exact(profile.cost, ['state', 'measured_total', 'measured_unit', 'unqualified_catalog_estimate_units']) &&
+      exact(profile.performance, ['state', 'reference_match', 'measurement_source', 'catalog_quality_state']),
+      'planner_input_v4_profile_invalid');
+    profileIDs.add(profile.profile_id);
+  }
+  const ids = new Set(), candidates = m.candidates.map(row => {
+    requireValue(Array.isArray(row) && row.length === CANDIDATE_COLUMNS.length &&
+      CANDIDATE_COLUMNS.every((_, i) => Object.hasOwn(row, i)), 'planner_input_v4_row_invalid');
+    const c = Object.fromEntries(CANDIDATE_COLUMNS.map((k, i) => [k, row[i]]));
+    requireValue(metadataToken(c.candidate_id, 128) && !ids.has(c.candidate_id) && profileIDs.has(c.profile_id) &&
+      metadataToken(c.model) && CANDIDATE_EFFORTS.has(c.effort) && HASH.test(c.configuration_sha256 ?? '') &&
+      HASH.test(c.exact_config_sha256 ?? ''), 'planner_input_v4_row_invalid');
+    ids.add(c.candidate_id); return c;
+  });
+  requireValue(dense(v.requirements) && v.requirements.every(r => exact(r, ['id', 'text', 'status'])),
+    'planner_input_v4_requirements_invalid');
+  const {candidate_columns, ...expandedMetadata} = m;
+  const {representation_version, ...expanded} = v;
+  return freeze(copy({...expanded, schema: 3, kind: 'OS1_LOCAL_PLAN_INPUT_V3',
+    objective: resolveText(v.objective),
+    requirements: v.requirements.map(r => ({...r, text: resolveText(r.text)})),
+    candidate_ids: candidates.map(c => c.candidate_id),
+    candidate_metadata: {...expandedMetadata, version: LOCAL_PLAN_CANDIDATE_COMPACT_VERSION, candidates}}));
+}
+function packLocalPlannerInputV4(structured) {
+  const ref = value => value === structured.original_request ? {...TEXT_REF} : value;
+  const metadata = structured.candidate_metadata;
+  const packed = {...structured, schema: 4, kind: 'OS1_LOCAL_PLAN_INPUT_V4',
+    representation_version: LOCAL_PLAN_INPUT_REPRESENTATION,
+    objective: ref(structured.objective),
+    requirements: structured.requirements.map(r => ({...r, text: ref(r.text)})),
+    candidate_ids: {...IDS_REF}, candidate_metadata: {...metadata, version: TABLE_VERSION,
+      candidate_columns: [...CANDIDATE_COLUMNS],
+      candidates: metadata.candidates.map(row => CANDIDATE_COLUMNS.map(k => row[k]))}};
+  requireValue(stableJSON(expandLocalPlannerInputV4(packed)) === stableJSON(structured),
+    'planner_input_v4_roundtrip_mismatch');
+  return freeze(packed);
+}
+
 function validateCandidateHints(proposal, view) {
   const byID = new Map(view.candidates.map(row => [row.candidate_id, row]));
   for (const node of proposal.nodes) {
@@ -405,12 +497,19 @@ function projectInput(host, expected, policy, projection, attempt, limits, candi
       max_preparation_nodes: maxPreparationNodes, model_writer_nodes_allowed: false}} : {}),
     budget: {max_nodes: maxPreparationNodes, max_parallel_workers: limits.max_workers,
       max_plan_revisions: limits.max_revisions, max_output_tokens: limits.max_tokens}, revision: copy(attempt)};
-  const userInput = JSON.stringify(structured);
+  const wire = candidateMetadata === null ? structured : packLocalPlannerInputV4(structured);
+  const userInput = JSON.stringify(wire);
+  const inputRepresentation = freeze({version: candidateMetadata === null ? 'legacy-v2' : LOCAL_PLAN_INPUT_REPRESENTATION,
+    wire_schema: wire.schema, expanded_schema: structured.schema, lossless_roundtrip_verified: candidateMetadata !== null,
+    wire_input_sha256: sha(userInput), expanded_input_sha256: sha(JSON.stringify(structured)),
+    wire_input_bytes: Buffer.byteLength(userInput), expanded_input_bytes: Buffer.byteLength(JSON.stringify(structured)),
+    representation_bytes_saved: Buffer.byteLength(JSON.stringify(structured)) - Buffer.byteLength(userInput),
+    ...(candidateMetadata === null ? {} : {wire_metadata_sha256: sha(stableJSON(wire.candidate_metadata))})});
   const systemPrompt = 'HOST-BOUND OWNER POLICY PROJECTION\n' + policy.text + '\n\n' + COMPACT_PROMPT + '\n\n' + LOCAL_PLAN_KERNEL +
     (hostFinalizer ? '\n\n' + HOST_FINALIZER_PROMPT : '');
   requireValue(Buffer.byteLength(userInput) + Buffer.byteLength(systemPrompt) + Buffer.byteLength(JSON.stringify(LOCAL_PLAN_RESPONSE_FORMAT)) <= limits.input_bytes,
     'planner_input_budget_exceeded');
-  return {userInput, systemPrompt, materials, candidateMetadata, hostFinalizer, maxPreparationNodes};
+  return {userInput, systemPrompt, materials, candidateMetadata, hostFinalizer, maxPreparationNodes, inputRepresentation};
 }
 function checkedLimits(values) {
   const limits = {...LOCAL_PLAN_LIMITS, ...values};
@@ -439,12 +538,13 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
     let capture = rawCapture(null, limits.output_bytes);
     const event = (kind, reason, response = null) => {
       const clock = now();
-      if (response !== null) completionObservation = freeze(responseMetadata(response));
+      const uncertainZero = kind === 'cancelled' || response?.stopReason !== 'stop';
+      if (response !== null) completionObservation = freeze(responseMetadata(response, uncertainZero));
       // Same exact local-resource event shape; plan_proposal is an explicit
       // new stage. Foreign receipt telemetry cannot inherit Ollama's token basis.
       const value = freeze({id: operationID, stage: 'plan_proposal', state: kind,
         provider: 'ollama', model: LOCAL_PLAN_MODEL,
-        usage: localOrigin(response) ? normalizeUsage(response.usage).usage : null,
+        usage: localOrigin(response) ? normalizeUsage(response.usage, uncertainZero).usage : null,
         observed_at_ms: count(clock) ? clock : null, elapsed_ms: started === null || !count(clock - started) ? null : clock - started,
         reason, usage_basis: 'openclaw_input_excludes_cache'});
       events.push(value); try { observeResourceUsage?.(value); } catch {} return value;
@@ -456,6 +556,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       operation_id: operationID, model_calls_started: started === null ? 0 : 1,
       resource_events: [...events], resource_adapter_required: 'plan_proposal_v1',
       completion_observation: completionObservation,
+      input_representation: input?.inputRepresentation ?? null,
       ...capture,
       kernel_version: LOCAL_PLAN_KERNEL_VERSION, kernel_sha256: LOCAL_PLAN_KERNEL_SHA256,
       proposal_budget: proposalBudget(input ? {...limits, max_nodes: input.maxPreparationNodes} : limits)});
@@ -558,6 +659,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
         classifier_view: 'exact_objective_and_host_projected_metadata_only', executor_view_supplied: false,
         operation_id: operationID, model_calls_started: 1, resource_events: [...events],
         completion_observation: completionObservation, completion_outcome_unknown: completionUnknown,
+        input_representation: input.inputRepresentation,
         raw_capture_status: capture.raw_capture_status, raw_output_bytes: capture.raw_output_bytes,
         resource_adapter_required: 'plan_proposal_v1',
         candidate_view: input.candidateMetadata === null ? {mode: 'legacy_ids_only', informed_metadata_supplied: false} : {

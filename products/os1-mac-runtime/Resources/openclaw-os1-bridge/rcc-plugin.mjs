@@ -578,7 +578,7 @@ export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, 
       registration: pluginConfig?.live_plan_capability ?? null});
     return {adaptiveRoutingPolicy: policy, ...calibrated, livePlanCapability: capability,
       ...(capability === null ? {} : {proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
-        limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
+        limits: {timeout_ms: 30000, input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
           max_tokens: Math.min(policy.planner_output_tokens, LOCAL_PLAN_LIMITS.max_tokens),
           max_nodes: 1, max_workers: 1, max_revisions: 0}})})};
   }
@@ -589,7 +589,7 @@ export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, 
   return {adaptiveRoutingPolicy: policy, ...calibrated,
     frozenRoutePredictor: loaded === null ? null : createFrozenRoutePredictor({artifacts: loaded.artifacts}),
     proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
-    limits: {input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
+    limits: {timeout_ms: 30000, input_bytes: Math.min(policy.planner_input_bytes, LOCAL_PLAN_LIMITS.input_bytes),
       max_tokens: Math.min(policy.planner_output_tokens, LOCAL_PLAN_LIMITS.max_tokens),
       max_nodes: policy.max_nodes, max_workers: policy.max_parallel,
       max_revisions: Math.min(policy.max_plan_revisions, policy.max_planner_calls - 1)}})};
