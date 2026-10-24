@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {createLocalPlanPlanner, projectLocalPlannerCandidates, LOCAL_PLAN_KERNEL,
+import {createLocalPlanPlanner, projectLocalPlannerCandidates, compactLocalPlannerCandidates, LOCAL_PLAN_KERNEL,
   LOCAL_PLAN_CANDIDATE_METADATA_VERSION} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
 import {stableJSON, exactConfigFingerprint} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';
 const sha = x => createHash('sha256').update(x).digest('hex');
@@ -65,7 +65,7 @@ test('actual native row shape yields bound full tuple/quota, not fabricated perf
 test('informed V3 request carries data; exact candidate ID remains proposal v2 without dispatch authority', async () => {
   const f = fixture(), r = run(f), answer = await r.result, q = JSON.parse(r.requests[0].messages[0].content);
   assert.equal(q.schema, 3); assert.equal(q.kind, 'OS1_LOCAL_PLAN_INPUT_V3'); assert.equal(q.output_schema_version, 2);
-  assert.deepEqual(q.candidate_ids, f.hostProjection.candidate_ids); assert.deepEqual(q.candidate_metadata, project(f));
+  assert.deepEqual(q.candidate_ids, f.hostProjection.candidate_ids); assert.deepEqual(q.candidate_metadata, compactLocalPlannerCandidates(project(f)));
   assert.equal(answer.status, 'proposal'); assert.equal(answer.proposal.nodes[0].proposed_candidate_id, 'cfg-luna');
   assert.equal(answer.execution_authorized, false); assert.equal(answer.quality_parity_verified, false);
   assert.equal(answer.candidate_view.informed_metadata_supplied, true); assert.equal(r.calls(), 1);
@@ -195,4 +195,44 @@ test('output metadata is detached and deeply frozen, unknown is not zero', () =>
   const f = fixture(), view = project(f); f.candidateCatalog.candidates[0].tools.push('write');
   assert.deepEqual(view.candidates[0].tools, ['read', 'execute']); assert.throws(() => view.candidates.push({}), TypeError);
   assert.equal(view.candidates[0].cost.measured_total, null); assert.equal(view.candidates[0].performance.reference_match, null);
+});
+
+// No semantic compression: reconstruct every expanded tuple byte-for-byte.
+test('shared profiles roundtrip all tuple facts, identities and unknowns without row loss', () => {
+  const f = fixture(), expanded = project(f), packed = compactLocalPlannerCandidates(expanded);
+  assert.equal(packed.profiles.length, 1); assert.equal(packed.candidates.length, 2);
+  const profiles = new Map(packed.profiles.map(({profile_id, ...p}) => [profile_id, p]));
+  const unpacked = packed.candidates.map(({profile_id, ...row}) => ({...row, ...profiles.get(profile_id)}));
+  assert.equal(stableJSON(unpacked), stableJSON(expanded.candidates));
+  assert.equal(packed.catalog_sha256, expanded.catalog_sha256);
+  assert.equal(packed.profiles[0].cost.state, 'unknown');
+});
+test('different quota/account/tools/source-time facts never merge into a convenient shared profile', () => {
+  for (const change of [r => r.quota_remaining_fraction = .7, r => r.quota_observed_at_ms--,
+    r => r.account_id = 'codex-second', r => r.tools = ['read'], r => r.estimated_cost_units = 3]) {
+    const f = fixture(); change(f.candidateCatalog.candidates[1]); rebind(f);
+    assert.equal(compactLocalPlannerCandidates(project(f)).profiles.length, 2);
+  }
+});
+test('lookalike compact input cannot pretend to be the projector result', () => {
+  assert.throws(() => compactLocalPlannerCandidates(structuredClone(project(fixture()))),
+    {code: 'planner_candidate_view_not_projected'});
+});
+
+test('full-size 18554B policy +1825B objective +46 native rows fits existing 65536B cap without dropping tuples', async () => {
+  const f = fixture(Array.from({length: 46}, (_, i) => row('cfg-' + i, {model: 'gpt-6-model-' + i})));
+  const request = 'q'.repeat(1825), policy = 'R'.repeat(18554);
+  f.hostProjection.request = request; f.hostProjection.objective = request;
+  f.hostProjection.binding.request_sha256 = sha(request); f.hostProjection.binding.policy_sha256 = sha(policy);
+  f.ownerPolicy = {text: policy, source_sha256: sha('large-original'), projection_sha256: sha(policy)};
+  f.candidateCatalog.request_sha256 = sha(request); f.projection.requirements[0].text = request; rebind(f);
+  const r = run(f, proposal(null)), answer = await r.result;
+  assert.equal(answer.status, 'proposal'); assert.equal(r.calls(), 1);
+  const call = r.requests[0], data = JSON.parse(call.messages[0].content);
+  assert.equal(data.candidate_metadata.candidates.length, 46); assert.equal(data.candidate_metadata.profiles.length, 1);
+  assert.deepEqual(data.candidate_metadata.candidates.map(c => c.candidate_id), f.hostProjection.candidate_ids);
+  const bytes = Buffer.byteLength(call.systemPrompt) + Buffer.byteLength(call.messages[0].content) +
+    Buffer.byteLength(JSON.stringify(call.responseFormat));
+  assert.ok(bytes <= 65536); assert.equal(call.maxTokens, 1536);
+  assert.equal(answer.candidate_view.informed_metadata_supplied, true);
 });

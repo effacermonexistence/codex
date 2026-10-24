@@ -53,8 +53,14 @@ model/effort combination or gain tools/rights through its proposal.
 ## Versions and legacy behavior
 
 With `candidateCatalog`, the local model receives input schema **3**,
-`kind: OS1_LOCAL_PLAN_INPUT_V3`, and `candidate_metadata` version
-`host-candidate-metadata-v1`. Successful return metadata says
+`kind: OS1_LOCAL_PLAN_INPUT_V3`, and compact `candidate_metadata` version
+`shared-candidate-profiles-v1`. The inspectable expanded projector uses
+`host-candidate-metadata-v1`. `compactLocalPlannerCandidates(expandedView)`
+losslessly factors byte-identical common facts into `profiles`; each candidate
+row retains exact ID, `profile_id`, model, effort and both configuration hashes.
+Different quota times/values, account, scope, tools or quality states never
+merge. Profile inheritance is explicit in the local kernel. This is structural
+representation compression, not source summarization or tuple truncation. Successful return metadata says
 `candidate_view.informed_metadata_supplied: true` and records exact catalog and
 projected-view hashes. This proves which DATA was supplied, not that the model
 used it correctly.
@@ -69,6 +75,21 @@ Root integration must supply the new argument on the actual generation path
 and update the existing source/resource pins. This patch does not alter
 `adaptive-plan-host`, the runtime/plugin, configuration, source pins, version,
 installation, registries, frozen evidence, or existing native dispatch policy.
+
+The reviewed planner ceiling is now 1536 output tokens and 30000ms callback
+abort, while the 4096 output-byte bound, max8 nodes and 65536 input-byte cap
+remain unchanged. Explicit caller token limits (including512) remain exact and
+cannot exceed1536. A maximal-prose compact four-node fixture fits the fixed
+byte contract; neither its token fit nor real-model latency is thereby proven.
+Core's observer timeout must be aligned by the integrating owner.
+
+A pure full-input probe used the exact immutable Schedule430 task's18554-byte
+policy,1825-byte request and46-row catalog with a canned local completion.
+The lossless compact view was14791B; total serialized system+user+response
+schema input was46927B, below65536. All46 tuple rows survived in one shared
+profile. This establishes full-input construction, not actual local-model
+execution, fresh quota, routing quality or provider inclusion. The frozen
+snapshot and score artifacts were not changed.
 
 ## Boundaries preserved
 

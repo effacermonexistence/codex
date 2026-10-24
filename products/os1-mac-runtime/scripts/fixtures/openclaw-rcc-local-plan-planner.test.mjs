@@ -46,7 +46,7 @@ test('one canned local proposal preserves exact objective and returns only untru
   assert.equal(r.execution_authorized, false); assert.equal(r.quality_parity_verified, false); assert.equal(r.semantic_coverage_verified, false);
   assert.equal(Object.hasOwn(r, 'plan'), false); assert.equal(Object.hasOwn(r, 'candidate_id'), false);
   assert.equal(call.model, LOCAL_PLAN_MODEL); assert.equal(call.purpose, LOCAL_PLAN_PURPOSE);
-  assert.equal(call.maxTokens, 512); assert.equal(call.temperature, 0); assert.equal(call.reasoning, 'off');
+  assert.equal(call.maxTokens, 1536); assert.equal(call.temperature, 0); assert.equal(call.reasoning, 'off');
   assert.deepEqual(call.responseFormat, LOCAL_PLAN_RESPONSE_FORMAT); assert.ok(call.signal instanceof AbortSignal);
   const data = JSON.parse(call.messages[0].content);
   assert.equal(data.original_request, i.hostProjection.request); assert.equal(data.objective, i.hostProjection.objective);
@@ -294,7 +294,7 @@ test('hidden reasoning tags/fields are hash-only even in failed raw capture', as
 
 test('compact v2 contract bounds routing prose without changing compiler keys or kernel identity', async () => {
   const f = setup(), r = await f.run(input()), call = f.requests[0], s = call.responseFormat;
-  assert.equal(LOCAL_PLAN_LIMITS.timeout_ms, 20000); assert.equal(LOCAL_PLAN_LIMITS.max_tokens, 512);
+  assert.equal(LOCAL_PLAN_LIMITS.timeout_ms, 30000); assert.equal(LOCAL_PLAN_LIMITS.max_tokens, 1536);
   assert.equal(LOCAL_PLAN_LIMITS.output_bytes, 4096); assert.equal(LOCAL_PLAN_LIMITS.max_nodes, 8);
   assert.equal(s.properties.schema.const, 2); assert.equal(s.properties.nodes.maxItems, 8);
   assert.equal(s.properties.nodes.items.additionalProperties, false);
@@ -382,7 +382,7 @@ test('eight compact synthetic nodes preserve DAG and final ownership, not a nati
   assert.deepEqual(r.proposal.nodes[7].dependencies, ['n6']);
   assert.equal(r.proposal.final_output_proposal.mode, p.final_output_proposal.mode);
   assert.deepEqual(r.proposal.final_output_proposal.node_ids, p.final_output_proposal.node_ids);
-  assert.equal(r.proposal_budget.max_nodes, 8); assert.equal(r.proposal_budget.max_output_tokens, 512);
+  assert.equal(r.proposal_budget.max_nodes, 8); assert.equal(r.proposal_budget.max_output_tokens, 1536);
   assert.equal(r.proposal_budget.token_fit_verified, false); assert.equal(r.proposal_budget.latency_guaranteed, false);
 });
 
@@ -398,7 +398,7 @@ test('compact budget cannot bypass strict unknown fields or cyclic dependency va
 
 test('a tiny token limit is never treated as structural or latency proof', async () => {
   // Canned response deliberately tests the boundary only; it does not assert
-  // a real512-token model can emit every graph or finish before20s.
+  // a real1536-token model can emit every graph or finish before30s.
   const f = setup(async () => ({...reply(), stopReason: 'length'}), {limits: {max_tokens: 1}});
   const r = await f.run(input()); assert.equal(f.requests[0].maxTokens, 1);
   assert.equal(r.reason, 'planner_completion_receipt_invalid_or_truncated');
@@ -473,4 +473,20 @@ test('properly escaped quotes and newlines in legitimate prose retain exact P1 m
   assert.equal(r.proposal.nodes[0].required_output, p.nodes[0].required_output);
   assert.equal(r.proposal.nodes[0].reason_code, p.nodes[0].reason_code);
   assert.equal(r.completion_outcome_unknown, false); assert.equal(r.execution_authorized, false);
+});
+
+test('default 1536 tokens threads a maximal-prose compact four-node fixture; explicit 512 remains exact', async () => {
+  const p = proposal();
+  p.nodes = Array.from({length: 4}, (_, i) => ({...structuredClone(p.nodes[0]),
+    proposal_node_id: 'n' + i + 'x'.repeat(22), instruction: 'x'.repeat(192),
+    required_output: 'y'.repeat(96), reason_code: 'z'.repeat(48)}));
+  p.final_output_proposal = {mode: 'ordered_collection', node_ids: p.nodes.map(n => n.proposal_node_id)};
+  assert.ok(Buffer.byteLength(JSON.stringify(p)) <= LOCAL_PLAN_LIMITS.output_bytes);
+  const f = setup(async () => reply(p)), r = await f.run(input());
+  assert.equal(r.status, 'proposal'); assert.equal(f.requests[0].maxTokens, 1536);
+  assert.equal(r.proposal_budget.max_output_tokens, 1536); assert.equal(r.proposal_budget.token_fit_verified, false);
+  assert.equal(r.proposal_budget.latency_guaranteed, false);
+  const lower = setup(async () => reply(p), {limits: {max_tokens: 512}});
+  assert.equal((await lower.run(input())).status, 'proposal'); assert.equal(lower.requests[0].maxTokens, 512);
+  assert.throws(() => setup(undefined, {limits: {max_tokens: 1537}}), {code: 'planner_limits_invalid'});
 });

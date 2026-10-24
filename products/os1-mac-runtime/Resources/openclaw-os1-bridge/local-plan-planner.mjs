@@ -24,6 +24,9 @@ Use supported tools/scope and current availability/quota observations, not names
 Unknown cost, performance or quota stays unknown; policy_admitted is NOT measured quality parity.
 Do not prefer the strongest tuple by default or pretend unmeasured cheaper tuples are equivalent.
 A stale/future/unavailable/mismatched row cannot be proposed; leave the hint null if none is justified.
+Compact candidate_metadata lists profiles plus candidates. Each candidate inherits exactly its profile_id's
+provider/surface/account/pool/tools/scope/availability/quota/unknown cost and performance fields. Its model,
+effort and exact ID stay on that candidate row. A shared profile is not an alternate candidate or permission.
 Candidate IDs are hints: existing host admission independently binds EVERY execution node.
 Use one node when decomposition adds overhead or loses coverage. Split only justified
 independent work; preserve dependencies and all required outputs in the final owner.
@@ -48,7 +51,7 @@ an upper bound, not a request to fill it. Keep instruction <=192 UTF-8 bytes, re
 If a faithful graph cannot fit, do not drop constraints or claim a usable plan.`;
 export const LOCAL_PLAN_COMPACT_PROMPT_SHA256 = sha(COMPACT_PROMPT);
 export const LOCAL_PLAN_LIMITS = Object.freeze({input_bytes: 65536, output_bytes: 4096,
-  policy_bytes: 32768, max_tokens: 512, timeout_ms: 20000, max_nodes: 8, max_workers: 4, max_revisions: 1});
+  policy_bytes: 32768, max_tokens: 1536, timeout_ms: 30000, max_nodes: 8, max_workers: 4, max_revisions: 1});
 const idSchema = {type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$'};
 const idsSchema = max => ({type: 'array', maxItems: max, uniqueItems: true, items: idSchema});
 // Generation-only schema: use the converter's JSON-string + length branch.
@@ -179,6 +182,8 @@ function checkCompactProposal(proposal) {
 // providers, authenticate a caller, certify source truth, estimate quality, reserve
 // quota or grant execution. The current Core must supply its actual validated catalog.
 export const LOCAL_PLAN_CANDIDATE_METADATA_VERSION = 'host-candidate-metadata-v1';
+export const LOCAL_PLAN_CANDIDATE_COMPACT_VERSION = 'shared-candidate-profiles-v1';
+const candidateViews = new WeakSet();
 const CATALOG_REQUIRED = ['schema', 'task_id', 'request_sha256', 'candidates'];
 const CATALOG_OPTIONAL = ['exclusions', 'routing_intent', 'routing_intent_v2', 'model_tiers',
   'explicit_route_intents', 'quota_scores', 'native_reference_efforts', 'owner_scope',
@@ -293,9 +298,28 @@ export function projectLocalPlannerCandidates({catalog, hostProjection: host, ex
   });
   requireValue(ids.size === host.candidate_ids.length && host.candidate_ids.every(id => ids.has(id)),
     'planner_candidate_id_set_mismatch');
-  return freeze({schema: 1, version: LOCAL_PLAN_CANDIDATE_METADATA_VERSION, catalog_sha256: expected.catalog_sha256,
+  const view = freeze({schema: 1, version: LOCAL_PLAN_CANDIDATE_METADATA_VERSION, catalog_sha256: expected.catalog_sha256,
     assessed_at_ms: now_ms, source: 'host_catalog_projection', execution_authorized: false,
     quality_certificate: false, candidates});
+  candidateViews.add(view); return view;
+}
+/** Lossless prompt representation, not a second selector. Deduplicate only
+ * byte-identical shared facts. Every exact row and both configuration hashes
+ * remain present; no row, timestamp, unknown or account binding is truncated. */
+export function compactLocalPlannerCandidates(view) {
+  requireValue(candidateViews.has(view), 'planner_candidate_view_not_projected');
+  const profiles = [], byValue = new Map();
+  const candidates = view.candidates.map(row => {
+    const {candidate_id, model, effort, configuration_sha256, exact_config_sha256, ...profile} = row;
+    const key = stableJSON(profile);
+    let profile_id = byValue.get(key);
+    if (profile_id === undefined) { profile_id = 'profile_' + profiles.length;
+      byValue.set(key, profile_id); profiles.push({profile_id, ...profile}); }
+    return {candidate_id, profile_id, model, effort, configuration_sha256, exact_config_sha256};
+  });
+  return freeze({schema: 1, version: LOCAL_PLAN_CANDIDATE_COMPACT_VERSION, catalog_sha256: view.catalog_sha256,
+    assessed_at_ms: view.assessed_at_ms, source: view.source, execution_authorized: false, quality_certificate: false,
+    profiles, candidates});
 }
 function validateCandidateHints(proposal, view) {
   const byID = new Map(view.candidates.map(row => [row.candidate_id, row]));
@@ -333,7 +357,7 @@ function projectInput(host, expected, policy, projection, attempt, limits, candi
   });
   checkProposalRepresentation(host, materials, limits);
   const candidateMetadata = candidateCatalog === undefined ? null :
-    projectLocalPlannerCandidates({catalog: candidateCatalog, hostProjection: host, expectedBinding: expected, now_ms});
+    compactLocalPlannerCandidates(projectLocalPlannerCandidates({catalog: candidateCatalog, hostProjection: host, expectedBinding: expected, now_ms}));
   const structured = {schema: candidateMetadata === null ? 2 : 3,
     kind: candidateMetadata === null ? 'OS1_LOCAL_PLAN_INPUT_V2' : 'OS1_LOCAL_PLAN_INPUT_V3', task_id: expected.task_id,
     original_request: host.request, objective: host.objective, request_sha256: expected.request_sha256,
