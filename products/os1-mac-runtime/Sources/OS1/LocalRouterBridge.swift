@@ -102,7 +102,7 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "414261f00194aa4bdd5b8791b803911b6ba2c31c2795d4455383b56c7c44de97"
+    static let rccRuntimeModuleSHA256 = "8cf30d5e492f1bd811748125770137d07a31c59a5f8b9aba1ab6e934aa725f80"
     static let rccRuntimePluginSHA256 = "89f297d30281f679854f06f1ce8b28d044b53b87a9d07786da746909543c7df9"
     static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
@@ -110,7 +110,7 @@ enum LocalRouterBridge {
     static let rccAdaptiveRoutingPolicySHA256 = "6325511ddeae2cff899d07688e178fff026551e54a28cab8edc26fe2751c3efa"
     static let rccJointRouteSelectorSHA256 = "6a13cbf6b1ac2a001bd641e56260cccad8e11c334a9d32fb0350c883705de326"
     static let rccLocalPlanPlannerSHA256 = "acc2da4dbf228d835fa694338bf557b81bd7d437c344e380ad11514f70241b67"
-    static let rccLocalPlanProposalSHA256 = "68e8807f4d5d95b1fceb623b81990135eedea8d781a0cbbb8e849d0cee662afd"
+    static let rccLocalPlanProposalSHA256 = "5d80a4bdf78d56bee82881dd2e0f9e9bb403e2f3605240a038d4ec3324e16f19"
     static let rccRoutingOutcomeSHA256 = "c2ff271ef5d71204f8787232451c10733961c36b79e987c88fabdbe7edc03ec1"
     static let rccRoutingOutcomeCaptureSHA256 = "6beb1dbdd0914c3f3d695912b949143f52b2b6c7089184bf5d90b2907f26c5aa"
     static let rccFrozenRouteArtifactsSHA256 = "87bbc5b0b6d7671bd88a727cd8f257b828a4c80d725632aec2362848bdb6bb93"

@@ -1,4 +1,4 @@
-# Bounded live Auto — build 434 source integration
+# Bounded live Auto — build 435 source integration
 
 This is an execution policy, not a quality certificate. The pre-existing covered-live/FULL verifier policy remains separate.
 
@@ -53,3 +53,11 @@ Tool-enabled read-only Claude launches require immutable per-attempt canonical w
 The composer observer adds closed first-failure stage/code diagnostics without changing capture/production deadlines or success predicates. Historical CI433 capture failure remains a failure; source instrumentation alone does not identify its cause or waive it.
 
 These repairs require a fresh full434 release, preservation-aware installation and actual App parallel/writer qualification. Existing scored case reuse is internal development, not fresh public proof. No latest-best, quota percentage, generic flagship parity or whole-product completion claim follows from this source section.
+
+## Installed434 owner-topology failure and435 source repair
+
+A4 returned both functional A/B answers but executed only one worker. The frozen component rubric passed; the explicitly requested two-worker topology and exact output protocol did not. The single broad `owner_objective` and unchanged singleton floor could not establish owner partition coverage. Failed raw answers, topology and format verdicts remain retained.
+
+435 derives a bounded explicit independent read-only source partition from the immutable owner request. Core—not a model node count or node-name prefix—owns its cardinality, source spans, scope and ordered raw collection. Current supported model/effort hints remain untrusted and independently admitted. Unsupported/conditional/dependent/quoted source syntax keeps the existing original route; FULL/cert/explicit/legacy paths remain separate. Canonical plan and the actual source-owned node fields are rechecked before every native ticket and final collection. All original materials and constraints remain bound; the same Core scheduler owns concurrency, quotas, retries, cancellation and integration. No final judge or second coordinator is added.
+
+Parser and temporary SQLite fixtures are source evidence only. Actual installed435 overlap, UI cards/windows, raw output protocol and quality remain separate gates. This repair is not flagship parity or quota-saving proof. The434 writer's correct file result, local120s timeout/unknown underlying completion, and read-only Bash success with an output-format failure remain separate recorded outcomes.
