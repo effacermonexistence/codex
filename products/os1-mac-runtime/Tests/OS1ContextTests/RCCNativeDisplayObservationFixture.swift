@@ -93,8 +93,18 @@ func runRCCNativeDisplayObservationFixtures() throws {
     publisher.activity(.init(.executing,provider:"codex",progress:progress))
     try check(RCCNativeDisplayStore.load(core,homeDirectory:temp).isEmpty,"progress before own native session/dispatch cannot decorate child")
     publisher.session(session)
-    RuntimeActivity.Observation.$sink.withValue({ publisher.activity($0) }) {
-        RuntimeActivity.emit(.executing, provider: "codex", model: "REQUESTED_NOT_ACTUAL", effort: "ultra", publicText: "SECRET_PUBLIC_PROSE_NOT_COPIED", progress: progress)
+    // Match production's ASYNC withValue overload. The optimized synchronous
+    // overload crashes in task-local push on this host, even inside a Task.
+    // Keep the same real sink/publication assertions, with a bounded completion.
+    let sinkFinished = DispatchSemaphore(value: 0)
+    Task.detached {
+        await RuntimeActivity.Observation.$sink.withValue({ publisher.activity($0) }, operation: { () async -> Void in
+            RuntimeActivity.emit(.executing, provider: "codex", model: "REQUESTED_NOT_ACTUAL", effort: "ultra", publicText: "SECRET_PUBLIC_PROSE_NOT_COPIED", progress: progress)
+        })
+        sinkFinished.signal()
+    }
+    guard sinkFinished.wait(timeout: .now() + 10) == .success else {
+        throw RCCNativeDisplayFixtureError.failed("async scoped sink did not complete within fixture budget")
     }
     let loaded = RCCNativeDisplayStore.load(core, homeDirectory: temp)
     let captured = loaded[O.key(attempt)].flatMap(O.decode)
