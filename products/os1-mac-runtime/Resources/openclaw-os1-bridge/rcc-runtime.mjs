@@ -5639,7 +5639,7 @@ class RCCRuntime {
         cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model} : null;
     const observedTask = executionTask(snapshot);
     const qualityContract = snapshot.catalog?.task_contract?.contract_sha256;
-    const outcomeContext = this.adaptivePolicy.mode === 'off' ? null : {
+    const outcomeContext = this.adaptivePolicy.mode === 'off' && !this.boundedAutoPlanning ? null : {
       identity: {task_id: observedTask.task_id, node_id: child.id,
         candidate_id: candidate.id, request_sha256: observedTask.request_sha256,
         source_fingerprint: observedTask.source_fingerprint, policy_sha256: observedTask.policy_sha256,

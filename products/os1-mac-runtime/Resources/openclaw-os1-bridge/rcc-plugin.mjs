@@ -560,10 +560,15 @@ export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, 
   const calibrated = calibratedRuntimeOptions({stateDir});
   if (pluginConfig?.bounded_auto !== undefined && typeof pluginConfig.bounded_auto !== 'boolean')
     throw new RCCRuntimeError('bounded_auto_config_invalid');
-  if (policy.mode === 'off' && pluginConfig?.bounded_auto === true) return {
-    adaptiveRoutingPolicy: policy, ...calibrated, boundedAutoPlanning: true,
-    proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
-      limits: {max_nodes: 4, max_workers: 4, max_revisions: 0}})};
+  if (policy.mode === 'off' && pluginConfig?.bounded_auto === true) {
+    const reader = createLocalPlanPlanner({complete, lifetimeSignal,
+      limits: {max_nodes: 4, max_workers: 4, max_revisions: 0}});
+    const writerPreparation = createLocalPlanPlanner({complete, lifetimeSignal,
+      limits: {max_nodes: 3, max_workers: 3, max_revisions: 0}});
+    return {adaptiveRoutingPolicy: policy, ...calibrated, boundedAutoPlanning: true,
+      proposeLocalPlan: request => request.candidateCatalog?.owner_scope === 'workspace_write' ?
+        writerPreparation(request) : reader(request)};
+  }
   if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy, ...calibrated};
   if (policy.mode === 'covered_live') {
     // No current production manifest is shipped. Bad/missing registration is
