@@ -167,3 +167,15 @@ test('separate finalizer hint chooses exact authorized writer tuple, never a rea
   const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
   await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].candidate_id,'writer_hint');assert.equal(h.tickets[0].instruction,q.request);
 });
+
+test('Core independently rejects forged writer permission profile and missing write/execute tools',()=>{
+  for(const modify of [c=>c.permission_profile='read_only',c=>c.tools=['read','execute'],c=>c.tools=['read','write']]) {
+    const q=task('/private/test');q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
+    const c=catalog(q);c.owner_scope='workspace_write';c.request_class='writer';
+    const writer={...c.candidates[0],id:'writer_hint',scope:'workspace_write',permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**'],configuration_sha256:H('writer_hint')};modify(writer);c.candidates.push(writer);
+    const raw=JSON.parse(proposal());raw.nodes=raw.nodes.slice(0,1);raw.final_output_proposal={mode:'direct_child',node_ids:['a'],host_finalizer_candidate_id:'writer_hint'};
+    const prep=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
+    const compiled=compileFreshPlannerProposal(JSON.stringify(raw),prep,prep,{max_nodes:3});
+    assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
+  }
+});

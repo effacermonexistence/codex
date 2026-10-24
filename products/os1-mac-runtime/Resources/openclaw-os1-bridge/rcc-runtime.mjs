@@ -1248,7 +1248,8 @@ function boundedAutoEligible(task, catalog) {
 }
 function executionPolicyChoice(node, task, catalog, now, {hint = null, avoidIDs = [], avoidPool = null} = {}) {
   const intent = routingIntent(catalog);
-  const rows = catalog.candidates.filter(c => eligibleRow(c, node) && intentAdmits(c, intent) &&
+  const rows = catalog.candidates.filter(c => eligibleRow(c, node) && c.permission_profile === node.scope &&
+    (node.scope !== 'workspace_write' || c.tools.includes('write') && c.tools.includes('execute')) && intentAdmits(c, intent) &&
     !avoidIDs.includes(c.id) && dispatchable(c, task, now) &&
     c.availability_observed_at_ms <= now && (c.quota_pool === 'none' || c.quota_observed_at_ms <= now));
   let chosen;
