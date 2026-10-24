@@ -1,22 +1,38 @@
-# OS1 Session Garden
+# OS1 Terran Session Surface
 
-Native sidebar entry: `os1.rail.simulation` (시뮬레이션).
+Native entry: `os1.rail.simulation` (시뮬레이션). The native SessionStore remains authoritative. This replaces the earlier procedural garden presentation without replacing the native engine, conversations, routing, queues or permission policy.
 
-The native SessionStore is authoritative. Unit UUIDs and names are the existing conversation UUIDs and titles, not a second session store. Search/paging bounds rendering to 24 workers without renaming or dropping stored sessions. Working animation follows `isSessionRunning`; queued, failed and completed states are distinct. New, select, open, send and stop call the existing native methods. Existing composer drafts are protected from overwrite.
+## Locked visual reference
 
-The garden is a local-only WKWebView with a nonpersistent data store, a main-frame + exact-file message gate, and `connect-src none`. It never launches another provider process. Closing the surface leaves conversations mounted and stops hidden GPU rendering.
+- Reference image: https://starcraft2.4fansites.de/screenshots/original/1509.jpg
+- Gallery: https://starcraft2.4fansites.de/galerie_1_1013.html
+- Source resolution: 1916 × 1075.
+- `public/reference.json` records source and asset SHA-256 identities.
 
-Build assets:
+The full original image provides terrain, structures, portrait, interface chrome and command icons. Only five worker-removal masks use a generated clean plate. All other original pixels remain the original source. Dynamic SCVs are source-pixel silhouette sprites, not generic 3D substitutes. The command surfaces are transparent functional hit regions over the original HUD; mission entry is a game-styled popup.
+
+Pixel claim boundary: the in-app F12 diagnostic compares six unchanged HUD-chrome rectangles (48,880 source-space pixels). A zero difference applies to those rectangles only. Session names, native status, dynamic workers, minimap worker dots and the five removal masks are intentional differences. The whole frame is not claimed pixel-identical.
+
+## Runtime contract
+
+Four actual OS1 UUIDs are visible at a time; the remaining sessions are searchable/paged. A unit's displayed name is the actual conversation title. No fictitious engine task is created for the animation. Session selection, opening chat, creation, prompt dispatch and interruption call the existing native methods.
+
+`src/mining-state.js` holds the independently testable cosmetic state machine. Active means the native snapshot status is exactly `working`. Phase advances only while active and visible. Each cycle travels from command center to mineral, mines, carries a crystal back, and repeats. Native idle/queued/failed/completed state freezes the existing phase and position. Resuming the same UUID continues that phase rather than teleporting to base. The motion is an activity indicator, not a measured percentage of task completion.
+
+The surface is a local-file WKWebView with nonpersistent website storage, an exact-file/main-frame command gate and `connect-src none`. It does not copy credentials or launch another provider process. Existing native composer drafts and per-session surface drafts are preserved.
+
+## Build and verify
 
 ```sh
 cd products/os1-mac-runtime/SimulationGarden
 npm ci
 node ../scripts/build-simulation-garden.mjs
 node ../scripts/test-simulation-garden.mjs
+node ../scripts/test-terran-motion.mjs
 ```
 
-Generated assets and their SHA-256/byte manifest are included in the normal release payload. Three.js is MIT; original procedural scenery and worker geometry do not include StarCraft game assets.
+The asset helper keeps module-local lexical scope inside a classic-script IIFE, avoiding file-URL module CORS without granting universal file access. Generated resources have exact SHA-256/byte manifests and narrow release payload paths.
 
-Local feature installation preserves the installed build434 CLI and its permission/route/queue boundaries. It is not a publication of a new runtime release. Use the existing verified installer with `--preserve-queue`; never replay or replace live session data. A separate native render/interaction receipt is required in addition to source tests.
+Local installation uses the existing verified installer and `--preserve-queue`, with the same signer and unchanged build434 runtime CLI. The old visual baseline remains in Git and binary recovery. This local UI update is not publication of a new global runtime release.
 
-Repair methodology reference actually inspected: the abstract of Huang et al., *Large Language Models Cannot Self-Correct Reasoning Yet* (https://arxiv.org/abs/2310.01798). External compiler results, deterministic source/resource checks and actual native UI observations are the adoption evidence; self-review alone is not.
+Synthetic browser diagnostics are kept outside the app/source payload and explicitly labeled `DIAGNOSTIC · NO MODEL CALLS`. Their results are not provider execution proof. Existing native routing remains separately governed and tested.

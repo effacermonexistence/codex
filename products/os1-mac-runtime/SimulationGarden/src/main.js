@@ -1,64 +1,39 @@
 import './style.css';
-import { CommandScene } from './scene.js';
-const $ = q => document.querySelector(q);
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const glyph = (type) => ({worker:'♙',new:'＋',chat:'↗',focus:'⌖',close:'×',arrow:'→',stop:'■'}[type]);
-let data = { sessions: [], selectedID: null, selectedOutput: '', notice: '', total: 0 }, page = 0, query = '', filter = 'all', scene;
-const drafts = new Map();
-let pendingOrder = null;
-$('#app').innerHTML = `<section class="garden"><div id="scene"></div><div class="vignette"></div><header><div class="garden-brand"><span class="brand-mark">⬡</span><div><span class="eyebrow">OS1 · YOUR SESSIONS, ALIVE</span><h1>시뮬레이션<span>.</span></h1></div></div><div class="metrics"><div><b id="total">0</b><span>SESSIONS</span></div><div><i></i><b id="working">0</b><span>WORKING</span></div><button id="close" title="채팅으로 돌아가기">채팅으로 <span>↗</span></button></div></header>
-<aside class="roster"><div class="roster-head"><span>SESSION FLEET</span><span id="shown"></span></div><label class="search"><span>⌕</span><input id="search" placeholder="세션 이름 검색…" aria-label="세션 이름 검색"></label><div class="filters"><button data-filter="all" class="active">전체</button><button data-filter="working">작업 중</button><button data-filter="idle">대기</button></div><div id="units" role="list" aria-label="실제 OS1 세션"></div><div class="pager"><button id="prev" aria-label="이전 세션">←</button><span id="page"></span><button id="next" aria-label="다음 세션">→</button></div><button id="new">＋ 새 SCV <span>새 OS1 세션</span></button></aside>
-<div class="field-title"><span class="eyebrow">SECTOR 01 / THE MEADOW</span><h2>A little space<br>for big ideas.</h2><p>잔디 위의 모든 SCV가<br>실제 OS1 세션입니다.</p></div><div class="field-controls"><button id="zoom-out" aria-label="축소">−</button><button id="zoom-in" aria-label="확대">＋</button><button id="focus" title="선택한 SCV 보기">⌖</button></div><div class="field-bottom"><span><i></i> OS1 LIVE STATE · NO SEPARATE ENGINE</span><span>클릭 선택 · 휠 확대 · 우클릭 이동</span></div>
-<footer><div class="unit-summary"><div class="unit-icon">♙</div><div class="unit-copy"><span class="eyebrow">SELECTED SESSION</span><h3 id="selected-title">세션을 선택하세요</h3><p><i id="status-dot"></i><span id="status">연결 중</span><span id="provider"></span></p><button id="open-chat">이 SCV의 채팅 열기 ↗</button></div></div><form id="order-form"><label for="prompt">이 SCV에 작업 지시 <small>⌘↵</small></label><textarea id="prompt" rows="2" maxlength="32000" placeholder="프롬프트를 입력하세요. 같은 세션에 이어서 실행됩니다." aria-label="SCV 작업 프롬프트"></textarea><div class="dispatch-row"><span id="notice">기존 세션·대화·큐는 그대로 보존됩니다.</span><button id="stop" type="button" title="선택한 작업 중단">■</button><button id="dispatch" type="submit">작업 보내기 →</button></div></form><div class="result"><span class="eyebrow">LATEST TRANSMISSION</span><p id="result">SCV를 선택하면 최근 응답이 표시됩니다.</p><button id="result-chat">전체 대화 보기 ↗</button></div></footer></section>`;
-function post(action, payload = {}) {
-  const channel = window.webkit?.messageHandlers?.os1Simulation;
-  if (!channel) { $('#notice').textContent = 'OS1 앱 안에서 열어 주세요. 외부 브라우저는 세션을 실행하지 않습니다.'; return; }
-  channel.postMessage({ action, ...payload });
-}
-function matches() { return data.sessions.filter(s => s.name.toLowerCase().includes(query.toLowerCase()) && (filter === 'all' || (filter === 'working' ? s.status === 'working' : s.status !== 'working'))); }
-function selected() { return data.sessions.find(s => s.id === data.selectedID); }
-function select(id) { drafts.set(data.selectedID, $('#prompt').value); data.selectedID = id; $('#prompt').value = drafts.get(id) || ''; post('select', { id }); render(); }
-function render() {
-  const all = matches(), pages = Math.max(1, Math.ceil(all.length / 24)); page = Math.min(page, pages - 1);
-  const visible = all.slice(page * 24, (page + 1) * 24), s = selected();
-  $('#total').textContent = data.sessions.length; $('#working').textContent = data.sessions.filter(x => x.status === 'working').length;
-  $('#shown').textContent = `${all.length} SCVs`; $('#page').textContent = `${page + 1} / ${pages}`;
-  $('#prev').disabled = page === 0; $('#next').disabled = page + 1 >= pages;
-  $('#units').innerHTML = visible.map(x => `<button class="unit ${x.id === data.selectedID ? 'selected' : ''}" data-id="${esc(x.id)}" aria-pressed="${x.id === data.selectedID}" title="${esc(x.name)}"><span class="robot">♙</span><span class="title">${esc(x.name)}<small>${esc(x.engine)} · ${x.status === 'working' ? '작업 중' : x.status === 'queued' ? '큐 대기' : x.status === 'completed' ? '작업 종료 · 대기' : x.status === 'failed' ? '확인 필요' : '대기 중'}</small></span><i class="${x.status}"></i></button>`).join('') || '<div class="empty">이 조건에 맞는 세션이 없습니다.</div>';
-  $('#selected-title').textContent = s?.name || '세션을 선택하세요'; $('#selected-title').title = s?.name || '';
-  $('#status').textContent = s?.status === 'working' ? '작업 중' : s?.status === 'queued' ? '기존 큐 대기' : s?.status === 'completed' ? '작업 종료 · 다시 지시할 수 있어요' : s?.status === 'failed' ? '기존 작업 확인 필요' : s ? '명령 대기 중' : '선택된 SCV 없음';
-  $('#status-dot').className = s?.status || ''; $('#provider').textContent = s?.engine || '';
-  $('#dispatch').disabled = !s || s.status === 'working'; $('#stop').disabled = s?.status !== 'working';
-  $('#result').textContent = data.selectedOutput || '아직 응답이 없습니다. 작업을 보내거나 전체 대화를 열어 보세요.';
-  $('#notice').textContent = data.notice || s?.activity || '기존 세션·대화·큐는 그대로 보존됩니다.';
-  const visual = visible.map((x, i) => ({ ...x, number: i + 1, slot: i % 8 }));
-  scene?.sync(visual, [data.selectedID]);
-}
-try { scene = new CommandScene($('#scene'), { select: id => select(id), move: (x, z) => { scene.moveSelected(x, z); scene.ping(x, z); } }); }
-catch { $('#scene').innerHTML = '<div class="render-error">3D 화면을 열 수 없습니다. 왼쪽 세션 목록과 작업 지시는 사용할 수 있습니다.</div>'; }
-window.os1SimulationUpdate = snapshot => {
-  const changed = data.selectedID !== snapshot.selectedID;
-  if (changed) drafts.set(data.selectedID, $('#prompt').value);
-  data = snapshot; if (scene) scene.enabled = snapshot.visible;
-  if (pendingOrder) {
-    const unit = data.sessions.find(s => s.id === pendingOrder.id);
-    if (unit && ['working', 'queued'].includes(unit.status)) {
-      if (data.selectedID === pendingOrder.id && $('#prompt').value === pendingOrder.text) $('#prompt').value = '';
-      drafts.set(pendingOrder.id, ''); pendingOrder = null;
-    } else if (data.notice) { pendingOrder = null; } // Rejected drafts stay visible.
-  }
-  if (changed) { $('#prompt').value = drafts.get(data.selectedID) || ''; const index = matches().findIndex(s => s.id === data.selectedID); if (index >= 0) page = Math.floor(index / 24); }
-  render();
-};
-$('#units').onclick = e => { const b = e.target.closest('[data-id]'); if (b) select(b.dataset.id); };
-$('#search').oninput = e => { query = e.target.value; page = 0; render(); };
-$('.filters').onclick = e => { const b = e.target.closest('[data-filter]'); if (!b) return; filter = b.dataset.filter; page = 0; document.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('active', x === b)); render(); };
-$('#prev').onclick = () => { page--; render(); }; $('#next').onclick = () => { page++; render(); };
-$('#new').onclick = () => post('new'); $('#close').onclick = () => post('close');
-$('#open-chat').onclick = $('#result-chat').onclick = () => data.selectedID && post('open', { id: data.selectedID });
-$('#zoom-in').onclick = () => scene?.setZoom(scene.zoom * 1.15); $('#zoom-out').onclick = () => scene?.setZoom(scene.zoom / 1.15); $('#focus').onclick = () => scene?.focus(data.selectedID);
-$('#order-form').onsubmit = e => { e.preventDefault(); const text = $('#prompt').value.trim(); if (!text || !selected() || selected().status === 'working') return; pendingOrder = { id: data.selectedID, text }; post('order', { id: data.selectedID, text }); };
-$('#stop').onclick = () => data.selectedID && post('stop', { id: data.selectedID });
-$('#prompt').oninput = () => drafts.set(data.selectedID, $('#prompt').value);
-$('#prompt').onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $('#order-form').requestSubmit(); } };
-render(); post('ready');
+import { TerranScene } from './terran-scene.js';
+const $=s=>document.querySelector(s),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let data={sessions:[],selectedID:null,selectedOutput:'',notice:'',visible:false},page=0,query='',pendingOrder=null,stableIDs=[],scene;
+const drafts=new Map();
+$('#app').innerHTML=`<div id="stage-shell"><main id="game" aria-label="스타크래프트 2 테란 세션 인터페이스"><div id="world"></div>
+<button class="hotspot" id="sessions-menu" aria-label="OS1 세션 목록 F9" title="OS1 세션 목록 (F9)"></button><button class="hotspot" id="menu" aria-label="메뉴 F10" title="메뉴 (F10)"></button><button class="hotspot" id="messages-menu" aria-label="최근 응답 F11" title="최근 응답 (F11)"></button><button class="hotspot" id="help" aria-label="레퍼런스와 상태 검증 F12" title="도움말 (F12)"></button>
+<div id="supply" title="현재 표시 중인 실제 SCV 세션 수"></div>
+<section id="fleet" aria-label="실제 OS1 세션"><div class="fleet-head"><b>OS1 Sessions</b><span id="total"></span></div><label id="search-label">세션 검색<input id="search" aria-label="세션 이름 검색" placeholder="세션 이름 검색…"></label><div id="units"></div><div class="fleet-nav"><button id="prev" aria-label="이전 SCV 네 기">‹</button><span id="page"></span><button id="next" aria-label="다음 SCV 네 기">›</button></div></section><span id="unit-count"></span>
+<section id="selected-info"><h1 id="selected-title">SCV</h1><p id="status">Standing by</p><p id="provider"></p><button id="open-chat">이 SCV의 채팅 열기 ↗</button></section>
+<button class="hotspot" id="move" aria-label="선택한 SCV의 작업 프롬프트 열기" title="작업 프롬프트 (M)"></button><button class="hotspot" id="stop" aria-label="선택한 세션 작업 중단" title="실제 세션 작업 중단 (S)"></button><button class="hotspot" id="gather" aria-label="채광 작업 프롬프트" title="프롬프트로 작업 배정 (G)"></button><button class="hotspot" id="focus" aria-label="선택 SCV 찾기" title="선택 SCV 찾기"></button><button class="hotspot" id="all" aria-label="전체 세션 목록" title="전체 세션 목록"></button><button class="hotspot" id="repair" aria-label="같은 세션에 작업 배정" title="같은 세션에 작업 배정 (R)"></button><button class="hotspot" id="build" aria-label="새 SCV 세션 생성" title="새 SCV · 새 OS1 세션 (N)"></button><button class="hotspot" id="base" aria-label="선택 세션 채팅으로 돌아가기" title="선택 세션 채팅으로 돌아가기"></button><button class="hotspot" id="close" aria-label="시뮬레이션 닫기" title="OS1 채팅으로 돌아가기 (Esc)"></button>
+<section id="order-panel" hidden><div class="panel-heading"><span>SCV · 작업 배정</span><button id="close-order" aria-label="프롬프트 닫기">×</button></div><p id="order-name"></p><form id="order-form"><textarea id="prompt" aria-label="SCV 작업 프롬프트" placeholder="이 세션에 실행할 작업을 입력하세요…" maxlength="32000" rows="4"></textarea><div class="order-bottom"><span id="notice"></span><button id="dispatch" type="submit">작업 보내기 →</button></div></form></section>
+<section id="transmission" hidden><div class="panel-heading"><span>TRANSMISSION</span><button id="close-result" aria-label="응답 닫기">×</button></div><pre id="result"></pre><button id="result-chat">전체 대화 열기 ↗</button></section>
+<section id="menu-panel" hidden><h2>Menu</h2><button id="resume">게임 화면으로</button><button id="new">새 SCV · 새 OS1 세션</button><button id="native-chat">OS1 채팅으로 돌아가기</button></section>
+<section id="help-panel" hidden><div class="panel-heading"><span>REFERENCE / LIVE STATE</span><button id="close-help" aria-label="도움말 닫기">×</button></div><p>스타2 테란 원본 화면을 고정 레퍼런스로 사용합니다. 네 기의 SCV는 실제 OS1 세션입니다.</p><p>세션 실행 중: 기지 ↔ 미네랄 왕복.<br>세션 중단·종료·실패·큐 대기: SCV는 현 위치 정지.</p><p>클릭: SCV 선택 · 1–4: 유닛 선택<br>G / Enter: 프롬프트 · S: 실제 작업 중단<br>N: 새 세션 · F10: 메뉴 · Esc: 닫기</p><pre id="pixel-check"></pre></section>
+</main></div>`;
+function post(action,payload={}){const channel=window.webkit?.messageHandlers?.os1Simulation;if(!channel){$('#notice').textContent='OS1 앱 안에서 실제 세션에 연결됩니다.';return;}channel.postMessage({action,...payload});}
+function selected(){return data.sessions.find(s=>s.id===data.selectedID);}
+function ordered(){const byID=new Map(data.sessions.map(s=>[s.id,s]));return stableIDs.map(id=>byID.get(id)).filter(Boolean).filter(s=>s.name.toLowerCase().includes(query.toLowerCase()));}
+function visible(){return ordered().slice(page*4,page*4+4);}
+function semanticKey(d){return JSON.stringify([d.selectedID,d.selectedOutput,d.notice,d.visible,d.sessions.map(s=>[s.id,s.name,s.engine,s.status,s.activity])]);}
+function select(id){drafts.set(data.selectedID,$('#prompt').value);data.selectedID=id;$('#prompt').value=drafts.get(id)||'';post('select',{id});render();}
+function openOrder(){if(!selected())return;$('#order-panel').hidden=false;$('#prompt').focus();}
+function render(){const list=ordered(),pages=Math.max(1,Math.ceil(list.length/4));page=Math.min(Math.max(0,page),pages-1);const units=visible(),s=selected();$('#total').textContent=String(data.sessions.length);$('#page').textContent=`${page+1} / ${pages}`;$('#prev').disabled=page===0;$('#next').disabled=page+1>=pages;$('#unit-count').textContent=String(units.length).padStart(2,'0');$('#supply').textContent=`${units.length}/11`;
+  $('#units').innerHTML=units.map((s,i)=>`<button data-id="${esc(s.id)}" class="session ${s.id===data.selectedID?'selected':''}" aria-pressed="${s.id===data.selectedID}" title="${esc(s.name)}"><span class="unit-number">${i+1}</span><span>${esc(s.name)}</span><i class="${s.status}"></i></button>`).join('')||'<p class="empty">일치하는 세션 없음</p>';
+  $('#selected-title').textContent=s?.name||'SCV';$('#selected-title').title=s?.name||'';$('#order-name').textContent=s?.name||'';$('#provider').textContent=s?.engine||'';$('#status').textContent=s?.status==='working'?'Gathering · 세션 실행 중':s?.status==='queued'?'Queued · 대기':s?.status==='failed'?'Idle · 확인 필요':'Idle · 명령 대기';$('#status').className=s?.status||'';$('#result').textContent=data.selectedOutput||'아직 수신된 응답이 없습니다.';$('#notice').textContent=data.notice||s?.activity||'같은 OS1 세션에 이어서 실행됩니다.';$('#dispatch').disabled=!s||s.status==='working';$('#stop').disabled=s?.status!=='working';scene?.sync(units,data.selectedID,data.visible);}
+scene=new TerranScene($('#world'),select);scene.ready.then(()=>render()).catch(e=>{$('#notice').textContent=e.message;$('#order-panel').hidden=false;});
+let lastSemantic='';
+window.os1SimulationUpdate=snapshot=>{const key=semanticKey(snapshot);if(key===lastSemantic)return;lastSemantic=key;const changed=data.selectedID!==snapshot.selectedID;if(changed)drafts.set(data.selectedID,$('#prompt').value);const incoming=snapshot.sessions.map(s=>s.id);const added=incoming.filter(id=>!stableIDs.includes(id));stableIDs=stableIDs.length?[...added,...stableIDs.filter(id=>incoming.includes(id))]:incoming;data=snapshot;
+  if(pendingOrder){const s=data.sessions.find(s=>s.id===pendingOrder.id);if(s&&['working','queued'].includes(s.status)){if(data.selectedID===pendingOrder.id&&$('#prompt').value===pendingOrder.text)$('#prompt').value='';drafts.set(pendingOrder.id,'');pendingOrder=null;$('#order-panel').hidden=true;}else if(data.notice)pendingOrder=null;}
+  if(changed){$('#prompt').value=drafts.get(data.selectedID)||'';const index=ordered().findIndex(s=>s.id===data.selectedID);if(index>=0)page=Math.floor(index/4);}render();};
+$('#units').onclick=e=>{const b=e.target.closest('[data-id]');if(b)select(b.dataset.id);};$('#search').oninput=e=>{query=e.target.value;page=0;render();};$('#prev').onclick=()=>{page--;render();};$('#next').onclick=()=>{page++;render();};
+$('#order-form').onsubmit=e=>{e.preventDefault();const text=$('#prompt').value.trim();if(!text||!selected()||selected().status==='working')return;pendingOrder={id:data.selectedID,text};post('order',{id:data.selectedID,text});};$('#prompt').oninput=()=>drafts.set(data.selectedID,$('#prompt').value);$('#prompt').onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();$('#order-form').requestSubmit();}};
+$('#open-chat').onclick=$('#result-chat').onclick=$('#base').onclick=()=>data.selectedID&&post('open',{id:data.selectedID});$('#close').onclick=$('#native-chat').onclick=()=>post('close');$('#new').onclick=$('#build').onclick=()=>post('new');$('#stop').onclick=()=>data.selectedID&&post('stop',{id:data.selectedID});$('#move').onclick=$('#gather').onclick=$('#repair').onclick=openOrder;$('#focus').onclick=()=>{if(!selected())return;const index=ordered().findIndex(s=>s.id===data.selectedID);if(index>=0){page=Math.floor(index/4);render();}};
+$('#menu').onclick=()=>$('#menu-panel').hidden=!$('#menu-panel').hidden;$('#resume').onclick=()=>$('#menu-panel').hidden=true;$('#messages-menu').onclick=()=>$('#transmission').hidden=!$('#transmission').hidden;$('#close-result').onclick=()=>$('#transmission').hidden=true;$('#close-order').onclick=()=>$('#order-panel').hidden=true;$('#sessions-menu').onclick=$('#all').onclick=()=>$('#fleet').classList.toggle('hidden-fleet');
+$('#help').onclick=()=>{$('#help-panel').hidden=!$('#help-panel').hidden;const p=scene.pixelReceipt;$('#pixel-check').textContent=p?`REFERENCE ${p.width} × ${p.height}\nSTATIC HUD PIXELS: ${p.unavailable?'UNAVAILABLE':p.staticHudPixels}\nDIFFERING PIXELS: ${p.unavailable?'UNAVAILABLE':p.differingPixels}\nSCOPE: unchanged HUD chrome, not entire frame\nVISIBLE SCVs: ${visible().length}\nMOVING: ${scene.states().filter(s=>s.moving).length}`:'Reference loading';};$('#close-help').onclick=()=>$('#help-panel').hidden=true;
+document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='Escape'){for(const id of ['order-panel','transmission','menu-panel','help-panel'])$('#'+id).hidden=true;return;}const n=Number(e.key);if(n>=1&&n<=4){const s=visible()[n-1];if(s)select(s.id);return;}const action={Enter:openOrder,g:openOrder,m:openOrder,r:openOrder,s:()=>$('#stop').click(),n:()=>post('new'),F9:()=>$('#sessions-menu').click(),F10:()=>$('#menu').click(),F11:()=>$('#messages-menu').click(),F12:()=>$('#help').click()}[e.key];if(action){e.preventDefault();action();}});
+function resize(){const outer=$('#stage-shell'),scale=Math.min(outer.clientWidth/1916,outer.clientHeight/1075);$('#game').style.transform=`translate(-50%,-50%) scale(${scale})`;}
+new ResizeObserver(resize).observe($('#stage-shell'));resize();render();post('ready');

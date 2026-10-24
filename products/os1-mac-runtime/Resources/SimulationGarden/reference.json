@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "sourceURL": "https://starcraft2.4fansites.de/screenshots/original/1509.jpg",
+  "sourcePage": "https://starcraft2.4fansites.de/galerie_1_1013.html",
+  "referenceDimensions": [
+    1916,
+    1075
+  ],
+  "referenceSHA256": "310df6885090c3b053af1d82fea5b69e622008038e811a48b03fd283777fd761",
+  "cleanPlateSHA256": "13c75641db619cc94f034d55d12d0f858bb7d0d32cd1bf1b267e7c00777bd718",
+  "mode": "Original reference image and source-pixel worker/HUD masks; five generated worker-removal regions only",
+  "initialVisibleWorkers": 4,
+  "allWorkersBackedByNativeSessionUUID": true,
+  "pixelClaimBoundary": "Static unmodified HUD chrome is copied from source; entire dynamic frame is not claimed identical"
+}

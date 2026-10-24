@@ -67,6 +67,7 @@ python3 "$script_dir/test-os1-context-helper-dispatch.py" --source-only
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-composer-viewport.py"
 node "$script_dir/test-simulation-garden.mjs"
+node "$script_dir/test-terran-motion.mjs"
 python3 "$script_dir/test-task-quality-wiring.py"
 python3 "$script_dir/test-rcc-native-display-observation-wiring.py"
 python3 "$script_dir/test-native-metadata-custody.py"
@@ -336,6 +337,9 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/index.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/manifest.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/terran-reference.jpg"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/terran-cleanplate.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/reference.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
@@ -504,6 +508,9 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/index.html"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/manifest.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/terran-reference.jpg"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/terran-cleanplate.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/reference.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
