@@ -3820,7 +3820,9 @@ class RCCRuntime {
     });
     const controller = new AbortController(), item = {controller, promise: null};
     this.intentControllers.set(taskID, item);
-    const expiresAt = Math.min(Date.now() + (bounded ? 30_000 : 20_000), state.created_at_ms + task.budget.max_duration_ms);
+    // Cold 21,579-token local prefill exceeded the former 30s bounded window.
+    // This remains a finite host deadline, not a latency/valid-plan guarantee.
+    const expiresAt = Math.min(Date.now() + (bounded ? 120_000 : 20_000), state.created_at_ms + task.budget.max_duration_ms);
     let timeout, onAbort, settled = false;
     const aborted = new Promise((_, reject) => {
       onAbort = () => reject(controller.signal.reason ?? new RCCRuntimeError('adaptive_plan_aborted'));
