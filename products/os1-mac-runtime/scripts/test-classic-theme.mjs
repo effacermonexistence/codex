@@ -11,5 +11,6 @@ check(view.includes('let accentHex: String'),'native palette on same state chann
 check(app.includes('accentHex: store.appSettings.resolvedAccentColor'),'settings is sole theme authority');
 check(app.includes('if action == "settings" { profileNavigation.sheet = .settings; return }'),'theme opens actual OS1 Settings');
 check(app.includes('OS1AppearanceSettingsRow(accent: store.appSettings.resolvedAccentColor)'),'native palette chooser');
+const scene=read('SimulationGarden/src/terran-scene.js');check(scene.includes('layer.style.webkitFilter=filter'),'WebKit CSS filter layers');check(!scene.includes('c.filter='),'no unsupported Canvas filter dependency');
 const ref=JSON.parse(read('SimulationGarden/public/reference.json'));check(ref.width===640&&ref.height===480,'classic 640x480 stage');check(ref.wholeFrameIdentical===false,'intentional theme changes are not called full-frame identity');
 console.log(JSON.stringify({status:'PASS',checks,scope:'theme normalization, native bridge, source contracts; no provider calls'}));
