@@ -8,7 +8,7 @@ import {stableJSON, exactConfigFingerprint} from './joint-route-selector.mjs';
 // run in the existing tool-free OpenClaw service/lifetime scope.
 export const LOCAL_PLAN_MODEL = 'ollama/qwen3.5:4b';
 export const LOCAL_PLAN_PURPOSE = 'os1.rcc.local-plan-proposal';
-export const LOCAL_PLAN_KERNEL_VERSION = 'rcc-local-plan-kernel-v3';
+export const LOCAL_PLAN_KERNEL_VERSION = 'rcc-local-plan-kernel-v4';
 export const LOCAL_PLAN_KERNEL = `You propose bounded execution plans for the SINGLE OS-1 OpenClaw RCC task.
 The exact original objective, owner constraints, supplied state and unknowns are the floor.
 Preserve identity, provenance, time, negation, conditions, quantities and scope.
@@ -39,6 +39,8 @@ A non-null host_finalizer_candidate_id needs explicit host_finalizer context; it
 Candidate IDs are hints: existing host admission independently binds EVERY execution node.
 Use one node when decomposition adds overhead or loses coverage. Split only justified
 independent work; preserve dependencies and all required outputs in the final owner.
+Final direct_child or integration_node names exactly ONE node ID. ordered_collection names
+ALL independent nodes in plan order (one to eight IDs); never use direct_child for several IDs.
 Keep all required materials assigned; unknown material necessity still requires host review.
 A highest-quality target is NOT an instruction to run every node at the highest model/effort.
 Use agent nodes within the projected scope/paths. Never propose deterministic/exact bypass.
@@ -85,9 +87,12 @@ export const LOCAL_PLAN_RESPONSE_FORMAT = freeze({type: 'object', additionalProp
           proposed_owned_paths: {type: 'array', maxItems: 128, uniqueItems: true, items: stringSchema(1024)},
           required_output: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.required_output_bytes), check_refs: idsSchema(128),
           reason_code: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.reason_bytes)}}},
-    final_output_proposal: {type: 'object', additionalProperties: false, required: ['mode', 'node_ids'],
-      properties: {host_finalizer_candidate_id: {anyOf: [idSchema, {type: 'null'}]}, mode: {enum: ['direct_child', 'ordered_collection', 'integration_node']},
-        node_ids: {...nodeIDsSchema(8), minItems: 1}}}},
+    // Disjoint complete objects: generation grammar must obey the SAME
+    // mode/cardinality contract as P1, not merely emit a valid JSON object.
+    final_output_proposal: {anyOf: ['direct_child', 'integration_node', 'ordered_collection'].map(mode => ({
+      type: 'object', additionalProperties: false, required: ['mode', 'node_ids'],
+      properties: {host_finalizer_candidate_id: {anyOf: [idSchema, {type: 'null'}]}, mode: {const: mode},
+        node_ids: {...nodeIDsSchema(mode === 'ordered_collection' ? 8 : 1), minItems: 1}}}))}},
 });
 const HASH = /^[a-f0-9]{64}$/;
 const PID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
