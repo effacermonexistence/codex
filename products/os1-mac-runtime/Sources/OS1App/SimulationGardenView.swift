@@ -19,6 +19,7 @@ struct OS1GardenSnapshot: Codable, Equatable {
     let selectedOutput: String
     let notice: String
     let visible: Bool
+    let accentHex: String
 }
 
 struct OS1SimulationGarden: NSViewRepresentable {
@@ -79,7 +80,7 @@ struct OS1SimulationGarden: NSViewRepresentable {
             guard message.name == "os1Simulation", message.frameInfo.isMainFrame,
                   let entry, webView?.url?.standardizedFileURL == entry,
                   let body = message.body as? [String: Any], let action = body["action"] as? String,
-                  ["ready", "select", "open", "new", "close", "order", "stop"].contains(action) else { return }
+                  ["ready", "select", "open", "new", "close", "order", "stop", "settings"].contains(action) else { return }
             if action == "ready" { ready = true; lastJSON = ""; publish(); return }
             let id = body["id"] as? String
             if ["select", "open", "order", "stop"].contains(action) {

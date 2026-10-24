@@ -1,38 +1,27 @@
-# OS1 Terran Session Surface
+# OS1 Classic Terran Session Surface
 
-Native entry: `os1.rail.simulation` (시뮬레이션). The native SessionStore remains authoritative. This replaces the earlier procedural garden presentation without replacing the native engine, conversations, routing, queues or permission policy.
+Native entry: `os1.rail.simulation` (시뮬레이션). Existing native UUIDs, titles, send/stop/new methods, permissions, queues and provider sessions remain authoritative. This changes presentation, not the execution engine.
 
-## Locked visual reference
+## Classic reference
 
-- Reference image: https://starcraft2.4fansites.de/screenshots/original/1509.jpg
-- Gallery: https://starcraft2.4fansites.de/galerie_1_1013.html
-- Source resolution: 1916 × 1075.
-- `public/reference.json` records source and asset SHA-256 identities.
+The stage now uses StarCraft 1 / Brood War classic graphics at 640×480, not SC2 or a generated 3D substitute. Source screenshot: https://satirist.org/pix/starcraft/blog/2019-03-27_scv.png . Source article: https://satirist.org/ai/starcraft/blog/archives/784-produce-workers-closer-to-the-minerals.html . Official visual cross-reference: https://classic.battle.net/scc/terran/basic.shtml . The original image supplies terrain, Command Center, SCV silhouette, portrait, wireframe and command grid. Worker-removal masks clone source terrain with feathered edges. Faction paint, selection rings, wireframe and small chevron trim use the selected accent. Nearest-neighbor scaling preserves the low-resolution character. The whole themed frame is intentionally not pixel-identical to the source.
 
-The full original image provides terrain, structures, portrait, interface chrome and command icons. Only five worker-removal masks use a generated clean plate. All other original pixels remain the original source. Dynamic SCVs are source-pixel silhouette sprites, not generic 3D substitutes. The command surfaces are transparent functional hit regions over the original HUD; mission entry is a game-styled popup.
+## One appearance authority
 
-Pixel claim boundary: the in-app F12 diagnostic compares six unchanged HUD-chrome rectangles (48,880 source-space pixels). A zero difference applies to those rectangles only. Session names, native status, dynamic workers, minimap worker dots and the five removal masks are intentional differences. The whole frame is not claimed pixel-identical.
+Settings → Appearance → Accent color offers eight swatches and a custom native color picker. OS1 Pink is the existing native `.93, .70, .80` color, represented as `#EDB3CC`. This is not asserted to be a copied Codex pink. Codex's documented appearance workflow supplies the settings interaction reference: https://learn.chatgpt.com/docs/reference/settings . Direct CUA inspection of the Codex app was unavailable; no permissions were broadened or restriction bypassed.
 
-## Runtime contract
+The optional `accentColor` field lives in the existing private OS1 settings file. Older files load pink without a migration write. Only six-digit hex colors cross the trusted native snapshot bridge. `accentHex` is part of snapshot deduplication. A color change redraws existing workers; it does not recreate sessions, reset phase, dispatch work, change routing, or overwrite drafts. Theme controls open the actual OS1 Settings sheet. The UI does not store a second preferences/session database.
 
-Four actual OS1 UUIDs are visible at a time; the remaining sessions are searchable/paged. A unit's displayed name is the actual conversation title. No fictitious engine task is created for the animation. Session selection, opening chat, creation, prompt dispatch and interruption call the existing native methods.
+## Motion contract
 
-`src/mining-state.js` holds the independently testable cosmetic state machine. Active means the native snapshot status is exactly `working`. Phase advances only while active and visible. Each cycle travels from command center to mineral, mines, carries a crystal back, and repeats. Native idle/queued/failed/completed state freezes the existing phase and position. Resuming the same UUID continues that phase rather than teleporting to base. The motion is an activity indicator, not a measured percentage of task completion.
+Four native UUIDs are visible at once; the rest remain searchable/paged. Active `working` state alone advances the phase: Command Center → minerals → mining dwell → cargo return → repeat. Idle, queue, failure and terminal state freeze exact phase/position/cargo. The same UUID resumes its phase. Hidden rendering is suspended. Animation is an activity indicator, not measured progress.
 
-The surface is a local-file WKWebView with nonpersistent website storage, an exact-file/main-frame command gate and `connect-src none`. It does not copy credentials or launch another provider process. Existing native composer drafts and per-session surface drafts are preserved.
+The local-file WKWebView remains nonpersistent, exact-file/main-frame gated and `connect-src none`. Native command modifiers are excluded from game hotkeys. Changing theme does not grant tool permissions or launch a provider call.
 
-## Build and verify
+## Verification
 
-```sh
-cd products/os1-mac-runtime/SimulationGarden
-npm ci
-node ../scripts/build-simulation-garden.mjs
-node ../scripts/test-simulation-garden.mjs
-node ../scripts/test-terran-motion.mjs
-```
+Run `node ../scripts/build-simulation-garden.mjs`, `node ../scripts/test-simulation-garden.mjs`, `node ../scripts/test-terran-motion.mjs`, and `node ../scripts/test-classic-theme.mjs` from this folder. Native settings fixtures: `OS1ContextTests --appearance-only`. Browser fixtures stay outside the app payload and visibly say DIAGNOSTIC / NO MODEL CALLS; they are not provider-run evidence. The earlier native two-turn Codex test remains historical engine evidence, not a new inference run for this appearance-only update.
 
-The asset helper keeps module-local lexical scope inside a classic-script IIFE, avoiding file-URL module CORS without granting universal file access. Generated resources have exact SHA-256/byte manifests and narrow release payload paths.
+Repair method: inspected the abstract of https://arxiv.org/abs/2310.01798 (intrinsic self-correction limits). Adopt only after deterministic regression, actual rendered observation, and native settings/restart readback, rather than fluent self-review. No private source or log was sent in a research query.
 
-Local installation uses the existing verified installer and `--preserve-queue`, with the same signer and unchanged build434 runtime CLI. The old visual baseline remains in Git and binary recovery. This local UI update is not publication of a new global runtime release.
-
-Synthetic browser diagnostics are kept outside the app/source payload and explicitly labeled `DIAGNOSTIC · NO MODEL CALLS`. Their results are not provider execution proof. Existing native routing remains separately governed and tested.
+Local installation uses the existing verified, queue-preserving installer with private paging snapshot/restore drill, unchanged runtime CLI/config and signer continuity. Historical SC2 resources remain recoverable through Git and the previous verified app recovery point.

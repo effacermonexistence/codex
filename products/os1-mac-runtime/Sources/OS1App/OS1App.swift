@@ -9653,7 +9653,9 @@ private final class SessionStore: ObservableObject {
         selfUpdateHome = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser
         // Only the live store reads the owner's files; a store with its own
         // storage root is a fixture and must not depend on this Mac's state.
-        appSettings = storageRoot == nil ? OS1Settings.load() : OS1Settings()
+        let initialSettings = storageRoot == nil ? OS1Settings.load() : OS1Settings()
+        appSettings = initialSettings
+        if storageRoot == nil { OS1AppearanceState.shared.set(initialSettings.resolvedAccentColor) }
         accountBook = storageRoot == nil ? BackendAccounts.load() : BackendAccounts.normalized(BackendAccountBook())
         self.sourceAdmissionCheck = sourceAdmissionCheck
         self.routingIntentHostEnabled = storageRoot == nil ? RCCRoutingIntentIngress.enableRoutingIntentV2
@@ -13666,7 +13668,7 @@ private final class SessionStore: ObservableObject {
         // Only the live store owns settings.json; a fixture store changes its
         // own admission without touching the owner's file.
         if customStorageRoot == nil {
-            do { try value.save() } catch { alertMessage = error.localizedDescription }
+            do { try value.save(); OS1AppearanceState.shared.set(value.resolvedAccentColor) } catch { alertMessage = error.localizedDescription }
         }
         if !value.showCodex, surface == .codex { surface = .auto }
         // A raised cap is the owner asking for the waiting conversations to run
@@ -14078,8 +14080,11 @@ private enum Theme {
     static let borderStrong = Color.white.opacity(0.22)
     static let muted = Color.white.opacity(0.47)
     static let text = Color.white.opacity(0.95)
-    static let pink = Color(red: 0.93, green: 0.70, blue: 0.80)
-    static let pinkDeep = Color(red: 0.22, green: 0.10, blue: 0.16)
+    static var pink: Color { os1AccentColor(OS1AppearanceState.shared.accent) }
+    static var pinkDeep: Color {
+        let (r, g, b) = OS1AccentPalette.rgb(OS1AppearanceState.shared.accent)
+        return Color(red: r * 0.24, green: g * 0.15, blue: b * 0.20)
+    }
     static let green = Color(red: 0.28, green: 0.93, blue: 0.55)
     /// Needs the owner, but nothing is broken: a backend waiting for sign-in.
     static let amber = Color(red: 0.99, green: 0.78, blue: 0.35)
@@ -16196,6 +16201,11 @@ private struct OS1SettingsView: View {
                            "Language applies to menus, buttons and status text right away. The OS-1 interface is available in English and 한국어; ‘Auto detect’ uses whichever comes first in your macOS language order. Response language offers Codex's full language list, and ‘Auto’ answers in whatever language you type — an English keyboard with a Korean message still gets a Korean answer."))
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Section(os1Tr("모양", "Appearance")) {
+                OS1AppearanceSettingsRow(accent: store.appSettings.resolvedAccentColor) { hex in
+                    store.updateSettings { $0.accentColor = OS1AccentPalette.normalized(hex) }
+                }
+            }
             Section(os1Tr("동시 실행", "Parallel runs")) {
                 Picker(os1Tr("동시에 실행할 대화 수", "Conversations running at the same time"),
                        selection: Binding(get: { store.appSettings.parallelRuns },
@@ -16926,11 +16936,12 @@ private struct RootView: View {
         let rows = store.simulationGardenRows
         let output = store.selectedSession?.messages.last(where: { $0.role == .assistant })?.text ?? ""
         return OS1GardenSnapshot(sessions: rows, selectedID: store.selectedSessionID?.uuidString,
-            selectedOutput: String(output.prefix(6000)), notice: simulationNotice, visible: simulationVisible)
+            selectedOutput: String(output.prefix(6000)), notice: simulationNotice, visible: simulationVisible, accentHex: store.appSettings.resolvedAccentColor)
     }
 
     private func gardenAction(_ action: String, _ rawID: String?, _ text: String?) {
         simulationNotice = ""
+        if action == "settings" { profileNavigation.sheet = .settings; return }
         if action == "close" { simulationVisible = false; return }
         if action == "new" { store.createSession(); return }
         guard let rawID, let id = UUID(uuidString: rawID),
@@ -17334,9 +17345,9 @@ private struct ProviderRail: View {
                 Image(systemName: "leaf.fill").font(.system(size: 21, weight: .medium))
                 Text("시뮬레이션").font(.system(size: 7, weight: .semibold))
             }
-            .foregroundStyle(simulationVisible ? Color(red: 0.79, green: 0.91, blue: 0.57) : Color.white.opacity(0.62))
+            .foregroundStyle(simulationVisible ? Theme.pink : Color.white.opacity(0.62))
             .frame(width: 58, height: 52)
-            .background(simulationVisible ? Color.green.opacity(0.13) : Color.clear,
+            .background(simulationVisible ? Theme.pink.opacity(0.13) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 11))
             .contentShape(RoundedRectangle(cornerRadius: 11))
         }

@@ -24,6 +24,6 @@ assert(scene.includes('if(!this.enabled||!this.loaded)return'), 'hidden surface 
 assert(scene.includes('this.sessions.some(s=>s.id===u.id)'), 'nonvisible workers must not receive clicks');
 assert(scene.includes("s.status==='working'"), 'real active state only');
 const dest=path.join(root,'Resources/SimulationGarden'),manifest=JSON.parse(fs.readFileSync(path.join(dest,'manifest.json'),'utf8'));
-for(const entry of manifest.files){assert(/^(index\.html|THREE-LICENSE\.txt|terran-reference\.jpg|terran-cleanplate\.png|reference\.json|assets\/index-[a-zA-Z0-9_-]+\.(js|css))$/.test(entry.path),'asset path outside exact resource contract');const b=fs.readFileSync(path.join(dest,entry.path));assert.equal(b.length,entry.bytes);assert.equal(createHash('sha256').update(b).digest('hex'),entry.sha256)}
+for(const entry of manifest.files){assert(/^(index\.html|THREE-LICENSE\.txt|classic-reference\.png|reference\.json|assets\/index-[a-zA-Z0-9_-]+\.(js|css))$/.test(entry.path),'asset path outside exact resource contract');const b=fs.readFileSync(path.join(dest,entry.path));assert.equal(b.length,entry.bytes);assert.equal(createHash('sha256').update(b).digest('hex'),entry.sha256)}
 const html=fs.readFileSync(path.join(dest,'index.html'),'utf8');assert(!html.includes('type="module"'));assert(html.includes("connect-src 'none'"));
 console.log(JSON.stringify({status:'PASS',checks:16,assetFiles:manifest.files.length,basis:'deterministic source and asset integrity; native render separately verified'}));

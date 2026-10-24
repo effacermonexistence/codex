@@ -12,6 +12,9 @@ public struct OS1Settings: Codable, Equatable, Sendable {
     /// a name typed by hand.
     public var outputLanguage: String
     /// Show the Codex backend in the rail and allow routing to it.
+    public var accentColor: String? = nil
+    public var resolvedAccentColor: String { OS1AccentPalette.normalized(accentColor) }
+
     public var showCodex: Bool
     /// Route automatic work to Codex when its quota window is about to reset
     /// with quota left. Optional so older settings files still decode.
@@ -73,7 +76,7 @@ public struct OS1Settings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case interfaceLanguage, outputLanguage, showCodex
+        case interfaceLanguage, outputLanguage, showCodex, accentColor
         case burnCodexBeforeReset, codexBurnLeadHours
         case openAISurface, anthropicSurface
         case parallelRunLimit, parallelRunLimitVersion
@@ -84,6 +87,7 @@ public struct OS1Settings: Codable, Equatable, Sendable {
         interfaceLanguage = try values.decodeIfPresent(String.self, forKey: .interfaceLanguage) ?? "en"
         outputLanguage = try values.decodeIfPresent(String.self, forKey: .outputLanguage) ?? "auto"
         showCodex = try values.decodeIfPresent(Bool.self, forKey: .showCodex) ?? true
+        accentColor = try values.decodeIfPresent(String.self, forKey: .accentColor).map(OS1AccentPalette.normalized)
         burnCodexBeforeReset = try values.decodeIfPresent(Bool.self, forKey: .burnCodexBeforeReset)
         codexBurnLeadHours = try values.decodeIfPresent(Int.self, forKey: .codexBurnLeadHours)
         openAISurface = try values.decodeIfPresent(String.self, forKey: .openAISurface)
@@ -101,6 +105,7 @@ public struct OS1Settings: Codable, Equatable, Sendable {
         try values.encode(interfaceLanguage, forKey: .interfaceLanguage)
         try values.encode(outputLanguage, forKey: .outputLanguage)
         try values.encode(showCodex, forKey: .showCodex)
+        try values.encodeIfPresent(accentColor.map(OS1AccentPalette.normalized), forKey: .accentColor)
         try values.encodeIfPresent(burnCodexBeforeReset, forKey: .burnCodexBeforeReset)
         try values.encodeIfPresent(codexBurnLeadHours, forKey: .codexBurnLeadHours)
         try values.encodeIfPresent(openAISurface, forKey: .openAISurface)
