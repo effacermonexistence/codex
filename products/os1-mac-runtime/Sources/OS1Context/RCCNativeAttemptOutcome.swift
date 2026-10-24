@@ -34,6 +34,25 @@ public enum RCCNativeAttemptOutcome {
     /// reported a tool call of the model's own that broke down and was never
     /// recovered (`ExecutionStream.mainToolBreakdownsUnrecovered`).
     public static let nativeToolFailed = "native_tool_failed"
+    public static let readOnlyWorkspaceChanged = "read_only_workspace_changed_preserved"
+
+    /// Existing bounded fingerprints can positively observe a delta, but
+    /// equality is not a complete/global scan or attribution to this attempt.
+    public static func workspaceFingerprintObservation(before: String?, after: String?) -> String {
+        let empty = RCCRuntimeContract.digest(Data())
+        func usable(_ value: String?) -> Bool {
+            guard let value, value != empty else { return false }
+            return value.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+        }
+        guard usable(before), usable(after) else { return "unknown_or_unreliable" }
+        return before == after ? "bounded_fingerprint_equal_not_complete_proof" : "bounded_fingerprint_changed_attribution_unknown"
+    }
+    public static func readOnlyWorkspaceChange(scope: RCCRuntimeContract.Scope, before: String?, after: String?) -> Report? {
+        guard scope == .readOnly,
+              workspaceFingerprintObservation(before: before, after: after) == "bounded_fingerprint_changed_attribution_unknown" else { return nil }
+        return .init(status: .effectsUncertain, dispatchStage: .dispatched, sideEffects: .confirmed,
+                     error: readOnlyWorkspaceChanged)
+    }
 
     public struct Report: Equatable, Sendable {
         public var status: RCCRuntimeContract.ExecutionStatus

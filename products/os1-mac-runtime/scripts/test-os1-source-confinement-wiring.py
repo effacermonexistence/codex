@@ -256,9 +256,12 @@ check('isExecutableFile(atPath: "/usr/bin/sandbox-exec")' in wrapper
       'missing source-only guard fails closed instead of running unprotected')
 check('try OS1SourceConfinement.sourceWriteGuardProfile(protectedPaths: protectedPaths), executable] + arguments' in wrapper,
       'the source-only guard wraps the actual Claude executable and its complete argument list')
-check('let launch = try fullAccessPaths.isEmpty ? (claude, arguments) : fullAccessResumeArguments(' in main
+check('let launch = try readOnlyProtection.map {' in main
+      and 'try fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: $0.protectedPaths)' in main
+      and '} ?? (fullAccessPaths.isEmpty ? (claude, arguments) :' in main
+      and 'fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: fullAccessPaths))' in main
       and re.search(r'do \{ raw = try commandOutput\(\s*launch\.0,\s*launch\.1,', main),
-      'the guarded launch, not an unused wrapper, is the executed command')
+      'both immutable readonly and source-only full-access guards reach the executed command')
 check('providerSessionID: OS1FullAccessContinuation.sessionID ??' in main,
       'the pinned original identity reaches execute despite REVAS-native-session adoption rules')
 check(full_handoff.index('let resumed =') < full_handoff.index('guard resumed.status == "complete"'),

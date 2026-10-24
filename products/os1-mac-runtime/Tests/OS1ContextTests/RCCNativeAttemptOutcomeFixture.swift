@@ -315,5 +315,24 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
                                         now: now.addingTimeInterval(ClaudeQuotaBackoff.cooldown)) == nil,
               "both cooldowns are bounded and expire")
 
+    let roBefore = C.digest(Data("RO before".utf8)), roAfter = C.digest(Data("RO changed".utf8))
+    let delta = O.readOnlyWorkspaceChange(scope: .readOnly, before: roBefore, after: roAfter)
+    try check(delta == .init(status: .effectsUncertain, dispatchStage: .dispatched, sideEffects: .confirmed,
+                            error: O.readOnlyWorkspaceChanged), "a positive bounded RO delta holds without attributing its cause")
+    try check(O.readOnlyWorkspaceChange(scope: .workspaceWrite, before: roBefore, after: roAfter) == nil,
+              "writer classification is unchanged")
+    try check(O.readOnlyWorkspaceChange(scope: .readOnly, before: roBefore, after: roBefore) == nil &&
+              O.workspaceFingerprintObservation(before: roBefore, after: roBefore) == "bounded_fingerprint_equal_not_complete_proof",
+              "bounded equality is not upgraded to complete/global no-effect proof")
+    for pair in [(nil, nil), (roBefore, nil), (C.digest(Data()), roAfter), ("partial", roAfter)] as [(String?, String?)] {
+        try check(O.readOnlyWorkspaceChange(scope: .readOnly, before: pair.0, after: pair.1) == nil &&
+                  O.workspaceFingerprintObservation(before: pair.0, after: pair.1) == "unknown_or_unreliable",
+                  "unknown/partial/sentinel hashes remain unknown without permanently rejecting valid RO")
+    }
+    if let delta {
+        let held = record(delta, scope: .readOnly)
+        try C.validate(held); checks += 1
+        try check(try C.decodeRecord(C.encode(held)) == held, "RO confirmed-effect HOLD survives strict record encoding")
+    }
     print("RCC native attempt outcome: \(checks) checks OK; model calls 0")
 }

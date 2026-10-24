@@ -20,6 +20,67 @@ import Foundation
 /// binding keep working. The four Mach services are what `gh`/Go TLS needs
 /// inside the sandbox. No excluded commands: each would be a hole.
 public enum OS1SourceConfinement {
+    public enum ReadOnlyProtectionError: Error { case invalidWorkspace, providerStateCollision }
+    /// Per-attempt workspace/source protection, never a global no-effect claim.
+    public struct ReadOnlyProtection: Equatable, Sendable {
+        public let workspace: String
+        public let protectedPaths: [String]
+        public let profile: String
+        public var profileSHA256: String {
+            SHA256.hash(data: Data(profile.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+    }
+    public static func readOnlyProtection(workspace: String, additionalProtectedPaths: [String] = [],
+                                          home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> ReadOnlyProtection {
+        guard workspace.hasPrefix("/"), workspace.utf8.count <= 4096,
+              !workspace.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              additionalProtectedPaths.count <= 64,
+              let canonical = realPath(workspace), home.isFileURL,
+              let canonicalHome = realPath(home.path) else { throw ReadOnlyProtectionError.invalidWorkspace }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw ReadOnlyProtectionError.invalidWorkspace
+        }
+        var paths = [canonical]
+        for path in additionalProtectedPaths {
+            guard path.hasPrefix("/"), path.utf8.count <= 4096,
+                  !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), let resolved = realPath(path) else {
+                throw ReadOnlyProtectionError.invalidWorkspace
+            }
+            if !paths.contains(resolved) { paths.append(resolved) }
+        }
+        for path in paths {
+            let alias = path.hasPrefix(dataVolume + "/") ? String(path.dropFirst(dataVolume.count)) : dataVolume + path
+            if sameFile(alias, path), !paths.contains(alias) { paths.append(alias) }
+        }
+        // Do not discover this collision by spending a model call with its
+        // own auth/session storage denied. No carve-out weakens a HOME guard.
+        let providerState = [".claude", ".claude.json"].flatMap { name -> [String] in
+            let lexical = URL(fileURLWithPath: canonicalHome).appendingPathComponent(name).path
+            return [lexical, realPath(lexical)].compactMap { $0 }
+        }
+        guard !paths.contains(where: { path in providerState.contains(where: { contains(path, $0) || contains($0, path) }) }) else {
+            throw ReadOnlyProtectionError.providerStateCollision
+        }
+        return .init(workspace: canonical, protectedPaths: paths,
+                     profile: try sourceWriteGuardProfile(protectedPaths: paths))
+    }
+    /// The vendor Bash sandbox is defense in depth; the outer inherited OS
+    /// profile remains effective for excluded commands and native file tools.
+    public static func claudeReadOnlySettings(_ protection: ReadOnlyProtection) -> String {
+        var object = (try! JSONSerialization.jsonObject(with: Data(claudeSettings(protectedPaths: protection.protectedPaths).utf8))) as! [String: Any]
+        var permissions = object["permissions"] as! [String: Any]
+        permissions["deny"] = (permissions["deny"] as! [String]) + ["Write", "Edit", "MultiEdit", "NotebookEdit"]
+        object["permissions"] = permissions
+        var sandbox = object["sandbox"] as! [String: Any]
+        sandbox["excludedCommands"] = [] as [String]
+        sandbox["filesystem"] = ["disabled": false, "denyWrite": protection.protectedPaths] as [String: Any]
+        var network = sandbox["network"] as! [String: Any]
+        network["allowedDomains"] = ClaudeReadOnlyShell.allowedNetworkHosts
+        network["allowLocalBinding"] = false
+        sandbox["network"] = network; object["sandbox"] = sandbox
+        return String(decoding: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+    }
     /// The line a confined backend ends its answer with when the request
     /// genuinely needs a change to OS-1 itself. OS-1 then reruns the request
     /// as its own repair; the owner never sees this line.

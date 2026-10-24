@@ -54,10 +54,11 @@ func rccBoundSourceDeliverySelfTest() throws {
     }
     try check(!rccSnapshotOnlySource(delivery.evidence) && rccSnapshotOnlySource(evidence(original)) &&
               !rccSnapshotOnlySource(nil), "new source DATA retains the selected agent tools; legacy snapshot-only unchanged")
+    let readOnlyProtection = try OS1SourceConfinement.readOnlyProtection(workspace: root.path)
     for (only, expectedEmpty) in [(false, false), (true, true)] {
         let args = try claudeArguments(model: "fixture", effort: "low", instructions: "fixture", sessionID: "fixture",
             startNewSession: true, title: "fixture", permissionProfile: "read_only", prompt: current,
-            sourceContextOnly: only)
+            sourceContextOnly: only, readOnlyProtection: only ? nil : readOnlyProtection)
         let at = args.firstIndex(of: "--tools")
         let emptyTools = at.map { args.indices.contains($0 + 1) && args[$0 + 1].isEmpty } ?? false
         try check(emptyTools == expectedEmpty, "source preload does not silently remove readonly execution tools")

@@ -2305,8 +2305,15 @@ func claudeArguments(
     confinedEscalates: Bool = true,
     fullAccessProtectedPaths: [String] = [],
     managedDelegation: Bool = ParallelAgentRuntime.managedDelegation,
-    interactiveHooksDisabled: Bool = false
+    interactiveHooksDisabled: Bool = false,
+    readOnlyProtection: OS1SourceConfinement.ReadOnlyProtection? = nil
 ) throws -> [String] {
+    if permissionProfile == "read_only" {
+        guard confinedPaths.isEmpty, fullAccessProtectedPaths.isEmpty,
+              sourceContextOnly || readOnlyProtection != nil else {
+            throw OS1Error.message("Read-only Claude launch lacks immutable workspace protection; nothing dispatched")
+        }
+    }
     var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     // A HOME write task that holds no OS-1 source lease (build 320): its
     // backend must be unable to write OS-1's live tree, and is told so.
@@ -2324,6 +2331,11 @@ func claudeArguments(
     // following named option so the positional user prompt is never consumed
     // as another tool name.
     var permissions = try claudePermissionArguments(permissionProfile, sourceContextOnly: sourceContextOnly)
+    if permissionProfile == "read_only", let readOnlyProtection {
+        if let index = permissions.firstIndex(of: "--settings"), permissions.indices.contains(index + 1) {
+            permissions[index + 1] = OS1SourceConfinement.claudeReadOnlySettings(readOnlyProtection)
+        } else { permissions += ["--settings", OS1SourceConfinement.claudeReadOnlySettings(readOnlyProtection)] }
+    }
     if let memoryConfiguration {
         if let index = permissions.firstIndex(of: "--disallowedTools"), permissions[index + 1] == "mcp__*" {
             permissions.removeSubrange(index...index + 1)
@@ -2350,6 +2362,11 @@ func claudeArguments(
         if let index = permissions.firstIndex(of: "--settings"), permissions.indices.contains(index + 1) {
             permissions[index + 1] = try claudeSettingsDisablingHooks(permissions[index + 1])
         } else { permissions += ["--settings", claudeDelegatedReadOnlySettings] }
+    }
+    if permissionProfile == "read_only", readOnlyProtection != nil {
+        if let denied = permissions.firstIndex(of: "--disallowedTools") {
+            permissions[denied + 1] += ",Write,Edit,MultiEdit,NotebookEdit"
+        } else { permissions += ["--disallowedTools", "Write,Edit,MultiEdit,NotebookEdit"] }
     }
     // Managed delegation only (ParallelAgentRuntime): the coordinator's children
     // and primary lose the CLI's own sub-agent tools; existing denies are kept.
@@ -2381,6 +2398,18 @@ func claudeArguments(
     } else {
         arguments.append(prompt)
     }
+    if permissionProfile == "read_only", sourceContextOnly, readOnlyProtection == nil {
+        // This is the only non-OS-guarded lane: genuinely tool-free safe mode,
+        // not a hidden exception for shell/MCP access or provider-state writes.
+        guard memoryConfiguration == nil,
+              arguments.contains("--safe-mode"), arguments.contains("--strict-mcp-config"),
+              let tools = arguments.firstIndex(of: "--tools"), arguments[tools + 1].isEmpty,
+              let mcp = arguments.firstIndex(of: "--mcp-config"),
+              let object = try? JSONSerialization.jsonObject(with: Data(arguments[mcp + 1].utf8)) as? [String: Any],
+              let servers = object["mcpServers"] as? [String: Any], servers.isEmpty else {
+            throw OS1Error.message("Read-only tool-free Claude profile is not closed; nothing dispatched")
+        }
+    }
     return arguments
 }
 
@@ -2394,11 +2423,12 @@ func claudePermissionArguments(_ permissionProfile: String, sourceContextOnly: B
         }
         // Claude's plan mode encourages AskUserQuestion/ExitPlanMode chatter
         // and writes unsolicited plan files. An explicit tool allowlist keeps
-        // analysis read-only while letting ordinary answers execute directly.
+        // analysis tools available while letting ordinary answers execute directly.
         // The lane also carries a bounded shell: read-only inspection commands
         // (ClaudeReadOnlyShell) so status/verification objectives can run here
-        // when Codex is unavailable. Anything outside those prefixes is denied
-        // without a prompt under dontAsk.
+        // when Codex is unavailable. These approval lists merge with existing
+        // user settings: the immutable per-attempt OS workspace/source guard,
+        // not an allow-prefix assumption, enforces the filesystem boundary.
         return [
             "--permission-mode", "dontAsk",
             "--tools", "Read,Glob,Grep,WebSearch,WebFetch,Bash",
@@ -8301,6 +8331,7 @@ private func execute(
     onInstructions: ((String) -> Void)? = nil,
     onPreDispatchReceipt: ((String) -> Void)? = nil,
     onConfiguredInput: ((RCCNativeConfiguredInput) -> Void)? = nil,
+    onReadOnlyProtection: ((OS1SourceConfinement.ReadOnlyProtection) -> Void)? = nil,
     memoryTurn: MemoryExecutionManifest? = nil,
     quotaContext: ProviderQuotaContext? = nil,
     surfaceChoiceReceipt: String? = nil,
@@ -8721,6 +8752,17 @@ private func execute(
         // objective that needs nothing from this machine.
         let chatLane = surfaceOverride.map { $0 == .claudeChat } ?? claudeChatLane(provider: ticket.provider, permission: ticket.permissionProfile,
                                       hasSource: hasPreloadedR2Evidence, objective: lockedObjective)
+        guard ticket.permissionProfile != "read_only" ||
+            (OS1FullAccessContinuation.sessionID == nil && OS1FullAccessContinuation.protectedPaths.isEmpty) else {
+            throw OS1Error.message("Immutable read-only Claude ticket cannot resume full access; nothing dispatched")
+        }
+        let readOnlyProtection: OS1SourceConfinement.ReadOnlyProtection?
+        if ticket.permissionProfile == "read_only", (!sourceOnly && !chatLane || memoryTurn != nil) {
+            let sourcePaths = OS1SourceWatch.containedRoot(workspace: executionWorkspace)
+                .map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
+            readOnlyProtection = try OS1SourceConfinement.readOnlyProtection(workspace: executionWorkspace,
+                additionalProtectedPaths: Array(Set(OS1SourceConfinement.activeRoots + sourcePaths)))
+        } else { readOnlyProtection = nil }
         RuntimeActivity.emit(.preparing, provider: "claude", surface: executedSurface?.rawValue, model: model, effort: effort)
         if chatLane {
             RuntimeActivity.emit(.preparing, provider: "claude", surface: executedSurface?.rawValue, model: model, effort: effort,
@@ -8835,7 +8877,8 @@ private func execute(
             confinedPaths: confinedPaths,
             confinedEscalates: handBackEscalates,
             fullAccessProtectedPaths: fullAccessPaths,
-            interactiveHooksDisabled: delegatedChild
+            interactiveHooksDisabled: delegatedChild,
+            readOnlyProtection: readOnlyProtection
         )
         guard let systemIndex = arguments.firstIndex(of: "--append-system-prompt"),
               arguments.indices.contains(systemIndex + 1) else {
@@ -8865,7 +8908,13 @@ private func execute(
         var revision = 0
         var relayedResultCount = 0
         let raw: (Int32, Data, Data)
-        let launch = try fullAccessPaths.isEmpty ? (claude, arguments) : fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: fullAccessPaths)
+        // The historical helper is a neutral inherited OS path guard. It
+        // adds no bypass, auth, tool, or continuation flags for read-only use.
+        let launch = try readOnlyProtection.map {
+            try fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: $0.protectedPaths)
+        } ?? (fullAccessPaths.isEmpty ? (claude, arguments) :
+            fullAccessResumeArguments(executable: claude, arguments: arguments, protectedPaths: fullAccessPaths))
+        if let readOnlyProtection { onReadOnlyProtection?(readOnlyProtection) }
         onConfiguredInput?(.init(channel: "claude_append_system", prompt: prompt,
             instructions: configuredSystemInstructions, baseInstructions: nil,
             nativeExecutable: claude, sessionState: startsNewSession ? "new" : "resumed",
@@ -15851,6 +15900,7 @@ func selfTest() throws {
         ]
     )
     let claudeInstructions = claudeExecutorInstructions(contract: claudeContract, ticket: claudeTicket)
+    let readOnlyFixtureProtection = try OS1SourceConfinement.readOnlyProtection(workspace: transcriptRoot.path)
     let driftRoot = transcriptRoot.appendingPathComponent("drift-wire")
     let driftStore = DriftPolicyStore(root: driftRoot)
     let driftPrompt = "한국어 두 문장으로 캐시가 무엇인지 설명해 주세요."
@@ -15861,7 +15911,7 @@ func selfTest() throws {
     let correction = try driftStore.application(scope: driftSubject, objective: DriftScope.digest(driftPrompt), attemptID: "trial")
     let correctedInstructions = claudeInstructions + correction.instructions
     let correctedArgs = try claudeArguments(model: "sonnet", effort: "medium", instructions: correctedInstructions,
-        sessionID: claudeSessionID, startNewSession: true, title: "drift-wire", permissionProfile: "read_only", prompt: driftPrompt)
+        sessionID: claudeSessionID, startNewSession: true, title: "drift-wire", permissionProfile: "read_only", prompt: driftPrompt, readOnlyProtection: readOnlyFixtureProtection)
     guard let appendIndex = correctedArgs.firstIndex(of: "--append-system-prompt"),
           correctedArgs[appendIndex + 1] == correctedInstructions, correctedArgs.last == driftPrompt,
           correctedArgs.contains("--system-prompt-snapshot"), correction.rules == [.presentation] else {
@@ -15917,7 +15967,7 @@ func selfTest() throws {
         startNewSession: true,
         title: "OS-1 Claude probe",
         permissionProfile: "read_only",
-        prompt: claudeProbePrompt
+        prompt: claudeProbePrompt, readOnlyProtection: readOnlyFixtureProtection
     )
     let sourceOnlyArguments = try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions,
         sessionID: claudeSessionID, startNewSession: true, title: "source-only", permissionProfile: "read_only",
@@ -15935,7 +15985,7 @@ func selfTest() throws {
     // explicitly off, every argument is byte-identical. The variadic deny value is always followed by a named option.
     let managedProbe = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
         try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
-            startNewSession: true, title: "OS-1 Claude probe", permissionProfile: "read_only", prompt: claudeProbePrompt)
+            startNewSession: true, title: "OS-1 Claude probe", permissionProfile: "read_only", prompt: claudeProbePrompt, readOnlyProtection: readOnlyFixtureProtection)
     }
     let managedWriter = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
         try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
@@ -15943,14 +15993,14 @@ func selfTest() throws {
     }
     let managedExplicitlyOff = try ParallelAgentRuntime.$managedDelegation.withValue(true) {
         try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
-            startNewSession: true, title: "OS-1 Claude probe", permissionProfile: "read_only", prompt: claudeProbePrompt, managedDelegation: false)
+            startNewSession: true, title: "OS-1 Claude probe", permissionProfile: "read_only", prompt: claudeProbePrompt, managedDelegation: false, readOnlyProtection: readOnlyFixtureProtection)
     }
     let managedExplicitlyOn = try claudeArguments(model: "sonnet", effort: "medium", instructions: claudeInstructions, sessionID: claudeSessionID,
         startNewSession: true, title: "workspace", permissionProfile: "workspace_write", prompt: claudeProbePrompt, sourceContextOnly: true,
         managedDelegation: true)
     let managedProbeDelta = zip(managedProbe, claudeProbeArguments).filter { $0 != $1 }
-    guard managedProbe.count == claudeProbeArguments.count, managedProbeDelta.map({ $0.0 }) == ["mcp__*,Agent,Task"],
-          managedProbeDelta.map({ $0.1 }) == ["mcp__*"], !claudeProbeArguments.contains(where: { $0.contains("Agent,Task") }),
+    guard managedProbe.count == claudeProbeArguments.count, managedProbeDelta.map({ $0.0 }) == ["mcp__*,Write,Edit,MultiEdit,NotebookEdit,Agent,Task"],
+          managedProbeDelta.map({ $0.1 }) == ["mcp__*,Write,Edit,MultiEdit,NotebookEdit"], !claudeProbeArguments.contains(where: { $0.contains("Agent,Task") }),
           let managedDeny = managedWriter.firstIndex(of: "--disallowedTools"), managedWriter[managedDeny + 1] == "Agent,Task",
           managedWriter[managedDeny + 2].hasPrefix("--"), managedWriter.count == writingArguments.count + 2,
           managedWriter.filter({ !writingArguments.contains($0) }) == ["--disallowedTools", "Agent,Task"],
@@ -15962,7 +16012,7 @@ func selfTest() throws {
     for (profile, sourceOnly) in [("read_only", true), ("read_only", false), ("workspace_write", true), ("workspace_write", false)] {
         let args = try claudeArguments(model: "sonnet", effort: "medium", instructions: "fixture",
             sessionID: claudeSessionID, startNewSession: true, title: "paging", permissionProfile: profile,
-            prompt: "fixture", sourceContextOnly: sourceOnly, memoryConfiguration: memoryConfig)
+            prompt: "fixture", sourceContextOnly: sourceOnly, memoryConfiguration: memoryConfig, readOnlyProtection: profile == "read_only" ? readOnlyFixtureProtection : nil)
         guard args.filter({ $0 == "--mcp-config" }).count == 1, args.contains(memoryConfig),
               !args.contains("mcp__*"), args.contains(where: { $0.contains("mcp__os1_memory__memory_query") }),
               (profile != "workspace_write" || !args.contains("--strict-mcp-config")) else {
@@ -15972,7 +16022,7 @@ func selfTest() throws {
         // that config: the empty-MCP shape is only for children without one.
         let delegatedArgs = try claudeArguments(model: "sonnet", effort: "medium", instructions: "fixture",
             sessionID: claudeSessionID, startNewSession: true, title: "paging", permissionProfile: profile,
-            prompt: "fixture", sourceContextOnly: sourceOnly, memoryConfiguration: memoryConfig, interactiveHooksDisabled: true)
+            prompt: "fixture", sourceContextOnly: sourceOnly, memoryConfiguration: memoryConfig, interactiveHooksDisabled: true, readOnlyProtection: profile == "read_only" ? readOnlyFixtureProtection : nil)
         guard delegatedArgs.filter({ $0 == "--mcp-config" }).count == 1, delegatedArgs.contains(memoryConfig),
               !delegatedArgs.contains(claudeEmptyMCPConfiguration),
               delegatedArgs.filter({ $0 == "--strict-mcp-config" }).count == (profile == "read_only" ? 1 : 0) else {
@@ -16269,10 +16319,10 @@ func selfTest() throws {
     for (profile, source) in [("read_only", false), ("read_only", true), ("workspace_write", false)] {
         let effortless = try claudeArguments(model: "haiku", effort: "none", instructions: claudeInstructions,
             sessionID: claudeSessionID, startNewSession: true, title: "effortless", permissionProfile: profile,
-            prompt: claudeProbePrompt, sourceContextOnly: source)
+            prompt: claudeProbePrompt, sourceContextOnly: source, readOnlyProtection: profile == "read_only" ? readOnlyFixtureProtection : nil)
         let effortful = try claudeArguments(model: "haiku", effort: "low", instructions: claudeInstructions,
             sessionID: claudeSessionID, startNewSession: true, title: "effortless", permissionProfile: profile,
-            prompt: claudeProbePrompt, sourceContextOnly: source)
+            prompt: claudeProbePrompt, sourceContextOnly: source, readOnlyProtection: profile == "read_only" ? readOnlyFixtureProtection : nil)
         guard !effortless.contains("--effort"), !effortless.contains("none"),
               let system = effortless.firstIndex(of: "--append-system-prompt"), effortless[system + 1] == claudeInstructions,
               effortless.contains("--system-prompt-snapshot"), effortless.last == claudeProbePrompt,
@@ -16986,11 +17036,14 @@ func selfTest() throws {
                   let unconfined = try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
                       startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "p"),
                   !unconfined.contains("--settings"),
-                  // The read-only lane keeps its own settings, never these.
+                  // A read-only ticket never borrows write-confinement/handback authority.
+                  (try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
+                      startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", confinedPaths: protected)) == nil,
+                  let roProtection = try? OS1SourceConfinement.readOnlyProtection(workspace: root.path, additionalProtectedPaths: protected),
                   let readOnly = try? claudeArguments(model: "sonnet", effort: "medium", instructions: "base", sessionID: session,
-                      startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", confinedPaths: protected),
+                      startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", readOnlyProtection: roProtection),
                   readOnly.filter({ $0 == "--settings" }).count == 1,
-                  readOnly.contains(ClaudeReadOnlyShell.sandboxSettings),
+                  readOnly.contains(OS1SourceConfinement.claudeReadOnlySettings(roProtection)),
                   !readOnly.joined().contains(OS1SourceConfinement.changeRequiredMarker) else { return false }
             repair = nil
             return (try? tryAcquireOS1SourceSharedLease(root: root.path)) != nil
@@ -19442,6 +19495,8 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     var executionWorkspace: String?
     var executionWorkspaceBefore: String?
     var sourceConfined = false
+    var readOnlyProtection: OS1SourceConfinement.ReadOnlyProtection?
+    var observedWorkspaceFingerprints: (before: String?, after: String?) = (nil, nil)
     var protectedSourceAtDispatch: OS1SourceWatch?
     var sourceBeforeClean = false
     // What the native attempt spent, as its provider recorded it. Kept for a
@@ -19683,7 +19738,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                         record.configuredInputObservation = try? prepared.observation(ticket: t, delegated: delegated,
                             catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAtMS)
                     }
-                }, quotaContext: input.providerQuota,
+                }, onReadOnlyProtection: { readOnlyProtection = $0 }, quotaContext: input.providerQuota,
                 surfaceOverride: surface, workspaceOverride: workspace,
                 // Only a side session that never becomes the conversation's
                 // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
@@ -19703,6 +19758,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         operationalPreparation?.nativeProfileSHA256 = localQualityProfile?.receiptSHA256
         timing.mark(.executeReturned)
         var a = execution.artifact
+        observedWorkspaceFingerprints = (a.workspaceBeforeHash, a.workspaceAfterHash)
         // execute returned: the native turn ended (a finished answer).
         record.nativeTurnTerminated = true
         if isFullAccess, let continuation = t.continuation,
@@ -19906,6 +19962,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             // A post-check refusal does not erase a real finished candidate.
             // Keep its exact native bytes and receipt; never relabel it complete.
             let e = rejected.execution, a = e.artifact
+            observedWorkspaceFingerprints = (a.workspaceBeforeHash, a.workspaceAfterHash)
             record.output = a.output
             record.executionVerified = a.exitCode == 0 && e.nativeRecord.persistence == "verified"
             knownFinishedCandidate = record.executionVerified
@@ -19983,6 +20040,12 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         record.dispatchStage = report.dispatchStage
         record.sideEffects = report.sideEffects
         record.error = report.error
+        if !dispatched, let protectionError = error as? OS1SourceConfinement.ReadOnlyProtectionError {
+            switch protectionError {
+            case .providerStateCollision: record.error = "read_only_provider_state_collision"
+            case .invalidWorkspace: record.error = "read_only_workspace_guard_unavailable"
+            }
+        }
         // A rejected, held or interrupted attempt reports the spend its
         // provider recorded (execute measured it before it threw); an
         // unmeasured one keeps no usage, as before.
@@ -20004,6 +20067,28 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             record.parityState = .unverified; record.operationalQuality = nil
             record.error = "native_staged_writer_held"
         }
+    }
+    if dispatched, let changed = RCCNativeAttemptOutcome.readOnlyWorkspaceChange(scope: t.selectedConfig.scope,
+        before: observedWorkspaceFingerprints.before, after: observedWorkspaceFingerprints.after) {
+        // A positive bounded delta is real, but may have another writer as
+        // cause. Preserve it without attributing a hidden motive or replaying.
+        record.status = changed.status; record.dispatchStage = changed.dispatchStage
+        record.sideEffects = changed.sideEffects; record.error = changed.error
+        record.executionVerified = false; record.taskVerified = false
+        record.taskQuality = .failed; record.parityState = .unverified
+        record.operationalQuality = nil; record.handback = nil; record.repairSource = nil
+    }
+    if t.selectedConfig.scope == .readOnly, let raw = record.nativeSummary,
+       var summary = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] {
+        summary["read_only_workspace_boundary"] = [
+            "basis": readOnlyProtection == nil ? "outer_guard_not_observed" : "configured_inherited_os_workspace_source_guard_v1",
+            "protected_path_count": readOnlyProtection?.protectedPaths.count ?? 0,
+            "profile_sha256": readOnlyProtection?.profileSHA256 ?? NSNull(),
+            "fingerprint_observation": RCCNativeAttemptOutcome.workspaceFingerprintObservation(
+                before: observedWorkspaceFingerprints.before, after: observedWorkspaceFingerprints.after),
+            "global_no_effects_proof": false,
+        ] as [String: Any]
+        record.nativeSummary = String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]), as: UTF8.self)
     }
     timing.mark(.receiptPersistStarted)
     let data = try RCCRuntimeContract.encode(record)
@@ -20502,23 +20587,28 @@ func effortlessRoutingSelfTest() throws {
               "a Codex none profile or a provider mismatch is rejected at the ticket")
     try check(!isSupportedEffort("none") && isSupportedProfileEffort("none"), "Codex effort lists still exclude none")
     // A read-only RCC delegated child runs without the owner's interactive hooks; writers keep them.
+    let roFixture = FileManager.default.temporaryDirectory.appendingPathComponent("os1-ro-argv-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: roFixture, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: roFixture) }
+    let readOnlyFixtureProtection = try OS1SourceConfinement.readOnlyProtection(workspace: roFixture.path)
+    let readOnlyFixtureSettings = OS1SourceConfinement.claudeReadOnlySettings(readOnlyFixtureProtection)
     let hooklessRead = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
-        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", interactiveHooksDisabled: true)
+        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", interactiveHooksDisabled: true, readOnlyProtection: readOnlyFixtureProtection)
     let hookedWrite = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
         startNewSession: true, title: "t", permissionProfile: "workspace_write", prompt: "p", interactiveHooksDisabled: true)
     let ownRead = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
-        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p")
+        startNewSession: true, title: "t", permissionProfile: "read_only", prompt: "p", readOnlyProtection: readOnlyFixtureProtection)
     func settings(_ arguments: [String]) -> [[String: Any]] {
         arguments.indices.filter { arguments[$0] == "--settings" && arguments.indices.contains($0 + 1) }.compactMap {
             try? JSONSerialization.jsonObject(with: Data(arguments[$0 + 1].utf8)) as? [String: Any]
         }
     }
-    let sandbox = try JSONSerialization.jsonObject(with: Data(ClaudeReadOnlyShell.sandboxSettings.utf8)) as? [String: Any]
+    let sandbox = try JSONSerialization.jsonObject(with: Data(readOnlyFixtureSettings.utf8)) as? [String: Any]
     let merged = settings(hooklessRead)
     try check(merged.count == 1 && merged[0]["disableAllHooks"] as? Bool == true &&
               (merged[0]["sandbox"] as? NSDictionary) == (sandbox?["sandbox"] as? NSDictionary) &&
               settings(ownRead).count == 1 && settings(ownRead)[0]["disableAllHooks"] == nil &&
-              ownRead.contains(ClaudeReadOnlyShell.sandboxSettings) &&
+              ownRead.contains(readOnlyFixtureSettings) &&
               !settings(hookedWrite).contains { $0["disableAllHooks"] != nil } && hooklessRead.last == "p",
               "a read-only delegated child disables interactive hooks inside its one sandbox --settings; a writer and an own session keep them")
     let sourceOnlyRead = try claudeArguments(model: "haiku", effort: "none", instructions: "fixture", sessionID: "s",
@@ -20535,8 +20625,8 @@ func effortlessRoutingSelfTest() throws {
     let emptyAt = hooklessRead.firstIndex(of: "--mcp-config")
     try check(hooklessRead.filter { $0 == "--strict-mcp-config" }.count == 1 && mcpValues(hooklessRead) == [claudeEmptyMCPConfiguration] &&
               emptyAt.map { hooklessRead.indices.contains($0 + 2) && hooklessRead[$0 + 2].hasPrefix("--") } == true &&
-              hooklessRead.contains("mcp__*") && hooklessRead.last == "p" &&
-              ownRead.filter({ !hooklessRead.contains($0) }) == [ClaudeReadOnlyShell.sandboxSettings] &&
+              hooklessRead.contains(where: { $0.split(separator: ",").contains("mcp__*") }) && hooklessRead.last == "p" &&
+              ownRead.filter({ !hooklessRead.contains($0) }) == [readOnlyFixtureSettings] &&
               hooklessRead.filter({ !ownRead.contains($0) }).count == 4,
               "a read-only delegated child adds only --strict-mcp-config, an empty --mcp-config and its hooks-off settings; MCP tools stay denied")
     try check(!hookedWrite.contains("--strict-mcp-config") && mcpValues(hookedWrite).isEmpty &&
