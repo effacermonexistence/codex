@@ -9784,6 +9784,15 @@ private final class SessionStore: ObservableObject {
             isLive: (isSessionRunning(id) || graphAwaitingInstall) && !unconfirmedParallelCustody.contains(id), observedExecution: observed)
     }
 
+    func compactTaskActivity(_ id: UUID) -> CompactTaskActivity {
+        let state = agentTaskInspectorState(id)
+        let awaitingInstall = sessions.first(where: { $0.id == id })?.rccInstallations?
+            .contains { $0.submissionID == state.snapshot?.submissionID } == true
+        return CompactTaskActivity(state: state,
+            executionOwned: isSessionRunning(id) && !unconfirmedParallelCustody.contains(id),
+            awaitingInstallation: awaitingInstall)
+    }
+
     func refreshAgentTaskInspectorWindows() {
         // Navigation is read-only. An unrelated conversation becoming selected
         // must not redirect an open inspector or dispatch another backend.
@@ -18948,6 +18957,7 @@ private func terminalAgentTaskTreeFixture(_ input: ParallelAgentTask.Snapshot) -
 
 @MainActor
 private func agentTaskTreeSelfTest() async throws {
+    try compactTaskActivitySelfTest()
     try await parallelParentCustodySelfTest()
     try await inspectorWindowSelfTest()
     var checks = 0
@@ -18958,6 +18968,12 @@ private func agentTaskTreeSelfTest() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-agent-tree-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
+    final class MockExecutionGate {
+        var continuation: CheckedContinuation<Void, Never>?
+        func release() { let saved = continuation; continuation = nil; saved?.resume() }
+    }
+    let executionGate = MockExecutionGate()
+    defer { executionGate.release() }
     var capturedSubmission: PendingSubmission?, liveGraph: ParallelAgentTask.Snapshot?
     var fixtureExecutorCalls = 0
     let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, onActivity in
@@ -18966,7 +18982,7 @@ private func agentTaskTreeSelfTest() async throws {
             request: submission.executionRequest)
         liveGraph = graph
         onActivity(RuntimeActivity(.executing, provider: "codex", model: "fixture-model", effort: "high", agentTask: graph))
-        try await Task.sleep(for: .milliseconds(350))
+        await withCheckedContinuation { executionGate.continuation = $0 }
         return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "codex", action: "fixture",
             model: "fixture-model", effort: "high", revasDisposition: "adopted", sessionID: UUID().uuidString,
             permissionProfile: "read_only", exitCode: 0, output: "Mock primary result", stderr: "", durationMS: 1,
@@ -18983,6 +18999,10 @@ private func agentTaskTreeSelfTest() async throws {
     try check(store.agentTaskSnapshot(for: sessionID)?.planID == graph.planID, "actual activity callback must reach session-owned graph")
     try check(store.sessions.first(where: { $0.id == sessionID })?.agentTask?.nodes.contains(where: { $0.state == .running }) == true,
               "live observation is preserved without claiming terminal completion")
+    try check(!AgentTaskInspectorWindows.shared.hasWindow(conversationID: sessionID),
+        "actual progress must never auto-open a detail window")
+    try check(store.compactTaskActivity(sessionID).isAnimating,
+        "owned work remains observable without opening its log")
     let observedReload = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
     try check(observedReload.sessions.first(where: { $0.id == sessionID })?.agentTask?.nodes.contains(where: { $0.state == .running }) == true,
               "GUI reload preserves observed running state without fabricating interruption or success")
@@ -19014,13 +19034,19 @@ private func agentTaskTreeSelfTest() async throws {
               "opening inspector preserves composer and queue")
     store.toggleAgentTaskInspector(sessionID)
     try check(store.requestedInspectorSessionID == nil, "repeated marker click collapses")
+    try check(store.isSessionRunning(sessionID) && fixtureExecutorCalls == 1 && executionGate.continuation != nil,
+        "closing task details neither cancels nor replays the still-gated execution")
     store.toggleAgentTaskInspector(UUID())
     try check(store.requestedInspectorSessionID == nil, "unknown session cannot open an inspector")
 
+    executionGate.release()
     while !store.activeRuns.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
     try check(store.activeRuns.isEmpty && fixtureExecutorCalls == 1, "mock execution drained exactly once")
     try check(store.sessions.first(where: { $0.id == sessionID })?.agentTask?.nodes.allSatisfy({ $0.state.isTerminal }) == true,
               "bound terminal summary survives run removal")
+    try check(!store.compactTaskActivity(sessionID).isAnimating &&
+        !AgentTaskInspectorWindows.shared.hasWindow(conversationID: sessionID),
+        "completion stops the compact live indication without revealing a window")
     let reloaded = SessionStore(storageRoot: root, nativeSessionOpener: { _ in false })
     try check(reloaded.agentTaskSnapshot(for: sessionID)?.planID == graph.planID, "terminal graph survives session-store reload")
     try check(reloaded.selectedSessionID != nil, "legacy session state remains readable")
@@ -19675,7 +19701,25 @@ private struct ConversationHeader: View {
                 Text(session.title).fontWeight(.medium).lineLimit(1).foregroundStyle(Theme.text)
                 Spacer(minLength: 8)
                 MemoryContextView(conversationID: session.id.uuidString.lowercased())
-                if let activity = store.activeRuns[session.id]?.activity ?? store.sourceWaitingActivity(session.id) {
+                let taskActivity = store.compactTaskActivity(session.id)
+                if taskActivity.hasDetails {
+                    Button { store.toggleAgentTaskInspector(session.id) } label: {
+                        HStack(spacing: 6) {
+                            if taskActivity.isAnimating {
+                                ProgressView().controlSize(.mini).tint(Theme.pink).frame(width: 12, height: 12)
+                            } else {
+                                Image(systemName: taskActivity.isAwaitingInstallation ? "clock" : "point.3.connected.trianglepath.dotted")
+                                    .foregroundStyle(Theme.pink)
+                            }
+                            Text(taskActivity.title).lineLimit(1)
+                        }.font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    }
+                    .buttonStyle(.plain).frame(maxWidth: 190)
+                    .help(taskActivity.help)
+                    .accessibilityLabel(os1Tr("작업 상태 및 로그", "Task status and logs"))
+                    .accessibilityValue(taskActivity.title)
+                    .accessibilityIdentifier("os1.task.activity.summary")
+                } else if let activity = store.activeRuns[session.id]?.activity ?? store.sourceWaitingActivity(session.id) {
                     SessionExecutionBadge(session: session, activity: activity, compact: true,
                         lanes: store.liveRouteLanes(session.id))
                         .layoutPriority(1)
@@ -20104,9 +20148,12 @@ private func timelineAttributedDocument(
     func appendRouteLanes(_ record: RouteLanesRecord, message: ChatMessage) {
         let key = message.id.uuidString + "-lanes"
         let presentation = RouteLanesPresentation(record: record)
-        let content = RouteLanesRenderer.block(presentation, answers: record.answers(in: message.role == .assistant ? message.text : ""),
+        let detailsOpen = RouteLanesRenderer.showsDetails(presentation, key: key, expanded: expanded, expandAll: expandAll)
+        let content = detailsOpen ? RouteLanesRenderer.block(presentation, answers: record.answers(in: message.role == .assistant ? message.text : ""),
                 capacity: laneCapacity, key: key, expanded: expanded, expandAll: expandAll,
-                finalText: message.role == .assistant && !record.answersInText ? message.text : nil)
+                finalText: message.role == .assistant && !record.answersInText ? message.text : nil,
+                trailing: RouteLanesRenderer.disclosure(presentation, key: key, open: true))
+            : RouteLanesRenderer.compact(presentation, key: key)
         appendBlock(role: "routeLanes", components: [], richContent: content,
             trailingSpacing: message.role == .assistant && !record.answersInText ? 18 : 30)
     }
@@ -20167,7 +20214,8 @@ private func timelineAttributedDocument(
             // again under them (it is still what copy and handoff carry).
             if let lanes = message.routeLanes, !lanes.lanes.isEmpty {
                 appendRouteLanes(lanes, message: message)
-                if lanes.answersInText { break }
+                if lanes.answersInText && RouteLanesRenderer.showsDetails(RouteLanesPresentation(record: lanes),
+                    key: message.id.uuidString + "-lanes", expanded: expanded, expandAll: expandAll) { break }
             }
             let provider = providerDisplayName(message.provider, surface: message.executionSurface)
             let providerColor = message.provider == "local"
@@ -20246,10 +20294,12 @@ private func timelineAttributedDocument(
         if let liveLanes {
             let lead = liveRun.map { LiveRunMarkSpec($0).space }
             let tail = liveRun.map { liveRunFoldedTail($0, expanded: liveRunExpanded) }
-            let content = !liveLanes.lanes.isEmpty
+            let detailsOpen = RouteLanesRenderer.showsDetails(liveLanes, key: "live-lanes", expanded: expanded, expandAll: expandAll)
+            let content = detailsOpen && !liveLanes.lanes.isEmpty
                 ? RouteLanesRenderer.block(liveLanes, capacity: liveLaneCapacity ?? laneCapacity, key: "live-lanes",
-                    expanded: expanded, expandAll: expandAll, lead: lead, trailing: tail)
-                : RouteLanesRenderer.header(liveLanes, lead: lead, trailing: tail)
+                    expanded: expanded, expandAll: expandAll, lead: lead,
+                    trailing: RouteLanesRenderer.disclosure(liveLanes, key: "live-lanes", open: true, trailing: tail))
+                : RouteLanesRenderer.compact(liveLanes, key: "live-lanes", lead: lead, trailing: tail)
             appendBlock(role: "routeLanes", components: [], richContent: content, trailingSpacing: 14)
             if let liveRun, liveRunExpanded {
                 let details = liveRunRow(liveRun, expanded: true, headless: true, lanes: liveLanes)
@@ -20832,7 +20882,7 @@ private final class TranscriptRenderCache {
         }
         let row = value.isRunning && (value.liveRun != nil || value.liveLanes != nil)
             ? timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: value.workspace,
-                liveRun: value.liveRun, liveRunExpanded: value.liveRunExpanded, liveLanes: value.liveLanes,
+                expanded: expanded, liveRun: value.liveRun, liveRunExpanded: value.liveRunExpanded, liveLanes: value.liveLanes,
                 laneCapacity: value.liveLaneCapacity)
             : NSAttributedString(string: "")
         return Parts(prefix: prefix, progress: progress, row: row, rebuilt: rebuilt)
@@ -20939,7 +20989,9 @@ private struct ContinuousTranscriptView: NSViewRepresentable {
             guard let textView = scrollView.documentView as? ContinuousTranscriptTextView else { return }
             let changingSession = renderedSessionID != view.sessionID
             if changingSession { expanded.removeAll() }
-            if view.isRunning, !wasRunning || changingSession { expanded = expanded.filter { !$0.hasPrefix(liveFeedKey + "-") } }
+            if view.isRunning, !wasRunning || changingSession {
+                expanded = expanded.filter { !$0.hasPrefix(liveFeedKey + "-") && !$0.hasPrefix("live-lanes-routes-") }
+            }
             wasRunning = view.isRunning
             content = view
             let input = TranscriptRenderInput(sessionID: view.sessionID, messages: view.messages,
@@ -23695,6 +23747,28 @@ private func renderRouteLanesFixture(_ store: SessionStore, _ kind: RouteLanesFi
         }
     }
     settle()
+    // Preserve the compact default, then explicitly open details for the
+    // existing full-card layout/paint fixtures. Rendering is never a click.
+    if let view = findTranscriptView(in: host), let storage = view.textStorage,
+       let coordinator = view.delegate as? ContinuousTranscriptView.Coordinator {
+        var routeLink: (url: URL, at: Int)?
+        storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            guard let url = value as? URL, url.scheme == "os1-detail",
+                  url.lastPathComponent.contains("-routes-") else { return }
+            routeLink = (url, range.location); stop.pointee = true
+        }
+        if let routeLink {
+            try check(view.routeLaneFrames().isEmpty, "default conversation expanded route details")
+            if let file, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                if let png = bitmap.representation(using: .png, properties: [:]) {
+                    try png.write(to: file.deletingPathExtension().appendingPathExtension("compact.png"), options: .atomic)
+                }
+            }
+            _ = coordinator.textView(view, clickedOnLink: routeLink.url, at: routeLink.at)
+            settle()
+        }
+    }
     // "Show more", clicked the way the owner clicks it.
     if kind == .longAnswerOpen, let textView = findTranscriptView(in: host), let storage = textView.textStorage,
        let coordinator = textView.delegate as? ContinuousTranscriptView.Coordinator {
@@ -24194,12 +24268,12 @@ private func routeLanesSelfTest() throws {
 
     // The transcript: lanes in place of the joined answers.
     let history2 = [ChatMessage(role: .user, text: "route test"), message]
-    let document = timelineAttributedDocument(messages: history2, queuedSubmissions: [], isRunning: false, workspace: "/tmp")
+    let document = timelineAttributedDocument(messages: history2, queuedSubmissions: [], isRunning: false, workspace: "/tmp", expandAll: true)
     try check(!document.string.contains("requested-1: ") && document.string.contains("Claude chat · 2+2") &&
         document.string.contains(RouteLaneStatus.completed.title), "the transcript draws the joined answers, not the lanes")
     try check(columns(document) == [4], "four lanes are not four columns: \(columns(document))")
     let narrow = timelineAttributedDocument(messages: history2, queuedSubmissions: [], isRunning: false, workspace: "/tmp",
-        laneCapacity: 3)
+        expandAll: true, laneCapacity: 3)
     try check(columns(narrow) == [2], "four lanes in a three-lane column are not a 2 × 2 grid")
     try check(RouteLanesRenderer.capacity(textWidth: 760) == 4 && RouteLanesRenderer.capacity(textWidth: 636) == 3 &&
         RouteLanesRenderer.capacity(textWidth: 476) == 2 && RouteLanesRenderer.columns(lanes: 3, capacity: 3) == 3 &&
@@ -24208,7 +24282,7 @@ private func routeLanesSelfTest() throws {
     var heldReceipt = ChatMessage(role: .receipt, text: "held"); heldReceipt.routeLanes = heldRecord
     let heldDocument = timelineAttributedDocument(messages: [ChatMessage(role: .user, text: "x"),
         ChatMessage(role: .system, text: rccCoreBoundaryHeadline(held)!), heldReceipt], queuedSubmissions: [], isRunning: false,
-        workspace: "/tmp")
+        workspace: "/tmp", expandAll: true)
     try check(!heldDocument.string.contains(os1Tr("OpenClaw 작업 상태: ", "OpenClaw task state: ")) &&
         heldDocument.string.contains("node verifier failed"), "the routed turn repeats Core's raw state line")
     let plainDocument = timelineAttributedDocument(messages: [ChatMessage(role: .user, text: "x"),
@@ -24243,8 +24317,9 @@ private func routeLanesSelfTest() throws {
         input.liveLaneCapacity = tick < 2 ? RouteLanesRenderer.defaultCapacity : 2
         let parts = cache.parts(input, expanded: [])
         if tick == 0 { firstPrefix = parts.prefix }
-        try check(parts.prefix === firstPrefix && parts.row.string.contains(RouteLaneStatus.verifying.title),
-            "a live lane tick rebuilt the history or lost the lanes")
+        try check(parts.prefix === firstPrefix && parts.row.string.contains(live.taskStatus.title) &&
+            parts.row.string.contains(os1Tr("경로 3개", "3 routes")),
+            "a compact live tick rebuilt history or lost the task status/route count")
     }
     try check(cache.prefixBuildCount == 1, "live lanes reparsed the history")
 
@@ -24255,7 +24330,10 @@ private func routeLanesSelfTest() throws {
     scroll.frame = NSRect(x: 0, y: 0, width: 1_000, height: 700)
     guard let textView = scroll.documentView as? ContinuousTranscriptTextView else { throw RunnerError.message("Routing lanes: no transcript view") }
     let sessionID = UUID()
-    func show(_ messages: [ChatMessage]) {
+    func show(_ messages: [ChatMessage], detailsOpen: Bool = false) {
+        coordinator.expanded = Set(detailsOpen ? messages.compactMap { message in
+            message.routeLanes.map { RouteLanesRenderer.disclosureKey(RouteLanesPresentation(record: $0), key: message.id.uuidString + "-lanes") }
+        } : [])
         coordinator.render(ContinuousTranscriptView(sessionID: sessionID, messages: messages, queuedSubmissions: [],
             isRunning: false, workspace: "/tmp"), in: scroll)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -24272,7 +24350,7 @@ private func routeLanesSelfTest() throws {
     try check(abs(textView.textContainerOrigin.y - 34 - textView.bottomAnchorOffset) < 0.5, "the anchor is not the text's origin")
     try check(abs(firstFrame.paint.maxX - (textView.textContainerOrigin.x + textView.textContainer!.size.width)) < 1,
         "the user bubble does not end at the column's edge")
-    show([ChatMessage(role: .user, text: "first"), message])
+    show([ChatMessage(role: .user, text: "first"), message], detailsOpen: true)
     let wideLanes = textView.routeLaneFrames()
     try check(wideLanes.count == 4 && Set(wideLanes.map { Int($0.frame.minY.rounded()) }).count == 1,
         "four lanes are not side by side in a 1000-point view")
@@ -24286,7 +24364,7 @@ private func routeLanesSelfTest() throws {
     var unequalMessage = ChatMessage(role: .assistant, text: F.joined(unequal))
     unequalMessage.routeLanes = RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-unequal", request: "x", state: .completed,
         routes: unequal, base: base, result: F.joined(unequal)), submissionID: submission, messageText: F.joined(unequal))
-    show([ChatMessage(role: .user, text: "first"), unequalMessage])
+    show([ChatMessage(role: .user, text: "first"), unequalMessage], detailsOpen: true)
     let pair = textView.routeLaneFrames()
     guard pair.count == 2, let layoutManager = textView.layoutManager, let container = textView.textContainer else {
         throw RunnerError.message("Routing lanes: the unequal lanes were not drawn")
@@ -24307,7 +24385,7 @@ private func routeLanesSelfTest() throws {
     let probe = rep.colorAt(x: Int(pair[0].frame.minX + 6), y: Int(dirty.midY))?.alphaComponent ?? 0
     try check(probe > 0.01, "a partial redraw left the short lane's card unpainted (alpha \(probe))")
     scroll.frame = NSRect(x: 0, y: 0, width: 560, height: 700)
-    show([ChatMessage(role: .user, text: "first"), message])
+    show([ChatMessage(role: .user, text: "first"), message], detailsOpen: true)
     scroll.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     scroll.layoutSubtreeIfNeeded()
@@ -24382,6 +24460,57 @@ private func inlineRouteCardSelfTest() throws {
         if value is RouteLaneInspectionBox { trustedLinks += 1 }
     }
     try check(cards == 3 && trustedLinks == 3, "three real workers do not have three host-bound cards")
+    // The ordinary conversation is compact, without hiding its answer.
+    func cardCount(_ value: NSAttributedString) -> Int {
+        var count = 0
+        value.enumerateAttribute(.os1RouteLaneCard, in: NSRange(location: 0, length: value.length)) { item, _, _ in
+            if item is RouteLaneCardStyle { count += 1 }
+        }
+        return count
+    }
+    let compact = RouteLanesRenderer.compact(presentation, key: "fixture")
+    try check(cardCount(compact) == 0 && !compact.string.contains("Public fixture output"),
+        "default task summary rendered large route cards or worker output")
+    try check(compact.string.contains(os1Tr("품질 주의", "Quality notice")),
+        "compact presentation hid a recorded partial quality failure")
+    var answerMessage = ChatMessage(role: .assistant, text: "EXACT_FINAL_ANSWER_KEPT_ONCE")
+    let answerRecord = RouteLanesRecord(submissionID: submission, taskStatus: .returned,
+        lanes: [presentation.lanes[2]], answersInText: true)
+    answerMessage.routeLanes = answerRecord
+    let answerPresentation = RouteLanesPresentation(record: answerRecord)
+    let answerKey = answerMessage.id.uuidString + "-lanes"
+    let folded = timelineAttributedDocument(messages: [answerMessage], queuedSubmissions: [], isRunning: false, workspace: "/tmp")
+    try check(cardCount(folded) == 0 && folded.string.components(separatedBy: answerMessage.text).count == 2,
+        "collapsing saved route metadata hid or duplicated the final answer")
+    let openKey = RouteLanesRenderer.disclosureKey(answerPresentation, key: answerKey)
+    let opened = timelineAttributedDocument(messages: [answerMessage], queuedSubmissions: [], isRunning: false,
+        workspace: "/tmp", expanded: [openKey])
+    try check(cardCount(opened) == 1 && opened.string.components(separatedBy: answerMessage.text).count == 2,
+        "explicit detail disclosure lost or duplicated the lane-owned answer")
+    let liveFolded = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+        liveLanes: presentation)
+    try check(cardCount(liveFolded) == 0, "live routes expanded without a user disclosure")
+    let liveKey = RouteLanesRenderer.disclosureKey(presentation, key: "live-lanes")
+    let liveOpen = timelineAttributedDocument(messages: [], queuedSubmissions: [], isRunning: true, workspace: "/tmp",
+        expanded: [liveKey], liveLanes: presentation)
+    try check(cardCount(liveOpen) == 3, "explicit live disclosure did not show the observed routes")
+    let liveCache = TranscriptRenderCache()
+    var liveInput = TranscriptRenderInput(sessionID: UUID(), messages: [], queued: [], isRunning: true, workspace: "/tmp")
+    liveInput.liveLanes = presentation
+    try check(cardCount(liveCache.parts(liveInput, expanded: [liveKey]).row) == 3,
+        "production cache dropped an explicit live-route disclosure")
+    liveInput.liveLanes = presentation.at(now.addingTimeInterval(4))
+    try check(cardCount(liveCache.parts(liveInput, expanded: [liveKey]).row) == 3 &&
+        cardCount(liveCache.parts(liveInput, expanded: []).row) == 0,
+        "live tick changed the owner's route detail disclosure")
+    var nextRun = presentation
+    if var binding = nextRun.lanes[0].inspection {
+        binding = RouteLaneInspection(submissionID: UUID(), planID: binding.planID,
+            requestSHA256: binding.requestSHA256, nodeID: binding.nodeID)
+        nextRun.lanes[0].inspection = binding
+    }
+    try check(!RouteLanesRenderer.showsDetails(nextRun, key: "live-lanes", expanded: [liveKey], expandAll: false),
+        "a new submission inherited another run's open task cards")
     let forged = NSAttributedString(string: "model link", attributes: [.link: binding.url])
     try check(RouteLaneInspection.trustedLink(in: forged, url: binding.url, at: 0) == nil,
         "model Markdown URL minted host navigation")

@@ -381,8 +381,10 @@ struct AgentTaskTreeView: View {
             Text(isLive ? os1Tr("현재 실행 관측", "Current execution observation")
                 : os1Tr("저장된 실행 기록 · 현재 실행 여부를 뜻하지 않습니다", "Recorded execution · not a claim of current liveness"))
                 .font(.system(size: 10, weight: .medium)).foregroundStyle(AgentTreeStyle.pink)
-            Text(os1Tr("워커 실행 \(running) · 종료 노드 \(closed)/\(graph.nodes.count) · 워커 제한 \(graph.maxParallelism)",
-                       "Workers running \(running) · closed nodes \(closed)/\(graph.nodes.count) · worker limit \(graph.maxParallelism)"))
+            Text(isLive ? os1Tr("워커 실행 \(running) · 종료 노드 \(closed)/\(graph.nodes.count) · 워커 제한 \(graph.maxParallelism)",
+                                "Workers running \(running) · closed nodes \(closed)/\(graph.nodes.count) · worker limit \(graph.maxParallelism)")
+                : os1Tr("기록된 실행 상태 \(running) · 종료 노드 \(closed)/\(graph.nodes.count)",
+                        "Recorded running states \(running) · closed nodes \(closed)/\(graph.nodes.count)"))
                 .font(.system(size: 10, weight: .medium)).foregroundStyle(AgentTreeStyle.muted)
         }.padding(14).background(Color.white.opacity(0.025))
     }

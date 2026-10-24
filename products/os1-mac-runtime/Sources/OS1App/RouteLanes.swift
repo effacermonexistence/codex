@@ -849,6 +849,53 @@ enum RouteLanesRenderer {
     static let foldCharacters = 520
     static let foldLines = 12
 
+    /// Disclosure belongs to this exact observed run, not a global "show
+    /// progress" preference. A later submission cannot inherit open cards.
+    static func disclosureKey(_ p: RouteLanesPresentation, key: String) -> String {
+        let identity = p.lanes.compactMap(\.inspection).first.map {
+            $0.submissionID.uuidString + ":" + $0.planID.uuidString + ":" + $0.requestSHA256
+        } ?? ((p.startedAt.map { String($0.timeIntervalSince1970) } ?? "pending") + ":" + p.lanes.map(\.id).joined(separator: ":"))
+        return key + "-routes-" + String(SourceContextStore.digest(Data(identity.utf8)).prefix(16))
+    }
+
+    static func showsDetails(_ p: RouteLanesPresentation, key: String, expanded: Set<String>, expandAll: Bool) -> Bool {
+        expandAll || expanded.contains(disclosureKey(p, key: key))
+    }
+
+    /// Ordinary chat stays small. Details are a presentation-only click;
+    /// neither rendering this line nor opening it dispatches a backend.
+    static func compact(_ p: RouteLanesPresentation, key: String, lead: NSAttributedString? = nil,
+                        trailing: NSAttributedString? = nil) -> NSAttributedString {
+        let line = NSMutableAttributedString()
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        if let lead { line.append(lead) }
+        else { line.append(symbol("point.3.connected.trianglepath.dotted", color: RouteLanePalette.secondary, size: 11)) }
+        line.append(piece(" " + p.coordinator + " · ", font, RouteLanePalette.secondary))
+        line.append(pill(p.taskStatus))
+        if !p.lanes.isEmpty { line.append(piece(" · " + os1Tr("경로 \(p.lanes.count)개", "\(p.lanes.count) routes"), font, RouteLanePalette.muted)) }
+        if p.lanes.contains(where: { $0.qualityNotice != nil }) {
+            let warning = NSMutableAttributedString(attributedString: piece(" · " + os1Tr("품질 주의", "Quality notice"), font, RouteLanePalette.yellow))
+            let notices = p.lanes.compactMap(\.qualityNotice).prefix(2).joined(separator: "\n")
+            warning.addAttribute(.toolTip, value: notices, range: NSRange(location: 0, length: warning.length))
+            line.append(warning)
+        }
+        if p.now == nil { line.append(piece(" · " + os1Tr("실행 기록", "Recorded"), font, RouteLanePalette.muted)) }
+        line.append(disclosure(p, key: key, open: false, trailing: trailing))
+        return line
+    }
+
+    static func disclosure(_ p: RouteLanesPresentation, key: String, open: Bool,
+                           trailing: NSAttributedString? = nil) -> NSAttributedString {
+        let caption = open ? os1Tr("상세 접기", "Hide details") : os1Tr("실행 상세", "Execution details")
+        let detail = NSMutableAttributedString(attributedString: piece("  " + (open ? "▾ " : "▸ ") + caption,
+            NSFont.systemFont(ofSize: 11, weight: .medium), RouteLanePalette.secondary))
+        let url = URL(string: "os1-detail://toggle/" + disclosureKey(p, key: key))!
+        detail.addAttribute(.link, value: url, range: NSRange(location: 0, length: detail.length))
+        detail.addAttribute(.toolTip, value: p.noteText ?? os1Tr("이 작업의 경로와 로그 펼치기", "Expand this task's routes and logs"), range: NSRange(location: 0, length: detail.length))
+        if let trailing { detail.append(trailing) }
+        return detail
+    }
+
     /// Lanes a text column `width` points wide holds side by side.
     static func capacity(textWidth width: CGFloat) -> Int {
         guard width > 1 else { return defaultCapacity }
