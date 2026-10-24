@@ -61,9 +61,12 @@ func runRCCNativeDisplayObservationFixtures() throws {
     try check(O.observedSettings(metadata.dropLast(), provider: "codex", sessionID: session, turnID: turn) == nil, "partial native row is not observation")
     let conflict = metadata + (try JSONSerialization.data(withJSONObject: ["type":"turn_context","payload":["turn_id":turn,"model":"other","effort":"high"]])) + Data([10])
     try check(O.observedSettings(conflict, provider: "codex", sessionID: session, turnID: turn) == nil, "conflicting exact-turn settings omitted")
-    func claudeRow(_ model: String, _ text: String, sessionID: String = session, timestamp: Date = now) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["type":"assistant", "sessionId":sessionID, "timestamp":ISO8601DateFormatter().string(from:timestamp),
-            "message":["model":model, "content":[["type":"thinking","thinking":"SECRET"], ["type":"text","text":text]]]]) + Data([10])
+    func claudeRow(_ model: String, _ text: String, sessionID: String = session, timestamp: Date = now,
+                   metadata: [String: Any] = [:]) throws -> Data {
+        var row: [String: Any] = ["type":"assistant", "sessionId":sessionID, "timestamp":ISO8601DateFormatter().string(from:timestamp),
+            "message":["model":model, "content":[["type":"thinking","thinking":"SECRET"], ["type":"text","text":text]]]]
+        for (key, value) in metadata { row[key] = value }
+        return try JSONSerialization.data(withJSONObject: row) + Data([10])
     }
     let outputHash = C.digest(Data("CURRENT_VISIBLE_OUTPUT".utf8))
     let claude = try claudeRow("claude-old", "OLD_OUTPUT") + claudeRow("claude-actual", "CURRENT_VISIBLE_OUTPUT")
@@ -78,6 +81,57 @@ func runRCCNativeDisplayObservationFixtures() throws {
     let oldOnly = try claudeRow("claude-old", "CURRENT_VISIBLE_OUTPUT", timestamp:now.addingTimeInterval(-10)) + JSONSerialization.data(withJSONObject:["type":"system","timestamp":ISO8601DateFormatter().string(from:now)]) + Data([10])
     try check(O.observedSettings(oldOnly,provider:"claude",sessionID:session,turnID:nil,finalOutputSHA256:outputHash,notBefore:now.addingTimeInterval(-1),notAfter:now.addingTimeInterval(1)) == nil,"old same-output assistant plus unrelated new event cannot supply current model")
     try check(O.observedSettings(claude,provider:"claude",sessionID:session,turnID:nil,finalOutputSHA256:outputHash) == nil,"Claude missing current-attempt time anchor stays unknown")
+    func claudeSettings(_ rows: Data) -> (model: String, effort: String?, basis: String, sourceSHA256: String, outputSHA256: String?)? {
+        O.observedSettings(rows, provider:"claude", sessionID:session, turnID:nil, finalOutputSHA256:outputHash,
+            notBefore:now.addingTimeInterval(-1), notAfter:now.addingTimeInterval(1))
+    }
+    for effort in ["low", "medium", "high", "max"] {
+        for metadata in [["effort":effort], ["perTurnEffort":effort], ["effort":effort,"perTurnEffort":effort]] {
+            let rows = try claudeRow("claude-observed", "CURRENT_VISIBLE_OUTPUT", metadata:metadata)
+            let observed = claudeSettings(rows)
+            try check(observed?.model == "claude-observed" && observed?.effort == effort &&
+                observed?.sourceSHA256 == C.digest(rows) && observed?.outputSHA256 == outputHash &&
+                observed?.basis == "native_assistant_model", "exact Claude root effort metadata: " + effort)
+        }
+    }
+    let unsupportedEfforts: [Any] = [NSNull(), true, 1, [], ["value":"max"], "", "MAX", " max", "ultra", "xhigh", "automatic"]
+    for bad in unsupportedEfforts {
+        for key in ["effort", "perTurnEffort"] {
+            let rows = try claudeRow("claude-observed", "CURRENT_VISIBLE_OUTPUT", metadata:[key:bad])
+            let observed = claudeSettings(rows)
+            try check(observed?.model == "claude-observed" && observed?.effort == nil,
+                "unsupported Claude root effort does not erase independently observed model")
+        }
+    }
+    let conflictingEfforts: [[String: Any]] = [["effort":"max","perTurnEffort":"high"], ["effort":"max","perTurnEffort":NSNull()],
+                                               ["effort":NSNull(),"perTurnEffort":"max"], ["effort":"max","perTurnEffort":"ultra"]]
+    for metadata in conflictingEfforts {
+        try check(claudeSettings(try claudeRow("claude-observed", "CURRENT_VISIBLE_OUTPUT", metadata:metadata))?.effort == nil,
+            "conflicting or malformed Claude metadata remains unknown")
+    }
+    let priorEffort = try claudeRow("claude-old", "OLD_OUTPUT", metadata:["effort":"max","perTurnEffort":"max"]) + claudeRow("claude-actual", "CURRENT_VISIBLE_OUTPUT")
+    try check(claudeSettings(priorEffort)?.effort == nil, "other-output assistant effort cannot fill current missing value")
+    let oldEffort = try claudeRow("claude-old", "CURRENT_VISIBLE_OUTPUT", timestamp:now.addingTimeInterval(-10), metadata:["effort":"max"]) + claudeRow("claude-actual", "CURRENT_VISIBLE_OUTPUT")
+    try check(claudeSettings(oldEffort)?.effort == nil, "old matching-output effort cannot fill current missing value")
+    let foreignEffort = try claudeRow("claude-other", "CURRENT_VISIBLE_OUTPUT", sessionID:UUID().uuidString, metadata:["effort":"max"]) + claudeRow("claude-actual", "CURRENT_VISIBLE_OUTPUT")
+    try check(claudeSettings(foreignEffort)?.effort == nil, "foreign-session effort cannot fill current missing value")
+    let thinkingEffort = try JSONSerialization.data(withJSONObject:["type":"assistant","sessionId":session,
+        "timestamp":ISO8601DateFormatter().string(from:now),"effort":"max","perTurnEffort":"max",
+        "message":["model":"claude-thinking","content":[["type":"thinking","thinking":"SECRET","effort":"max"]]]]) + Data([10])
+    try check(claudeSettings(try thinkingEffort + claudeRow("claude-actual", "CURRENT_VISIBLE_OUTPUT"))?.effort == nil,
+        "thinking-only assistant metadata cannot fill current text row's missing effort")
+    let emptyOutputHash = C.digest(Data())
+    try check(O.observedSettings(thinkingEffort, provider:"claude", sessionID:session, turnID:nil,
+        finalOutputSHA256:emptyOutputHash, notBefore:now.addingTimeInterval(-1), notAfter:now.addingTimeInterval(1)) == nil,
+        "thinking-only assistant cannot become a visible witness by matching an empty output hash")
+    try check(O.observedSettings(try claudeRow("claude-empty", "", metadata:["effort":"max"]), provider:"claude",
+        sessionID:session, turnID:nil, finalOutputSHA256:emptyOutputHash,
+        notBefore:now.addingTimeInterval(-1), notAfter:now.addingTimeInterval(1)) == nil,
+        "empty text assistant is not a final visible output witness")
+    let nestedEffort = try JSONSerialization.data(withJSONObject:["type":"assistant","sessionId":session,
+        "timestamp":ISO8601DateFormatter().string(from:now),"message":["model":"claude-actual","effort":"max","perTurnEffort":"max",
+        "content":[["type":"text","text":"CURRENT_VISIBLE_OUTPUT","effort":"max"]]]]) + Data([10])
+    try check(claudeSettings(nestedEffort)?.effort == nil, "message/content values are not native root metadata")
     let progress = NativeExecutionProgress(sequence: 1, kind: .processing, tool: nil, scope: "main",
         toolsRequested: 0, toolsReturned: 0, activeTools: 0, observedAt: now,
         events: [.init(sequence: 1, kind: .processing, tool: nil, scope: "main", observedAt: now)], stream: "0123456789ab")

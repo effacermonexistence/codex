@@ -102,13 +102,13 @@ public struct RCCNativeDisplayObservation: Codable, Equatable, Sendable {
                 let timestamp = o["timestamp"] as? String,
                 let time = timestampDate(timestamp), time >= start, time <= finish,
                 let content = message["content"] as? [[String: Any]] {
-                // Claude persists model on its assistant message, but does not
-                // universally expose executed reasoning effort. Only ONE own
+                // Claude may persist effort metadata on the assistant envelope;
+                // absent/unsupported/conflicting metadata stays unknown. Only ONE own
                 // assistant whose text hashes to this exact receipt output is
                 // a current-attempt witness; last-in-session is insufficient.
                 let text = content.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
-                if RCCRuntimeContract.digest(Data(text.utf8)) == expected {
-                    sessionMatches = true; settings.append((model, nil))
+                if !text.isEmpty && RCCRuntimeContract.digest(Data(text.utf8)) == expected {
+                    sessionMatches = true; settings.append((model, claudeObservedEffort(o)))
                 }
             }
         }
@@ -116,6 +116,21 @@ public struct RCCNativeDisplayObservation: Codable, Equatable, Sendable {
               provider != "claude" || settings.count == 1,
               Self.token(value.0, maximum: 128), value.1.map({ RCCRuntimeContract.Effort(rawValue: $0) != nil }) ?? true else { return nil }
         return (value.0, value.1, provider == "codex" ? "native_turn_context" : "native_assistant_model", RCCRuntimeContract.digest(data), provider == "claude" ? finalOutputSHA256 : nil)
+    }
+    private static func claudeObservedEffort(_ row: [String: Any]) -> String? {
+        // These are provider-native root metadata, not message content, ACK,
+        // requested settings, or a value inferred from a different assistant.
+        // Both fields, when present, must independently support the same value.
+        let fields = ["effort", "perTurnEffort"].filter { row.keys.contains($0) }
+        guard !fields.isEmpty else { return nil }
+        var values: [String] = []
+        for field in fields {
+            guard let value = row[field] as? String,
+                  ["low", "medium", "high", "max"].contains(value) else { return nil }
+            values.append(value)
+        }
+        guard let first = values.first, values.allSatisfy({ $0 == first }) else { return nil }
+        return first
     }
     private static func timestampDate(_ text: String) -> Date? {
         guard text.utf8.count <= 64 else { return nil }
