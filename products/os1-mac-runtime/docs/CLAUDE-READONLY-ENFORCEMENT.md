@@ -24,7 +24,9 @@ qualification—not documentation alone—establish the implemented boundary.
 
 `OS1SourceConfinement.readOnlyProtection` constructs one immutable per-attempt
 protection from the actual existing workspace and known protected OS1 source
-roots. It canonicalizes paths, includes equivalent Data-volume aliases in both
+roots. A registered containing OS1 source root is resolved first, preserving
+sibling source/admin protection even when the workspace is a project subfolder;
+an OS1 root contained inside a broader workspace is the fallback. It canonicalizes paths, includes equivalent Data-volume aliases in both
 directions, and reuses the existing `sourceWriteGuardProfile`, including ancestor
 unlink protection. No second authority, scheduler or global settings is added.
 

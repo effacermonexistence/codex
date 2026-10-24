@@ -125,5 +125,8 @@ assert 'record.executionVerified = false; record.taskVerified = false' in adapte
 assert 'record.sideEffects = changed.sideEffects; record.error = changed.error' in adapter
 assert 'global_no_effects_proof' in adapter and 'configured_inherited_os_workspace_source_guard_v1' in adapter
 assert 'onReadOnlyProtection: { readOnlyProtection = $0 }' in adapter
+assert '''let protectedSourceRoot = LocalProjectWorkspace.root(containing: executionWorkspace, projectID: "os1-clodex")
+                ?? OS1SourceWatch.containedRoot(workspace: executionWorkspace)''' in main
+assert 'let sourcePaths = protectedSourceRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []' in main
 assert main.index('Immutable read-only Claude ticket cannot resume full access') < main.index('let previousSessionID = try normalizedSessionID(providerSessionID)', main.index('Immutable read-only Claude ticket cannot resume full access'))
 print('PASS: RO immutable predispatch/effect-HOLD wiring retained; model calls0')

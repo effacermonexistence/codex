@@ -8758,8 +8758,9 @@ private func execute(
         }
         let readOnlyProtection: OS1SourceConfinement.ReadOnlyProtection?
         if ticket.permissionProfile == "read_only", (!sourceOnly && !chatLane || memoryTurn != nil) {
-            let sourcePaths = OS1SourceWatch.containedRoot(workspace: executionWorkspace)
-                .map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
+            let protectedSourceRoot = LocalProjectWorkspace.root(containing: executionWorkspace, projectID: "os1-clodex")
+                ?? OS1SourceWatch.containedRoot(workspace: executionWorkspace)
+            let sourcePaths = protectedSourceRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
             readOnlyProtection = try OS1SourceConfinement.readOnlyProtection(workspace: executionWorkspace,
                 additionalProtectedPaths: Array(Set(OS1SourceConfinement.activeRoots + sourcePaths)))
         } else { readOnlyProtection = nil }
