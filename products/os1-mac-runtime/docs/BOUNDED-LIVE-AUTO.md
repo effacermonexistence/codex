@@ -1,10 +1,10 @@
-# Bounded live Auto — build 432 source integration
+# Bounded live Auto — build 433 source integration
 
 This is an execution policy, not a quality certificate. The pre-existing covered-live/FULL verifier policy remains separate.
 
 ## Actual path
 
-Sealed `LocalRouterBridge` configuration enables `bounded_auto`. The same OpenClaw Core calls its existing tools-free local planner with current catalog and RCC policy. The planner sees lossless candidate profiles/tuples, tools, scopes, accounts/pools and timestamped quota; unknown performance/cost stays unknown. Current source uses at most one 30s/1536-token proposal, 4 read-only nodes or 3 read-only preparation nodes.
+Sealed `LocalRouterBridge` configuration enables `bounded_auto`. The same OpenClaw Core calls its existing tools-free local planner with current catalog and RCC policy. The planner sees lossless candidate profiles/tuples, tools, scopes, accounts/pools and timestamped quota; unknown performance/cost stays unknown. Current source uses at most one bounded120s/1536-token proposal (also capped by remaining task lifetime; legacy shadow20s unchanged), 4 read-only nodes or 3 read-only preparation nodes.
 
 Core independently checks task/request/policy/catalog identity, candidate support, explicit model/effort/provider constraints, current availability/quota, scope, graph, final ownership and budgets. Invalid, late, oversized or unsupported proposals restore the existing original host route before dispatch. FULL task contracts, class certificates, registered verifier paths and explicit maximum-effort constraints are not downgraded by this policy.
 
@@ -27,3 +27,15 @@ Pure SQLite/transport fixtures are not native execution or installed UI proof. S
 The actual App diagnostic on431 used a workspace-write owner capability ceiling for a read-only lookup. Strict equality with the effective task scope skipped planning entirely and selected one Astra/ultra worker.432 uses independently derived effective scope within the unchanged owner ceiling; it does not mutate the signed catalog or permit read-to-write escalation. Local planning, prompt limits, candidate metadata checks and finalizer admission use that effective scope consistently. The old failed task and its output are retained.
 
 Provider-native owned0644 logs use a separate bounded stable metadata reader; private OS-1 receipt/sidecar0600 custody is unchanged. Actual source-observed model/reasoning may then be displayed without substituting selected configuration. Source/pure-test success is not installed432 runtime evidence.
+
+## Installed432 prefill failure and433 source repair
+
+The owned App A2 diagnostic reached the real local planner but cold21,579-token prefill was cancelled by the old30s window after15,360 processed tokens, before a proposal. Its single-worker Fable/max fallback, raw output and failed architecture verdict are retained; passing component answers did not make parallel routing succeed.
+
+433 losslessly packs repeated exact text through closed host references and the full candidate catalog through a fixed-column table. Roundtrip reconstruction retains the original task, full bound RCC projection, all68 historical candidate rows/profiles/hashes/unknowns and outputV2/compiler contract. Historical helper input54,370→43,186 UTF‑8 bytes is a representation measurement, not measured token/latency savings or a smaller context authority.
+
+Both bounded Core and helper allow up to120s within the unchanged total task lifetime. Cancellation/quiescence/unknown-backend-state and fresh pre-dispatch support/quota checks remain authoritative. There is no automatic retry or backend substitution. An aborted/error all-zero usage placeholder remains unknown, not zero consumption.
+
+The native display reader may use optional provider-native Claude assistant effort/perTurnEffort only on the exact current output/session/time witness. Missing/conflicting/unsupported data stays unknown; selected settings are not execution readback.
+
+New source fixtures are included in the full release preflight. Actual installed433 App decomposition, parallel/native metadata and writer effects remain separate qualification gates until execution receipts exist. No general flagship parity, quota percentage or whole-product completion follows from these source fixes.
