@@ -84,6 +84,15 @@ enum LocalRouterBridge {
         // The actual constructor omits optional per-agent model overrides.
         // Apply finite residency without assuming the template's shape.
         config = try RCCModelResidencyConfiguration.applying(to: config)
+        // The sealed host opts into bounded local execution planning. This is
+        // not a covered-live quality certificate or model-authored permission.
+        var plugins = config["plugins"] as! [String: Any]
+        var pluginEntries = plugins["entries"] as! [String: Any]
+        var bridgeEntry = pluginEntries["os1-bridge"] as! [String: Any]
+        bridgeEntry["config"] = ["bounded_auto": true]
+        pluginEntries["os1-bridge"] = bridgeEntry; plugins["entries"] = pluginEntries
+        config["plugins"] = plugins
+
         let publicPolicy = try RuntimeConfig.load().executorContract.directives.joined(separator: "\n")
         return RCCRuntimeGatewayClient.Configuration(identity: .init(nodePath: old.nodePath, nodeSHA256: old.nodeSHA256,
             entryPath: old.entryPath, entrySHA256: old.entrySHA256, pluginDirectory: plugin.path,

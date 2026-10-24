@@ -338,6 +338,10 @@
             }
           }
         ]
+      },
+      "bounded_auto": {
+        "type": "boolean",
+        "description": "Host-enabled bounded execution-only local planning. Does not certify task quality or grant additional permissions."
       }
     }
   }

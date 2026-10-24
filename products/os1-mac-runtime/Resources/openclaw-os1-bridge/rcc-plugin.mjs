@@ -553,11 +553,17 @@ export function calibratedRuntimeOptions({stateDir, now_ms = Date.now()} = {}) {
 export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, stateDir}) {
   if (pluginConfig != null && (typeof pluginConfig !== 'object' || Array.isArray(pluginConfig) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(pluginConfig)) ||
-      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts', 'live_plan_capability'].includes(k)) ||
+      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts', 'live_plan_capability', 'bounded_auto'].includes(k)) ||
       Object.values(Object.getOwnPropertyDescriptors(pluginConfig)).some(d => !Object.hasOwn(d, 'value'))))
     throw new RCCRuntimeError('adaptive_plugin_config_invalid');
   const policy = decodeAdaptiveRoutingPolicy(pluginConfig?.adaptive_routing);
   const calibrated = calibratedRuntimeOptions({stateDir});
+  if (pluginConfig?.bounded_auto !== undefined && typeof pluginConfig.bounded_auto !== 'boolean')
+    throw new RCCRuntimeError('bounded_auto_config_invalid');
+  if (policy.mode === 'off' && pluginConfig?.bounded_auto === true) return {
+    adaptiveRoutingPolicy: policy, ...calibrated, boundedAutoPlanning: true,
+    proposeLocalPlan: createLocalPlanPlanner({complete, lifetimeSignal,
+      limits: {max_nodes: 4, max_workers: 4, max_revisions: 0}})};
   if (policy.mode === 'off') return {adaptiveRoutingPolicy: policy, ...calibrated};
   if (policy.mode === 'covered_live') {
     // No current production manifest is shipped. Bad/missing registration is
