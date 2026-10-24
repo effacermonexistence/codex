@@ -38,13 +38,32 @@ provider file tools remain inside the outer process filesystem guard. Inherited
 global Bash approvals or vendor `excludedCommands` cannot remove this outer
 profile.
 
-The same paths are supplied to vendor per-request settings: sandbox enabled,
-filesystem enabled, `denyWrite`, `failIfUnavailable=true`, and
-`allowUnsandboxedCommands=false`. Write/Edit/MultiEdit/NotebookEdit are denied in
-both settings and CLI tool denies. Existing read tools, bounded Bash/local
-computation, provider-state IO, network policy, hook suppression and explicit
-memory configuration retain their applicable behavior. No user/global settings,
-authentication caches or provider files are modified by this implementation.
+The same paths are retained in vendor per-request settings, with file-tool
+denies in both settings and CLI. However, a separate real-OS compatibility probe
+found that outer sandbox-exec followed by inner sandbox-exec exits71 at
+`sandbox_apply: Operation not permitted`; the inner child never starts. The
+initial vendor-enabled draft is therefore not native-Bash-qualified and its
+failed probe is preserved.
+
+Under Root's explicit source-policy adoption, ONLY this immutable
+outer-guard-bound settings function disables the redundant inner vendor Bash
+sandbox. It adds no bypass permission, full-access flag, handback or global
+settings change. The outer guard remains mandatory and fails closed if it
+cannot be prepared/launched. Genuinely tool-free settings are unchanged. Read
+tools, shell/local computation, provider-state IO, hook suppression and explicit
+memory configuration keep their applicable permissions.
+
+Retained inner filesystem/network keys and `failIfUnavailable`/
+`allowUnsandboxedCommands` values are inactive while its sandbox is disabled;
+they are not claimed as enforced. In particular, vendor allowed-domain and
+local-binding network confinement is NOT supplied by the outer filesystem-only
+guard. Existing owner/managed/tool permissions and task constraints remain
+binding; no unrestricted network authorization is inferred. Current closed RCC
+host/config/ticket schemas expose no vendor-network enforcement contract;
+unsupported explicit network-policy fields are rejected before dispatch. A
+future host requiring such enforcement must remain held unless an appropriate
+supported enforcement path is implemented—it cannot silently use this profile.
+No user/global settings, authentication caches or provider files are modified.
 
 ## Fail-closed boundaries
 
@@ -54,7 +73,9 @@ authentication caches or provider files are modified by this implementation.
   continuation authority, including a full-access handback marker.
 - A missing/invalid workspace or protection path fails before dispatch.
 - A guarded workspace/source path overlapping the provider's `.claude` or
-  `.claude.json` state fails before dispatch. A HOME workspace is not silently
+  `.claude.json` state fails before dispatch. This compares verified logical and
+  Data-volume home aliases even when the state file does not yet exist; an
+  actual Data-root collision regression is retained. A HOME workspace is not silently
   weakened by adding a provider-state carve-out.
 - The existing unguarded source-context lane remains possible only when it is
   actually tool-free: safe mode, empty tools, strict empty MCP configuration and
@@ -79,7 +100,8 @@ Equal bounded hashes are not complete no-effect proof. Missing, malformed, empty
 sentinel or partial/unreliable evidence stays unknown; it does not cause permanent
 rejection of every valid read-only task. A private native-summary annotation
 records the configured guard/profile digest, path count and fingerprint class,
-with `global_no_effects_proof=false`. This is launch configuration and bounded
+with `vendor_network_sandbox_enforced=false` and `global_no_effects_proof=false`.
+This is launch configuration and bounded
 observation—not proof of all-world effects, pre-existing external services,
 filesystem aliases not represented by the verified paths, or arbitrary outside
 workspace activity.
@@ -94,10 +116,13 @@ captured; this document does not promote that inference into a verified event.
 and neutral-wrapper functions against current OS1Context objects. It exercises
 canonical paths/aliases, provider-state collision, missing/foreign guard
 rejection, strict settings, tool-free versus memory-MCP distinction, and exact
-wrapper/profile binding. Private real-OS canaries first prove read/local compute
+wrapper/profile binding and unsupported explicit network-contract rejection.
+Private real-OS canaries first prove outer-only read/local compute
 and separate provider-log writes work, then require EPERM plus unchanged data
 for shell write, mkdir, rename, hardlink, Python write and protected-source write.
-No provider/model/SDK/RPC is called. Raw denials belong in private test receipts.
+No provider/model/SDK/RPC is called. Raw denials and the earlier nested-sandbox
+failure belong in private test receipts. These canaries do not execute the
+Claude provider and do not themselves prove its native Bash integration works.
 
 `RCCNativeAttemptOutcomeFixture` verifies positive-delta HOLD classification,
 writer noninterference, equal/nonproof and unknown preservation. Existing main

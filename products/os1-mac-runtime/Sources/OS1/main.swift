@@ -20082,7 +20082,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     if t.selectedConfig.scope == .readOnly, let raw = record.nativeSummary,
        var summary = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] {
         summary["read_only_workspace_boundary"] = [
-            "basis": readOnlyProtection == nil ? "outer_guard_not_observed" : "configured_inherited_os_workspace_source_guard_v1",
+            "basis": readOnlyProtection == nil ? "outer_guard_not_observed" : "configured_inherited_os_workspace_source_guard_v2_outer_only",
+            "vendor_bash_sandbox": readOnlyProtection == nil ? "not_observed" : "disabled_outer_guard_only",
+            "vendor_network_sandbox_enforced": false,
             "protected_path_count": readOnlyProtection?.protectedPaths.count ?? 0,
             "profile_sha256": readOnlyProtection?.profileSHA256 ?? NSNull(),
             "fingerprint_observation": RCCNativeAttemptOutcome.workspaceFingerprintObservation(

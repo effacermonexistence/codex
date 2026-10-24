@@ -55,6 +55,10 @@ for collision in [home.path, root.path] {
 }
 do { _ = try OS1SourceConfinement.readOnlyProtection(workspace:workspace.path,additionalProtectedPaths:[home.path],home:home); fatalError("source protection collides with provider state") }
 catch OS1SourceConfinement.ReadOnlyProtectionError.providerStateCollision { checks += 1 }
+if FileManager.default.fileExists(atPath:"/System/Volumes/Data" + canonical(home.path)) {
+    do { _ = try OS1SourceConfinement.readOnlyProtection(workspace:"/System/Volumes/Data",home:home); fatalError("Data-root provider-state collision admitted") }
+    catch OS1SourceConfinement.ReadOnlyProtectionError.providerStateCollision { checks += 1 }
+}
 @MainActor func args(protection p:OS1SourceConfinement.ReadOnlyProtection?=protection, sourceOnly:Bool=false, memory:String?=nil, full:[String]=[], confined:[String]=[]) throws -> [String] {
     try claudeArguments(model:"fixture",effort:"high",instructions:"fixture",sessionID:UUID().uuidString.lowercased(),startNewSession:true,title:"fixture",permissionProfile:"read_only",prompt:"fixture",sourceContextOnly:sourceOnly,memoryConfiguration:memory,confinedPaths:confined,fullAccessProtectedPaths:full,managedDelegation:true,interactiveHooksDisabled:true,readOnlyProtection:p)
 }
@@ -62,7 +66,7 @@ let arguments = try args()
 require(!arguments.contains("bypassPermissions") && arguments.contains("dontAsk"), "RO acquired bypass")
 let si = arguments.firstIndex(of:"--settings")!, settings = try JSONSerialization.jsonObject(with:Data(arguments[si+1].utf8)) as! [String:Any]
 let sandbox = settings["sandbox"] as! [String:Any], filesystem = sandbox["filesystem"] as! [String:Any]
-require(sandbox["enabled"] as? Bool == true && sandbox["failIfUnavailable"] as? Bool == true && sandbox["allowUnsandboxedCommands"] as? Bool == false, "strict sandbox flags missing")
+require(sandbox["enabled"] as? Bool == false && sandbox["failIfUnavailable"] as? Bool == true && sandbox["allowUnsandboxedCommands"] as? Bool == false, "only redundant inner sandbox must be disabled under mandatory outer guard")
 require(filesystem["disabled"] as? Bool == false && filesystem["denyWrite"] as? [String] == protection.protectedPaths, "workspace denyWrite lost")
 require(settings["disableAllHooks"] as? Bool == true, "hook suppression lost while merging settings")
 let di = arguments.firstIndex(of:"--disallowedTools")!, denies = arguments[di+1].split(separator:",").map(String.init)
@@ -80,6 +84,19 @@ require(try args(sourceOnly:true,memory:memory).contains(memory), "guarded expli
 let launch = try fullAccessResumeArguments(executable:"/bin/sh",arguments:arguments,protectedPaths:protection.protectedPaths)
 require(launch.0 == "/usr/bin/sandbox-exec" && Array(launch.1.suffix(arguments.count)) == arguments && !launch.1.contains("bypassPermissions"), "neutral wrapper altered permission args")
 require(launch.1[0] == "-p" && launch.1[1] == protection.profile && launch.1[2] == "/bin/sh", "actual launch/profile binding mismatch")
+// Current host contracts have no vendor-specific network enforcement field.
+// Unsupported explicit requirements fail before dispatch, not silently vanish.
+let host = RCCRuntimeContract.HostContext(workspace:workspace.path,context:nil,providerPreference:"auto",codexSessionID:nil,claudeSessionID:nil,requireReadOnly:true,ownerPolicy:nil)
+let hostBytes = try RCCRuntimeContract.encode(host), text = "fixture request", ph = RCCRuntimeContract.digest(Data("fixture policy".utf8))
+let request = RCCRuntimeContract.Request(taskID:"fixture-task",request:text,requestSHA256:RCCRuntimeContract.digest(Data(text.utf8)),objective:text,policySHA256:ph,sourceFingerprint:RCCRuntimeContract.digest(hostBytes),mode:.auto,materialRefs:[],budget:.init(maxAttempts:1,maxParallel:1,maxCostUnits:nil,maxDurationMS:60000),hostContext:host)
+let requestBytes = try RCCRuntimeContract.encode(request)
+require(try RCCRuntimeContract.decodeRequest(requestBytes) == request, "valid host contract must pass before rejection can count")
+for key in ["require_vendor_network_sandbox", "network_policy"] {
+    var object = try JSONSerialization.jsonObject(with:requestBytes) as! [String:Any]
+    var owner = object["host_context"] as! [String:Any]; owner[key] = true; object["host_context"] = owner
+    do { _ = try RCCRuntimeContract.decodeRequest(JSONSerialization.data(withJSONObject:object)); fatalError("unsupported explicit network requirement silently relaxed") }
+    catch { checks += 1 }
+}
 // Adversarial user-wide Bash approval and excludedCommands cannot remove an
 // inherited OS profile. Invoke the real shell/Python directly as if excluded.
 let inheritedAllows = ["Bash", "Write"], inheritedExclusions = ["cat", "python3"]
@@ -123,7 +140,8 @@ adapter = main[main.index('private func rccNativeAdapter('):main.index('/// A ro
 assert adapter.index('RCCNativeAttemptOutcome.readOnlyWorkspaceChange') < adapter.index('timing.mark(.receiptPersistStarted)')
 assert 'record.executionVerified = false; record.taskVerified = false' in adapter
 assert 'record.sideEffects = changed.sideEffects; record.error = changed.error' in adapter
-assert 'global_no_effects_proof' in adapter and 'configured_inherited_os_workspace_source_guard_v1' in adapter
+assert 'global_no_effects_proof' in adapter and 'configured_inherited_os_workspace_source_guard_v2_outer_only' in adapter
+assert '"vendor_network_sandbox_enforced": false' in adapter
 assert 'onReadOnlyProtection: { readOnlyProtection = $0 }' in adapter
 assert '''let protectedSourceRoot = LocalProjectWorkspace.root(containing: executionWorkspace, projectID: "os1-clodex")
                 ?? OS1SourceWatch.containedRoot(workspace: executionWorkspace)''' in main

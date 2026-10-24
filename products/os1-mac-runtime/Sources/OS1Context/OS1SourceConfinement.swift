@@ -55,9 +55,14 @@ public enum OS1SourceConfinement {
         }
         // Do not discover this collision by spending a model call with its
         // own auth/session storage denied. No carve-out weakens a HOME guard.
-        let providerState = [".claude", ".claude.json"].flatMap { name -> [String] in
-            let lexical = URL(fileURLWithPath: canonicalHome).appendingPathComponent(name).path
+        var providerHomes = [canonicalHome]
+        let homeAlias = canonicalHome.hasPrefix(dataVolume + "/")
+            ? String(canonicalHome.dropFirst(dataVolume.count)) : dataVolume + canonicalHome
+        if sameFile(homeAlias, canonicalHome) { providerHomes.append(homeAlias) }
+        let providerState = providerHomes.flatMap { homePath in [".claude", ".claude.json"].flatMap { name -> [String] in
+            let lexical = URL(fileURLWithPath: homePath).appendingPathComponent(name).path
             return [lexical, realPath(lexical)].compactMap { $0 }
+        }
         }
         guard !paths.contains(where: { path in providerState.contains(where: { contains(path, $0) || contains($0, path) }) }) else {
             throw ReadOnlyProtectionError.providerStateCollision
@@ -65,14 +70,17 @@ public enum OS1SourceConfinement {
         return .init(workspace: canonical, protectedPaths: paths,
                      profile: try sourceWriteGuardProfile(protectedPaths: paths))
     }
-    /// The vendor Bash sandbox is defense in depth; the outer inherited OS
-    /// profile remains effective for excluded commands and native file tools.
+    /// Only for a mandatory outer-guard-bound launch. macOS rejects nested
+    /// sandbox_apply, so the redundant vendor Bash sandbox must be off here.
+    /// Its retained network keys are NOT enforced; the outer guard is scoped
+    /// filesystem protection, not a substitute network sandbox.
     public static func claudeReadOnlySettings(_ protection: ReadOnlyProtection) -> String {
         var object = (try! JSONSerialization.jsonObject(with: Data(claudeSettings(protectedPaths: protection.protectedPaths).utf8))) as! [String: Any]
         var permissions = object["permissions"] as! [String: Any]
         permissions["deny"] = (permissions["deny"] as! [String]) + ["Write", "Edit", "MultiEdit", "NotebookEdit"]
         object["permissions"] = permissions
         var sandbox = object["sandbox"] as! [String: Any]
+        sandbox["enabled"] = false
         sandbox["excludedCommands"] = [] as [String]
         sandbox["filesystem"] = ["disabled": false, "denyWrite": protection.protectedPaths] as [String: Any]
         var network = sandbox["network"] as! [String: Any]
