@@ -236,3 +236,100 @@ test('full-size 18554B policy +1825B objective +46 native rows fits existing 655
   assert.ok(bytes <= 65536); assert.equal(call.maxTokens, 1536);
   assert.equal(answer.candidate_view.informed_metadata_supplied, true);
 });
+
+function writerFixture() {
+  const f = fixture([row(), row('cfg-writer', {scope: 'workspace_write', permission_profile: 'workspace_write',
+    tools: ['read', 'write', 'execute'], allowed_paths: ['**']})]);
+  f.candidateCatalog.owner_scope = 'workspace_write'; return rebind(f);
+}
+function finalizerProposal(hint = 'cfg-writer', count = 1) {
+  const p = proposal('cfg-luna');
+  p.nodes = Array.from({length: count}, (_, i) => ({...structuredClone(p.nodes[0]), proposal_node_id: 'n' + i}));
+  p.final_output_proposal = {mode: 'ordered_collection', node_ids: p.nodes.map(n => n.proposal_node_id), host_finalizer_candidate_id: hint};
+  return p;
+}
+test('writer owner supplies explicit host-owned writer context, separate current exact writer tuple hint', async () => {
+  const f = writerFixture(), p = finalizerProposal(), r = run(f, p), result = await r.result;
+  assert.equal(result.status, 'proposal'); assert.equal(result.execution_authorized, false);
+  const input = JSON.parse(r.requests[0].messages[0].content);
+  assert.deepEqual(input.host_finalizer, {kind: 'host_original_request_writer_v1', finalizer_count: 1,
+    original_request_sha256: f.expectedBinding.request_sha256, preparation_scope: 'read_only', max_preparation_nodes: 3,
+    model_writer_nodes_allowed: false});
+  assert.equal(input.candidate_metadata.owner_scope, 'workspace_write');
+  assert.equal(input.budget.max_nodes, 3); assert.equal(r.requests[0].responseFormat.properties.nodes.maxItems, 3);
+  assert.ok(r.requests[0].systemPrompt.includes('Core will add exactly ONE final writer'));
+  assert.equal(result.proposal_budget.max_nodes, 3); assert.equal(result.proposal.nodes[0].proposed_scope, 'read_only');
+});
+for (const [name, change] of [
+  ['read-only owner', f => f.candidateCatalog.owner_scope = 'read_only'],
+  ['missing owner scope', f => delete f.candidateCatalog.owner_scope],
+  ['future quota', f => f.candidateCatalog.candidates[1].quota_observed_at_ms = NOW + 1],
+  ['expired quota', f => f.candidateCatalog.candidates[1].quota_valid_until_ms = NOW],
+  ['unknown quota', f => {const c=f.candidateCatalog.candidates[1];c.quota_remaining_fraction=null;c.quota_observed_at_ms=null;c.quota_valid_until_ms=null;}],
+  ['unavailable writer', f => f.candidateCatalog.candidates[1].availability = 'unavailable'],
+  ['quality-mismatched writer', f => f.candidateCatalog.candidates[1].quality_state = 'mismatch'],
+  ['writer without write tool', f => f.candidateCatalog.candidates[1].tools = ['read', 'execute']],
+  ['invalid owner scope type', f => f.candidateCatalog.owner_scope = true],
+]) test('non-null finalizer hint rejected for ' + name, async () => {
+  const f = writerFixture(); change(f); rebind(f);
+  const answer = await run(f, finalizerProposal()).result; assert.equal(answer.status, 'fallback_required');
+});
+test('a read-only candidate ID is never mapped to a writer and unknown IDs stay unsupported', async () => {
+  for (const id of ['cfg-luna', 'unknown-writer']) {
+    const r = run(writerFixture(), finalizerProposal(id)); assert.equal((await r.result).status, 'fallback_required');
+  }
+});
+test('legacy IDs-only call rejects non-null host writer hint, omission/null remains legacy', async () => {
+  const f = writerFixture(); delete f.candidateCatalog;
+  assert.equal((await run(f, finalizerProposal()).result).reason, 'planner_host_finalizer_not_available');
+  const n = run(f, finalizerProposal(null)), a = await n.result;
+  assert.equal(a.status, 'proposal'); assert.equal(a.candidate_view.informed_metadata_supplied, false);
+  const input = JSON.parse(n.requests[0].messages[0].content);
+  assert.equal(input.schema, 2); assert.equal(Object.hasOwn(input, 'host_finalizer'), false);
+});
+test('writer context caps local read-only preparations at three and never creates its final writer', async () => {
+  const f = writerFixture(), good = run(f, finalizerProposal('cfg-writer', 3)), answer = await good.result;
+  assert.equal(answer.status, 'proposal'); assert.equal(answer.proposal.nodes.length, 3);
+  assert.ok(answer.proposal.nodes.every(n => n.proposed_scope === 'read_only' && n.proposed_owned_paths.length === 0));
+  const bad = run(f, finalizerProposal('cfg-writer', 4));
+  assert.equal((await bad.result).reason, 'planner_node_budget_exceeded'); assert.equal(bad.calls(), 1);
+});
+test('writer preparation context must be read-only even if caller projected write scope', async () => {
+  const f = writerFixture(); f.hostProjection.scope = 'workspace_write'; f.hostProjection.allowed_owned_paths = ['out.txt'];
+  const r = run(f, finalizerProposal()); assert.equal((await r.result).reason, 'planner_host_finalizer_preparation_scope_invalid');
+  assert.equal(r.calls(), 0);
+});
+test('unsupported Local writer or tool-free chat writer cannot enter informed candidates', async () => {
+  for (const fields of [
+    {surface:'local',transport:'local',quota_pool:'none',quota_remaining_fraction:null,quota_observed_at_ms:null,quota_valid_until_ms:null},
+    {surface:'claude-chat',transport:'claude_cli',quota_pool:'anthropic_shared'},
+  ]) {
+    const f = writerFixture(); Object.assign(f.candidateCatalog.candidates[1], fields); rebind(f);
+    const r = run(f, finalizerProposal()); assert.equal((await r.result).status, 'fallback_required'); assert.equal(r.calls(), 0);
+  }
+});
+test('finalizer expiry across await is rejected without changing original timestamps', async () => {
+  const f = writerFixture(); f.candidateCatalog.candidates[1].quota_valid_until_ms = NOW + 2; rebind(f); let time = NOW;
+  const r = run(f, finalizerProposal(), {now:()=>time,complete:async()=>{time=NOW+3;return reply(finalizerProposal());}});
+  const failed=await r.result;assert.equal(failed.reason,'planner_host_finalizer_hint_not_currently_supported');
+  assert.equal(failed.proposal_budget.max_nodes,3);assert.equal(r.calls(),1);
+  assert.equal(f.candidateCatalog.candidates[1].quota_valid_until_ms, NOW + 2);
+});
+
+test('large writer envelope preserves 46read+46write tuples, three-read prep budget and separate writer hint under existing input cap', async () => {
+  const rows = Array.from({length:46},(_,i)=>row('cfg-read-'+i,{model:'gpt-6-model-'+i}));
+  rows.push(...Array.from({length:46},(_,i)=>row('cfg-write-'+i,{model:'gpt-6-model-'+i,scope:'workspace_write',
+    permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**']})));
+  const f=fixture(rows),request='q'.repeat(1825),policy='R'.repeat(18554);
+  f.hostProjection.request=request;f.hostProjection.objective=request;f.hostProjection.binding.request_sha256=sha(request);
+  f.hostProjection.binding.policy_sha256=sha(policy);f.ownerPolicy={text:policy,source_sha256:sha('large-writer-original'),projection_sha256:sha(policy)};
+  f.candidateCatalog.request_sha256=sha(request);f.candidateCatalog.owner_scope='workspace_write';
+  f.projection.requirements[0].text=request;rebind(f);
+  const p=finalizerProposal('cfg-write-0',3);for(const n of p.nodes)n.proposed_candidate_id='cfg-read-0';
+  const r=run(f,p),answer=await r.result;assert.equal(answer.status,'proposal');assert.equal(r.calls(),1);
+  const call=r.requests[0],data=JSON.parse(call.messages[0].content);
+  assert.equal(data.candidate_metadata.candidates.length,92);assert.equal(data.candidate_metadata.profiles.length,2);
+  assert.equal(data.budget.max_nodes,3);assert.equal(answer.proposal.final_output_proposal.host_finalizer_candidate_id,'cfg-write-0');
+  const bytes=Buffer.byteLength(call.systemPrompt)+Buffer.byteLength(call.messages[0].content)+Buffer.byteLength(JSON.stringify(call.responseFormat));
+  assert.ok(bytes<=65536,'complete writer prompt must fit existing cap');
+});

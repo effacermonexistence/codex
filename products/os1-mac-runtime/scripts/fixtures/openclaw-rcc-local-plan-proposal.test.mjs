@@ -181,3 +181,22 @@ test('decode is shape-only and cannot promote a foreign known-looking alias', ()
   assert.equal(decode(JSON.stringify(p)).kind, 'untrusted_local_plan_proposal');
   rejects(p, host(), 'unknown_material_alias');
 });
+
+test('optional host-finalizer tuple hint remains separate untrusted data; legacy shape unchanged', () => {
+  const legacy = run(); assert.equal(Object.hasOwn(legacy, 'host_finalizer_preference'), false);
+  const p = proposal(); p.final_output_proposal.host_finalizer_candidate_id = 'reference_c';
+  const compiled = run(p);
+  assert.deepEqual(compiled.host_finalizer_preference, {proposed_candidate_id:'reference_c'});
+  assert.equal(compiled.plan.nodes.length, 1); assert.equal(compiled.plan.nodes[0].scope, 'read_only');
+  assert.equal(Object.hasOwn(compiled.plan.nodes[0], 'candidate_id'), false); assert.equal(compiled.execution_authorized, false);
+  p.final_output_proposal.host_finalizer_candidate_id = null;
+  assert.deepEqual(run(p).host_finalizer_preference, {proposed_candidate_id:null});
+});
+for (const hint of [false, 1, {}, [], 'with spaces', ''])
+  test('reject invalid optional host-finalizer hint ' + JSON.stringify(hint), () => {
+    const p = proposal(); p.final_output_proposal.host_finalizer_candidate_id = hint; rejects(p);
+  });
+test('finalizer ID must exist in exact host candidate set even before Core checks writer eligibility', () => {
+  const p = proposal(); p.final_output_proposal.host_finalizer_candidate_id = 'unknown-writer';
+  rejects(p, host(), 'unknown_host_finalizer_candidate');
+});

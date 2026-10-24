@@ -115,7 +115,11 @@ export function decodeLocalPlanProposal(raw) {
   }
   for (const id of byID.keys()) visit(id);
   const f = p.final_output_proposal;
-  need(exact(f, ['mode', 'node_ids']) && ['direct_child', 'ordered_collection', 'integration_node'].includes(f.mode) &&
+  need(plain(f) && ['mode', 'node_ids'].every(k => own(f, k)) &&
+    Object.keys(f).every(k => ['mode', 'node_ids', 'host_finalizer_candidate_id'].includes(k)) &&
+    (!own(f, 'host_finalizer_candidate_id') || f.host_finalizer_candidate_id === null ||
+      typeof f.host_finalizer_candidate_id === 'string' && PID.test(f.host_finalizer_candidate_id)) &&
+    ['direct_child', 'ordered_collection', 'integration_node'].includes(f.mode) &&
     ids(f.node_ids, 8) && f.node_ids.length > 0 && f.node_ids.every(id => byID.has(id)), 'final_shape');
   if (f.mode === 'ordered_collection') {
     need(p.nodes.every(n => n.dependencies.length === 0) && f.node_ids.length === p.nodes.length &&
@@ -183,6 +187,9 @@ export function compileLocalPlanProposal(raw, hostProjection, expectedBinding) {
       context_refs: n.material_refs.map(alias => h.materials.get(alias))};
   });
   need([...h.requirements].every(id => mappedRequirements.has(id)), 'requirement_unmapped');
+  need(!own(p.final_output_proposal, 'host_finalizer_candidate_id') ||
+    p.final_output_proposal.host_finalizer_candidate_id === null ||
+    h.candidates.has(p.final_output_proposal.host_finalizer_candidate_id), 'unknown_host_finalizer_candidate');
   const byID = new Map(nodes.map(n => [n.id, n]));
   const depends = (node, id) => node.dependencies.some(d => d === id || depends(byID.get(d), id));
   const writers = nodes.filter(n => n.scope === 'workspace_write');
@@ -197,6 +204,11 @@ export function compileLocalPlanProposal(raw, hostProjection, expectedBinding) {
     plan: {schema: 1, task_id: h.binding.task_id, request_sha256: h.binding.request_sha256, nodes,
       final_node_id: p.final_output_proposal.mode === 'ordered_collection' ? null : nodeIDs.get(p.final_output_proposal.node_ids[0])},
     candidate_preferences: preferences, node_obligations: obligations,
+    // Untrusted separate hint only: never a model-owned writer node,
+    // bound candidate_id, filesystem grant or native ticket. Core must check
+    // writer-owner scope and current exact catalog again before using it.
+    ...(own(p.final_output_proposal, 'host_finalizer_candidate_id') ? {host_finalizer_preference: {
+      proposed_candidate_id: p.final_output_proposal.host_finalizer_candidate_id}} : {}),
     coverage: {status: 'interpretation_inferred', structurally_mapped_requirement_ids: [...h.requirements],
       semantic_coverage_verified: false},
     execution_authorized: false, quality_parity_verified: false,

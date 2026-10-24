@@ -54,8 +54,8 @@ model/effort combination or gain tools/rights through its proposal.
 
 With `candidateCatalog`, the local model receives input schema **3**,
 `kind: OS1_LOCAL_PLAN_INPUT_V3`, and compact `candidate_metadata` version
-`shared-candidate-profiles-v1`. The inspectable expanded projector uses
-`host-candidate-metadata-v1`. `compactLocalPlannerCandidates(expandedView)`
+`shared-candidate-profiles-v2`. The inspectable expanded projector uses
+`host-candidate-metadata-v2`. `compactLocalPlannerCandidates(expandedView)`
 losslessly factors byte-identical common facts into `profiles`; each candidate
 row retains exact ID, `profile_id`, model, effort and both configuration hashes.
 Different quota times/values, account, scope, tools or quality states never
@@ -85,8 +85,8 @@ Core's observer timeout must be aligned by the integrating owner.
 
 A pure full-input probe used the exact immutable Schedule430 task's18554-byte
 policy,1825-byte request and46-row catalog with a canned local completion.
-The lossless compact view was14791B; total serialized system+user+response
-schema input was46927B, below65536. All46 tuple rows survived in one shared
+The finalizer-aware lossless compact view was14823B; total serialized
+system+user+response schema input was48141B, below65536. All46 tuple rows survived in one shared
 profile. This establishes full-input construction, not actual local-model
 execution, fresh quota, routing quality or provider inclusion. The frozen
 snapshot and score artifacts were not changed.
@@ -134,3 +134,56 @@ read at <https://arxiv.org/abs/2506.22716>. Its joint model/compute/quality fram
 supports exposing the actual candidate choices rather than opaque IDs. Its
 reported experimental savings do not establish this implementation's efficacy;
 this patch neither imports its numbers nor invents a calibrated forecast.
+
+## Host-owned writer finalizer (optional proposal extension)
+
+The schema2 `final_output_proposal` still requires only `mode` and `node_ids`.
+It additionally permits optional `host_finalizer_candidate_id: string | null`.
+Old proposals without it are unchanged. The pure compiler returns a separate
+`host_finalizer_preference: {proposed_candidate_id}` only when the optional
+field exists. It must name an exact ID in the bound host candidate set, but
+this pure compiler does **not** establish writer authority or current support.
+It creates no model-owned writer node, bound candidate_id, path grant or ticket.
+
+Only informed input whose exact hashed host catalog has
+`owner_scope: workspace_write` enables `host_finalizer` planning context:
+
+```json
+{
+  "kind": "host_original_request_writer_v1",
+  "finalizer_count": 1,
+  "original_request_sha256": "<original bound request SHA>",
+  "preparation_scope": "read_only",
+  "max_preparation_nodes": 3,
+  "model_writer_nodes_allowed": false
+}
+```
+
+The effective preparation limit is min(3, caller max_nodes); response schema,
+visible input budget and returned proposal budget agree. The model proposes
+only read-only preparation. Core adds one original-request writer and passes
+it the required preparation results; the model cannot paraphrase that writer
+or borrow the prep nodes' read-only IDs as write authority.
+
+A non-null finalizer hint must reference a distinct supported writer tuple in
+the exact supplied catalog: workspace_write scope/permission, write+execute
+capabilities, current availability, positive current quota and no quality
+mismatch. Stale, future, unknown, missing-catalog or read-only owner inputs
+reject a non-null writer hint. Null or omission leaves Core's existing choice;
+it must not be described as a model-selected writer tuple. The helper checks
+original observation freshness again after await, without backdating times.
+
+Root must separately validate `compiled.host_finalizer_preference` against
+CURRENT host scope, catalog, original binding, explicit owner constraints,
+source/paths, budget and reservation gates before applying it. A copied or
+independently compiled proposal is still untrusted DATA, not a capability.
+This planner change does not enable the Core writer policy itself.
+
+Regressions cover optional-field absence/null/invalid types, unknown ID,
+read-only ID instead of writer, stale/future/unknown quota, invalid owner scope,
+legacy IDs-only mode, Local/chat writer rejection, non-write-capable row,
+3-prep/4-prep distinction, unchanged original intent and no bound writer node.
+A full-size synthetic18554Bpolicy+1825Brequest+46read/46write tuple input
+retains all92 rows in two profiles and fits65536 bytes with three canned prep
+nodes and one separate writer hint. This is an input/contract test only, not
+actual model execution, token fit, live writer behavior or parity proof.

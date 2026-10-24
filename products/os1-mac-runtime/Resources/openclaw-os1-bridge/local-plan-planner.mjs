@@ -27,6 +27,7 @@ A stale/future/unavailable/mismatched row cannot be proposed; leave the hint nul
 Compact candidate_metadata lists profiles plus candidates. Each candidate inherits exactly its profile_id's
 provider/surface/account/pool/tools/scope/availability/quota/unknown cost and performance fields. Its model,
 effort and exact ID stay on that candidate row. A shared profile is not an alternate candidate or permission.
+A non-null host_finalizer_candidate_id needs explicit host_finalizer context; it never creates a writer node.
 Candidate IDs are hints: existing host admission independently binds EVERY execution node.
 Use one node when decomposition adds overhead or loses coverage. Split only justified
 independent work; preserve dependencies and all required outputs in the final owner.
@@ -77,7 +78,7 @@ export const LOCAL_PLAN_RESPONSE_FORMAT = freeze({type: 'object', additionalProp
           required_output: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.required_output_bytes), check_refs: idsSchema(128),
           reason_code: stringSchema(LOCAL_PLAN_COMPACT_BUDGET.reason_bytes)}}},
     final_output_proposal: {type: 'object', additionalProperties: false, required: ['mode', 'node_ids'],
-      properties: {mode: {enum: ['direct_child', 'ordered_collection', 'integration_node']},
+      properties: {host_finalizer_candidate_id: {anyOf: [idSchema, {type: 'null'}]}, mode: {enum: ['direct_child', 'ordered_collection', 'integration_node']},
         node_ids: {...nodeIDsSchema(8), minItems: 1}}}},
 });
 const HASH = /^[a-f0-9]{64}$/;
@@ -181,8 +182,8 @@ function checkCompactProposal(proposal) {
 // Exact native catalog rows only, projected as DATA. This helper does not discover
 // providers, authenticate a caller, certify source truth, estimate quality, reserve
 // quota or grant execution. The current Core must supply its actual validated catalog.
-export const LOCAL_PLAN_CANDIDATE_METADATA_VERSION = 'host-candidate-metadata-v1';
-export const LOCAL_PLAN_CANDIDATE_COMPACT_VERSION = 'shared-candidate-profiles-v1';
+export const LOCAL_PLAN_CANDIDATE_METADATA_VERSION = 'host-candidate-metadata-v2';
+export const LOCAL_PLAN_CANDIDATE_COMPACT_VERSION = 'shared-candidate-profiles-v2';
 const candidateViews = new WeakSet();
 const CATALOG_REQUIRED = ['schema', 'task_id', 'request_sha256', 'candidates'];
 const CATALOG_OPTIONAL = ['exclusions', 'routing_intent', 'routing_intent_v2', 'model_tiers',
@@ -250,7 +251,8 @@ export function projectLocalPlannerCandidates({catalog, hostProjection: host, ex
   requireValue(plain(c) && CATALOG_REQUIRED.every(k => Object.hasOwn(c, k)) &&
     Object.keys(c).every(k => [...CATALOG_REQUIRED, ...CATALOG_OPTIONAL].includes(k)) &&
     c.schema === 1 && c.task_id === expected.task_id && c.request_sha256 === expected.request_sha256 &&
-    Array.isArray(c.candidates) && c.candidates.length > 0 && c.candidates.length <= 256,
+    Array.isArray(c.candidates) && c.candidates.length > 0 && c.candidates.length <= 256 &&
+    (c.owner_scope === undefined || ['read_only', 'workspace_write'].includes(c.owner_scope)),
     'planner_candidate_catalog_binding_invalid');
   requireValue(sha(stableJSON(c)) === expected.catalog_sha256, 'planner_candidate_catalog_hash_mismatch');
   const ids = new Set(), candidates = c.candidates.map(row => {
@@ -266,7 +268,7 @@ export function projectLocalPlannerCandidates({catalog, hostProjection: host, ex
       Array.isArray(row.allowed_paths) && row.allowed_paths.length <= 128 &&
       row.allowed_paths.every(path => text(path, 1024)) && new Set(row.allowed_paths).size === row.allowed_paths.length &&
       (row.scope !== 'read_only' || row.allowed_paths.length === 0) &&
-      (row.surface !== 'claude-chat' || row.scope === 'read_only' && row.tools.length === 0),
+      (!['claude-chat', 'local'].includes(row.surface) || row.scope === 'read_only' && row.tools.length === 0),
       'planner_candidate_capability_invalid');
     requireValue(['available', 'unavailable', 'unknown'].includes(row.availability) &&
       (row.quota_remaining_fraction === null || typeof row.quota_remaining_fraction === 'number' &&
@@ -299,7 +301,7 @@ export function projectLocalPlannerCandidates({catalog, hostProjection: host, ex
   requireValue(ids.size === host.candidate_ids.length && host.candidate_ids.every(id => ids.has(id)),
     'planner_candidate_id_set_mismatch');
   const view = freeze({schema: 1, version: LOCAL_PLAN_CANDIDATE_METADATA_VERSION, catalog_sha256: expected.catalog_sha256,
-    assessed_at_ms: now_ms, source: 'host_catalog_projection', execution_authorized: false,
+    assessed_at_ms: now_ms, owner_scope: c.owner_scope ?? null, source: 'host_catalog_projection', execution_authorized: false,
     quality_certificate: false, candidates});
   candidateViews.add(view); return view;
 }
@@ -318,7 +320,7 @@ export function compactLocalPlannerCandidates(view) {
     return {candidate_id, profile_id, model, effort, configuration_sha256, exact_config_sha256};
   });
   return freeze({schema: 1, version: LOCAL_PLAN_CANDIDATE_COMPACT_VERSION, catalog_sha256: view.catalog_sha256,
-    assessed_at_ms: view.assessed_at_ms, source: view.source, execution_authorized: false, quality_certificate: false,
+    assessed_at_ms: view.assessed_at_ms, owner_scope: view.owner_scope, source: view.source, execution_authorized: false, quality_certificate: false,
     profiles, candidates});
 }
 function validateCandidateHints(proposal, view) {
@@ -330,6 +332,26 @@ function validateCandidateHints(proposal, view) {
       row.availability.time_state === 'current' && ['sufficient', 'not_applicable'].includes(row.quota.state) &&
       row.performance.catalog_quality_state !== 'mismatch', 'planner_candidate_hint_not_currently_supported');
   }
+}
+
+const HOST_FINALIZER_PROMPT = `HOST-OWNED ORIGINAL WRITER
+When host_finalizer is present, propose READ-ONLY PREPARATION only: at most three nodes.
+Core will add exactly ONE final writer with the original request and all preparation outputs.
+Do not create a writer node, expand paths/permissions, or paraphrase the host writer's objective.
+Optionally set final_output_proposal.host_finalizer_candidate_id to one exact workspace_write
+candidate ID from candidate_metadata with current support/quota. This is a separate untrusted
+whole-tuple hint, NOT a preparation candidate or permission. Null/omission leaves Core selection.
+Read-only tasks or legacy IDs-only input do not support a non-null host-finalizer hint.`;
+function validateHostFinalizerHint(proposal, view) {
+  const hint = proposal.final_output_proposal.host_finalizer_candidate_id;
+  if (hint == null) return;
+  requireValue(view?.owner_scope === 'workspace_write', 'planner_host_finalizer_not_available');
+  const row = view.candidates.find(c => c.candidate_id === hint);
+  requireValue(row && row.provider !== 'local' && row.scope === 'workspace_write' && row.permission_profile === 'workspace_write' &&
+    row.tools.includes('write') && row.tools.includes('execute') &&
+    row.availability.state === 'available' && row.availability.time_state === 'current' &&
+    ['sufficient', 'not_applicable'].includes(row.quota.state) && row.performance.catalog_quality_state !== 'mismatch',
+  'planner_host_finalizer_hint_not_currently_supported');
 }
 
 function projectInput(host, expected, policy, projection, attempt, limits, candidateCatalog, now_ms) {
@@ -358,19 +380,27 @@ function projectInput(host, expected, policy, projection, attempt, limits, candi
   checkProposalRepresentation(host, materials, limits);
   const candidateMetadata = candidateCatalog === undefined ? null :
     compactLocalPlannerCandidates(projectLocalPlannerCandidates({catalog: candidateCatalog, hostProjection: host, expectedBinding: expected, now_ms}));
+  const hostFinalizer = candidateMetadata?.owner_scope === 'workspace_write';
+  requireValue(!hostFinalizer || host.scope === 'read_only' && host.allowed_owned_paths.length === 0,
+    'planner_host_finalizer_preparation_scope_invalid');
+  const maxPreparationNodes = hostFinalizer ? Math.min(3, limits.max_nodes) : limits.max_nodes;
   const structured = {schema: candidateMetadata === null ? 2 : 3,
     kind: candidateMetadata === null ? 'OS1_LOCAL_PLAN_INPUT_V2' : 'OS1_LOCAL_PLAN_INPUT_V3', task_id: expected.task_id,
     original_request: host.request, objective: host.objective, request_sha256: expected.request_sha256,
     scope: host.scope, allowed_owned_paths: [...host.allowed_owned_paths], requirements, materials,
     candidate_ids: [...host.candidate_ids], check_ids: [...host.check_ids], output_schema_version: 2,
     ...(candidateMetadata === null ? {} : {candidate_metadata: candidateMetadata}),
-    budget: {max_nodes: limits.max_nodes, max_parallel_workers: limits.max_workers,
+    ...(hostFinalizer ? {host_finalizer: {kind: 'host_original_request_writer_v1', finalizer_count: 1,
+      original_request_sha256: expected.request_sha256, preparation_scope: 'read_only',
+      max_preparation_nodes: maxPreparationNodes, model_writer_nodes_allowed: false}} : {}),
+    budget: {max_nodes: maxPreparationNodes, max_parallel_workers: limits.max_workers,
       max_plan_revisions: limits.max_revisions, max_output_tokens: limits.max_tokens}, revision: copy(attempt)};
   const userInput = JSON.stringify(structured);
-  const systemPrompt = 'HOST-BOUND OWNER POLICY PROJECTION\n' + policy.text + '\n\n' + COMPACT_PROMPT + '\n\n' + LOCAL_PLAN_KERNEL;
+  const systemPrompt = 'HOST-BOUND OWNER POLICY PROJECTION\n' + policy.text + '\n\n' + COMPACT_PROMPT + '\n\n' + LOCAL_PLAN_KERNEL +
+    (hostFinalizer ? '\n\n' + HOST_FINALIZER_PROMPT : '');
   requireValue(Buffer.byteLength(userInput) + Buffer.byteLength(systemPrompt) + Buffer.byteLength(JSON.stringify(LOCAL_PLAN_RESPONSE_FORMAT)) <= limits.input_bytes,
     'planner_input_budget_exceeded');
-  return {userInput, systemPrompt, materials, candidateMetadata};
+  return {userInput, systemPrompt, materials, candidateMetadata, hostFinalizer, maxPreparationNodes};
 }
 function checkedLimits(values) {
   const limits = {...LOCAL_PLAN_LIMITS, ...values};
@@ -395,7 +425,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
   return async function propose({hostProjection: host, expectedBinding: expected, ownerPolicy, projection,
     attempt = {index: 0, revision_of: null, correction_codes: []}, signal, observeResourceUsage, candidateCatalog} = {}) {
     const events = [], operationID = makeOperationID();
-    let entry, state, started = null, completionObservation = null, completionUnknown = false;
+    let entry, state, input, started = null, completionObservation = null, completionUnknown = false;
     let capture = rawCapture(null, limits.output_bytes);
     const event = (kind, reason, response = null) => {
       const clock = now();
@@ -418,8 +448,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       completion_observation: completionObservation,
       ...capture,
       kernel_version: LOCAL_PLAN_KERNEL_VERSION, kernel_sha256: LOCAL_PLAN_KERNEL_SHA256,
-      proposal_budget: proposalBudget(limits)});
-    let input;
+      proposal_budget: proposalBudget(input ? {...limits, max_nodes: input.maxPreparationNodes} : limits)});
     try {
       requireValue(exact(attempt, ['index', 'revision_of', 'correction_codes']) && [0, 1].includes(attempt.index) && attempt.index <= limits.max_revisions &&
         dense(attempt.correction_codes) && attempt.correction_codes.length <= 8 &&
@@ -454,8 +483,10 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       if (combined.aborted) { entry.settled = true; event('not_needed', 'planner_cancelled_before_call'); return fallback('planner_cancelled_before_call'); }
       const callTime = now(); requireValue(count(callTime), 'planner_clock_invalid');
       started = callTime; completionUnknown = true; event('started', null);
+      const responseFormat = input.hostFinalizer ? copy(LOCAL_PLAN_RESPONSE_FORMAT) : LOCAL_PLAN_RESPONSE_FORMAT;
+      if (input.hostFinalizer) responseFormat.properties.nodes.maxItems = input.maxPreparationNodes;
       const request = {model: LOCAL_PLAN_MODEL, messages: [{role: 'user', content: input.userInput}],
-        systemPrompt: input.systemPrompt, responseFormat: LOCAL_PLAN_RESPONSE_FORMAT,
+        systemPrompt: input.systemPrompt, responseFormat,
         maxTokens: limits.max_tokens, temperature: 0, reasoning: 'off', signal: combined, purpose: LOCAL_PLAN_PURPOSE};
       // Do NOT race the real completion against a timeout promise. Core tracks
       // this awaited callback until the actual underlying operation settles.
@@ -488,7 +519,9 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
         requireValue(Buffer.byteLength(response.text) <= limits.output_bytes, 'planner_output_budget_exceeded');
         requireValue(capture.raw_capture_status !== 'reasoning_withheld_hash_only', 'planner_reasoning_output_rejected');
         proposal = decodeLocalPlanProposal(response.text);
-        requireValue(proposal.nodes.length <= limits.max_nodes, 'planner_node_budget_exceeded');
+        requireValue(proposal.nodes.length <= input.maxPreparationNodes, 'planner_node_budget_exceeded');
+        if (input.hostFinalizer) requireValue(proposal.nodes.every(n => n.proposed_scope === 'read_only' &&
+          n.proposed_owned_paths.length === 0), 'planner_host_finalizer_preparation_scope_invalid');
         checkCompactProposal(proposal);
         compileLocalPlanProposal(response.text, host, expected);
         if (candidateCatalog !== undefined) {
@@ -496,8 +529,8 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
           // compare the exact binding, reserve capacity and admit the eventual ticket.
           const current = projectLocalPlannerCandidates({catalog: candidateCatalog, hostProjection: host,
             expectedBinding: expected, now_ms: now()});
-          validateCandidateHints(proposal, current);
-        }
+          validateCandidateHints(proposal, current); validateHostFinalizerHint(proposal, current);
+        } else validateHostFinalizerHint(proposal, null);
         const mapped = new Set(proposal.nodes.flatMap(n => n.material_refs));
         requireValue(input.materials.filter(m => m.required === true).every(m => mapped.has(m.id)), 'planner_required_material_unmapped');
         if (combined.aborted) throw Object.assign(new Error('planner_cancelled'), {code: 'planner_cancelled'});
@@ -510,7 +543,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
         output_sha256: outputSHA, execution_authorized: false, quality_parity_verified: false,
         semantic_coverage_verified: false, requires_host_material_review: input.materials.some(m => m.required === 'unknown'),
         kernel_version: LOCAL_PLAN_KERNEL_VERSION, kernel_sha256: LOCAL_PLAN_KERNEL_SHA256,
-        proposal_budget: proposalBudget(limits),
+        proposal_budget: proposalBudget({...limits, max_nodes: input.maxPreparationNodes}),
         owner_policy_source_sha256: ownerPolicy.source_sha256, owner_policy_projection_sha256: ownerPolicy.projection_sha256,
         classifier_view: 'exact_objective_and_host_projected_metadata_only', executor_view_supplied: false,
         operation_id: operationID, model_calls_started: 1, resource_events: [...events],
