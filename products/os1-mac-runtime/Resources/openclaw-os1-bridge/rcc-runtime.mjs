@@ -13,6 +13,7 @@ import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector
 import { captureRoutingOutcome, validateConfiguredInputObservation } from './routing-outcome-capture.mjs';
 import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
 import { isCalibratedRoutePredictor, isCalibratedRouteInference } from './calibrated-route-predictor.mjs';
+import { deriveExplicitParallelOwnerContract } from './local-plan-proposal.mjs';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
 // The pinned OpenClaw plugin must call this module from its long-lived Gateway
@@ -1221,13 +1222,15 @@ function hostScope(task, catalog) {
  * route test runs one node per route that still runs, keyed by its original
  * ordinal, with that route's own text; no model grades or rewrites either. A
  * big request runs as one session, as the native reference does (R8). */
-export function hostPlan(task, catalog) {
+export function hostPlan(task, catalog, {ownerExplicitParallel = false} = {}) {
   const scope = hostScope(task, catalog);
   const node = (id, instruction) => ({id, instruction, dependencies: [], kind: 'agent', scope,
     owned_paths: scope === 'workspace_write' ? ['**'] : [], context_refs: [...task.material_refs]});
   const base = {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256};
   const collection = ownerCollectionFor(task, catalog);
   if (ownerCollectionPlanEligible(task, collection)) return {...base, nodes: collection.obligations.map((o, i) => node(`owner_${i}`, o.instruction)), final_node_id: null};
+  const ownerParallel = ownerExplicitParallel ? ownerExplicitParallelFor(task, catalog) : null;
+  if (ownerParallel) return ownerExplicitParallelPlan(task, ownerParallel);
   if (task.mode !== 'explicit_routing_test') return {...base, nodes: [node('node_0', task.request)], final_node_id: 'node_0'};
   assert(modelTiers(catalog) !== null, 'explicit_route_catalog_untiered');
   const effective = effectiveExplicitRoutes(task);
@@ -1247,6 +1250,47 @@ function boundedAutoEligible(task, catalog) {
     !ownerCollectionFor(task, catalog) && catalog.task_contract == null &&
     Object.keys(catalog.class_certificates ?? {}).length === 0 && routingIntent(catalog)?.require_native_ceiling !== true &&
     task.policy?.projection_sha256 === task.policy_sha256 && HASH.test(task.policy?.source_sha256 ?? '');
+}
+// A closed owner-authored partition is task topology, not a model quality
+// claim. Derive afresh from the immutable original request and current host
+// scope. Certified/FULL/explicit/owner-collection paths keep their old contract.
+function ownerExplicitParallelFor(task, catalog) {
+  if (!boundedAutoEligible(task, catalog) || hostScope(task, catalog) !== 'read_only') return null;
+  const contract = deriveExplicitParallelOwnerContract(task.request, {scope: 'read_only', maxNodes: 4});
+  if (!contract || contract.request_sha256 !== task.request_sha256 ||
+      contract.units.some(unit => !boundedText(ownerExplicitUnitInstruction(contract, unit), 12_000))) return null;
+  return contract;
+}
+function ownerExplicitUnitInstruction(contract, unit) {
+  return `OS-1 HOST ASSIGNMENT: Perform only owner unit ${unit.label}. Core already owns the split and sibling schedule. Do not plan, spawn, delegate, or schedule sibling units. All constraints in the original request remain binding, including constraints outside this section. Return only this unit's output; do not merge or repeat other units.\n\nORIGINAL GLOBAL CONTEXT (constraints retained; scheduling already owned by Core):\n` +
+    contract.global_prefix.text + '\n\nASSIGNED OWNER UNIT (exact source):\n' + unit.exact_instruction;
+}
+function ownerExplicitParallelPlan(task, contract) {
+  return {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
+    nodes: contract.units.map(unit => ({id: unit.id, instruction: ownerExplicitUnitInstruction(contract, unit),
+      dependencies: [], kind: 'agent', scope: 'read_only', owned_paths: [], context_refs: [...task.material_refs]})),
+    final_node_id: null};
+}
+export function assertOwnerExplicitParallelPlan(plan, task, catalog) {
+  const contract = ownerExplicitParallelFor(task, catalog);
+  assert(contract && plan.final_node_id === null && plan.nodes.length === contract.units.length &&
+    plan.nodes.every((node, index) => {
+      const unit = contract.units[index];
+      return node.id === unit.id && node.instruction === ownerExplicitUnitInstruction(contract, unit) &&
+        node.kind === 'agent' && node.scope === 'read_only' && node.dependencies.length === 0 &&
+        node.owned_paths.length === 0 && stable(node.context_refs) === stable(task.material_refs);
+    }), 'owner_explicit_parallel_contract_mismatch');
+  return contract;
+}
+function ownerExplicitTuplePreference(compiled, unit) {
+  // Labels are only a hint locator, not proof the model covered the unit.
+  // A missing/merged/duplicated locator cannot erase topology or borrow a
+  // positional sibling hint. The existing bounded null-hint policy decides.
+  const matches = compiled.node_obligations.filter(obligation =>
+    obligation.proposal_node_id === unit.label || obligation.proposal_node_id === unit.id);
+  if (matches.length !== 1) return {proposed_candidate_id: null};
+  const preferences = compiled.candidate_preferences.filter(x => x.node_id === matches[0].node_id);
+  return preferences.length === 1 ? preferences[0] : {proposed_candidate_id: null};
 }
 function executionPolicyChoice(node, task, catalog, now, {hint = null, avoidIDs = [], avoidPool = null} = {}) {
   const intent = routingIntent(catalog);
@@ -1290,7 +1334,9 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
   // The model can propose read-only preparatory work, NEVER write authority.
   // A host-authorized writer owns one final original-request node and depends
   // on all preparation. No parallel native writers pretend to be path-sandboxed.
-  let proposed = writer ? compiled.plan : lockIndivisibleInstruction(compiled.plan, task).plan;
+  const ownerParallel = writer ? null : ownerExplicitParallelFor(task, catalog);
+  let proposed = ownerParallel ? ownerExplicitParallelPlan(task, ownerParallel) :
+    writer ? compiled.plan : lockIndivisibleInstruction(compiled.plan, task).plan;
   assertFinalOutputOwnership(proposed, task);
   if (writer) {
     const research = proposed.nodes.length > 1 ? proposed.nodes : [];
@@ -1304,7 +1350,8 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
     const finalWriter = writer && node.id === 'host_finalize';
     assert(node.kind === 'agent' && (finalWriter || node.scope === 'read_only' && node.owned_paths.length === 0) &&
       !Object.hasOwn(node, 'candidate_id'), 'bounded_plan_authority_upgrade');
-    const preference = finalWriter ? {proposed_candidate_id: finalizerHint} :
+    const preference = finalWriter ? {proposed_candidate_id: finalizerHint} : ownerParallel ?
+      ownerExplicitTuplePreference(compiled, ownerParallel.units.find(unit => unit.id === node.id)) :
       compiled.candidate_preferences.find(x => x.node_id === node.id);
     assert(preference, 'bounded_candidate_hint_missing');
     // Retain every original material for each branch. A model's omission is
@@ -2200,6 +2247,8 @@ function validatePlan(plan, task, catalog) {
     ownerCollectionPlanEligible(task, collection) && plan.final_node_id === null && plan.nodes.length === collection.obligations.length &&
     plan.nodes.every((n, i) => n.id === `owner_${i}` && ownerCollectionObligation(n, task, catalog) !== null),
   'owner_collection_plan_mismatch');
+  if (plan.nodes.some(node => node.id.startsWith('owner_parallel_')))
+    assertOwnerExplicitParallelPlan(plan, task, catalog);
   // Planner independence was checked before host writer serialization.
   // Candidate-only rebindings preserve the admitted graph/ownership.
   assertFinalOutputOwnership(plan, task, {collectionMayBeOrdered: true});
@@ -4189,7 +4238,8 @@ class RCCRuntime {
         }
       }
       if (!this.hostAutoPlan && !this._allowModelGeneration(taskID)) return;
-      const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog) :
+      const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog,
+        {ownerExplicitParallel: this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' && this.verifierRegistry.size === 0}) :
         await this.plan({task: immutable(admitted), catalog: immutable(catalog)}));
       // Writer serialization is a safety order, not authority to manufacture
       // the planner's final-output dependency coverage.
@@ -4231,6 +4281,13 @@ class RCCRuntime {
           'host_exact_request_shadow' : 'host_exact_request'
         : 'external_plan_callback';
       if (snapshot.owner_collection) snapshot.plan_provenance = 'host_owner_collection_v1';
+      if (plan.nodes.some(node => node.id.startsWith('owner_parallel_'))) {
+        const contract = assertOwnerExplicitParallelPlan(plan, admitted, catalog);
+        snapshot.owner_explicit_parallel = {schema: 1, contract: immutable(contract),
+          structural_owner_unit_coverage_verified: true, semantic_coverage_verified: false,
+          quality_certificate: false, local_proposal_admitted: liveAdopted};
+        snapshot.plan_provenance = 'host_owner_explicit_parallel_v1';
+      }
       if (calibrated) {
         snapshot.calibrated_route = {...calibrated.record, floor_provenance: snapshot.plan_provenance};
         snapshot.plan_provenance = 'host_calibrated_original_v1';
@@ -6420,7 +6477,16 @@ class RCCRuntime {
     // collection emit every labelled result; other DAGs have one final owner.
     let candidateOutput;
     try {
-      candidateOutput = snapshot.owner_collection ? ownerCollectionOutput(snapshot.plan, snapshot.children) :
+      const ownerParallel = snapshot.owner_explicit_parallel;
+      if (ownerParallel) {
+        const current = assertOwnerExplicitParallelPlan(snapshot.plan, admittedTask(snapshot), snapshot.catalog);
+        assert(stable(current) === stable(ownerParallel.contract), 'owner_explicit_parallel_source_changed');
+      }
+      candidateOutput = ownerParallel ? ownerParallel.contract.units.map(unit => {
+        const child = byID.get(unit.id);
+        assert(child?.state === 'completed' && typeof child.output === 'string', 'owner_explicit_parallel_output_missing');
+        return `${unit.label}: ${child.output}`;
+      }).join('\n\n') : snapshot.owner_collection ? ownerCollectionOutput(snapshot.plan, snapshot.children) :
         snapshot.plan.final_node_id ? byID.get(snapshot.plan.final_node_id)?.output :
         ordered.length === 1 ? ordered[0].output :
           ordered.map(c => `${c.id}: ${c.output}`).join('\n\n');
