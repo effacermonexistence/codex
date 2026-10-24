@@ -18,7 +18,12 @@ codex=main[main.index('            if appServer.ownsThreadWriter {\n            
 assert codex.index('onConfiguredInput?') < codex.index('turn = try appServer.runTurn(')
 assert codex.index('onConfiguredInput?') < codex.index('            } else {')
 assert codex.count('onConfiguredInput?') == 1  # no Desktop/foreign-writer capture
-claude=main[main.index('        let launch = try fullAccessPaths.isEmpty ?'):main.index('            onLaunch: {',main.index('        let launch = try fullAccessPaths.isEmpty ?'))]
+launch_anchor='        let launch = try readOnlyProtection.map {'
+assert main.count(launch_anchor) == 1
+claude=main[main.index(launch_anchor):main.index('            onLaunch: {',main.index(launch_anchor))]
+assert 'protectedPaths: $0.protectedPaths)' in claude
+assert '?? (fullAccessPaths.isEmpty ? (claude, arguments) :' in claude
+assert claude.index('onReadOnlyProtection?(readOnlyProtection)') < claude.index('onConfiguredInput?')
 assert claude.index('onConfiguredInput?') < claude.index('do { raw = try commandOutput(')
 assert 'instructions: configuredSystemInstructions' in claude
 assert main.index('let configuredSystemInstructions = arguments[systemIndex + 1]') < main.index('if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }')
