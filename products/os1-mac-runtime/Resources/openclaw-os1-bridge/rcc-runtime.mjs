@@ -1281,6 +1281,9 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
     compiled.node_obligations?.length === compiled.plan.nodes.length &&
     compiled.candidate_preferences?.length === compiled.plan.nodes.length, 'bounded_plan_binding_or_scope');
   const writer = hostScope(task, catalog) === 'workspace_write';
+  const finalizerHint = compiled.host_finalizer_preference?.proposed_candidate_id ?? null;
+  assert((finalizerHint === null || ID.test(finalizerHint)) && (writer || finalizerHint === null),
+    'bounded_finalizer_hint_without_write_authority');
   // The model can propose read-only preparatory work, NEVER write authority.
   // A host-authorized writer owns one final original-request node and depends
   // on all preparation. No parallel native writers pretend to be path-sandboxed.
@@ -1298,7 +1301,7 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
     const finalWriter = writer && node.id === 'host_finalize';
     assert(node.kind === 'agent' && (finalWriter || node.scope === 'read_only' && node.owned_paths.length === 0) &&
       !Object.hasOwn(node, 'candidate_id'), 'bounded_plan_authority_upgrade');
-    const preference = finalWriter ? {proposed_candidate_id: null} :
+    const preference = finalWriter ? {proposed_candidate_id: finalizerHint} :
       compiled.candidate_preferences.find(x => x.node_id === node.id);
     assert(preference, 'bounded_candidate_hint_missing');
     // Retain every original material for each branch. A model's omission is

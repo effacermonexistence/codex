@@ -67,6 +67,7 @@ python3 "$script_dir/test-os1-context-helper-dispatch.py" --source-only
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-composer-viewport.py"
 python3 "$script_dir/test-task-quality-wiring.py"
+python3 "$script_dir/test-rcc-native-display-observation-wiring.py"
 python3 "$script_dir/test-owner-retained-control.py"
 python3 "$script_dir/test-owner-retrospective-permit.py"
 python3 "$script_dir/test-versioned-readonly-contract.py"

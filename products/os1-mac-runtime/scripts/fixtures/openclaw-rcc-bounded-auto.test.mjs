@@ -158,3 +158,12 @@ test('oversize dependency is retained and never truncated or sent to a final wor
   const done=await h.run(q);assert.equal(h.tickets.length,1);assert.notEqual(done.state,'completed');
   assert.equal(h.runtime._load(q.task_id).children[0].output.length,65000);
 });
+
+test('separate finalizer hint chooses exact authorized writer tuple, never a read-only ID', async t=>{
+  const raw=JSON.parse(proposal());raw.nodes=raw.nodes.slice(0,1);raw.final_output_proposal={mode:'direct_child',node_ids:['a'],host_finalizer_candidate_id:'writer_hint'};
+  const h=await harness(t,{boundedAutoPlanning:true,catalog:async q=>{const c=catalog(q);c.owner_scope='workspace_write';c.request_class='writer';
+    c.candidates.push({...c.candidates[0],id:'writer_hint',scope:'workspace_write',permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**'],configuration_sha256:H('writer_hint')});return c;},
+    proposeLocalPlan:async()=>({status:'proposal',raw_proposal:JSON.stringify(raw),completion_outcome_unknown:false})});
+  const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
+  await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].candidate_id,'writer_hint');assert.equal(h.tickets[0].instruction,q.request);
+});

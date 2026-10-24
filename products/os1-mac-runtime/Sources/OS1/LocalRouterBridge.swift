@@ -102,15 +102,15 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "b823c8b450e254a3c3e16ccb85ed5ca1a351ab42705737e26a5e747d4e44aed6"
-    static let rccRuntimePluginSHA256 = "ee138f3c4907c74bf2f5e6b9a7c6697ca5c6f8e976605223abfa1dd7f929e301"
+    static let rccRuntimeModuleSHA256 = "175394ad2036e8856a18b38e0837d61686bae56248c0305f36736b3932147be0"
+    static let rccRuntimePluginSHA256 = "8aba63aafaf9d18fd0abf5478e617f1634c433fa7e5fc761bda3cf4bbc0306be"
     static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
     static let rccAdaptivePlanHostSHA256 = "c17457e2530e044f536bed02ab9a66ab2971e5d1e59e9a758f0b49eb6f972971"
     static let rccAdaptiveRoutingPolicySHA256 = "6325511ddeae2cff899d07688e178fff026551e54a28cab8edc26fe2751c3efa"
     static let rccJointRouteSelectorSHA256 = "6a13cbf6b1ac2a001bd641e56260cccad8e11c334a9d32fb0350c883705de326"
-    static let rccLocalPlanPlannerSHA256 = "21cdfa3c636d932498ee4c01d1035a229ebb1677f5042aae5e93ca7351e63f7a"
-    static let rccLocalPlanProposalSHA256 = "ae18aba5f02030372fd0a99993db4e9d53a9fa79d485b5caeb3c29c2f97eef59"
+    static let rccLocalPlanPlannerSHA256 = "0783cd675983c9a07a9743cadb8f8eed9624cc74f23f1601a5439a90dfd854e9"
+    static let rccLocalPlanProposalSHA256 = "68e8807f4d5d95b1fceb623b81990135eedea8d781a0cbbb8e849d0cee662afd"
     static let rccRoutingOutcomeSHA256 = "c2ff271ef5d71204f8787232451c10733961c36b79e987c88fabdbe7edc03ec1"
     static let rccRoutingOutcomeCaptureSHA256 = "6beb1dbdd0914c3f3d695912b949143f52b2b6c7089184bf5d90b2907f26c5aa"
     static let rccFrozenRouteArtifactsSHA256 = "87bbc5b0b6d7671bd88a727cd8f257b828a4c80d725632aec2362848bdb6bb93"
@@ -133,7 +133,7 @@ enum LocalRouterBridge {
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
     private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
     private static let pinnedPluginIndexSHA256 = "0c1a8eb96a252e2610e4964069f069dfc344dcb2d4bf76fb77b2585222bba0a5"
-    private static let pinnedPluginManifestSHA256 = "88225cf848505c070bbc0c6f771e665f8a7be991e76f51794d61272959bf56c3"
+    private static let pinnedPluginManifestSHA256 = "e6268cac45f2fdd885d50ebca7f410fbe7274fb9c21fe80652ecfb62d15a4cd7"
     private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
     #if arch(arm64)
     private static let pinnedArchitecture = "arm64"

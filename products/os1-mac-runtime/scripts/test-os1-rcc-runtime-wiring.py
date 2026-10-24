@@ -484,9 +484,12 @@ check("RCCRuntimeContract.decodeRecord(bytes)" in PROJECTION and
       "record.attemptID == attempt" in PROJECTION and "record.candidateID == candidate" in PROJECTION and
       "record.selectedConfig == selected" in PROJECTION and "record.nativeReceipt == path" in PROJECTION,
       "display witness cannot inherit a neighboring task, child, attempt, configuration or receipt")
-check("model: nil, effort: nil, nativeSessionID: native?.sessionID" in PROJECTION and
+check("model: display?.model, effort: display?.effort" in PROJECTION and
+      "model: child.selectedConfig?.model" not in PROJECTION and
+      "value.attemptID == attempt" in PROJECTION and
+      "RCCRuntimeContract.digest(receipt) == receiptSHA" in PROJECTION and
       "record.dispatchStage == .dispatched" in PROJECTION and "record.executionVerified" in PROJECTION,
-      "receipt provenance cannot promote selected model/effort into observed settings or task/reference quality")
+      "separately bound observed metadata, never selected model/effort or task/reference quality")
 # Build 376 regression: catalog freshness is judged after every native probe.
 catalog_fn = section(MAIN, "private func rccNativeCatalog(", "\n}\n")
 check("input.now = Date()" in catalog_fn and
