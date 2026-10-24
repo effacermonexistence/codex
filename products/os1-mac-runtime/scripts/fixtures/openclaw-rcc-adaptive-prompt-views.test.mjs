@@ -81,7 +81,7 @@ test('explicit unknown read status stays unknown, not converted to unread/read/z
 });
 test('public local kernel identity is separate from owner original/projection identities', async () => {
   const q = task(), p = prepared(q), {result, requests} = await run(p, q);
-  assert.equal(LOCAL_PLAN_KERNEL_VERSION, 'rcc-local-plan-kernel-v1'); assert.equal(H(LOCAL_PLAN_KERNEL), LOCAL_PLAN_KERNEL_SHA256);
+  assert.equal(LOCAL_PLAN_KERNEL_VERSION, 'rcc-local-plan-kernel-v2'); assert.equal(H(LOCAL_PLAN_KERNEL), LOCAL_PLAN_KERNEL_SHA256);
   assert.equal(result.kernel_version, LOCAL_PLAN_KERNEL_VERSION); assert.equal(result.kernel_sha256, LOCAL_PLAN_KERNEL_SHA256);
   assert.notEqual(result.kernel_sha256, result.owner_policy_projection_sha256);
   assert.notEqual(result.kernel_sha256, result.owner_policy_source_sha256);
