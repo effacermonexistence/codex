@@ -239,5 +239,47 @@ func runOwnerActionScopeFixtures() throws {
     try check(ScopeResolution.resolve(koreanFence.decomposedStringWithCanonicalMapping) == koreanResult, "NFC/NFD scope and prohibition equality")
     try check(ScopeResolution.resolve("승인받은 뒤에만 진행해. " + koreanFence).prohibitions.contains("승인받은 뒤에만 진행해"),
               "whole unresolved enclosing authority clause retained, not erased by a bounded filename match")
+
+    // Data immutability constrains implementation semantics; it is not a
+    // blanket filesystem ban beside an independently authorized file edit.
+    let inputValueWrites = [
+        "Modify labels.py. Do not change the input list.",
+        "Repair records.csv. Do not modify input arrays.",
+        "Fix config.yaml. Never alter the input dictionary.",
+        "labels.py 파일 하나만 수정하세요. 입력 리스트는 변경하지 마세요.",
+        "result.py만 고쳐. 입력 배열은 수정하지 마세요.",
+        "현재 폴더의 report.py 파일만 편집하십시오. 입력 객체를 변경하지 마십시오.",
+        "입력 인수는 변경하지 마세요. result.py만 수정해줘.",
+    ]
+    for request in inputValueWrites {
+        let result = ScopeResolution.resolve(request)
+        try check(result.scope == .workspaceWrite, "input VALUE fence is not a global file ban")
+        try check(result.prohibitions.contains(where: { $0.contains("input") || $0.contains("입력") }), "full input VALUE constraint retained")
+        try check(ScopeResolution.routingObjective(request, scope: result.scope).contains(request), "original handoff unchanged")
+        try check(ScopeResolution.resolve(request.decomposedStringWithCanonicalMapping) == result, "input VALUE fence normalization stable")
+    }
+    let noValueAuthority = [
+        "Do not change the input list.", "입력 리스트는 변경하지 마세요.",
+        "Explain normalize_labels; do not change the input list.",
+        "Modify labels.py. Do not change any files. Do not change the input list.",
+        "Do not change any files. Modify labels.py. Do not change the input list.",
+        "Read only. Modify labels.py. Do not change the input list.",
+        "labels.py 파일 하나만 수정하세요. 입력 리스트는 변경하지 마세요. 파일 수정하지 마세요.",
+        "Rename first.py to second.py. Do not change the input list.",
+        "Modify /etc/hosts. Do not change the input list.",
+        "Modify ../outside.py. Do not change the input list.",
+        "Modify labels.py. Do not change the input file.",
+        "Modify input.list. Do not change input.list.",
+        "Modify labels.py. Do not change the input list or any files.",
+        "Modify labels.py. Do not change the input list, and do not modify files.",
+        "If approved, modify labels.py. Do not change the input list.",
+        "Approval pending. Modify labels.py. Do not change the input list.",
+        "승인받으면 labels.py 파일 하나만 수정하세요. 입력 리스트는 변경하지 마세요.",
+        "labels.py 파일 하나만 수정하세요. 입력 리스트는 변경하지 마세요. 설명만 하세요.",
+        "Modify labels.py? Do not change the input list.",
+    ]
+    for request in noValueAuthority {
+        try check(ScopeResolution.resolve(request).scope == .readOnly, "input VALUE fence cannot invent file authority: " + request)
+    }
     print("Owner-action scope fixtures passed (\(checks) checks)")
 }

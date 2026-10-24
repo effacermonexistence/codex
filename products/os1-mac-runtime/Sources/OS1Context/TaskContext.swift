@@ -1340,11 +1340,58 @@ public struct ScopeResolution: Equatable, Sendable {
         return sentences.map { capabilityQuestion($0.trimmingCharacters(in: .whitespacesAndNewlines)) ? " question? " : $0 }.joined()
     }
 
+    // Input VALUE immutability is not a filesystem-wide no-write instruction.
+    // This view can narrow a negative clause only beside one independently
+    // closed relative-file edit. It never creates positive authority, guesses
+    // a filename from a data label, or alters the original executor request.
+    private static func inputValuePreservationView(_ source: String) -> (text: String, prohibitions: [String]) {
+        let condition = #"(?i)\b(?:if|unless|provided|assuming)\b|\b(?:pending|without|before)\s+(?:an?\s+)?(?:approval|permission)\b|\b(?:approval|permission)\s+(?:is\s+)?(?:pending|required|needed)\b|(?:허락|승인)[^.!?;\n]{0,32}(?:받으면|되면|받은\s*(?:후|뒤)(?:에만)?|전(?:에|까지)?|대기)"#
+        guard source.range(of: condition, options: .regularExpression) == nil else { return (source, []) }
+        let koreanEdit = #"^(?:(?:그|이|현재|작업)\s*폴더(?:\s*안)?의\s*)?("# + concretePathPattern + #")(?:\s*파일)?\s*(?:하나\s*)?만\s*(?:고쳐(?:\s*줘|주세요|라)?|(?:수정|변경|편집)\s*(?:해(?:\s*줘|주세요|라)?|하세요|하십시오))$"#
+        let dataFence = #"(?i)^(?:(?:do\s+not|don't|never)\s+(?:mutate|modify|change|alter)\s+(?:the\s+)?input\s+(?:lists?|arrays?|collections?|dictionaries|dictionary|arguments?|objects?|values?)|입력\s*(?:리스트|배열|컬렉션|사전|인수|객체|값)(?:은|는|을|를)?\s*(?:수정|변경|변형)\s*하지\s*마(?:세요|십시오)?)$"#
+        guard let english = try? NSRegularExpression(pattern: singleFileEditPattern),
+              let korean = try? NSRegularExpression(pattern: koreanEdit),
+              let fence = try? NSRegularExpression(pattern: dataFence) else { return (source, []) }
+        var clauses: [(Range<String.Index>, String)] = [], fileEdits = 0
+        var cursor = source.startIndex
+        while cursor < source.endIndex {
+            let end = clauseEnd(source, from: cursor)
+            let clause = String(source[cursor..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if end == source.endIndex || source[end] != "?" {
+                clauses.append((cursor..<end, clause))
+                let normalized = boundedFileDirectiveView(clause).trimmingCharacters(in: .whitespacesAndNewlines)
+                for (value, regex) in [(normalized, english), (clause, korean)] {
+                    let whole = NSRange(value.startIndex..<value.endIndex, in: value)
+                    if let match = regex.firstMatch(in: value, range: whole), match.range == whole,
+                       let operand = Range(match.range(at: 1), in: value) {
+                        let target = String(value[operand])
+                        if !target.hasPrefix("/"), !target.hasPrefix("~"),
+                           !target.contains(where: { "\"“”'‘’`\\*?[]{}".contains($0) }),
+                           target.split(separator: "/", omittingEmptySubsequences: false)
+                            .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) { fileEdits += 1 }
+                    }
+                }
+            }
+            guard end < source.endIndex else { break }
+            cursor = source.index(after: end)
+        }
+        guard fileEdits == 1 else { return (source, []) }
+        var view = source, prohibitions: [String] = []
+        for (range, clause) in clauses.reversed() {
+            let whole = NSRange(clause.startIndex..<clause.endIndex, in: clause)
+            guard let match = fence.firstMatch(in: clause, range: whole), match.range == whole else { continue }
+            prohibitions.append(clause)
+            view.replaceSubrange(range, with: " ")
+        }
+        return (view, Array(prohibitions.reversed()))
+    }
+
     public static func resolve(_ prompt: String) -> ScopeResolution {
         let value = OwnerIntentText.normalized(OwnerIntentText.authorityText(prompt))
-        let korean = koreanFileScopeView(value)
+        let valueFence = inputValuePreservationView(value)
+        let korean = koreanFileScopeView(valueFence.text)
         let coordinated = coordinatedFenceView(suppliedFileEditView(boundedFileDirectiveView(korean.text)))
-        var prohibitions = korean.prohibitions + coordinated.prohibitions
+        var prohibitions = valueFence.prohibitions + korean.prohibitions + coordinated.prohibitions
         var remaining = coordinated.text
         var protectedPaths = korean.protectedPaths + coordinated.protectedPaths
         var unresolvedTargetFence = korean.unresolved || coordinated.unresolved

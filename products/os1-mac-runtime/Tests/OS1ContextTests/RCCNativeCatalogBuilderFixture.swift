@@ -103,6 +103,42 @@ func runRCCNativeCatalogBuilderFixtures() throws {
               explicitHostRows.admission?.requestClass == .readonlyLookup,
               "the explicit host read-only boundary beats a write-oriented owner hint")
 
+    // Natural writer failure / CODE-OUTPUT control. These are test data,
+    // never runtime marker rules or permission from a registered contract.
+    let inputValueWriter = #"""
+    OS1_LIVE_AUTO_20261023_B 구현 진단. 작업 폴더는 /tmp/fixture-workspace입니다. 그 폴더의 labels.py 파일 하나만 수정하세요. normalize_labels(values)는 문자열 리스트를 받아 앞뒤 공백을 strip하고 casefold로 정규화하며, 빈 값은 버리고 중복은 첫 등장 순서만 남겨야 합니다. 입력 리스트는 변경하지 마세요. import나 외부 패키지는 필요 없습니다. 다른 파일·네트워크·배포는 건드리지 마세요. 수정 후 아래 경우를 Python으로 확인하고 변경 파일과 테스트 결과만 보고하세요: 빈 리스트, 공백 값, 대소문자 중복, Straße/STRASSE 중복.
+    """#
+    let actualCodeOutputControl = #"""
+    OS1_LIVE_AUTO_20261023_A3 진단. 아래 A와 B는 서로 독립된 작업이므로 각각 별도 하위 작업으로 나눠 병렬로 처리하세요. 도구·파일·웹을 사용하지 말고, 각 결과를 A/B로 구분해 원문 그대로 전달하세요.
+
+    A — 제공된 기록만 사용하세요. [S1] 2026-10-23T08:00:00Z: Cobalt preview는 보안 검사 통과 후에만 허용되며 production은 허가되지 않았다. [S2] 08:10:00Z: 보안 검사는 미통과이고 배포 작업은 시작되지 않았다. [S3] 08:40:00Z: 지연된 알림이 preview eligible이라고 표시했으나 내부 자격 상태가 처음 바뀐 시각은 기록에 없다. 제공된 기록을 08:45:00Z에 평가하세요. preview_completed는 이 자료가 preview 완료를 입증하는지, production_authorized는 이 자료에 production 허가가 있는지를 뜻합니다. preview_completed, production_authorized, internal_eligibility_change_time, notice_time 네 필드를 가진 JSON 객체 하나만 답하세요. 미확인 시각은 null이며 알림 시각을 내부 상태 생성 시각으로 바꾸지 마세요.
+
+    B — 다음 Python 함수를 순수 함수로 고친 코드만 답하세요. 입력은 문자열 리스트입니다. 앞뒤 공백을 제거하고 casefold()로 정규화하고, 정규화 후 빈 값은 제외하고, 중복은 첫 등장 순서만 남기세요. 입력 리스트를 수정하지 마세요. import·파일·도구 사용 없이 normalize_labels 함수 하나만 python 코드 블록으로 주세요.
+    def normalize_labels(values):
+        return [value.strip().lower() for value in values]
+    """#
+    for request in [inputValueWriter, "Modify labels.py. Do not change the input list."] {
+        var value = input(request, chat: false)
+        value.ownerScope = .workspaceWrite
+        value.taskContract = nil
+        let result = try B.build(value)
+        try check(result.admission?.requestClass == .writer &&
+            result.candidates.contains { $0["scope"] as? String == "workspace_write" },
+            "ordinary file writer plus input-value immutability gets writer rows without contract")
+        value.requireReadOnly = true
+        let restricted = try B.build(value)
+        try check(restricted.admission?.requestClass == .readonlyLookup &&
+            restricted.candidates.allSatisfy { $0["scope"] as? String == "read_only" },
+            "hard host read-only still wins over an input-value writer")
+    }
+    var codeOnly = input(actualCodeOutputControl, chat: false)
+    codeOnly.ownerScope = .workspaceWrite
+    let codeOnlyCatalog = try B.build(codeOnly)
+    try check(ScopeResolution.resolve(actualCodeOutputControl).scope == .readOnly &&
+        codeOnlyCatalog.admission?.requestClass == .readonlyLookup &&
+        codeOnlyCatalog.candidates.allSatisfy { $0["scope"] as? String == "read_only" },
+        "actual A3 CODE-OUTPUT task stays read-only; data-code repair is not file-edit authority")
+
     // Closed Korean exact-file fences work on a cold start, WITHOUT a
     // registered quality contract or an ownerScope override. Catalog rows
     // and admission class must consume the same shared scope resolution.
