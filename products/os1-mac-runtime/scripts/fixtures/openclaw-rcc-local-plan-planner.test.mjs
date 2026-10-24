@@ -47,7 +47,13 @@ test('one canned local proposal preserves exact objective and returns only untru
   assert.equal(Object.hasOwn(r, 'plan'), false); assert.equal(Object.hasOwn(r, 'candidate_id'), false);
   assert.equal(call.model, LOCAL_PLAN_MODEL); assert.equal(call.purpose, LOCAL_PLAN_PURPOSE);
   assert.equal(call.maxTokens, 1536); assert.equal(call.temperature, 0); assert.equal(call.reasoning, 'off');
-  assert.deepEqual(call.responseFormat, LOCAL_PLAN_RESPONSE_FORMAT); assert.ok(call.signal instanceof AbortSignal);
+  const expectedSchema = structuredClone(LOCAL_PLAN_RESPONSE_FORMAT), fields = expectedSchema.properties.nodes.items.properties;
+  fields.requirement_refs = {type: 'array', uniqueItems: true, minItems: 1, maxItems: 1, items: {enum: ['r1']}};
+  fields.material_refs = {type: 'array', uniqueItems: true, maxItems: 1, items: {enum: ['m1']}};
+  fields.check_refs = {type: 'array', uniqueItems: true, maxItems: 0, items: {...LOCAL_PLAN_RESPONSE_FORMAT.properties.nodes.items.properties.check_refs.items}};
+  fields.proposed_scope = {const: 'read_only'};
+  fields.proposed_owned_paths = {type: 'array', maxItems: 0, uniqueItems: true, items: {type: 'string', minLength: 1, maxLength: 1024}};
+  assert.deepEqual(call.responseFormat, expectedSchema); assert.ok(call.signal instanceof AbortSignal);
   const data = JSON.parse(call.messages[0].content);
   assert.equal(data.original_request, i.hostProjection.request); assert.equal(data.objective, i.hostProjection.objective);
   assert.deepEqual(data.candidate_ids, i.hostProjection.candidate_ids);
@@ -302,8 +308,8 @@ test('compact v2 contract bounds routing prose without changing compiler keys or
   assert.equal(s.properties.nodes.items.properties.required_output.maxLength, 96);
   assert.equal(s.properties.nodes.items.properties.reason_code.maxLength, 48);
   assert.equal(s.properties.nodes.items.properties.proposal_node_id.maxLength, 24);
-  assert.equal(s.properties.nodes.items.properties.requirement_refs.items.pattern,
-    '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$');
+  assert.deepEqual(s.properties.nodes.items.properties.requirement_refs.items.enum, ['r1']);
+  assert.equal(s.properties.nodes.items.properties.requirement_refs.maxItems, 1);
   assert.equal(r.proposal_budget.version, LOCAL_PLAN_COMPACT_BUDGET.version);
   assert.equal(r.proposal_budget.prompt_sha256, LOCAL_PLAN_COMPACT_PROMPT_SHA256);
   assert.equal(r.kernel_sha256, LOCAL_PLAN_KERNEL_SHA256); assert.ok(call.systemPrompt.endsWith(LOCAL_PLAN_KERNEL));

@@ -30,3 +30,17 @@ P1 rejection, and exact conditional schema forwarding to the existing tools-free
 completion callback. Installed OpenClaw/Ollama source forwarding and converter
 support require separate source inspection without making a new model call. Schema source
 and synthetic success do not prove that a new live generation will be valid.
+
+## Already admitted host fields in generation schema
+
+Each request gets a detached frozen schema derived only after host projection
+validation. Read-only tasks and host-writer preparation get constant read-only
+scope and zero path hints. Requirement/material/check references use the exact
+host ID enums; an empty material/check set permits only an empty array. A
+legitimate legacy write host retains its allowed read/write scope and only its
+exact admitted path hints. This is not a claim that all writers are read-only.
+
+The exact per-request schema, including its enums, is included in the existing
+input-byte bound and passed intact to the same completion callback. The strict
+P1 compiler still rejects unsupported replies if a provider ignores generation
+constraints. No failed actual writer reply is normalized or re-adopted.

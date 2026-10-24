@@ -185,6 +185,28 @@ function checkProposalRepresentation(host, materials, limits) {
   requireValue(Buffer.byteLength(JSON.stringify(minimum)) <= limits.output_bytes,
     'planner_proposal_budget_unrepresentable');
 }
+// Generation constraints follow the already validated host projection. This
+// never widens P1, certifies coverage, chooses a route, or grants a path.
+function generationResponseFormat(host, maxNodes, hostFinalizer) {
+  const schema = copy(LOCAL_PLAN_RESPONSE_FORMAT), properties = schema.properties.nodes.items.properties;
+  schema.properties.nodes.maxItems = maxNodes;
+  const refs = (ids, nonempty = false) => ({type: 'array', uniqueItems: true,
+    ...(nonempty ? {minItems: 1} : {}), maxItems: ids.length,
+    items: ids.length ? {enum: [...ids]} : {...idSchema}});
+  properties.requirement_refs = refs(host.requirement_ids, true);
+  properties.material_refs = refs(Object.keys(host.material_aliases));
+  properties.check_refs = refs(host.check_ids);
+  if (hostFinalizer || host.scope === 'read_only') {
+    properties.proposed_scope = {const: 'read_only'};
+    properties.proposed_owned_paths = {type: 'array', maxItems: 0, uniqueItems: true, items: stringSchema(1024)};
+  } else {
+    // A legitimate write host may still request a read-only child. Only its
+    // exact host-admitted path hints can be generated, never invented paths.
+    properties.proposed_owned_paths = {type: 'array', maxItems: host.allowed_owned_paths.length,
+      uniqueItems: true, items: host.allowed_owned_paths.length ? {enum: [...host.allowed_owned_paths]} : stringSchema(1024)};
+  }
+  return freeze(schema);
+}
 function proposalBudget(limits) {
   return {version: LOCAL_PLAN_COMPACT_BUDGET.version, prompt_sha256: LOCAL_PLAN_COMPACT_PROMPT_SHA256,
     max_output_tokens: limits.max_tokens, max_output_bytes: limits.output_bytes, max_time_ms: limits.timeout_ms,
@@ -504,6 +526,7 @@ function projectInput(host, expected, policy, projection, attempt, limits, candi
       max_plan_revisions: limits.max_revisions, max_output_tokens: limits.max_tokens}, revision: copy(attempt)};
   const wire = candidateMetadata === null ? structured : packLocalPlannerInputV4(structured);
   const userInput = JSON.stringify(wire);
+  const responseFormat = generationResponseFormat(host, maxPreparationNodes, hostFinalizer);
   const inputRepresentation = freeze({version: candidateMetadata === null ? 'legacy-v2' : LOCAL_PLAN_INPUT_REPRESENTATION,
     wire_schema: wire.schema, expanded_schema: structured.schema, lossless_roundtrip_verified: candidateMetadata !== null,
     wire_input_sha256: sha(userInput), expanded_input_sha256: sha(JSON.stringify(structured)),
@@ -512,9 +535,9 @@ function projectInput(host, expected, policy, projection, attempt, limits, candi
     ...(candidateMetadata === null ? {} : {wire_metadata_sha256: sha(stableJSON(wire.candidate_metadata))})});
   const systemPrompt = 'HOST-BOUND OWNER POLICY PROJECTION\n' + policy.text + '\n\n' + COMPACT_PROMPT + '\n\n' + LOCAL_PLAN_KERNEL +
     (hostFinalizer ? '\n\n' + HOST_FINALIZER_PROMPT : '');
-  requireValue(Buffer.byteLength(userInput) + Buffer.byteLength(systemPrompt) + Buffer.byteLength(JSON.stringify(LOCAL_PLAN_RESPONSE_FORMAT)) <= limits.input_bytes,
+  requireValue(Buffer.byteLength(userInput) + Buffer.byteLength(systemPrompt) + Buffer.byteLength(JSON.stringify(responseFormat)) <= limits.input_bytes,
     'planner_input_budget_exceeded');
-  return {userInput, systemPrompt, materials, candidateMetadata, hostFinalizer, maxPreparationNodes, inputRepresentation};
+  return {userInput, systemPrompt, materials, candidateMetadata, hostFinalizer, maxPreparationNodes, inputRepresentation, responseFormat};
 }
 function checkedLimits(values) {
   const limits = {...LOCAL_PLAN_LIMITS, ...values};
@@ -599,10 +622,8 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       if (combined.aborted) { entry.settled = true; event('not_needed', 'planner_cancelled_before_call'); return fallback('planner_cancelled_before_call'); }
       const callTime = now(); requireValue(count(callTime), 'planner_clock_invalid');
       started = callTime; completionUnknown = true; event('started', null);
-      const responseFormat = input.hostFinalizer ? copy(LOCAL_PLAN_RESPONSE_FORMAT) : LOCAL_PLAN_RESPONSE_FORMAT;
-      if (input.hostFinalizer) responseFormat.properties.nodes.maxItems = input.maxPreparationNodes;
       const request = {model: LOCAL_PLAN_MODEL, messages: [{role: 'user', content: input.userInput}],
-        systemPrompt: input.systemPrompt, responseFormat,
+        systemPrompt: input.systemPrompt, responseFormat: input.responseFormat,
         maxTokens: limits.max_tokens, temperature: 0, reasoning: 'off', signal: combined, purpose: LOCAL_PLAN_PURPOSE};
       // Do NOT race the real completion against a timeout promise. Core tracks
       // this awaited callback until the actual underlying operation settles.

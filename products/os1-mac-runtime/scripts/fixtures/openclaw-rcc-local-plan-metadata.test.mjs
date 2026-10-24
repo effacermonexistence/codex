@@ -260,6 +260,8 @@ test('writer owner supplies explicit host-owned writer context, separate current
     model_writer_nodes_allowed: false});
   assert.equal(input.candidate_metadata.owner_scope, 'workspace_write');
   assert.equal(input.budget.max_nodes, 3); assert.equal(r.requests[0].responseFormat.properties.nodes.maxItems, 3);
+  assert.deepEqual(r.requests[0].responseFormat.properties.nodes.items.properties.proposed_scope, {const: 'read_only'});
+  assert.equal(r.requests[0].responseFormat.properties.nodes.items.properties.proposed_owned_paths.maxItems, 0);
   assert.ok(r.requests[0].systemPrompt.includes('Core will add exactly ONE final writer'));
   assert.equal(result.proposal_budget.max_nodes, 3); assert.equal(result.proposal.nodes[0].proposed_scope, 'read_only');
 });
