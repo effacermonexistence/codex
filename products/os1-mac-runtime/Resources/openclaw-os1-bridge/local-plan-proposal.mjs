@@ -52,6 +52,9 @@ export function deriveExplicitParallelOwnerContract(request, options = {}) {
         options.scope !== 'read_only' || !text(request, 12000)) return null;
     const maximum = own(options, 'maxNodes') ? options.maxNodes : 4;
     if (!Number.isSafeInteger(maximum) || maximum < 2 || maximum > 4) return null;
+    // A late closed authority condition is no less binding than a prefix one.
+    // Generic `if` in supplied code/data is NOT an authority condition here.
+    if (/\b(?:only\s+after|after\s+(?:obtaining|receiving))\s+(?:an?\s+)?(?:approval|permission|authorization|authorisation|consent)\b|\b(?:if|unless|once|when)\s+(?:explicitly\s+)?(?:approved|authorized|authorised|permitted)\b|(?:승인|허락|허가)\s*(?:받으면|후에만|받은\s*(?:후|뒤)(?:에만)?)/i.test(request.normalize('NFC'))) return null;
     // An owner directive cannot be recovered by interpreting quoted/data/code
     // headers as commands. We deliberately abstain on these unsupported forms.
     if (/```|~~~|^[ \t]*>|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/m.test(request)) return null;

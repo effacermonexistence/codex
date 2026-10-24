@@ -17,7 +17,7 @@ descriptor. Concatenating prefix and sections reconstructs the original request
 byte-for-byte. No source strings are rewritten or normalized in the result.
 
 Unknown forms return `null`: absent/negated parallel intent, dependent or serial
-prefix, unresolved prefix approval/authority conditions, recognized cross-unit
+prefix, unresolved prefix or recognized late approval/authority conditions, recognized cross-unit
 completion/result dependencies, missing/duplicate/conflicting labels, quoted/reporting/data prefix,
 fenced or blockquoted input, an ambiguous/mixed filesystem mutation, more than
 the host's two-to-four node bound, or any effective scope other than read-only.
