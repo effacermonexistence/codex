@@ -174,14 +174,62 @@ public enum RCCNativeDisplayStore {
             a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec, a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec else { return nil }
         return data
     }
-    /// The native persistence path was already verified by the transport.
-    /// Read only this exact regular file, no symlink, bounded and stable.
-    public static func readNativeMetadata(_ path: String) -> Data? {
-        let url = URL(fileURLWithPath: path)
-        guard url.standardizedFileURL.path == path, url.resolvingSymlinksInPath().path == path else { return nil }
-        let fd = open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    // Provider-owned native logs can legitimately be0644. They are not OS-1
+    // sidecars/receipts, whose separate read() custody remains owner-only0600.
+    // This predicate grants no path or backend authority; callers still bind
+    // the transport-verified exact source to one session/turn/receipt below.
+    private static func nativeMetadataFileIsSafe(_ value: stat, maximum: Int64, expectedUID: uid_t) -> Bool {
+        value.st_mode & S_IFMT == S_IFREG && value.st_uid == expectedUID && value.st_nlink == 1 &&
+        value.st_mode & 0o022 == 0 && value.st_mode & 0o111 == 0 && value.st_mode & 0o7000 == 0 &&
+        value.st_size > 0 && value.st_size <= maximum
+    }
+    private static func readOwnedNativeMetadata(_ name: String, directory: Int32, maximum: Int) -> Data? {
+        let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return nil }; defer { close(fd) }
-        return read(url.lastPathComponent, directory: fd, maximum: 16_000_000)
+        var before = stat()
+        guard fstat(fd, &before) == 0,
+              nativeMetadataFileIsSafe(before, maximum: Int64(maximum), expectedUID: getuid()) else { return nil }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 16384)
+        while true {
+            let n = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            if n < 0 { if errno == EINTR { continue }; return nil }; if n == 0 { break }
+            guard data.count + n <= maximum else { return nil }; data.append(contentsOf: buffer.prefix(n))
+        }
+        var after = stat(), named = stat()
+        guard fstat(fd, &after) == 0, fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              nativeMetadataFileIsSafe(after, maximum: Int64(maximum), expectedUID: getuid()),
+              nativeMetadataFileIsSafe(named, maximum: Int64(maximum), expectedUID: getuid()),
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_dev == named.st_dev, before.st_ino == named.st_ino,
+              before.st_mode == after.st_mode, before.st_mode == named.st_mode,
+              before.st_size == data.count, before.st_size == after.st_size, before.st_size == named.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              before.st_mtimespec.tv_sec == named.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == named.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == named.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == named.st_ctimespec.tv_nsec else { return nil }
+        return data
+    }
+    /// Only the exact persistence path already verified by the native transport.
+    /// Read-only provider metadata policy allows0600/0644, never foreign-owned,
+    /// writable-by-others, linked, special, aliased or changed source. It does
+    /// not mutate provider files or weaken private OS-1 receipt/sidecar custody.
+    public static func readNativeMetadata(_ path: String) -> Data? {
+        let url = URL(fileURLWithPath: path), parent = url.deletingLastPathComponent()
+        guard url.standardizedFileURL.path == path, url.resolvingSymlinksInPath().path == path else { return nil }
+        let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }; defer { close(fd) }
+        var before = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFDIR,
+              before.st_uid == getuid(), before.st_mode & 0o022 == 0,
+              let data = readOwnedNativeMetadata(url.lastPathComponent, directory: fd, maximum: 16_000_000) else { return nil }
+        var after = stat(), named = stat()
+        guard fstat(fd, &after) == 0, lstat(parent.path, &named) == 0,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_dev == named.st_dev, before.st_ino == named.st_ino,
+              before.st_mode == after.st_mode, before.st_mode == named.st_mode,
+              before.st_uid == after.st_uid, before.st_uid == named.st_uid,
+              url.resolvingSymlinksInPath().path == path else { return nil }
+        return data
     }
 
     public final class Publisher: @unchecked Sendable {
