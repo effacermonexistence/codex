@@ -178,7 +178,10 @@ public enum RCCRuntimeProjection {
         let root = ParallelAgentTask.Node(id: rootID, title: "OpenClaw task", role: .coordinator,
             state: rootState, startedAt: rootStarted, finishedAt: rootFinished,
             progressText: rootDescription,
-            resultSummary: core.result == nil ? nil : "Returned output is retained in the original task; this graph is not a quality certificate.",
+            // K12b: a partial answer says what it covers: the counts first and
+            // at most three ids (public text redaction keeps a short prefix).
+            resultSummary: core.result.map { result in (result.partial.map { $0.coverage.label(maximumIDs: 3) + " · " } ?? "") +
+                "Returned output is retained in the original task; this graph is not a quality certificate." },
             failureSummary: [.held, .failed].contains(core.state) ? "Core held the task; original request and evidence are preserved." : nil)
         var nodes = [root]
         for (index, child) in core.children.enumerated() {

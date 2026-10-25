@@ -13865,6 +13865,8 @@ func os1DeliveredCorrectionIDs(submissionID: String?, mailbox: ExecutionSteering
 func printRunSummary(_ summary: RunSummary) {
     for notice in summary.routingNotices ?? [] { print("[routing] " + notice) }
     if let core = summary.rccRuntime {
+        // K12b: a partial answer names what it covers before its output.
+        if let partial = core.result?.partial { print("[" + partial.coverage.label() + "]") }
         if let result = core.result, !result.output.isEmpty { print(result.output) }
         print("\n[OpenClaw task \(core.state.rawValue) · execution/quality/reference parity recorded separately]")
         if let error = core.error { print("Preserved state: " + error) }
@@ -18214,6 +18216,7 @@ func usage() {
       os1 run --workspace /path/to/project --prompt "task"
       os1 run --workspace /path/to/project --prompt "hello" --forbid-model-generation
       os1 run --workspace /path/to/project --request-file task.txt --max-native-dispatches 4 --max-parallel 2
+              [--result-contract-version 1|2]
               [--provider auto|codex|chatgpt|claude|claude-chat]
               [--codex-session-id UUID] [--claude-session-id UUID]
               [--codex-capacity 0...100] [--claude-capacity 0...100]
@@ -18697,6 +18700,7 @@ struct OS1Main {
                 var forbidModelGeneration = false
                 var maxNativeDispatches: Int?
                 var maxParallel: Int?
+                var resultContractVersion: Int?
                 var parallelWriteGrantPath: String?
                 var rccTaskID: String?
                 var routingIntentPolicyVersion: String?
@@ -18709,6 +18713,8 @@ struct OS1Main {
                         maxNativeDispatches = try RCCRunBudgetOptions.nativeDispatches(arguments[index + 1]); index += 2
                     case "--max-parallel" where index + 1 < arguments.count && maxParallel == nil:
                         maxParallel = try RCCRunBudgetOptions.parallelism(arguments[index + 1]); index += 2
+                    case "--result-contract-version" where index + 1 < arguments.count && resultContractVersion == nil:
+                        resultContractVersion = try RCCRunBudgetOptions.resultContractVersion(arguments[index + 1]); index += 2
                     case "--rcc-task-id" where index + 1 < arguments.count:
                         guard rccTaskID == nil, UUID(uuidString: arguments[index + 1]) != nil else { throw OS1Error.message("Invalid RCC task identity") }
                         rccTaskID = arguments[index + 1].lowercased(); index += 2
@@ -18838,7 +18844,8 @@ struct OS1Main {
                             forbidModelGeneration: forbidModelGeneration,
                             maxNativeDispatches: maxNativeDispatches, maxParallel: maxParallel,
                             routingIntentPolicyVersion: routingIntentPolicyVersion,
-                            capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord)
+                            capacityPlan: capacityPlan, routingNotices: routingNotices, interpreterRecord: interpreterRecord,
+                            resultContractVersion: resultContractVersion)
                     } catch {
                         // Transport/policy failure is NOT permission for an old
                         // OS-1 coordinator to redispatch this request.
@@ -20706,7 +20713,7 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
     forbidModelGeneration: Bool = false, maxNativeDispatches: Int? = nil, maxParallel: Int? = nil,
     routingIntentPolicyVersion: String? = nil,
     capacityPlan: RCCRuntimeContract.CapacityPlan? = nil, routingNotices priorNotices: [String] = [],
-    interpreterRecord: InterpretedRoutingRecord? = nil) async throws -> RunSummary {
+    interpreterRecord: InterpretedRoutingRecord? = nil, resultContractVersion: Int? = nil) async throws -> RunSummary {
     try RCCRoutingIntentIngress.validate(routingIntentPolicyVersion, mode: .auto,
         provider: requestedSurface.rawValue)
     let owner = try loadCurrentOwnerPolicy(), cfg = try RuntimeConfig.load()
@@ -20745,6 +20752,9 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
             projectionSHA256: sha256Hex(Data(text.utf8)), text: text), hostContext: host)
     try RCCRoutingIntentIngress.bindRequest(&candidateRequest, version: routingIntentPolicyVersion,
         provider: surface.rawValue)
+    // K12b: the result contract this run reads; nil (a direct CLI run, or a
+    // submission an older App build saved) stays v1 under the same task ID.
+    candidateRequest.resultContractVersion = resultContractVersion
     let request = candidateRequest
     let data = try RCCRuntimeContract.encode(request)
     _ = try RCCRuntimeContract.decodeRequest(data)
@@ -20772,11 +20782,23 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         } else { RuntimeActivity.emit(.preparing, publicText: "OpenClaw task " + state.state.rawValue + " · " + String(state.children.count) + " child run(s)") }
     }
     let result = try RCCRuntimeContract.decodeSnapshot(terminal)
+    // K12b negotiation: a typed partial answers only a run that asked for
+    // result contract v2. Anything else is a contract breach, never a v1 answer.
+    guard RCCRuntimeContract.negotiated(result, resultContractVersion: request.resultContractVersion) else {
+        throw RCCRuntimeGatewayClient.Failure.snapshotInvalid
+    }
     // A best-effort route test (route-all) ran the routes it could; say which
     // it skipped and why.
     if let skipped = routeAllSkippedNotice(result.skippedRoutes) {
         RuntimeActivity.emit(.routing, publicText: skipped)
         routingNotices.append(skipped)
+    }
+    // K14: an unclassified new model was offered and the reference stayed the
+    // existing classified model; every such delivery says so (cleared by
+    // updating ModelTiers). It never says which row produced the answer.
+    if let review = RCCRuntimeContract.referenceReviewNotice(result) {
+        RuntimeActivity.emit(.routing, publicText: review)
+        routingNotices.append(review)
     }
     var steps: [RunStepSummary] = []
     for serialized in result.result?.nativeSummaries ?? [] {

@@ -17,6 +17,14 @@ public enum RCCRunBudgetOptions {
     /// means the legacy nil. Rollback raises this value (<= 64) or holds
     /// dispatch; it never removes the flag (RT-10).
     public static let appNativeDispatches = 16
+    /// K12b: the result contract every new App submission freezes and sends
+    /// on `os1 run` (`--result-contract-version 2`). v2 types a partial
+    /// outcome (Result.partial), so a failed or held task's completed answers
+    /// reach the owner labelled partial instead of being dropped. The version
+    /// is part of Core's submit fingerprint: a submission an older build saved
+    /// has none and keeps none across retry/restart under the same task ID, and
+    /// a direct CLI run without the flag stays on v1.
+    public static let appResultContractVersion = 2
     public struct Invalid: LocalizedError, Equatable {
         public let option: String
         public let upper: Int
@@ -32,5 +40,8 @@ public enum RCCRunBudgetOptions {
     }
     public static func parallelism(_ raw: String) throws -> Int {
         try parse(raw, option: "--max-parallel", upper: 8)
+    }
+    public static func resultContractVersion(_ raw: String) throws -> Int {
+        try parse(raw, option: "--result-contract-version", upper: 2)
     }
 }

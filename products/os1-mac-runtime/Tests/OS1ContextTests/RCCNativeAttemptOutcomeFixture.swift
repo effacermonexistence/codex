@@ -308,8 +308,9 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
     let bytes = try B.catalogData(named, taskID: "task-fixture", requestSHA256: C.digest(Data(request.utf8)))
     try check(try C.decodeCatalog(bytes).exclusions == [.init(provider: "claude", reason: "quota_backoff", count: 2)],
               "the strict Swift catalog decoder accepts quota_backoff")
-    try check(C.Exclusion.reasons.contains("quota_backoff") && C.Exclusion.reasons.contains("reference_unavailable"),
-              "quota_backoff and reference_unavailable are contract reasons")
+    try check(C.Exclusion.reasons.contains("quota_backoff") && C.Exclusion.reasons.contains("reference_unavailable") &&
+              C.Exclusion.reasons.contains("unclassified_model") && C.Exclusion.informational == ["unclassified_model"],
+              "quota_backoff, reference_unavailable and the informational unclassified_model (K14) are contract reasons")
     try check(ClaudeQuotaBackoff.activeModels(directory: directory, now: now.addingTimeInterval(ClaudeQuotaBackoff.modelCooldown)).isEmpty &&
               ClaudeQuotaBackoff.active(at: directory.appendingPathComponent(ClaudeQuotaBackoff.defaultURL.lastPathComponent),
                                         now: now.addingTimeInterval(ClaudeQuotaBackoff.cooldown)) == nil,

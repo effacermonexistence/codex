@@ -39,6 +39,10 @@ function retainedJSON(text) {
   });
 }
 const TERMINAL = new Set(['completed', 'returned_unverified', 'awaiting_install', 'held', 'failed', 'cancelled', 'effects_uncertain']);
+// K12 partial result contract. v2 types a partial outcome; absent means 1.
+const RESULT_CONTRACT_VERSIONS = new Set([1, 2]);
+// A v2 partial may ride an unfinished-answer state; v1 shows none there.
+const PARTIAL_RESULT_STATES = new Set(['failed', 'held', 'cancelled']);
 const QUALITY = new Set(['policy_admitted', 'exact_domain_verified', 'reference_equivalent', 'reference_above', 'unverified', 'mismatch']);
 const PARITY = new Set(['unverified', 'reference_equivalent', 'reference_above', 'mismatch']);
 const TASK_QUALITY = new Set(['execution_only', 'task_verified', 'failed', 'unverified']);
@@ -55,7 +59,15 @@ export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';
 const EXCLUSION_PROVIDERS = new Set(['codex', 'claude']);
 const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unavailable', 'quota_zero',
   'capacity_zero', 'codex_hidden', 'effort_requires_explicit_request', 'explicit_constraint_unavailable',
-  'chat_gate_refused', 'gpt_dropped', 'quota_backoff', 'reference_unavailable']);
+  'chat_gate_refused', 'gpt_dropped', 'quota_backoff', 'reference_unavailable', 'unclassified_model']);
+// K14: an informational exclusion explains no hold. `unclassified_model` says
+// the pool offers a model OS-1 cannot classify (no provider-stated tier and not
+// a known untiered model): it stays isolated by tier routing and the old
+// reference keeps running, so it grants or withholds no reference, never
+// explains an empty catalog, and marks each model-backed delivery
+// `reference_review_required` (publicSnapshot).
+const INFORMATIONAL_EXCLUSIONS = new Set(['unclassified_model']);
+export const REFERENCE_REVIEW_REASON = 'reference_review_required';
 // The one typed execution reason that lets a started backend process count as
 // a verified no-effect attempt: the provider's own stream proved a quota
 // rejection before any work, on a read-only attempt with an unchanged
@@ -455,11 +467,15 @@ function validateTask(task, {allowCoreRouting = false} = {}) {
   const required = ['schema', 'task_id', 'request', 'request_sha256', 'objective', 'policy_sha256',
     'source_fingerprint', 'mode', 'material_refs', 'budget', 'host_context'];
   const optional = ['context', 'workspace', 'native_sessions', 'provider_preference', 'policy', 'routing_intent_policy_version',
-    ...(allowCoreRouting ? ['core_routing'] : [])];
+    'result_contract_version', ...(allowCoreRouting ? ['core_routing'] : [])];
   assert(plain(task) && required.every(key => Object.hasOwn(task, key)) &&
     Object.keys(task).every(key => required.includes(key) || optional.includes(key)), 'task_shape_invalid');
   assert(task.routing_intent_policy_version == null ||
     (task.routing_intent_policy_version === INTENT_V2_VERSION && task.mode === 'auto'), 'intent_policy_version_invalid');
+  // K12: the result contract this host reads (absent = 1). Only a v2 task's
+  // partial outcome is typed on the wire; it is part of the submit fingerprint.
+  assert(task.result_contract_version == null || RESULT_CONTRACT_VERSIONS.has(task.result_contract_version),
+    'result_contract_version_invalid');
   assert(task.schema === 1 && ID.test(task.task_id) && boundedText(task.request, 64_000) &&
     boundedText(task.objective, 8_192) && HASH.test(task.request_sha256) &&
     sha(Buffer.from(task.request)) === task.request_sha256 && HASH.test(task.policy_sha256) &&
@@ -626,6 +642,8 @@ function intentAdmits(candidate, intent) {
 function referenceEffort(rows, intent, catalog) {
   const offered = rows.map(c => c.effort);
   if (intent?.effort) return offered.includes(intent.effort) ? intent.effort : null;
+  // Only reference_unavailable withholds a reference; an informational
+  // exclusion (K14 unclassified_model) neither grants nor withholds one.
   // Ordinary Auto must preserve the provider's missing-reference boundary
   // even on a legacy catalog that also carries per-model metadata. That map
   // describes represented models, not the absent frontier. A named family
@@ -1195,6 +1213,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
  * descent needs a dispatchable reference too (R9), so nothing below a
  * reference ever counts. */
 function noDispatchableReason(task, catalog, now) {
+  // Reads no exclusion: an informational one (K14) is never reference absence.
   const scopes = scopesAllowed(task);
   // Only a host-computed exact row means "something can run": the local model
   // row is an explicit route's surface, never a reason to plan Auto work.
@@ -1833,6 +1852,37 @@ function exactConfig(candidate) {
     'scope', 'permission_profile', 'quota_pool', 'allowed_paths', 'configuration_sha256']
     .map(key => [key, immutable(candidate[key])]));
 }
+/** K14, mirroring the host contract: an informational exclusion for provider
+ * P needs a tiered catalog (model_tiers) that offers a P row whose model has no
+ * tier. So it can never stand alone in an empty catalog. */
+function validInformationalExclusions(catalog) {
+  return catalog.exclusions.every(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason) ||
+    (plain(catalog.model_tiers) && catalog.candidates.some(c => plain(c) &&
+      providerOfPool(c.quota_pool) === item.provider && !Object.hasOwn(catalog.model_tiers, c.model))));
+}
+/** K14: whether this catalog offers an unclassified model. */
+function referenceReviewRequired(catalog) {
+  return Array.isArray(catalog?.exclusions) && catalog.exclusions.some(item => item?.reason === 'unclassified_model');
+}
+/** K14: `reason` with one `reference_review_required` segment appended
+ * (idempotent), within the 1 KiB public reason bound: trailing diagnostic
+ * segments are dropped first, so the token always survives. */
+export function referenceReviewReason(reason) {
+  const token = REFERENCE_REVIEW_REASON;
+  const text = typeof reason === 'string' ? reason : '';
+  if (text.split(';').includes(token)) return text;
+  const fits = head => Buffer.byteLength(head) + 1 + Buffer.byteLength(token) <= 1_024;
+  let head = text;
+  while (head && !fits(head)) {
+    const cut = head.lastIndexOf(';');
+    if (cut > 0) { head = head.slice(0, cut); continue; }
+    // One oversized segment: keep its longest prefix that fits.
+    const chars = Array.from(head);
+    while (chars.length && !fits(chars.join(''))) chars.pop();
+    head = chars.join('');
+  }
+  return head.trim() ? head + ';' + token : token;
+}
 function validExclusions(exclusions) {
   return Array.isArray(exclusions) && exclusions.length > 0 && exclusions.length <= 32 &&
     exclusions.every(item => keys(item, ['provider', 'reason', 'count']) &&
@@ -2093,7 +2143,9 @@ function validateCatalog(catalog, task) {
     (catalog.native_reference_efforts === undefined ||
       validNativeReferenceEfforts(catalog.native_reference_efforts, catalog.candidates)) &&
     validAdmissionFacts(catalog, task) &&
-    (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
+    (catalog.exclusions === undefined || validInformationalExclusions(catalog)) &&
+    (catalog.candidates.length > 0 ||
+      (catalog.exclusions ?? []).some(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason))), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
   // An empty catalog is an explicit, explained hold rather than an opaque
   // binding error: say which configured profiles were excluded and why.
@@ -2647,7 +2699,61 @@ function publicResourceUsage(snapshot) {
     quota_savings: s.quota_savings, cash_cost: s.cash_cost,
     accounting_scope: 'observed_attempts_as_of_snapshot_not_future_cost'};
 }
+/** K12 v2 partial: coverage over every child (completed vs unresolved), the
+ * parent task it belongs to, and one entry per node whose output it carries.
+ * A held child whose output is retained is carried and still unresolved. The
+ * partial is built from the same children as its output; a certified descent
+ * its check has not accepted never reaches here (the callers drop it). Core
+ * keeps no digest of a child's native receipt, so that field is null, never a
+ * guess. A completed deterministic node runs on a host-computed exact row and
+ * has no attempt: its attempt_id is null, only there. The parent revision is
+ * bound when the partial is attached. */
+function partialContract(snapshot, returned) {
+  const completed = returned.filter(c => c.state === 'completed').map(c => c.id);
+  const done = new Set(completed);
+  const unresolved = snapshot.children.map(c => c.id).filter(id => !done.has(id));
+  assert(unresolved.length > 0 && snapshot.children.every(c => done.has(c.id) || c.state !== 'completed') &&
+    returned.every(c => ID.test(c.id) && typeof c.output === 'string' && (c.attempt_id === null ?
+      c.state === 'completed' && plain(c.selected_config) && localExactRow(c.selected_config) :
+      typeof c.attempt_id === 'string' && ID.test(c.attempt_id))), 'partial_contract_invalid');
+  return {coverage: {completed_node_ids: completed, unresolved_node_ids: unresolved},
+    parent: {task_id: snapshot.task.task_id, request_sha256: snapshot.task.request_sha256, revision: null},
+    nodes: returned.map(c => ({node_id: c.id, attempt_id: c.attempt_id,
+      output_sha256: sha(Buffer.from(c.output)), native_receipt_sha256: null}))};
+}
+/** K12: attach a v2 partial (inside the attaching update) only if every node
+ * it carries still holds the same attempt and output and its coverage still
+ * matches the children; its parent revision is the one this update writes.
+ * A race drops the whole result (never a stale partial); the original failure
+ * or hold reason stands. A result without a partial passes unchanged. */
+function boundPartialResult(state, result) {
+  if (!result?.partial) return result;
+  const partial = result.partial, children = new Map(state.children.map(c => [c.id, c]));
+  const done = new Set(partial.coverage.completed_node_ids);
+  const current = children.size === done.size + partial.coverage.unresolved_node_ids.length &&
+    [...done, ...partial.coverage.unresolved_node_ids].every(id => children.has(id)) &&
+    state.children.every(c => (c.state === 'completed') === done.has(c.id)) &&
+    partial.nodes.every(node => {
+      const child = children.get(node.node_id);
+      return child?.attempt_id === node.attempt_id && typeof child.output === 'string' &&
+        sha(Buffer.from(child.output)) === node.output_sha256;
+    });
+  return current ? {...result, partial: {...partial, parent: {...partial.parent, revision: state.revision + 1}}} : null;
+}
+/** K12: the wire result, gated exactly like the host contract's
+ * validate(Snapshot): a whole answer (completed, returned_unverified), an
+ * install handoff, or a v2 partial on a failed, held or cancelled task. A v1
+ * task's failed partial (and any older stored one) stays in the durable record
+ * for the inspector; on the wire that task is a typed failure with no result. */
+function publicResult(snapshot) {
+  const result = snapshot.result;
+  if (!result) return null;
+  const shown = snapshot.state === 'completed' || snapshot.state === 'returned_unverified' ||
+    snapshot.install_handoff != null || (result.partial != null && PARTIAL_RESULT_STATES.has(snapshot.state));
+  return shown ? immutable(result) : null;
+}
 function publicSnapshot(snapshot) {
+  const review = referenceReviewRequired(snapshot.catalog);
   return { schema: 1, task_id: snapshot.task.task_id,
     request_sha256: snapshot.task.request_sha256, state: snapshot.state,
     revision: snapshot.revision,
@@ -2664,12 +2770,17 @@ function publicSnapshot(snapshot) {
         // on its verifier, or held) is never shown.
         output_summary: typeof output === 'string' && (state === 'completed' || !pendingEscalation(child)) ?
           output.slice(0, 600) : null,
-        // Why the host chose this exact row. Older snapshots have none.
-        routing_decision: child.routing_decision ? immutable(child.routing_decision) : null,
+        // Why the host chose this exact row. Older snapshots have none. K14:
+        // while the catalog offers an unclassified model, a model-backed
+        // child's public reason names reference_review_required (the stored
+        // decision and the ledger stay unchanged).
+        routing_decision: child.routing_decision ? immutable(review && plain(selected_config) && selected_config.transport !== 'local' ?
+          {...child.routing_decision, reason: referenceReviewReason(child.routing_decision.reason)} :
+          child.routing_decision) : null,
         // R6: why a delivered output is not task-verified (present only then).
         ...(child.quality_disclosure ? {quality_disclosure: immutable(child.quality_disclosure)} : {})};
     }),
-    result: snapshot.result ? immutable(snapshot.result) : null,
+    result: publicResult(snapshot),
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
     ...(snapshot.intent_resolution_state ? {routing_intent: {
       state: snapshot.intent_resolution_state,
@@ -3070,8 +3181,9 @@ class RCCRuntime {
   _hold(taskID, reason, result = null) {
     return this._update(taskID, 'held', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
-      snapshot.state = result ? 'returned_unverified' : 'held';
-      snapshot.error = reason; if (result) snapshot.result = result;
+      const bound = boundPartialResult(snapshot, result);
+      snapshot.state = bound ? 'returned_unverified' : 'held';
+      snapshot.error = reason; if (bound) snapshot.result = bound;
     });
   }
   /** Per-request hard zero, not a usage estimate or global switch. Original
@@ -3652,11 +3764,19 @@ class RCCRuntime {
 
   /** Existing partial-result shape, scoped to exactly the supplied returned
    * children. A failed/missing child supplies neither answer nor execution
-   * evidence. This never adopts the quality of the original whole task. */
-  async _partialResult(taskID, returned) {
+   * evidence. This never adopts the quality of the original whole task.
+   * K12: a v2 task (the ORIGINAL task's result_contract_version) also types
+   * the partial (partialContract); its parent revision is bound on attach. A
+   * partial the contract cannot type falls back to this v1 result: never a
+   * replaced failure or hold reason, never a lost answer. */
+  async _partialResult(taskID, returned, snapshot = null) {
     if (!returned.length) return null;
     const output = returned.map(c => `${c.id}: ${c.output}`).join('\n\n');
     assert(Buffer.byteLength(output) <= MAX_OUTPUT_BYTES, 'partial_output_oversize');
+    let partial = null;
+    if (snapshot?.task?.result_contract_version === 2) {
+      try { partial = partialContract(snapshot, returned); } catch { partial = null; }
+    }
     let receipt;
     try { receipt = await this._aggregateReceipt(taskID, returned, output); }
     catch { throw new RCCRuntimeError('aggregate_receipt_unavailable'); }
@@ -3664,7 +3784,7 @@ class RCCRuntime {
       task_quality: 'execution_only', parity_state: 'unverified', native_receipt: receipt,
       native_summary: returned.length === 1 ? returned[0].native_summary : null,
       native_summaries: returned.flatMap(c => c.native_summaries ??
-        (c.native_summary ? [c.native_summary] : []))};
+        (c.native_summary ? [c.native_summary] : [])), ...(partial ? {partial} : {})};
   }
 
   async _verifiedNativeReceiptDigest(result) {
@@ -5377,16 +5497,19 @@ class RCCRuntime {
           // Failure remains failure, but a supported earlier or concurrently
           // completed result must not disappear behind the terminal error.
           // Aggregation failure does not replace that original failure reason.
+          // K12: only a v2 task's partial is shown on the wire (typed); a
+          // v1 failed task stays a typed failure there, its partial durable.
           let partial = null;
           try { partial = await this._partialResult(taskID,
-            snapshot.children.filter(c => c.state === 'completed' && c.output !== null)); }
+            snapshot.children.filter(c => c.state === 'completed' && c.output !== null), snapshot); }
           catch { /* Child records remain intact if no bounded receipt can be assembled. */ }
           this._update(taskID, 'task_failed', state => {
             if (TERMINAL.has(state.state)) return;
             state.state = 'failed';
             state.error = snapshot.children.find(c => c.state === 'failed' && typeof c.failure_reason === 'string')
               ?.failure_reason ?? 'child_failed';
-            if (partial) state.result = partial;
+            const bound = boundPartialResult(state, partial);
+            if (bound) state.result = bound;
           });
         }
         else {
@@ -5405,7 +5528,7 @@ class RCCRuntime {
           if (snapshot.children.some(c => c.state === 'held' && c.hold_reason === 'owner_collection_control_unverified')) {
             this._hold(taskID, reason); return;
           }
-          try { this._hold(taskID, reason, await this._partialResult(taskID, returned)); }
+          try { this._hold(taskID, reason, await this._partialResult(taskID, returned, snapshot)); }
           catch (error) { this._hold(taskID, error.code ?? 'aggregate_receipt_unavailable'); }
         }
         return;

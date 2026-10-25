@@ -41,6 +41,29 @@ assert blocking.count(cap)==1
 line=blocking[blocking.rindex('\n',0,blocking.index(cap))+1:blocking.index(cap)]
 assert line.strip()=='' and blocking[:blocking.index(cap)].count('{')-blocking[:blocking.index(cap)].count('}')==1,'cap is top-level in runBlocking, not inside an if'
 assert blocking.index('"--codex-capacity", String(codexCapacity),')<blocking.index(cap)<blocking.index('arguments = ["resume-delivery", storedID]')
+# K12b: the result contract is frozen per submission the same way (it is in
+# Core's submit fingerprint too): parsed once by `os1 run`, bound onto the
+# Request before it is encoded, negotiated on the terminal snapshot, and
+# appended by the App outside any condition from the submission's own field.
+assert 'case "--result-contract-version" where index + 1 < arguments.count && resultContractVersion == nil:' in run
+assert 'resultContractVersion = try RCCRunBudgetOptions.resultContractVersion(arguments[index + 1])' in run
+assert 'interpreterRecord: interpreterRecord,\n                            resultContractVersion: resultContractVersion)' in run
+assert fn.index('candidateRequest.resultContractVersion = resultContractVersion')<fn.index('RCCRuntimeContract.encode(request)')
+assert fn.index('let result = try RCCRuntimeContract.decodeSnapshot(terminal)')<fn.index('guard RCCRuntimeContract.negotiated(result, resultContractVersion: request.resultContractVersion) else {')<fn.index('var summary = RunSummary(status: result.state')
+assert pending.count('    var resultContractVersion: Int? = RCCRunBudgetOptions.appResultContractVersion\n')==1
+assert app.count('submission.resultContractVersion =')==0 and app.count('retry.resultContractVersion =')==0,'no path overrides the frozen contract'
+assert app.count('resultContractVersion: submission.resultContractVersion,')==1 and app.count('resultContractVersion: resultContractVersion,')==1
+contract='arguments += resultContractArguments(resultContractVersion)'
+assert blocking.count(contract)==1
+line=blocking[blocking.rindex('\n',0,blocking.index(contract))+1:blocking.index(contract)]
+assert line.strip()=='' and blocking[:blocking.index(contract)].count('{')-blocking[:blocking.index(contract)].count('}')==1,'contract is top-level in runBlocking, not inside an if'
+assert blocking.index(cap)<blocking.index(contract)<blocking.index('arguments = ["resume-delivery", storedID]')
+# K12b: the CLI names a partial answer's coverage before its output, outside
+# any other condition of the Core summary.
+summary=s[s.index('func printRunSummary(_ summary: RunSummary) {'):s.index('\n}\n',s.index('func printRunSummary(_ summary: RunSummary) {'))]
+label='        if let partial = core.result?.partial { print("[" + partial.coverage.label() + "]") }\n'
+assert summary.count(label)==1 and s.count('partial.coverage.label()')==1
+assert summary.index('    if let core = summary.rccRuntime {\n')<summary.index(label)<summary.index('        if let result = core.result, !result.output.isEmpty { print(result.output) }')
 # The value is Core's own two-per-node reserve over its largest admissible plan:
 # raising the 8-node/8-obligation bound or max_attempts must raise the cap.
 rt=(R/'Resources/openclaw-os1-bridge/rcc-runtime.mjs').read_text()
@@ -69,6 +92,11 @@ let round=try JSONDecoder().decode(C.Budget.self,from:encode.encode(limited))
 check(round.maxNativeDispatches == 4 && round.maxParallel == 2 && round.forbidModelGeneration == true)
 check(RCCRunBudgetOptions.appNativeDispatches == 2 * 8)
 check(try RCCRunBudgetOptions.nativeDispatches(String(RCCRunBudgetOptions.appNativeDispatches)) == RCCRunBudgetOptions.appNativeDispatches)
+for n in [1,2] { check(try RCCRunBudgetOptions.resultContractVersion(String(n)) == n) }
+for value in ["", "0", "3", "02", "-1", " 2", "2.0", "v2", "true"] {
+ do { _ = try RCCRunBudgetOptions.resultContractVersion(value); fatalError("invalid result contract accepted") } catch { checks += 1 }
+}
+check(RCCRunBudgetOptions.appResultContractVersion == 2)
 print("ACTUAL_RUN_LIMIT_OPTIONS_PASS: \(checks) checks; no SDK/model/gateway calls")
 '''
 with tempfile.TemporaryDirectory(prefix='os1-native-budget-cli-') as d:

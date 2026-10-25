@@ -58,6 +58,15 @@ import Foundation
 ///   an explicit model family or route test names its own route instead.
 /// - Every excluded profile is counted per provider and reason, so an empty
 ///   catalog is an explained hold, not an opaque binding error.
+/// - K14: in Auto (no route test, model family or exact model) a pool that
+///   offers rows of an UNCLASSIFIED model (`ModelTiers.classification`: in
+///   neither the tier table nor `knownUntiered`) records the informational
+///   exclusion `unclassified_model` (count: distinct such models). Nothing
+///   else changes: the model keeps its rows (sorted last, no `model_tiers`
+///   entry), is never a reference, a certified descent or an escalation
+///   target, and stays usable only through the owner's words. It never
+///   explains an empty catalog or a hold; the core marks every model-backed
+///   delivery `reference_review_required` instead.
 public enum RCCNativeCatalogBuilder {
     public static let maximumCandidates = 256
     public static let effortOrder = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
@@ -571,6 +580,13 @@ public enum RCCNativeCatalogBuilder {
             for provider in ["codex", "claude"] where rows.contains(where: { $0.provider == provider }) &&
                 !referenceAvailable(provider) {
                 excluded[provider, default: [:]]["reference_unavailable", default: 0] += max(1, referenceProfiles[provider] ?? 0)
+            }
+            // K14, informational only: an offered model OS-1 cannot classify.
+            // Counted from rows, so it never stands alone in an empty catalog.
+            for provider in ["codex", "claude"] {
+                let unclassified = Set(rows.filter { $0.provider == provider &&
+                    ModelTiers.classification(of: $0.model) == .unclassified }.map(\.model))
+                if !unclassified.isEmpty { excluded[provider, default: [:]]["unclassified_model"] = unclassified.count }
             }
         }
 

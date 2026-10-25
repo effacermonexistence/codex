@@ -1620,7 +1620,20 @@ enum RCCOperationalQuality {
             }
             return keep
         }
-        var exclusions = catalog.exclusions ?? []
+        let models = Set(catalog.candidates.map(\.model))
+        catalog.modelTiers = catalog.modelTiers.map { $0.filter { models.contains($0.key) } }
+        // K14: an informational exclusion (unclassified_model) describes rows
+        // the catalog offers. It closes over the surviving rows like the
+        // metadata below: kept only while its provider still offers a row
+        // with no tier, never left to explain a filtered-out pool.
+        var exclusions = (catalog.exclusions ?? []).filter { exclusion in
+            !C.Exclusion.informational.contains(exclusion.reason) || catalog.modelTiers.map { tiers in
+                catalog.candidates.contains { row in
+                    let provider = row.quotaPool == .anthropicShared ? "claude" : row.quotaPool == .openAICodex ? "codex" : nil
+                    return provider == exclusion.provider && tiers[row.model] == nil
+                }
+            } == true
+        }
         for provider in removed.keys.sorted() {
             if let index = exclusions.firstIndex(where: { $0.provider == provider && $0.reason == "explicit_constraint_unavailable" }) {
                 exclusions[index].count += removed[provider]!
@@ -1632,8 +1645,6 @@ enum RCCOperationalQuality {
             throw Failure.localEffectsCapabilityUnavailable
         }
         catalog.exclusions = exclusions.isEmpty ? nil : exclusions
-        let models = Set(catalog.candidates.map(\.model))
-        catalog.modelTiers = catalog.modelTiers.map { $0.filter { models.contains($0.key) } }
         catalog.quotaScores = catalog.quotaScores.map { $0.filter { models.contains($0.key) } }
         if let native = catalog.nativeReferenceEfforts {
             var filtered: [String: [String: String]] = [:]
@@ -2584,6 +2595,29 @@ func rccLocalEffectsAdmissionSelfTest() throws {
     try check(constrained.modelTiers?[claude.model] == nil && constrained.quotaScores?[claude.model] == nil && constrained.nativeReferenceEfforts?["claude"] == nil, "metadata closes over surviving models")
     let held = try C.decodeCatalog(Q.constrainCatalogData(bytes, request: request, sourceBound: true, rootURL: base))
     try check(held.candidates.isEmpty && held.exclusions?.contains(where: { $0.reason == "explicit_constraint_unavailable" }) == true, "unsupported source-bound workspace yields explained empty hold")
+    // K14: an informational unclassified_model exclusion closes over the
+    // surviving rows. It leaves with its filtered-out pool (Claude here, every
+    // pool when source-bound) and stays while its pool still offers the row.
+    let claudeNew = row("claude-new", .claude, "fixture-claude-new"), codexNew = row("codex-new", .codex, "fixture-codex-new")
+    var unclassifiedCatalog = catalog
+    unclassifiedCatalog.candidates += [claudeNew, codexNew]
+    unclassifiedCatalog.nativeReferenceEfforts?["codex"]?[codexNew.model] = "max"
+    unclassifiedCatalog.nativeReferenceEfforts?["claude"]?[claudeNew.model] = "max"
+    unclassifiedCatalog.exclusions = [.init(provider: "claude", reason: "unclassified_model", count: 1),
+        .init(provider: "codex", reason: "unclassified_model", count: 1)]
+    let unclassifiedBytes = try C.encode(unclassifiedCatalog)
+    _ = try C.decodeCatalog(unclassifiedBytes, request: request); count += 1
+    let reviewed = try C.decodeCatalog(Q.constrainCatalogData(unclassifiedBytes, request: request, sourceBound: false, rootURL: base))
+    try check(reviewed.candidates == [cheap, frontier, writer, codexNew] &&
+        reviewed.exclusions?.contains(.init(provider: "codex", reason: "unclassified_model", count: 1)) == true &&
+        reviewed.exclusions?.contains(where: { $0.provider == "claude" && $0.reason == "unclassified_model" }) == false &&
+        reviewed.exclusions?.contains(.init(provider: "claude", reason: "explicit_constraint_unavailable", count: 2)) == true,
+        "an unclassified Claude row the boundary removes takes its informational exclusion along; Codex keeps its own")
+    let reviewedHeld = try C.decodeCatalog(Q.constrainCatalogData(unclassifiedBytes, request: request, sourceBound: true, rootURL: base))
+    try check(reviewedHeld.candidates.isEmpty &&
+        reviewedHeld.exclusions?.contains(where: { $0.reason == "unclassified_model" }) == false &&
+        reviewedHeld.exclusions?.contains(where: { $0.reason == "explicit_constraint_unavailable" }) == true,
+        "a source-bound workspace with an unclassified model is the same explained empty hold")
     try save(envelope(scope: .readOnly))
     let read = try C.decodeCatalog(Q.constrainCatalogData(bytes, request: request, sourceBound: false, rootURL: base))
     try check(read.candidates == [cheap, frontier], "parent read ceiling never offers writer")

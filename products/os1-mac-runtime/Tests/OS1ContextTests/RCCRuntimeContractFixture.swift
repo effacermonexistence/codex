@@ -68,6 +68,25 @@ func runRCCRuntimeContractFixture() throws {
         materialRefs: [], budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 60_000),
         policy: .init(sourceSHA256: hash, projectionSHA256: policyHash, text: policyText), hostContext: host)
     try check(try C.decodeRequest(C.encode(request)) == request, "request round trip")
+    // K12: the result contract version is an optional request field. Absent
+    // (nil) encodes no key at all, so a v1 host's request bytes are unchanged.
+    try check(!String(decoding: try C.encode(request), as: UTF8.self).contains("result_contract_version") &&
+              request.resultContractVersion == nil, "a v1 request carries no result_contract_version key")
+    for version in [1, 2] {
+        var versioned = request; versioned.resultContractVersion = version
+        let decoded = try C.decodeRequest(C.encode(versioned))
+        try check(decoded == versioned && decoded.resultContractVersion == version,
+                  "result contract v\(version) request roundtrips")
+    }
+    for version in [0, 3, -1] {
+        var versioned = request; versioned.resultContractVersion = version
+        try reject("result contract version \(version) is not negotiable") { _ = try C.decodeRequest(C.encode(versioned)) }
+    }
+    var versionObject = try JSONSerialization.jsonObject(with: C.encode(request)) as! [String: Any]
+    versionObject["result_contract_version"] = "2"
+    try reject("a string result contract version is rejected") {
+        _ = try C.decodeRequest(JSONSerialization.data(withJSONObject: versionObject))
+    }
     var fourHost = host
     fourHost.explicitRoutes = [.init(surface: .chatgpt, instruction: "1+1"), .init(surface: .codex, instruction: "2+2"),
         .init(surface: .claude, instruction: "3+3"), .init(surface: .claudeChat, instruction: "4+4")]
@@ -438,6 +457,185 @@ func runRCCRuntimeContractFixture() throws {
     try reject("returned_unverified cannot quietly mean complete") { try C.validate(badSnapshot) }
     badSnapshot = snapshot; badSnapshot.state = .running
     try reject("result cannot attach to running state") { try C.validate(badSnapshot) }
+    // K12 partial result v2: a failed, held or cancelled task carries a result
+    // only as a typed partial bound to this task and to its children.
+    try check(!String(decoding: try C.encode(snapshot), as: UTF8.self).contains("\"partial\"") &&
+              (try C.decodeSnapshot(C.encode(snapshot))).result?.partial == nil,
+              "a whole answer has no partial key and decodes with partial nil (legacy snapshots too)")
+    let partialChildren: [C.ChildSnapshot] = [
+        .init(id: "n1", state: .completed, attemptID: "attempt-n1", candidateID: candidate.id),
+        .init(id: "n2", state: .failed, attemptID: "attempt-n2", candidateID: candidate.id)]
+    let typedPartial = C.Partial(coverage: .init(completedNodeIDs: ["n1"], unresolvedNodeIDs: ["n2"]),
+        parent: .init(taskID: request.taskID, requestSHA256: request.requestSHA256, revision: 7),
+        nodes: [.init(nodeID: "n1", attemptID: "attempt-n1", outputSHA256: C.digest(Data("2".utf8)))])
+    let partialFailed = C.Snapshot(taskID: request.taskID, requestSHA256: request.requestSHA256, state: .failed,
+        revision: 8, children: partialChildren, result: .init(output: "n1: 2", executionVerified: true,
+            taskVerified: false, parityState: .unverified, nativeReceipt: "/private/fixture/aggregate.json",
+            taskQuality: .executionOnly, partial: typedPartial), error: "verified_not_dispatched_retry_exhausted")
+    for state in [C.State.failed, .held, .cancelled, .returnedUnverified] {
+        var typed = partialFailed; typed.state = state
+        try check(try C.decodeSnapshot(C.encode(typed)) == typed, "a v2 partial on \(state.rawValue) roundtrips")
+    }
+    var heldWithRetained = partialFailed; heldWithRetained.state = .returnedUnverified
+    heldWithRetained.children[1].state = .held
+    heldWithRetained.result?.partial?.nodes.append(.init(nodeID: "n2", attemptID: "attempt-n2",
+        outputSHA256: C.digest(Data("4".utf8)), nativeReceiptSHA256: C.digest(Data("receipt".utf8))))
+    try check(try C.decodeSnapshot(C.encode(heldWithRetained)) == heldWithRetained,
+              "a held child's retained output is carried and still unresolved")
+    try check(!C.negotiated(partialFailed, resultContractVersion: nil) && !C.negotiated(partialFailed, resultContractVersion: 1) &&
+              C.negotiated(partialFailed, resultContractVersion: 2) && C.negotiated(snapshot, resultContractVersion: nil) &&
+              C.negotiated(snapshot, resultContractVersion: 2),
+              "negotiation: a typed partial answers only a v2 request; a whole answer answers any")
+    try check(typedPartial.coverage.label().contains("1/2") && typedPartial.coverage.label().hasSuffix("n2") &&
+              C.PartialCoverage(completedNodeIDs: [], unresolvedNodeIDs: (1...10).map { "u\($0)" }).label(maximumIDs: 8)
+                .hasSuffix("u8 +2"), "the coverage label names counts and at most eight unresolved ids")
+    var unversioned = partialFailed; unversioned.result?.partial = nil
+    try reject("negotiation absent: a failed task with a v1 result is rejected") { try C.validate(unversioned) }
+    unversioned.state = .held
+    try reject("negotiation absent: a held task with a v1 result is rejected") { try C.validate(unversioned) }
+    unversioned.state = .returnedUnverified
+    try C.validate(unversioned); checks += 1
+    func rejectPartial(_ label: String, _ change: (inout C.Snapshot) -> Void) throws {
+        var bad = partialFailed; change(&bad)
+        try reject(label) { try C.validate(bad) }
+    }
+    for state in [C.State.running, .planning, .queued, .waiting, .cancelling, .completed, .effectsUncertain, .awaitingInstall] {
+        try rejectPartial("a partial whose parent has not ended (\(state.rawValue))") { $0.state = state }
+    }
+    try rejectPartial("unknown id in coverage") { $0.result?.partial?.coverage.completedNodeIDs = ["n1", "n9"] }
+    try rejectPartial("an id both completed and unresolved") { $0.result?.partial?.coverage.unresolvedNodeIDs = ["n1", "n2"] }
+    try rejectPartial("coverage misses a child") {
+        $0.children.append(.init(id: "n3", state: .queued, attemptID: nil, candidateID: nil))
+    }
+    try rejectPartial("a duplicate coverage id") { $0.result?.partial?.coverage.unresolvedNodeIDs = ["n2", "n2"] }
+    try rejectPartial("nothing unresolved is not a partial") {
+        $0.children[1].state = .completed
+        $0.result?.partial?.coverage = .init(completedNodeIDs: ["n1", "n2"], unresolvedNodeIDs: [])
+        $0.result?.partial?.nodes.append(.init(nodeID: "n2", attemptID: "attempt-n2", outputSHA256: C.digest(Data("4".utf8))))
+    }
+    try rejectPartial("a completed id names an unfinished child") {
+        $0.result?.partial?.coverage = .init(completedNodeIDs: ["n2"], unresolvedNodeIDs: ["n1"])
+    }
+    try rejectPartial("an unresolved id names a completed child") { $0.children[1].state = .completed }
+    try rejectPartial("a completed node is not carried") { $0.result?.partial?.nodes = [] }
+    try rejectPartial("a duplicate carried node") { let first = $0.result!.partial!.nodes[0]; $0.result?.partial?.nodes.append(first) }
+    try rejectPartial("a carried node is not a child") {
+        $0.result?.partial?.nodes.append(.init(nodeID: "n9", attemptID: "attempt-n9", outputSHA256: C.digest(Data("9".utf8))))
+    }
+    try rejectPartial("a carried node from another attempt") { $0.result?.partial?.nodes[0].attemptID = "attempt-other" }
+    try rejectPartial("a carried node whose child has no attempt") { $0.children[0].attemptID = nil; $0.children[0].candidateID = nil }
+    // A completed deterministic node runs on the host-computed exact local
+    // row with no attempt: it alone is carried with no attempt id.
+    var localExact = config
+    localExact.surface = .local; localExact.transport = .local; localExact.quotaPool = .none
+    localExact.model = "exact"; localExact.effort = .none
+    var deterministicPartial = partialFailed
+    deterministicPartial.children[0].selectedConfig = config
+    deterministicPartial.children.insert(.init(id: "d", state: .completed, attemptID: nil, candidateID: "local",
+        selectedConfig: localExact), at: 0)
+    deterministicPartial.result?.partial?.coverage.completedNodeIDs = ["d", "n1"]
+    deterministicPartial.result?.partial?.nodes.insert(.init(nodeID: "d", attemptID: nil,
+        outputSHA256: C.digest(Data("2".utf8))), at: 0)
+    try check(try C.decodeSnapshot(C.encode(deterministicPartial)) == deterministicPartial,
+              "a completed deterministic node is carried with no attempt id")
+    func rejectDeterministic(_ label: String, _ change: (inout C.Snapshot) -> Void) throws {
+        var bad = deterministicPartial; change(&bad)
+        try reject(label) { try C.validate(bad) }
+    }
+    try rejectDeterministic("a model-backed carried node without an attempt id") {
+        $0.children[1].attemptID = nil; $0.result?.partial?.nodes[1].attemptID = nil
+    }
+    try rejectDeterministic("an attempt-less entry for a child that ran an attempt") { $0.children[0].attemptID = "attempt-d" }
+    try rejectDeterministic("an attempt-less entry for a child with no selected row") { $0.children[0].selectedConfig = nil }
+    try rejectDeterministic("the local worker model is not a host-computed exact row") {
+        $0.children[0].selectedConfig?.model = RCCNativeCatalogBuilder.localWorkerModel
+    }
+    try rejectDeterministic("an attempt-less entry for an unresolved child") {
+        $0.children[0].state = .held
+        $0.result?.partial?.coverage = .init(completedNodeIDs: ["n1"], unresolvedNodeIDs: ["d", "n2"])
+    }
+    try rejectPartial("a foreign parent task") { $0.result?.partial?.parent.taskID = "task-foreign" }
+    try rejectPartial("a foreign parent request") { $0.result?.partial?.parent.requestSHA256 = C.digest(Data("other".utf8)) }
+    try rejectPartial("a parent revision this task has not reached") { $0.result?.partial?.parent.revision = 9 }
+    try rejectPartial("a parent revision of zero") { $0.result?.partial?.parent.revision = 0 }
+    try rejectPartial("an output digest that is not a hash") { $0.result?.partial?.nodes[0].outputSHA256 = "2" }
+    try rejectPartial("a receipt digest that is not a hash") { $0.result?.partial?.nodes[0].nativeReceiptSHA256 = "receipt" }
+    try rejectPartial("a partial is never task-verified") { $0.state = .returnedUnverified; $0.result?.taskVerified = true }
+    try rejectPartial("a partial never claims parity") { $0.result?.parityState = .mismatch }
+    try rejectPartial("a partial is never a failed-quality answer") { $0.result?.taskQuality = .failed }
+    try rejectPartial("a partial never rides an install handoff") {
+        $0.installHandoff = .init(taskID: request.taskID, requestSHA256: request.requestSHA256, nodeID: "n1",
+            parentAttemptID: "attempt-n1", sourceFingerprint: hash, sourceRoot: "/tmp/rcc-fixture",
+            sourceHead: String(repeating: "a", count: 40), protectedSourceSHA256: hash, stagedIntentID: "intent-fixture",
+            stagedReceiptSHA256: hash, state: .staged)
+    }
+    var partialObject = try JSONSerialization.jsonObject(with: C.encode(partialFailed)) as! [String: Any]
+    var partialResultObject = partialObject["result"] as! [String: Any]
+    for (label, path) in [("partial", [String]()), ("partial.coverage", ["coverage"]), ("partial.parent", ["parent"]),
+                          ("partial.nodes[0]", ["nodes"])] {
+        var partialBody = partialResultObject["partial"] as! [String: Any]
+        switch path.first {
+        case nil: partialBody["quality_claim"] = "invented"
+        case "nodes"?:
+            var entries = partialBody["nodes"] as! [[String: Any]]; entries[0]["model"] = "invented"
+            partialBody["nodes"] = entries
+        case let key?:
+            var nested = partialBody[key] as! [String: Any]; nested["extra"] = "invented"; partialBody[key] = nested
+        }
+        var resultCopy = partialResultObject; resultCopy["partial"] = partialBody
+        var objectCopy = partialObject; objectCopy["result"] = resultCopy
+        try reject("\(label) rejects an unknown field") {
+            _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: objectCopy))
+        }
+    }
+    partialResultObject["partial"] = NSNull(); partialObject["result"] = partialResultObject
+    try reject("a null partial on a failed task is still no partial") {
+        _ = try C.decodeSnapshot(JSONSerialization.data(withJSONObject: partialObject))
+    }
+    // K14: the reference review notice reads the public reason token of a
+    // DELIVERED model-backed child only (a whole answer's completed children,
+    // or the children a typed partial carries); the exact segment, never a
+    // prefix; never a local row, a held task without a result, or no child.
+    func reviewed(_ reason: String, state: C.ChildState = .completed, transport: C.Transport = .codexAppServer)
+        -> C.ChildSnapshot {
+        var selected = config; selected.transport = transport
+        return .init(id: "n1", state: state, attemptID: "attempt-n1", candidateID: candidate.id, selectedConfig: selected,
+            routingDecision: .init(routeClass: "deep", resolvedCandidateID: candidate.id, surface: config.surface,
+                model: config.model, effort: config.effort, quotaPool: config.quotaPool, reason: reason,
+                quotaRemainingFraction: nil))
+    }
+    let reviewReason = "resolver;route_reference;pool_rank_0;" + C.referenceReviewToken
+    let reviewedCompleted = C.Snapshot(taskID: request.taskID, requestSHA256: request.requestSHA256, state: .completed,
+        revision: 3, children: [reviewed(reviewReason)], result: .init(output: "4", executionVerified: true,
+            taskVerified: true, parityState: .unverified, nativeReceipt: "/private/fixture/receipt.json",
+            taskQuality: .taskVerified), error: nil)
+    try check(C.referenceReviewToken == "reference_review_required" &&
+              (try C.decodeSnapshot(C.encode(reviewedCompleted))) == reviewedCompleted &&
+              C.referenceReviewNotice(reviewedCompleted)?.isEmpty == false,
+              "a completed model-backed delivery with the exact token carries the reference review notice")
+    var reviewedUnverified = reviewedCompleted; reviewedUnverified.state = .returnedUnverified
+    reviewedUnverified.result?.taskVerified = false; reviewedUnverified.result?.taskQuality = .executionOnly
+    reviewedUnverified.children = [reviewed(reviewReason, state: .succeeded)]
+    try check(C.referenceReviewNotice(reviewedUnverified) != nil, "a returned_unverified delivery carries it too")
+    var reviewedHeld = reviewedCompleted; reviewedHeld.state = .held; reviewedHeld.result = nil
+    var reviewedPrefix = reviewedCompleted; reviewedPrefix.children = [reviewed(reviewReason + "X")]
+    var reviewedLocal = reviewedCompleted; reviewedLocal.children = [reviewed(reviewReason, transport: .local)]
+    var reviewedEmpty = reviewedCompleted; reviewedEmpty.children = []
+    var reviewedFailedChild = reviewedCompleted; reviewedFailedChild.children = [reviewed(reviewReason, state: .failed)]
+    var reviewedPlain = reviewedCompleted; reviewedPlain.children = [reviewed("resolver;route_reference;pool_rank_0")]
+    for (label, value) in [("a held task without a result", reviewedHeld), ("a token prefix", reviewedPrefix),
+                           ("a local row", reviewedLocal), ("no children", reviewedEmpty),
+                           ("an undelivered child", reviewedFailedChild), ("no token", reviewedPlain)] {
+        try check(C.referenceReviewNotice(value) == nil, "no reference review notice for \(label)")
+    }
+    // A typed partial: only the children it carries are delivered.
+    var reviewedPartial = partialFailed
+    reviewedPartial.children[0] = reviewed(reviewReason)
+    try check(C.referenceReviewNotice(reviewedPartial) != nil, "a carried partial node carries the notice")
+    reviewedPartial.children[0] = reviewed("resolver;route_reference")
+    var unresolvedOnly = reviewed(reviewReason, state: .failed); unresolvedOnly.id = "n2"; unresolvedOnly.attemptID = "attempt-n2"
+    reviewedPartial.children[1] = unresolvedOnly
+    try check(C.referenceReviewNotice(reviewedPartial) == nil, "an unresolved, uncarried child never carries the notice")
     let deterministic = C.Snapshot(taskID: request.taskID, requestSHA256: request.requestSHA256, state: .completed,
         revision: 2, children: [], result: .init(output: "2", executionVerified: true, taskVerified: true,
             parityState: .unverified, nativeReceipt: nil, taskQuality: .taskVerified), error: nil)
@@ -789,6 +987,129 @@ func runRCCRuntimeContractFixture() throws {
                 .map { "\($0.selectedConfig.model)/\($0.selectedConfig.effort.rawValue)" } == ["gpt-6-luna/low", "gpt-6-astra/max"],
               "REAL Node disclosed fixture: the failed descent escalates exactly once to the reference")
     try check(try C.decodeSnapshot(C.encode(nativeDisclosed)) == nativeDisclosed, "a node-verifier disclosure roundtrips through Swift")
+    // K12 across the boundary: the REAL Core's failed and held outcomes for a
+    // v1 host and for a Swift-encoded result contract v2 request decode under
+    // the strict Swift contract (the failed v1 task is a typed failure with no
+    // result on the wire; the v2 partial is typed and bound to its children).
+    var partialRequest = request; partialRequest.taskID = "task-node-partial-v2"
+    partialRequest.resultContractVersion = 2; partialRequest.budget.maxAttempts = 1
+    let partialWireScript = """
+    import {pathToFileURL} from 'node:url';
+    import {readFileSync} from 'node:fs';
+    import {createHash} from 'node:crypto';
+    import {mkdtemp,rm} from 'node:fs/promises';
+    import {tmpdir} from 'node:os';
+    import {join} from 'node:path';
+    const {createRCCRuntime}=await import(pathToFileURL(process.argv[1]).href);
+    const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-partial-'));
+    const sha=s=>createHash('sha256').update(s).digest('hex');
+    const swiftV2=JSON.parse(readFileSync(0,'utf8'));
+    async function produce(name,task,error,det=false){
+      const now=Date.now();
+      const row=id=>({id,surface:'codex',transport:'codex_app_server',account_id:'fixture-account',model:'fixture-model',
+        effort:'low',tools:[],scope:'read_only',permission_profile:'read_only',quota_pool:'openai_codex',allowed_paths:[],
+        configuration_sha256:sha('fixture config '+id),availability:'available',availability_observed_at_ms:now-100,
+        availability_valid_until_ms:now+30000,quota_remaining_fraction:0.7,quota_observed_at_ms:now-100,
+        quota_valid_until_ms:now+30000,quality_state:'policy_admitted',estimated_cost_units:1});
+      const node=(id,candidate,dependencies)=>({id,instruction:'Return '+(id==='n1'?2:4),dependencies,kind:'agent',
+        candidate_id:candidate,scope:'read_only',owned_paths:[],context_refs:[]});
+      const local={...row('local-exact'),surface:'local',transport:'local',model:'exact',effort:'none',quota_pool:'none',
+        quota_remaining_fraction:null,quota_observed_at_ms:null,quota_valid_until_ms:null};
+      const nodes=det?[{...node('d','local-exact',[]),kind:'deterministic',instruction:'1+1'},node('n1','fake-a',[]),
+        node('n2','fake-b',['d','n1'])]:[node('n1','fake-a',[]),node('n2','fake-b',['n1'])];
+      const runtime=await createRCCRuntime({stateDir:join(root,name),
+        catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,
+          candidates:det?[row('fake-a'),row('fake-b'),local]:[row('fake-a'),row('fake-b')]}),
+        plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes,final_node_id:'n2'}),
+        execute:async ticket=>({schema:1,task_id:ticket.task_id,node_id:ticket.node_id,attempt_id:ticket.attempt_id,
+          candidate_id:ticket.candidate_id,configuration_sha256:ticket.configuration_sha256,selected_config:ticket.selected_config,
+          acknowledged_config:ticket.selected_config,observed_config:null,side_effects:'none',parity_state:'unverified',
+          native_receipt:join(root,'synthetic-native-'+ticket.attempt_id),usage:{input_tokens:4,output_tokens:2},
+          ...(ticket.node_id==='n1'?{status:'succeeded',dispatch_stage:'dispatched',output:'2',execution_verified:true,
+            task_verified:false,task_quality:'execution_only',native_summary:JSON.stringify({node:'n1'})}:
+           {status:'failed',dispatch_stage:'not_dispatched',output:null,error,execution_verified:false,
+            task_verified:false,task_quality:'failed',native_summary:null})}),
+        verifyTask:async()=>{throw Error('a partial task never requests parent adoption');}});
+      try{
+        let snapshot=await runtime.submit(task);const deadline=Date.now()+5000;
+        while(!['completed','returned_unverified','failed','held','effects_uncertain'].includes(snapshot.state)){
+          if(Date.now()>deadline)throw Error('fixture runtime timeout');
+          await new Promise(resolve=>setTimeout(resolve,5));snapshot=runtime.status({schema:1,task_id:task.task_id});
+        }
+        const stored=runtime._load(task.task_id);
+        return {snapshot,stored_version:stored.task.result_contract_version??null,durable_output:stored.result?.output??null};
+      }finally{await runtime.close();}
+    }
+    const v1=structuredClone(swiftV2);delete v1.result_contract_version;
+    const out={};
+    for(const [name,task,error,det] of [['failedV1',{...v1,task_id:'task-node-partial-v1'},'synthetic_outage'],
+      ['failedV2',swiftV2,'synthetic_outage'],['heldV1',{...v1,task_id:'task-node-held-v1'},'native_pre_dispatch_failed'],
+      ['heldV2',{...swiftV2,task_id:'task-node-held-v2'},'native_pre_dispatch_failed'],
+      ['failedV2Det',{...swiftV2,task_id:'task-node-partial-v2-det'},'synthetic_outage',true],
+      ['heldV2Det',{...swiftV2,task_id:'task-node-held-v2-det'},'native_pre_dispatch_failed',true]])
+      out[name]=await produce(name,task,error,det);
+    try{process.stdout.write(JSON.stringify(out));}finally{await rm(root,{recursive:true,force:true});}
+    """
+    let partialProcess = Process(), partialInput = Pipe(), partialOutput = Pipe(), partialErrors = Pipe()
+    partialProcess.executableURL = process.executableURL
+    partialProcess.arguments = (partialProcess.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
+        ["--input-type=module", "-e", partialWireScript, runtimeModule.path]
+    partialProcess.standardInput = partialInput; partialProcess.standardOutput = partialOutput
+    partialProcess.standardError = partialErrors
+    try partialProcess.run()
+    try partialInput.fileHandleForWriting.write(contentsOf: C.encode(partialRequest))
+    try partialInput.fileHandleForWriting.close()
+    let partialWire = partialOutput.fileHandleForReading.readDataToEndOfFile()
+    let partialWireErrors = partialErrors.fileHandleForReading.readDataToEndOfFile(); partialProcess.waitUntilExit()
+    try check(partialProcess.terminationStatus == 0,
+              "real Node partial producer exited successfully (error bytes \(partialWireErrors.count))")
+    let partialRuns = try JSONSerialization.jsonObject(with: partialWire) as! [String: [String: Any]]
+    func partialRun(_ name: String) throws -> (C.Snapshot, Any?, Any?) {
+        let run = partialRuns[name]!
+        return (try C.decodeSnapshot(JSONSerialization.data(withJSONObject: run["snapshot"]!)),
+                run["stored_version"], run["durable_output"])
+    }
+    let (failedV1, failedV1Version, failedV1Durable) = try partialRun("failedV1")
+    try check(failedV1.state == .failed && failedV1.result == nil &&
+              failedV1.error == "verified_not_dispatched_retry_exhausted" && failedV1Version is NSNull &&
+              failedV1Durable as? String == "n1: 2",
+              "REAL Node v1 failed task: a typed failure with no wire result; its partial stays durable")
+    let (failedV2, failedV2Version, _) = try partialRun("failedV2")
+    let wirePartial = failedV2.result?.partial
+    try check(failedV2.state == .failed && failedV2Version as? Int == 2 && failedV2.result?.output == "n1: 2" &&
+              wirePartial?.coverage == C.PartialCoverage(completedNodeIDs: ["n1"], unresolvedNodeIDs: ["n2"]) &&
+              wirePartial?.parent.taskID == partialRequest.taskID &&
+              wirePartial?.parent.requestSHA256 == partialRequest.requestSHA256 &&
+              (wirePartial?.parent.revision ?? .max) <= failedV2.revision &&
+              wirePartial?.nodes.count == 1 && wirePartial?.nodes.first?.nodeID == "n1" &&
+              wirePartial?.nodes.first?.attemptID == failedV2.children.first(where: { $0.id == "n1" })?.attemptID &&
+              wirePartial?.nodes.first?.outputSHA256 == C.digest(Data("2".utf8)) &&
+              wirePartial?.nodes.first?.nativeReceiptSHA256 == nil,
+              "REAL Node v2 failed partial from a Swift-encoded v2 request decodes typed and bound")
+    try check(try C.decodeSnapshot(C.encode(failedV2)) == failedV2, "a REAL Node v2 partial roundtrips through Swift")
+    let (heldV1, _, _) = try partialRun("heldV1")
+    try check(heldV1.state == .returnedUnverified && heldV1.result?.output == "n1: 2" && heldV1.result?.partial == nil,
+              "REAL Node v1 held-with-retained-output task is unchanged: returned_unverified, no partial")
+    let (heldV2, _, _) = try partialRun("heldV2")
+    try check(heldV2.state == .returnedUnverified && heldV2.result?.output == "n1: 2" &&
+              heldV2.result?.partial?.coverage.unresolvedNodeIDs == ["n2"] &&
+              heldV2.result?.partial?.parent.taskID == "task-node-held-v2",
+              "REAL Node v2 held outcome types the same answer as a partial")
+    // A deterministic node (host-computed exact local row, no attempt) beside
+    // model-backed nodes: both v2 paths keep the answer and type it.
+    for (name, state, error) in [("failedV2Det", C.State.failed, "verified_not_dispatched_retry_exhausted"),
+                                 ("heldV2Det", .returnedUnverified, "native_pre_dispatch_failed")] {
+        let (outcome, _, _) = try partialRun(name)
+        let typed = outcome.result?.partial
+        try check(outcome.state == state && outcome.error == error && outcome.result?.output == "d: 2\n\nn1: 2" &&
+                  typed?.coverage == C.PartialCoverage(completedNodeIDs: ["d", "n1"], unresolvedNodeIDs: ["n2"]) &&
+                  typed?.nodes.map(\.nodeID) == ["d", "n1"] && typed?.nodes[0].attemptID == nil &&
+                  outcome.children.first(where: { $0.id == "d" })?.attemptID == nil &&
+                  typed?.nodes[1].attemptID == outcome.children.first(where: { $0.id == "n1" })?.attemptID &&
+                  typed?.nodes[1].attemptID != nil,
+                  "REAL Node \(name): a deterministic node is carried with no attempt; the reason and answer stand")
+        try check(try C.decodeSnapshot(C.encode(outcome)) == outcome, "a REAL Node \(name) partial roundtrips through Swift")
+    }
     let soloTickets = actualTickets.filter { $0.taskID == "task-node-unverified" }
     try check(soloTickets.count == 1 && soloTickets[0].nativeResumeSessionID == "native-codex-fixture",
               "REAL core-issued single full-agent ticket retains its exact host session")

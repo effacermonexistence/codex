@@ -8,6 +8,7 @@ gates. No provider, network, live state, user HOME or other product is touched.
 """
 from pathlib import Path
 import hashlib
+import json
 import re
 import subprocess
 import tempfile
@@ -791,5 +792,65 @@ check("if value.allowNativeSubagents == true { throw Rejection.invalidConfigurat
       "ticket validation refuses allow_native_subagents=true on every surface (K13)")
 check("allow_native_subagents" not in RUNTIME and "delegation:" not in RUNTIME,
       "Core never emits the reserved delegation flag or a delegation object")
+
+# K12: result contract v2. The version is a request key on both sides (the
+# Swift rcc-intent and rcc-catalog operations decode every Core task through
+# requestShape), both sides negotiate the same versions, and the wire result
+# gate is the same on both sides: a failed, held or cancelled task carries a
+# result only as a typed v2 partial.
+check('"routing_intent_policy_version", "result_contract_version"], [' in TICKET_CONTRACT and
+      'case resultContractVersion = "result_contract_version"' in TICKET_CONTRACT,
+      "Swift Request and requestShape accept result_contract_version (K12)")
+check("'result_contract_version', ...(allowCoreRouting ? ['core_routing'] : [])" in RUNTIME and
+      "const RESULT_CONTRACT_VERSIONS = new Set([1, 2]);" in RUNTIME and
+      "public static let resultContractVersions: Set<Int> = [1, 2]" in TICKET_CONTRACT,
+      "JS validateTask and Swift validate(Request) accept the same result contract versions (K12)")
+check('"native_summaries", "partial"], ["partial": partialShape])' in TICKET_CONTRACT and
+      "result: publicResult(snapshot)," in RUNTIME and
+      "const PARTIAL_RESULT_STATES = new Set(['failed', 'held', 'cancelled']);" in RUNTIME and
+      "(result.partial != nil && [.failed, .held, .cancelled].contains(value.state))" in TICKET_CONTRACT,
+      "the public result gate matches validate(Snapshot): failed/held/cancelled only as a v2 partial (K12)")
+
+# K14: an unclassified offered model is an informational exclusion, never a
+# hold. Both allowlists (and their informational subsets) are one set; every
+# model the bundled server config signs is classified, so today's catalogs
+# emit no unclassified_model; the notice reaches the per-delivery channel.
+
+
+def string_set(text, start):
+    body = section(text, start, "]")
+    return set(re.findall(r"['\"]([a-z0-9_.\-]+)['\"]", body))
+
+
+JS_REASONS = string_set(RUNTIME, "const EXCLUSION_REASONS = new Set([")
+SWIFT_REASONS = string_set(TICKET_CONTRACT, "public static let reasons: Set<String> = [")
+check(JS_REASONS == SWIFT_REASONS and "unclassified_model" in JS_REASONS and len(JS_REASONS) == 13,
+      "JS EXCLUSION_REASONS and Swift Exclusion.reasons are the same set (K14)")
+check(string_set(RUNTIME, "const INFORMATIONAL_EXCLUSIONS = new Set([") ==
+      string_set(TICKET_CONTRACT, "public static let informational: Set<String> = [") == {"unclassified_model"},
+      "the informational reason subset is the same on both sides (K14)")
+check("(catalog.exclusions === undefined || validInformationalExclusions(catalog))" in RUNTIME and
+      "(catalog.exclusions ?? []).some(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason))" in RUNTIME and
+      "value.exclusions?.contains(where: { !Exclusion.informational.contains($0.reason) }) == true" in TICKET_CONTRACT and
+      "for exclusion in exclusions where Exclusion.informational.contains(exclusion.reason)" in TICKET_CONTRACT,
+      "an informational exclusion needs a tier-less offered row and never explains an empty catalog, on both sides (K14)")
+tier_names = set(re.findall(r'"([^"]+)"\s*:\s*\.', table))
+known_untiered = set(re.findall(r'"([^"]+)"', section(TIERS, "public static let knownUntiered: Set<String> = [", "]")))
+check(len(known_untiered) == 9 and not (known_untiered & tier_names) and "gpt-6-sol" in known_untiered,
+      "the known untiered set is explicit data, disjoint from the tier table (K14)")
+PRODUCTION = json.loads((ROOT / "Config/production.json").read_text())
+signed = {profile["model"].split("[", 1)[0] for profile in PRODUCTION["execution_profiles"].values()
+          if profile.get("provider") in ("codex", "claude")}
+check(signed and signed <= tier_names | known_untiered,
+      "every model the bundled config signs is classified, so no production catalog emits unclassified_model: " +
+      ", ".join(sorted(signed - tier_names - known_untiered)))
+check('excluded[provider, default: [:]]["unclassified_model"] = unclassified.count' in BUILDER and
+      "ModelTiers.classification(of: $0.model) == .unclassified" in BUILDER,
+      "the builder reports unclassified offered models, informational only (K14)")
+review = section(MAIN, "if let review = RCCRuntimeContract.referenceReviewNotice(result) {", "}")
+check("routingNotices.append(review)" in review and "RuntimeActivity.emit(.routing, publicText: review)" in review and
+      "export function referenceReviewReason(" in RUNTIME and "const review = referenceReviewRequired(snapshot.catalog);" in RUNTIME and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"' in RELEASE,
+      "every model-backed delivery while an unclassified model is offered carries the reference review notice (K14)")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

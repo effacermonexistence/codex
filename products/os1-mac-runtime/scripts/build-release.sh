@@ -99,6 +99,7 @@ node --test "$script_dir/fixtures/openclaw-rcc-cross-parent-pool.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-ready-wave.test.mjs"
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-bind-catalog-reuse.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-partial-failure.test.mjs"
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-partial-contract.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-native-budget.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-zero-generation.test.mjs"
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-exact-arithmetic.test.mjs"
@@ -116,6 +117,9 @@ node --test "$script_dir/fixtures/openclaw-rcc-owner-parallel-contract.test.mjs"
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-owner-explicit-parallel.test.mjs"
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-bounded-auto.test.mjs"
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-one-law.test.mjs"
+# K14: an unclassified offered model is isolated (informational exclusion, no
+# hold) and every model-backed delivery names reference_review_required.
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"
 # K4: node verifier registry soundness, and the tier-routing and runtime fixtures that
 # hold most verifier/ladder coverage; a per-test timeout turns a hang into a failure.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-verifier-registry.test.mjs"

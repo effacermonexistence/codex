@@ -205,17 +205,23 @@ public enum RCCRuntimeContract {
         public var coreRouting: CoreRouting?
         /// Explicit host migration marker, separate from unchanged original request bytes.
         public var routingIntentPolicyVersion: String?
+        /// K12: the result contract this host reads (nil = 1). Only a v2
+        /// task's partial outcome is typed (Result.partial). Part of Core's
+        /// submit fingerprint: never re-send a task ID under another version.
+        public var resultContractVersion: Int?
         public init(schema: Int = 1, taskID: String, request: String, requestSHA256: String, objective: String,
                     policySHA256: String, sourceFingerprint: String, mode: Mode, materialRefs: [String], budget: Budget,
                     context: String? = nil, workspace: String? = nil, nativeSessions: [String: String]? = nil,
                     providerPreference: String? = nil, policy: Policy? = nil, hostContext: HostContext? = nil,
-                    coreRouting: CoreRouting? = nil, routingIntentPolicyVersion: String? = nil) {
+                    coreRouting: CoreRouting? = nil, routingIntentPolicyVersion: String? = nil,
+                    resultContractVersion: Int? = nil) {
             self.schema = schema; self.taskID = taskID; self.request = request; self.requestSHA256 = requestSHA256
             self.objective = objective; self.policySHA256 = policySHA256; self.sourceFingerprint = sourceFingerprint
             self.mode = mode; self.materialRefs = materialRefs; self.budget = budget; self.context = context
             self.workspace = workspace; self.nativeSessions = nativeSessions; self.providerPreference = providerPreference; self.policy = policy
             self.hostContext = hostContext; self.coreRouting = coreRouting
             self.routingIntentPolicyVersion = routingIntentPolicyVersion
+            self.resultContractVersion = resultContractVersion
         }
         enum CodingKeys: String, CodingKey {
             case schema, request, objective, mode, budget, context, workspace, policy
@@ -224,6 +230,7 @@ public enum RCCRuntimeContract {
             case providerPreference = "provider_preference"
             case hostContext = "host_context", coreRouting = "core_routing"
             case routingIntentPolicyVersion = "routing_intent_policy_version"
+            case resultContractVersion = "result_contract_version"
         }
     }
     public struct ExactConfig: Codable, Equatable, Sendable {
@@ -302,10 +309,14 @@ public enum RCCRuntimeContract {
     }
     /// Why configured profiles produced no candidate, counted per provider.
     /// Evidence for an explicit hold, never a routing proposal or quota claim.
+    /// An `informational` reason (K14 `unclassified_model`: the pool offers a
+    /// model OS-1 cannot classify) explains no hold: it never stands for an
+    /// empty catalog and needs an offered tier-less row of its provider.
     public struct Exclusion: Codable, Equatable, Sendable {
         public static let reasons: Set<String> = ["signed_out", "non_subscription", "model_unavailable", "quota_zero",
             "capacity_zero", "codex_hidden", "effort_requires_explicit_request", "explicit_constraint_unavailable",
-            "chat_gate_refused", "gpt_dropped", "quota_backoff", "reference_unavailable"]
+            "chat_gate_refused", "gpt_dropped", "quota_backoff", "reference_unavailable", "unclassified_model"]
+        public static let informational: Set<String> = ["unclassified_model"]
         public static let providers: Set<String> = ["codex", "claude"]
         public var provider: String
         public var reason: String
@@ -1124,13 +1135,17 @@ public enum RCCRuntimeContract {
         public var nativeReceipt: String?
         public var nativeSummary: String?
         public var nativeSummaries: [String]?
+        /// K12: present only for a v2 task whose answer is partial (a failed,
+        /// held, cancelled or returned_unverified task). Never a whole answer.
+        public var partial: Partial?
         public init(output: String, executionVerified: Bool, taskVerified: Bool, parityState: Parity, nativeReceipt: String?, nativeSummary: String? = nil,
-                    nativeSummaries: [String]? = nil, taskQuality: TaskQuality? = nil) {
+                    nativeSummaries: [String]? = nil, taskQuality: TaskQuality? = nil, partial: Partial? = nil) {
             self.output = output; self.executionVerified = executionVerified; self.taskVerified = taskVerified
             self.parityState = parityState; self.nativeReceipt = nativeReceipt
             self.nativeSummary = nativeSummary
             self.nativeSummaries = nativeSummaries
             self.taskQuality = taskQuality
+            self.partial = partial
         }
         enum CodingKeys: String, CodingKey {
             case output, executionVerified = "execution_verified", taskVerified = "task_verified"
@@ -1138,6 +1153,64 @@ public enum RCCRuntimeContract {
             case nativeSummary = "native_summary"
             case nativeSummaries = "native_summaries"
             case taskQuality = "task_quality"
+            case partial
+        }
+    }
+    /// K12 partial result v2 (RT-08): which nodes completed and which did not
+    /// (every child, exactly once), the parent task and revision it was
+    /// attached at, and one entry per node whose output the result carries.
+    /// Core keeps no digest of a child's native receipt, so that is optional.
+    /// A completed deterministic node (a host-computed exact local row) runs
+    /// no attempt, so its entry has no attempt id; every other entry has one.
+    public struct Partial: Codable, Equatable, Sendable {
+        public var coverage: PartialCoverage
+        public var parent: PartialParent
+        public var nodes: [PartialNode]
+        public init(coverage: PartialCoverage, parent: PartialParent, nodes: [PartialNode]) {
+            self.coverage = coverage; self.parent = parent; self.nodes = nodes
+        }
+    }
+    public struct PartialCoverage: Codable, Equatable, Sendable {
+        public var completedNodeIDs: [String]
+        public var unresolvedNodeIDs: [String]
+        public init(completedNodeIDs: [String], unresolvedNodeIDs: [String]) {
+            self.completedNodeIDs = completedNodeIDs; self.unresolvedNodeIDs = unresolvedNodeIDs
+        }
+        /// K12b: what a partial answer covers, shown beside its output on every
+        /// surface (CLI, task graph, App). Counts and node ids only, never a
+        /// quality claim; at most `maximumIDs` unresolved ids are named.
+        public func label(maximumIDs: Int = 8) -> String {
+            let total = completedNodeIDs.count + unresolvedNodeIDs.count
+            let named = unresolvedNodeIDs.prefix(maximumIDs).joined(separator: ", ")
+                + (unresolvedNodeIDs.count > maximumIDs ? " +\(unresolvedNodeIDs.count - maximumIDs)" : "")
+            return os1Tr("부분 결과 · 완료 \(completedNodeIDs.count)/\(total) · 미해결: " + named,
+                         "Partial result · completed \(completedNodeIDs.count)/\(total) · unresolved: " + named)
+        }
+        enum CodingKeys: String, CodingKey {
+            case completedNodeIDs = "completed_node_ids", unresolvedNodeIDs = "unresolved_node_ids"
+        }
+    }
+    public struct PartialParent: Codable, Equatable, Sendable {
+        public var taskID: String
+        public var requestSHA256: String
+        public var revision: Int
+        public init(taskID: String, requestSHA256: String, revision: Int) {
+            self.taskID = taskID; self.requestSHA256 = requestSHA256; self.revision = revision
+        }
+        enum CodingKeys: String, CodingKey { case taskID = "task_id", requestSHA256 = "request_sha256", revision }
+    }
+    public struct PartialNode: Codable, Equatable, Sendable {
+        public var nodeID: String
+        public var attemptID: String?
+        public var outputSHA256: String
+        public var nativeReceiptSHA256: String?
+        public init(nodeID: String, attemptID: String?, outputSHA256: String, nativeReceiptSHA256: String? = nil) {
+            self.nodeID = nodeID; self.attemptID = attemptID; self.outputSHA256 = outputSHA256
+            self.nativeReceiptSHA256 = nativeReceiptSHA256
+        }
+        enum CodingKeys: String, CodingKey {
+            case nodeID = "node_id", attemptID = "attempt_id", outputSHA256 = "output_sha256"
+            case nativeReceiptSHA256 = "native_receipt_sha256"
         }
     }
     /// A route of a best-effort route test (route-all) that Core did not
@@ -1263,6 +1336,7 @@ public enum RCCRuntimeContract {
         guard value.routingIntentPolicyVersion == nil ||
             (value.routingIntentPolicyVersion == RoutingIntentV2.version && value.mode == .auto)
             else { throw Rejection.invalidConfiguration }
+        guard value.resultContractVersion.map(resultContractVersions.contains) ?? true else { throw Rejection.invalidInput }
         guard id(value.taskID) else { throw Rejection.invalidIdentity }
         guard isHash(value.requestSHA256), value.requestSHA256 == digest(Data(value.request.utf8)),
               isHash(value.policySHA256), isHash(value.sourceFingerprint) else { throw Rejection.invalidHash }
@@ -1401,15 +1475,24 @@ public enum RCCRuntimeContract {
             guard scores.count <= 256, scores.allSatisfy({ text($0.key, max: 256) && models.contains($0.key) &&
                 (0...1_000_000_000).contains($0.value) }) else { throw Rejection.invalidObservation }
         }
+        func provider(_ candidate: Candidate) -> String? {
+            switch candidate.quotaPool {
+            case .openAICodex: return "codex"
+            case .anthropicShared: return "claude"
+            default: return nil
+            }
+        }
+        // K14: an informational exclusion names a provider whose offered rows
+        // include a model with no provider-stated tier on a tiered catalog.
+        if let exclusions = value.exclusions {
+            for exclusion in exclusions where Exclusion.informational.contains(exclusion.reason) {
+                guard let tiers = value.modelTiers, value.candidates.contains(where: {
+                    provider($0) == exclusion.provider && tiers[$0.model] == nil
+                }) else { throw Rejection.invalidObservation }
+            }
+        }
         if let native = value.nativeReferenceEfforts {
             let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
-            func provider(_ candidate: Candidate) -> String? {
-                switch candidate.quotaPool {
-                case .openAICodex: return "codex"
-                case .anthropicShared: return "claude"
-                default: return nil
-                }
-            }
             var represented: [String: Set<String>] = [:]
             for candidate in value.candidates {
                 if let provider = provider(candidate) { represented[provider, default: []].insert(candidate.model) }
@@ -1436,7 +1519,10 @@ public enum RCCRuntimeContract {
         }
         try validateAdmissionFacts(value, request: request)
         // An empty catalog must say why; otherwise it is a malformed binding.
-        guard !value.candidates.isEmpty || value.exclusions != nil else { throw Rejection.invalidIdentity }
+        // An informational reason explains no hold (K14).
+        guard !value.candidates.isEmpty ||
+              value.exclusions?.contains(where: { !Exclusion.informational.contains($0.reason) }) == true
+        else { throw Rejection.invalidIdentity }
         for candidate in value.candidates { try validate(candidate) }
     }
     /// Build 407: the admission facts travel together (owner_scope,
@@ -1882,7 +1968,10 @@ public enum RCCRuntimeContract {
                   child.outputSummary.map({ $0.utf8.count <= 4_096 && !$0.contains("\0") }) ?? true else { throw Rejection.invalidSnapshot }
         }
         if let result = value.result {
-            guard value.state == .completed || value.state == .returnedUnverified || value.installHandoff != nil,
+            // K12: a failed, held or cancelled task carries a result only as a
+            // v2 partial; a v1 host never sees one there.
+            guard value.state == .completed || value.state == .returnedUnverified || value.installHandoff != nil ||
+                    (result.partial != nil && [.failed, .held, .cancelled].contains(value.state)),
                   text(result.output, max: 256_000),
                   !result.taskVerified || result.executionVerified,
                   !result.executionVerified || result.nativeReceipt != nil || (result.taskVerified && value.children.allSatisfy { $0.selectedConfig?.transport == .local }),
@@ -1890,6 +1979,7 @@ public enum RCCRuntimeContract {
             if let quality = result.taskQuality { guard (quality == .taskVerified) == result.taskVerified else { throw Rejection.invalidSnapshot } }
             guard result.nativeSummary.map({ $0.utf8.count <= 512_000 && !$0.contains("\0") }) ?? true,
                   result.nativeSummaries.map({ $0.count <= maximumNodes && $0.allSatisfy { $0.utf8.count <= 512_000 && !$0.contains("\0") } }) ?? true else { throw Rejection.invalidSnapshot }
+            if let partial = result.partial { try validate(partial, of: result, in: value) }
         }
         if value.state == .completed { guard value.result?.taskVerified == true && value.error == nil else { throw Rejection.invalidSnapshot } }
         if value.state == .returnedUnverified { guard let result = value.result, !result.taskVerified, result.parityState == .unverified else { throw Rejection.invalidSnapshot } }
@@ -1907,6 +1997,73 @@ public enum RCCRuntimeContract {
             guard !skipped.isEmpty, skipped.count <= 8,
                   skipped.allSatisfy({ text($0.instruction, max: 12_000) && text($0.reason, max: 1_024) }) else { throw Rejection.invalidSnapshot }
         }
+    }
+    /// The result contract versions a host may request (nil = 1).
+    public static let resultContractVersions: Set<Int> = [1, 2]
+    /// K14: the reason token Core appends to a model-backed child's PUBLIC
+    /// routing decision while its catalog offers an unclassified model
+    /// (`unclassified_model`). The stored decision and the ledger are unchanged.
+    public static let referenceReviewToken = "reference_review_required"
+    /// K14: one routing notice for a delivered answer while an unclassified
+    /// new model is offered. Delivered means a whole answer (completed,
+    /// returned_unverified or an install handoff: its completed children) or a
+    /// typed partial (the children it carries). Only a delivered child that ran
+    /// on a model (not a local row) and whose public reason carries the exact
+    /// token counts. It discloses that the reference stays the existing
+    /// classified model (the escalation reference of a certified descent too);
+    /// it never says which row produced the answer and never claims anything
+    /// about the new model.
+    public static func referenceReviewNotice(_ snapshot: Snapshot) -> String? {
+        let delivered: (ChildSnapshot) -> Bool
+        if let partial = snapshot.result?.partial {
+            let carried = Set(partial.nodes.map(\.nodeID))
+            delivered = { carried.contains($0.id) }
+        } else if [.completed, .returnedUnverified, .awaitingInstall].contains(snapshot.state) {
+            delivered = { $0.state == .completed || $0.state == .succeeded }
+        } else { return nil }
+        guard snapshot.children.contains(where: { child in
+            delivered(child) && child.selectedConfig.map({ $0.transport != .local }) == true &&
+                child.routingDecision?.reason.split(separator: ";").contains(Substring(referenceReviewToken)) == true
+        }) else { return nil }
+        return os1Tr("분류되지 않은 새 모델이 있어 레퍼런스는 기존 분류 모델로 유지됩니다 · 레퍼런스 검토 필요(ModelTiers 갱신 시 해소)",
+                     "An unclassified new model is offered; the reference stays the existing classified model · reference review required (cleared by updating ModelTiers)")
+    }
+    /// K12b negotiation: a typed partial answers only a request that asked for
+    /// result contract v2. A host that did not treats one as a contract breach.
+    public static func negotiated(_ snapshot: Snapshot, resultContractVersion version: Int?) -> Bool {
+        version == 2 || snapshot.result?.partial == nil
+    }
+    /// K12: a v2 partial is bound to this task (id, request, a revision it has
+    /// reached), covers every child exactly once (completed vs unresolved,
+    /// at least one unresolved), and carries each completed node: per carried
+    /// node the child's current attempt and a digest of its output. Only a
+    /// completed deterministic child (no attempt, a local exact row, not the
+    /// local worker model) is carried without an attempt id. Never a
+    /// task-verified or reference-parity answer, never an install handoff.
+    private static func validate(_ partial: Partial, of result: Result, in value: Snapshot) throws {
+        let children = Dictionary(uniqueKeysWithValues: value.children.map { ($0.id, $0) })
+        let completed = partial.coverage.completedNodeIDs, unresolved = partial.coverage.unresolvedNodeIDs
+        let carried = partial.nodes.map(\.nodeID)
+        guard [.returnedUnverified, .failed, .held, .cancelled].contains(value.state), value.installHandoff == nil,
+              !result.taskVerified, result.parityState == .unverified,
+              result.taskQuality.map({ [.executionOnly, .unverified].contains($0) }) ?? true,
+              partial.parent.taskID == value.taskID, partial.parent.requestSHA256 == value.requestSHA256,
+              partial.parent.revision > 0, partial.parent.revision <= value.revision,
+              (completed + unresolved).allSatisfy(id), !unresolved.isEmpty,
+              Set(completed + unresolved).count == completed.count + unresolved.count,
+              Set(completed + unresolved) == Set(children.keys),
+              completed.allSatisfy({ children[$0].map { [.completed, .succeeded].contains($0.state) } ?? false }),
+              unresolved.allSatisfy({ children[$0].map { ![.completed, .succeeded].contains($0.state) } ?? false }),
+              !partial.nodes.isEmpty, partial.nodes.count <= maximumNodes, Set(carried).count == carried.count,
+              Set(completed).isSubset(of: Set(carried)),
+              partial.nodes.allSatisfy({ node in
+                  guard let child = children[node.nodeID] else { return false }
+                  let attempt = node.attemptID.map { child.attemptID == $0 } ?? (child.attemptID == nil &&
+                      [.completed, .succeeded].contains(child.state) && child.selectedConfig.map {
+                          $0.surface == .local && $0.transport == .local && $0.quotaPool == .none &&
+                              $0.model != RCCNativeCatalogBuilder.localWorkerModel } == true)
+                  return attempt && isHash(node.outputSHA256) && (node.nativeReceiptSHA256.map(isHash) ?? true) })
+        else { throw Rejection.invalidSnapshot }
     }
     public static func validate(_ value: Event) throws {
         guard value.schema == schema else { throw Rejection.invalidSchema }
@@ -1950,7 +2107,7 @@ public enum RCCRuntimeContract {
     private static let capacityPlanShape = Shape.object(["codex", "claude"])
     private static let hostShape = Shape.object(["workspace", "context", "provider_preference", "codex_session_id", "claude_session_id", "require_read_only", "owner_policy", "explicit_routes", "conversation_id", "submission_id", "capacity_plan", "explicit_routes_best_effort"], ["owner_policy": ownerPolicyShape, "explicit_routes": .array(explicitRouteShape), "capacity_plan": capacityPlanShape])
     private static let coreRoutingShape = Shape.object(["schema", "original_source_fingerprint", "original_mode", "original_provider_preference", "original_require_read_only", "resolution_sha256", "model_answer"])
-    private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing", "routing_intent_policy_version"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
+    private static let requestShape = Shape.object(["schema", "task_id", "request", "request_sha256", "objective", "policy_sha256", "source_fingerprint", "mode", "material_refs", "budget", "context", "workspace", "native_sessions", "provider_preference", "policy", "host_context", "core_routing", "routing_intent_policy_version", "result_contract_version"], ["budget": budgetShape, "policy": policyShape, "host_context": hostShape, "core_routing": coreRoutingShape])
     private static let exclusionShape = Shape.object(["provider", "reason", "count"])
     private static let routingIntentV2Shape = Shape.object(["version", "allowed_surfaces", "exact_model", "model_family", "effort", "require_native_ceiling", "quality_target", "state"])
     private static let routingIntentShape = Shape.object(["effort", "model_family"])
@@ -1973,7 +2130,8 @@ public enum RCCRuntimeContract {
     private static let configuredBytesShape = Shape.object(["sha256", "utf8_bytes"])
     private static let configuredInputShape = Shape.object(["schema", "kind", "task_id", "node_id", "attempt_id", "candidate_id", "request_sha256", "source_fingerprint", "original_source_fingerprint", "policy_sha256", "policy_source_sha256", "configuration_sha256", "selected_config_sha256", "renderer_id", "harness_sha256", "launch_entry_sha256", "native_binary_sha256", "native_binary_basis", "catalog_sha256", "catalog_observed_at_ms", "prepared_at_ms", "catalog_basis", "channel", "session_state", "delegated_input", "provider_input", "instructions", "base_instructions", "execution_configuration_sha256", "execution_configuration_basis", "input_coverage", "capture_state", "backend_inclusion_verified", "quality_certified", "execution_authorized", "tokenizer_id", "input_tokens", "context_window_tokens", "family", "capacity_upper_bound"], ["delegated_input": configuredBytesShape, "provider_input": configuredBytesShape, "instructions": configuredBytesShape, "base_instructions": configuredBytesShape])
     private static let recordShape = Shape.object(["schema", "task_id", "node_id", "attempt_id", "candidate_id", "configuration_sha256", "selected_config", "acknowledged_config", "observed_config", "status", "output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "side_effects", "usage", "error", "dispatch_stage", "native_summary", "handback", "repair_source", "native_turn_terminated", "operational_quality", "staged_writer", "configured_input_observation"], ["selected_config": configShape, "acknowledged_config": configShape, "observed_config": configShape, "usage": usageShape, "handback": handbackShape, "repair_source": repairSourceShape, "operational_quality": operationalQualityShape, "staged_writer": stagedWriterShape, "configured_input_observation": configuredInputShape])
-    private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries"])
+    private static let partialShape = Shape.object(["coverage", "parent", "nodes"], ["coverage": .object(["completed_node_ids", "unresolved_node_ids"]), "parent": .object(["task_id", "request_sha256", "revision"]), "nodes": .array(.object(["node_id", "attempt_id", "output_sha256", "native_receipt_sha256"]))])
+    private static let resultShape = Shape.object(["output", "execution_verified", "task_verified", "task_quality", "parity_state", "native_receipt", "native_summary", "native_summaries", "partial"], ["partial": partialShape])
     private static let ladderShape = Shape.object(["cheap_effort", "reference_effort", "cheap_model", "reference_model"])
     private static let routingDecisionShape = Shape.object(["route_class", "resolved_candidate_id", "surface", "model", "effort", "quota_pool", "reason", "quota_remaining_fraction", "ladder", "tier"], ["ladder": ladderShape])
     private static let qualityDisclosureShape = Shape.object(["coverage", "failed_check_ids", "witness_sha256", "checker"])
