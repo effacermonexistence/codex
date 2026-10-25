@@ -657,8 +657,8 @@ func runRCCRuntimeContractFixture() throws {
       // 407 binds it; no ledger history or same-model ladder lowers it.
       const candidates=ladder?[candidate,{...candidate,id:'fake-codex-max',effort:'max',configuration_sha256:sha('fixture config max')}]:[candidate];
       // A tier fixture: the frontier reference and a fast model in one pool; a
-      // registered verifier certifies the fast descent (R0 (b)); its first
-      // answer is empty, so it escalates once to the reference (R9).
+      // registered sound_full node verifier certifies the fast descent (R0 (b),
+      // K4); its first answer is empty, so it escalates once to the reference (R9).
       if(tiered)candidates.splice(0,candidates.length,
         {...candidate,id:'fake-astra-max',model:'gpt-6-astra',effort:'max',configuration_sha256:sha('fixture astra max')},
         {...candidate,id:'fake-luna-low',model:'gpt-6-luna',effort:'low',configuration_sha256:sha('fixture luna low')});
@@ -670,7 +670,9 @@ func runRCCRuntimeContractFixture() throws {
       // so the descent escalates once and the reference's own answer, which
       // the verifier also rejects, is delivered with its disclosure.
       const runtime=await createRCCRuntime({stateDir:join(root,disclosed?'disclosed':ladder?'ladder':graded?'graded':verified?'verified':'unverified'),
-        ...(tiered?{verifierRegistry:new Map([['trivial:read_only:agent',async()=>({passed:!disclosed,reason:'fixture'})]])}:{}),
+        ...(tiered?{verifierRegistry:new Map([['fixture-sound',{id:'fixture-sound',scope:'read_only',surfaces:['agent','chat'],
+          soundness:'sound_full',applies:()=>true,refutations:[{instruction:'Return 2',output:'3'}],
+          verify:async input=>({passed:!disclosed&&input.output===String(2*Number(input.node_id.slice(1))),reason:'fixture'})}]])}:{}),
         catalog:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates,
           ...(tiered?{model_tiers:{'gpt-6-astra':'frontier','gpt-6-luna':'fast'}}:{})}),
         plan:async()=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,nodes,

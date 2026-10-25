@@ -1733,15 +1733,15 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
 /// What the real JS resolver binds for one host node (read-only unless
 /// `scope` says workspace_write) on exactly these catalog bytes, by the one
 /// admission law (build 407): "reference" with no certifying source,
-/// "certified" with a registered gold-blind verifier for the certified class
-/// (R0 (b)). Returns "pool/model/effort/route_kind", then ">model" of its
+/// "certified" with a registered sound_full node verifier that applies to the
+/// node (R0 (b), K4). Returns "pool/model/effort/route_kind", then ">model" of its
 /// escalation reference when it has one, or "error:<code>".
 private func javascriptRoute(_ catalog: Data, admission: String = "reference", now: Date,
                              scope: String = "read_only", explicitRoutes: [String]? = nil, routeIndex: Int = 0) throws -> String {
     let script = """
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
-    const {resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
+    const {resolveRoutePlan,registerNodeVerifiers}=await import(pathToFileURL(process.argv[1]).href);
     const catalog=JSON.parse(readFileSync(0,'utf8'));
     const write=process.argv[4]==='workspace_write';
     const explicit=JSON.parse(process.argv[5]), ordinal=Number(process.argv[6]);
@@ -1751,9 +1751,10 @@ private func javascriptRoute(_ catalog: Data, admission: String = "reference", n
       host_context:{require_read_only:!write,...(explicit?{explicit_routes:explicit.map(surface=>({surface,instruction}))}:{})}};
     const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id,
       instruction,dependencies:[],kind:'agent',scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
-    const passes=async()=>({passed:true,reason:'fixture'});
-    const verifierRegistry=process.argv[3]==='certified'?
-      new Map([['trivial:read_only:agent',passes],['trivial:read_only:chat',passes]]):null;
+    const verifierRegistry=process.argv[3]==='certified'?await registerNodeVerifiers(new Map([['fixture-sound',
+      {id:'fixture-sound',scope:'read_only',surfaces:['agent','chat'],soundness:'sound_full',applies:()=>true,
+        refutations:[{instruction:'Explain the login function',output:'fixture wrong answer'}],
+        verify:async input=>({passed:input.output==='fixture answer',reason:'fixture'})}]])):null;
     try {
       const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2]),{verifierRegistry}).decisions[id];
       process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`+

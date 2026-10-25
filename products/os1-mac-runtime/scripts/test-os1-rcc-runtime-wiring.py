@@ -515,6 +515,59 @@ check("export const TIER_ROUTES" in RUNTIME and "'model_tiers'" in RUNTIME and "
       "referenceOnly: escalated" in RUNTIME and "pendingEscalation(" in RUNTIME and
       "export function admittedRoute(" in RUNTIME and "function certifiedAnswer(" in RUNTIME,
       "core binds every node by the admission law and escalates a rejected certified descent once to the reference")
+# K4: only a probed sound_full verifier whose applies() holds certifies (probes
+# fail closed and get the certifier's own row-free input), and a verifier-admitted
+# descent is delivered only with that certifier's pass on THIS attempt;
+# production registers none. The node fixtures are the behaviour gate.
+check("export async function registerNodeVerifiers(" in RUNTIME and "verifier_registration_unsound" in RUNTIME and
+      "if (!plain(verdict) || verdict.passed !== false) throw new RCCRuntimeError('verifier_registration_probe_unanswered');" in RUNTIME and
+      "selected_config: certifier ? null : exactConfig(candidate)" in RUNTIME and
+      "VERIFIER_REGISTRATION_TIMEOUT_MS" not in RUNTIME and
+      "function soundVerifierFor(" in RUNTIME and "function verifiedSurfaceKinds(" not in RUNTIME and
+      "case 'verifier': return true" not in RUNTIME and
+      "verdict.attempt_id === result.attempt_id" in RUNTIME and
+      "const registry = await registerNodeVerifiers(verifierRegistry ?? new Map());" in RUNTIME and
+      "if (descent && (result.handback || result.repair_source)) {" in RUNTIME and
+      "verifierRegistry" not in PLUGIN and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-verifier-registry.test.mjs"' in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-tier-routing.test.mjs"' in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-runtime.test.mjs"' in RELEASE,
+      "K4: applicability-scoped verifier certification, per-attempt acceptance, none registered in production, fixtures release-gated")
+# K9: every ledger record this build fixes names its delivery basis and its
+# check; the offline delivery_policy_valid audit reads the JSONL only (its one
+# bundled import is the pure resource reducer K16's parity check uses; the
+# script is never bundled itself) and is release-gated.
+REPLAY = (ROOT / "scripts/route-replay.mjs").read_text()
+check("export function deliveryBasisOf(" in RUNTIME and "export function checkIdOf(" in RUNTIME and
+      "delivery_basis: deliveryBasis, check_id: checkID, stratum," in RUNTIME and
+      "...(typeof route.delivery_basis === 'string' ? this._ledgerCheck(route, checkOutcome) : {})," in RUNTIME and
+      "score_space: 'check_acceptance_v1'" in RUNTIME and "'certifier_unavailable'" in RUNTIME and
+      "entry?.check_outcome ?? null" in RUNTIME and "settled ? entry.check_outcome ?? null : null" in RUNTIME and
+      "export function auditDeliveryPolicy(" in REPLAY and
+      re.findall(r"openclaw-os1-bridge/[\w.-]+", REPLAY) == ["openclaw-os1-bridge/resource-usage.mjs"] and
+      "fetch(" not in REPLAY and "node:child_process" not in REPLAY and
+      "const SUBCOMMANDS = Object.freeze({delivery: runDelivery" in REPLAY and
+      "route-replay.mjs" not in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-replay.test.mjs"' in RELEASE,
+      "K9: ledger delivery basis and check per attempt; offline delivery_policy_valid audit, release-gated")
+# K16: `route-replay.mjs usage` reports M1 (verified_not_dispatched null usage is
+# verified zero, per-pool completeness from snapshots, the runtime reducer as a
+# fail-closed parity check); quota-replay.py keeps M2/M3 as labelled estimates
+# and judges 15% per pool from M4 alone with the quantization-conservative bound.
+# Both are offline scripts, never bundled, and release-gated.
+QUOTA = (ROOT / "scripts/quota-replay.py").read_text()
+M4_SECTION = section(QUOTA, "# ---- M4: the only verdict. ----", "def build_report(")
+check("export function replayUsage(" in REPLAY and "usage: runUsage" in REPLAY and
+      "record.attempt_state === 'verified_not_dispatched' ? {state: 'verified_zero'}" in REPLAY and
+      "summarizeTaskResources(snapshot)" in REPLAY and "'runtime_reducer_native_incomplete'" in REPLAY and
+      "def m4_verdict(m4, task_pools):" in QUOTA and 'VERDICT_BASIS = "M4_quota_window_observation_only"' in QUOTA and
+      "THRESHOLD = Fraction(15, 100)" in QUOTA and "lower = 1 - (d_os1 + quantum) / (d_ref - quantum)" in QUOTA and
+      not re.search(r"\b(m2_estimate|m3_estimate|_price_proxies|load_price_card|load_cf_card|price|cf)\b", M4_SECTION) and
+      not re.search(r"^\s*(import|from)\s+(socket|urllib|http|ssl)\b", QUOTA, re.M) and
+      "quota-replay.py" not in RELEASE.replace('python3 -I "$script_dir/quota-replay.py" --self-test', "") and
+      'python3 -I "$script_dir/quota-replay.py" --self-test' in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-replay-usage.test.mjs"' in RELEASE,
+      "K16: offline M1 usage replay and M4-only per-pool quota verdict, never bundled, release-gated")
 check("hostAutoPlan: true" in PLUGIN and "export function hostPlan(" in RUNTIME and
       "plan: async" not in section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.") and
       not re.search(r"GRADED_PLAN|buildBoundedPlannerInput|decodePlannerResponse|route_class picks", PLUGIN) and

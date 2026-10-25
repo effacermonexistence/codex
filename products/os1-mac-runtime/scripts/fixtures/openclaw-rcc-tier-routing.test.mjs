@@ -11,7 +11,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createRCCRuntime, hostContextFingerprint, MODEL_TIERS, resolveRoutePlan,
+import { createRCCRuntime, hostContextFingerprint, MODEL_TIERS, registerNodeVerifiers, resolveRoutePlan,
   TIER_ROUTES } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -93,11 +93,18 @@ const unbound = (id, options = {}) => ({id, instruction: options.instruction ?? 
   dependencies: [], kind: 'agent', scope: options.scope ?? 'read_only',
   owned_paths: options.scope === 'workspace_write' ? ['**'] : [], context_refs: []});
 const graded = (id, routeClass, options = {}) => ({...unbound(id, options), route_class: routeClass});
-// R0 (b): a registered gold-blind verifier for the certified class is the
-// fixtures' certifying source. Production registers none and ships an empty
-// class table, so production binds every Auto node at its reference.
-const passes = async () => ({passed: true, reason: 'fixture'});
-const CERTIFY = new Map([['trivial:read_only:agent', passes], ['trivial:read_only:chat', passes]]);
+// R0 (b): a registered sound_full node verifier (K4) is the fixtures'
+// certifying source: it applies to every read-only node and accepts exactly
+// the fixture executor's answers. Production registers none and ships an
+// empty class table, so production binds every Auto node at its reference.
+const passes = async input => ({passed: typeof input.output === 'string' && input.output.startsWith('answer from '),
+  reason: 'fixture'});
+const sound = (id, verify, surfaces = ['agent', 'chat']) => registerNodeVerifiers(new Map([[id, {id, scope: 'read_only',
+  surfaces, soundness: 'sound_full', applies: () => true, verify,
+  refutations: [{instruction: 'Do one bounded task', output: 'fixture wrong answer'}]}]]));
+const CERTIFY = await sound('fixture-sound', passes);
+// A verifier registered for the agent surface kind only.
+const AGENT_ONLY = await sound('fixture-agent-only', passes, ['agent']);
 const plan = (request, nodes, finalNodeID) => ({schema: 1, task_id: request.task_id, request_sha256: request.request_sha256, nodes,
   ...(finalNodeID === undefined ? {} : {final_node_id: finalNodeID})});
 function execution(ticket, overrides = {}) {
@@ -120,7 +127,7 @@ function resolve(request, catalog, admission = 'reference', options = {}) {
   return resolveRoutePlan(plan(request, [unbound('n', options)]), request, catalog, Date.now(),
     admission === 'certified' ? {verifierRegistry: CERTIFY} : {});
 }
-const certifiedLadder = (cheap, reference) => ({source: 'tier', admitted_by: 'verifier', certificate_id: null,
+const certifiedLadder = (cheap, reference) => ({source: 'tier', admitted_by: 'verifier', certificate_id: 'fixture-sound',
   format_check: null, cheap_model: cheap.model, cheap_effort: cheap.effort, reference_model: reference?.model ?? null,
   reference_effort: reference?.effort ?? null, reference_candidate_id: reference?.id ?? null});
 
@@ -233,7 +240,7 @@ test('a failed descent reaches ultra once; a failed ultra verifier is delivered 
   assert.equal(escalated.done.state, 'completed', escalated.done.error);
   assert.equal(escalated.done.result.output, 'answer from gpt-6-astra/ultra');
   const rejected = await run(t, dir, 'highest verifier rejected', {catalog,
-    verifierRegistry: new Map([['trivial:read_only:agent', async () => ({passed: false, reason: 'fixture rejected'})]]),
+    verifierRegistry: await sound('fixture-rejects', async () => ({passed: false, reason: 'fixture rejected'})),
     execute: ticket => execution(ticket)});
   assert.deepEqual(rejected.tuples, ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
   // R6: the reference's completed answer is delivered, never held or nulled.
@@ -513,7 +520,7 @@ test('read-only work takes the chat row of the same model and effort, and escala
   assert.equal(reference.plan.nodes[0].candidate_id, key('claude-fable-5-1', 'max', 'read_only', 'claude-chat'));
   // A verifier registered for the agent surface only never admits a chat row it would not judge.
   const agentOnly = resolveRoutePlan(plan(request, [unbound('n')]), request, catalog, Date.now(),
-    {verifierRegistry: new Map([['trivial:read_only:agent', passes]])});
+    {verifierRegistry: AGENT_ONLY});
   assert.equal(agentOnly.decisions.n.surface, 'claude');
   assert.equal(route(agentOnly.decisions.n), 'anthropic_shared/claude-haiku-4-5-20251001/none');
 });
@@ -639,8 +646,10 @@ test('every failure signal escalates a certified read-only answer exactly once t
 
 test('a registered verifier failing escalates once; a failing reference is never escalated again', async t => {
   const dir = await fixture(t);
-  const verifierRegistry = new Map([['trivial:read_only:agent', async input =>
-    ({passed: input.selected_config.model === 'gpt-6-astra', reason: 'fake'})]]);
+  // Accepts only the reference model's answer, judged from the answer itself
+  // (a certifier never sees the selected row).
+  const verifierRegistry = await sound('fixture-astra-only', async input =>
+    ({passed: input.output.startsWith('answer from gpt-6-astra/'), reason: 'fake'}));
   const verified = await run(t, dir, 'verifier', {verifierRegistry, execute: ticket => execution(ticket)});
   assert.equal(verified.done.state, 'completed', verified.done.error);
   assert.deepEqual(verified.tuples, ['gpt-6-luna/low', 'gpt-6-astra/max']);
@@ -668,8 +677,8 @@ test('a failed reference or explicit verifier delivers its answer with a disclos
     const intent = routeKind === 'explicit' ? {model_family: 'astra', effort: 'max'} : null;
     // An escalated node keeps its certified family, so its verifier judges
     // the reference answer too; the others carry the reference family.
-    const verifierRegistry = routeKind === 'escalated' ? new Map([['trivial:read_only:agent', async input =>
-      input.selected_config.model === 'gpt-6-astra' ? verify() : {passed: false, reason: 'cheap rejected'}]]) :
+    const verifierRegistry = routeKind === 'escalated' ? await sound('fixture-escalated', async input =>
+      input.output.startsWith('answer from gpt-6-astra/') ? verify() : {passed: false, reason: 'cheap rejected'}) :
       new Map([['deep:read_only:agent', verify]]);
     const runtime = await createRCCRuntime({stateDir: join(dir, routeKind + '-' + name), verifierRegistry,
       catalog: async value => tierCatalog(value, {intent}),

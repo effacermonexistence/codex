@@ -13,14 +13,19 @@ import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp, chmod, rm, realpath, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createRCCRuntime, hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import {createRCCRuntime, hostContextFingerprint, registerNodeVerifiers} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {adaptiveRuntimeOptions} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 const H = s => createHash('sha256').update(s).digest('hex');
 const RUNTIME = new URL('../../Resources/openclaw-os1-bridge/rcc-runtime.mjs', import.meta.url);
 const policyText = 'Preserve the original objective and source. Proposal is not execution authority.';
 const REJECTED = 'provider_quota_rejected_before_execution';
-const passes = async () => ({passed: true, reason: 'fixture'});
-const CERTIFY = new Map([['trivial:read_only:agent', passes], ['trivial:read_only:chat', passes]]);
+// R0 (b) (K4): registered sound_full node verifiers applying to every
+// read-only node; each accepts only the fixture executor's answer.
+const sound = (id, verify) => registerNodeVerifiers(new Map([[id, {id, scope: 'read_only', surfaces: ['agent', 'chat'],
+  soundness: 'sound_full', applies: () => true, verify,
+  refutations: [{instruction: 'Read the provided definition and explain its boundary precisely.', output: 'wrong'}]}]]));
+const CERTIFY = await sound('fixture-result', async input => ({passed: input.output === 'fixture result', reason: 'fixture'}));
+const REJECTS = await sound('fixture-rejects', async () => ({passed: false, reason: 'fixture rejected'}));
 
 function task(dir, hostPatch = {}) {
   const request = 'Read the provided definition and explain its boundary precisely.';
@@ -162,8 +167,7 @@ test('no Core ticket carries native delegation (K13)', async t => {
     assert(h.tickets.every(undelegated), JSON.stringify(h.tickets));
   }
   // (c) A certified descent whose verifier fails, then its fixed escalation.
-  const h = await harness(t, tickets => ({verifierRegistry: new Map([['trivial:read_only:agent',
-    async () => ({passed: false, reason: 'fixture rejected'})]]),
+  const h = await harness(t, tickets => ({verifierRegistry: REJECTS,
   execute: async ticket => {tickets.push(ticket); return completed(ticket);}}));
   const q = task(h.directory), done = await h.run(q);
   assert.deepEqual(h.tickets.map(tuple), ['gpt-6-luna/low', 'gpt-6-astra/ultra'], JSON.stringify(done));

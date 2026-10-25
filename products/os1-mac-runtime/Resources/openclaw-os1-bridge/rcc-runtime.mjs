@@ -123,6 +123,19 @@ export const TIER_ROUTES = Object.freeze({
 // A class certificate's own per-answer format check (R9 (c)), by name. A
 // certificate naming a check this Core does not know certifies nothing.
 const FORMAT_CHECKS = Object.freeze({nonempty_text: output => typeof output === 'string' && output.trim() !== ''});
+// Node verifier registry (R0 (b), K4). A 'sound_full' entry certifies only
+// the nodes its own applies() admits, and only once registerNodeVerifiers
+// probed it with its refutations and a Core nonce; a 'partial' entry (and a
+// legacy family -> function entry) is a failure signal only.
+const VERIFIER_SURFACES = Object.freeze(['agent', 'chat']);
+const VERIFIER_SOUNDNESS = new Set(['sound_full', 'partial']);
+const MAX_NODE_VERIFIERS = 32;
+const MAX_REFUTATIONS = 16;
+// The registries and the frozen entries registerNodeVerifiers built
+// (module-private brands): a raw caller Map, or an entry a caller put into a
+// registered Map afterwards, certifies nothing.
+const REGISTERED_VERIFIERS = new WeakSet();
+const REGISTERED_VERIFIER_ENTRIES = new WeakSet();
 // Swift's QualityDisclosure carries at most this many failed check IDs.
 const MAX_DISCLOSED_CHECKS = 64;
 const INTENT_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -143,10 +156,25 @@ const MAX_LEDGER_FAILURE_INDEX_BYTES = 524_288;
 // failed, it ran and returned nothing deliverable, or it was interrupted
 // before its verifier answered.
 const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted']);
+// K9 (§2.2): the delivery basis a ledger record names, fixed at dispatch: why
+// its tuple may answer. A certified basis names its admitting source (and the
+// verifier or class certificate); 'certified:unrecorded' is a descent recorded
+// without one (an older build), 'unbound' a row no host resolution chose.
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
+// The admitting source's verdict on a descent attempt: it accepted the answer,
+// failed it, or the answer was not returned in a form it accepts.
+// 'certifier_unavailable': the certifier its ladder names was gone at adoption
+// (a configuration fault, never a failure of the route); no check ran.
+const LEDGER_CHECK_OUTCOMES = new Set(['pass', 'fail', 'not_returned', 'certifier_unavailable']);
+// §4.3: the sources whose verdict is a calibration label. A verifier certifies
+// only as a registered 'sound_full' entry (K4); a class format check is partial.
+const SOUND_FULL_CHECK_SOURCES = new Set(['exact', 'contract', 'verifier']);
 // Verdicts a settled attempt stores on its history entry; a restart records
 // them as they were instead of 'interrupted'.
 const SETTLED_VERDICTS = new Set(['pass', 'fail', 'not_returned']);
-// A registered node verifier that does not answer in time counts as a failure.
+// A registered node verifier that does not answer in time counts as a failure
+// (live), and refuses its registration (a probe gets the same bound).
 const NODE_VERIFIER_TIMEOUT_MS = 60_000;
 // The attempt states of a failed cheaper ladder attempt: its verifier failed,
 // or it returned nothing deliverable. Never charged to the owner's budgets.
@@ -777,11 +805,104 @@ function quotaScore(catalog, model) {
 }
 
 // ---- The admission law (build 407, R0) ----
-/** The surface kinds ('agent', 'chat') a registered gold-blind node verifier
- * covers for the certified class (R0 (b)). Production registers none. */
-function verifiedSurfaceKinds(registry) {
-  return registry instanceof Map ? ['agent', 'chat'].filter(kind =>
-    typeof registry.get(`${CERTIFIED_CLASS}:read_only:${kind}`) === 'function') : [];
+/** K4: validate a node verifier registry and return a frozen, branded COPY
+ * (later changes to the caller's Map change nothing). A Map of at most 32
+ * entries, each either
+ *  - legacy: family (routeFamily, at most 128 chars) -> async function, kept
+ *    as a 'partial' entry: a failure signal for that family, never a
+ *    certifying source; or
+ *  - id -> {id, scope: 'read_only', surfaces (non-empty subset of agent,
+ *    chat), soundness: 'sound_full'|'partial', applies(node, task, catalog),
+ *    verify(input), refutations?}. The id has no ':' (never a family key).
+ *    A 'sound_full' entry needs 1..16 refutations {instruction, output} of
+ *    known-wrong answers: registration runs verify on each, and on a Core
+ *    nonce answer for each instruction, and refuses the registry
+ *    ('verifier_registration_unsound') when any probe passes. It fails
+ *    closed: a probe must answer {passed: false} within the live verifier
+ *    timeout; a throw, a timeout or a malformed verdict refuses it too
+ *    ('verifier_registration_probe_unanswered'). A probe gets exactly the
+ *    input shape a live certifier gets (no receipt, no selected
+ *    configuration: _verifyNode), so a verdict keyed on those cannot pass
+ *    live. Probes can disprove soundness, never prove it: production
+ *    registers none.
+ * Only entries built here, in a registry built here, certify
+ * (soundVerifierFor). An entry already built here is kept as it is (never
+ * probed twice), so a registered Map may be registered again: each call
+ * returns a new Map no caller holds. */
+export async function registerNodeVerifiers(raw) {
+  assert(raw instanceof Map && raw.size <= MAX_NODE_VERIFIERS, 'verifier_registry_invalid');
+  const registry = new Map();
+  for (const [key, value] of raw) {
+    if (REGISTERED_VERIFIER_ENTRIES.has(value) && value.id === key) { registry.set(key, value); continue; }
+    if (typeof value === 'function') {
+      assert(typeof key === 'string' && key.length > 0 && key.length <= 128, 'verifier_registry_invalid');
+      const legacy = Object.freeze({id: key, family: key, soundness: 'partial', scope: null, surfaces: null,
+        applies: null, verify: value, refutations: null});
+      REGISTERED_VERIFIER_ENTRIES.add(legacy);
+      registry.set(key, legacy);
+      continue;
+    }
+    const sound = value?.soundness === 'sound_full';
+    assert(plain(value) && keys(value, ['id', 'scope', 'surfaces', 'soundness', 'applies', 'verify',
+      ...(Object.hasOwn(value, 'refutations') ? ['refutations'] : [])]) &&
+      key === value.id && typeof key === 'string' && ID.test(key) && value.scope === 'read_only' &&
+      Array.isArray(value.surfaces) && value.surfaces.length > 0 && new Set(value.surfaces).size === value.surfaces.length &&
+      value.surfaces.every(kind => VERIFIER_SURFACES.includes(kind)) && VERIFIER_SOUNDNESS.has(value.soundness) &&
+      typeof value.applies === 'function' && typeof value.verify === 'function' &&
+      (sound ? Array.isArray(value.refutations) && value.refutations.length > 0 &&
+        value.refutations.length <= MAX_REFUTATIONS && value.refutations.every(r => keys(r, ['instruction', 'output']) &&
+          boundedText(r.instruction, 12_000) && boundedText(r.output, MAX_OUTPUT_BYTES)) :
+        !Object.hasOwn(value, 'refutations')), 'verifier_registry_invalid');
+    const refutations = sound ? Object.freeze(value.refutations.map(({instruction, output}) =>
+      Object.freeze({instruction, output}))) : null;
+    const entry = Object.freeze({id: key, family: null, soundness: value.soundness, scope: value.scope,
+      surfaces: Object.freeze([...value.surfaces]), applies: value.applies, verify: value.verify, refutations});
+    if (sound) {
+      const probes = [...refutations, ...refutations.map(({instruction}) =>
+        ({instruction, output: 'os1-verifier-registration-nonce:' + randomUUID()}))];
+      for (const {instruction, output} of probes) {
+        let timer, verdict = null;
+        try {
+          verdict = await Promise.race([entry.verify(immutable({schema: 1, task_id: 'verifier_registration_probe',
+            node_id: 'probe', family: key, verifier_id: key, instruction, output, native_receipt: null,
+            selected_config: null})), new Promise(resolve => {
+            timer = setTimeout(() => resolve(null), NODE_VERIFIER_TIMEOUT_MS); timer.unref?.();
+          })]);
+        } catch { verdict = null; }
+        finally { clearTimeout(timer); }
+        if (plain(verdict) && verdict.passed === true) throw new RCCRuntimeError('verifier_registration_unsound');
+        if (!plain(verdict) || verdict.passed !== false) throw new RCCRuntimeError('verifier_registration_probe_unanswered');
+      }
+    }
+    REGISTERED_VERIFIER_ENTRIES.add(entry);
+    registry.set(key, entry);
+  }
+  REGISTERED_VERIFIERS.add(registry);
+  return registry;
+}
+/** Whether a verifier entry's own applicability holds for this node, task
+ * and catalog (copies: a registrant cannot change Core state). A throw or
+ * anything but `true` is not applicable. */
+function verifierApplies(entry, node, task, catalog) {
+  try { return entry.applies(immutable(node), immutable(task), immutable(catalog ?? null)) === true; }
+  catch { return false; }
+}
+/** The entry registered under `id` in a registry registerNodeVerifiers
+ * built, or null (a raw Map, or an entry put in afterwards). */
+function registeredVerifier(registry, id) {
+  const entry = REGISTERED_VERIFIERS.has(registry) && typeof id === 'string' ? registry.get(id) : undefined;
+  return REGISTERED_VERIFIER_ENTRIES.has(entry) && entry.id === id ? entry : null;
+}
+/** R0 (b): the first registered 'sound_full' verifier (in registration
+ * order) for this node's scope whose applies() holds; null otherwise, and
+ * always null for a registry registerNodeVerifiers did not build. */
+function soundVerifierFor(node, task, catalog, registry) {
+  if (!REGISTERED_VERIFIERS.has(registry)) return null;
+  for (const [id, entry] of registry)
+    if (registeredVerifier(registry, id) === entry && entry.soundness === 'sound_full' && entry.scope === node.scope &&
+        verifierApplies(entry, node, task, catalog))
+      return entry;
+  return null;
 }
 /** R0, the one admission law, decided in code at bind before any model call:
  * the reference tuple unless one certifying source exists NOW. Pure: the
@@ -801,7 +922,9 @@ function verifiedSurfaceKinds(registry) {
  *  - (a) 'contract': a full-coverage read-only owner contract that the host
  *    re-bound at catalog time to this exact request, still valid, and a node
  *    running that request byte-exact;
- *  - (b) 'verifier': a registered verifier for the certified class;
+ *  - (b) 'verifier': a registered 'sound_full' node verifier whose own
+ *    applies() admits this node, task and catalog (certificate_id names it;
+ *    only that verifier's pass on THIS attempt accepts the answer, I2);
  *  - (c) 'class': this request class's signed certificate, for a node running
  *    the request byte-exact, whose per-answer format check this Core knows;
  *  - anything else 'uncertified'. A model-authored grade never certifies. */
@@ -844,8 +967,8 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
       contract.bindings_checked === true && contract.objective_sha256 === task.request_sha256 &&
       int(contract.valid_until_ms, 0, Number.MAX_SAFE_INTEGER) && contract.valid_until_ms > now)
     return {class: 'certified', source: 'contract', certificate_id: null};
-  if (verifiedSurfaceKinds(verifierRegistry).length > 0)
-    return {class: 'certified', source: 'verifier', certificate_id: null};
+  const certifier = soundVerifierFor(node, task, catalog, verifierRegistry);
+  if (certifier) return {class: 'certified', source: 'verifier', certificate_id: certifier.id};
   const cls = catalog?.request_class;
   const certificate = own && CERTIFIABLE_CLASSES.has(cls) && plain(catalog.class_certificates) ?
     catalog.class_certificates[cls] : undefined;
@@ -860,11 +983,51 @@ function admissionToken(admission) {
     admission.source === 'class' ? 'admitted_certified_class:' + admission.certificate_id :
       'admitted_certified_' + admission.source;
 }
+/** K9 (§2.2): an attempt's delivery basis, from the route facts it
+ * dispatched with. Pure. A host-resolved descent (route kind 'tier') is
+ * 'certified:' + its admitting source (the ladder's admitted_by and, for a
+ * verifier or class, its certificate_id), else 'certified:unrecorded'; the
+ * one reference run after a descent failed is 'reference_escalated'; a tuple
+ * the owner's words fixed (an explicit route, an effort or model word, a
+ * provider choice: the 'admitted_reference_owner_words' token) is
+ * 'owner_words'; the reference the law bound is 'reference'; a row no host
+ * resolution chose is 'unbound' ('owner_words' on an explicit route test);
+ * anything else 'unclassified'. Never decided by a model. */
+export function deliveryBasisOf({explicitRoute = false, routeClass = null, routeKind = null, ladder = null,
+  reason = null} = {}) {
+  let basis;
+  if (!ROUTE_CLASSES.includes(routeClass)) basis = explicitRoute ? 'owner_words' : 'unbound';
+  else if (routeKind === 'tier') {
+    const source = plain(ladder) && ladder.escalated !== true ? ladder.admitted_by : null;
+    const id = plain(ladder) && typeof ladder.certificate_id === 'string' ? ladder.certificate_id : null;
+    basis = 'certified:' + (source === 'contract' || source === 'exact' ? source :
+      (source === 'verifier' || source === 'class') && id !== null ? source + ':' + id : 'unrecorded');
+  } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
+  else if (routeKind === 'explicit' ||
+      (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
+  else basis = routeKind === 'reference' ? 'reference' : 'unclassified';
+  return LEDGER_BASIS.test(basis) ? basis : 'unclassified';
+}
+/** K9: the id of the check a certified basis names (null for any other
+ * basis): 'exact_arithmetic_v1'; 'contract:' + the owner contract's
+ * contract_sha256 (or 'contract'); 'verifier:' + the certifying verifier id;
+ * 'class:' + certificate id + ':' + its format check. Pure; never an answer,
+ * an instruction or request text. */
+export function checkIdOf(basis, {formatCheck = null, contractSHA256 = null} = {}) {
+  if (typeof basis !== 'string' || !LEDGER_BASIS.test(basis) || !basis.startsWith('certified:')) return null;
+  const source = basis.slice('certified:'.length);
+  const id = source === 'exact' ? 'exact_arithmetic_v1' :
+    source === 'contract' ? (HASH.test(contractSHA256 ?? '') ? 'contract:' + contractSHA256 : 'contract') :
+      source.startsWith('verifier:') ? source :
+        source.startsWith('class:') && FORMAT_CHECK.test(formatCheck ?? '') ? source + ':' + formatCheck : null;
+  return id !== null && LEDGER_CHECK_ID.test(id) ? id : null;
+}
 /** The rows one pool offers a certified descent, as ordered entries: the
  * certificate's own tuple (c), else the cheapest tier list (a, b). A contract
  * binds an agent surface only (its start tree is the host workspace, which a
- * tool-free chat lane does not run in); a verifier only the surface kinds it
- * is registered for, so it judges every answer it admitted. */
+ * tool-free chat lane does not run in); a verifier only the surface kinds the
+ * certifying entry itself is registered for, so it judges every answer it
+ * admitted. */
 function certifiedEntries(pool, admission, catalog, verifierRegistry) {
   if (admission.source === 'class') {
     const certificate = catalog.class_certificates[catalog.request_class];
@@ -872,7 +1035,7 @@ function certifiedEntries(pool, admission, catalog, verifierRegistry) {
       candidate.model === certificate.model && candidate.effort === certificate.effort)}];
   }
   const kinds = admission.source === 'contract' ? ['agent'] : admission.source === 'exact' ? ['agent', 'chat'] :
-    verifiedSurfaceKinds(verifierRegistry);
+    admission.source === 'verifier' ? registeredVerifier(verifierRegistry, admission.certificate_id)?.surfaces ?? [] : [];
   const rows = pool.rows.filter(({candidate}) => kinds.includes(surfaceKind(candidate.surface)) &&
     (!stagedWriterContract(catalog.task_contract) || (candidate.surface === 'codex' && candidate.transport === 'codex_app_server')));
   return TIER_ROUTES[CERTIFIED_CLASS].map(([tier, effort], index) =>
@@ -2324,7 +2487,10 @@ function publicSnapshot(snapshot) {
       return {id, state, attempt_id, candidate_id, selected_config,
         requested_surface: requestedSurface(snapshot, child), instruction, dependencies,
         started_at_ms, finished_at_ms, native_receipt,
-        output_summary: typeof output === 'string' ? output.slice(0, 600) : null,
+        // I2: a descent answer its admitting source has not accepted (waiting
+        // on its verifier, or held) is never shown.
+        output_summary: typeof output === 'string' && (state === 'completed' || !pendingEscalation(child)) ?
+          output.slice(0, 600) : null,
         // Why the host chose this exact row. Older snapshots have none.
         routing_decision: child.routing_decision ? immutable(child.routing_decision) : null,
         // R6: why a delivered output is not task-verified (present only then).
@@ -2381,22 +2547,30 @@ function stagedWriterDiscarded(result) {
 function tierFailureSignal(result) {
   return typeof result.output !== 'string' || result.output.trim() === '' || result.error != null;
 }
-/** R9: whether the source that admitted a certified descent accepts THIS
- * answer. (a) the owner contract verified it with full coverage; (b) it is
- * structurally sound, and the registered verifier then decides; (c) it is
- * structurally sound and passes the certificate's own format check. Under
- * any source an operational check that ran partially, could not verify or
- * failed is no acceptance. A descent recorded without its admitting source
- * (an older build) is never accepted: it escalates. */
-function certifiedAnswer(ladder, result) {
+/** A descent answer with no structural failure: a non-empty output and no
+ * error, an applied staged writer, and no operational check that ran
+ * partially, could not verify or failed. */
+function descentStructurallySound(result) {
   if (tierFailureSignal(result)) return false;
   if (result.selected_config?.scope === 'workspace_write' && result.staged_writer?.state !== 'applied') return false;
   const q = result.operational_quality;
-  if (q && (q.coverage !== 'full' || ['unverified', 'mismatch'].includes(q.assessment_state))) return false;
+  return !(q && (q.coverage !== 'full' || ['unverified', 'mismatch'].includes(q.assessment_state)));
+}
+/** R9: whether the source that admitted a certified descent accepts THIS
+ * answer. It must be structurally sound, and then (a) the owner contract
+ * verified it with full coverage; (b) the verifier its ladder names
+ * (certificate_id) passed THIS attempt (`verdict`, I2); (c) it passes the
+ * certificate's own format check. A descent recorded without its admitting
+ * source (an older build) is never accepted: it escalates. */
+function certifiedAnswer(ladder, result, verdict = null) {
+  if (!descentStructurallySound(result)) return false;
+  const q = result.operational_quality;
   switch (ladder?.admitted_by) {
     case 'contract': return result.task_verified === true && q?.coverage === 'full' &&
       q.assessment_state === 'task_contract_verified';
-    case 'verifier': return true;
+    case 'verifier': return plain(verdict) && verdict.passed === true && typeof result.attempt_id === 'string' &&
+      verdict.attempt_id === result.attempt_id && typeof ladder.certificate_id === 'string' &&
+      verdict.verifier_id === ladder.certificate_id;
     case 'class': return Object.hasOwn(FORMAT_CHECKS, ladder.format_check) && FORMAT_CHECKS[ladder.format_check](result.output);
     case 'exact': return typeof ladder.exact_answer === 'string' && result.output.trim() === ladder.exact_answer;
     default: return false;
@@ -2531,11 +2705,14 @@ function alive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-/** `verifierRegistry`: Map of task family (routeFamily) to an async node
- * verifier ({schema, task_id, node_id, family, instruction, output,
- * native_receipt, selected_config} -> {passed: boolean, reason}): a
- * registration for the certified class is R0's source (b). Production
- * registers none, so every node runs its reference. `hostAutoPlan` (R7): the
+/** `verifierRegistry`: a Map of node verifiers (registerNodeVerifiers: a
+ * legacy family -> async function entry, a failure signal only; or id ->
+ * {id, scope, surfaces, soundness, applies, verify, refutations}). Each
+ * verify gets {schema, task_id, node_id, family, verifier_id, instruction,
+ * output, native_receipt, selected_config} and returns {passed: boolean,
+ * reason}. Only a probed 'sound_full' entry whose applies() holds is R0's
+ * source (b), and its pass on THIS attempt alone accepts the descent (I2).
+ * Production registers none, so every node runs its reference. `hostAutoPlan` (R7): the
  * host builds every plan itself (hostPlan) and never calls `plan`; injected
  * plans (`plan`) remain for fixtures. `ledgerLog` receives a ledger write
  * failure code, which never fails or holds a task. */
@@ -2550,9 +2727,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
   assert(int(cancelGraceMs, 100, 30_000), 'cancel_grace_invalid');
-  const registry = verifierRegistry ?? new Map();
-  assert(registry instanceof Map && [...registry].every(([family, verify]) =>
-    typeof family === 'string' && family.length <= 128 && typeof verify === 'function'), 'verifier_registry_invalid');
+  // A frozen copy, registered (and probed) before any state is touched.
+  const registry = await registerNodeVerifiers(verifierRegistry ?? new Map());
   assert(typeof hostAutoPlan === 'boolean' && typeof boundedAutoPlanning === 'boolean', 'host_auto_plan_invalid');
   assert(!boundedAutoPlanning || hostAutoPlan && typeof proposeLocalPlan === 'function', 'bounded_auto_planner_required');
   const adaptivePolicy = decodeAdaptiveRoutingPolicy(adaptiveRoutingPolicy);
@@ -3222,14 +3398,18 @@ class RCCRuntime {
           const entry = child?.attempt_history?.find(item => item.attempt_id === row.attempt_id);
           const current = child?.attempt_id === row.attempt_id;
           const settled = entry && !UNSETTLED_ATTEMPT_STATES.has(entry.state);
-          const outcome = route.verifier !== true ? 'not_registered' :
+          // K9: a certifier gone at adoption is a configuration fault, never
+          // a parity failure of the route (as when the attempt settled live).
+          const outcome = settled && entry.check_outcome === 'certifier_unavailable' ? 'certifier_unavailable' :
+            route.verifier !== true ? 'not_registered' :
             settled && SETTLED_VERDICTS.has(entry.verifier) ? entry.verifier :
             settled && entry.state === 'verified_not_dispatched' ? 'not_dispatched' : 'interrupted';
           const record = this._ledgerRecord({taskID: row.task_id, nodeID: row.node_id, attemptID: row.attempt_id,
             route}, {usage: entry?.usage ?? null, execution_verified: current && child.execution_verified === true,
             task_quality: current ? child.task_quality ?? null : null,
             routing_outcome_summary: this._outcomeSummary(entry?.routing_outcome)}, outcome, settled ? entry.state : 'interrupted',
-            settled ? entry.escalation_outcome ?? null : null, settled ? entry.dispatched_failure ?? null : null);
+            settled ? entry.escalation_outcome ?? null : null, settled ? entry.dispatched_failure ?? null : null,
+            settled ? entry.check_outcome ?? null : null);
           const write = () => this.ledger.append(record);
           if (this._backlogged(record)) { keep = true; this.ledgerBacklog.set(row.attempt_id, write); }
           write();
@@ -5707,6 +5887,27 @@ class RCCRuntime {
         cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model} : null;
     const observedTask = executionTask(snapshot);
     const qualityContract = snapshot.catalog?.task_contract?.contract_sha256;
+    // K9: the delivery basis and the check it names, from the child's own
+    // route kind (an explicit route test's exact descent is certified:exact),
+    // and the stratum an offline calibration keys on (§4.3; sizes, never text).
+    const deliveryBasis = deliveryBasisOf({explicitRoute, routeClass, routeKind: child.route_kind,
+      ladder: child.ladder, reason: child.routing_decision?.reason});
+    const nodeIndex = snapshot.plan?.nodes.findIndex(n => n.id === child.id) ?? -1;
+    const planNode = nodeIndex >= 0 ? snapshot.plan.nodes[nodeIndex] : null;
+    const obligation = nodeIndex >= 0 ? snapshot.owner_collection?.obligations?.[nodeIndex] : undefined;
+    const checkID = checkIdOf(deliveryBasis, {formatCheck: child.ladder?.format_check ?? null,
+      contractSHA256: (obligation ? obligation.contract_sha256 : qualityContract) ?? null});
+    let stratum = null;
+    if (routeClass !== null) {
+      const text = value => typeof value === 'string' ? value : '';
+      try {
+        stratum = {request_class: ID.test(text(snapshot.catalog?.request_class)) ? snapshot.catalog.request_class : null,
+          turn: withoutConversation(observedTask) ? 'first' : 'not_first',
+          has_materials: (planNode?.context_refs ?? []).length > 0,
+          context_bytes: Buffer.byteLength(text(planNode?.instruction ?? child.instruction)) +
+            Buffer.byteLength(text(observedTask.context)) + Buffer.byteLength(text(observedTask.host_context?.context))};
+      } catch { stratum = null; } // A routing fact for calibration only: it never fails a dispatch.
+    }
     const outcomeContext = this.adaptivePolicy.mode === 'off' && !this.boundedAutoPlanning ? null : {
       identity: {task_id: observedTask.task_id, node_id: child.id,
         candidate_id: candidate.id, request_sha256: observedTask.request_sha256,
@@ -5723,6 +5924,7 @@ class RCCRuntime {
       escalated: routeClass !== null && child.ladder?.escalated === true,
       quota_remaining_fraction: candidate.quota_remaining_fraction, dispatched_at_ms: child.dispatched_at_ms ?? null,
       verifier: Boolean(this._nodeVerifier(snapshot, child.id, candidate)),
+      delivery_basis: deliveryBasis, check_id: checkID, stratum,
       ...(outcomeContext === null ? {} : {outcome_context: outcomeContext})};
   }
   /** Inside a dispatch update: fix the attempt's route facts and mark the
@@ -5748,9 +5950,17 @@ class RCCRuntime {
    * attempt. `dispatchedFailure` 'no_effects': the executor reported that the
    * attempt failed after dispatch with no side effects (the node is still
    * never replayed); null on every other attempt. `host_route_kind` and
-   * `dispatched_failure` are optional: older records lack them. */
+   * `dispatched_failure` are optional: older records lack them.
+   * K9: a route fixed by this build adds `delivery_basis`, `check_id` (a
+   * certified basis only), `check_outcome` (a certified basis only: the
+   * admitting source's verdict on THIS attempt, `checkOutcome`, else
+   * 'not_run'), `check_label` (§4.3, top level: only an exact, contract or
+   * sound_full verifier verdict, never a class format check, a reference or
+   * owner words; it means "accepted within that check's coverage", not
+   * reference-equal quality) and `stratum`. A route pended by an older build
+   * has none of them, and `verifier_outcome` keeps its meaning. */
   _ledgerRecord({taskID, nodeID, attemptID, route}, outcome, verifierOutcome, attemptState, escalationOutcome = null,
-                dispatchedFailure = null) {
+                dispatchedFailure = null, checkOutcome = null) {
     const record = {schema: 1, task_id: taskID, node_id: nodeID, attempt_id: attemptID,
       family: routeFamily(route.route_class, route.scope, route.surface), route_class: route.route_class,
       scope: route.scope, surface_kind: surfaceKind(route.surface), surface: route.surface,
@@ -5765,12 +5975,32 @@ class RCCRuntime {
         escalationOutcome : null,
       dispatched_failure: dispatchedFailure === 'no_effects' ? 'no_effects' : null,
       dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now(),
+      ...(typeof route.delivery_basis === 'string' ? this._ledgerCheck(route, checkOutcome) : {}),
       ...(outcome.routing_outcome_summary ? {routing_outcome: outcome.routing_outcome_summary} : {})};
     // Full capture is in the existing attempt row; optional metadata must not
     // turn a bounded legacy ledger/failure entry into a lost oversize record.
     if (record.routing_outcome && Buffer.byteLength(stable(record)) + 1 > MAX_LEDGER_RECORD_BYTES)
       delete record.routing_outcome;
     return record;
+  }
+  /** K9: the delivery-basis fields of a record whose route this build fixed
+   * (re-validated: a stored route is data). */
+  _ledgerCheck(route, checkOutcome) {
+    const basis = LEDGER_BASIS.test(route.delivery_basis) ? route.delivery_basis : 'unclassified';
+    const certified = basis.startsWith('certified:');
+    const check_id = certified && typeof route.check_id === 'string' && LEDGER_CHECK_ID.test(route.check_id) ?
+      route.check_id : null;
+    const check_outcome = !certified ? null : LEDGER_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run';
+    const source = certified ? basis.slice('certified:'.length).split(':')[0] : null;
+    const check_label = check_id !== null && SOUND_FULL_CHECK_SOURCES.has(source) &&
+      ['pass', 'fail', 'not_returned'].includes(check_outcome) ?
+      {score_space: 'check_acceptance_v1', check_id, soundness: 'sound_full', outcome: check_outcome} : null;
+    const s = route.stratum;
+    const stratum = plain(s) && (s.request_class === null || (typeof s.request_class === 'string' && ID.test(s.request_class))) &&
+      ['first', 'not_first'].includes(s.turn) && typeof s.has_materials === 'boolean' &&
+      int(s.context_bytes, 0, Number.MAX_SAFE_INTEGER) ?
+      {request_class: s.request_class, turn: s.turn, has_materials: s.has_materials, context_bytes: s.context_bytes} : null;
+    return {delivery_basis: basis, check_id, check_outcome, check_label, stratum};
   }
   _outcomeSummary(capture) {
     if (!capture) return null;
@@ -5828,7 +6058,8 @@ class RCCRuntime {
       record = this._ledgerRecord(pending, {usage: result?.usage ?? null,
         execution_verified: result?.execution_verified, task_quality: result?.task_quality ?? null,
         routing_outcome_summary: this._outcomeSummary(outcomeCapture)},
-      verifierOutcome, settled, entry?.escalation_outcome ?? null, entry?.dispatched_failure ?? null);
+      verifierOutcome, settled, entry?.escalation_outcome ?? null, entry?.dispatched_failure ?? null,
+      entry?.check_outcome ?? null);
       write = () => this.ledger.append(record);
       write();
     } catch (error) {
@@ -5854,43 +6085,75 @@ class RCCRuntime {
       this._clearLedgerPending(attemptID);
     }
   }
-  /** The registered verifier for a resolved read-only node's family, if any. */
+  /** The node verifier a resolved read-only node's attempt runs, as {verify,
+   * id, family, role}, or null. A descent the verifier source admitted gets
+   * ONLY the certifying entry its ladder names (certificate_id): it must
+   * still be registered 'sound_full', cover this surface kind and apply to
+   * the node, else null and the descent is discarded (I2); after its
+   * escalation the same entry judges the reference as a failure signal.
+   * Every other node gets the first failure signal for it: a legacy entry
+   * of its route family, or an applying 'partial' entry. */
   _nodeVerifier(snapshot, nodeID, candidate) {
     const child = this._resolverNode(snapshot, nodeID);
     if (!child || candidate.scope !== 'read_only' || this.verifierRegistry.size === 0) return null;
     const family = routeFamily(child.routing_decision.route_class, candidate.scope, candidate.surface);
-    const verify = this.verifierRegistry.get(family);
-    return typeof verify === 'function' ? {verify, family} : null;
+    const kind = surfaceKind(candidate.surface);
+    if (child.ladder?.source === 'tier' && child.ladder.admitted_by === 'verifier') {
+      const entry = registeredVerifier(this.verifierRegistry, child.ladder.certificate_id);
+      const planNode = snapshot.plan?.nodes.find(n => n.id === nodeID);
+      return entry?.soundness === 'sound_full' && entry.surfaces.includes(kind) && planNode &&
+        verifierApplies(entry, planNode, executionTask(snapshot), snapshot.catalog) ?
+        {verify: entry.verify, id: entry.id, family, role: child.ladder.escalated === true ? 'signal' : 'certifier'} : null;
+    }
+    for (const entry of this.verifierRegistry.values()) {
+      if (entry.soundness !== 'partial') continue;
+      const planNode = entry.family === null ? snapshot.plan?.nodes.find(n => n.id === nodeID) : null;
+      if (entry.family === family || (entry.family === null && entry.scope === candidate.scope &&
+          entry.surfaces.includes(kind) && planNode && verifierApplies(entry, planNode, executionTask(snapshot), snapshot.catalog)))
+        return {verify: entry.verify, id: entry.id, family, role: 'signal'};
+    }
+    return null;
   }
-  /** Run the family verifier on a returned read-only node. Pass adopts it;
-   * a certified descent that fails goes to _ladderFailed (R9). A rejected
-   * reference or explicit route is delivered with its disclosure (R6), never
-   * replayed; only an undisclosable record (an unterminated turn, reported
-   * effects) is held. Returns the ledger outcome. */
-  async _verifyNode(taskID, node, candidate, result, {verify, family}) {
+  /** Run a node verifier on a returned read-only node. A certifier adopts a
+   * descent only through certifiedAnswer with its pass on THIS attempt (I2);
+   * a signal's pass adopts the node. A certified descent that is not
+   * accepted goes to _ladderFailed (R9). A rejected reference or explicit
+   * route is delivered with its disclosure (R6), never replayed; only an
+   * undisclosable record (an unterminated turn, reported effects) is held.
+   * The attempt records the verifier's id beside its outcome. Returns the
+   * ledger outcome. */
+  async _verifyNode(taskID, node, candidate, result, {verify, id, family, role}) {
     if (!this._allowModelGeneration(taskID)) return 'not_registered';
 
     let passed = false, timer;
+    // A certifier judges the answer to the instruction only: it gets the
+    // input shape its registration probes had (no receipt, no selected
+    // configuration), so no verdict keyed on the row can certify a descent.
+    const certifier = role === 'certifier';
     try {
       const verdict = await Promise.race([verify(immutable({schema: 1, task_id: taskID, node_id: node.id,
-        family, instruction: node.instruction, output: result.output, native_receipt: result.native_receipt ?? null,
-        selected_config: exactConfig(candidate)})), new Promise(resolve => {
+        family, verifier_id: id, instruction: node.instruction, output: result.output,
+        native_receipt: certifier ? null : result.native_receipt ?? null,
+        selected_config: certifier ? null : exactConfig(candidate)})), new Promise(resolve => {
         timer = setTimeout(() => resolve(null), NODE_VERIFIER_TIMEOUT_MS); timer.unref?.();
       })]);
       passed = plain(verdict) && verdict.passed === true;
     } catch { passed = false; }
     finally { clearTimeout(timer); }
-    const outcome = passed ? 'pass' : 'fail';
-    if (this.closed) return outcome;
+    if (this.closed) return passed ? 'pass' : 'fail';
     const state = this._load(taskID);
     const child = state?.children.find(c => c.id === node.id);
     if (!state || TERMINAL.has(state.state) || child?.state !== 'waiting' || child.attempt_id !== result.attempt_id)
-      return outcome;
-    if (!passed && pendingEscalation(child)) {
+      return passed ? 'pass' : 'fail';
+    // A certifier's pass accepts only THIS attempt's answer (I2).
+    const accepted = role === 'certifier' ?
+      certifiedAnswer(child.ladder, result, {passed, attempt_id: result.attempt_id, verifier_id: id}) : passed;
+    const outcome = accepted ? 'pass' : 'fail';
+    if (!accepted && pendingEscalation(child)) {
       await this._ladderFailed(taskID, node, candidate, result, outcome);
       return outcome;
     }
-    if (!passed && disclosable(result, candidate.scope)) {
+    if (!accepted && disclosable(result, candidate.scope)) {
       const disclosure = qualityDisclosure(result, false);
       disclosure.failed_check_ids = ['node_verifier', ...disclosure.failed_check_ids].slice(0, MAX_DISCLOSED_CHECKS);
       this._update(taskID, 'node_verifier_failed_disclosed', snapshot => {
@@ -5899,22 +6162,39 @@ class RCCRuntime {
         Object.assign(target, {state: 'completed', node_verifier: outcome, quality_disclosure: disclosure,
           parity_state: 'unverified'});
         const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
-        if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; }
+        if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; attempt.verifier_id = id; }
       });
       return outcome;
     }
-    this._update(taskID, passed ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
+    this._update(taskID, accepted ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
       const target = snapshot.children.find(c => c.id === node.id);
       if (target?.state !== 'waiting' || target.attempt_id !== result.attempt_id) return;
-      target.state = passed ? 'completed' : 'held'; target.node_verifier = outcome;
-      if (!passed) {
+      target.state = accepted ? 'completed' : 'held'; target.node_verifier = outcome;
+      if (!accepted) {
         target.hold_reason = 'node_verifier_failed';
         target.task_quality = 'failed'; target.parity_state = 'unverified';
       }
       const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
-      if (attempt) { attempt.state = target.state; attempt.verifier = outcome; }
+      if (attempt) {
+        attempt.state = target.state; attempt.verifier = outcome; attempt.verifier_id = id;
+        // K9: the certifier's own pass on THIS attempt is the descent's check.
+        if (accepted && role === 'certifier') attempt.check_outcome = 'pass';
+      }
     });
     return outcome;
+  }
+  /** A pending descent's attempt its admitting source did not accept: its
+   * output is never kept and the child waits for _ladderFailed. */
+  _discardDescentAttempt(taskID, nodeID, result) {
+    this._update(taskID, 'child_returned', snapshot => {
+      const child = snapshot.children.find(c => c.id === nodeID);
+      Object.assign(child, {output: null, execution_verified: false, task_quality: 'unverified',
+        parity_state: 'unverified', native_receipt: result.native_receipt, native_summary: null,
+        usage: result.usage ?? null, finished_at_ms: Date.now(), state: 'waiting', dispatched_at_ms: null});
+      child.attempt_history.at(-1).state = 'ladder_not_returned';
+      child.attempt_history.at(-1).native_receipt = result.native_receipt;
+      child.attempt_history.at(-1).usage = result.usage ?? null;
+    });
   }
   /** A certified descent failed (R9): its verifier failed ('fail') or its
    * admitting source did not accept the answer ('not_returned'). Its output
@@ -5927,7 +6207,9 @@ class RCCRuntime {
    * cancel request) with a typed reason: the scheduler settles the task after
    * every running sibling reconciles. Either way the cheaper attempt's
    * history entry records its escalation outcome ('escalated', or the hold
-   * reason), which the routing ledger keeps. */
+   * reason) and, unless its admitting source already gave one (a pass a
+   * failure signal then overruled, or certifier_unavailable), its check
+   * outcome (K9): the routing ledger keeps both. */
   async _ladderFailed(taskID, node, candidate, result, outcome) {
     const current = () => {
       const state = this._load(taskID);
@@ -5962,7 +6244,7 @@ class RCCRuntime {
         node_verifier: outcome, hold_reason: reason, finished_at_ms: Date.now()});
       const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
       if (attempt) { attempt.state = outcome === 'fail' ? 'ladder_verifier_failed' : 'ladder_not_returned';
-        attempt.verifier = outcome; attempt.escalation_outcome = reason; }
+        attempt.verifier = outcome; attempt.escalation_outcome = reason; attempt.check_outcome ??= outcome; }
     });
   }
   /** Once, read-only only: the certified descent failed, so the node returns
@@ -6017,7 +6299,7 @@ class RCCRuntime {
       state.bound_rows = {...(state.bound_rows ?? {}), [reference.id]: immutable(reference)};
       const attempt = target.attempt_history.find(entry => entry.attempt_id === attemptID);
       if (attempt) { attempt.state = outcome === 'fail' ? 'ladder_verifier_failed' : 'ladder_not_returned';
-        attempt.verifier = outcome; attempt.escalation_outcome = 'escalated'; }
+        attempt.verifier = outcome; attempt.escalation_outcome = 'escalated'; attempt.check_outcome ??= outcome; }
       // Its [dispatched, now] interval: ladderExemptMs exempts the union.
       const dispatchedAt = attempt?.ledger?.dispatched_at_ms;
       const escalatedAt = Date.now();
@@ -6265,6 +6547,16 @@ class RCCRuntime {
           });
           return;
         }
+        // I2: a descent's answer is adopted only through its admitting
+        // source's acceptance below. A handback or a source repair is neither
+        // that acceptance nor its continuation: it is discarded like any
+        // unaccepted descent, and the node runs its fixed reference once (or
+        // holds, typed), never continuing or staging the cheaper attempt.
+        if (descent && (result.handback || result.repair_source)) {
+          this._discardDescentAttempt(taskID, node.id, result);
+          await this._ladderFailed(taskID, node, candidate, result, 'not_returned');
+          return;
+        }
         // A handback or a source repair settles this attempt now; record it
         // before the continuation chain or the source stage, not after.
         if (result.handback) {
@@ -6307,10 +6599,23 @@ class RCCRuntime {
             result.operational_quality?.coverage === 'full' &&
             result.operational_quality?.assessment_state === 'task_contract_verified' &&
             result.operational_quality?.contract_sha256 === collectionObligation.contract_sha256;
-          const deliverable = collectionChecked && result.execution_verified &&
+          // A descent the verifier source admitted is never adopted here: it
+          // waits for the certifier its ladder names, whose pass on THIS
+          // attempt alone accepts it (I2). With that certifier gone (no
+          // longer registered, sound or applicable) it is discarded, never
+          // delivered, and the node runs its reference once.
+          const verifierDescent = descent && recorded.ladder?.admitted_by === 'verifier';
+          const certifierPresent = verifier?.role === 'certifier' && verifier.id === recorded.ladder?.certificate_id;
+          const answered = collectionChecked && result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
-            boundedText(result.output, MAX_OUTPUT_BYTES) && (!descent || certifiedAnswer(recorded.ladder, result));
+            boundedText(result.output, MAX_OUTPUT_BYTES);
+          const deliverable = answered && (!descent || (verifierDescent ?
+            descentStructurallySound(result) && certifierPresent : certifiedAnswer(recorded.ladder, result)));
           const discard = !deliverable && descent;
+          // K9: a sound answer whose certifier is gone was never checked (a
+          // configuration fault, not a failure of the route).
+          const certifierUnavailable = discard && verifierDescent && answered && descentStructurallySound(result) &&
+            !certifierPresent;
           this._update(taskID, 'child_returned', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             child.output = discard ? null : result.output;
@@ -6328,8 +6633,16 @@ class RCCRuntime {
               child.state === 'waiting' ? 'node_verifier_pending' : child.state;
             child.attempt_history.at(-1).native_receipt = result.native_receipt;
             child.attempt_history.at(-1).usage = result.usage ?? null;
+            // K9: the admitting source's verdict on THIS attempt, kept for
+            // the ledger (also across a restart). An exact, contract or class
+            // acceptance is final here; a certifier's comes from _verifyNode.
+            if (descent && !verifierDescent && deliverable) child.attempt_history.at(-1).check_outcome = 'pass';
+            if (certifierUnavailable) child.attempt_history.at(-1).check_outcome = 'certifier_unavailable';
           });
-          if (discard) { await this._ladderFailed(taskID, node, candidate, result, 'not_returned'); return; }
+          if (discard) {
+            if (certifierUnavailable) verifierOutcome = 'certifier_unavailable';
+            await this._ladderFailed(taskID, node, candidate, result, 'not_returned'); return;
+          }
           if (!deliverable) return;
           verifierOutcome = result.task_verified && result.operational_quality?.coverage === 'full' &&
             result.operational_quality.assessment_state === 'task_contract_verified' ? 'pass' : 'not_registered';
@@ -6398,15 +6711,7 @@ class RCCRuntime {
         const failedChild = current.children.find(c => c.id === node.id);
         if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none' &&
             pendingEscalation(failedChild) && candidate.scope === 'read_only') {
-          this._update(taskID, 'child_returned', snapshot => {
-            const child = snapshot.children.find(c => c.id === node.id);
-            Object.assign(child, {output: null, execution_verified: false, task_quality: 'unverified',
-              parity_state: 'unverified', native_receipt: result.native_receipt, native_summary: null,
-              usage: result.usage ?? null, finished_at_ms: Date.now(), state: 'waiting', dispatched_at_ms: null});
-            child.attempt_history.at(-1).state = 'ladder_not_returned';
-            child.attempt_history.at(-1).native_receipt = result.native_receipt;
-            child.attempt_history.at(-1).usage = result.usage ?? null;
-          });
+          this._discardDescentAttempt(taskID, node.id, result);
           await this._ladderFailed(taskID, node, candidate, result, 'not_returned');
           return;
         }

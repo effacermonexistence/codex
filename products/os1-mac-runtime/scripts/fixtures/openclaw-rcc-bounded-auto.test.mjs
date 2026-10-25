@@ -6,7 +6,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp, chmod, rm, mkdir, writeFile, readFile, realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createRCCRuntime, hostContextFingerprint, RCCRuntimeError, admitBoundedAutoPlan} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import {createRCCRuntime, hostContextFingerprint, RCCRuntimeError, admitBoundedAutoPlan, registerNodeVerifiers} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {createPlannerHostProjection, compileFreshPlannerProposal} from '../../Resources/openclaw-os1-bridge/adaptive-plan-host.mjs';
 import {adaptiveRuntimeOptions} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 import {createLocalPlanPlanner, projectLocalPlannerCandidates} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
@@ -145,11 +145,15 @@ test('no exhausted, stale or out-of-scope row binds a bounded node', () => {
     assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
   }
 });
-test('a registered verifier certifies a bounded read node: the descent carries its fixed reference escalation', () => {
+test('a registered verifier certifies a bounded read node: the descent carries its fixed reference escalation', async () => {
   const q = task('/private/test'), c = withCheap(q);
   const prepared = createPlannerHostProjection({task: q, catalog: c, scope: 'read_only', nonce: 'fixed_nonce'});
   const compiled = compileFreshPlannerProposal(single('reference'), prepared, prepared, {max_nodes: 4});
-  const registry = new Map([['trivial:read_only:agent', () => ({passed: true})]]);
+  // K4: a registered sound_full node verifier (it rejects its refutation and the Core nonce).
+  const registry = await registerNodeVerifiers(new Map([['bounded-read', {id: 'bounded-read', scope: 'read_only',
+    surfaces: ['agent', 'chat'], soundness: 'sound_full', applies: () => true,
+    verify: async input => ({passed: input.output === 'fixture answer'}),
+    refutations: [{instruction: 'fixture instruction', output: 'fixture wrong answer'}]}]]));
   const uncertified = admitBoundedAutoPlan(compiled, q, c);
   const [plain] = uncertified.plan.nodes;
   assert.equal(plain.candidate_id, 'reference'); assert.equal(uncertified.routes[plain.id].kind, 'reference');
@@ -159,6 +163,7 @@ test('a registered verifier certifies a bounded read node: the descent carries i
   assert.equal(certified.routes[node.id].kind, 'tier');
   assert.equal(certified.routes[node.id].ladder.reference_candidate_id, 'reference');
   assert.equal(certified.routes[node.id].ladder.admitted_by, 'verifier');
+  assert.equal(certified.routes[node.id].ladder.certificate_id, 'bounded-read');
   assert.match(certified.decisions[node.id].reason, /^bounded_plan;route_tier;admitted_certified_verifier;/);
 });
 test('writer preparation from a model is not admitted: ONE host writer runs the request', async t => {

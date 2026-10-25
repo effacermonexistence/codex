@@ -2768,11 +2768,20 @@ test('routing ledger: one private record per settled attempt, ids and routing fa
     assert.equal(text.includes(forbidden), false, forbidden);
   const records = await ledgerRecords(dir);
   assert.equal(records.length, 2, 'one record per attempt: the quota rejection and the success');
-  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'dispatched_at_ms',
+  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'check_id', 'check_label',
+    'check_outcome', 'delivery_basis', 'dispatched_at_ms',
     'dispatched_failure', 'effort', 'escalated', 'escalation_outcome', 'execution_verified', 'family',
     'host_route_kind', 'ladder', 'model', 'node_id', 'quota_pool', 'quota_remaining_fraction',
-    'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'surface', 'surface_kind',
-    'task_id', 'task_quality', 'tier', 'usage', 'verifier_outcome']);
+    'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'stratum', 'surface',
+    'surface_kind', 'task_id', 'task_quality', 'tier', 'usage', 'verifier_outcome']);
+  // K9: the law bound the reference; no check, no label, verifier_outcome unchanged.
+  for (const record of records) {
+    assert.equal(record.delivery_basis, 'reference');
+    assert.equal(record.check_id, null); assert.equal(record.check_outcome, null); assert.equal(record.check_label, null);
+    assert.deepEqual(Object.keys(record.stratum).sort(), ['context_bytes', 'has_materials', 'request_class', 'turn']);
+    assert.equal(record.stratum.turn, 'first'); assert.equal(record.stratum.has_materials, false);
+    assert.equal(record.stratum.context_bytes, Buffer.byteLength(secret));
+  }
   // An older catalog (no model_tiers) records no tier and no escalation.
   assert.equal(records[1].tier, null); assert.equal(records[1].escalated, false);
   // Not a named route, and no failure after dispatch: both optional facts null.
