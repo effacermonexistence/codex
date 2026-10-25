@@ -45,11 +45,12 @@ async function harness(t,{duration=240000,bounded=true,catalogChange=null,ignore
  return{runtime,q,tickets,get args(){return args;},get plannerCalls(){return plannerCalls;},get catalogCalls(){return catalogCalls;},finish:()=>resolve(reply()),tick:n=>t.mock.timers.tick(n),
  done:async()=>{await until(()=>['returned_unverified','held','failed','cancelled','effects_uncertain'].includes(runtime._load(q.task_id)?.state),'terminal');return runtime._load(q.task_id);}};
 }
-test('bounded planner healthy at40s passes actual Core and keeps both original-objective children',async t=>{
+test('bounded planner healthy at40s reaches the actual Core; its uncertified two-node split runs as one reference request',async t=>{
  const h=await harness(t);const original=JSON.stringify(h.q);h.tick(40000);assert.equal(h.args.signal.aborted,false);h.finish();const s=await h.done();
- assert.equal(s.plan_provenance,'host_checked_execution_plan_v1');assert.equal(s.adaptive_routing.live_plan_changed,true);assert.equal(h.tickets.length,2);
+ assert.equal(s.plan_provenance,'host_exact_request');assert.equal(s.adaptive_routing.live_plan_changed,false);assert.equal(h.tickets.length,1);
+ assert.equal(h.tickets[0].instruction,h.q.request);assert.equal(s.children[0].route_kind,'reference');
  assert(h.tickets.every(x=>x.original_request===h.q.request));assert.equal(JSON.stringify(h.q),original);assert.equal(s.adaptive_routing.quality_certificate,false);
- await h.runtime.submit(h.q);assert.equal(h.plannerCalls,1);assert.equal(h.tickets.length,2,'no replay');
+ await h.runtime.submit(h.q);assert.equal(h.plannerCalls,1);assert.equal(h.tickets.length,1,'no replay');
 });
 test('bounded Core deadline is120s, not30s; timeout retains exact host fallback once',async t=>{
  const h=await harness(t);h.tick(119999);assert.equal(h.args.signal.aborted,false);h.tick(1);assert.equal(h.args.signal.aborted,true);

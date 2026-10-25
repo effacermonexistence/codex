@@ -399,8 +399,11 @@ test('a writer or deterministic node is never certified: a writer binds the refe
   const request = task('/tmp', 'Change one file', {write: true});
   const catalog = tierCatalog(request, {write: true});
   const proposed = plan(request, [unbound('w', {scope: 'workspace_write'})]);
-  const first = resolveRoutePlan(structuredClone(proposed), request, catalog, 1_000_000, {verifierRegistry: CERTIFY});
-  assert.deepEqual(first, resolveRoutePlan(structuredClone(proposed), request, catalog, 1_000_000, {verifierRegistry: CERTIFY}));
+  // One bind time after the catalog's observations (a row observed after the
+  // bind time is no observation yet).
+  const now = Date.now();
+  const first = resolveRoutePlan(structuredClone(proposed), request, catalog, now, {verifierRegistry: CERTIFY});
+  assert.deepEqual(first, resolveRoutePlan(structuredClone(proposed), request, catalog, now, {verifierRegistry: CERTIFY}));
   const write = first.decisions.w;
   assert.equal(route(write), 'openai_codex/gpt-6-astra/max');
   assert.equal(write.route_class, 'deep');

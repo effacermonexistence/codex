@@ -514,12 +514,14 @@ function validateTask(task, {allowCoreRouting = false} = {}) {
 /** The one dispatch rule. Returns null when the row may be dispatched now,
  * otherwise the exact hold/failure code _candidate has always used. */
 function dispatchFailure(candidate, task, now) {
-  if (!(candidate.availability === 'available' && candidate.availability_valid_until_ms > now))
+  // Telemetry observed after `now` (a future-dated row) is no observation yet.
+  if (!(candidate.availability === 'available' && candidate.availability_observed_at_ms <= now &&
+      candidate.availability_valid_until_ms > now))
     return 'candidate_unavailable';
   if (candidate.quality_state === 'mismatch') return 'candidate_quality_mismatch';
   if (candidate.quota_pool !== 'none' && !(candidate.quota_pool !== 'unknown' &&
       candidate.quota_remaining_fraction !== null && candidate.quota_remaining_fraction > 0 &&
-      candidate.quota_valid_until_ms > now))
+      candidate.quota_observed_at_ms <= now && candidate.quota_valid_until_ms > now))
     return 'candidate_quota_unknown_or_exhausted';
   if ((task?.budget?.max_cost_units ?? null) !== null && candidate.estimated_cost_units === null)
     return 'candidate_cost_unknown';
@@ -560,7 +562,9 @@ function scopesAllowed(task) {
  * write authority), before any dispatchability or avoidance. `anyPaths` is
  * for the availability summary, which has no planned paths yet. */
 function eligibleRow(c, node, {widenWrites = false, anyPaths = false} = {}) {
-  if (c.scope !== node.scope || !hostRoutable(c)) return false;
+  // A row whose permission profile is not its scope (the catalog builder
+  // always sets them equal) binds nothing.
+  if (c.scope !== node.scope || c.permission_profile !== c.scope || !hostRoutable(c)) return false;
   // An explicit local route binds its row in localRouteCandidate, never here.
   if (node.kind === 'deterministic' ? !localExactRow(c) : c.surface === 'local') return false;
   return node.scope !== 'workspace_write' || anyPaths || coversOwnedPaths(c, node.owned_paths) ||
@@ -1238,9 +1242,10 @@ export function hostPlan(task, catalog, {ownerExplicitParallel = false} = {}) {
     effective.includes(route) ? [node(explicitRouteNodeID(index), route.instruction)] : [])};
 }
 
-/** Host-enabled execution policy, NOT a quality certificate. Local choices
- * are accepted only inside current host/catalog authority. Certified/FULL
- * requests keep their original R0/checker path. Unknown quality stays unknown. */
+/** Whether a task may ask the local planner for a decomposition proposal.
+ * Not a quality certificate and not a binding: every proposed node is bound by
+ * the one admission law (admitBoundedAutoPlan). Certified/FULL requests keep
+ * their original R0/checker path. Unknown quality stays unknown. */
 function boundedAutoEligible(task, catalog) {
   return task?.mode === 'auto' && task.objective === task.request &&
     ['read_only', 'workspace_write'].includes(hostScope(task, catalog)) &&
@@ -1282,42 +1287,15 @@ export function assertOwnerExplicitParallelPlan(plan, task, catalog) {
     }), 'owner_explicit_parallel_contract_mismatch');
   return contract;
 }
-function ownerExplicitTuplePreference(compiled, unit) {
-  // Labels are only a hint locator, not proof the model covered the unit.
-  // A missing/merged/duplicated locator cannot erase topology or borrow a
-  // positional sibling hint. The existing bounded null-hint policy decides.
-  const matches = compiled.node_obligations.filter(obligation =>
-    obligation.proposal_node_id === unit.label || obligation.proposal_node_id === unit.id);
-  if (matches.length !== 1) return {proposed_candidate_id: null};
-  const preferences = compiled.candidate_preferences.filter(x => x.node_id === matches[0].node_id);
-  return preferences.length === 1 ? preferences[0] : {proposed_candidate_id: null};
-}
-function executionPolicyChoice(node, task, catalog, now, {hint = null, avoidIDs = [], avoidPool = null} = {}) {
-  const intent = routingIntent(catalog);
-  const rows = catalog.candidates.filter(c => eligibleRow(c, node) && c.permission_profile === node.scope &&
-    (node.scope !== 'workspace_write' || c.tools.includes('write') && c.tools.includes('execute')) && intentAdmits(c, intent) &&
-    !avoidIDs.includes(c.id) && dispatchable(c, task, now) &&
-    c.availability_observed_at_ms <= now && (c.quota_pool === 'none' || c.quota_observed_at_ms <= now));
-  let chosen;
-  if (hint !== null) {
-    chosen = rows.find(c => c.id === hint);
-    assert(chosen, 'bounded_candidate_not_current_or_allowed');
-  } else {
-    // A missing hint has no invented model confidence. This is a bounded
-    // execution-cost policy, not evidence of equal task quality.
-    const quota = c => Number.isFinite(c.quota_remaining_fraction) && c.quota_observed_at_ms <= now && c.quota_valid_until_ms > now ? c.quota_remaining_fraction : -1;
-    chosen = rows.map((candidate, index) => ({candidate, index})).sort((a, b) =>
-      Number(a.candidate.quota_pool === avoidPool) - Number(b.candidate.quota_pool === avoidPool) ||
-      (a.candidate.estimated_cost_units ?? Infinity) - (b.candidate.estimated_cost_units ?? Infinity) ||
-      EFFORT_ORDER.indexOf(a.candidate.effort) - EFFORT_ORDER.indexOf(b.candidate.effort) ||
-      quota(b.candidate) - quota(a.candidate) || a.index - b.index)[0]?.candidate;
-  }
-  assert(chosen, 'bounded_no_current_candidate');
-  return {candidate: chosen, kind: 'execution_only', routeClass: 'standard', referenceEffort: null,
-    ladder: null, tier: modelTiers(catalog)?.[chosen.model] ?? null,
-    why: 'host_checked_unmeasured_choice;quality_not_certified'};
-}
-export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) {
+/** A local planner's proposal, admitted under the one law (converged
+ * architecture v2, K1/K2): the planner proposes topology only, and every node
+ * binds by selectRouteCandidate, so a row below the reference binds only when
+ * admittedRoute certifies it and its answer is checked before delivery. The
+ * planner's candidate ids are hints and are never bound. A decomposition that
+ * is not the owner's own partition needs a measured plan-shape certificate
+ * (K11b), and no such certificate exists yet: such a plan is not admitted and
+ * the caller keeps the host plan. */
+export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), verifierRegistry = null) {
   assert(boundedAutoEligible(task, catalog) && compiled?.provenance === 'host_unbound_plan' &&
     compiled.execution_authorized === false && compiled.quality_parity_verified === false &&
     compiled.binding?.task_id === task.task_id && compiled.binding.request_sha256 === task.request_sha256 &&
@@ -1345,22 +1323,20 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
       instruction: task.request, dependencies: research.map(n => n.id), scope: 'workspace_write',
       owned_paths: ['**'], context_refs: [...task.material_refs]}], final_node_id: 'host_finalize'};
   }
+  assert(ownerParallel || proposed.nodes.length === 1, 'bounded_decomposition_not_admissible');
   const decisions = {}, routes = {};
   const nodes = proposed.nodes.map(node => {
     const finalWriter = writer && node.id === 'host_finalize';
     assert(node.kind === 'agent' && (finalWriter || node.scope === 'read_only' && node.owned_paths.length === 0) &&
       !Object.hasOwn(node, 'candidate_id'), 'bounded_plan_authority_upgrade');
-    const preference = finalWriter ? {proposed_candidate_id: finalizerHint} : ownerParallel ?
-      ownerExplicitTuplePreference(compiled, ownerParallel.units.find(unit => unit.id === node.id)) :
-      compiled.candidate_preferences.find(x => x.node_id === node.id);
-    assert(preference, 'bounded_candidate_hint_missing');
     // Retain every original material for each branch. A model's omission is
     // not authority to discard source context or claim it was already read.
     const checked = {...node, context_refs: [...task.material_refs]};
-    const choice = executionPolicyChoice(checked, task, catalog, now, {hint: preference.proposed_candidate_id});
-    decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, choice.why, null, choice.tier);
-    routes[node.id] = {kind: choice.kind, reference_effort: null, ladder: null};
-    return {...checked, candidate_id: choice.candidate.id};
+    const choice = selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry});
+    decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'bounded_plan;' + choice.why,
+      choice.ladder, choice.tier);
+    routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
+    return {...checked, owned_paths: choice.widened ? ['**'] : checked.owned_paths, candidate_id: choice.candidate.id};
   });
   if (ownerParallel) assertOwnerExplicitParallelPlan({...proposed, nodes}, task, catalog);
   const plan = validatePlan({...proposed, nodes}, task, catalog);
@@ -4190,18 +4166,10 @@ class RCCRuntime {
       }
     } else {
       // Nothing that could run now: say why per pool, before a planner call.
-      // Execution-only planning does not claim reference parity and must not
-      // require frontier access merely to start ordinary authorized work.
-      // Certified/FULL/explicit-ceiling paths retain the original R0 gate.
-      let boundedAvailable = false;
-      if (this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' &&
-          this.verifierRegistry.size === 0 && boundedAutoEligible(admitted, catalog)) {
-        const scope = hostScope(admitted, catalog);
-        try { executionPolicyChoice({kind: 'agent', scope,
-          owned_paths: scope === 'workspace_write' ? ['**'] : []}, admitted, catalog, boundAt);
-          boundedAvailable = true; } catch { /* Keep exact current availability failure. */ }
-      }
-      const blocked = boundedAvailable ? null : noDispatchableReason(task, catalog, boundAt);
+      // Bounded Auto has no shortcut here: with no runnable reference no row
+      // below it can bind (R9), so the task holds whatever the planner might
+      // propose.
+      const blocked = noDispatchableReason(task, catalog, boundAt);
       if (blocked) { this._hold(taskID, blocked); return; }
     }
     if (!this.hostAutoPlan && typeof this.plan !== 'function') {
@@ -4225,7 +4193,7 @@ class RCCRuntime {
         if (['live_host_checked_proposal', 'bounded_host_checked_proposal'].includes(observed?.reason) && observed.host_bound_compilation) {
           try {
             accepted = observed.reason === 'bounded_host_checked_proposal' ?
-              admitBoundedAutoPlan(observed.host_bound_compilation, admitted, catalog, Date.now()) :
+              admitBoundedAutoPlan(observed.host_bound_compilation, admitted, catalog, Date.now(), this.verifierRegistry) :
               admitLivePlannerPlan(observed.host_bound_compilation, admitted, catalog,
                 this.livePlanCapability, Date.now(), this.verifierRegistry);
           } catch {
@@ -4418,11 +4386,12 @@ class RCCRuntime {
     const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
     // An escalated tier route stays at the reference wherever it moves; any
     // other node is admitted again by the same law (R0) against the fresh rows.
+    // A child an older build bound as 'execution_only' (no check) moves to
+    // the reference: its earlier row had no admitting source to keep.
     const escalated = child.ladder?.source === 'tier' && child.ladder.escalated === true;
-    const choice = child.route_kind === 'execution_only' ?
-      executionPolicyChoice(node, executionTask(snapshot), fresh, Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs}) :
-      selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
-        {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs, referenceOnly: escalated, verifierRegistry: this.verifierRegistry});
+    const choice = selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
+      {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs,
+        referenceOnly: escalated || child.route_kind === 'execution_only', verifierRegistry: this.verifierRegistry});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, fresh, [nodeID]));
@@ -4489,10 +4458,10 @@ class RCCRuntime {
     }
     const pick = (catalog, now) => {
       try {
-        const options = {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry};
-        const choice = child.route_kind === 'execution_only' ?
-          executionPolicyChoice(node, executionTask(snapshot), catalog, now, options) :
-          selectRouteCandidate(node, executionTask(snapshot), catalog, now, options);
+        // An older build's unchecked 'execution_only' child moves only to a reference.
+        const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
+          {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry,
+            referenceOnly: child.route_kind === 'execution_only'});
         return choice.candidate.quota_pool !== planned.quota_pool &&
           this._leasePossible(choice.candidate, executionTask(snapshot), node.id, false) ? choice : null;
       } catch { return null; }
