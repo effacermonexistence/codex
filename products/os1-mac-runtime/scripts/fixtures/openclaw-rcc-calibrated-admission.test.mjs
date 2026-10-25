@@ -101,12 +101,15 @@ async function harness(t,{fixture=true,missing=false,failCheap=false,unknown=fal
  afterCreate?.({runtime,q,cat,packet});
  const original=structuredClone(q);await runtime.submit(q);const result=await done(runtime,q);
  assert.deepEqual(q,original);assert.deepEqual(runtime._load(q.task_id).task,original);
- return {runtime,q,result,tickets,baseline,packet,cat};
+ return {runtime,q,result,tickets,baseline,packet,cat,catalogCalls:()=>catalogCalls};
 }
 test('protected fixture capability selects an actually different cheaper R0-certified tuple and full checker adopts',async t=>{
  const h=await harness(t);assert.equal(h.result.state,'completed',h.result.error);assert.deepEqual(h.tickets.map(t=>t.candidate_id),['SYNTHETIC-routed']);
  const s=h.runtime._load(h.q.task_id);assert.equal(s.calibrated_route.state,'dispatched');assert.equal(s.plan_provenance,'host_calibrated_original_v1');assert.equal(s.children[0].ladder.admitted_by,'contract');assert.equal(s.children[0].ladder.reference_candidate_id,'SYNTHETIC-reference');
  assert.equal(s.plan.nodes[0].instruction,h.q.request);assert.equal(h.result.result.parity_state,'unverified');assert.equal(s.native_dispatches,1);
+ // K8: a calibrated pending dispatch never reuses its bind-time catalog; the
+ // requalification runs on the second (pre-dispatch) build.
+ assert.equal(h.catalogCalls(),2);
 });
 test('failed cheap full checker escalates once to independently bound reference, never adopts cheap failure',async t=>{
  const h=await harness(t,{failCheap:true});assert.equal(h.result.state,'completed',h.result.error);assert.deepEqual(h.tickets.map(t=>t.candidate_id),['SYNTHETIC-routed','SYNTHETIC-reference']);
@@ -122,6 +125,7 @@ test('revoked private evidence before dispatch restores exact R0 without an atte
  const h=await harness(t,{beforeRefresh:({packet})=>rmSync(join(packet.root,'promotion-review.json'),{force:true})});
  assert.equal(h.result.state,'completed',h.result.error);assert.deepEqual(h.tickets.map(t=>t.candidate_id),['SYNTHETIC-floor']);
  const s=h.runtime._load(h.q.task_id);assert.equal(s.calibrated_route.state,'restored_r0');assert.equal(stableJSON(s.plan),stableJSON(h.baseline.plan));assert.equal(s.children[0].attempt_history.length,1);
+ assert.ok(h.catalogCalls()>=2,'the revocation is seen by a pre-dispatch build, never skipped by bind reuse');
 });
 test('unknown already-dispatched selected outcome is never replayed as either candidate or reference',async t=>{
  const h=await harness(t,{unknown:true});assert.equal(h.result.state,'effects_uncertain');assert.deepEqual(h.tickets.map(t=>t.candidate_id),['SYNTHETIC-routed']);

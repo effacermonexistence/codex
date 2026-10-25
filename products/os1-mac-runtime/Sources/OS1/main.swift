@@ -20509,15 +20509,16 @@ func routingOrderInterpreterHostSelfTest() async throws {
     print("Routing interpreter host: \(checks) checks PASS; canned answers only, local model, providers and Core not called")
 }
 
-/// Core's zero-model exact route answers a request that only asks one sum,
-/// difference or product (pureArithmetic / exactArithmeticQuestion in
-/// rcc-runtime.mjs) with the decimal integer it computed (BigInt.toString);
-/// its only other zero-model answer, the local check-in, is a sentence. So an
-/// integer output of the bound `local-core` child is exact arithmetic, and the
-/// owner is told no model and no subscription allowance was used (2026-10-15:
-/// a plain Auto "1+1이 뭐야?" had run Codex gpt-6-luna/low for 29K input tokens).
+/// Core's zero-model exact route answers a request that only asks one closed
+/// arithmetic expression (zeroModelArithmetic in rcc-runtime.mjs,
+/// os1-closed-arithmetic-v1) with the exact integer or finite decimal it
+/// computed, in canonical form (RCCExactArithmeticOutput); its only other
+/// zero-model answer, the local check-in, is a sentence. So a canonical output
+/// of the bound `local-core` child is exact arithmetic, and the owner is told
+/// no model and no subscription allowance was used (2026-10-15: a plain Auto
+/// "1+1이 뭐야?" had run Codex gpt-6-luna/low for 29K input tokens).
 func rccDeterministicArithmeticNotice(output: String) -> String? {
-    guard output.range(of: #"^-?[0-9]{1,40}$"#, options: .regularExpression) != nil else { return nil }
+    guard RCCExactArithmeticOutput.isCanonical(output) else { return nil }
     return os1Tr("정확한 산술식이라 OS-1이 로컬에서 계산·검증했습니다 · 모델 호출·구독 사용량 없음",
                  "An exact arithmetic expression: OS-1 computed and verified it locally · no model call, no subscription usage")
 }
@@ -20658,12 +20659,12 @@ func effortlessRoutingSelfTest() throws {
               !rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: true, chatLane: false),
               "a resumed thread and a continuation are not one-shot")
     // Core's exact arithmetic is told apart from its check-in by its output.
-    for output in ["2", "-12", "0", "123456789012345678901234567890"] {
-        try check(rccDeterministicArithmeticNotice(output: output)?.isEmpty == false, "integer \(output) is exact arithmetic")
+    for output in ["2", "-12", "0", "123456789012345678901234567890", "2.5", "0.125", "-0.25"] {
+        try check(rccDeterministicArithmeticNotice(output: output)?.isEmpty == false, "canonical \(output) is exact arithmetic")
     }
     for output in ["응, 지금 OS-1 로컬 요청·응답 경로는 살아 있어.", "Yes. This local OS-1 request-and-response path is working.",
-                   "", "2.5", "1+1", "2\n", String(repeating: "9", count: 41)] {
-        try check(rccDeterministicArithmeticNotice(output: output) == nil, "non-integer output \(output.debugDescription) gets no notice")
+                   "", "1+1", "2\n", String(repeating: "9", count: 41), "2.50", "-0", "01", ".5", "1e3"] {
+        try check(rccDeterministicArithmeticNotice(output: output) == nil, "non-canonical output \(output.debugDescription) gets no notice")
     }
     // The planner model is named only once Core has bound a planned child.
     func snapshot(_ state: RCCRuntimeContract.State, _ children: [String]) -> RCCRuntimeContract.Snapshot {

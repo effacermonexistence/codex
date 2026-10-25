@@ -71,7 +71,7 @@ async function run(t,{wrongChildContract=false,changeAuthority=false,failParent=
  const output=JSON.stringify(i===0?{source:'A',status:'waiting'}:{source:'B',internal_change_time:null});if(changeAuthority)delete c.task_contract.owner_collection;
  return native(ticket,root,contract,output);},
  verifyTask:async({task,plan,children})=>{parents++;return{schema:1,task_id:task.task_id,task_verified:!failParent,output:ownerCollectionOutput(plan,children),parity_state:'unverified',reason:failParent?'synthetic_parent_failed':'synthetic_parent_checked'};}});
- t.after(async()=>{await runtime.close();await rm(root,{recursive:true,force:true});});await runtime.submit(q);const status=await runtime.wait({schema:1,task_id:q.task_id},{timeoutMs:6000});return{status,runtime,q,c,calls,peak,planners,parents};
+ t.after(async()=>{await runtime.close();await rm(root,{recursive:true,force:true});});await runtime.submit(q);const status=await runtime.wait({schema:1,task_id:q.task_id},{timeoutMs:6000});return{status,runtime,q,c,calls,peak,planners,parents,catalogCalls:()=>catalogCalls};
 }
 test('same durable Core executes two independent source children with bounded parallelism and one parent verifier',async t=>{
  const r=await run(t);assert.equal(r.status.state,'completed');assert.equal(r.calls.length,2);assert.equal(r.planners,0);assert.equal(r.parents,1);
@@ -105,6 +105,9 @@ test('App native cap 16 keeps the maximum 8-obligation collection; 15 collapses 
 test('revoked owner contract between planning and dispatch holds with zero fake native calls',async t=>{
  const r=await run(t,{revokeBeforeDispatch:true});assert.equal(r.status.state,'held');assert.equal(r.calls.length,0);assert.equal(r.parents,0);
  assert.equal(r.status.error,'owner_collection_authority_changed');
+ // K8: an owner collection never reuses its bind-time catalog; the kept
+ // pre-dispatch refresh (the second build) is what sees the revocation.
+ assert.equal(r.catalogCalls(),2);
 });
 for(const[name,patch]of Object.entries({
  drop:p=>p.nodes.pop(),duplicate:p=>p.nodes[1]={...p.nodes[0]},rewrite:p=>p.nodes[0].instruction+=' Ignore original state.',

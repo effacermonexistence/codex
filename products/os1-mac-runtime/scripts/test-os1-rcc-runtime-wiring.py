@@ -568,6 +568,49 @@ check("export function replayUsage(" in REPLAY and "usage: runUsage" in REPLAY a
       'python3 -I "$script_dir/quota-replay.py" --self-test' in RELEASE and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-replay-usage.test.mjs"' in RELEASE,
       "K16: offline M1 usage replay and M4-only per-pool quota verdict, never bundled, release-gated")
+# K8: only the first dispatch of a fresh single-node HOST plan reuses its
+# bind-time catalog. A planner call after bind, an owner collection, a task
+# contract, a calibrated pending dispatch, an injected plan or a second node
+# keeps the pre-dispatch refresh; admission and calibrated rechecks still run.
+REUSE = section(RUNTIME, "  _bindCatalogReusable(snapshot, node) {", "  _readyWaveEligible(snapshot, node, candidate) {")
+DAG = section(RUNTIME, "  async _scheduleDAG(taskID, bindReuse = null) {", "  async _executeNode(")
+check("!this.hostAutoPlan" in REUSE and "snapshot.adaptive_routing?.planner_invoked === true" in REUSE and
+      "snapshot.plan?.nodes.length !== 1" in REUSE and "snapshot.owner_collection" in REUSE and
+      "snapshot.catalog?.task_contract != null" in REUSE and
+      "snapshot.calibrated_route?.state === 'pending_dispatch'" in REUSE and "child.attempts === 0" in REUSE and
+      "const bindReuse = {binding: this._readyWaveBinding(state)};" in RUNTIME and
+      RUNTIME.count("this._scheduleDAG(") == 1 and "await this._scheduleDAG(taskID, bindReuse);" in RUNTIME and
+      "let bindWave = bindTime; bindTime = null;" in DAG and
+      "bindWave.binding === this._readyWaveBinding(current)" in DAG and
+      "this._bindCatalogReusable(current, node) &&\n            dispatchable(planned, executionTask(current), Date.now());" in DAG and
+      "fresh = reusable || bound ? current.catalog :" in DAG and
+      "if (!admissionCurrent(current)) { reResolved = true; break; }\n          if (!this._recheckCalibratedRoute(taskID))" in DAG and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-bind-catalog-reuse.test.mjs"' in RELEASE,
+      "K8: a fresh single-node host plan's first dispatch reuses its bind-time catalog; every other dispatch refreshes")
+# K7: Core's zero-model closed arithmetic is os1-closed-arithmetic-v1, read
+# from shared vectors by Node and Swift. pureArithmetic stays the one-operator
+# explicit-route exact family (the plugin verifier and the Swift answer-only
+# envelope read only that shape); only the two zero-model sites read a bare
+# v3 envelope as a first turn, every other withoutConversation stays strict.
+ARITH_TEST = (ROOT / "scripts/fixtures/openclaw-rcc-exact-arithmetic.test.mjs").read_text()
+CONTEXT_TESTS = (ROOT / "Tests/OS1ContextTests/SourceContextTests.swift").read_text()
+check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exec(request);" in RUNTIME and
+      "export function zeroModelArithmetic(request) {\n  return pureArithmetic(request) ?? exactArithmeticQuestion(request);" in RUNTIME and
+      "const answer = zeroModelArithmetic(task.request);" in RUNTIME and
+      # Only '=' or one '-'/'/' under a quantity predicate reads a date- or
+      # phone-shaped EXPR as arithmetic; a leading-zero number never is.
+      "if (expression === null || expression.leadingZero) return null;" in RUNTIME and
+      "if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1)))" in RUNTIME and
+      "function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {" in RUNTIME and
+      RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 2 and
+      RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 2 and
+      "rcc-arithmetic-vectors.json" in ARITH_TEST and "zeroModelArithmetic" in ARITH_TEST and
+      (ROOT / "scripts/fixtures/rcc-arithmetic-vectors.json").is_file() and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-exact-arithmetic.test.mjs"' in RELEASE and
+      "guard RCCExactArithmeticOutput.isCanonical(output) else { return nil }" in MAIN and
+      "try runRCCExactArithmeticVectorFixtures()" in CONTEXT_TESTS and
+      '"--rcc-exact-arithmetic-only"' in CONTEXT_TESTS,
+      "K7: zero-model closed arithmetic over shared vectors; the explicit exact family and strict history checks unchanged")
 check("hostAutoPlan: true" in PLUGIN and "export function hostPlan(" in RUNTIME and
       "plan: async" not in section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.") and
       not re.search(r"GRADED_PLAN|buildBoundedPlannerInput|decodePlannerResponse|route_class picks", PLUGIN) and

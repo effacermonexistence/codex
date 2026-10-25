@@ -2155,38 +2155,176 @@ function pureArithmetic(request) {
 // Wrapped exact arithmetic (2026-10-15). A plain Auto "1+1이 뭐야?" ran Codex
 // gpt-6-luna/low (29K input tokens) and still ended returned_unverified
 // (no_registered_exact_task_verifier): the bare-expression gate above missed
-// the question wording around the same exact sum. Only these closed whole-
-// request shapes take Core's zero-model exact route; any other word, a number
-// word, an operator word, division, a decimal, a second operator or a second
-// expression abstains (null) and stays with the models.
-const WRAPPED_EXPRESSION = /^(\d{1,15}) ?([+*]) ?(\d{1,15})/;
+// the question wording around the same exact sum. K7 (2026-10-25) widens the
+// closed grammar to os1-closed-arithmetic-v1: several operators with the usual
+// precedence and parentheses, decimal operands, division, and the Korean and
+// English operator words. pureArithmetic above stays the explicit-route exact
+// family (the plugin verifier and the Swift answer-only envelope read only that
+// one shape). The shared vectors are scripts/fixtures/rcc-arithmetic-vectors.json.
 // EXPR, an optional subject/topic particle, an optional closed predicate.
 const KOREAN_ARITHMETIC_SUFFIX = new RegExp('^ ?(?:(은|는|이|가) ?)?(뭐야|뭐냐|뭐니|뭐지|뭐죠|뭐예요|뭐에요|뭔가요|' +
   '얼마야|얼마냐|얼마지|얼마죠|얼마예요|얼마에요|얼마인가요|몇이야|몇이냐|몇이지|몇이에요)?$', 'u');
 // The typographic apostrophe is the same word (macOS/iOS smart punctuation).
 const ENGLISH_ARITHMETIC_PREFIX = /^(?:what is|what's|what’s|how much is) /u;
-/** The exact answer of a whole request that only asks one sum or product, or
- * null. Shapes (after NFKC, '×' as '*', collapsed whitespace, lowercase, at
- * most 160 characters, one trailing run of ?!.。？！ removed):
- *  (a) a bare expression exactly as pureArithmetic reads it ('-' included)
- *      when nothing was removed; with a removed question/end mark only + or *;
- *  (b) EXPR + an optional particle (은|는|이|가) + an optional closed Korean
- *      predicate; a particle alone needs the '?' ("2+2는?");
- *  (c) a closed English prefix (what is | what's | how much is) + EXPR;
- *  (d) EXPR followed by '=' ("1+1=", "1+1=?").
- * Every wrapped shape takes + or * only and unsigned operands: a hyphen next
- * to words reads as a section, score or range ("5-3은?", "3-4?"). A
- * compatibility character other than a fullwidth form that folds into a
- * digit or operator abstains: NFKC turns the exponent in "2²+1" into "22+1".
- * A '!' right after a digit abstains: "2+3!" is factorial notation. */
+export const CLOSED_ARITHMETIC_LIMITS = Object.freeze({input_chars: 160, int_digits: 15, frac_digits: 15,
+  operands: 16, paren_depth: 4, output_digits: 40, tokens: 64, intermediate_digits: 256});
+const CLOSED_ARITHMETIC_NUMBER = /^([0-9]{1,15})(?:\.([0-9]{1,15}))?(?![0-9.])/;
+const CLOSED_ARITHMETIC_SYMBOLS = Object.freeze({'+': '+', '-': '-', '*': '*', '×': '*', '/': '/', '÷': '/'});
+// Korean operator words may touch a digit ("1플러스1"); English ones need a
+// space on both sides ("2plus2" abstains). Never a number word.
+const CLOSED_ARITHMETIC_KOREAN = /^(?:더하기|플러스|빼기|마이너스|곱하기|나누기)/u;
+const CLOSED_ARITHMETIC_ENGLISH = /^(?:plus|minus|times|multiplied by|divided by)(?= )/;
+const CLOSED_ARITHMETIC_WORDS = Object.freeze({더하기: '+', 플러스: '+', 빼기: '-', 마이너스: '-', 곱하기: '*',
+  나누기: '/', plus: '+', minus: '-', times: '*', 'multiplied by': '*', 'divided by': '/'});
+/** The tokens at the start of `body` (one optional space before each) and
+ * the untokenized rest, or null past the token cap. */
+function closedArithmeticTokens(body) {
+  const tokens = [];
+  let at = 0;
+  for (;;) {
+    const spaced = body[at] === ' ', start = spaced ? at + 1 : at, tail = body.slice(start);
+    let token = null, match;
+    if ((match = CLOSED_ARITHMETIC_NUMBER.exec(tail)))
+      token = {kind: 'num', length: match[0].length, int: match[1], frac: match[2] ?? ''};
+    else if (tail[0] === '(' || tail[0] === ')') token = {kind: tail[0], length: 1};
+    else if (tail.length > 0 && Object.hasOwn(CLOSED_ARITHMETIC_SYMBOLS, tail[0]))
+      token = {kind: 'op', length: 1, op: CLOSED_ARITHMETIC_SYMBOLS[tail[0]], symbol: tail[0]};
+    else if ((match = CLOSED_ARITHMETIC_KOREAN.exec(tail)) || (spaced && (match = CLOSED_ARITHMETIC_ENGLISH.exec(tail))))
+      token = {kind: 'op', length: match[0].length, op: CLOSED_ARITHMETIC_WORDS[match[0]], symbol: null};
+    if (token === null) return {tokens, rest: body.slice(at)};
+    if (tokens.length === CLOSED_ARITHMETIC_LIMITS.tokens) return null;
+    tokens.push(token); at = start + token.length;
+  }
+}
+/** Exact BigInt rational {n, d > 0}, reduced; null past the intermediate cap. */
+function closedRational(n, d) {
+  if (d < 0n) { n = -n; d = -d; }
+  let a = n < 0n ? -n : n, b = d;
+  while (b !== 0n) [a, b] = [b, a % b];
+  n /= a; d /= a;
+  const digits = value => (value < 0n ? -value : value).toString().length;
+  return digits(n) > CLOSED_ARITHMETIC_LIMITS.intermediate_digits ||
+    digits(d) > CLOSED_ARITHMETIC_LIMITS.intermediate_digits ? null : {n, d};
+}
+/** expr := term (('+'|'-') term)*; term := unary (('*'|'/') unary)*;
+ * unary := ['-' symbol] primary; primary := NUM | '(' expr ')'. Every token is
+ * consumed; at least one binary operator. Returns the value, whether every
+ * binary operator is an ASCII '-' or '/' with no parenthesis (a date, phone
+ * number, range, score or fraction reading), how many binary operators there
+ * are, whether a unary '-' leads, and whether a number has a leading zero
+ * ("010", "007": a phone number or a code, never written as a quantity). */
+function closedArithmeticValue(tokens) {
+  const binary = [];
+  let at = 0, depth = 0, operands = 0, leadingUnary = false;
+  const operator = ops => tokens[at]?.kind === 'op' && ops.includes(tokens[at].op);
+  function primary() {
+    const token = tokens[at];
+    if (token?.kind === 'num') {
+      at++;
+      if (++operands > CLOSED_ARITHMETIC_LIMITS.operands) return null;
+      return closedRational(BigInt(token.int + token.frac), 10n ** BigInt(token.frac.length));
+    }
+    if (token?.kind !== '(' || ++depth > CLOSED_ARITHMETIC_LIMITS.paren_depth) return null;
+    at++;
+    const value = expr();
+    if (value === null || tokens[at]?.kind !== ')') return null;
+    at++; depth--;
+    return value;
+  }
+  function unary() {
+    // One symbolic minus per operand: no word, no '--3'.
+    const negative = tokens[at]?.kind === 'op' && tokens[at].symbol === '-';
+    if (negative) { if (at === 0) leadingUnary = true; at++; }
+    const value = primary();
+    return value === null ? null : negative ? {n: -value.n, d: value.d} : value;
+  }
+  function term() {
+    let value = unary();
+    while (value !== null && operator(['*', '/'])) {
+      const token = tokens[at++]; binary.push(token);
+      const right = unary();
+      if (right === null || (token.op === '/' && right.n === 0n)) return null;
+      value = token.op === '*' ? closedRational(value.n * right.n, value.d * right.d) :
+        closedRational(value.n * right.d, value.d * right.n);
+    }
+    return value;
+  }
+  function expr() {
+    let value = term();
+    while (value !== null && operator(['+', '-'])) {
+      const token = tokens[at++]; binary.push(token);
+      const right = term();
+      if (right === null) return null;
+      const sign = token.op === '+' ? 1n : -1n;
+      value = closedRational(value.n * right.d + sign * right.n * value.d, value.d * right.d);
+    }
+    return value;
+  }
+  const value = expr();
+  if (value === null || at !== tokens.length || binary.length === 0) return null;
+  return {value, leadingUnary, operators: binary.length,
+    leadingZero: tokens.some(token => token.kind === 'num' && token.int.length > 1 && token.int[0] === '0'),
+    ambiguous: !tokens.some(token => token.kind === '(') &&
+      binary.every(token => token.symbol === '-' || token.symbol === '/')};
+}
+/** The finite decimal of an exact rational, or null: a denominator other than
+ * 2^a·5^b (non-terminating) or more than 40 digits. Never rounded, no
+ * exponent, no grouping, no trailing zero, '0' never '-0'. */
+function closedDecimal({n, d}) {
+  let rest = d, twos = 0, fives = 0;
+  while (rest % 2n === 0n) { rest /= 2n; twos++; }
+  while (rest % 5n === 0n) { rest /= 5n; fives++; }
+  if (rest !== 1n) return null;
+  if (n === 0n) return '0';
+  const places = Math.max(twos, fives), negative = n < 0n;
+  const digits = ((negative ? -n : n) * 10n ** BigInt(places) / d).toString().padStart(places + 1, '0');
+  if (digits.length > CLOSED_ARITHMETIC_LIMITS.output_digits) return null;
+  return (negative ? '-' : '') + (places === 0 ? digits : digits.slice(0, -places) + '.' + digits.slice(-places));
+}
+/** The exact answer of a whole request that only asks one closed arithmetic
+ * expression (os1-closed-arithmetic-v1), or null.
+ * Text: NFKC, collapsed whitespace, lowercase, at most 160 characters; a '!'
+ * right after a digit abstains ("2+3!" is factorial notation); one trailing
+ * run of ?!.。？！ is removed. A compatibility character other than a fullwidth
+ * form or U+3000 that folds into a digit, operator, parenthesis, '.', ',' or
+ * '=' abstains (NFKC turns "2²+1" into "22+1", "½" into "1⁄2"); a mark of the
+ * removed trailing run is punctuation ("1+1이 뭐야…": '…' folds to "...").
+ * Shapes, with the expression EXPR read by closedArithmeticTokens/Value:
+ *  BARE    EXPR alone, nothing removed. pureArithmetic's one-operator form
+ *          keeps its exact legacy reading ('5-3', '5--3', '-3*-4').
+ *  WEAK    EXPR with a removed mark, or EXPR + a particle (은|는|이|가) and a
+ *          '?' ("2+2는?").
+ *  STRONG  EXPR + '=' ("1+1=", "1+1=?"); EXPR + an optional particle + a
+ *          closed Korean predicate ("3*7은 얼마야?", "1+1이 뭐야?"); a closed
+ *          English prefix (what is | what's | how much is) + EXPR and nothing
+ *          else.
+ * EXPR: numbers of 1-15 digits with an optional '.' and 1-15 digits; + - * ×
+ * / ÷ ( ); 더하기 플러스 빼기 마이너스 곱하기 나누기 and plus minus times
+ * 'multiplied by' 'divided by'. No number word, no other letter, ',' '^' '%'
+ * 'x' or U+2212; implicit multiplication abstains. At most 64 tokens, 16
+ * numbers and 4 nested parentheses. A number with a leading zero ("010",
+ * "007") is a phone number or a code at every strength: abstain.
+ * Ambiguity: without a parenthesis, an EXPR whose every operator is the ASCII
+ * '-' or '/' may be a date, phone number, store, range, score, section or
+ * fraction ("2024-10-24", "10/25", "7-11", "5-3은?"). It is read as arithmetic
+ * only when the words ask for its value: '=' ("10-3-2="), or a quantity
+ * predicate (얼마 | 몇 | how much is) over ONE such operator ("5-3은 얼마야?").
+ * BARE, WEAK and the what-is wording (뭐야 family, what is | what's) ask what
+ * the thing is ("2024-10-24는 뭐야?", "what is 7-11?") and abstain, and so
+ * does a WEAK EXPR that starts with '-' ("-3+5는?").
+ * Value: exact rationals; division by zero, a non-terminating result
+ * ("1/3=") or more than 40 output digits abstain; never rounded. */
 export function exactArithmeticQuestion(request) {
   if (typeof request !== 'string') return null;
-  for (const ch of request) {
+  const chars = [...request];
+  let marks = chars.length;
+  while (marks > 0 && /^[?!.\u3002\uFF1F\uFF01\s]+$/u.test(chars[marks - 1].normalize('NFKC'))) marks--;
+  for (const ch of chars.slice(0, marks)) {
     const folded = ch.normalize('NFKC');
-    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*=-]/.test(folded)) return null;
+    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*/=().,-]/.test(folded)) return null;
   }
-  let text = request.normalize('NFKC').replace(/×/gu, '*').replace(/\s+/gu, ' ').trim().toLowerCase();
-  if (text.length > 160 || /\d!/.test(text)) return null;
+  let text = request.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
+  if (text.length > CLOSED_ARITHMETIC_LIMITS.input_chars || /\d!/.test(text)) return null;
   const end = /[?!.。？！]+$/u.exec(text);
   const question = end !== null && /[?？]/u.test(end[0]);
   if (end) text = text.slice(0, end.index).trim();
@@ -2196,25 +2334,43 @@ export function exactArithmeticQuestion(request) {
   }
   const prefix = ENGLISH_ARITHMETIC_PREFIX.exec(text);
   const body = prefix ? text.slice(prefix[0].length) : text;
-  const expression = WRAPPED_EXPRESSION.exec(body);
-  if (!expression) return null;
-  const rest = body.slice(expression[0].length);
-  const answer = pureArithmetic(`${expression[1]}${expression[2]}${expression[3]}`);
-  // (c): nothing may follow the expression.
-  if (prefix) return rest === '' ? answer : null;
-  // (a) with a removed mark, and (d).
-  if (rest === '' || /^ ?=$/u.test(rest)) return answer;
-  // (b): a particle or a predicate (the empty suffix was (a) above).
-  const korean = KOREAN_ARITHMETIC_SUFFIX.exec(rest);
-  if (!korean) return null;
-  return korean[2] !== undefined || question ? answer : null;
+  const read = closedArithmeticTokens(body);
+  if (read === null || read.tokens.length === 0) return null;
+  // asks: what a STRONG shape's words ask for, 'equals' | 'quantity' | 'what'.
+  let strength = null, asks = null;
+  if (prefix) {
+    strength = read.rest === '' ? 'strong' : null;
+    asks = prefix[0].startsWith('how much') ? 'quantity' : 'what';
+  } else if (read.rest === '') strength = end ? 'weak' : 'bare';
+  else if (/^ ?=$/u.test(read.rest)) { strength = 'strong'; asks = 'equals'; }
+  else {
+    const korean = KOREAN_ARITHMETIC_SUFFIX.exec(read.rest);
+    strength = korean === null ? null : korean[2] !== undefined ? 'strong' : question ? 'weak' : null;
+    if (strength === 'strong') asks = /^(?:얼마|몇)/u.test(korean[2]) ? 'quantity' : 'what';
+  }
+  if (strength === null) return null;
+  const expression = closedArithmeticValue(read.tokens);
+  if (expression === null || expression.leadingZero) return null;
+  if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1)))
+    return null;
+  if (strength === 'weak' && expression.leadingUnary) return null;
+  return closedDecimal(expression.value);
+}
+/** Core's zero-model arithmetic answer for a whole Auto request. */
+export function zeroModelArithmetic(request) {
+  return pureArithmetic(request) ?? exactArithmeticQuestion(request);
 }
 
 /** Whether a task carries no earlier conversation that could give its words
  * another meaning (a product label, a score, a promotion): no context text on
  * the task or the host, and no native session the host would resume. Every
- * zero-model path requires it (R1). */
-function withoutConversation(task) {
+ * zero-model path requires it (R1). A host envelope must say priorMessageCount
+ * 0: a missing count is unknown history. Only the zero-model sites pass
+ * `bareEnvelopeIsFirstTurn` (K7): there a bare v3 envelope with no count and
+ * nothing else (empty transcript, no source, task context or memory paging)
+ * carries exactly what a null context carries, the same thing Swift
+ * SessionHandoff.decode(nil) returns. Every other caller stays strict. */
+function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {
   const h = task.host_context;
   const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
   if (task.native_sessions != null && Object.keys(task.native_sessions).length !== 0) return false;
@@ -2228,7 +2384,9 @@ function withoutConversation(task) {
     try { x = JSON.parse(raw); } catch { return false; }
     if (JSON.stringify(x) !== raw || !plain(x) ||
         Object.keys(x).some(k => !['format', 'transcript', 'source', 'taskContext', 'memoryPaging', 'priorMessageCount'].includes(k)) ||
-        x.format !== 'os1-session-handoff-v3' || x.priorMessageCount !== 0 ||
+        x.format !== 'os1-session-handoff-v3' ||
+        !(x.priorMessageCount === 0 || (bareEnvelopeIsFirstTurn && !Object.hasOwn(x, 'priorMessageCount') &&
+          x.taskContext == null && x.memoryPaging == null)) ||
         x.transcript !== '' || x.source != null) return false;
     const c = x.taskContext;
     if (c != null) {
@@ -4297,16 +4455,17 @@ class RCCRuntime {
     // "1+1은 얼마야?" asks a price, and "3-4" after a score is no sum; a model
     // must see that context (review 2026-10-15). A wrapped question
     // ("1+1이 뭐야?") is the same exact sum: the child keeps the whole request
-    // as its instruction (_completeLocalExact).
+    // as its instruction (_completeLocalExact). K7: a bare v3 envelope with
+    // nothing in it is a null context here, and only here.
     if (task.mode === 'auto' && task.objective.trim() === task.request.trim() && task.host_context.provider_preference === 'auto' &&
         (task.provider_preference == null || task.provider_preference === 'auto') &&
         task.host_context.explicit_routes == null &&
-        task.material_refs.length === 0 && withoutConversation(task)) {
+        task.material_refs.length === 0 && withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
       const checkin = exactLocalGreeting(task.request);
       if (checkin !== null && task.objective.trim() === task.request.trim()) {
         this._completeLocalExact(taskID, 'local_checkin', checkin); return;
       }
-      const answer = pureArithmetic(task.request) ?? exactArithmeticQuestion(task.request);
+      const answer = zeroModelArithmetic(task.request);
       if (answer !== null) {
         this._completeLocalExact(taskID, 'deterministic_arithmetic', answer);
         return;
@@ -4315,7 +4474,8 @@ class RCCRuntime {
     if (!this._allowModelGeneration(taskID)) return;
     task = await this._resolveTaskIntent(taskID);
     if (task === null || this.closed || this.stopping || this.quiescing) return;
-    if (this._load(taskID)?.intent_resolution?.kind === 'local_response' && withoutConversation(task)) {
+    if (this._load(taskID)?.intent_resolution?.kind === 'local_response' &&
+        withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
       this._completeLocalExact(taskID, 'local_checkin', localResponsePathOutput(task.request)); return;
     }
     state = this._update(taskID, 'planning', snapshot => {
@@ -4522,7 +4682,11 @@ class RCCRuntime {
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
     if (typeof this.execute !== 'function') { this._hold(taskID, 'executor_unavailable'); return; }
-    try { await this._scheduleDAG(taskID); } finally { this.spreadProbes.delete(taskID); }
+    // K8: the catalog this plan was just bound with may admit its first
+    // dispatch, bound to this exact in-process snapshot. A refresh, spread,
+    // re-resolution, restart or later loop changes the binding or drops it.
+    const bindReuse = {binding: this._readyWaveBinding(state)};
+    try { await this._scheduleDAG(taskID, bindReuse); } finally { this.spreadProbes.delete(taskID); }
   }
 
   _completeLocalExact(taskID, kind, output) {
@@ -4767,6 +4931,24 @@ class RCCRuntime {
     return sha(Buffer.from(stable({task: executionTask(snapshot), plan: snapshot.plan,
       bound_rows: snapshot.bound_rows ?? {}, catalog: snapshot.catalog,
       catalog_bound_at_ms: snapshot.catalog_bound_at_ms})));
+  }
+  /** K8: the first dispatch of a freshly admitted single-node host plan,
+   * before any model call after bind, any attempt, repair, re-resolution or
+   * spread. Only the host builds the plan (hostAutoPlan): an injected plan
+   * callback may take any time between bind and dispatch. The native adapter
+   * still re-probes the selected provider's inventory and quota fresh. */
+  _bindCatalogReusable(snapshot, node) {
+    if (!snapshot || snapshot.cancel_requested || TERMINAL.has(snapshot.state) || this.stopping || this.closed ||
+        !this.hostAutoPlan || snapshot.adaptive_routing?.planner_invoked === true || node.kind !== 'agent' ||
+        snapshot.plan?.nodes.length !== 1 ||
+        // Owner authority only the pre-dispatch refresh re-observes, and a
+        // calibrated row's requalification, stay refreshed.
+        snapshot.owner_collection || snapshot.catalog?.task_contract != null ||
+        snapshot.calibrated_route?.state === 'pending_dispatch') return false;
+    const child = snapshot.children.find(c => c.id === node.id);
+    return child?.state === 'queued' && child.attempts === 0 && (child.attempt_history ?? []).length === 0 &&
+      !child.repair_needed && child.continuation == null && child.stage == null &&
+      !(child.re_resolutions > 0) && !(child.spreads > 0) && child.spread !== true;
   }
   _readyWaveEligible(snapshot, node, candidate) {
     if (!snapshot || snapshot.cancel_requested || TERMINAL.has(snapshot.state) || this.stopping || this.closed ||
@@ -5154,8 +5336,9 @@ class RCCRuntime {
     }
   }
 
-  async _scheduleDAG(taskID) {
+  async _scheduleDAG(taskID, bindReuse = null) {
     const active = new Map();
+    let bindTime = bindReuse;
     // Waiting for a busy pool/workspace backs off instead of probing natively.
     let idleDelay = 50;
     const refreshFailures = new Map();
@@ -5236,6 +5419,8 @@ class RCCRuntime {
       // Only siblings already ready together can share the first successful
       // pre-dispatch refresh. A later loop/wave always starts without it.
       let readyWave = null;
+      // Only the first ready loop may consume the bind-time observation.
+      let bindWave = bindTime; bindTime = null;
       const readyIDs = new Set(ready.map(node => node.id));
       const admissionCurrent = state => state && !state.cancel_requested && !TERMINAL.has(state.state) &&
         !state.children.some(c => ['failed', 'effects_uncertain'].includes(c.state)) &&
@@ -5282,7 +5467,12 @@ class RCCRuntime {
             this._readyWaveEligible(current, node, planned) &&
             readyWave.binding === this._readyWaveBinding(current) &&
             dispatchable(planned, executionTask(current), Date.now());
-          fresh = reusable ? current.catalog :
+          const bound = !reusable && bindWave !== null && planned !== undefined &&
+            bindWave.binding === this._readyWaveBinding(current) &&
+            this._bindCatalogReusable(current, node) &&
+            dispatchable(planned, executionTask(current), Date.now());
+          bindWave = null; // one first dispatch, never a sibling or a retry
+          fresh = reusable || bound ? current.catalog :
             await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
           current = this._load(taskID);
           if (!admissionCurrent(current)) { reResolved = true; break; }
