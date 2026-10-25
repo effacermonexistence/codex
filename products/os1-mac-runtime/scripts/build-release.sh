@@ -111,9 +111,9 @@ node --test "$script_dir/fixtures/openclaw-rcc-local-plan-metadata.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-local-plan-input-v4.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-final-cardinality.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-owner-parallel-contract.test.mjs"
-node --test "$script_dir/fixtures/openclaw-rcc-owner-explicit-parallel.test.mjs"
-node --test "$script_dir/fixtures/openclaw-rcc-bounded-auto.test.mjs"
-node --test "$script_dir/fixtures/openclaw-rcc-one-law.test.mjs"
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-owner-explicit-parallel.test.mjs"
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-bounded-auto.test.mjs"
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-one-law.test.mjs"
 # K4: node verifier registry soundness, and the tier-routing and runtime fixtures that
 # hold most verifier/ladder coverage; a per-test timeout turns a hang into a failure.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-verifier-registry.test.mjs"
@@ -124,7 +124,7 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-repla
 # K16: offline M1 usage replay (route-replay usage) and the M4-only per-pool quota verdict.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-replay-usage.test.mjs"
 python3 -I "$script_dir/quota-replay.py" --self-test
-node --test "$script_dir/fixtures/openclaw-rcc-planner-deadline.test.mjs"
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-planner-deadline.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-joint-selector.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-policy.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-plan-host.test.mjs"

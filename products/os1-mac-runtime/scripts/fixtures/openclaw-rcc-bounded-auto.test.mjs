@@ -86,6 +86,11 @@ const writerRow = (c, id, patch = {}) => ({...c.candidates[0], id, scope: 'works
 
 test('a model decomposition is not admitted without a plan-shape certificate: the request runs once at the reference', async t => {
   for (const raw of [proposal(), dependent(), cheapHints(proposal())]) {
+    // The wired (K3: not asked) admission refuses the decomposition itself.
+    const direct = task('/private/test'), c = withCheap(direct);
+    const prepared = createPlannerHostProjection({task: direct, catalog: c, scope: 'read_only', nonce: 'fixed_nonce'});
+    assert.throws(() => admitBoundedAutoPlan(compileFreshPlannerProposal(raw, prepared, prepared, {max_nodes: 4}), direct, c),
+      {code: 'bounded_decomposition_not_admissible'});
     const h = await harness(t, {boundedAutoPlanning: true, catalog: async q => withCheap(q), proposeLocalPlan: reply(raw)});
     const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
     assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
@@ -106,15 +111,60 @@ test('bad bounded candidate restores original host floor before any dispatch', a
   await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].instruction,q.request);
   assert.equal(h.runtime._load(q.task_id).adaptive_routing.live_plan_changed,false);
 });
-test('one proposed node keeps the original words and binds by the law: a cheap hint never binds', async t => {
-  const h = await harness(t, {boundedAutoPlanning: true, catalog: async q => withCheap(q), proposeLocalPlan: reply(single('cheap'))});
+test('K3: a one-node cheap hint is never asked for; the request keeps the original words and binds by the law', async t => {
+  let calls = 0;
+  const h = await harness(t, {boundedAutoPlanning: true, catalog: async q => withCheap(q),
+    proposeLocalPlan: async () => {calls++; return reply(single('cheap'))();}});
   const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
-  assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
+  assert.equal(done.state, 'returned_unverified', JSON.stringify(done)); assert.equal(calls, 0);
   assert.equal(h.tickets.length, 1); assert.equal(h.tickets[0].instruction, q.request);
   assert.equal(h.tickets[0].candidate_id, 'reference');
-  assert.equal(saved.plan_provenance, 'host_checked_execution_plan_v1');
+  assert.equal(saved.plan_provenance, 'host_exact_request');
   assert.equal(saved.children[0].route_kind, 'reference');
-  assert.match(saved.children[0].routing_decision.reason, /^bounded_plan;route_reference;admitted_reference_uncertified;/);
+  assert.match(saved.children[0].routing_decision.reason, /^resolver;route_reference;admitted_reference_uncertified;/);
+});
+
+// K3: with no applicable sound_full check AND no loaded plan-shape
+// certificate (K11b), bounded Auto never asks the local planner: no call, no
+// wait, and the skip is an observed zero in the resource accounting.
+test('K3: no admissible check or plan shape: the planner is never called and never awaited', async t => {
+  let calls = 0;
+  const h = await harness(t, {boundedAutoPlanning: true, proposeLocalPlan: () => {calls++; return new Promise(() => {});}});
+  const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(done.state, 'returned_unverified', JSON.stringify(done)); assert.equal(calls, 0);
+  assert.deepEqual(saved.adaptive_routing, {schema: 1, mode: 'bounded_auto', state: 'not_needed',
+    reason: 'no_admissible_check_or_shape', planner_invoked: false, live_plan_changed: false, quality_certificate: false});
+  const events = saved.resource_events.filter(e => e.stage === 'plan_proposal');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].state, 'not_needed'); assert.equal(events[0].reason, 'no_admissible_check_or_shape');
+  assert.equal(done.resource_usage.plan_model_calls, 0);
+  assert(!done.resource_usage.issues.includes('plan_model_calls_unobserved'), JSON.stringify(done.resource_usage));
+  assert.equal(h.tickets.length, 1); assert.equal(h.tickets[0].candidate_id, 'reference');
+  assert.equal(h.tickets[0].instruction, q.request);
+  await h.runtime.submit(q); assert.equal(calls, 0); assert.equal(h.tickets.length, 1, 'no replay');
+});
+test('K3: a registered verifier no longer switches bounded Auto off; the planner is still not called', async t => {
+  let calls = 0;
+  // K4: a registered sound_full node verifier (it rejects its refutation and the Core nonce).
+  const registry = await registerNodeVerifiers(new Map([['bounded-read', {id: 'bounded-read', scope: 'read_only',
+    surfaces: ['agent', 'chat'], soundness: 'sound_full', applies: () => true,
+    verify: async input => ({passed: input.output === 'fixture result'}),
+    refutations: [{instruction: 'fixture instruction', output: 'fixture wrong answer'}]}]]));
+  const h = await harness(t, {boundedAutoPlanning: true, verifierRegistry: registry, catalog: async q => withCheap(q),
+    proposeLocalPlan: async () => {calls++; return reply(single('cheap'))();}});
+  const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(calls, 0);
+  assert.equal(saved.adaptive_routing.mode, 'bounded_auto', 'the registry no longer disables the bounded policy');
+  assert.equal(saved.adaptive_routing.reason, 'no_admissible_check_or_shape');
+  assert.equal(saved.plan_provenance, 'host_exact_request');
+  // The host plan binds the certified descent by the same law, its escalation reference fixed at bind.
+  assert.deepEqual(h.tickets.map(x => x.candidate_id), ['cheap'], JSON.stringify(done));
+  assert.equal(done.state, 'returned_unverified');
+  const [child] = saved.children;
+  assert.equal(child.route_kind, 'tier'); assert.equal(child.ladder.reference_candidate_id, 'reference');
+  assert.equal(child.ladder.certificate_id, 'bounded-read');
+  assert.match(child.routing_decision.reason, /^resolver;route_tier;admitted_certified_verifier;/);
+  assert.equal(done.resource_usage.plan_model_calls, 0);
 });
 test('read-only parent cannot gain write authority from local plan', async t => {
   const raw=JSON.parse(proposal());raw.nodes[0].proposed_scope='workspace_write';raw.nodes[0].proposed_owned_paths=['evil'];
@@ -214,7 +264,7 @@ test('with no runnable reference bounded Auto holds before any planner call or d
   assert.match(h.runtime._load(q.task_id).error,/^no_dispatchable_candidate:/);
 });
 
-test('App-shaped bounded options: the real local compiler runs once and its cheap hints never bind', async t => {
+test('App-shaped bounded options: the real local compiler is not asked (K3) and no cheap row binds', async t => {
   let calls=0;
   const options=adaptiveRuntimeOptions({pluginConfig:{bounded_auto:true},complete:async request=>{
     calls++;
@@ -229,7 +279,7 @@ test('App-shaped bounded options: the real local compiler runs once and its chea
     catalog:async q=>{const c=withCheap(q);c.owner_scope='workspace_write';return c;}});
   const q=writerTask(h.directory);
   const original=JSON.stringify(q),done=await h.run(q),saved=h.runtime._load(q.task_id);
-  assert.equal(calls,1);assert.equal(done.state,'returned_unverified',JSON.stringify(done));
+  assert.equal(calls,0);assert.equal(done.state,'returned_unverified',JSON.stringify(done));
   assert.equal(h.tickets.length,1);assert.equal(saved.plan_provenance,'host_exact_request');
   assert.equal(saved.adaptive_routing.quality_certificate,false);
   assert(h.tickets.every(x=>x.selected_config.scope==='read_only'&&x.selected_config.model==='gpt-6-astra'&&x.selected_config.effort==='ultra'));

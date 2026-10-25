@@ -94,7 +94,7 @@ test('the Core has one binding function: no unchecked execution-only route kind 
   assert.equal(/kind: 'execution_only'/.test(source), false, 'no route kind execution_only is constructed');
 });
 
-test('App bounded options: the planner hint, the bind and the re-resolution all bind by the law', async t => {
+test('App bounded options: the planner is not asked (K3); the bind and the re-resolution bind by the law', async t => {
   let calls = 0;
   const h = await harness(t, tickets => ({...adaptiveRuntimeOptions({pluginConfig: {bounded_auto: true},
     complete: async () => {calls++; return {provider: 'ollama', model: 'qwen3.5:4b', responseModel: 'qwen3.5:4b',
@@ -102,15 +102,38 @@ test('App bounded options: the planner hint, the bind and the re-resolution all 
   maximumWorkers: 4, maximumReadWorkersPerPool: 4,
   execute: async ticket => {tickets.push(ticket); return tickets.length === 1 ? rejected(ticket) : completed(ticket);}}));
   const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
-  assert.equal(calls, 1, 'the local planner ran');
+  assert.equal(calls, 0, 'no admissible check or plan shape: the local planner is not asked');
   assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
-  assert.equal(saved.plan_provenance, 'host_checked_execution_plan_v1', 'the one-node proposal was admitted');
+  assert.equal(saved.adaptive_routing.reason, 'no_admissible_check_or_shape');
+  assert.equal(saved.plan_provenance, 'host_exact_request');
   // The first pool's reference was refused before execution; the other pool's reference ran.
   assert.deepEqual(h.tickets.map(tuple), ['gpt-6-astra/ultra', 'claude-fable-5-1/max']);
   assert(h.tickets.every(x => !['luna', 'haiku'].includes(x.candidate_id)), 'the cheap hint never bound');
   assert(saved.children.every(lawBound), JSON.stringify(saved.children.map(c => c.route_kind)));
   assert.match(saved.children[0].routing_decision.reason,
     new RegExp(`^re_resolved_after:${REJECTED};other_pool;route_reference;admitted_reference_uncertified;`));
+});
+
+// K5: the owner's explicit A/B partition is topology hostPlan builds with no
+// planner call; each unit binds by the same law, so no unchecked row binds.
+test('App bounded options with an owner A/B request: no planner call, every unit binds by the law (K5)', async t => {
+  let calls = 0;
+  const h = await harness(t, tickets => ({...adaptiveRuntimeOptions({pluginConfig: {bounded_auto: true},
+    complete: async () => {calls++; return {provider: 'ollama', model: 'qwen3.5:4b', responseModel: 'qwen3.5:4b',
+      stopReason: 'stop', execution: {mode: 'direct-provider', owner: {kind: 'provider', id: 'ollama'}}, text: cheapHint()};}}),
+  maximumWorkers: 4, maximumReadWorkersPerPool: 4,
+  execute: async ticket => {tickets.push(ticket); return completed(ticket);}}));
+  const request = 'Process A and B as independent tasks in parallel. Return each result unchanged.\n\nA — Return the supplied number only: 19.\n\nB — Return the supplied word only: orchard.';
+  const q = {...task(h.directory), request, objective: request, request_sha256: H(request)};
+  const done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(calls, 0, 'owner topology never asks the local planner');
+  assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
+  assert.equal(saved.plan_provenance, 'host_owner_explicit_parallel_v1');
+  assert.equal(h.tickets.length, 2);
+  assert.equal(saved.children.filter(c => c.route_kind === 'execution_only').length, 0);
+  assert(saved.children.every(lawBound) && saved.children.every(c => c.route_kind === 'reference'),
+    JSON.stringify(saved.children.map(c => c.route_kind)));
+  assert(h.tickets.every(x => !['luna', 'haiku'].includes(x.candidate_id)), 'no cheap row binds a unit');
 });
 
 test('a child an older build bound execution-only re-resolves to the reference, not a cheaper row', async t => {

@@ -23,12 +23,26 @@ Unsupported, quoted, ambiguous, effectful or over-bound forms return null. This
 is not a complete natural-language intent/permission parser and not a universal
 parallel-planning claim.
 
-Core uses it only within the existing bounded Auto eligibility boundary:
-ordinary Auto, original objective, no FULL task contract, no class certificate,
-no registered owner collection and no explicit maximum/reference ceiling.
-Existing certified/FULL/live-capability/writer/explicit-route paths do not borrow
-this policy. The default `hostPlan` remains unchanged unless the owning Core
-explicitly supplies its bounded owner-partition option.
+Since K5 (`ROUTING-ARCHITECTURE-V2-FROZEN.md` §5, K5 row) Core derives it
+whenever the host builds the plan (`hostAutoPlan`), under
+`ownerExplicitParallelEligible`: ordinary Auto, original objective, admission
+facts present (`owner_scope`), current effective read-only scope, no registered
+owner collection and a bound policy projection. It no longer depends on the
+bounded Auto flag, the adaptive mode, a class certificate, a verifier registry
+or the native ceiling: the partition is the owner's topology, not a planner or
+quality claim, and every unit still binds by the one admission law. A class
+certificate does not certify a unit (a unit is not the original request), so a
+unit binds the reference; a native ceiling binds each unit to the owner's
+maximum words; an applicable registered `sound_full` verifier gives each unit a
+certified descent whose reference escalation is fixed at bind. An older catalog
+without admission facts keeps the original indivisible request.
+
+A FULL task contract and a partition cannot coexist. Core holds the task as
+`owner_partition_contract_conflict` before any planner call or plan write, and
+`assertOwnerExplicitParallelPlan` enforces the same exclusion, so a catalog
+refresh that gains a contract holds at the ticket boundary. Writer and
+explicit-route paths do not borrow this policy. The default `hostPlan` remains
+unchanged unless the owning Core explicitly supplies its owner-partition option.
 
 ## Same owner, same scheduler, immutable source
 
@@ -48,20 +62,21 @@ Its assigned-unit `objective` / `instruction` remain distinct from that floor. N
 host context, catalog hash or permission profile is rewritten. Source spans
 prove text partition identity, not complete semantic global-constraint coverage.
 
-The strict V2 decoder and P1 compiler are unchanged. Once a compiled proposal
-passes those existing gates, model nodes provide optional candidate-ID hints
-only. A hint is associated with a unit only by an exact unit label or host unit
-ID. Missing, merged, extra or ambiguous locators do not discard units or reuse
-an arbitrary sibling's positional hint. They use the existing bounded null-hint
-candidate policy, with current scope/account/tools/quota/availability checks.
-No model-authored dependency, paraphrase or final-owner selection replaces the
-host graph.
+The local planner is never asked for an owner partition (K5). The adaptive
+observation returns before any proposal in every adaptive mode and records a
+`plan_proposal` `not_needed` resource event (reason
+`owner_explicit_parallel_partition`), so `plan_model_calls` is an observed 0.
+`admitBoundedAutoPlan` rejects a proposal for a partitionable task with
+`bounded_owner_partition_not_planner_owned`, and Core does not adopt an earlier
+observed proposal for it. There are therefore no model candidate-ID hints: each
+unit's row is bound by the host admission law (`resolveRoutePlan`), with current
+scope/account/tools/quota/availability checks. No model-authored dependency,
+paraphrase or final-owner selection replaces the host graph.
 
-A malformed/unsupported proposal remains rejected by P1. The old host reference
-fallback is retained; when the owner partition itself is supported, that
-fallback still retains all exact units. This does not introduce a new maximum
-model default or a new cheap-quality certificate. Unsupported source syntax
-retains the original prior behavior.
+For tasks without a supported partition the strict V2 decoder and P1 compiler
+are unchanged and a malformed/unsupported proposal remains rejected by P1. This
+does not introduce a new maximum model default or a new cheap-quality
+certificate. Unsupported source syntax retains the original prior behavior.
 
 All work uses the existing Core scheduler, task budgets, pool reservations,
 leases, cancellation, retry and source-freshness checks. Independent node
@@ -70,19 +85,21 @@ availability still govern it. Real concurrency must be observed separately.
 
 ## Output and evidence
 
-Core activates this contract through its explicit bounded feature/source path,
-not by recognizing a node-name prefix. Legacy/FULL/cert/explicit/feature-off plans
-using the same spelling retain prior behavior. The newly admitted contract is
+Core activates this contract through its explicit host-plan owner-partition
+option and source path, not by recognizing a node-name prefix. Legacy, explicit
+and externally planned plans using the same spelling retain prior behavior; a
+FULL contract holds as above. The newly admitted contract is
 then recorded as Core-owned snapshot metadata and revalidated before every
 actual native ticket and final collection, then labels each completed child's raw output with the corresponding
 owner label in source order. It does not summarize the children through another
 LLM or promote execution-only output into task/quality/parity certification.
 
 Snapshot metadata distinguishes source-structural unit coverage from unverified
-semantic coverage and quality. `local_proposal_admitted` records only that the
-existing local-proposal path passed; it does not assert that any tuple hint was
-uniquely mapped or used. Proposed model topology remains an untrusted
-observation rather than being relabelled the executed graph.
+semantic coverage and quality. `local_proposal_admitted` is kept for schema
+compatibility and is always false since K5, because no proposal is asked or
+adopted for a partition. Proposed model topology, where a planner runs for
+other tasks, remains an untrusted observation rather than being relabelled the
+executed graph.
 
 Pure fixtures use real temporary Core SQLite plus canned planner/native
 callbacks. They are regression tests, not provider runs, quota savings,
@@ -115,3 +132,8 @@ fields with the canonical current unit (and preserves read-only authority),
 while still allowing legitimate candidate-only rebinding. The original plan
 and earlier review receipts remain preserved; new negative fixtures keep the
 snapshot unchanged and mutate only the actual ticket argument.
+
+K5 on the one-law branch then decoupled the partition from the bounded planner
+boundary described in the earlier text: eligibility, the contract hold and the
+no-planner path are as stated above, and the frozen routing document's K5 row
+records the deviations and behavior changes.

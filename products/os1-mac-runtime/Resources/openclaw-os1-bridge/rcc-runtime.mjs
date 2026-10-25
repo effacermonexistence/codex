@@ -1420,10 +1420,22 @@ function boundedAutoEligible(task, catalog) {
     task.policy?.projection_sha256 === task.policy_sha256 && HASH.test(task.policy?.source_sha256 ?? '');
 }
 // A closed owner-authored partition is task topology, not a model quality
-// claim. Derive afresh from the immutable original request and current host
-// scope. Certified/FULL/explicit/owner-collection paths keep their old contract.
+// claim (K5): it is the owner's own split, so whether it runs never depends on
+// the bounded planner flag, a task contract, a class certificate, a verifier
+// registry or the native ceiling. Each unit still binds by the one law. A
+// partition next to a task contract is held by the caller (and at ticket,
+// assertOwnerExplicitParallelPlan), never merged into one node. The admission
+// facts (owner_scope) must be present: an older catalog without them keeps
+// the original indivisible request.
+function ownerExplicitParallelEligible(task, catalog) {
+  return task?.mode === 'auto' && task.objective === task.request && SCOPES.has(catalog?.owner_scope) &&
+    hostScope(task, catalog) === 'read_only' && !ownerCollectionFor(task, catalog) &&
+    task.policy?.projection_sha256 === task.policy_sha256 && HASH.test(task.policy?.source_sha256 ?? '');
+}
+// Derive afresh from the immutable original request and current host scope.
+// Explicit/owner-collection paths keep their old contract.
 function ownerExplicitParallelFor(task, catalog) {
-  if (!boundedAutoEligible(task, catalog) || hostScope(task, catalog) !== 'read_only') return null;
+  if (!ownerExplicitParallelEligible(task, catalog)) return null;
   const contract = deriveExplicitParallelOwnerContract(task.request, {scope: 'read_only', maxNodes: 4});
   if (!contract || contract.request_sha256 !== task.request_sha256 ||
       contract.units.some(unit => !boundedText(ownerExplicitUnitInstruction(contract, unit), 12_000))) return null;
@@ -1441,6 +1453,9 @@ function ownerExplicitParallelPlan(task, contract) {
 }
 export function assertOwnerExplicitParallelPlan(plan, task, catalog) {
   const contract = ownerExplicitParallelFor(task, catalog);
+  // A partition and a task contract cannot coexist (K5): a refreshed catalog
+  // that gained a contract holds before dispatch, never runs beside it.
+  assert(!contract || catalog.task_contract == null, 'owner_partition_contract_conflict');
   assert(contract && plan.final_node_id === null && plan.nodes.length === contract.units.length &&
     plan.nodes.every((node, index) => {
       const unit = contract.units[index];
@@ -1475,9 +1490,10 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), 
   // The model can propose read-only preparatory work, NEVER write authority.
   // A host-authorized writer owns one final original-request node and depends
   // on all preparation. No parallel native writers pretend to be path-sandboxed.
-  const ownerParallel = writer ? null : ownerExplicitParallelFor(task, catalog);
-  let proposed = ownerParallel ? ownerExplicitParallelPlan(task, ownerParallel) :
-    writer ? compiled.plan : lockIndivisibleInstruction(compiled.plan, task).plan;
+  // The owner's own partition is never planner-owned (K5): hostPlan builds it
+  // with no planner call, so a proposal for it is not admitted here.
+  assert(writer || ownerExplicitParallelFor(task, catalog) === null, 'bounded_owner_partition_not_planner_owned');
+  let proposed = writer ? compiled.plan : lockIndivisibleInstruction(compiled.plan, task).plan;
   assertFinalOutputOwnership(proposed, task);
   if (writer) {
     const research = proposed.nodes.length > 1 ? proposed.nodes : [];
@@ -1486,7 +1502,7 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), 
       instruction: task.request, dependencies: research.map(n => n.id), scope: 'workspace_write',
       owned_paths: ['**'], context_refs: [...task.material_refs]}], final_node_id: 'host_finalize'};
   }
-  assert(ownerParallel || proposed.nodes.length === 1, 'bounded_decomposition_not_admissible');
+  assert(proposed.nodes.length === 1, 'bounded_decomposition_not_admissible');
   const decisions = {}, routes = {};
   const nodes = proposed.nodes.map(node => {
     const finalWriter = writer && node.id === 'host_finalize';
@@ -1501,7 +1517,6 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), 
     routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
     return {...checked, owned_paths: choice.widened ? ['**'] : checked.owned_paths, candidate_id: choice.candidate.id};
   });
-  if (ownerParallel) assertOwnerExplicitParallelPlan({...proposed, nodes}, task, catalog);
   const plan = validatePlan({...proposed, nodes}, task, catalog);
   return {plan, decisions, routes};
 }
@@ -3958,7 +3973,9 @@ class RCCRuntime {
   }
 
   async _observeAdaptivePlan(taskID, task, catalog) {
-    const bounded = this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' && this.verifierRegistry.size === 0 && boundedAutoEligible(task, catalog);
+    // K3: a registered verifier no longer switches bounded Auto off; whether
+    // the planner is asked at all is the disposition below.
+    const bounded = this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' && boundedAutoEligible(task, catalog);
     const policy = bounded ? {mode: 'bounded_auto', policy_id: 'host-execution-policy', version: '1',
       max_nodes: hostScope(task, catalog) === 'workspace_write' ? 3 : 4, max_parallel: Math.min(4, task.budget.max_parallel), max_plan_revisions: 0, max_planner_calls: 1} : this.adaptivePolicy;
     if (ownerCollectionFor(task, catalog)) {
@@ -3966,6 +3983,15 @@ class RCCRuntime {
         provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
         usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_supplied_independent_partition'});
       return true; // Actual host partition, not inferred zero-cost history.
+    }
+    // K5: the owner's explicit partition is task topology hostPlan builds; it
+    // runs with no planner call in every adaptive mode (bounded, shadow,
+    // covered_live). The skip is an observed zero (plan_model_calls 0).
+    if (this.hostAutoPlan && ownerExplicitParallelFor(task, catalog)) {
+      this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
+        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_explicit_parallel_partition'});
+      return true;
     }
     if (policy.mode === 'off' || task.mode !== 'auto') return true;
     if (!this._allowModelGeneration(taskID)) return false;
@@ -3981,7 +4007,16 @@ class RCCRuntime {
     // only for shadow observations; it cannot qualify a cheap live route.
     let disposition;
     if (bounded) {
-      disposition = {plan_proposals_enabled: true, reason: 'host_bounded_execution_policy'};
+      // K3: the owner's own partition needs no planner (hostPlan builds it).
+      // Any other model decomposition is admitted only with an applicable
+      // sound_full check (K4) AND a loaded plan-shape certificate (K11b).
+      // The catalog keys are closed (validateCatalog) and have no plan-shape
+      // kind, so no proposal can be admitted and the local planner is never
+      // asked: no call, no 120 s wait.
+      // K11b replaces this line with the real predicate and fills check_ids.
+      // The bounded policy, deadline, scope and admitBoundedAutoPlan stay
+      // wired, not adopted.
+      disposition = {plan_proposals_enabled: false, reason: 'no_admissible_check_or_shape'};
     } else if (policy.mode === 'covered_live') {
       try {
         // Test R0 and the exact source/rights/calibration family BEFORE a local
@@ -4002,6 +4037,11 @@ class RCCRuntime {
       });
     }
     if (!disposition.plan_proposals_enabled) {
+      // A skipped bounded proposal is an observed zero, not unobserved plan
+      // accounting (plan_model_calls 0, as the owner-collection branch above).
+      if (bounded) this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
+        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        usage_basis: 'openclaw_input_excludes_cache', reason: disposition.reason});
       this._update(taskID, 'adaptive_plan_skipped', snapshot => {
         snapshot.adaptive_routing = {schema: 1, mode: policy.mode,
           state: 'not_needed', reason: disposition.reason, planner_invoked: false,
@@ -4097,7 +4137,7 @@ class RCCRuntime {
           scope: bounded ? 'read_only' : hostScope(freshTask, freshCatalog), nonce});
         compiled = compileFreshPlannerProposal(raw, prepared, fresh, policy);
         if (bounded) {
-          admitBoundedAutoPlan(compiled, freshTask, freshCatalog, Date.now());
+          admitBoundedAutoPlan(compiled, freshTask, freshCatalog, Date.now(), this.verifierRegistry);
           reason = 'bounded_host_checked_proposal';
         } else if (policy.mode === 'covered_live') {
           admitLivePlannerPlan(compiled, freshTask, freshCatalog, this.livePlanCapability,
@@ -4358,9 +4398,14 @@ class RCCRuntime {
       return;
     }
     let plan, decisions, routes, lockedID = null, liveAdopted = false;
-    const ownerPartitionEnabled = this.hostAutoPlan && this.boundedAutoPlanning &&
-      this.adaptivePolicy.mode === 'off' && this.verifierRegistry.size === 0;
+    // K5: the owner's explicit partition is decoupled from the bounded
+    // planner flag, adaptive mode and verifier registry: it is the owner's
+    // topology whenever the host builds the plan.
+    const ownerPartitionEnabled = this.hostAutoPlan;
     const ownerPartition = ownerPartitionEnabled ? ownerExplicitParallelFor(admitted, catalog) : null;
+    // A partition cannot coexist with a task contract: hold, typed, before any
+    // planner call or plan write; never merge the owner's units into one node.
+    if (ownerPartition && catalog.task_contract != null) { this._hold(taskID, 'owner_partition_contract_conflict'); return; }
     try {
       if (!await this._observeAdaptivePlan(taskID, admitted, catalog)) return;
       // R7: the host builds the plan itself (hostPlan); no model plans or
@@ -4368,7 +4413,7 @@ class RCCRuntime {
       // state, never a model-authored replacement for that state, and the
       // host then binds exact rows by the same admission law.
       let accepted = null;
-      if (this.hostAutoPlan && (this.adaptivePolicy.mode === 'covered_live' || this.boundedAutoPlanning)) {
+      if (!ownerPartition && this.hostAutoPlan && (this.adaptivePolicy.mode === 'covered_live' || this.boundedAutoPlanning)) {
         const observed = this._load(taskID)?.adaptive_routing;
         if (['live_host_checked_proposal', 'bounded_host_checked_proposal'].includes(observed?.reason) && observed.host_bound_compilation) {
           try {
@@ -4725,7 +4770,7 @@ class RCCRuntime {
   }
   _readyWaveEligible(snapshot, node, candidate) {
     if (!snapshot || snapshot.cancel_requested || TERMINAL.has(snapshot.state) || this.stopping || this.closed ||
-        !candidate || !this._readPoolEligible(candidate, executionTask(snapshot)) ||
+        !candidate || !this._readPoolEligible(candidate, executionTask(snapshot), snapshot) ||
         snapshot.plan?.nodes.length < 2 || node.kind !== 'agent' ||
         !snapshot.plan.nodes.every(n => n.scope === 'read_only' && n.owned_paths.length === 0 &&
           n.dependencies.length === 0)) return false;
@@ -4744,14 +4789,16 @@ class RCCRuntime {
   }
   /** Sharing is bounded to new, independent read-only Codex children of
    * ONE parent. The durable pool lease still fences every other task and all
-   * writes. A resumed native thread is never used by simultaneous turns. */
-  _readPoolEligible(candidate, task) {
+   * writes. A resumed native thread is never used by simultaneous turns.
+   * `state` is the plan the decision is about (K5: a caller may pass the
+   * prospective or current snapshot); by default the persisted one. */
+  _readPoolEligible(candidate, task, state = undefined) {
     if (!(this.maximumReadWorkersPerPool > 1 && task.budget.max_parallel > 1 &&
         candidate.surface === 'codex' && candidate.transport === 'codex_app_server' &&
         candidate.scope === 'read_only' && candidate.permission_profile === 'read_only' &&
         candidate.quota_pool === 'openai_codex' &&
         (task.native_sessions == null || Object.keys(task.native_sessions).length === 0))) return false;
-    const state = this._load(task.task_id);
+    if (state === undefined) state = this._load(task.task_id);
     // _ticket creates fresh side sessions for a real multi-node plan even
     // when the conversation itself already owns a thread. Do not confuse
     // that history with concurrent turns on one resumed native thread.
@@ -6786,7 +6833,11 @@ class RCCRuntime {
         snapshot.plan.final_node_id ? byID.get(snapshot.plan.final_node_id)?.output :
         ordered.length === 1 ? ordered[0].output :
           ordered.map(c => `${c.id}: ${c.output}`).join('\n\n');
-    } catch { this._hold(taskID, 'owner_collection_output_invalid'); return; }
+    } catch (error) {
+      // A refreshed catalog that gained a task contract keeps its typed reason (K5).
+      this._hold(taskID, error?.code === 'owner_partition_contract_conflict' ? error.code : 'owner_collection_output_invalid');
+      return;
+    }
     const output = candidateOutput ?? '';
     if (!boundedText(output, MAX_OUTPUT_BYTES)) {
       this._hold(taskID, 'combined_output_empty_or_oversize'); return;
