@@ -799,10 +799,13 @@ public enum RCCRuntimeContract {
         public var instruction: String
         public var contextRefs: [String]
         public var ownedPaths: [String]
-        /// Optional (build 407, R5): Core sets it on a reference or explicit
-        /// final-owner node, whose native CLI may then run its own sub-agents
-        /// (Codex ultra's automatic delegation). Absent/false keeps OS-1's
-        /// managed delegation (sub-agent tools off). Not part of authorization.
+        /// Reserved (K13). Core never sets it, and native sub-agents are not
+        /// parity with the reference. `validate` refuses `true` until a native
+        /// adapter enforces a typed delegation {max_children,
+        /// child_tuple: parent, cancel: propagate, usage: children_required,
+        /// enforced: true} before dispatch; no adapter does. Absent or false
+        /// means OS-1 managed delegation (sub-agent tools off). Not
+        /// authorization.
         public var allowNativeSubagents: Bool?
         public var executionIsolation: String?
         public var executionIsolationSHA256: String?
@@ -1613,10 +1616,10 @@ public enum RCCRuntimeContract {
                 value.stagedWriterBaseSHA256.map(isHash) == true && value.selectedConfig.scope == .workspaceWrite &&
                 value.selectedConfig.surface == .codex && value.executionIsolation == "codex_fresh_local_effects_v1" &&
                 value.stagedWriterEnvelopeSHA256 == value.executionIsolationSHA256 && value.qualityContinuation == nil) else { throw Rejection.invalidConfiguration }
-        // Only a native agent surface has sub-agents to allow (R5).
-        if value.allowNativeSubagents == true, ![.codex, .claude].contains(value.selectedConfig.surface) {
-            throw Rejection.invalidConfiguration
-        }
+        // K13: no surface enforces child count, child tuple, cancel or child
+        // usage before dispatch, so a ticket that allows native sub-agents is
+        // refused on every surface (it fails before dispatch).
+        if value.allowNativeSubagents == true { throw Rejection.invalidConfiguration }
         if let host = value.hostContext {
             try validate(host)
             guard digest(try encode(host)) == value.sourceFingerprint,

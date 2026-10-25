@@ -6315,6 +6315,12 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Frozen when this owner submission is created. Missing in older saved
     /// queues, and nil must stay nil across retry/restart with the same task ID.
     var routingIntentPolicyVersion: String? = nil
+    /// The typed native-dispatch cap (K6), frozen when this owner submission
+    /// is created. Missing in older saved queues, and nil must stay nil across
+    /// retry/restart with the same task ID: the cap is part of Core's submit
+    /// fingerprint, so adding it to an older build's task is an idempotency
+    /// conflict that orphans that task's result.
+    var maxNativeDispatches: Int? = RCCRunBudgetOptions.appNativeDispatches
     /// The surface the chosen backend routes to, as the runtime's `--provider`
     /// value. A backend tile is one account with two ways to spend it, so the
     /// tile alone does not say which one ran. Absent in legacy stores and for
@@ -8817,6 +8823,7 @@ private enum OS1Runner {
         deliveryID: String? = nil,
         submissionID: UUID? = nil,
         routingIntentPolicyVersion: String? = nil,
+        maxNativeDispatches: Int?,
         conversationID: UUID? = nil,
         submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void = { _ in }
@@ -8836,11 +8843,19 @@ private enum OS1Runner {
                 deliveryID: deliveryID,
                 submissionID: submissionID,
                 routingIntentPolicyVersion: routingIntentPolicyVersion,
+                maxNativeDispatches: maxNativeDispatches,
                 conversationID: conversationID,
                 submissionStartedAt: submissionStartedAt,
                 onActivity: onActivity
             )
         }.value
+    }
+
+    /// K6: the submission's frozen typed cap as `os1 run` arguments. A cap hit
+    /// is a typed hold (native_dispatch_budget_exhausted), never a cheaper
+    /// delivery. Only a submission an older build saved has none (legacy nil).
+    static func nativeDispatchArguments(_ cap: Int?) -> [String] {
+        cap.map { ["--max-native-dispatches", String($0)] } ?? []
     }
 
     /// A failed `os1 run` that left no backend notice. The owner-policy
@@ -8877,6 +8892,7 @@ private enum OS1Runner {
         deliveryID: String?,
         submissionID: UUID?,
         routingIntentPolicyVersion: String?,
+        maxNativeDispatches: Int?,
         conversationID: UUID? = nil,
         submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void
@@ -8938,6 +8954,8 @@ private enum OS1Runner {
             // without delivering URLs that can activate the external app.
             "--desktop-reveal", "background",
         ]
+        // Every new submission carries a typed cap (K6), frozen at creation.
+        arguments += nativeDispatchArguments(maxNativeDispatches)
         let savedResult = submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
         if !requireReadOnly, let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
         else {
@@ -9044,6 +9062,26 @@ private func rccIntentIngressAppSelfTest() async throws {
     let decodedMigrated = try JSONDecoder().decode(PendingSubmission.self, from: JSONEncoder().encode(migrated))
     try check(decodedMigrated.routingIntentPolicyVersion == version && decodedMigrated.id == legacy.id,
               "v2 retry/readback persistence preserves the original marker and task ID")
+    // K6: a new submission freezes the typed native-dispatch cap at creation.
+    // An item an older build saved has no cap and keeps none across retry, so
+    // a same-task-ID resubmit never changes Core's submit fingerprint.
+    let appCap = RCCRunBudgetOptions.appNativeDispatches
+    try check(legacy.maxNativeDispatches == appCap && decodedLegacy.maxNativeDispatches == appCap &&
+              decodedMigrated.maxNativeDispatches == appCap,
+              "a new submission freezes the App native-dispatch cap and persistence preserves it")
+    var preCapObject = try JSONSerialization.jsonObject(with: legacyBytes) as? [String: Any] ?? [:]
+    try check(preCapObject.removeValue(forKey: "maxNativeDispatches") as? Int == appCap,
+              "the frozen cap is stored under its own key")
+    let preCap = try JSONDecoder().decode(PendingSubmission.self,
+                                          from: JSONSerialization.data(withJSONObject: preCapObject))
+    try check(preCap.maxNativeDispatches == nil && preCap.id == legacy.id &&
+              routeFanoutRetrySubmission(preCap).maxNativeDispatches == nil,
+              "an older build's queued item decodes and retries without a cap under the same task ID")
+    let capArguments = OS1Runner.nativeDispatchArguments(appCap)
+    try check(OS1Runner.nativeDispatchArguments(nil).isEmpty &&
+              capArguments == ["--max-native-dispatches", String(appCap)] &&
+              (try RCCRunBudgetOptions.nativeDispatches(capArguments[1])) == appCap,
+              "only a frozen cap reaches os1 run, as a value the CLI accepts; legacy nil stays absent")
     try check(try OS1Runner.routingIntentArguments(version: nil, provider: "auto", requireReadOnly: false,
         hostEnabled: true).isEmpty, "host switch alone never upgrades old queue")
     try check(try OS1Runner.routingIntentArguments(version: version, provider: "auto", requireReadOnly: false,
@@ -9074,6 +9112,7 @@ private func rccIntentIngressAppSelfTest() async throws {
     while control.captured == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
     try check(control.captured?.provider == .auto && control.captured?.routingIntentPolicyVersion == version,
               "only a new owner Auto submission is stamped at creation")
+    try check(control.captured?.maxNativeDispatches == appCap, "a new owner submission dispatches with the App cap")
     // Use the actual App argument writer, CLI option validator, request binder
     // and native-catalog binder in one fake chain. No runtime or provider runs.
     let arguments = try OS1Runner.routingIntentArguments(version: control.captured!.routingIntentPolicyVersion,
@@ -9668,6 +9707,7 @@ private final class SessionStore: ObservableObject {
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
                 submissionID: submission.id, routingIntentPolicyVersion: submission.routingIntentPolicyVersion,
+                maxNativeDispatches: submission.maxNativeDispatches,
                 conversationID: submission.sessionID, submissionStartedAt: submission.submittedAt, onActivity: onActivity)
         }
         if storageRoot == nil {

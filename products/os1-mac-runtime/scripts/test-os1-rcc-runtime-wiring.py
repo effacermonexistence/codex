@@ -684,4 +684,16 @@ check("(exactAnswer ? \"\" : SourceTransformationContract.instructions)" in MAIN
       'case "self-test-source-input":' in MAIN and "try rccBoundSourceDeliverySelfTest()" in MAIN,
       "source transformation policy uses existing native instruction channel, clean exact-answer path, and actual private-store fixtures")
 
+# K13: C3 native sub-agent parity is withdrawn. Every Core-dispatched native
+# attempt runs managed, and the contract refuses the reserved flag on every
+# surface until a native adapter enforces typed delegation before dispatch.
+TICKET_CONTRACT = (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text()
+check("ParallelAgentRuntime.$managedDelegation.withValue(true) {" in native and
+      "withValue(t.allowNativeSubagents" not in MAIN,
+      "the RCC native adapter hard-wires managed delegation; a ticket flag never turns it off")
+check("if value.allowNativeSubagents == true { throw Rejection.invalidConfiguration }" in TICKET_CONTRACT,
+      "ticket validation refuses allow_native_subagents=true on every surface (K13)")
+check("allow_native_subagents" not in RUNTIME and "delegation:" not in RUNTIME,
+      "Core never emits the reserved delegation flag or a delegation object")
+
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

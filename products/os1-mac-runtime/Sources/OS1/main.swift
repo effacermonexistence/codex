@@ -19720,9 +19720,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         try await OS1FullAccessContinuation.$sessionID.withValue(isFullAccess ? t.nativeResumeSessionID : nil) {
         try await OS1FullAccessContinuation.$protectedPaths.withValue(isFullAccess ? protected : []) {
         try await OS1ChangeEscalation.$available.withValue(!h.requireReadOnly && t.selectedConfig.scope == .workspaceWrite && sourceRoot != nil) {
-        // R5: a reference/explicit final-owner node may run its native
-        // sub-agents (Core sets the flag); every other node stays managed.
-        try ParallelAgentRuntime.$managedDelegation.withValue(t.allowNativeSubagents != true) {
+        // K13: every Core-dispatched native attempt is managed; typed
+        // delegation is reserved until a native adapter enforces it before
+        // dispatch (the contract already refuses the flag).
+        try ParallelAgentRuntime.$managedDelegation.withValue(true) {
         try OwnerPolicyContext.$snapshot.withValue(policy) {
             try execute(ticket: signed, prompt: nativePrompt,
                 workspace: workspace, timeout: config.executionTimeoutSeconds, idleTimeout: config.providerIdleTimeoutSeconds,

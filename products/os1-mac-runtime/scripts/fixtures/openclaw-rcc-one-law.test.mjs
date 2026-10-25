@@ -22,10 +22,10 @@ const REJECTED = 'provider_quota_rejected_before_execution';
 const passes = async () => ({passed: true, reason: 'fixture'});
 const CERTIFY = new Map([['trivial:read_only:agent', passes], ['trivial:read_only:chat', passes]]);
 
-function task(dir) {
+function task(dir, hostPatch = {}) {
   const request = 'Read the provided definition and explain its boundary precisely.';
   const host = {workspace: dir, context: null, provider_preference: 'auto', codex_session_id: null,
-    claude_session_id: null, require_read_only: true, owner_policy: null};
+    claude_session_id: null, require_read_only: true, owner_policy: null, ...hostPatch};
   return {schema: 1, task_id: randomUUID(), request, objective: request, request_sha256: H(request),
     policy_sha256: H(policyText), source_fingerprint: hostContextFingerprint(host), mode: 'auto', material_refs: [],
     budget: {max_attempts: 1, max_parallel: 4, max_cost_units: null, max_duration_ms: 10000}, host_context: host,
@@ -137,4 +137,35 @@ test('a child an older build bound execution-only re-resolves to the reference, 
     }
     assert(lawBound(child));
   }
+});
+
+// K13: C3 (native sub-agent parity) was never implemented and is withdrawn.
+// No Core ticket allows native sub-agents or carries a delegation object; the
+// typed delegation is reserved until a native adapter enforces it before
+// dispatch, and the Swift contract refuses the flag.
+test('no Core ticket carries native delegation (K13)', async t => {
+  const source = await readFile(RUNTIME, 'utf8');
+  assert.equal(source.includes('allow_native_subagents'), false, 'Core never emits the flag');
+  assert.equal(source.includes('delegation:'), false, 'Core never emits a delegation object');
+  const undelegated = ticket => !Object.hasOwn(ticket, 'allow_native_subagents') && !Object.hasOwn(ticket, 'delegation');
+  const session = randomUUID();
+  // (a) The C3 trigger shape: Auto, one node, the Codex reference, a resumed
+  // owner thread. (b) The Claude reference, resumed. Each is one ticket.
+  for (const [hostPatch, expected] of [[{codex_session_id: session}, 'gpt-6-astra/ultra'],
+    [{claude_session_id: session}, 'claude-fable-5-1/max']]) {
+    const h = await harness(t, tickets => ({execute: async ticket => {tickets.push(ticket); return completed(ticket);}}));
+    const q = task(h.directory, hostPatch), done = await h.run(q), saved = h.runtime._load(q.task_id);
+    assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
+    assert.deepEqual(h.tickets.map(tuple), [expected]);
+    assert.equal(saved.children[0].route_kind, 'reference');
+    assert.equal(h.tickets[0].native_resume_session_id, session, 'the owner thread is resumed');
+    assert(h.tickets.every(undelegated), JSON.stringify(h.tickets));
+  }
+  // (c) A certified descent whose verifier fails, then its fixed escalation.
+  const h = await harness(t, tickets => ({verifierRegistry: new Map([['trivial:read_only:agent',
+    async () => ({passed: false, reason: 'fixture rejected'})]]),
+  execute: async ticket => {tickets.push(ticket); return completed(ticket);}}));
+  const q = task(h.directory), done = await h.run(q);
+  assert.deepEqual(h.tickets.map(tuple), ['gpt-6-luna/low', 'gpt-6-astra/ultra'], JSON.stringify(done));
+  assert(h.tickets.every(undelegated), JSON.stringify(h.tickets));
 });

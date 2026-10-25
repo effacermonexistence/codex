@@ -194,7 +194,7 @@ func runRCCAdmissionFactsFixtures() throws {
     try rejectCatalog("a pin keyed by another class") { $0["class_provider_pins"] = ["writer": "codex"] }
     try rejectCatalog("a pin to an unknown pool") { $0["class_provider_pins"] = ["chat_explanatory": "gpt"] }
 
-    // ---- Ticket delegation flag (R5) ----------------------------------------
+    // ---- Ticket delegation flag (K13: reserved, refused, always managed) ----
     let host = questionRequest.hostContext!
     let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "acct-codex", model: "gpt-6-astra",
         effort: .ultra, tools: ["read", "execute"], scope: .readOnly, permissionProfile: .readOnly, quotaPool: .openAICodex,
@@ -207,8 +207,14 @@ func runRCCAdmissionFactsFixtures() throws {
     let legacyTicket = try C.decodeTicket(C.encode(ticket))
     try check(legacyTicket.allowNativeSubagents == nil &&
               (try object(C.encode(ticket)))["allow_native_subagents"] == nil, "a ticket without the flag stays managed")
+    ticket.allowNativeSubagents = false
+    try check(try C.decodeTicket(C.encode(ticket)).allowNativeSubagents == false, "an explicit false flag decodes and stays managed")
+    try C.validate(ticket); checks += 1
     ticket.allowNativeSubagents = true
-    try check(try C.decodeTicket(C.encode(ticket)).allowNativeSubagents == true, "a reference final-owner ticket may allow native sub-agents")
+    try reject("no native adapter enforces delegation before dispatch (K13): decode refuses the flag") {
+        _ = try C.decodeTicket(C.encode(ticket))
+    }
+    try reject("no native adapter enforces delegation before dispatch (K13): validate refuses the flag") { try C.validate(ticket) }
     var chatTicket = ticket; chatTicket.selectedConfig.surface = .claudeChat; chatTicket.selectedConfig.transport = .claudeCLI
     chatTicket.selectedConfig.quotaPool = .anthropicShared; chatTicket.selectedConfig.tools = []
     var chatManaged = chatTicket; chatManaged.allowNativeSubagents = nil

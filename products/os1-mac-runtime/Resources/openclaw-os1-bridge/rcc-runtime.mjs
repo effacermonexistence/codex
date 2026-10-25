@@ -4984,11 +4984,17 @@ class RCCRuntime {
           // reference) names the hold; any other held child is unverified.
           const reason = snapshot.children.find(c => c.state === 'held' && typeof c.hold_reason === 'string')
             ?.hold_reason ?? 'child_task_quality_unverified';
-          const returned = snapshot.children.filter(c => c.output !== null);
+          // A certified descent's output that its check has not accepted is
+          // never delivered, not even inside a partial result.
+          const returned = snapshot.children.filter(c => c.output !== null &&
+            (c.state === 'completed' || !pendingEscalation(c)));
           // A protocol/control unknown is an actual HOLD, not a delivered
-          // unverified answer and never a reason to replay a model. Every raw
-          // child output/receipt remains in the same durable task/inspector.
-          if (reason === 'owner_collection_control_unverified') { this._hold(taskID, reason); return; }
+          // unverified answer and never a reason to replay a model, whichever
+          // child holds first (an earlier sibling's hold must not unmask it).
+          // Every raw child output/receipt remains in the same durable task/inspector.
+          if (snapshot.children.some(c => c.state === 'held' && c.hold_reason === 'owner_collection_control_unverified')) {
+            this._hold(taskID, reason); return;
+          }
           try { this._hold(taskID, reason, await this._partialResult(taskID, returned)); }
           catch (error) { this._hold(taskID, error.code ?? 'aggregate_receipt_unavailable'); }
         }
