@@ -6038,8 +6038,9 @@ private func simulationOutcome(_ session: ConversationSession) -> OS1SimulationO
     guard let last = outcomes.last else {
         return OS1SimulationOutcome(revision: nil, text: "", timestamp: nil, hasResult: false)
     }
-    let answers = outcomes.filter { $0.role == .assistant }.map(\.text)
-    var text = answers.isEmpty ? outcomes.map(\.text).joined(separator: "\n\n") : answers.joined(separator: "\n\n")
+    // Keep the native return's status/partial/held boundary alongside its
+    // answer. An assistant fragment alone is not the complete outcome.
+    var text = outcomes.map(\.text).joined(separator: "\n\n")
     if session.lastFailure != nil || session.lastBackendFailure != nil {
         text = "작업이 확인을 필요로 하는 상태입니다. 결과 확인은 성공 인증이 아닙니다.\n\n" + text
     }
@@ -9656,6 +9657,15 @@ private final class SessionStore: ObservableObject {
     @Published var simulationPresentation = SimulationPresentationState()
     @Published var simulationQuotaPools: [String: OS1GardenTokenPool] = [:]
     private let simulationTelemetryCache = OS1GardenTelemetryCache()
+    private var simulationQuotaScope: (codex: String, claude: String, codexEnabled: Bool)?
+
+    fileprivate var currentSimulationQuotaPools: [String: OS1GardenTokenPool] {
+        guard let scope = simulationQuotaScope,
+              scope.codex == (activeAccount(for: .codex)?.id ?? ""),
+              scope.claude == (activeAccount(for: .claude)?.id ?? ""),
+              scope.codexEnabled == appSettings.showCodex else { return [:] }
+        return simulationQuotaPools
+    }
     @Published var appSettings: OS1Settings
     /// Which Codex and Claude accounts this Mac is signed in to. The runtime
     /// owns the file; the app reads it and asks the runtime to change it.
@@ -10478,8 +10488,15 @@ private final class SessionStore: ObservableObject {
         guard customStorageRoot == nil else { return }
         let codex = activeAccount(for: .codex)?.id ?? ""
         let claude = activeAccount(for: .claude)?.id ?? ""
+        let codexEnabled = appSettings.showCodex
         let result = await simulationTelemetryCache.quotas(codexAccountID: codex, claudeAccountID: claude,
-            codexEnabled: appSettings.showCodex)
+            codexEnabled: codexEnabled)
+        // A suspended read must not publish a previous account's quota after
+        // an account/provider switch. The next tick reads the current scope.
+        guard codex == (activeAccount(for: .codex)?.id ?? ""),
+              claude == (activeAccount(for: .claude)?.id ?? ""),
+              codexEnabled == appSettings.showCodex else { return }
+        simulationQuotaScope = (codex: codex, claude: claude, codexEnabled: codexEnabled)
         if simulationQuotaPools != result { simulationQuotaPools = result }
     }
 
@@ -17200,7 +17217,7 @@ private struct RootView: View {
         let outcome = selected.map(simulationOutcome)
         let engine = rows.first(where: { $0.id == selected?.id.uuidString })?.engine.lowercased() ?? ""
         let provider = engine.contains("claude") ? "claude" : engine.contains("codex") ? "codex" : ""
-        let quota = store.simulationQuotaPools[provider] ?? .unavailable
+        let quota = store.currentSimulationQuotaPools[provider] ?? .unavailable
         let currentUsage = selected?.simulationUsage.flatMap { receipt in
             selected?.messages.last(where: { $0.role == .user })?.id == receipt.userMessageID ? receipt.pool : nil
         }
@@ -17211,7 +17228,7 @@ private struct RootView: View {
         return OS1GardenSnapshot(sessions: rows, selectedID: selected?.id.uuidString,
             selectedOutput: outcome?.text ?? "", notice: simulationNotice, visible: simulationVisible,
             accentHex: store.appSettings.resolvedAccentColor, selectedOutputID: selected?.id.uuidString,
-            selectedResultRevision: outcome?.revision, tokenPool: pool, tokenPools: store.simulationQuotaPools)
+            selectedResultRevision: outcome?.revision, tokenPool: pool, tokenPools: store.currentSimulationQuotaPools)
     }
 
     private func gardenAction(_ action: String, _ rawID: String?, _ text: String?) {
@@ -17228,21 +17245,24 @@ private struct RootView: View {
         if ["inspect", "review"].contains(action) {
             guard simulationVisible, store.selectedSessionID == id else { return }
         }
-        store.select(id)
-        if action == "inspect", let text {
-            guard let session = store.selectedSession, !store.isSessionRunning(id),
+        if action == "inspect" {
+            guard let text, let session = store.selectedSession, !store.isSessionRunning(id),
                   !store.queuedSubmissions.contains(where: { $0.sessionID == id }) else { return }
             let outcome = simulationOutcome(session)
             if outcome.hasResult && outcome.revision == text { simulationInspected[id] = text }
             return
         }
-        if action == "review", let text {
+        if action == "review" {
+            guard let text else { return }
             if store.reviewSimulationSession(id, revision: text, inspected: simulationInspected[id]) {
                 simulationInspected.removeValue(forKey: id)
                 simulationNotice = "결과 확인됨 · 일꾼만 퇴장했습니다. 대화와 재작업 기능은 그대로입니다."
             } else { simulationNotice = "현재 세션의 결과를 먼저 열어 확인해 주세요. 실행·대기 중인 일꾼은 퇴장하지 않습니다." }
             return
         }
+        // Inspection/acknowledgement above are presentation-only. Selecting
+        // here can persist drafts and ingest records, so never do it for them.
+        store.select(id)
         if action == "select" { store.deploySimulationSession(id) }
         if action == "open" { store.showClodexHome(); simulationVisible = false }
         else if action == "stop" { store.cancelSelectedRun() }
