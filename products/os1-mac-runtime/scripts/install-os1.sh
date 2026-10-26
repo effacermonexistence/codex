@@ -172,6 +172,15 @@ verify_unnotarized_beta_package() {
     requires_rcc_calibrated_routes=1
   fi
 
+  # 0.9.370 (build436) adds the seven self-contained SimulationGarden files
+  # (index, manifest, license, reference image/json, one js, one css).
+  # Keep every <=0.9.369 inventory unchanged.
+  if (( 10#$release_major > 0 || 10#$release_minor > 9 ||
+        (10#$release_minor == 9 && 10#$release_patch >= 370) )); then
+    expected_payload_files=59
+    expected_component_files=62
+  fi
+
   pkgutil --expand-full "$package_path" "$expanded_root" || {
     echo "OS-1 beta verification could not expand the package." >&2
     return 1
@@ -331,6 +340,13 @@ verify_unnotarized_beta_package() {
       "Applications/OS-1 CLODEX.app/Contents/Resources/Codex.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/ClaudeCode.png"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/Constellation.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/index.html"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/manifest.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-reference.png"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/reference.json"|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
+      "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/consumer-chatgpt-driver.mjs"|\
       "Applications/OS-1 CLODEX.app/Contents/Resources/local-router-config.template.json"|\
@@ -390,6 +406,8 @@ verify_unnotarized_beta_package() {
       "/Applications/OS-1 CLODEX.app/Contents/MacOS"|\
       "/Applications/OS-1 CLODEX.app/Contents/Resources"|\
       "/Applications/OS-1 CLODEX.app/Contents/Resources/openclaw-os1-bridge"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden"|\
+      "/Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets"|\
       "/Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle"|\
       "/Applications/OS-1 CLODEX.app/Contents/Resources/SwiftMath_SwiftMath.bundle/mathFonts.bundle"|\
       "/Applications/OS-1 CLODEX.app/Contents/_CodeSignature"|\
