@@ -14,6 +14,61 @@ const app=read('Sources/OS1App/OS1App.swift'),view=read('Sources/OS1App/Simulati
 const js=read('SimulationGarden/src/main.js'),scene=read('SimulationGarden/src/terran-scene.js'),field=read('SimulationGarden/src/field-state.js');
 const telemetry=read('Sources/OS1App/SimulationTelemetry.swift'),presentation=read('Sources/OS1Context/SimulationPresentation.swift');
 const reports=[];function check(name,fn){fn();reports.push(name);}
+// Match one actual Swift function/branch, including its balanced nested
+// closures. Ignore string/comment braces without changing source offsets.
+function swiftBody(text,signature){
+ const start=text.indexOf(signature);assert(start>=0,'missing scoped Swift section '+signature);
+ const masked=text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,token=>' '.repeat(token.length));
+ const open=masked.indexOf('{',start);assert(open>=0);let depth=0;
+ for(let i=open;i<masked.length;i++){if(masked[i]==='{')depth++;if(masked[i]==='}'&&--depth===0)return text.slice(open+1,i);}
+ assert.fail('unbalanced scoped Swift section '+signature);
+}
+function verifyOutcomeBoundaries(body){
+ const user=body.indexOf('messages.lastIndex(where: { $0.role == .user })');
+ const later=body.indexOf('messages.suffix(from: userIndex + 1)');
+ const roles=body.indexOf('later.filter { $0.role == .assistant || $0.role == .system || $0.role == .receipt }');
+ const join=body.indexOf('text = outcomes.map(\\.text).joined(separator: "\\n\\n")');
+ assert(user>=0&&user<later&&later<roles&&roles<join,'current request must retain assistant/status/receipt in source order');
+ assert(!/outcomes\.filter\s*\{\s*\$0\.role\s*==\s*\.assistant\s*\}/.test(body),'assistant-only fallback drops native partial/error boundary');
+}
+function verifyReviewDoesNotSelect(body){
+ const inspectStart=body.indexOf('if action == "inspect" {'),reviewStart=body.indexOf('if action == "review" {');
+ const select=body.indexOf('store.select(id)');
+ assert(inspectStart>=0&&reviewStart>inspectStart&&select>reviewStart,'inspect/review branches must precede selection');
+ assert.equal(body.match(/store\.select\(id\)/g)?.length,1,'unexpected extra selection side effect');
+ for(const name of ['inspect','review']){
+  const branch=swiftBody(body,`if action == "${name}" {`);
+  assert(branch.includes('guard let text'),'malformed inspection must return rather than fall through');
+  assert(/\breturn\s*$/.test(branch.trim()),'presentation action must return before native selection');
+  assert(!/store\.(select|send|createSession|cancelSelectedRun|deploySimulationSession)\(/.test(branch),'inspection/review may not enter native selection/task path');
+ }
+}
+function verifyQuotaPublicationScope(body){
+ const awaitRead=body.indexOf('await simulationTelemetryCache.quotas(');
+ for(const captured of ['let codex = activeAccount(for: .codex)?.id ?? ""','let claude = activeAccount(for: .claude)?.id ?? ""','let codexEnabled = appSettings.showCodex'])
+  assert(body.indexOf(captured)>=0&&body.indexOf(captured)<awaitRead,'capture account/provider scope before suspension');
+ const guardAt=body.indexOf('guard codex ==',awaitRead),publish=body.indexOf('simulationQuotaPools = result');
+ assert(awaitRead>=0&&guardAt>awaitRead&&publish>guardAt,'scope revalidation must precede quota publication');
+ const guarded=body.slice(guardAt,body.indexOf('else { return }',guardAt));
+ for(const condition of ['codex == (activeAccount(for: .codex)?.id ?? "")','claude == (activeAccount(for: .claude)?.id ?? "")','codexEnabled == appSettings.showCodex'])assert(guarded.includes(condition),'missing post-await scope check '+condition);
+ assert(body.slice(awaitRead,guardAt).includes('codexEnabled: codexEnabled'),'async read must use the captured enable flag');
+ assert(!/\bawait\b/.test(body.slice(guardAt,publish)),'no new suspension between scope guard and publication');
+ const scopeAt=body.indexOf('simulationQuotaScope = (codex: codex, claude: claude, codexEnabled: codexEnabled)');
+ assert(scopeAt>guardAt&&scopeAt<publish,'stored quota scope must be the successfully revalidated capture');
+}
+function verifyPublishedQuotaScope(text){
+ const filtered=swiftBody(text,'fileprivate var currentSimulationQuotaPools:');
+ const returned=filtered.indexOf('return simulationQuotaPools');
+ const fallback=filtered.indexOf('else { return [:] }');
+ assert(fallback>=0&&returned>fallback,'stale published scope must project no current balance');
+ for(const condition of ['scope.codex == (activeAccount(for: .codex)?.id ?? "")','scope.claude == (activeAccount(for: .claude)?.id ?? "")','scope.codexEnabled == appSettings.showCodex'])
+  assert(filtered.slice(0,fallback).includes(condition),'missing current scope projection check '+condition);
+ const snapshot=swiftBody(text,'private var gardenSnapshot:');
+ assert(snapshot.includes('let quota = store.currentSimulationQuotaPools[provider]'));
+ assert(snapshot.includes('tokenPools: store.currentSimulationQuotaPools'));
+ assert(!/store\.simulationQuotaPools\b/.test(snapshot),'snapshot must not bypass the current-scope filter');
+ assert(!/activeAccount\(|simulationQuotaScope/.test(snapshot),'account identifiers must not be serialized into snapshot');
+}
 check('native UUID/name/run projection retained',()=>{
  assert(app.includes('.accessibilityIdentifier("os1.rail.simulation")'));
  assert(app.includes('name: session.title')&&app.includes('id: session.id.uuidString'));
@@ -37,6 +92,28 @@ check('inspection/review require visible selected exact native result',()=>{
  const guardPosition=action.indexOf('guard simulationVisible, store.selectedSessionID == id');
  assert(guardPosition>=0&&guardPosition<action.indexOf('store.select(id)'),'stale inspect may not silently select target');
  assert(app.includes('outcome.hasResult, outcome.revision == revision')&&app.includes('inspectedRevision: inspected'));
+});
+check('current-request results retain native partial/error/status/receipt boundaries',()=>{
+ const body=swiftBody(app,'private func simulationOutcome(');verifyOutcomeBoundaries(body);
+ assert.throws(()=>verifyOutcomeBoundaries(body.replace(' || $0.role == .system || $0.role == .receipt','')),'regression must reject assistant-only output');
+});
+check('inspection/review cannot fall through into draft-saving native selection',()=>{
+ const body=swiftBody(app,'private func gardenAction(');verifyReviewDoesNotSelect(body);
+ const reverted=body.replace('store.select(id)','').replace('if action == "inspect" {','store.select(id)\n        if action == "inspect" {');
+ assert.throws(()=>verifyReviewDoesNotSelect(reverted),'regression must reject selecting before inspection');
+});
+check('quota publication revalidates exact captured accounts/provider state after await',()=>{
+ const body=swiftBody(app,'func refreshSimulationTelemetry() async');verifyQuotaPublicationScope(body);
+ assert.throws(()=>verifyQuotaPublicationScope(body.replace('claude == (activeAccount(for: .claude)?.id ?? "")','true')),'regression must reject cross-account async publication');
+});
+check('already-published quota is filtered against current scope without exporting account IDs',()=>{
+ verifyPublishedQuotaScope(app);
+ assert.throws(()=>verifyPublishedQuotaScope(app.replace('scope.claude == (activeAccount(for: .claude)?.id ?? "")','true')),'regression must reject stale published account balance');
+ assert.throws(()=>verifyPublishedQuotaScope(app.replace('tokenPools: store.currentSimulationQuotaPools','tokenPools: store.simulationQuotaPools')),'regression must reject direct stale snapshot publication');
+ for(const dto of ['struct OS1GardenTokenPool:','struct OS1GardenQuotaObservation:']){
+  const body=swiftBody(telemetry,dto);
+  assert(!/\b(?:let|var)\s+(?:accountID|codexAccountID|claudeAccountID|codexID|claudeID)\s*:/.test(body),'account ID in WebKit telemetry DTO');
+ }
 });
 check('presentation retirement has no native storage/task authorization side effects',()=>{
  assert(presentation.includes('simulation-presentation.json'));
