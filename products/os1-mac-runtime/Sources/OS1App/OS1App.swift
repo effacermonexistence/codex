@@ -6011,6 +6011,43 @@ private func turnWorkSegments(_ log: NativePublicRunLog, entries: Range<Int>, an
     }
 }
 
+private struct OS1SimulationMeasuredUsage: Codable, Equatable, Sendable {
+    let taskID: String
+    let requestSHA256: String
+    let userMessageID: UUID
+    let pool: OS1GardenTokenPool
+}
+
+private struct OS1SimulationOutcome {
+    let revision: String?
+    let text: String
+    let timestamp: Date?
+    let hasResult: Bool
+}
+
+/// Only this request's actual returned output, never an earlier answer while
+/// a newer user request is pending. Receipt IDs bind inspection/retirement.
+private func simulationOutcome(_ session: ConversationSession) -> OS1SimulationOutcome {
+    let messages = session.visibleMessages
+    guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
+        return OS1SimulationOutcome(revision: nil, text: "", timestamp: nil, hasResult: false)
+    }
+    let request = messages[userIndex]
+    let later = messages.suffix(from: userIndex + 1)
+    let outcomes = later.filter { $0.role == .assistant || $0.role == .system || $0.role == .receipt }
+    guard let last = outcomes.last else {
+        return OS1SimulationOutcome(revision: nil, text: "", timestamp: nil, hasResult: false)
+    }
+    let answers = outcomes.filter { $0.role == .assistant }.map(\.text)
+    var text = answers.isEmpty ? outcomes.map(\.text).joined(separator: "\n\n") : answers.joined(separator: "\n\n")
+    if session.lastFailure != nil || session.lastBackendFailure != nil {
+        text = "작업이 확인을 필요로 하는 상태입니다. 결과 확인은 성공 인증이 아닙니다.\n\n" + text
+    }
+    if text.count > 12000 { text = "[일부 표시 · 전체 내용은 이 세션의 채팅에서 확인]\n" + String(text.suffix(12000)) }
+    return OS1SimulationOutcome(revision: request.id.uuidString + ":" + last.id.uuidString,
+        text: text, timestamp: last.timestamp, hasResult: !text.isEmpty)
+}
+
 private struct ConversationSession: Codable, Identifiable, Sendable {
     let id: UUID
     var title: String
@@ -6054,6 +6091,7 @@ private struct ConversationSession: Codable, Identifiable, Sendable {
     /// the entries before the recorded end are earlier attempts', whether or
     /// not one of them left a work line. nil in stores from earlier builds.
     var attemptFeedEnds: [AttemptFeedEnd]? = nil
+    var simulationUsage: OS1SimulationMeasuredUsage? = nil
     var updatedAt: Date
 
     init(
@@ -9470,6 +9508,9 @@ private final class SessionStore: ObservableObject {
     /// store (custom storage root) starts from the defaults instead: build
     /// 326 failed staging because every self-test store inherited the owner's
     /// parallelRunLimit from settings.json.
+    @Published var simulationPresentation = SimulationPresentationState()
+    @Published var simulationQuotaPools: [String: OS1GardenTokenPool] = [:]
+    private let simulationTelemetryCache = OS1GardenTelemetryCache()
     @Published var appSettings: OS1Settings
     /// Which Codex and Claude accounts this Mac is signed in to. The runtime
     /// owns the file; the app reads it and asks the runtime to change it.
@@ -9655,6 +9696,8 @@ private final class SessionStore: ObservableObject {
         // storage root is a fixture and must not depend on this Mac's state.
         let initialSettings = storageRoot == nil ? OS1Settings.load() : OS1Settings()
         appSettings = initialSettings
+        let presentationRoot = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/OS-1")
+        simulationPresentation = SimulationPresentationState.load(from: presentationRoot.appendingPathComponent(SimulationPresentationState.filename))
         if storageRoot == nil { OS1AppearanceState.shared.set(initialSettings.resolvedAccentColor) }
         accountBook = storageRoot == nil ? BackendAccounts.load() : BackendAccounts.normalized(BackendAccountBook())
         self.sourceAdmissionCheck = sourceAdmissionCheck
@@ -10251,14 +10294,73 @@ private final class SessionStore: ObservableObject {
         }
     }
 
+    private var simulationPresentationURL: URL {
+        storageURL.deletingLastPathComponent().appendingPathComponent(SimulationPresentationState.filename)
+    }
+
+    /// Establish the first *visible* workforce baseline. Historical outcomes
+    /// stay in the roster; they are never silently called reviewed.
+    func establishSimulationPresentation() {
+        guard !fileManager.fileExists(atPath: simulationPresentationURL.path) else { return }
+        let value = SimulationPresentationState(baselineAt: Date())
+        do { try value.save(to: simulationPresentationURL); simulationPresentation = value }
+        catch { alertMessage = "시뮬레이션 표시 상태를 저장하지 못했습니다. 대화와 작업은 그대로입니다." }
+    }
+
+    func deploySimulationSession(_ id: UUID, reassign: Bool = false) {
+        var value = simulationPresentation
+        guard value.deploy(sessionID: id.uuidString) else { return }
+        if reassign { value.clearReview(sessionID: id.uuidString) }
+        do { try value.save(to: simulationPresentationURL); simulationPresentation = value }
+        catch { alertMessage = "일꾼 표시 상태 저장 실패 · 기존 작업은 보존됐습니다." }
+    }
+
+    func reviewSimulationSession(_ id: UUID, revision: String, inspected: String?) -> Bool {
+        guard let session = sessions.first(where: { $0.id == id }), selectedSessionID == id,
+              !isSessionRunning(id), !queuedSubmissions.contains(where: { $0.sessionID == id }) else { return false }
+        let outcome = simulationOutcome(session)
+        guard outcome.hasResult, outcome.revision == revision else { return false }
+        var value = simulationPresentation
+        guard value.review(sessionID: id.uuidString, revision: revision, inspectedRevision: inspected,
+                           isRunning: false, isQueued: false) else { return false }
+        do { try value.save(to: simulationPresentationURL); simulationPresentation = value; return true }
+        catch { alertMessage = "결과 확인 상태를 저장하지 못했습니다. 세션은 보존됐습니다."; return false }
+    }
+
+    func refreshSimulationTelemetry() async {
+        guard customStorageRoot == nil else { return }
+        let codex = activeAccount(for: .codex)?.id ?? ""
+        let claude = activeAccount(for: .claude)?.id ?? ""
+        let result = await simulationTelemetryCache.quotas(codexAccountID: codex, claudeAccountID: claude,
+            codexEnabled: appSettings.showCodex)
+        if simulationQuotaPools != result { simulationQuotaPools = result }
+    }
+
     fileprivate var simulationGardenRows: [OS1GardenSession] {
         orderedSessions.filter { $0.archived != true }.map { session in
             let running = isSessionRunning(session.id)
             let queued = queuedSubmissions.contains { $0.sessionID == session.id }
-            let status = running ? "working" : queued ? "queued" : session.lastFailure != nil ? "failed" : session.lastCompletedAt != nil ? "completed" : "idle"
-            return OS1GardenSession(id: session.id.uuidString, name: session.title,
-                engine: session.lastProvider ?? session.provider.title, status: status,
-                activity: running ? (publicRunProgress(session.id) ?? "OS1 작업 실행 중") : queued ? "기존 큐는 그대로 보존됩니다." : "같은 세션에 이어서 작업할 수 있어요.")
+            let outcome = simulationOutcome(session)
+            let latestOwnerAt = session.visibleMessages.last(where: { $0.role == .user })?.timestamp
+            let currentCompleted = session.lastCompletedAt.map { completed in
+                latestOwnerAt.map { $0 <= completed } ?? false
+            } ?? false
+            let status = running ? "working" : queued ? "queued" : session.lastFailure != nil ? "failed" :
+                currentCompleted && outcome.hasResult ? "completed" : outcome.hasResult ? "returned" : "idle"
+            let reviewed = simulationPresentation.hasReviewed(sessionID: session.id.uuidString, revision: outcome.revision)
+            let featured = simulationPresentation.isFeatured(id: session.id.uuidString, revision: outcome.revision,
+                hasResult: outcome.hasResult, resultAt: outcome.timestamp, isRunning: running, isQueued: queued,
+                isNewEmpty: session.messages.isEmpty && session.updatedAt >= simulationPresentation.baselineAt,
+                isSelected: selectedSessionID == session.id)
+            let usage = session.simulationUsage.flatMap { receipt in
+                session.messages.last(where: { $0.role == .user })?.id == receipt.userMessageID ? receipt.pool : nil
+            }
+            let engine = running ? (activeRuns[session.id]?.provider?.title ?? "라우팅 중") : (session.lastProvider ?? session.provider.title)
+            return OS1GardenSession(id: session.id.uuidString, name: session.title, engine: engine, status: status,
+                activity: running ? (publicRunProgress(session.id) ?? "OS1 작업 실행 중") : queued ? "대기 중 · 아직 토큰 사용으로 표시하지 않습니다." : "실행 완료 후 결과를 확인하면 일꾼만 퇴장합니다.",
+                tokensUsed: usage?.used, usageLabel: usage?.label, resultRevision: outcome.revision,
+                reviewed: reviewed, hasResult: outcome.hasResult && !running && !queued,
+                featured: featured, resultPending: outcome.hasResult && !reviewed && !running && !queued && featured)
         }
     }
 
@@ -11751,6 +11853,13 @@ private final class SessionStore: ObservableObject {
                     return
                 }
                 if let core = summary.rccRuntime {
+                    if (try? RCCRuntimeContract.validate(core)) != nil,
+                       core.taskID == submission.id.uuidString.lowercased(),
+                       core.requestSHA256 == appSHA256Hex(submission.executionRequest) {
+                        sessions[target].simulationUsage = OS1SimulationMeasuredUsage(taskID: core.taskID,
+                            requestSHA256: core.requestSHA256, userMessageID: submission.userMessageID,
+                            pool: OS1GardenTelemetry.resourcePool(core.resourceUsage))
+                    }
                     let localReceipt = RCCDeterministicReceipt.bound(core, graph: summary.agentTask,
                         submission: submission, steps: summary.steps)
                     // UI projection only: a held/unverified core result never
@@ -16930,23 +17039,59 @@ private struct RootView: View {
     @State private var simulationVisible = false
     @State private var simulationTick = 0
     @State private var simulationNotice = ""
+    @State private var simulationInspected: [UUID: String] = [:]
 
     private var gardenSnapshot: OS1GardenSnapshot {
         let _ = simulationTick
         let rows = store.simulationGardenRows
-        let output = store.selectedSession?.messages.last(where: { $0.role == .assistant })?.text ?? ""
-        return OS1GardenSnapshot(sessions: rows, selectedID: store.selectedSessionID?.uuidString,
-            selectedOutput: String(output.prefix(6000)), notice: simulationNotice, visible: simulationVisible, accentHex: store.appSettings.resolvedAccentColor)
+        let selected = store.selectedSession
+        let outcome = selected.map(simulationOutcome)
+        let engine = rows.first(where: { $0.id == selected?.id.uuidString })?.engine.lowercased() ?? ""
+        let provider = engine.contains("claude") ? "claude" : engine.contains("codex") ? "codex" : ""
+        let quota = store.simulationQuotaPools[provider] ?? .unavailable
+        let currentUsage = selected?.simulationUsage.flatMap { receipt in
+            selected?.messages.last(where: { $0.role == .user })?.id == receipt.userMessageID ? receipt.pool : nil
+        }
+        let pool = OS1GardenTokenPool(used: currentUsage?.used, remaining: nil, capacity: nil,
+            remainingPercent: quota.remainingPercent,
+            label: (currentUsage?.label ?? "현재 작업 토큰 미상") + " · " + quota.label,
+            source: (currentUsage?.source ?? "unavailable") + "/" + quota.source, quota: quota.quota)
+        return OS1GardenSnapshot(sessions: rows, selectedID: selected?.id.uuidString,
+            selectedOutput: outcome?.text ?? "", notice: simulationNotice, visible: simulationVisible,
+            accentHex: store.appSettings.resolvedAccentColor, selectedOutputID: selected?.id.uuidString,
+            selectedResultRevision: outcome?.revision, tokenPool: pool, tokenPools: store.simulationQuotaPools)
     }
 
     private func gardenAction(_ action: String, _ rawID: String?, _ text: String?) {
         simulationNotice = ""
         if action == "settings" { profileNavigation.sheet = .settings; return }
         if action == "close" { simulationVisible = false; return }
-        if action == "new" { store.createSession(); return }
+        if action == "new" {
+            store.createSession()
+            if let id = store.selectedSessionID { store.deploySimulationSession(id) }
+            return
+        }
         guard let rawID, let id = UUID(uuidString: rawID),
               store.sessions.contains(where: { $0.id == id && $0.archived != true }) else { return }
+        if ["inspect", "review"].contains(action) {
+            guard simulationVisible, store.selectedSessionID == id else { return }
+        }
         store.select(id)
+        if action == "inspect", let text {
+            guard let session = store.selectedSession, !store.isSessionRunning(id),
+                  !store.queuedSubmissions.contains(where: { $0.sessionID == id }) else { return }
+            let outcome = simulationOutcome(session)
+            if outcome.hasResult && outcome.revision == text { simulationInspected[id] = text }
+            return
+        }
+        if action == "review", let text {
+            if store.reviewSimulationSession(id, revision: text, inspected: simulationInspected[id]) {
+                simulationInspected.removeValue(forKey: id)
+                simulationNotice = "결과 확인됨 · 일꾼만 퇴장했습니다. 대화와 재작업 기능은 그대로입니다."
+            } else { simulationNotice = "현재 세션의 결과를 먼저 열어 확인해 주세요. 실행·대기 중인 일꾼은 퇴장하지 않습니다." }
+            return
+        }
+        if action == "select" { store.deploySimulationSession(id) }
         if action == "open" { store.showClodexHome(); simulationVisible = false }
         else if action == "stop" { store.cancelSelectedRun() }
         else if action == "order", let text {
@@ -16956,6 +17101,8 @@ private struct RootView: View {
             }
             // The exact existing send path retains provider routing, approvals,
             // queues, recovery holds and native thread continuity.
+            store.deploySimulationSession(id, reassign: true)
+            simulationInspected.removeValue(forKey: id)
             store.composer = text
             store.send()
         }
@@ -17006,7 +17153,16 @@ private struct RootView: View {
             }
         }
         .onReceive(Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()) { _ in
-            if simulationVisible { simulationTick &+= 1 }
+            if simulationVisible {
+                simulationTick &+= 1
+                Task { await store.refreshSimulationTelemetry() }
+            }
+        }
+        .onChange(of: simulationVisible) { visible in
+            if visible {
+                store.establishSimulationPresentation()
+                Task { await store.refreshSimulationTelemetry() }
+            }
         }
         .sheet(isPresented: $store.accountsOpen) { BackendAccountsView(store: store) }
         .sheet(item: $profileNavigation.sheet) { destination in

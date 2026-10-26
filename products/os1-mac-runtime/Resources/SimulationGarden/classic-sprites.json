@@ -1,0 +1,115 @@
+{
+  "format": "os1-classic-animation-atlas-v1",
+  "sourceRepository": "https://github.com/dada78641/bwmapgfx",
+  "sourceCommit": "997130ec718841ef74e0aafe29a193aa66bec975",
+  "sourceFiles": {
+    "scv": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/unit/terran/scv.grp",
+      "sha256": "eb18975bad9fdd1deb1f477b4832b53d09d1f956197cdde412ee2112fc58dba4",
+      "bytes": 21467
+    },
+    "probe": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/unit/protoss/probe.grp",
+      "sha256": "168648b51df59c614c035bb023a2d4a6517015bb4740a9ccf8161226864a492a",
+      "bytes": 3578
+    },
+    "scvspark": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/unit/bullet/scvspark.grp",
+      "sha256": "ab59a7c65ab3d8c3bbaddd52126e967fa13282835c509650ea2c5f92295010ab",
+      "bytes": 1225
+    },
+    "min01": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/unit/neutral/min01.grp",
+      "sha256": "57fa42b9b43e5d9b504f349d363cf06a3b89a2fafb65e46abb0e52932cb506a3",
+      "bytes": 8076
+    },
+    "min02": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/unit/neutral/min02.grp",
+      "sha256": "7a37a08b056045e0edb85466a5afe650e7c46ca35335a68f83f2efb40de45c0c",
+      "bytes": 7495
+    },
+    "min03": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/unit/neutral/min03.grp",
+      "sha256": "52b3186208dba4a4d82ae3702476f15885a2ff55183ea8404d5730bfc146be83",
+      "bytes": 7100
+    },
+    "palette": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/tileset/jungle.wpe",
+      "sha256": "55985cc07c12504659f4748a7401cff8754dc9596ba843b7c5e32be359186eee",
+      "bytes": 1024
+    }
+  },
+  "scvBody": {
+    "image": "scv-body.png",
+    "frames": 51,
+    "frameWidth": 72,
+    "frameHeight": 72,
+    "columns": 17,
+    "sha256": "d0993def3d2938dd3022a1ff6e1c605c1825cda0180944c35ac31a8fd9923180"
+  },
+  "scvTeam": {
+    "image": "scv-team.png",
+    "frames": 51,
+    "frameWidth": 72,
+    "frameHeight": 72,
+    "columns": 17,
+    "sha256": "e517c2ea8e00e204582303c7d1ce8c38c750431fa6576e48e46253c193e2eabb"
+  },
+  "probeBody": {
+    "image": "probe-body.png",
+    "frames": 17,
+    "frameWidth": 32,
+    "frameHeight": 32,
+    "columns": 17,
+    "sha256": "c71add6d138886faf60da67e9c1ad3b10516e429c24276be5d7ca9bc51e891f8"
+  },
+  "probeTeam": {
+    "image": "probe-team.png",
+    "frames": 17,
+    "frameWidth": 32,
+    "frameHeight": 32,
+    "columns": 17,
+    "sha256": "eb60bb58995699ed7f60831c9bcc8ba53fb1f4e5c0dc990d374e216ba676d57a"
+  },
+  "spark": {
+    "image": "scv-spark.png",
+    "frames": 10,
+    "frameWidth": 48,
+    "frameHeight": 48,
+    "columns": 10,
+    "sha256": "81212abb89ea882d3c17dc4e2b70b9cdb98adf8769bdde3fd70b817178c28ea2"
+  },
+  "minerals": [
+    {
+      "image": "mineral-1.png",
+      "frames": 4,
+      "frameWidth": 64,
+      "frameHeight": 96,
+      "columns": 4,
+      "sha256": "e868e9f291d2106a73941f3647a4b0c71c3cd77d451f26830ae40e483e854dab"
+    },
+    {
+      "image": "mineral-2.png",
+      "frames": 4,
+      "frameWidth": 64,
+      "frameHeight": 96,
+      "columns": 4,
+      "sha256": "159a9ba17c454e71877164c5d2d5bd1248af38bf9b4b3a3000ab85a1153c97bc"
+    },
+    {
+      "image": "mineral-3.png",
+      "frames": 4,
+      "frameWidth": 64,
+      "frameHeight": 96,
+      "columns": 4,
+      "sha256": "078d1edb5265eb0284c3871cc3ebf30889c73dcb65fb1ade148455c5d3d4f45d"
+    }
+  ],
+  "scvAnimation": {
+    "directions": 17,
+    "poses": 3,
+    "mirroredWest": true,
+    "frameOrder": "pose * 17 + half-circle direction",
+    "purpose": "locomotion / drill pose cycling, never token accounting"
+  }
+}

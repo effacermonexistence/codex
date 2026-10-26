@@ -1,0 +1,61 @@
+{
+  "format": "sc1-megatile-atlas-v1",
+  "sourceRepository": "https://github.com/dada78641/bwmapgfx",
+  "sourceCommit": "997130ec718841ef74e0aafe29a193aa66bec975",
+  "groupIDs": [
+    8,
+    9
+  ],
+  "tileIDs": [
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82
+  ],
+  "tileSize": 32,
+  "columns": 8,
+  "frames": 23,
+  "image": "classic-terrain.png",
+  "imageSHA256": "e6a0b628746aeb3c2af0d359c24551c62c2c69341fc7cbbac39ee632788db934",
+  "sourceFiles": {
+    "cv5": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/tileset/jungle.cv5",
+      "bytes": 106392,
+      "sha256": "6c638df7815fbe95424526ddaf78339a034fb6a45d7e0da244678e8d9689f8e5"
+    },
+    "vx4": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/tileset/jungle.vx4",
+      "bytes": 161472,
+      "sha256": "17fdc33d1103f56aab73674c1c255a8c2e740b7fc112d8ed76f7e9a33cb7c7c3"
+    },
+    "vr4": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/tileset/jungle.vr4",
+      "bytes": 3564160,
+      "sha256": "f37d530d20cf6f87553bdb85a83352689c26b1a6fa90be99915f547867d53c0b"
+    },
+    "wpe": {
+      "url": "https://raw.githubusercontent.com/dada78641/bwmapgfx/997130ec718841ef74e0aafe29a193aa66bec975/resources/tileset/jungle.wpe",
+      "bytes": 1024,
+      "sha256": "55985cc07c12504659f4748a7401cff8754dc9596ba843b7c5e32be359186eee"
+    }
+  }
+}

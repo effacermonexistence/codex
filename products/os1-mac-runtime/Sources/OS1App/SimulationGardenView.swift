@@ -11,6 +11,13 @@ struct OS1GardenSession: Codable, Equatable {
     let engine: String
     let status: String
     let activity: String
+    var tokensUsed: Int? = nil
+    var usageLabel: String? = nil
+    var resultRevision: String? = nil
+    var reviewed: Bool = false
+    var hasResult: Bool = false
+    var featured: Bool = false
+    var resultPending: Bool = false
 }
 
 struct OS1GardenSnapshot: Codable, Equatable {
@@ -20,6 +27,10 @@ struct OS1GardenSnapshot: Codable, Equatable {
     let notice: String
     let visible: Bool
     let accentHex: String
+    var selectedOutputID: String? = nil
+    var selectedResultRevision: String? = nil
+    var tokenPool: OS1GardenTokenPool = .unavailable
+    var tokenPools: [String: OS1GardenTokenPool] = [:]
 }
 
 struct OS1SimulationGarden: NSViewRepresentable {
@@ -80,14 +91,18 @@ struct OS1SimulationGarden: NSViewRepresentable {
             guard message.name == "os1Simulation", message.frameInfo.isMainFrame,
                   let entry, webView?.url?.standardizedFileURL == entry,
                   let body = message.body as? [String: Any], let action = body["action"] as? String,
-                  ["ready", "select", "open", "new", "close", "order", "stop", "settings"].contains(action) else { return }
+                  ["ready", "select", "open", "new", "close", "order", "stop", "settings", "inspect", "review"].contains(action) else { return }
             if action == "ready" { ready = true; lastJSON = ""; publish(); return }
             let id = body["id"] as? String
-            if ["select", "open", "order", "stop"].contains(action) {
+            if ["select", "open", "order", "stop", "inspect", "review"].contains(action) {
                 guard let id, UUID(uuidString: id) != nil, snapshot.sessions.contains(where: { $0.id == id }) else { return }
             }
             let text = body["text"] as? String
             if action == "order" { guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf8.count <= 128_000 else { return } }
+            if ["inspect", "review"].contains(action) {
+                guard snapshot.visible, let id, snapshot.selectedID == id, let text, text.utf8.count <= 512,
+                      snapshot.sessions.first(where: { $0.id == id })?.resultRevision == text else { return }
+            }
             onAction(action, id, text)
         }
 

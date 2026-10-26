@@ -340,6 +340,17 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-reference.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/reference.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-sprites.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/scv-body.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/scv-team.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/scv-spark.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/probe-body.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/probe-team.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/mineral-1.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/mineral-2.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/mineral-3.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-terrain.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-terrain.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\
@@ -510,6 +521,17 @@ while IFS= read -r payload_file; do
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/THREE-LICENSE.txt"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-reference.png"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/reference.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-sprites.json"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/scv-body.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/scv-team.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/scv-spark.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/probe-body.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/probe-team.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/mineral-1.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/mineral-2.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/mineral-3.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-terrain.png"|\
+    "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/classic-terrain.json"|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.js|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/SimulationGarden/assets/"*.css|\
     "Applications/OS-1 CLODEX.app/Contents/Resources/CodexDictationCapture.html"|\

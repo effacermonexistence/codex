@@ -1,5 +1,5 @@
 {
-  "format": "classic-source-reference-v1",
+  "format": "classic-session-workshop-v2",
   "game": "StarCraft: Brood War (classic graphics)",
   "width": 640,
   "height": 480,
@@ -9,7 +9,12 @@
   "assetSHA256": "8a03f347f2d5f6536054249db4eaae09cd1c7c48cc21f0d686b7e2eadf88a71a",
   "defaultAccent": "#EDB3CC",
   "accentSource": "existing native OS1 Theme.pink (.93,.70,.80)",
-  "rendering": "640x480 source coordinate stage with nearest-neighbor scaling; original HUD and source-pixel sprites; selective faction/selection tint and pixel-chevron trim",
+  "rendering": "Original 640x480 classic HUD; source-terrain battlefield with pan/zoom/minimap; decoded original GRP direction/pose animation; isolated team-color tint without CanvasRenderingContext2D.filter",
   "wholeFrameIdentical": false,
-  "nativeEngineChanged": false
+  "nativeEngineChanged": false,
+  "spriteSource": "classic-sprites.json",
+  "workers": "one native session UUID = one worker; all running and queued sessions shown; historic roster pagination does not cap battlefield",
+  "motion": "native working only drives repeated outbound/mining/cargo-return; terminal freezes position; exact-result display plus explicit native review retires presentation only",
+  "tokens": "only supplied native token counts / separately labeled provider quota percentages; unknown stays unknown; no animation-derived token accounting",
+  "preview": "explicitly labeled model-free synthetic cohort, isolated from native snapshots and bridge; optional sample percentages are examples only"
 }
