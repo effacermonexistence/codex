@@ -16,7 +16,7 @@ assert 'maxParallel: maxParallel ?? 4, maxCostUnits: nil' in fn
 assert 'maxNativeDispatches: maxNativeDispatches, forbidModelGeneration: forbidModelGeneration ? true : nil' in fn
 assert 'maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256' in fn
 progress=fn[fn.index('RCCRuntimeGatewayClient.run(request:'):fn.index('let result = try RCCRuntimeContract.decodeSnapshot(terminal)')]
-terminal=fn[fn.index('let graph = try? RCCRuntimeProjection.project(result,'):fn.index('var summary = RunSummary(status: result.state')]
+terminal=fn[fn.index('let graph = try? RCCRuntimeProjection.project(result,'):fn.index('var summary = RunSummary(status: rccRunStatus(result.state)')]
 for projection in [progress,terminal]:
  assert 'maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256' in projection
  assert 'maxParallelism: 4, expectedRequestSHA256: request.requestSHA256' not in projection
@@ -49,7 +49,7 @@ assert 'case "--result-contract-version" where index + 1 < arguments.count && re
 assert 'resultContractVersion = try RCCRunBudgetOptions.resultContractVersion(arguments[index + 1])' in run
 assert 'interpreterRecord: interpreterRecord,\n                            resultContractVersion: resultContractVersion)' in run
 assert fn.index('candidateRequest.resultContractVersion = resultContractVersion')<fn.index('RCCRuntimeContract.encode(request)')
-assert fn.index('let result = try RCCRuntimeContract.decodeSnapshot(terminal)')<fn.index('guard RCCRuntimeContract.negotiated(result, resultContractVersion: request.resultContractVersion) else {')<fn.index('var summary = RunSummary(status: result.state')
+assert fn.index('let result = try RCCRuntimeContract.decodeSnapshot(terminal)')<fn.index('guard RCCRuntimeContract.negotiated(result, resultContractVersion: request.resultContractVersion) else {')<fn.index('var summary = RunSummary(status: rccRunStatus(result.state)')
 assert pending.count('    var resultContractVersion: Int? = RCCRunBudgetOptions.appResultContractVersion\n')==1
 assert app.count('submission.resultContractVersion =')==0 and app.count('retry.resultContractVersion =')==0,'no path overrides the frozen contract'
 assert app.count('resultContractVersion: submission.resultContractVersion,')==1 and app.count('resultContractVersion: resultContractVersion,')==1

@@ -11,6 +11,8 @@ const repository = 'effacermonexistence/codex';
 const objective = 'os1-fleet-objective-v1';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
+// The App's label for an unverified Core answer (RCCRuntimeProjection.returnedUnverifiedDescription).
+const unverifiedLabel = 'Output returned · task quality unverified; candidate retained.';
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', {flag:'wx', mode:0o600});
 const command = (bin, args, options = {}) => execFileSync(bin, args, {encoding:'utf8', timeout:30_000, maxBuffer:4_000_000, stdio:['ignore','pipe','pipe'], ...options}).trim();
 
@@ -33,17 +35,43 @@ function verifyReceipt({mirror, receipt, intent, marker, profile, revision, expe
   assert.equal(result.repository, repository);
   assert.equal(result.revision, revision);
   assert(['pro', 'air'].includes(result.node_role));
-  assert.equal(result.run.status, 'complete');
+  // Since build 438 a fleet job's answer is OpenClaw Core's own result (the
+  // "core" block): completed (task_verified) or returned_unverified, with the
+  // App's label. Core is the authority; its model steps are execution_only.
+  const core = result.core;
+  if (core) {
+    assert(['completed', 'returned_unverified'].includes(core.state), 'Core result is not a delivered answer');
+    const completed = core.state === 'completed';
+    assert.equal(result.run.status, completed ? 'complete' : 'returned_unverified', 'run status disagrees with Core');
+    assert.equal(core.task_verified, completed, 'Core verification relabelled');
+    assert.equal(core.verification, completed ? 'task_verified' : 'unverified');
+    if (!completed) { assert.equal(core.label, unverifiedLabel, 'unverified Core answer lost its label'); assert.equal(core.parity_state, 'unverified'); }
+    assert.equal(core.task_id.toLowerCase(), mirror.job_id.toLowerCase(), 'Core task is not this job');
+    assert.equal(core.partial_coverage, undefined, 'a partial result was delivered as an answer');
+    assert.equal(core.output_truncated, false, 'proof answers must be complete');
+    assert.equal(hash(core.output), core.output_sha256, 'Core answer digest mismatch');
+    assert(!('rccRuntime' in result.run) && !('agentTask' in result.run), 'receipt carries the Core snapshot');
+    // R6: Core's disclosed checks (failed check IDs, an unavailable checker)
+    // ride beside the label on an unverified answer only.
+    if (core.quality_disclosure !== undefined) {
+      assert(!completed, 'a completed Core answer carries a quality disclosure');
+      assert(typeof core.quality_disclosure.text === 'string' && core.quality_disclosure.text.length > 0, 'quality disclosure lost its text');
+      assert(Array.isArray(core.quality_disclosure.failed_check_ids) && core.quality_disclosure.failed_check_ids.length <= 8, 'quality disclosure names too many checks');
+    }
+  } else {
+    assert.equal(result.run.status, 'complete');
+  }
   assert.equal(result.run.steps.length, 1, 'extra executor attempts require reconciliation');
   const step = result.run.steps[0];
   assert.equal(step.provider, profile);
   assert.equal(step.exit_code, 0);
   assert.equal(step.permission_profile, 'read_only');
-  assert.equal(step.revas_disposition, 'adopted');
+  if (!core) assert.equal(step.revas_disposition, 'adopted');
   assert.equal(step.native_record.persistence, 'verified');
   assert(/^[a-f0-9-]{36}$/i.test(step.session_id));
   assert.equal(typeof expected.release_id,'string','source release_id is required');
-  for (const text of [marker, expected.release_id, expected.objective_version]) assert(step.output.includes(text));
+  const answer = core ? core.output : step.output;
+  for (const text of [marker, expected.release_id, expected.objective_version]) assert(answer.includes(text));
   assert(!result.result_branch && !result.result_commit, 'read-only job published changes');
   return {provider:profile, job_id:mirror.job_id, executor_device_id:mirror.executor_device_id,
     executor_role:result.node_role, automatic:true, preferred_device:null,
@@ -79,7 +107,44 @@ function selfTest() {
     value => { const r = JSON.parse(value.mirror.result); r.run.steps.push(r.run.steps[0]); value.mirror.result=JSON.stringify(r);value.mirror.result_hash=hash(value.mirror.result); },
   ];
   for (const change of changes) { const bad = structuredClone(input); change(bad); assert.throws(() => verifyReceipt(bad)); }
-  console.log(JSON.stringify({status:'PASS', checks:changes.length+2, model_calls:0}));
+  // A Core receipt (build 438): Core's answer, labelled unverified, passes;
+  // any relabelling, digest mismatch or legacy-only shape does not.
+  const coreOutput = `${marker} release ${objective}`;
+  const coreResult = {...structuredClone(result), run:{status:'returned_unverified', steps:[{...result.run.steps[0],
+      revas_disposition:'execution_only', output:coreOutput}]},
+    core:{task_id:result.job_id, request_sha256:'c'.repeat(64), state:'returned_unverified', revision:7,
+      verification:'unverified', label:unverifiedLabel, error:'no_registered_exact_task_verifier', output:coreOutput,
+      output_sha256:hash(coreOutput), output_bytes:Buffer.byteLength(coreOutput), output_truncated:false,
+      parity_state:'unverified', task_quality:'execution_only', execution_verified:true, task_verified:false}};
+  const coreBody = JSON.stringify(coreResult);
+  const coreInput = {...structuredClone(input), mirror:{...input.mirror, result:coreBody, result_hash:hash(coreBody)}};
+  verifyReceipt(coreInput);
+  const disclosed = JSON.parse(coreBody);
+  disclosed.core.quality_disclosure = {failed_check_ids:['node_verifier'], failed_check_count:1, checker_unavailable:false,
+    text:'Core-reported failed checks: node_verifier'};
+  const disclosedBody = JSON.stringify(disclosed);
+  verifyReceipt({...structuredClone(coreInput), mirror:{...coreInput.mirror, result:disclosedBody, result_hash:hash(disclosedBody)}});
+  const coreChanges = [
+    r => { r.run.status = 'complete'; },
+    r => { r.core.task_verified = true; },
+    r => { r.core.verification = 'task_verified'; },
+    r => { r.core.label = 'OpenClaw core state: completed'; },
+    r => { r.core.output += ' tampered'; },
+    r => { r.core.partial_coverage = 'Partial result · completed 1/2 · unresolved: node_1'; },
+    r => { r.run.rccRuntime = {state:'returned_unverified'}; },
+    r => { r.core.output_truncated = true; },
+    r => { delete r.core; },
+    r => { r.core.quality_disclosure = {failed_check_ids:[], failed_check_count:0, checker_unavailable:true, text:''}; },
+    r => { r.run.status = 'complete'; r.core.state = 'completed'; r.core.task_verified = true; r.core.verification = 'task_verified';
+           r.core.label = 'OpenClaw core state: completed'; r.core.quality_disclosure = {failed_check_ids:[], failed_check_count:0,
+           checker_unavailable:true, text:'Checker unavailable · not itself a failed-check verdict'}; },
+  ];
+  for (const change of coreChanges) {
+    const bad = structuredClone(coreInput), r = JSON.parse(bad.mirror.result);
+    change(r); bad.mirror.result = JSON.stringify(r); bad.mirror.result_hash = hash(bad.mirror.result);
+    assert.throws(() => verifyReceipt(bad));
+  }
+  console.log(JSON.stringify({status:'PASS', checks:changes.length+coreChanges.length+4, model_calls:0}));
 }
 
 async function run() {

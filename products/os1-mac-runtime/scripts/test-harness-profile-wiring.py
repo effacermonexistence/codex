@@ -82,6 +82,19 @@ check('let claudeOneShotPromptCacheTTL = "5m"' in MAIN, "the 5-minute TTL is a n
 ttl = section(MAIN, "func claudePromptCacheEnvironment(", "\n}")
 check('"CLAUDE_CODE_PROMPT_CACHE_TTL": claudeOneShotPromptCacheTTL' in ttl and '"5m"' not in ttl,
       "claudePromptCacheEnvironment uses the constant, not a literal")
+# The lifetime reaches the environment only: the model-visible bytes (argv
+# builder, instructions, prompt) are the same under 5m and 1h, so choosing
+# 5m for more sessions cannot change an answer.
+claude_argv = section(MAIN, "func claudeArguments(", ") throws -> [String]")
+for token in ("TTL", "OneShot", "PromptCache"):
+    check(token not in claude_argv, f"claudeArguments takes no {token} input")
+execute = section(MAIN, "\nprivate func execute(", "\n}\n")
+check(execute.count("delegatedOneShotSession") == 2
+      and "delegatedOneShotSession: Bool = false," in execute
+      and "delegatedOneShot: delegatedOneShotSession)) { _, ttl in ttl }" in execute,
+      "execute() reads delegatedOneShotSession only as the prompt-cache environment input")
+check(digest is not None and digest.group(1).startswith("4ecd97ffe17a"),
+      "the H0 golden rendering is unchanged by the prompt-cache lifetime")
 
 # Instruction builders carry no per-attempt id, sequence, nonce, signature,
 # expiry or clock read: the same content gives the same bytes.

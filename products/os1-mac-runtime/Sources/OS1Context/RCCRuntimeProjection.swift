@@ -70,6 +70,26 @@ public enum RCCRuntimeProjection {
         (identifier(taskID, "plan"), identifier(taskID, "child:" + childID))
     }
 
+    /// What a Core task's root state means for its owner. One text per state
+    /// on every surface: the task graph shows it as the root's progress, and
+    /// OS-1 Fleet carries it inside its signed receipt (`core.label`), so a
+    /// fleet answer is labelled exactly as the App labels the same snapshot.
+    public static let returnedUnverifiedDescription = "Output returned · task quality unverified; candidate retained."
+    public static let awaitingInstallDescription = "Verified staged artifact · installation pending; task is not complete."
+    public static func rootDescription(_ core: RCCRuntimeContract.Snapshot) -> String {
+        if let intent = core.routingIntent, intent.state == .resolving {
+            return "OpenClaw core is interpreting the original request; no worker dispatched."
+        }
+        if let intent = core.routingIntent, intent.state == .held {
+            return "OpenClaw core held routing interpretation: " + (intent.reason ?? "unconfirmed")
+        }
+        switch core.state {
+        case .returnedUnverified: return returnedUnverifiedDescription
+        case .awaitingInstall: return awaitingInstallDescription
+        default: return "OpenClaw core state: " + core.state.rawValue
+        }
+    }
+
     public static func project(_ core: RCCRuntimeContract.Snapshot,
                                conversationID: UUID, submissionID: UUID,
                                objective: String, observedAt: Date = Date(),
@@ -163,18 +183,7 @@ public enum RCCRuntimeProjection {
         let priorRoot = prior?.nodes.first { $0.id == rootID }
         let rootStarted: Date? = rootState == .pending ? nil : (priorRoot?.startedAt ?? firstObservedAt)
         let rootFinished: Date? = rootState.isTerminal ? (priorRoot?.finishedAt ?? observedAt) : nil
-        let rootDescription: String
-        if let intent = core.routingIntent, intent.state == .resolving {
-            rootDescription = "OpenClaw core is interpreting the original request; no worker dispatched."
-        } else if let intent = core.routingIntent, intent.state == .held {
-            rootDescription = "OpenClaw core held routing interpretation: " + (intent.reason ?? "unconfirmed")
-        } else {
-        rootDescription = core.state == .returnedUnverified
-            ? "Output returned · task quality unverified; candidate retained."
-            : core.state == .awaitingInstall
-            ? "Verified staged artifact · installation pending; task is not complete."
-            : "OpenClaw core state: " + core.state.rawValue
-        }
+        let rootDescription = Self.rootDescription(core)
         let root = ParallelAgentTask.Node(id: rootID, title: "OpenClaw task", role: .coordinator,
             state: rootState, startedAt: rootStarted, finishedAt: rootFinished,
             progressText: rootDescription,

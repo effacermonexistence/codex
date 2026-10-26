@@ -139,6 +139,18 @@ public enum RCCNativeAttemptOutcome {
         resumedSessionID == nil && conversationSessionID != nil && !chatLane
     }
 
+    /// Whether the host that submitted the task can ever feed a native session
+    /// back. Only the App does: it always sends a SessionHandoff context, binds
+    /// a delivered step's session as the conversation's thread and passes it
+    /// as the next turn's session id. OS-1 Fleet and a bare `os1 run` send
+    /// neither a context nor a session id, and their session is never fed back,
+    /// so nothing can resume it. Any context or session id counts as resumable
+    /// (a misread then keeps the CLI default cache: money, never answer bytes).
+    public static func hostResumesNativeSessions(context: String?, claudeSessionID: String?,
+                                                 codexSessionID: String?) -> Bool {
+        context != nil || claudeSessionID != nil || codexSessionID != nil
+    }
+
     /// Whether the workspace part of the no-effect proof is about THIS
     /// attempt. An isolated workspace (the chat lane's private answer
     /// workspace) belongs to the attempt alone: its hash must be unchanged

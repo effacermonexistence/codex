@@ -83,6 +83,8 @@ python3 "$script_dir/test-voice-send-ui-wiring.py"
 python3 "$script_dir/test-voice-fixture-diagnostic.py"
 python3 "$script_dir/test-browser-dictation-wiring.py"
 node "$script_dir/test-memory-paging-recovery.mjs"
+# Live fleet proof verifier: its deterministic fixtures only (no model call).
+node "$script_dir/verify-native-fleet.mjs" --self-test
 python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
 python3 "$script_dir/test-harness-profile-wiring.py"

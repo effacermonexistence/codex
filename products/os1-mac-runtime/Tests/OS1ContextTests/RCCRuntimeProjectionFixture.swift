@@ -36,7 +36,8 @@ func runRCCRuntimeProjectionFixtures() throws {
     interpreting.routingIntent = .init(state: .held, notices: [], reason: "ambiguous_recipient")
     let intentHeldGraph = try project(interpreting)
     try check(intentHeldGraph.nodes.count == 1 && intentHeldGraph.nodes[0].state == .blocked &&
-        intentHeldGraph.nodes[0].progressText?.contains("ambiguous_recipient") == true,
+        intentHeldGraph.nodes[0].progressText?.contains("ambiguous_recipient") == true &&
+        intentHeldGraph.nodes[0].progressText == RCCRuntimeProjection.rootDescription(interpreting),
         "Core intent hold remains visible before provider dispatch")
     core.state = .running
     core.children = [.init(id: "one", state: .running, attemptID: "attempt", candidateID: "candidate")]
@@ -89,6 +90,11 @@ func runRCCRuntimeProjectionFixtures() throws {
     let candidate = try project(core)
     try check(candidate.nodes[0].state != .succeeded, "unverified return not task success")
     try check(!String(decoding: try candidate.encoded(), as: UTF8.self).contains("Private raw result"), "raw output not leaked to public graph")
+    // One owner-facing label per Core state: OS-1 Fleet's signed receipt
+    // carries the same text (`rootDescription`) as this root's progress.
+    try check(candidate.nodes[0].progressText == RCCRuntimeProjection.rootDescription(core)
+              && RCCRuntimeProjection.rootDescription(core) == "Output returned · task quality unverified; candidate retained.",
+              "graph root and fleet share the unverified label")
     var staged = core
     staged.state = .awaitingInstall
     staged.installHandoff = .init(taskID: staged.taskID, requestSHA256: hash, nodeID: "one", parentAttemptID: "attempt",
@@ -98,6 +104,9 @@ func runRCCRuntimeProjectionFixtures() throws {
     let stagingGraph = try project(staged)
     try check(stagingGraph.nodes[0].state == .running && stagingGraph.nodes[0].finishedAt == nil,
               "awaiting installation is unfinished, never task success")
+    try check(stagingGraph.nodes[0].progressText == RCCRuntimeProjection.rootDescription(staged)
+              && RCCRuntimeProjection.rootDescription(staged).contains("installation pending; task is not complete"),
+              "graph root and fleet share the pending-installation label")
     let binding = try RCCRuntimeProjection.InstallationBinding(staged, submissionID: submission, objective: request, firstObservedAt: now)
     let decodedBinding = try JSONDecoder().decode(RCCRuntimeProjection.InstallationBinding.self, from: JSONEncoder().encode(binding))
     try check(binding == decodedBinding && (try binding.accepts(staged)), "original install binding persists across GUI restart")

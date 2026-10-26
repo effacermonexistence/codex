@@ -1397,7 +1397,7 @@ struct RunStepSummary: Codable {
 
 struct RunSummary: Codable {
     let status: String
-    let steps: [RunStepSummary]
+    var steps: [RunStepSummary]
     var sourceContext: SourceReference? = nil
     /// OS-1 owned task state after this run (v3 handoff). Absent for
     /// delivery resumes and legacy callers; the app never overwrites a
@@ -1637,10 +1637,12 @@ func claudeLeanEnvironment(environment: [String: String] = ProcessInfo.processIn
 /// CLAUDE_CODE_PROMPT_CACHE_TTL=5m (usage moved from ephemeral_1h to
 /// ephemeral_5m, and an immediate second call still read the cached prefix).
 /// Only a ONE-SHOT session takes it: the tool-free chat lane, a source-only
-/// answer, or an RCC delegated child whose new session can never become the
-/// conversation's thread (rccDelegatedSessionOneShot). A session that may be
-/// resumed later keeps the CLI default. commandOutput strips inherited
-/// CLAUDE_CODE_* variables, so this travels as an override.
+/// answer, or an RCC delegated child whose new session nothing can resume
+/// (rccDelegatedSessionOneShot): a side session beside the conversation's
+/// thread, or a read-only session of a host that never feeds a session back
+/// (Fleet, bare `os1 run`). A session that may be resumed later keeps the CLI
+/// default. commandOutput strips inherited CLAUDE_CODE_* variables, so this
+/// travels as an override; it changes no argv, instruction or prompt byte.
 func claudePromptCacheEnvironment(startsNewSession: Bool, chatLane: Bool, sourceOnly: Bool,
                                   delegatedOneShot: Bool) -> [String: String] {
     startsNewSession && (chatLane || sourceOnly || delegatedOneShot) ? ["CLAUDE_CODE_PROMPT_CACHE_TTL": claudeOneShotPromptCacheTTL] : [:]
@@ -1679,17 +1681,25 @@ func claudeSettingsDisablingHooks(_ settings: String) throws -> String {
 /// cache. Core leaves `native_resume_session_id` null for a side session
 /// beside the conversation's thread (a cheaper REVAS attempt, one part of a
 /// plan) AND for the first agent turn of a conversation that has no thread
-/// yet. OS-1 binds that first session as the conversation's
+/// yet. The App binds that first session as the conversation's
 /// (nativeSessionRebinds with nothing bound) and Core resumes it on the next
 /// turn, so a 5-minute write there would expire before a follow-up 5-60
 /// minutes later that the 1-hour default would have read (review
-/// 2026-10-15). Only a detached side session is one-shot
+/// 2026-10-15). So a detached side session is one-shot
 /// (RCCNativeAttemptOutcome.nativeSessionDetached); a continuation resumes
 /// its own session. The chat lane is one-shot through `chatLane` instead.
+/// A new READ-ONLY session whose host can never feed a session back is
+/// one-shot as well (RCCNativeAttemptOutcome.hostResumesNativeSessions): OS-1
+/// Fleet and a bare `os1 run` send no context and no session id, and no
+/// Claude turn of theirs was ever followed by a resumed one (Core census
+/// 2026-10-26: 0 of 131 tasks with a Claude session; agent sessions paused at
+/// most 183 s between calls). Writers keep the CLI default: a build or a
+/// full-access handback can come back to the session after 5 minutes.
 func rccDelegatedSessionOneShot(resumedSessionID: String?, conversationSessionID: String?,
-                                continuing: Bool, chatLane: Bool) -> Bool {
-    !continuing && RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: resumedSessionID,
+                                continuing: Bool, chatLane: Bool, readOnly: Bool, hostResumesSessions: Bool) -> Bool {
+    !continuing && (RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: resumedSessionID,
         conversationSessionID: conversationSessionID, chatLane: chatLane)
+        || (resumedSessionID == nil && readOnly && !hostResumesSessions))
 }
 
 /// `ownerPolicyProjectionInBaseInstructions`: the Codex session verifiably
@@ -20083,11 +20093,15 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                     }
                 }, onReadOnlyProtection: { readOnlyProtection = $0 }, quotaContext: input.providerQuota,
                 surfaceOverride: surface, workspaceOverride: workspace,
-                // Only a side session that never becomes the conversation's
-                // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
+                // Only a session nothing can resume takes the 5-minute cache:
+                // a side session beside the conversation's thread, or a
+                // read-only one of a host that never feeds a session back
+                // (rccDelegatedSessionOneShot).
                 delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
                     conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
-                    continuing: t.continuation != nil, chatLane: surface.forcesChatLane),
+                    continuing: t.continuation != nil, chatLane: surface.forcesChatLane,
+                    readOnly: t.selectedConfig.scope == .readOnly,
+                    hostResumesSessions: RCCNativeAttemptOutcome.hostResumesNativeSessions(context: h.context, claudeSessionID: h.claudeSessionID, codexSessionID: h.codexSessionID)),
                 delegatedChild: true)
         }
         }
@@ -20990,15 +21004,32 @@ func effortlessRoutingSelfTest() throws {
               claudePromptCacheEnvironment(startsNewSession: false, chatLane: false, sourceOnly: false, delegatedOneShot: true).isEmpty &&
               claudePromptCacheEnvironment(startsNewSession: false, chatLane: true, sourceOnly: true, delegatedOneShot: true).isEmpty,
               "a session that may become the conversation's thread, and any resumed session, keep the CLI default")
-    // Which delegated child is one-shot: only a side session beside the
-    // conversation's existing thread. A first turn's session becomes the thread.
+    // Which delegated child is one-shot: a side session beside the
+    // conversation's existing thread, or a read-only session of a host that
+    // never feeds a session back. An App first turn's session becomes the thread.
     let thread = UUID().uuidString
-    try check(rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: false, chatLane: false),
+    try check(rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: false, chatLane: false,
+                                         readOnly: false, hostResumesSessions: true),
               "a side session beside the conversation's thread is one-shot")
-    try check(!rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: nil, continuing: false, chatLane: false),
-              "a conversation's first agent session (nothing bound, nothing resumed) keeps the CLI default")
-    try check(!rccDelegatedSessionOneShot(resumedSessionID: thread, conversationSessionID: thread, continuing: false, chatLane: false) &&
-              !rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: true, chatLane: false),
+    try check(rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: nil, continuing: false, chatLane: false,
+                                         readOnly: true, hostResumesSessions: false),
+              "fleet/bare-CLI read-only first session takes 5m")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: nil, continuing: false, chatLane: false,
+                                          readOnly: true, hostResumesSessions: true),
+              "App first turn keeps CLI default")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: nil, continuing: false, chatLane: false,
+                                          readOnly: false, hostResumesSessions: false),
+              "writer keeps 1h")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: nil, continuing: true, chatLane: false,
+                                          readOnly: true, hostResumesSessions: false),
+              "a continuation of an unresumable read-only host is not one-shot")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: thread, conversationSessionID: nil, continuing: false, chatLane: false,
+                                          readOnly: true, hostResumesSessions: false),
+              "a session Core resumed is not one-shot, whatever the host")
+    try check(!rccDelegatedSessionOneShot(resumedSessionID: thread, conversationSessionID: thread, continuing: false, chatLane: false,
+                                          readOnly: true, hostResumesSessions: true) &&
+              !rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: true, chatLane: false,
+                                          readOnly: true, hostResumesSessions: true),
               "a resumed thread and a continuation are not one-shot")
     // Core's exact arithmetic is told apart from its check-in by its output.
     for output in ["2", "-12", "0", "123456789012345678901234567890", "2.5", "0.125", "-0.25"] {
@@ -21041,6 +21072,36 @@ func rccSourceDetachmentRequested(_ request: String) -> Bool {
 func rccBoundSourceMaterialRefs(request: String, context: String?) throws -> [String] {
     if rccSourceDetachmentRequested(request) || ResponseAvailability.matches(request, hasAttachments: !PromptAttachments.imagePaths(in: request).isEmpty) { return [] }
     return try RCCBoundSourceInput.materialRefs(context: context)
+}
+
+/// The host's steps for one terminal Core snapshot: the native summaries Core
+/// retained, or Core's own deterministic local answer (a host step). Shared
+/// by a run and by OS-1 Fleet's reconciliation of a task it no longer
+/// observes (`fleetRunSummary`), so both read one snapshot the same way.
+func rccHostSteps(_ result: RCCRuntimeContract.Snapshot, prompt: String, taskID id: String,
+                  startedAt observed: Date) -> [RunStepSummary] {
+    var steps: [RunStepSummary] = []
+    for serialized in result.result?.nativeSummaries ?? [] {
+        if let summary = try? JSONDecoder().decode(RunSummary.self, from: Data(serialized.utf8)) { steps += summary.steps }
+    }
+    if steps.isEmpty, let output = result.result?.output, !output.isEmpty,
+       result.state == .completed, result.result?.taskVerified == true,
+       result.children.count == 1, let child = result.children.first,
+       child.id == "local-core", child.candidateID == "local-core",
+       child.selectedConfig?.surface == .local, child.selectedConfig?.transport == .local,
+       child.selectedConfig?.model == "none", child.instruction == prompt {
+        steps = [RunStepSummary(sequence: 1, provider: "local", action: "rcc_deterministic", model: "deterministic",
+            effort: "none", revasDisposition: result.result?.taskVerified == true ? "control_verified" : "execution_only",
+            sessionID: id, permissionProfile: "local_control", exitCode: 0, output: output, stderr: "", durationMS: Int64(Date().timeIntervalSince(observed) * 1000), nativeRecord: nil)]
+    }
+    return steps
+}
+
+/// A run's status for a terminal Core state: the one mapping
+/// `runOpenClawRCCTask` reports and OS-1 Fleet's delivery check and
+/// reconciliation compare against (`fleetCoreSelfTest` pins it).
+func rccRunStatus(_ state: RCCRuntimeContract.State) -> String {
+    state == .completed ? "complete" : state == .returnedUnverified ? "returned_unverified" : "workflow_blocked"
 }
 
 func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, surface requestedSurface: ProviderSurface,
@@ -21135,28 +21196,16 @@ func runOpenClawRCCTask(prompt: String, workspace: String, context: String?, sur
         RuntimeActivity.emit(.routing, publicText: review)
         routingNotices.append(review)
     }
-    var steps: [RunStepSummary] = []
-    for serialized in result.result?.nativeSummaries ?? [] {
-        if let summary = try? JSONDecoder().decode(RunSummary.self, from: Data(serialized.utf8)) { steps += summary.steps }
-    }
-    if steps.isEmpty, let output = result.result?.output, !output.isEmpty,
-       result.state == .completed, result.result?.taskVerified == true,
-       result.children.count == 1, let child = result.children.first,
-       child.id == "local-core", child.candidateID == "local-core",
-       child.selectedConfig?.surface == .local, child.selectedConfig?.transport == .local,
-       child.selectedConfig?.model == "none", child.instruction == prompt {
-        steps = [RunStepSummary(sequence: 1, provider: "local", action: "rcc_deterministic", model: "deterministic",
-            effort: "none", revasDisposition: result.result?.taskVerified == true ? "control_verified" : "execution_only",
-            sessionID: id, permissionProfile: "local_control", exitCode: 0, output: output, stderr: "", durationMS: Int64(Date().timeIntervalSince(observed) * 1000), nativeRecord: nil)]
-        if let notice = rccDeterministicArithmeticNotice(output: output) {
-            RuntimeActivity.emit(.routing, provider: "local", model: "deterministic", effort: "none", publicText: notice)
-            routingNotices.append(notice)
-        }
+    let steps = rccHostSteps(result, prompt: prompt, taskID: id, startedAt: observed)
+    if steps.count == 1, steps[0].action == "rcc_deterministic", steps[0].provider == "local",
+       let notice = rccDeterministicArithmeticNotice(output: steps[0].output) {
+        RuntimeActivity.emit(.routing, provider: "local", model: "deterministic", effort: "none", publicText: notice)
+        routingNotices.append(notice)
     }
     let graph = try? RCCRuntimeProjection.project(result, conversationID: conversationID, submissionID: submissionID,
         objective: prompt, observedAt: Date(), firstObservedAt: observed, maxParallelism: maxParallel ?? 4, expectedRequestSHA256: request.requestSHA256,
         nativeReceipts: RCCNativeDisplayReceipts.load(result))
-    var summary = RunSummary(status: result.state == RCCRuntimeContract.State.completed ? "complete" : result.state == RCCRuntimeContract.State.returnedUnverified ? "returned_unverified" : "workflow_blocked",
+    var summary = RunSummary(status: rccRunStatus(result.state),
         steps: steps, monitorTaskID: id, workflowBlocker: result.error, agentTask: graph, localRouterReceipt: configuration.identity.pluginDirectory, rccRuntime: result)
     if !routingNotices.isEmpty { summary.routingNotices = routingNotices }
     return summary

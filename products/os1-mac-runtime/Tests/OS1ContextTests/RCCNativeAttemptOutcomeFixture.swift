@@ -245,6 +245,17 @@ func runRCCNativeAttemptOutcomeFixtures() throws {
               "with no thread bound yet the fresh session becomes the conversation's")
     try check(!O.nativeSessionDetached(resumedSessionID: nil, conversationSessionID: ownerThread, chatLane: true),
               "a chat lane is never the conversation's agent session (its own rule)")
+    // Only a host that sends a context or a session id can resume a session:
+    // Fleet (Fleet.swift: context nil, both session ids nil) and a bare
+    // `os1 run` send none of them; the App always sends a SessionHandoff.
+    try check(!O.hostResumesNativeSessions(context: nil, claudeSessionID: nil, codexSessionID: nil),
+              "the Fleet / bare os1 run host (no context, no session id) never resumes a native session")
+    try check(O.hostResumesNativeSessions(context: "x", claudeSessionID: nil, codexSessionID: nil),
+              "a host context (the App's SessionHandoff) can resume")
+    try check(O.hostResumesNativeSessions(context: nil, claudeSessionID: ownerThread, codexSessionID: nil),
+              "a host Claude session id can be resumed")
+    try check(O.hostResumesNativeSessions(context: nil, claudeSessionID: nil, codexSessionID: ownerThread),
+              "a host Codex session id counts as a resuming host")
 
     // ---- Cooldown left for the next catalog ---------------------------------
     try check(O.claudeBackoffScope(provider: "claude", quotaExhausted: true, scope: nil) == .account,

@@ -805,6 +805,17 @@ public enum OwnerIntentText {
     }
 
     public static func authorityText(_ prompt: String) -> String {
+        authorityText(prompt, keepingFeasibilityQuestions: false)
+    }
+
+    /// The authority view WITH its feasibility questions ("should we …?",
+    /// "…해도 돼?"): quoted, fenced and payload text is still removed. Used
+    /// only to keep a question beside an imperative read-only.
+    public static func questionPreservingAuthorityText(_ prompt: String) -> String {
+        authorityText(prompt, keepingFeasibilityQuestions: true)
+    }
+
+    private static func authorityText(_ prompt: String, keepingFeasibilityQuestions: Bool) -> String {
         var text = strippedTextOperationPayload(prompt.precomposedStringWithCanonicalMapping)
         for pattern in [
             #"(?s)```.*?```"#,
@@ -826,9 +837,10 @@ public enum OwnerIntentText {
         }
         for pattern in [
             #"(?i)(?<![A-Za-z0-9])['‘][^'’\n]*(?:delete |remove |fix |repair |modify |implement |create |write |save |rename |update |edit |수정해|고쳐|삭제해|빼)[^'’\n]*['’](?![A-Za-z0-9])"#,
+        ] + (keepingFeasibilityQuestions ? [] : [
             #"(?im)\b(?:how\s+(?:do|can|should)\s+(?:i|we)|(?:can|could|should|may)\s+(?:i|we))\b[^.!?;\n]*[?]?"#,
             #"[^.!?;\n]*(?:해도\s*(?:돼|되|될)|고쳐졌는지|수정됐는지|삭제됐는지|방법\s*(?:알려|설명))[^.!?;\n]*[?]?"#,
-        ] {
+        ]) {
             text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
         }
         return ambiguousInlineQuote ? text + " read-only " : text
@@ -1261,6 +1273,26 @@ public struct ScopeResolution: Equatable, Sendable {
         #"(?i)\b(?:create|write|save|rename|delete|remove|edit|modify|update)\s+(?:(?:a|an|the)\s+)?[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,16}\b"#,
         #"(?i)\b(?:write|save)\s+(?:the\s+)?(?:result|content|output|changes?)\s+(?:in|into|to)\b"#,
     ]
+    // "<work noun> 시작/진행해" starts the work itself: fleet job f0b9ee10
+    // ("…아키텍처 동결하고 구현 시작해", 2026-10-26) ran read-only and could not
+    // implement. Matched like positiveFileEditPatterns, and in resolve() also
+    // against the question-preserving authority view, so a feasibility
+    // question the authority view strips ("…, or should we wait?") still
+    // keeps the request read-only.
+    static let startWorkPatterns = [
+        // Clause-final imperative only. A following auxiliary or adnominal
+        // ("시작해 놓은 브랜치 리뷰해줘", "진행해 버린 부분", "진행해 온 히스토리")
+        // describes work already done, and a question later in the sentence
+        // ("시작해, 괜찮지?"), "시작해 줄래?", "시작하기 전에", "시작해서" and
+        // "시작해도" stay read-only.
+        #"(?:구현|개발|코딩|수정|리팩터링|리팩토링|마이그레이션)\s*(?:을|를)?\s*(?:바로\s*|지금\s*|이제\s*)?(?:시작|진행|착수|재개)\s*(?:해(?:\s*줘(?:요)?|\s*주세요|라)?|하자|하세요|하십시오|하라)(?=[ \t]*(?:[.!~,;\n]|$))(?![^.!\n]*\?)"#,
+        // Clause-initial English only ("before you start implementing" and
+        // "when should we start implementing?" are not requests). A gerund
+        // takes an object; a noun ends its clause or takes "now", so a
+        // compound noun ("implementation review", "refactoring discussion",
+        // "implementation planning") stays read-only.
+        #"(?i)(?:^|(?<=[.!;\n]))\s*(?:(?:ok(?:ay)?|so|now|then|please)[,]?\s+)*(?:start|begin|proceed\s+with|go\s+ahead\s+with)\s+(?:(?:implementing|refactoring|coding)\b(?!\s+(?:reviews?|plans?|planning|discussions?|notes|details|docs?|documentation|proposals?|specs?|specification|meetings?|sessions?|phase|estimates?|summary|report|checklist|guides?|guidelines|strategy|approach|options|ideas|steps|outline|trade-?offs|risks|questions|standards|retro|retrospective)\b)|(?:the\s+)?(?:implementation|refactoring|coding)\b(?=[ \t]*(?:[.!;,\n]|$)|\s+(?:now|right\s+now|right\s+away|immediately|today)\b))(?![^.!\n]*\?)"#,
+    ]
     static let negatedTargets: [(pattern: String, prohibition: String)] = [
         // A trailing scope fence narrows an explicit edit; it does not revoke
         // that edit. Consume it before the generic prohibition detector so
@@ -1358,6 +1390,7 @@ public struct ScopeResolution: Equatable, Sendable {
             clause.range(of: #"(?i)\b(?:fix|repair|modify|edit|update|implement|create|write|save|delete|remove|rename|move|copy|change|alter|add|append|overwrite)\b"#, options: .regularExpression) != nil ||
                 positiveEdit.contains { $0.range(of: #"[가-힣]"#, options: .regularExpression) != nil && clause.contains($0) } ||
                 positiveFileEditPatterns.contains { clause.range(of: $0, options: .regularExpression) != nil } ||
+                startWorkPatterns.contains { clause.range(of: $0, options: .regularExpression) != nil } ||
                 clause.range(of: concretePathPattern + #"[^.!?;\n]{0,96}(?:수정|변경|편집|삭제|고쳐|바꿔|복사|이동|작성|생성)"#, options: .regularExpression) != nil
         }
         var clauses: [(Range<String.Index>, String)] = [], fileEdits = 0, unresolvedAction = false
@@ -1522,9 +1555,15 @@ public struct ScopeResolution: Equatable, Sendable {
             remaining.range(of: globalNoWriteClausePattern, options: .regularExpression) != nil ||
             remaining.range(of: ambiguousPathRestrictionPattern, options: .regularExpression) != nil
         let editPaths = directEditPaths(editView)
+        // A start-work request must also read as one where no feasibility
+        // question was stripped (OwnerIntentText.questionPreservingAuthorityText).
+        let startsWork = startWorkPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil } && {
+            let questionView = OwnerIntentText.normalized(OwnerIntentText.questionPreservingAuthorityText(prompt))
+            return startWorkPatterns.contains { questionView.range(of: $0, options: .regularExpression) != nil }
+        }()
         let asksEdit = positiveEdit.contains(where: editView.contains) ||
             positiveFileEditPatterns.contains { editView.range(of: $0, options: .regularExpression) != nil } ||
-            !editPaths.isEmpty
+            startsWork || !editPaths.isEmpty
         if protectedPaths.contains(where: { protected in editPaths.contains { edited in
             edited == protected || edited.hasPrefix(protected + "/") ||
                 (protected == "." && !edited.hasPrefix("/")) || protected == "/" ||

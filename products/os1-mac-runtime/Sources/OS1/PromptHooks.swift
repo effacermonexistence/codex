@@ -90,8 +90,18 @@ private func promptHookStateDirectory() throws -> URL {
     return directory
 }
 
-private func automaticFleetContext(receipt: FleetEnqueueReceipt, executable: String) -> String {
-    """
+/// `localDeviceID` decides where Core's task can be read: OS-1 Core runs a
+/// fleet job on the EXECUTOR Mac, so rcc-task-status and observe_command
+/// only answer there; on another Mac a status read proves nothing.
+func automaticFleetContext(receipt: FleetEnqueueReceipt, executable: String, localDeviceID: String?) -> String {
+    let local = localDeviceID == receipt.executorDeviceID
+    let location = local
+        ? "When core.output_truncated is true, read the full answer with: \(shellQuoted(executable)) rcc-task-status --task-id <core.task_id> --request-sha256 <core.request_sha256>."
+        : "This job runs on another Mac (executor \(receipt.executorDeviceID)): its OpenClaw Core task, rcc-task-status and observe_command exist only there, and a Core status read on this Mac proves nothing about it. When core.output_truncated is true, the full answer (core.output_sha256) is readable only on the executor Mac; work from the delivered part and say that it is truncated."
+    let pending = local
+        ? "a failure with core_admitted \"unknown\" or \"yes\" may still finish in Core, so check observe_command before redoing the work."
+        : "a failure with core_admitted \"unknown\" or \"yes\" may still finish in Core on the executor Mac, so check observe_command there before redoing the work."
+    return """
     OS-1 Fleet automatic execution accepted this exact user request.
     Objective: \(receipt.objectiveVersion)
     Job: \(receipt.jobID)
@@ -99,10 +109,10 @@ private func automaticFleetContext(receipt: FleetEnqueueReceipt, executable: Str
     Execution mode: \(receipt.executionMode)
     Selected executor: \(receipt.executorDeviceID)
 
-    The selected Pro/Air background agent has accepted the request. Before using any write tool or giving the final answer, run this exact command and wait for its verified result:
+    The selected Pro/Air background agent has accepted the request. Before using any write tool or giving the final answer, run this exact command and wait for its signed result:
     \(shellQuoted(executable)) fleet-result --job \(shellQuoted(receipt.jobID))
 
-    This command only reads OS1's locally mirrored result; it never loads credentials, invokes Secure Enclave, or re-executes the task. Do not duplicate the same work while that job is pending. Treat the returned execution receipt as a candidate: verify its output and, when it contains result_branch/result_commit, fetch and inspect that exact commit before integrating it. A wait timeout is NOT execution failure: repeat fleet-result with this same job ID. Only after a terminal failure may you reconcile the remote partial changes before resuming the uncompleted work. This routes whole Codex/Claude jobs between Macs; it does not claim transparent pooling of hosted-model inference or arbitrary macOS CPU, RAM, and GPU processes.
+    This command only reads OS1's locally mirrored result; it never loads credentials, invokes Secure Enclave, or re-executes the task. Do not duplicate the same work while that job is pending. Treat the returned execution receipt as a candidate: verify its output and, when it contains result_branch/result_commit, fetch and inspect that exact commit before integrating it. A receipt with a "core" block is OS-1 Core's own answer in core.output. When core.verification is "unverified", it is a reference answer delivered unverified: present it with core.label, and with core.quality_disclosure.text when present (checks Core reported failed, or an unavailable checker), verify it before relying on it, and do not repeat the task. \(location) A wait timeout is NOT execution failure: repeat fleet-result with this same job ID. Only after a terminal failure may you reconcile the remote partial changes before resuming the uncompleted work. A failure carrying partial_answer is OS-1 Core's completed part, unverified: resume only the unresolved work named by partial_coverage. A failure with model_dispatched "false" or core_admitted "no" means nothing ran for this job; \(pending) This routes whole Codex/Claude jobs between Macs; it does not claim transparent pooling of hosted-model inference or arbitrary macOS CPU, RAM, and GPU processes.
     """
 }
 
@@ -159,7 +169,7 @@ private func automaticFleetSubmission(
     if
        let data = try? Data(contentsOf: cacheURL),
        let cached = try? JSONDecoder().decode(FleetEnqueueReceipt.self, from: data) {
-        return automaticFleetContext(receipt: cached, executable: executable)
+        return automaticFleetContext(receipt: cached, executable: executable, localDeviceID: try? deviceID())
     }
 
     let receipt = try await enqueueFleetTask(
@@ -176,7 +186,7 @@ private func automaticFleetSubmission(
         try data.write(to: cacheURL, options: [.atomic, .completeFileProtectionUnlessOpen])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
     }
-    return automaticFleetContext(receipt: receipt, executable: executable)
+    return automaticFleetContext(receipt: receipt, executable: executable, localDeviceID: try? deviceID())
 }
 
 private func runEXOPromptHook(consumerName: String, fleetProfile: String) async {

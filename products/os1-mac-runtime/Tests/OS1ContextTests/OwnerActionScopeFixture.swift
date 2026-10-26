@@ -213,6 +213,49 @@ func runOwnerActionScopeFixtures() throws {
         ("only_unsupported_implement", "Implement only archive.json. Do not modify protected.json.", .readOnly),
         ("only_unsupported_delete", "Delete only archive.json. Do not modify protected.json.", .readOnly),
         ("only_unsupported_remove", "Remove only archive.json. Do not modify protected.json.", .readOnly),
+        // Natural failure (fleet job f0b9ee10, 2026-10-26 census): "<work noun>
+        // 시작/진행해" is an implement request. It ran read-only on the full
+        // reference (0.83M tokens) and could not implement anything.
+        ("start_impl_f0b9ee10", "그럼 그 구조로 아키텍처 동결하고 구현 시작해", .workspaceWrite),
+        ("start_impl_benefactive", "구현 시작해줘", .workspaceWrite),
+        ("start_impl_hortative", "이제 구현 시작하자", .workspaceWrite),
+        ("start_dev_proceed", "그 설계대로 개발 진행해", .workspaceWrite),
+        ("start_impl_formal_object", "구현을 바로 시작하세요", .workspaceWrite),
+        ("start_edit", "수정 시작해", .workspaceWrite),
+        ("start_impl_english", "Start implementing the frozen architecture.", .workspaceWrite),
+        ("start_impl_english_ok", "OK, begin the implementation now.", .workspaceWrite),
+        // Questions, subordinate clauses, prohibitions and contradictory
+        // fences around the same words stay read-only.
+        ("start_impl_permission_question", "구현 시작해도 돼?", .readOnly),
+        ("start_impl_past_question", "구현 시작했어?", .readOnly),
+        ("start_impl_question", "구현 시작해?", .readOnly),
+        ("start_impl_prohibited", "구현은 아직 시작하지 마. 설계만 검토해", .readOnly),
+        ("start_impl_before_clause", "구현 시작하기 전에 아키텍처 리뷰해줘", .readOnly),
+        ("start_impl_when_question", "구현을 언제 시작해야 할지 알려줘", .readOnly),
+        ("start_impl_connective", "구현 시작해서 막히면 알려줘", .readOnly),
+        ("start_impl_english_before", "Before you start implementing, review the architecture.", .readOnly),
+        ("start_impl_english_when", "When should we start implementing?", .readOnly),
+        ("start_impl_contradictory_fence", "구현 시작해. 단 파일은 수정하지 마", .readOnly),
+        ("start_impl_comma_continuation", "구현 시작해, 테스트도 같이 돌려", .workspaceWrite),
+        ("start_impl_polite_benefactive", "구현 시작해줘요", .workspaceWrite),
+        // Work already started, described by an auxiliary or adnominal ending,
+        // and English compound nouns are review/explain/summary requests: they
+        // must never gain workspace_write (bypassPermissions) from these words.
+        ("start_impl_aux_branch_review", "내가 구현 시작해 놓은 브랜치 리뷰해줘", .readOnly),
+        ("start_impl_aux_code_explain", "구현 시작해 둔 코드 설명해줘", .readOnly),
+        ("edit_proceed_aux_cause", "수정 진행해 버린 부분 원인 분석해줘", .readOnly),
+        ("refactor_proceed_aux_history", "리팩토링 진행해 온 히스토리 요약해줘", .readOnly),
+        ("start_impl_aux_pr_status", "구현 시작해 놓은 PR 상태 알려줘", .readOnly),
+        ("begin_impl_review_noun", "Begin the implementation review and list the risks.", .readOnly),
+        ("start_refactoring_discussion_noun", "Start the refactoring discussion by summarizing the tradeoffs.", .readOnly),
+        ("start_impl_planning_noun", "Start implementation planning: outline the steps only.", .readOnly),
+        // A question after the imperative keeps it read-only, including one
+        // the authority view strips as a feasibility question.
+        ("start_impl_benefactive_question", "구현 시작해 줄래?", .readOnly),
+        ("start_impl_tag_question", "구현 시작해, 괜찮지?", .readOnly),
+        ("start_impl_english_question", "Start implementing now?", .readOnly),
+        ("begin_impl_or_wait_question", "Begin the implementation, or should we wait?", .readOnly),
+        ("start_impl_or_wait_question", "Start implementing, or should we wait?", .readOnly),
     ]
     for (id, original, expected) in cases {
         let bytes = Data(original.utf8)

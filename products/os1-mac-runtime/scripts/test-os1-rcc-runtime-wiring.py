@@ -82,10 +82,37 @@ check('"--rcc-task-id"' in APP and '"--request-file"' in APP and '"run"' in APP,
       "GUI passes immutable request bytes and its stable task ID to normal CLI ingress")
 check("if summary.rccTransportFailure != nil" in APP and "if let core = summary.rccRuntime" in APP,
       "GUI preserves core transport failure and consumes the core's progress/result snapshot")
-check("run = try await runOpenClawRCCTask(" in FLEET and "taskID: assignment.jobID" in FLEET,
+check("run = try await runOpenClawRCCTask(" in FLEET and "taskID: jobID, resultContractVersion: version" in FLEET
+      and "fleetCoreRun(jobID: assignment.jobID" in FLEET,
       "ordinary Fleet checkout execution submits the same job ID to the core")
+reconcile = section(FLEET, "func fleetReconcileCore(", "/// Runs the job's one Core task")
+check("core.status(jobID, requestSHA256)" in reconcile and "core.run(" not in reconcile,
+      "Fleet reconciliation only observes the job's Core task; it never resubmits")
 check("runTaskWithOwnerPolicy(" not in FLEET and "runWorkflowTask(" not in FLEET,
       "Fleet custody does not introduce a second routing/workflow owner")
+agent = section(FLEET, "func runFleetAgent(", "private func fleetAdvanceWork(")
+advance = section(FLEET, "private func fleetAdvanceWork(", "private struct FleetAgentWork: Codable {")
+check("work = try await fleetAdvanceWork(work, role: role," in agent and
+      "finishRestarted: { await fleetFinishRestarted($0, role: role) }" in agent and
+      "execute: { try await executeFleetAssignment($0, role: role, config: config) }" in agent and
+      "persist: { try fleetPersist($0, at: activeFile) }" in agent,
+      "the fleet agent runs every local job record through the one tested state machine")
+restart_branch = section(advance, 'if work.phase == "running" {', 'if work.phase == "claimed" {')
+claimed_branch = advance.split('if work.phase == "claimed" {', 1)[1]
+check("let finished = await finishRestarted(work)" in restart_branch and "execute(" not in restart_branch and
+      claimed_branch.index("work.startedAtMs = now()") <
+      claimed_branch.index("work.resultContractVersion = RCCRunBudgetOptions.appResultContractVersion") <
+      claimed_branch.index("try persist(work)") < claimed_branch.index("work.result = try await execute(work.assignment)") and
+      "} catch let undelivered as FleetUndelivered {" in claimed_branch and
+      "work.result = String(decoding: try JSONEncoder().encode(undelivered.result), as: UTF8.self)" in claimed_branch,
+      "a restart reconciles before reporting, a run persists its start and contract first, and Core's non-answer is carried verbatim")
+receipt = section(FLEET, "private func fleetEncodedReceipt(", "/// A delivered Core answer as the receipt the submitter verifies")
+check("fleetResultFitsCompleteRequest(" in receipt and "65_536" not in receipt and
+      "fleetResultFitsCompleteRequest(String(decoding: data, as: UTF8.self), outcome: \"failed\")" in FLEET,
+      "fleet results are sized against the gateway's whole /v1/fleet/complete request, not the result alone")
+run_task = section(MAIN, "func runOpenClawRCCTask(", "    if !routingNotices.isEmpty { summary.routingNotices = routingNotices }")
+check("var summary = RunSummary(status: rccRunStatus(result.state)," in run_task and "\"returned_unverified\"" not in run_task,
+      "a run reports the one Core-state status mapping the Fleet delivery check compares against")
 
 check("import { registerRCCRuntime } from './rcc-plugin.mjs';" in INDEX,
       "sealed plugin entry imports the new core lifecycle integration")
@@ -272,8 +299,9 @@ for version, expected in (("0.9.106", "18/21/0/0/0"), ("0.9.107", "19/22/0/0/0")
                           ("0.9.301", "36/39/0/0/0"), ("0.9.302", "38/41/0/0/0"),
                           ("0.9.342", "38/41/0/0/0"), ("0.9.343", "39/42/1/0/0"),
                           ("0.9.349", "39/42/1/0/0"), ("0.9.350", "46/49/1/1/0"),
-                          ("0.9.351", "48/51/1/1/1"), ("0.9.355", "48/51/1/1/1"), ("0.9.356", "52/55/1/1/1"), ("0.10.0", "52/55/1/1/1"),
-                          ("1.0.0", "52/55/1/1/1")):
+                          ("0.9.351", "48/51/1/1/1"), ("0.9.355", "48/51/1/1/1"), ("0.9.356", "52/55/1/1/1"), ("0.9.369", "52/55/1/1/1"),
+                          ("0.9.370", "59/62/1/1/1"), ("0.9.371", "70/73/1/1/1"),
+                          ("0.10.0", "70/73/1/1/1"), ("1.0.0", "70/73/1/1/1")):
     fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
                version_gate + '\nprintf "%s/%s/%s/%s/%s" "$expected_payload_files" '
                '"$expected_component_files" "$requires_rcc_resource_usage" "$requires_rcc_adaptive_routing" '
@@ -809,6 +837,11 @@ check("delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionO
       "step.nativeSessionEphemeralWorkspace != true &&" in APP and
       '!nativeSessionRebinds(ephemeralAnswer, bound: nil)' in APP,
       "disposable staged workspaces never seed or replace native conversation continuity, including first session")
+one_shot = section(native, "delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(", "delegatedChild: true)")
+check("continuing: t.continuation != nil, chatLane: surface.forcesChatLane," in one_shot and
+      "readOnly: t.selectedConfig.scope == .readOnly," in one_shot and
+      "hostResumesSessions: RCCNativeAttemptOutcome.hostResumesNativeSessions(context: h.context, claudeSessionID: h.claudeSessionID, codexSessionID: h.codexSessionID)" in one_shot,
+      "a read-only delegated session of a host that never feeds a session back (Fleet, bare os1 run) is one-shot; the host is read from the ticket")
 # 414: explicit shared /tmp deny is part of the exact native capability.
 QUALITY = (ROOT / "Sources/OS1/TaskQualityRuntime.swift").read_text()
 local_profile = section(QUALITY, "final class RCCNativeLocalQualityProfile:", "func rccNativeLocalQualityProfileSelfTest()")

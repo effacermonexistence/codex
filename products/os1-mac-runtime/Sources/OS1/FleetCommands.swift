@@ -9,6 +9,7 @@ func fleetCommand(_ arguments: [String]) async throws -> Bool {
         // file of a live run it was started in (OS1_FAILURE_FILE).
         LiveRunEnvironment.detachCurrentProcess()
         try fleetSelfTest()
+        try await fleetCoreSelfTest()
             case "exo-doctor": try await exoDoctor(config: RuntimeConfig.load())
             case "exo-claude-hook": await runClaudeEXOHook()
             case "exo-codex-hook": await runCodexEXOHook()

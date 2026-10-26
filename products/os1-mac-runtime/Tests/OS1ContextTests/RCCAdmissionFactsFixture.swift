@@ -165,6 +165,19 @@ func runRCCAdmissionFactsFixtures() throws {
               (try B.build(fenced)).candidates.allSatisfy { $0["scope"] as? String == "read_only" } &&
               B.admissionFacts(fenced)?.requestClass == .readonlyLookup,
               "a writer class always has writer rows to bind")
+    // Fleet job f0b9ee10: an implement request that the scope classifier read
+    // as read-only, so the catalog offered only read_only rows. It binds
+    // writer rows now; a host-required read-only task still never does.
+    let implementText = "그럼 그 구조로 아키텍처 동결하고 구현 시작해"
+    var fleetImplement = input(implementText, owner: .workspaceWrite)
+    fleetImplement.providerPreference = "claude"  // the recorded fleet envelope
+    for implement in [input(implementText, owner: .workspaceWrite), fleetImplement] {
+        try check((try B.build(implement)).candidates.contains { $0["scope"] as? String == "workspace_write" } &&
+                  B.admissionFacts(implement)?.requestClass == .writer,
+                  "an implement request worded '구현 시작해' binds writer rows (\(implement.providerPreference))")
+    }
+    try check(B.admissionFacts(input(implementText, owner: .workspaceWrite, readOnly: true))?.requestClass == .readonlyLookup,
+              "a host-required read-only implement request is still never a writer")
     let attachedText = "Summarize the attached notes."
     try check(try C.decodeCatalog(catalog(input(attachedText, owner: .readOnly, material: true)),
                                   request: try request(attachedText, materials: ["material-1"])).requestClass == .readonlyMaterial,

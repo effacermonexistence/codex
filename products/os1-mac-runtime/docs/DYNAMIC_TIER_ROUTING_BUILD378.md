@@ -405,11 +405,19 @@ sets it only for a session that starts new and is one-shot: the tool-free chat
 lane, a source-only answer, and an RCC delegated child that starts a side
 session beside the conversation's existing Claude thread (a cheaper REVAS
 attempt, one part of a plan). A session that may become the conversation's
-thread keeps the CLI default: a conversation's first agent session (nothing
-bound yet, nothing resumed) is bound as its thread and resumed on the next
-turn, where only the 1-hour cache can still be read. It is an environment
-override (OS-1 strips inherited `CLAUDE_CODE_*`), and the pre-dispatch
-governance receipt still hashes instructions and input only.
+thread keeps the CLI default: an App conversation's first agent session
+(nothing bound yet, nothing resumed) is bound as its thread and resumed on the
+next turn, where only the 1-hour cache can still be read. A new read-only
+delegated session of a host that never feeds a session back is one-shot too
+(2026-10-26, `RCCNativeAttemptOutcome.hostResumesNativeSessions`): OS-1 Fleet
+and a bare `os1 run` send no context and no session id, and none of their
+Claude sessions was ever resumed (Core census: 0 of 131 tasks carried a Claude
+session id; agent sessions paused at most 183 s between calls). Writers keep
+the CLI default, since a build or a full-access handback can return to the
+session after more than 5 minutes; App first turns keep it because the App
+binds and resumes them. It is an environment override (OS-1 strips inherited
+`CLAUDE_CODE_*`; `claudeArguments` takes no lifetime input), and the
+pre-dispatch governance receipt still hashes instructions and input only.
 
 **Wrapped exact arithmetic takes Core's zero-model route.** A plain Auto
 "1+1이 뭐야?" had run Codex `gpt-6-luna` low (29K input tokens) and still ended
