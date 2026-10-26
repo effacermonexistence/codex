@@ -227,6 +227,13 @@ public enum HumanOutputContract {
         guard tokens.contains(where: { $0.rangeOfCharacter(from: .letters) != nil }) else { return false }
         var words = 0
         for token in tokens {
+            // A short label the request itself named ("A:", "B:", "1:") tags
+            // an identifier; it is not prose. 2026-10-26 D3 C1: "B: nomel",
+            // the answer to unit B of "각 결과를 A/B/C로 구분해", was refused as
+            // English-only prose while its sibling "elppa" was accepted.
+            if token.count <= 3, token.hasSuffix(":"), token.dropLast().allSatisfy({ $0.isLetter || $0.isNumber }) {
+                words = 0; continue
+            }
             // Math, LaTeX and assignments are judged by numericMathOnly.
             if token.hasSuffix(":") || token.rangeOfCharacter(from: CharacterSet(charactersIn: "\\{}$=")) != nil { return false }
             if token.range(of: #"^[A-Za-z]{2,}[.!?;]?$"#, options: .regularExpression) != nil {

@@ -64,5 +64,14 @@ func runHumanLiteralOutputFixtures() {
     check(!HumanOutputContract.issues(in: "The answer is six.", request: "곱셈 결과를 한국어로 설명해 줘").isEmpty, "prose-legacy")
     check(!HumanOutputContract.issues(in: "```json\n{ broken }\n```", request: "JSON으로 답해 줘").isEmpty, "JSON-validation-legacy")
     check(HumanOutputContract.issues(in: "```json\n{ broken }\n```", request: "원문 그대로 보여줘").isEmpty, "raw-source-legacy")
+    // D3 C1 (2026-10-26): a unit answer tagged with the label the request
+    // asked for is an identifier, not English prose; real prose still is.
+    let labelled = "각 결과를 A/B/C로 구분해 한 단어로만 전달하세요. B — 영어 단어 lemon의 철자를 거꾸로 쓴 한 단어만 답하세요."
+    for answer in ["B: nomel", "B:nomel", "A: elppa", "1: nomel", "nomel"] {
+        check(HumanOutputContract.issues(in: answer, request: labelled).isEmpty, "short-label-identifier-\(answer)")
+    }
+    for answer in ["B: this is the reversed word", "Answer: nomel is the reversed word", "The answer is nomel."] {
+        check(!HumanOutputContract.issues(in: answer, request: labelled).isEmpty, "labelled-prose-still-prose-\(answer)")
+    }
     print("Human literal output fixtures passed (\(checks) checks)")
 }
