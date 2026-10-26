@@ -1692,6 +1692,22 @@ func rccDelegatedSessionOneShot(resumedSessionID: String?, conversationSessionID
         conversationSessionID: conversationSessionID, chatLane: chatLane)
 }
 
+/// A Fleet job's checkout (~/.os1/fleet/jobs/<job uuid>/...) belongs to that
+/// job alone: Fleet runs it with no conversation context and no Claude session,
+/// and nothing ever resumes a session started there. So its read-only sessions
+/// are one-shot for the prompt cache too. The owner's Fable max work from
+/// 2026-10-14 to 10-26 was all Fleet jobs; 1.02M cache-write tokens took the
+/// 1-hour TTL, the longest pause inside one session was 183 s, and none was
+/// resumed. A writer keeps the default: a long build may pause it past 5 min.
+func rccFleetReadOnlySessionOneShot(hostWorkspace: String, scope: RCCRuntimeContract.Scope, continuing: Bool,
+                                    home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> Bool {
+    guard scope == .readOnly, !continuing else { return false }
+    let jobs = URL(fileURLWithPath: home).appendingPathComponent(".os1/fleet/jobs").standardizedFileURL.resolvingSymlinksInPath().path + "/"
+    let path = URL(fileURLWithPath: hostWorkspace).standardizedFileURL.resolvingSymlinksInPath().path
+    guard path.hasPrefix(jobs), let job = path.dropFirst(jobs.count).split(separator: "/").first else { return false }
+    return UUID(uuidString: String(job)) != nil
+}
+
 /// `ownerPolicyProjectionInBaseInstructions`: the Codex session verifiably
 /// holds the projection as its base instructions (codexDeveloperOmitsProjection),
 /// so this channel carries the owner policy without that body. Every other
@@ -20087,7 +20103,9 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
                 delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
                     conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
-                    continuing: t.continuation != nil, chatLane: surface.forcesChatLane),
+                    continuing: t.continuation != nil, chatLane: surface.forcesChatLane) ||
+                    rccFleetReadOnlySessionOneShot(hostWorkspace: h.workspace, scope: t.selectedConfig.scope,
+                        continuing: t.continuation != nil || t.nativeResumeSessionID != nil),
                 delegatedChild: true)
         }
         }
@@ -21000,6 +21018,18 @@ func effortlessRoutingSelfTest() throws {
     try check(!rccDelegatedSessionOneShot(resumedSessionID: thread, conversationSessionID: thread, continuing: false, chatLane: false) &&
               !rccDelegatedSessionOneShot(resumedSessionID: nil, conversationSessionID: thread, continuing: true, chatLane: false),
               "a resumed thread and a continuation are not one-shot")
+    // A Fleet job's read-only session is one-shot (build 438); its writer, a
+    // resumed session and any other workspace keep the CLI default.
+    let fixtureHome = "/Users/fixture"
+    let fleetCheckout = fixtureHome + "/.os1/fleet/jobs/" + UUID().uuidString + "/repository/products/x"
+    try check(rccFleetReadOnlySessionOneShot(hostWorkspace: fleetCheckout, scope: .readOnly, continuing: false, home: fixtureHome),
+              "a Fleet job's read-only session takes the 5-minute cache")
+    try check(!rccFleetReadOnlySessionOneShot(hostWorkspace: fleetCheckout, scope: .workspaceWrite, continuing: false, home: fixtureHome) &&
+              !rccFleetReadOnlySessionOneShot(hostWorkspace: fleetCheckout, scope: .readOnly, continuing: true, home: fixtureHome) &&
+              !rccFleetReadOnlySessionOneShot(hostWorkspace: fixtureHome + "/Developer/repo", scope: .readOnly, continuing: false, home: fixtureHome) &&
+              !rccFleetReadOnlySessionOneShot(hostWorkspace: fixtureHome + "/.os1/fleet/jobs/not-a-job/repository", scope: .readOnly, continuing: false, home: fixtureHome) &&
+              !rccFleetReadOnlySessionOneShot(hostWorkspace: fixtureHome + "/.os1/fleet/jobs-old/" + UUID().uuidString, scope: .readOnly, continuing: false, home: fixtureHome),
+              "a Fleet writer, a resumed Fleet session and any non-job workspace keep the CLI default")
     // Core's exact arithmetic is told apart from its check-in by its output.
     for output in ["2", "-12", "0", "123456789012345678901234567890", "2.5", "0.125", "-0.25"] {
         try check(rccDeterministicArithmeticNotice(output: output)?.isEmpty == false, "canonical \(output) is exact arithmetic")
