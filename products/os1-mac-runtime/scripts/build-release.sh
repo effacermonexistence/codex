@@ -133,6 +133,8 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-repla
 python3 -I "$script_dir/quota-replay.py" --self-test
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-planner-deadline.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-joint-selector.test.mjs"
+# K10: the frozen descent cost policy ranks only inside the admitted F; production registers none.
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-descent-policy.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-policy.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-adaptive-plan-host.test.mjs"
 node --test "$script_dir/fixtures/openclaw-rcc-routing-outcome.test.mjs"

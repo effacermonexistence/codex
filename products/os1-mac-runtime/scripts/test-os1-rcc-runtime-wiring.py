@@ -651,6 +651,36 @@ check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exe
       "try runRCCExactArithmeticVectorFixtures()" in CONTEXT_TESTS and
       '"--rcc-exact-arithmetic-only"' in CONTEXT_TESTS,
       "K7: zero-model closed arithmetic over shared vectors; the explicit exact family and strict history checks unchanged")
+# K10: a frozen check-acceptance cost policy re-ranks a contract or verifier
+# descent inside the F Core admitted (the fixed escalation reference plus the
+# R11 pool's dispatchable certified rows), on every route call site; the
+# plugin registers none, so production stays on TIER_ROUTES.
+SELECTOR = (PLUGIN_ROOT / "joint-route-selector.mjs").read_text()
+TIER_ROUTE = section(RUNTIME, "function tierRouteCandidate(", "/** Null when something in an allowed scope can run;")
+check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability_v1';" in SELECTOR and
+      "export function selectCertifiedDescent(" in SELECTOR and "export function prepareCertifiedDescentPolicy(" in SELECTOR and
+      "export const SCORE_SPACE = 'reference_match_probability_v1';" in SELECTOR and
+      "isPreparedCertifiedDescentPolicy(descentPolicy) &&\n        (admission.source === 'contract' || admission.source === 'verifier')" in TIER_ROUTE and
+      "'certified_descent_not_cost_effective'" in TIER_ROUTE and "'descent_cost_policy_'" in TIER_ROUTE and
+      "descents.find(descent => descent.candidate.id === selection.candidate_id) ?? null" in TIER_ROUTE and
+      "const served = policyReference ?? serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');" in TIER_ROUTE and
+      "policyReference = {hit: target, pool: targetPool," in TIER_ROUTE and
+      "...poolNotes(tier.pool.pool, chosen, tier.hit.candidate)," in TIER_ROUTE and
+      "'pool_scored_by_tier_hit_model'" in TIER_ROUTE and
+      "selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy});" in RUNTIME and
+      "selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,\n      descentPolicy});" in
+      section(RUNTIME, "export function admitBoundedAutoPlan(", "function livePlannerContext(") and
+      "resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});" in
+      section(RUNTIME, "function livePlannerContext(", "export function admitLivePlannerPlan(") and
+      "livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy);" in
+      section(RUNTIME, "export function admitLivePlannerPlan(", "const resolved = resolveRoutePlan(compiled.plan") and
+      "const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry, descentPolicy});" in RUNTIME and
+      "{verifierRegistry = null,\n                                                                       descentPolicy = null} = {}) {" in RUNTIME and
+      RUNTIME.count("descentPolicy: this.descentPolicy") == 4 and RUNTIME.count("this.descentPolicy") == 10 and
+      "prepareCertifiedDescentPolicy(certifiedDescentPolicy)" in RUNTIME and
+      "certifiedDescentPolicy" not in PLUGIN and "descentPolicy" not in PLUGIN and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-descent-policy.test.mjs"' in RELEASE,
+      "K10: frozen descent cost policy ranks only inside F for contract/verifier sources; none registered in production; release-gated")
 check("hostAutoPlan: true" in PLUGIN and "export function hostPlan(" in RUNTIME and
       "plan: async" not in section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.") and
       not re.search(r"GRADED_PLAN|buildBoundedPlannerInput|decodePlannerResponse|route_class picks", PLUGIN) and

@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usage.mjs';
 import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adaptive-routing-policy.mjs';
 import { createPlannerHostProjection, compileFreshPlannerProposal, isLivePlanCapability } from './adaptive-plan-host.mjs';
-import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector.mjs';
+import { selectJointRoute, exactConfigFingerprint, prepareCertifiedDescentPolicy, isPreparedCertifiedDescentPolicy,
+  selectCertifiedDescent } from './joint-route-selector.mjs';
 import { captureRoutingOutcome, validateConfiguredInputObservation } from './routing-outcome-capture.mjs';
 import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
 import { isCalibratedRoutePredictor, isCalibratedRouteInference } from './calibrated-route-predictor.mjs';
@@ -1062,6 +1063,22 @@ function certifiedEntries(pool, admission, catalog, verifierRegistry) {
 function surfaceToken(candidate) {
   return {chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(candidate.surface)] ?? 'agent_surface';
 }
+/** K10: the stratum a frozen descent cost policy keys one node on, from the
+ * facts the K9 ledger records per attempt (sizes, never text): request class,
+ * node scope, the admitting source and its certificate (a verifier id; null
+ * for a contract), first or later turn (strict withoutConversation),
+ * materials, and the UTF-8 bytes of the instruction plus task and host
+ * context. Throws on a malformed task; the caller then keeps TIER_ROUTES. */
+function descentStratum(node, task, catalog, admission) {
+  const text = value => typeof value === 'string' ? value : '';
+  return {request_class: ID.test(text(catalog.request_class)) ? catalog.request_class : null, scope: node.scope,
+    admitted_by: admission.source, check_id: admission.certificate_id ?? null,
+    turn: withoutConversation(task) ? 'first' : 'not_first', has_materials: (node.context_refs ?? []).length > 0,
+    context_bytes: Buffer.byteLength(text(node.instruction)) + Buffer.byteLength(text(task.context)) +
+      Buffer.byteLength(text(task.host_context?.context))};
+}
+const descentTuple = candidate => ({candidate_id: candidate.id, surface: candidate.surface,
+  quota_pool: candidate.quota_pool, model: candidate.model, effort: candidate.effort});
 
 /** An explicit route that names the local surface (route-all, 2026-10-14)
  * binds the one dispatchable local model row: the model OpenClaw already runs,
@@ -1099,9 +1116,16 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * catalog's pool order. The owner's provider word already shaped the catalog.
  *
  * The route is 'reference' (no owner words), 'explicit' (the reference the
- * owner's words leave) or 'tier' (a certified descent, carrying `ladder`). */
+ * owner's words leave) or 'tier' (a certified descent, carrying `ladder`).
+ *
+ * `descentPolicy` (K10, §2.4): a prepared frozen check-acceptance cost policy
+ * (prepareCertifiedDescentPolicy), or null. It only re-ranks F, the fixed
+ * escalation reference plus the R11 pool's dispatchable certified rows, for a
+ * contract or verifier admission; inactive, expired or uncovered, it changes
+ * nothing. */
 function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false,
-                            referenceOnly = false, preferPool = null, verifierRegistry = null} = {}) {
+                            referenceOnly = false, preferPool = null, verifierRegistry = null,
+                            descentPolicy = null} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
   if (explicitRoute?.surface === 'local') return localRouteCandidate(node, task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
@@ -1151,30 +1175,70 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     return {...scored[0].offer, skipped: [...skipped, ...passed], offered};
   };
   const referenceOf = pool => intentReferenceRows(pool.rows, catalog, intent);
-  const poolNotes = (pool, chosen) => [...(pinned(pool) ? ['pool_class_pin'] : []),
+  // `scoredBy`: the row whose model's quota score ranked this pool's offer
+  // (R11). K10 can bind another model of that pool, or the escalation
+  // reference, which that score did not rank; null when no score ranked it.
+  const poolNotes = (pool, chosen, scoredBy = chosen) => [...(pinned(pool) ? ['pool_class_pin'] : []),
     ...(affine(pool) ? ['pool_conversation_affinity'] : []),
-    ...(quotaScore(catalog, chosen.model) !== null ? ['pool_scored_by_bound_model'] : [])];
+    ...(scoredBy === null || quotaScore(catalog, scoredBy.model) === null ? [] :
+      [scoredBy.model === chosen.model ? 'pool_scored_by_bound_model' : 'pool_scored_by_tier_hit_model'])];
   const notes = [];
+  let policyReference = null;
   if (admission.class === 'certified') {
     const tier = serve(pool => certifiedEntries(pool, admission, catalog, verifierRegistry), 'tier');
-    const chosen = tier.hit?.candidate ?? null;
+    let chosen = tier.hit?.candidate ?? null;
     // The one escalation target, fixed now: this pool's reference when it can
     // dispatch, else another pool's.
     const target = chosen && [tier.pool, ...pools.filter(other => other !== tier.pool)
       .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
     const isReference = chosen && referenceOf(tier.pool).some(row => row.candidate.id === chosen.id);
-    if (target && !isReference) {
+    // K10 (§2.4): a prepared cost policy may re-rank F = that target plus
+    // THIS pool's dispatchable certified rows (every entry, not only the
+    // first), for a contract or verifier admission only: 'exact' keeps the
+    // owner-named route's cheapest tier, and 'class' has no check-acceptance
+    // labels. Every member of F is already admitted and its answer checked
+    // (I2); the pick is never outside F, and an inactive, expired or
+    // uncovered policy leaves today's TIER_ROUTES choice untouched.
+    let entryIndex = tier.entry?.index ?? null, policySHA256 = null, referenceWins = false;
+    if (target && !isReference && isPreparedCertifiedDescentPolicy(descentPolicy) &&
+        (admission.source === 'contract' || admission.source === 'verifier')) {
+      const excluded = new Set([target.candidate.id, ...referenceOf(tier.pool).map(row => row.candidate.id)]);
+      const descents = [];
+      for (const entry of certifiedEntries(tier.pool, admission, catalog, verifierRegistry))
+        for (const row of entry.rows.filter(usable).sort(order)) {
+          if (excluded.has(row.candidate.id)) continue;
+          excluded.add(row.candidate.id);
+          descents.push({candidate: row.candidate, entryIndex: entry.index});
+        }
+      let selection = null;
+      try {
+        selection = selectCertifiedDescent({now_ms: now, policy: descentPolicy,
+          stratum: descentStratum(node, task, catalog, admission), reference: descentTuple(target.candidate),
+          descents: descents.map(descent => descentTuple(descent.candidate))});
+      } catch { selection = null; }
+      // F membership: only a row Core listed above is ever taken.
+      const picked = selection?.decision === 'descent' ?
+        descents.find(descent => descent.candidate.id === selection.candidate_id) ?? null : null;
+      if (picked || (selection?.decision === 'reference' && selection.candidate_id === target.candidate.id)) {
+        policySHA256 = descentPolicy.sha256;
+        if (picked) { chosen = picked.candidate; entryIndex = picked.entryIndex; } else referenceWins = true;
+      }
+    }
+    const policyToken = policySHA256 === null ? null : 'descent_cost_policy_' + policySHA256.slice(0, 12);
+    if (target && !isReference && !referenceWins) {
       const certificate = admission.source === 'class' ? catalog.class_certificates[catalog.request_class] : null;
       const ladder = {source: 'tier', admitted_by: admission.source, certificate_id: admission.certificate_id,
         format_check: certificate?.format_check ?? null,
         ...(admission.source === 'exact' ? {exact_answer: pureArithmetic(node.instruction)} : {}),
         cheap_model: chosen.model, cheap_effort: chosen.effort,
         reference_model: target.candidate.model, reference_effort: target.candidate.effort,
-        reference_candidate_id: target.candidate.id};
+        reference_candidate_id: target.candidate.id,
+        ...(policySHA256 === null ? {} : {descent_policy_sha256: policySHA256})};
       const why = ['route_tier', admissionToken(admission)];
-      if (admission.source !== 'class') why.push('tier_list_' + tier.entry.index);
+      if (policyToken !== null) why.push(policyToken);
+      if (admission.source !== 'class') why.push('tier_list_' + entryIndex);
       why.push('tier_' + (tierOf(catalog, chosen.model) ?? 'none'), tier.rank, ...tier.skipped, 'effort_' + chosen.effort,
-        ...poolNotes(tier.pool.pool, chosen),
+        ...poolNotes(tier.pool.pool, chosen, tier.hit.candidate),
         'escalation_reference_' + (target.candidate.quota_pool === tier.pool.pool ? 'same_pool' : 'other_pool'),
         surfaceToken(chosen));
       if (avoidPool !== null) why.unshift(tier.pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
@@ -1184,10 +1248,20 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     // R9: a descent needs a reference that can dispatch now. Without one, or
     // without a dispatchable certified tuple below it, the node binds the
     // reference itself (which holds when no reference can dispatch, R12).
-    notes.push(!chosen ? 'certified_tuple_undispatchable' : isReference ? 'certified_tuple_is_reference' :
+    // K10: so does a node whose policy found no descent cheaper than it, and
+    // it binds the very reference the policy costed (the escalation target
+    // fixed above), never another pool's reference the R11 reference serve
+    // would rank: that row is outside F and was never costed.
+    if (referenceWins) {
+      notes.push('certified_descent_not_cost_effective', policyToken);
+      const targetPool = pools.find(pool => pool.pool === target.candidate.quota_pool);
+      const same = targetPool === tier.pool;
+      policyReference = {hit: target, pool: targetPool, rank: same ? tier.rank : 'pool_rank_' + ordinal.get(targetPool.pool),
+        skipped: same ? tier.skipped : [], scoredBy: same ? tier.hit.candidate : null};
+    } else notes.push(!chosen ? 'certified_tuple_undispatchable' : isReference ? 'certified_tuple_is_reference' :
       'tier_requires_runnable_reference');
   }
-  const served = serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');
+  const served = policyReference ?? serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');
   if (!served.hit)
     throw new RCCRuntimeError(`no_dispatchable_candidate:${node.scope}:` +
       (intent?.model_family || served.offered ? 'deep' : 'reference_unavailable'));
@@ -1199,7 +1273,8 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
   if (intent?.effort) why.push('intent_effort_' + intent.effort);
   if (intent?.model_family) why.push('intent_family_' + intent.model_family);
   why.push(admissionToken(admission), ...notes, 'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), rank, ...skipped,
-    'effort_' + chosen.effort, ...poolNotes(pool.pool, chosen), surfaceToken(chosen));
+    'effort_' + chosen.effort, ...poolNotes(pool.pool, chosen, policyReference === null ? chosen : policyReference.scoredBy),
+    surfaceToken(chosen));
   if (avoidPool !== null) why.unshift(pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
   const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
   if (widened) why.push('owned_paths_workspace');
@@ -1350,8 +1425,10 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
  * route kind (reference, explicit or tier), the reference effort and, for a
  * certified descent, its ladder (admitting source and escalation row).
  * `verifierRegistry` (Map of family to node verifier) is the R0 (b) source;
- * production registers none. */
-export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null} = {}) {
+ * production registers none. `descentPolicy` (K10) is a prepared frozen
+ * descent cost policy or null; production registers none. */
+export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null,
+                                                                       descentPolicy = null} = {}) {
   if ((task.mode === 'explicit_routing_test' && !explicitTierRouting(task, catalog)) ||
       !plain(plan) || !Array.isArray(plan.nodes))
     return {plan, decisions: {}, routes: {}};
@@ -1366,7 +1443,7 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifie
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
       const {route_class: _grade, ...rest} = node;
-      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry});
+      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy});
       decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
         choice.tier);
       routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
@@ -1492,7 +1569,8 @@ export function assertOwnerExplicitParallelPlan(plan, task, catalog) {
  * is not the owner's own partition needs a measured plan-shape certificate
  * (K11b), and no such certificate exists yet: such a plan is not admitted and
  * the caller keeps the host plan. */
-export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), verifierRegistry = null) {
+export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), verifierRegistry = null,
+                                     descentPolicy = null) {
   assert(boundedAutoEligible(task, catalog) && compiled?.provenance === 'host_unbound_plan' &&
     compiled.execution_authorized === false && compiled.quality_parity_verified === false &&
     compiled.binding?.task_id === task.task_id && compiled.binding.request_sha256 === task.request_sha256 &&
@@ -1530,7 +1608,8 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), 
     // Retain every original material for each branch. A model's omission is
     // not authority to discard source context or claim it was already read.
     const checked = {...node, context_refs: [...task.material_refs]};
-    const choice = selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry});
+    const choice = selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,
+      descentPolicy});
     decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'bounded_plan;' + choice.why,
       choice.ladder, choice.tier);
     routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
@@ -1547,7 +1626,7 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), 
  * must agree with the exact row Core independently selected; a certified
  * descent retains R0's runnable prebound reference and native full checker.
  * The manifest is loaded by the host, never by a task or proposal. */
-function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
+function livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy = null) {
   assert(isLivePlanCapability(capability, now) && capability.valid_until_ms > now &&
     task?.mode === 'auto' && activeIntentV2(task, catalog) &&
     catalog.owner_scope === 'read_only' && hostScope(task, catalog) === 'read_only' &&
@@ -1572,7 +1651,7 @@ function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
   const original = hostPlan(task, catalog);
   assert(original.nodes.length === 1 && admittedRoute(original.nodes[0], task, catalog, now,
     {verifierRegistry}).source === 'contract', 'live_r0_full_contract_required');
-  const reference = resolveRoutePlan(original, task, catalog, now, {verifierRegistry});
+  const reference = resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});
   const route = reference.routes[original.nodes[0].id];
   assert(route?.kind === 'reference' || route?.kind === 'tier' &&
     route.ladder?.admitted_by === 'contract' &&
@@ -1580,8 +1659,9 @@ function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
   'live_reference_fallback_unavailable');
   return reference;
 }
-export function admitLivePlannerPlan(compiled, task, catalog, capability, now = Date.now(), verifierRegistry = null) {
-  const reference = livePlannerContext(task, catalog, capability, now, verifierRegistry);
+export function admitLivePlannerPlan(compiled, task, catalog, capability, now = Date.now(), verifierRegistry = null,
+                                     descentPolicy = null) {
+  const reference = livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy);
   assert(compiled?.provenance === 'host_unbound_plan' && compiled.execution_authorized === false &&
     compiled.quality_parity_verified === false && compiled.binding?.task_id === task.task_id &&
     compiled.binding.request_sha256 === task.request_sha256 &&
@@ -1605,7 +1685,7 @@ export function admitLivePlannerPlan(compiled, task, catalog, capability, now = 
   const admission = admittedRoute(node, task, catalog, now, {verifierRegistry});
   assert(admission.class === 'certified' && admission.source === 'contract',
     'live_r0_full_contract_required');
-  const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry});
+  const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry, descentPolicy});
   const plan = validatePlan(lockIndivisibleInstruction(resolved.plan, task).plan, task, catalog);
   const chosen = plan.nodes[0].candidate_id;
   assert(chosen === reference.plan.nodes[0].candidate_id,
@@ -2999,15 +3079,22 @@ function alive(pid) {
  * Production registers none, so every node runs its reference. `hostAutoPlan` (R7): the
  * host builds every plan itself (hostPlan) and never calls `plan`; injected
  * plans (`plan`) remain for fixtures. `ledgerLog` receives a ledger write
- * failure code, which never fails or holds a task. */
+ * failure code, which never fails or holds a task. `certifiedDescentPolicy`
+ * (K10): a frozen check-acceptance cost policy, prepared once here; it only
+ * re-ranks a contract or verifier descent inside the F Core admitted, and an
+ * invalid, expired or uncovered one changes nothing. Production registers
+ * none. */
 export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, hostAutoPlan = false, boundedAutoPlanning = false, ledgerLog = null,
                                          adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null,
                                          frozenRoutePredictor = null, livePlanCapability = null, calibratedRoutePredictor = null,
-                                         calibratedRouteFixtureExecutor = null} = {}) {
+                                         calibratedRouteFixtureExecutor = null, certifiedDescentPolicy = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
+  // Type misuse only. A malformed policy object is inactive, never an error.
+  assert(certifiedDescentPolicy === null || plain(certifiedDescentPolicy), 'certified_descent_policy_invalid');
+  const descentPolicy = certifiedDescentPolicy === null ? null : prepareCertifiedDescentPolicy(certifiedDescentPolicy);
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
   assert(int(cancelGraceMs, 100, 30_000), 'cancel_grace_invalid');
@@ -3092,7 +3179,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, hostAutoPlan, boundedAutoPlanning, ledger, ledgerLog,
                                  adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
-                                 calibratedRoutePredictor, calibratedRouteFixture: calibratedRouteFixtureExecutor !== null});
+                                 calibratedRoutePredictor, calibratedRouteFixture: calibratedRouteFixtureExecutor !== null,
+                                 descentPolicy});
   runtime.reconcileRestart();
   runtime.reconcileLedger();
   runtime.startQueued();
@@ -3104,7 +3192,7 @@ class RCCRuntime {
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, boundedAutoPlanning, ledger,
                ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
-               calibratedRoutePredictor, calibratedRouteFixture}) {
+               calibratedRoutePredictor, calibratedRouteFixture, descentPolicy}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -3121,6 +3209,7 @@ class RCCRuntime {
     this.livePlanCapability = livePlanCapability;
     this.calibratedRoutePredictor = calibratedRoutePredictor;
     this.calibratedRouteFixture = calibratedRouteFixture;
+    this.descentPolicy = descentPolicy;
     this.ledger = ledger; this.ledgerLog = ledgerLog;
     // Dispatched attempts whose ledger record is not written yet, with the
     // route facts fixed at dispatch: an attempt that settles after stop is
@@ -4183,7 +4272,7 @@ class RCCRuntime {
     const task = executionTask(snapshot);
     let baseline;
     try { baseline = resolveRoutePlan(hostPlan(task, snapshot.catalog), task, snapshot.catalog, Date.now(),
-      {verifierRegistry: this.verifierRegistry}); }
+      {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy}); }
     catch (error) {
       this._restoreCalibratedR0(taskID, 'current_r0_unavailable', prior.baseline, {saved: true});
       throw error;
@@ -4302,7 +4391,7 @@ class RCCRuntime {
         // to ask the model to certify itself.
         assert(this.livePlanCapability?.manifest_sha256 === policy.adoption_manifest_sha256,
           'live_capability_unavailable');
-        livePlannerContext(task, catalog, this.livePlanCapability, Date.now(), this.verifierRegistry);
+        livePlannerContext(task, catalog, this.livePlanCapability, Date.now(), this.verifierRegistry, this.descentPolicy);
         disposition = {plan_proposals_enabled: true, reason: 'live_host_capability_bound'};
       } catch { disposition = {plan_proposals_enabled: false, reason: 'live_capability_or_full_contract_unavailable'}; }
     } else if (typeof workload !== 'string' || scope !== 'read_only') {
@@ -4415,11 +4504,11 @@ class RCCRuntime {
           scope: bounded ? 'read_only' : hostScope(freshTask, freshCatalog), nonce});
         compiled = compileFreshPlannerProposal(raw, prepared, fresh, policy);
         if (bounded) {
-          admitBoundedAutoPlan(compiled, freshTask, freshCatalog, Date.now(), this.verifierRegistry);
+          admitBoundedAutoPlan(compiled, freshTask, freshCatalog, Date.now(), this.verifierRegistry, this.descentPolicy);
           reason = 'bounded_host_checked_proposal';
         } else if (policy.mode === 'covered_live') {
           admitLivePlannerPlan(compiled, freshTask, freshCatalog, this.livePlanCapability,
-            Date.now(), this.verifierRegistry);
+            Date.now(), this.verifierRegistry, this.descentPolicy);
           reason = 'live_host_checked_proposal';
         } else reason = 'shadow_proposal_validated_not_executed';
       }
@@ -4698,9 +4787,10 @@ class RCCRuntime {
         if (['live_host_checked_proposal', 'bounded_host_checked_proposal'].includes(observed?.reason) && observed.host_bound_compilation) {
           try {
             accepted = observed.reason === 'bounded_host_checked_proposal' ?
-              admitBoundedAutoPlan(observed.host_bound_compilation, admitted, catalog, Date.now(), this.verifierRegistry) :
+              admitBoundedAutoPlan(observed.host_bound_compilation, admitted, catalog, Date.now(), this.verifierRegistry,
+                this.descentPolicy) :
               admitLivePlannerPlan(observed.host_bound_compilation, admitted, catalog,
-                this.livePlanCapability, Date.now(), this.verifierRegistry);
+                this.livePlanCapability, Date.now(), this.verifierRegistry, this.descentPolicy);
           } catch {
             // A task/catalog/contract change after the model reply restores
             // the host plan. Never repair a stale proposal by recomputing its
@@ -4720,7 +4810,7 @@ class RCCRuntime {
       // the planner's final-output dependency coverage.
       assertFinalOutputOwnership(proposed, admitted);
       const resolved = accepted ?? resolveRoutePlan(proposed, admitted, catalog, boundAt,
-        {verifierRegistry: this.verifierRegistry});
+        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy});
       // One indivisible task runs the owner's own words, never a planner
       // paraphrase (lockIndivisibleInstruction); the decision says so.
       const locked = lockIndivisibleInstruction(resolved.plan, admitted);
@@ -4900,7 +4990,8 @@ class RCCRuntime {
     const escalated = child.ladder?.source === 'tier' && child.ladder.escalated === true;
     const choice = selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
       {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs,
-        referenceOnly: escalated || child.route_kind === 'execution_only', verifierRegistry: this.verifierRegistry});
+        referenceOnly: escalated || child.route_kind === 'execution_only', verifierRegistry: this.verifierRegistry,
+        descentPolicy: this.descentPolicy});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, fresh, [nodeID]));
@@ -4970,7 +5061,7 @@ class RCCRuntime {
         // An older build's unchecked 'execution_only' child moves only to a reference.
         const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
           {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry,
-            referenceOnly: child.route_kind === 'execution_only'});
+            descentPolicy: this.descentPolicy, referenceOnly: child.route_kind === 'execution_only'});
         return choice.candidate.quota_pool !== planned.quota_pool &&
           this._leasePossible(choice.candidate, executionTask(snapshot), node.id, false) ? choice : null;
       } catch { return null; }
@@ -6285,6 +6376,10 @@ class RCCRuntime {
       quota_remaining_fraction: candidate.quota_remaining_fraction, dispatched_at_ms: child.dispatched_at_ms ?? null,
       verifier: Boolean(this._nodeVerifier(snapshot, child.id, candidate)),
       delivery_basis: deliveryBasis, check_id: checkID, stratum,
+      // K10: the frozen cost policy that chose this descent (and so its one
+      // escalation), when one did; absent otherwise.
+      ...(routeClass !== null && HASH.test(child.ladder?.descent_policy_sha256 ?? '') ?
+        {descent_policy_sha256: child.ladder.descent_policy_sha256} : {}),
       ...(outcomeContext === null ? {} : {outcome_context: outcomeContext})};
   }
   /** Inside a dispatch update: fix the attempt's route facts and mark the
@@ -6318,7 +6413,9 @@ class RCCRuntime {
    * sound_full verifier verdict, never a class format check, a reference or
    * owner words; it means "accepted within that check's coverage", not
    * reference-equal quality) and `stratum`. A route pended by an older build
-   * has none of them, and `verifier_outcome` keeps its meaning. */
+   * has none of them, and `verifier_outcome` keeps its meaning. K10 adds
+   * `descent_policy_sha256` only when a frozen cost policy chose the descent
+   * (its escalation included). */
   _ledgerRecord({taskID, nodeID, attemptID, route}, outcome, verifierOutcome, attemptState, escalationOutcome = null,
                 dispatchedFailure = null, checkOutcome = null) {
     const record = {schema: 1, task_id: taskID, node_id: nodeID, attempt_id: attemptID,
@@ -6336,6 +6433,7 @@ class RCCRuntime {
       dispatched_failure: dispatchedFailure === 'no_effects' ? 'no_effects' : null,
       dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now(),
       ...(typeof route.delivery_basis === 'string' ? this._ledgerCheck(route, checkOutcome) : {}),
+      ...(HASH.test(route.descent_policy_sha256 ?? '') ? {descent_policy_sha256: route.descent_policy_sha256} : {}),
       ...(outcome.routing_outcome_summary ? {routing_outcome: outcome.routing_outcome_summary} : {})};
     // Full capture is in the existing attempt row; optional metadata must not
     // turn a bounded legacy ledger/failure entry into a lost oversize record.
