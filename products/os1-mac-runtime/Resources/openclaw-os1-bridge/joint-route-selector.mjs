@@ -21,6 +21,14 @@
  * an independently prebound current catalog candidate. They are never merged.
  * Initial sample budget is exactly one. Read-only no-live-fallback extensions
  * and operational calibrated-policy admission are deliberately NOT implemented.
+ *
+ * K10 (§2.4): selectCertifiedDescent is a separate pure ranking in the score
+ * space check_acceptance_probability_v1, over a frozen per-stratum cost
+ * policy (prepareCertifiedDescentPolicy). Core calls it per node, inside a set
+ * F it has ALREADY admitted (the escalation reference fixed at bind plus that
+ * pool's dispatchable certified rows); it never grants admission, never adds
+ * a row, never accepts an answer, and returns only the id of an element it was
+ * given. selectJointRoute above stays advisory.
  */
 import {createHash} from 'node:crypto';
 
@@ -326,6 +334,150 @@ export function selectJointRoute(input) {
   return {...audit, decision: selected.candidate_id === ref.id ? 'preserve_reference' : 'candidate_proposal',
     reason: selected.candidate_id === ref.id ? 'no_quality_eligible_lower_total_resource_tuple' :
       'minimum_observed_total_resource_estimate_after_quality_threshold', selected};
+}
+
+// ---- K10 (§2.4): certified-descent cost ranking inside an admitted F ----
+export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability_v1';
+const CHECK_LABEL_SPACE = 'check_acceptance_v1'; // the K9 per-attempt label space a producer fits
+const CONTEXT_BUCKET_RULE = 'instruction_plus_context_utf8_bytes_v1';
+const DESCENT_POLICY_KEYS = ['schema', 'score_space', 'label_score_space', 'id', 'version', 'resource_unit',
+  'valid_from_ms', 'valid_until_ms', 'context_bucket_rule', 'context_bucket_upper_bytes', 'rows', 'policy_sha256'];
+const DESCENT_ROW_KEYS = ['request_class', 'scope', 'admitted_by', 'check_id', 'turn', 'has_materials',
+  'context_bucket', 'surface', 'quota_pool', 'model', 'effort', 'role', 'p_lower', 'basis_sample_count',
+  'basis_artifact_sha256', 'components'];
+const DESCENT_SOURCES = new Set(['contract', 'verifier']);
+const TURNS = new Set(['first', 'not_first']);
+// 2048 rows (about 27 JSON nodes each) stay inside stableJSON's 100,000-node
+// bound, so every admissible policy can be hashed.
+const MAX_DESCENT_POLICY_ROWS = 2048;
+const MAX_CONTEXT_BUCKETS = 16;
+const MAX_DESCENTS = 256;
+// Prepared policy -> its stratum index. Module-private: a copy, a hand-built
+// object or a later change to the caller's value never ranks anything.
+const PREPARED_DESCENT_POLICIES = new WeakMap();
+const optionalString = x => x === null || string(x);
+const stratumKey = s => stableJSON([s.request_class, s.scope, s.admitted_by, s.check_id, s.turn, s.has_materials,
+  s.context_bucket]);
+const tupleKey = t => stableJSON([t.surface, t.quota_pool, t.model, t.effort]);
+const componentSum = components => RESOURCE_COMPONENTS.reduce((sum, k) => sum + components[k], 0);
+
+/** K10: validate a frozen check-acceptance cost policy v1 once (the caller
+ * keeps the result; nothing is re-hashed per routing call). Pure. Returns a
+ * frozen, module-branded {status:'active', sha256, id, version,
+ * valid_from_ms, valid_until_ms, bounds, rows} or a frozen
+ * {status:'inactive', reason}. A row is one tuple {surface, quota_pool,
+ * model, effort} in one stratum {request_class, scope, admitted_by
+ * (contract | verifier), check_id, turn, has_materials, context_bucket}: a
+ * 'reference' row (p_lower null, no check cost) or a 'descent' row whose
+ * verification_tokens_per_sample is its check's cost and whose p_lower is the
+ * lower bound of that check accepting its answer. retry_reserve_tokens is
+ * always 0: the ranking derives it. policy_sha256 is the digest of the policy
+ * without that key (self-integrity, not provenance). */
+export function prepareCertifiedDescentPolicy(raw) {
+  const inactive = reason => Object.freeze({status: 'inactive', reason});
+  if (!plain(raw)) return inactive('policy_missing_or_not_plain');
+  if (!exact(raw, DESCENT_POLICY_KEYS)) return inactive('policy_shape_invalid');
+  if (!Array.isArray(raw.rows) || raw.rows.length < 1 || raw.rows.length > MAX_DESCENT_POLICY_ROWS)
+    return inactive('policy_rows_count_invalid');
+  try { stableJSON(raw); } catch { return inactive('policy_not_plain_finite_json'); }
+  if (raw.score_space !== CHECK_ACCEPTANCE_SCORE_SPACE) return inactive('policy_score_space_invalid');
+  if (raw.schema !== 1 || raw.label_score_space !== CHECK_LABEL_SPACE || !string(raw.id) || !string(raw.version) ||
+      raw.resource_unit !== RESOURCE_UNIT || raw.context_bucket_rule !== CONTEXT_BUCKET_RULE || !hash(raw.policy_sha256))
+    return inactive('policy_header_invalid');
+  if (!Number.isSafeInteger(raw.valid_from_ms) || raw.valid_from_ms < 0 || !Number.isSafeInteger(raw.valid_until_ms) ||
+      raw.valid_from_ms >= raw.valid_until_ms) return inactive('policy_window_invalid');
+  const bounds = raw.context_bucket_upper_bytes;
+  if (!Array.isArray(bounds) || bounds.length < 1 || bounds.length > MAX_CONTEXT_BUCKETS ||
+      !bounds.every((b, i) => Number.isSafeInteger(b) && b >= 0 && (i === 0 || b > bounds[i - 1])))
+    return inactive('policy_context_buckets_invalid');
+  const index = new Map();
+  for (const row of raw.rows) {
+    if (!exact(row, DESCENT_ROW_KEYS) || !optionalString(row.request_class) || !SCOPES.has(row.scope) ||
+        !DESCENT_SOURCES.has(row.admitted_by) || !optionalString(row.check_id) || !TURNS.has(row.turn) ||
+        typeof row.has_materials !== 'boolean' || !Number.isSafeInteger(row.context_bucket) ||
+        row.context_bucket < 0 || row.context_bucket > bounds.length ||
+        ![row.surface, row.quota_pool, row.model].every(string) || !EFFORTS.has(row.effort) ||
+        !['reference', 'descent'].includes(row.role) || !Number.isSafeInteger(row.basis_sample_count) ||
+        row.basis_sample_count < 1 || !hash(row.basis_artifact_sha256) || !exact(row.components, RESOURCE_COMPONENTS) ||
+        !RESOURCE_COMPONENTS.every(k => nonnegative(row.components[k])) || !finite(componentSum(row.components)))
+      return inactive('policy_row_invalid');
+    if (row.components.retry_reserve_tokens !== 0) return inactive('policy_row_retry_reserve_nonzero');
+    if (row.role === 'reference' && (row.p_lower !== null || row.components.verification_tokens_per_sample !== 0))
+      return inactive('policy_reference_row_invalid');
+    if (row.role === 'descent' && !probability(row.p_lower)) return inactive('policy_descent_row_invalid');
+    const stratum = stratumKey(row), tuple = tupleKey(row);
+    if (!index.has(stratum)) index.set(stratum, new Map());
+    if (index.get(stratum).has(tuple)) return inactive('policy_duplicate_row');
+    index.get(stratum).set(tuple, Object.freeze({role: row.role, p_lower: row.p_lower,
+      components: Object.freeze({...row.components})}));
+  }
+  const {policy_sha256: claimed, ...body} = raw;
+  if (digest(body) !== claimed) return inactive('policy_hash_mismatch');
+  const prepared = Object.freeze({status: 'active', sha256: claimed, id: raw.id, version: raw.version,
+    valid_from_ms: raw.valid_from_ms, valid_until_ms: raw.valid_until_ms, bounds: Object.freeze([...bounds]),
+    rows: raw.rows.length});
+  PREPARED_DESCENT_POLICIES.set(prepared, index);
+  return prepared;
+}
+export function isPreparedCertifiedDescentPolicy(value) { return PREPARED_DESCENT_POLICIES.has(value); }
+
+/** K10: rank F by expected total tokens after the per-answer check. Pure.
+ * F = `reference` (the escalation reference Core fixed at bind) plus
+ * `descents` (Core's dispatchable certified rows of the pool R11 chose, in
+ * TIER_ROUTES then catalog order), each {candidate_id, surface, quota_pool,
+ * model, effort}. `stratum` = {request_class, scope, admitted_by, check_id,
+ * turn, has_materials, context_bytes}. Inactive unless the policy is a
+ * prepared active one, valid_from_ms <= now_ms < valid_until_ms, and EVERY
+ * member of F has a row of its role in this stratum's bucket: an uncovered
+ * tuple is never costed as zero nor dropped, the caller keeps TIER_ROUTES.
+ * c_ref is the reference row's component sum; a descent's total is its
+ * components (its check's cost included) with retry_reserve_tokens =
+ * (1 - p_lower) * c_ref, the one escalation its check can still demand. The
+ * smallest total wins; a tie keeps the reference, then input order. No
+ * quality threshold: the check accepts each answer, this ranks only cost, and
+ * the result is always an input id. */
+export function selectCertifiedDescent({now_ms, policy, stratum, reference, descents} = {}) {
+  const fixed = {execution_authorized: false, quality_certificate: false};
+  const inactive = reason => ({decision: 'inactive', reason, ...fixed});
+  const index = PREPARED_DESCENT_POLICIES.get(policy);
+  if (index === undefined) return inactive(policy?.status === 'inactive' && typeof policy.reason === 'string' &&
+    /^[a-z0-9_]{1,64}$/.test(policy.reason) ? policy.reason : 'policy_not_prepared');
+  if (!Number.isSafeInteger(now_ms) || now_ms < policy.valid_from_ms || now_ms >= policy.valid_until_ms)
+    return inactive('policy_outside_validity_window');
+  if (!plain(stratum) || !optionalString(stratum.request_class) || !SCOPES.has(stratum.scope) ||
+      !DESCENT_SOURCES.has(stratum.admitted_by) || !optionalString(stratum.check_id) || !TURNS.has(stratum.turn) ||
+      typeof stratum.has_materials !== 'boolean' || !Number.isSafeInteger(stratum.context_bytes) ||
+      stratum.context_bytes < 0) return inactive('stratum_invalid');
+  const member = x => plain(x) && string(x.candidate_id) && [x.surface, x.quota_pool, x.model].every(string) &&
+    EFFORTS.has(x.effort);
+  if (!member(reference) || !Array.isArray(descents) || descents.length < 1 || descents.length > MAX_DESCENTS ||
+      !descents.every(member) || new Set([reference, ...descents].map(x => x.candidate_id)).size !== descents.length + 1)
+    return inactive('certified_set_invalid');
+  const found = policy.bounds.findIndex(bound => stratum.context_bytes <= bound);
+  const bucket = found === -1 ? policy.bounds.length : found;
+  const rows = index.get(stratumKey({...stratum, context_bucket: bucket}));
+  const rowOf = (x, role) => { const row = rows?.get(tupleKey(x)); return row?.role === role ? row : null; };
+  const referenceRow = rowOf(reference, 'reference');
+  if (referenceRow === null) return inactive('policy_reference_uncovered');
+  const descentRows = descents.map(x => rowOf(x, 'descent'));
+  if (descentRows.includes(null)) return inactive('policy_descent_uncovered');
+  const cRef = componentSum(referenceRow.components);
+  const totals = [{candidate_id: reference.candidate_id, role: 'reference', p_lower: null,
+    components: {...referenceRow.components}, total: cRef}];
+  descents.forEach((x, i) => {
+    const row = descentRows[i];
+    const components = {...row.components, retry_reserve_tokens: (1 - row.p_lower) * cRef};
+    totals.push({candidate_id: x.candidate_id, role: 'descent', p_lower: row.p_lower, components,
+      total: componentSum(components)});
+  });
+  if (!totals.every(option => finite(option.total))) return inactive('policy_total_overflow');
+  // Strictly smaller only: the reference (first) wins a tie, then input order.
+  const best = totals.reduce((a, b) => b.total < a.total ? b : a);
+  const descent = best.role === 'descent';
+  return {decision: descent ? 'descent' : 'reference',
+    reason: descent ? 'lowest_expected_total_after_check' : 'certified_descent_not_cost_effective',
+    candidate_id: best.candidate_id, policy_sha256: policy.sha256, score_space: CHECK_ACCEPTANCE_SCORE_SPACE,
+    unit: RESOURCE_UNIT, context_bucket: bucket, totals, ...fixed};
 }
 
 /*

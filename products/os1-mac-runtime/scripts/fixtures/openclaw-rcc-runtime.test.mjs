@@ -474,11 +474,14 @@ test('first-turn typed paging metadata is not prior history; retained or unknown
 // 2026-10-15: a plain Auto "1+1이 뭐야?" ran Codex gpt-6-luna/low (29K input
 // tokens) and ended returned_unverified. A wrapped exact question is the same
 // exact sum: Core answers it with no model call; anything else stays routed.
+// K7 (os1-closed-arithmetic-v1): a decimal operand and several operators are
+// exact too ('1.5+1은?', '1+1+1은?'); the full grammar is checked against the
+// shared vectors in openclaw-rcc-exact-arithmetic.test.mjs.
 const WRAPPED_ARITHMETIC = [['1+1이 뭐야?', '2'], ['2+2는?', '4'], ['3*7은 얼마야?', '21'], ['what is 6*7?', '42'],
   ['1+1=?', '2'], ['１＋１은?', '2'], ['1+1=', '2'], ['How much is 12 + 30', '42'], ['2×3은 뭐예요?', '6'],
-  ['What’s 2+2?', '4'], ['1+1 몇이야', '2'], ['1+1?', '2']];
+  ['What’s 2+2?', '4'], ['1+1 몇이야', '2'], ['1+1?', '2'], ['1.5+1은?', '2.5'], ['1+1+1은?', '3']];
 const ROUTED_ARITHMETIC = ['1+1이 뭐야? 그리고 설명해줘', '원플러스원', '5-3은?', '1+1 2+2', '1+1이 뭐야 코덱스로',
-  '1+1은', '5-3?', '2+3!', '2²+1', '6/3은?', '1.5+1은?', '1+1+1은?', '1+1=2?', 'what is one plus one?',
+  '1+1은', '5-3?', '2+3!', '2²+1', '6/3은?', '1+1=2?', 'what is one plus one?',
   'what is 1+1이 뭐야', '-3+5는?', `${'1'.repeat(16)}+1은?`];
 
 test('wrapped exact arithmetic questions are recognised only in their closed whole-request shapes', () => {
@@ -2768,11 +2771,20 @@ test('routing ledger: one private record per settled attempt, ids and routing fa
     assert.equal(text.includes(forbidden), false, forbidden);
   const records = await ledgerRecords(dir);
   assert.equal(records.length, 2, 'one record per attempt: the quota rejection and the success');
-  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'dispatched_at_ms',
+  assert.deepEqual(Object.keys(records[1]).sort(), ['attempt_id', 'attempt_state', 'check_id', 'check_label',
+    'check_outcome', 'delivery_basis', 'dispatched_at_ms',
     'dispatched_failure', 'effort', 'escalated', 'escalation_outcome', 'execution_verified', 'family',
     'host_route_kind', 'ladder', 'model', 'node_id', 'quota_pool', 'quota_remaining_fraction',
-    'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'surface', 'surface_kind',
-    'task_id', 'task_quality', 'tier', 'usage', 'verifier_outcome']);
+    'reference_effort', 'route_class', 'route_kind', 'schema', 'scope', 'settled_at_ms', 'stratum', 'surface',
+    'surface_kind', 'task_id', 'task_quality', 'tier', 'usage', 'verifier_outcome']);
+  // K9: the law bound the reference; no check, no label, verifier_outcome unchanged.
+  for (const record of records) {
+    assert.equal(record.delivery_basis, 'reference');
+    assert.equal(record.check_id, null); assert.equal(record.check_outcome, null); assert.equal(record.check_label, null);
+    assert.deepEqual(Object.keys(record.stratum).sort(), ['context_bytes', 'has_materials', 'request_class', 'turn']);
+    assert.equal(record.stratum.turn, 'first'); assert.equal(record.stratum.has_materials, false);
+    assert.equal(record.stratum.context_bytes, Buffer.byteLength(secret));
+  }
   // An older catalog (no model_tiers) records no tier and no escalation.
   assert.equal(records[1].tier, null); assert.equal(records[1].escalated, false);
   // Not a named route, and no failure after dispatch: both optional facts null.

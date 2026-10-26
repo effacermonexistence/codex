@@ -8,6 +8,7 @@ gates. No provider, network, live state, user HOME or other product is touched.
 """
 from pathlib import Path
 import hashlib
+import json
 import re
 import subprocess
 import tempfile
@@ -225,6 +226,16 @@ check("claudeCatalogs(workspace: host.workspace, config: config))?.configured" i
 check("RCCNativeCatalogBuilder.codexInventory(" in catalog_host and "codex.quotaExcludedModels" in catalog_host and
       "input.codexQuotaExhaustedModels = shaped.quotaExhausted" in catalog_host,
       "RCC catalog keeps a quota-exhausted Codex slug marked exhausted, never silently stripped")
+# K11: a table certificate's D4 measurement is read only from host custody, by
+# the hash the signed table names, through the private input gate; the harness
+# scope is the shipped profile's id and version. Nothing else feeds it.
+check("RCCClassMeasurement.custodyPath(home: measurementHome, sha256: certificate.measurementSHA256)" in catalog_host and
+      "let bytes = try? rccPrivateInput(url.path)" in catalog_host and
+      "input.classMeasurements[certificate.measurementSHA256] = bytes" in catalog_host and
+      "input.harnessProfile = RCCClassMeasurement.harnessScope(HarnessProfile.current)" in catalog_host and
+      catalog_host.count("input.classMeasurements[") == 1 and catalog_host.count("input.classTable") == 1 and
+      "input.classTable =" not in catalog_host,
+      "RCC catalog reads class measurements only from custody by their pinned hash (K11)")
 
 # Core-owned intent interpretation: compiler functions are pure native code;
 # OS1 transport submits raw input only, and the same task owns its lifecycle.
@@ -466,8 +477,13 @@ for fixture in ("local-plan-proposal", "local-plan-planner", "joint-selector", "
                 "adaptive-joint-shadow", "routing-outcome-capture", "adaptive-prompt-views",
                 "frozen-route-artifacts", "frozen-route-predictor", "frozen-runtime",
                 "calibrated-plugin", "calibrated-route-evidence", "calibrated-route-predictor", "calibrated-admission"):
-    check('node --test "$script_dir/fixtures/openclaw-rcc-' + fixture + '.test.mjs"' in RELEASE,
+    check('node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-' + fixture + '.test.mjs"' in RELEASE,
           "release executes exact pure routing fixture: " + fixture)
+# Node's default per-test timeout is infinite: a release fixture whose await
+# never settles would stall build-release.sh instead of failing it.
+NODE_TEST_LINES = re.findall(r"^node --test\b.*$", RELEASE, re.M)
+check(len(NODE_TEST_LINES) >= 50 and all(" --test-timeout=180000 " in line for line in NODE_TEST_LINES),
+      "every release node --test line carries a per-test timeout")
 check('"--append-system-prompt"' in MAIN and '"developerInstructions": instructions' in MAIN,
       "native execution retains real provider-supported governance channels")
 DISPLAY = (ROOT / "Sources/OS1Context/RCCNativeDisplayReceipts.swift").read_text()
@@ -511,10 +527,170 @@ check('"gpt-6-astra": .frontier' in table and '"gpt-6.1-sol": .workhorse' in tab
       "tier table copies provider descriptions; previous-generation and specialized models have no tier")
 check('object["model_tiers"] = output.modelTiers' in BUILDER and "ModelTiers.tier(of: $0.model) == .frontier" in BUILDER,
       "catalog builder emits model_tiers and the frontier reference explanation")
+# K11: the certificate decision sits in admissionFacts (not the serializer),
+# references are computed once in build(), and the wire still emits only the
+# verified facts.classCertificate.
+admission = section(BUILDER, "public static func admissionFacts(", "public static func providersToProbe(")
+MEASUREMENT = (ROOT / "Sources/OS1Context/RCCClassMeasurement.swift").read_text()
+check("RCCClassMeasurement.verified(signed, requestClass: requestClass," in admission and
+      "artifact: input.classMeasurements[signed.measurementSHA256]" in admission and
+      "reference: references[signed.provider]" in admission and
+      "classCertificate: certificate," in admission and
+      "references: [String: RCCClassMeasurement.Reference] = [:]" in admission and
+      "input.classTable.certificate(for: requestClass)" in admission and BUILDER.count("classTable.certificate(for:") == 1,
+      "admissionFacts carries a table certificate only after its measurement artifact verifies (K11)")
+check("admission: admissionFacts(input, references: references))" in BUILDER and
+      'excluded[provider]?["reference_unavailable"] == nil' in BUILDER and
+      "references[provider] = .init(provider: provider, model: frontier.model, effort: ceiling)" in BUILDER,
+      "build computes each pool's current frontier-ceiling reference once and passes it to admissionFacts (K11)")
+emission = section(BUILDER, "if let certificate = facts.classCertificate {", "if let pin = facts.classProviderPin")
+check('object["class_certificates"] = [facts.requestClass.rawValue:' in emission and
+      BUILDER.count('object["class_certificates"]') == 1 and "classCertificateRejection" not in
+      section(BUILDER, "public static func catalogData(", "\n}"),
+      "the catalog emits only the verified certificate; the rejection reason never reaches the wire (K11)")
+check('public static let kind = "os1_rcc_class_measurement_v1"' in MEASUREMENT and
+      "public static let minimumCases: Int64 = 60" in MEASUREMENT and
+      "guard C.isHash(sha256) else { return nil }" in MEASUREMENT and
+      "C.digest(artifact) == certificate.measurementSHA256" in MEASUREMENT and
+      "try? C.checkedObject(data), Set(object.keys) == artifactKeys" in MEASUREMENT and
+      "r.tierDisagreement <= r.referenceAADisagreement" in MEASUREMENT and
+      '"\\(profile.id)@\\(profile.version)"' in MEASUREMENT,
+      "the measurement gate checks hash, strict shape, scope, reference, harness, window and the PASS law (K11)")
 check("export const TIER_ROUTES" in RUNTIME and "'model_tiers'" in RUNTIME and "function tierRouteCandidate(" in RUNTIME and
       "referenceOnly: escalated" in RUNTIME and "pendingEscalation(" in RUNTIME and
       "export function admittedRoute(" in RUNTIME and "function certifiedAnswer(" in RUNTIME,
       "core binds every node by the admission law and escalates a rejected certified descent once to the reference")
+# K4: only a probed sound_full verifier whose applies() holds certifies (probes
+# fail closed and get the certifier's own row-free input), and a verifier-admitted
+# descent is delivered only with that certifier's pass on THIS attempt;
+# production registers none. The node fixtures are the behaviour gate.
+check("export async function registerNodeVerifiers(" in RUNTIME and "verifier_registration_unsound" in RUNTIME and
+      "if (!plain(verdict) || verdict.passed !== false) throw new RCCRuntimeError('verifier_registration_probe_unanswered');" in RUNTIME and
+      "selected_config: certifier ? null : exactConfig(candidate)" in RUNTIME and
+      "VERIFIER_REGISTRATION_TIMEOUT_MS" not in RUNTIME and
+      "function soundVerifierFor(" in RUNTIME and "function verifiedSurfaceKinds(" not in RUNTIME and
+      "case 'verifier': return true" not in RUNTIME and
+      "verdict.attempt_id === result.attempt_id" in RUNTIME and
+      "const registry = await registerNodeVerifiers(verifierRegistry ?? new Map());" in RUNTIME and
+      "if (descent && (result.handback || result.repair_source)) {" in RUNTIME and
+      "verifierRegistry" not in PLUGIN and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-verifier-registry.test.mjs"' in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-tier-routing.test.mjs"' in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-runtime.test.mjs"' in RELEASE,
+      "K4: applicability-scoped verifier certification, per-attempt acceptance, none registered in production, fixtures release-gated")
+# K9: every ledger record this build fixes names its delivery basis and its
+# check; the offline delivery_policy_valid audit reads the JSONL only (its one
+# bundled import is the pure resource reducer K16's parity check uses; the
+# script is never bundled itself) and is release-gated.
+REPLAY = (ROOT / "scripts/route-replay.mjs").read_text()
+check("export function deliveryBasisOf(" in RUNTIME and "export function checkIdOf(" in RUNTIME and
+      "delivery_basis: deliveryBasis, check_id: checkID, stratum," in RUNTIME and
+      "...(typeof route.delivery_basis === 'string' ? this._ledgerCheck(route, checkOutcome) : {})," in RUNTIME and
+      "score_space: 'check_acceptance_v1'" in RUNTIME and "'certifier_unavailable'" in RUNTIME and
+      "entry?.check_outcome ?? null" in RUNTIME and "settled ? entry.check_outcome ?? null : null" in RUNTIME and
+      "export function auditDeliveryPolicy(" in REPLAY and
+      re.findall(r"openclaw-os1-bridge/[\w.-]+", REPLAY) == ["openclaw-os1-bridge/resource-usage.mjs"] and
+      "fetch(" not in REPLAY and "node:child_process" not in REPLAY and
+      "const SUBCOMMANDS = Object.freeze({delivery: runDelivery" in REPLAY and
+      "route-replay.mjs" not in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-replay.test.mjs"' in RELEASE,
+      "K9: ledger delivery basis and check per attempt; offline delivery_policy_valid audit, release-gated")
+# K16: `route-replay.mjs usage` reports M1 (verified_not_dispatched null usage is
+# verified zero, per-pool completeness from snapshots, the runtime reducer as a
+# fail-closed parity check); quota-replay.py keeps M2/M3 as labelled estimates
+# and judges 15% per pool from M4 alone with the quantization-conservative bound.
+# Both are offline scripts, never bundled, and release-gated.
+QUOTA = (ROOT / "scripts/quota-replay.py").read_text()
+M4_SECTION = section(QUOTA, "# ---- M4: the only verdict. ----", "def build_report(")
+check("export function replayUsage(" in REPLAY and "usage: runUsage" in REPLAY and
+      "record.attempt_state === 'verified_not_dispatched' ? {state: 'verified_zero'}" in REPLAY and
+      "summarizeTaskResources(snapshot)" in REPLAY and "'runtime_reducer_native_incomplete'" in REPLAY and
+      "def m4_verdict(m4, task_pools):" in QUOTA and 'VERDICT_BASIS = "M4_quota_window_observation_only"' in QUOTA and
+      "THRESHOLD = Fraction(15, 100)" in QUOTA and "lower = 1 - (d_os1 + quantum) / (d_ref - quantum)" in QUOTA and
+      not re.search(r"\b(m2_estimate|m3_estimate|_price_proxies|load_price_card|load_cf_card|price|cf)\b", M4_SECTION) and
+      not re.search(r"^\s*(import|from)\s+(socket|urllib|http|ssl)\b", QUOTA, re.M) and
+      "quota-replay.py" not in RELEASE.replace('python3 -I "$script_dir/quota-replay.py" --self-test', "") and
+      'python3 -I "$script_dir/quota-replay.py" --self-test' in RELEASE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-route-replay-usage.test.mjs"' in RELEASE,
+      "K16: offline M1 usage replay and M4-only per-pool quota verdict, never bundled, release-gated")
+# K8: only the first dispatch of a fresh single-node HOST plan reuses its
+# bind-time catalog. A planner call after bind, an owner collection, a task
+# contract, a calibrated pending dispatch, an injected plan or a second node
+# keeps the pre-dispatch refresh; admission and calibrated rechecks still run.
+REUSE = section(RUNTIME, "  _bindCatalogReusable(snapshot, node) {", "  _readyWaveEligible(snapshot, node, candidate) {")
+DAG = section(RUNTIME, "  async _scheduleDAG(taskID, bindReuse = null) {", "  async _executeNode(")
+check("!this.hostAutoPlan" in REUSE and "snapshot.adaptive_routing?.planner_invoked === true" in REUSE and
+      "snapshot.plan?.nodes.length !== 1" in REUSE and "snapshot.owner_collection" in REUSE and
+      "snapshot.catalog?.task_contract != null" in REUSE and
+      "snapshot.calibrated_route?.state === 'pending_dispatch'" in REUSE and "child.attempts === 0" in REUSE and
+      "const bindReuse = {binding: this._readyWaveBinding(state)};" in RUNTIME and
+      RUNTIME.count("this._scheduleDAG(") == 1 and "await this._scheduleDAG(taskID, bindReuse);" in RUNTIME and
+      "let bindWave = bindTime; bindTime = null;" in DAG and
+      "bindWave.binding === this._readyWaveBinding(current)" in DAG and
+      "this._bindCatalogReusable(current, node) &&\n            dispatchable(planned, executionTask(current), Date.now());" in DAG and
+      "fresh = reusable || bound ? current.catalog :" in DAG and
+      "if (!admissionCurrent(current)) { reResolved = true; break; }\n          if (!this._recheckCalibratedRoute(taskID))" in DAG and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-bind-catalog-reuse.test.mjs"' in RELEASE,
+      "K8: a fresh single-node host plan's first dispatch reuses its bind-time catalog; every other dispatch refreshes")
+# K7: Core's zero-model closed arithmetic is os1-closed-arithmetic-v1, read
+# from shared vectors by Node and Swift. pureArithmetic stays the one-operator
+# explicit-route exact family (the plugin verifier and the Swift answer-only
+# envelope read only that shape); only the two zero-model sites read a bare
+# v3 envelope as a first turn, every other withoutConversation stays strict.
+ARITH_TEST = (ROOT / "scripts/fixtures/openclaw-rcc-exact-arithmetic.test.mjs").read_text()
+CONTEXT_TESTS = (ROOT / "Tests/OS1ContextTests/SourceContextTests.swift").read_text()
+check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exec(request);" in RUNTIME and
+      "export function zeroModelArithmetic(request) {\n  const bare = pureArithmetic(request);\n"
+      "  if (bare !== null) return legacyLeadingZero(request) ? null : bare;\n"
+      "  return exactArithmeticQuestion(request);" in RUNTIME and
+      # A bare one-operator leading-zero number ('02-123') abstains like
+      # every other strength; pureArithmetic itself is unchanged.
+      "if (bare !== null) return legacyLeadingZero(text) ? null : bare;" in RUNTIME and
+      "const answer = zeroModelArithmetic(task.request);" in RUNTIME and
+      # Only '=' or one '-'/'/' under a quantity predicate reads a date- or
+      # phone-shaped EXPR as arithmetic; a leading-zero number never is.
+      "if (expression === null || expression.leadingZero) return null;" in RUNTIME and
+      "if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1)))" in RUNTIME and
+      "function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {" in RUNTIME and
+      RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 2 and
+      RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 2 and
+      "rcc-arithmetic-vectors.json" in ARITH_TEST and "zeroModelArithmetic" in ARITH_TEST and
+      (ROOT / "scripts/fixtures/rcc-arithmetic-vectors.json").is_file() and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-exact-arithmetic.test.mjs"' in RELEASE and
+      "guard RCCExactArithmeticOutput.isCanonical(output) else { return nil }" in MAIN and
+      "try runRCCExactArithmeticVectorFixtures()" in CONTEXT_TESTS and
+      '"--rcc-exact-arithmetic-only"' in CONTEXT_TESTS,
+      "K7: zero-model closed arithmetic over shared vectors; the explicit exact family and strict history checks unchanged")
+# K10: a frozen check-acceptance cost policy re-ranks a contract or verifier
+# descent inside the F Core admitted (the fixed escalation reference plus the
+# R11 pool's dispatchable certified rows), on every route call site; the
+# plugin registers none, so production stays on TIER_ROUTES.
+SELECTOR = (PLUGIN_ROOT / "joint-route-selector.mjs").read_text()
+TIER_ROUTE = section(RUNTIME, "function tierRouteCandidate(", "/** Null when something in an allowed scope can run;")
+check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability_v1';" in SELECTOR and
+      "export function selectCertifiedDescent(" in SELECTOR and "export function prepareCertifiedDescentPolicy(" in SELECTOR and
+      "export const SCORE_SPACE = 'reference_match_probability_v1';" in SELECTOR and
+      "isPreparedCertifiedDescentPolicy(descentPolicy) &&\n        (admission.source === 'contract' || admission.source === 'verifier')" in TIER_ROUTE and
+      "'certified_descent_not_cost_effective'" in TIER_ROUTE and "'descent_cost_policy_'" in TIER_ROUTE and
+      "descents.find(descent => descent.candidate.id === selection.candidate_id) ?? null" in TIER_ROUTE and
+      "const served = policyReference ?? serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');" in TIER_ROUTE and
+      "policyReference = {hit: target, pool: targetPool," in TIER_ROUTE and
+      "...poolNotes(tier.pool.pool, chosen, tier.hit.candidate)," in TIER_ROUTE and
+      "'pool_scored_by_tier_hit_model'" in TIER_ROUTE and
+      "selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy});" in RUNTIME and
+      "selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,\n      descentPolicy});" in
+      section(RUNTIME, "export function admitBoundedAutoPlan(", "function livePlannerContext(") and
+      "resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});" in
+      section(RUNTIME, "function livePlannerContext(", "export function admitLivePlannerPlan(") and
+      "livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy);" in
+      section(RUNTIME, "export function admitLivePlannerPlan(", "const resolved = resolveRoutePlan(compiled.plan") and
+      "const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry, descentPolicy});" in RUNTIME and
+      "{verifierRegistry = null,\n                                                                       descentPolicy = null} = {}) {" in RUNTIME and
+      RUNTIME.count("descentPolicy: this.descentPolicy") == 4 and RUNTIME.count("this.descentPolicy") == 10 and
+      "prepareCertifiedDescentPolicy(certifiedDescentPolicy)" in RUNTIME and
+      "certifiedDescentPolicy" not in PLUGIN and "descentPolicy" not in PLUGIN and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-descent-policy.test.mjs"' in RELEASE,
+      "K10: frozen descent cost policy ranks only inside F for contract/verifier sources; none registered in production; release-gated")
 check("hostAutoPlan: true" in PLUGIN and "export function hostPlan(" in RUNTIME and
       "plan: async" not in section(PLUGIN, "export function registerRCCRuntime(", "api.registerGatewayMethod('os1.rcc.") and
       not re.search(r"GRADED_PLAN|buildBoundedPlannerInput|decodePlannerResponse|route_class picks", PLUGIN) and
@@ -544,11 +720,11 @@ check("isLivePlanCapability(capability, now)" in live_context and "activeIntentV
       "contract.coverage === 'full'" in live_context and "contract.context_sha256" in live_context and
       "live_r0_full_contract_required" in live_context and "live_reference_fallback_unavailable" in live_context,
       "bounded live seam rechecks current custody, fresh Auto scope, original metadata and full native R0 floor")
-check('node --test "$script_dir/fixtures/openclaw-rcc-live-plan-adoption.test.mjs"' in RELEASE and
+check('node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-live-plan-adoption.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-live-plan-adoption.test.mjs").is_file(),
       "release executes live-capability revocation, reachability and full-checker fallback fixtures")
 for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rcc-reference-floor"):
-    check(f'node --test "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
+    check(f'node --test --test-timeout=180000 "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
           (ROOT / f"scripts/fixtures/{fixture}.test.mjs").is_file(),
           "release runs the build-407 fixture " + fixture)
 
@@ -683,5 +859,77 @@ check("rccUsesLegacySourceOutputCheck(preloadedR2Evidence)" in MAIN and "rccUses
 check("(exactAnswer ? \"\" : SourceTransformationContract.instructions)" in MAIN and
       'case "self-test-source-input":' in MAIN and "try rccBoundSourceDeliverySelfTest()" in MAIN,
       "source transformation policy uses existing native instruction channel, clean exact-answer path, and actual private-store fixtures")
+
+# K13: C3 native sub-agent parity is withdrawn. Every Core-dispatched native
+# attempt runs managed, and the contract refuses the reserved flag on every
+# surface until a native adapter enforces typed delegation before dispatch.
+TICKET_CONTRACT = (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text()
+check("ParallelAgentRuntime.$managedDelegation.withValue(true) {" in native and
+      "withValue(t.allowNativeSubagents" not in MAIN,
+      "the RCC native adapter hard-wires managed delegation; a ticket flag never turns it off")
+check("if value.allowNativeSubagents == true { throw Rejection.invalidConfiguration }" in TICKET_CONTRACT,
+      "ticket validation refuses allow_native_subagents=true on every surface (K13)")
+check("allow_native_subagents" not in RUNTIME and "delegation:" not in RUNTIME,
+      "Core never emits the reserved delegation flag or a delegation object")
+
+# K12: result contract v2. The version is a request key on both sides (the
+# Swift rcc-intent and rcc-catalog operations decode every Core task through
+# requestShape), both sides negotiate the same versions, and the wire result
+# gate is the same on both sides: a failed, held or cancelled task carries a
+# result only as a typed v2 partial.
+check('"routing_intent_policy_version", "result_contract_version"], [' in TICKET_CONTRACT and
+      'case resultContractVersion = "result_contract_version"' in TICKET_CONTRACT,
+      "Swift Request and requestShape accept result_contract_version (K12)")
+check("'result_contract_version', ...(allowCoreRouting ? ['core_routing'] : [])" in RUNTIME and
+      "const RESULT_CONTRACT_VERSIONS = new Set([1, 2]);" in RUNTIME and
+      "public static let resultContractVersions: Set<Int> = [1, 2]" in TICKET_CONTRACT,
+      "JS validateTask and Swift validate(Request) accept the same result contract versions (K12)")
+check('"native_summaries", "partial"], ["partial": partialShape])' in TICKET_CONTRACT and
+      "result: publicResult(snapshot)," in RUNTIME and
+      "const PARTIAL_RESULT_STATES = new Set(['failed', 'held', 'cancelled']);" in RUNTIME and
+      "(result.partial != nil && [.failed, .held, .cancelled].contains(value.state))" in TICKET_CONTRACT,
+      "the public result gate matches validate(Snapshot): failed/held/cancelled only as a v2 partial (K12)")
+
+# K14: an unclassified offered model is an informational exclusion, never a
+# hold. Both allowlists (and their informational subsets) are one set; every
+# model the bundled server config signs is classified, so today's catalogs
+# emit no unclassified_model; the notice reaches the per-delivery channel.
+
+
+def string_set(text, start):
+    body = section(text, start, "]")
+    return set(re.findall(r"['\"]([a-z0-9_.\-]+)['\"]", body))
+
+
+JS_REASONS = string_set(RUNTIME, "const EXCLUSION_REASONS = new Set([")
+SWIFT_REASONS = string_set(TICKET_CONTRACT, "public static let reasons: Set<String> = [")
+check(JS_REASONS == SWIFT_REASONS and "unclassified_model" in JS_REASONS and len(JS_REASONS) == 13,
+      "JS EXCLUSION_REASONS and Swift Exclusion.reasons are the same set (K14)")
+check(string_set(RUNTIME, "const INFORMATIONAL_EXCLUSIONS = new Set([") ==
+      string_set(TICKET_CONTRACT, "public static let informational: Set<String> = [") == {"unclassified_model"},
+      "the informational reason subset is the same on both sides (K14)")
+check("(catalog.exclusions === undefined || validInformationalExclusions(catalog))" in RUNTIME and
+      "(catalog.exclusions ?? []).some(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason))" in RUNTIME and
+      "value.exclusions?.contains(where: { !Exclusion.informational.contains($0.reason) }) == true" in TICKET_CONTRACT and
+      "for exclusion in exclusions where Exclusion.informational.contains(exclusion.reason)" in TICKET_CONTRACT,
+      "an informational exclusion needs a tier-less offered row and never explains an empty catalog, on both sides (K14)")
+tier_names = set(re.findall(r'"([^"]+)"\s*:\s*\.', table))
+known_untiered = set(re.findall(r'"([^"]+)"', section(TIERS, "public static let knownUntiered: Set<String> = [", "]")))
+check(len(known_untiered) == 9 and not (known_untiered & tier_names) and "gpt-6-sol" in known_untiered,
+      "the known untiered set is explicit data, disjoint from the tier table (K14)")
+PRODUCTION = json.loads((ROOT / "Config/production.json").read_text())
+signed = {profile["model"].split("[", 1)[0] for profile in PRODUCTION["execution_profiles"].values()
+          if profile.get("provider") in ("codex", "claude")}
+check(signed and signed <= tier_names | known_untiered,
+      "every model the bundled config signs is classified, so no production catalog emits unclassified_model: " +
+      ", ".join(sorted(signed - tier_names - known_untiered)))
+check('excluded[provider, default: [:]]["unclassified_model"] = unclassified.count' in BUILDER and
+      "ModelTiers.classification(of: $0.model) == .unclassified" in BUILDER,
+      "the builder reports unclassified offered models, informational only (K14)")
+review = section(MAIN, "if let review = RCCRuntimeContract.referenceReviewNotice(result) {", "}")
+check("routingNotices.append(review)" in review and "RuntimeActivity.emit(.routing, publicText: review)" in review and
+      "export function referenceReviewReason(" in RUNTIME and "const review = referenceReviewRequired(snapshot.catalog);" in RUNTIME and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"' in RELEASE,
+      "every model-backed delivery while an unclassified model is offered carries the reference review notice (K14)")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

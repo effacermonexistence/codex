@@ -1,0 +1,80 @@
+import Foundation
+
+/// The versioned harness profile (routing architecture v2, §1.1 "H", K15):
+/// what a model sees around the same signed tuple. The tuple (provider,
+/// model, effort, permission) is the ticket's; the harness is everything
+/// OS-1 wraps around it: the lean owner-policy projection, the automatic
+/// chat lane, the order of the instruction channels, the delegated child's
+/// envelope and launch shape.
+///
+/// H0 is the harness OS-1 already ships. Its quality parity with the
+/// providers' own harness is NOT measured (D4 arm ②), so it is marked
+/// `.unverified`; a class certificate (K11) binds to a profile's id AND
+/// version (`RCCClassMeasurement.harnessScope`, "H0@1"), never to "whatever
+/// OS-1 runs today".
+///
+/// Any change a model can see (wording, order, a dropped line, a different
+/// lane predicate) is an H change: it needs a NEW descriptor (new id or
+/// version, parity unverified) and a re-pinned rendering, together. The os1
+/// self-test (`harnessProfileSelfTest`) renders the H0 builders from fixed
+/// inputs and fails when that rendering's digest moves without a bump.
+/// Byte-stability fixes that change no model-visible content (sorting a set,
+/// naming a constant) are N and keep the profile.
+public enum HarnessProfile {
+    public enum Parity: String, Sendable { case unverified, verified }
+
+    public struct Descriptor: Equatable, Sendable {
+        public let id: String
+        public let version: Int
+        public let parity: Parity
+        /// What this profile fixes, by stable component name.
+        public let components: [String]
+        /// SHA-256 of the canonical rendering of the profile's builders on
+        /// fixed inputs (paths normalised), pinned when the profile ships.
+        public let renderingSHA256: String
+    }
+
+    /// The shipped harness, pinned at K15.
+    /// - lean_projection_v1: Codex `model_instructions_file` = the projection
+    ///   plus the projection note on a started thread; Claude with every
+    ///   CLAUDE.md skipped plus the operating header (LeanBackendInstructions).
+    /// - chat_lane_predicate_v1: claudeChatLane / codexChatLane /
+    ///   claudeChatLaneRefusal, the host catalog chat gate, JS chatFirst.
+    /// - instruction_order_v1: executor contract, owner policy, ticket lines,
+    ///   then definitions, evidence, presentation, correction, bounded shell;
+    ///   Claude's workspace context and confinement text last.
+    /// - delegated_readonly_claude_hooks_off_empty_mcp_v1: a read-only RCC
+    ///   child runs with hooks off and no MCP server.
+    /// - delegated_envelope_v1: RCCDelegatedEnvelope.prompt (ids last).
+    /// - managed_delegation_v1: native sub-agent tools denied (K13).
+    public static let h0 = Descriptor(
+        id: "H0",
+        version: 1,
+        parity: .unverified,
+        components: [
+            "lean_projection_v1",
+            "chat_lane_predicate_v1",
+            "instruction_order_v1",
+            "delegated_readonly_claude_hooks_off_empty_mcp_v1",
+            "delegated_envelope_v1",
+            "managed_delegation_v1",
+        ],
+        renderingSHA256: "4ecd97ffe17a1185f8dc35aa780c6b4344df5dfec81d15d34242917e8cf24c8b")
+
+    /// The profile every dispatch runs under.
+    public static let current = h0
+
+    /// Append-only: every profile that ever shipped, with its pinned
+    /// rendering. Re-pinning an existing entry is not a bump.
+    public static let shipped: [Descriptor] = [h0]
+
+    /// Prefix levers identified at K15 that change what the model sees, so
+    /// they are H and NOT applied: shipping either needs a new descriptor
+    /// (H1, parity unverified) and a new pinned rendering. Recommended only
+    /// after D4 arm ② has measured H0.
+    /// - C4a_stable_first_reorder: put the stable operating header before the
+    ///   per-objective presentation directive and the ticket's action line.
+    /// - C4d_tool_free_read_original_line: drop the "Read the original at …"
+    ///   pointer from the tool-free chat lane, which cannot read it.
+    public static let pendingHItems = ["C4a_stable_first_reorder", "C4d_tool_free_read_original_line"]
+}

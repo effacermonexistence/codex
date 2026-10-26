@@ -6353,6 +6353,18 @@ private struct PendingSubmission: Identifiable, Codable, Equatable, Sendable {
     /// Frozen when this owner submission is created. Missing in older saved
     /// queues, and nil must stay nil across retry/restart with the same task ID.
     var routingIntentPolicyVersion: String? = nil
+    /// The typed native-dispatch cap (K6), frozen when this owner submission
+    /// is created. Missing in older saved queues, and nil must stay nil across
+    /// retry/restart with the same task ID: the cap is part of Core's submit
+    /// fingerprint, so adding it to an older build's task is an idempotency
+    /// conflict that orphans that task's result.
+    var maxNativeDispatches: Int? = RCCRunBudgetOptions.appNativeDispatches
+    /// The result contract (K12b), frozen when this owner submission is
+    /// created: v2 types a partial outcome, so a failed or held task's
+    /// completed answers reach the owner labelled partial. Missing in older
+    /// saved queues, and nil must stay nil across retry/restart with the same
+    /// task ID: the version is part of Core's submit fingerprint too.
+    var resultContractVersion: Int? = RCCRunBudgetOptions.appResultContractVersion
     /// The surface the chosen backend routes to, as the runtime's `--provider`
     /// value. A backend tile is one account with two ways to spend it, so the
     /// tile alone does not say which one ran. Absent in legacy stores and for
@@ -7880,6 +7892,65 @@ private func rccCoreBoundarySelfTest() async throws {
     print("RCC visible core boundary: \(checks) checks PASS; source-bound four held children; model/native calls 0")
 }
 
+/// K12b: a failed task's typed partial (result contract v2) reaches the owner
+/// as the answer it is, with what it covers beside it; nothing re-runs.
+@MainActor
+private func rccPartialResultSelfTest() async throws {
+    typealias C = RCCRuntimeContract
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("os1-core-partial-" + UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: root) }
+    var checks = 0, calls = 0
+    var requested: [Int?] = []
+    func check(_ value: Bool, _ label: String) throws {
+        guard value else { throw RunnerError.message("RCC partial result: " + label) }; checks += 1
+    }
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        calls += 1; requested.append(submission.resultContractVersion)
+        let taskID = submission.id.uuidString.lowercased(), requestSHA = appSHA256Hex(submission.executionRequest)
+        let core = C.Snapshot(taskID: taskID, requestSHA256: requestSHA, state: .failed, revision: 9,
+            children: [.init(id: "n1", state: .completed, attemptID: "attempt-n1", candidateID: nil,
+                             instruction: "Return 2", dependencies: []),
+                       .init(id: "n2", state: .failed, attemptID: "attempt-n2", candidateID: nil,
+                             instruction: "Return 4", dependencies: ["n1"])],
+            result: .init(output: "n1: 2", executionVerified: true, taskVerified: false, parityState: .unverified,
+                nativeReceipt: "/private/fixture/partial-receipt.json", taskQuality: .executionOnly,
+                partial: .init(coverage: .init(completedNodeIDs: ["n1"], unresolvedNodeIDs: ["n2"]),
+                    parent: .init(taskID: taskID, requestSHA256: requestSHA, revision: 8),
+                    nodes: [.init(nodeID: "n1", attemptID: "attempt-n1", outputSHA256: appSHA256Hex("2"))])),
+            error: "verified_not_dispatched_retry_exhausted")
+        try C.validate(core)
+        let now = Date(), graph = try RCCRuntimeProjection.project(core, conversationID: submission.sessionID,
+            submissionID: submission.id, objective: submission.request, observedAt: now, firstObservedAt: now, maxParallelism: 4)
+        return AppRunSummary(status: "workflow_blocked", steps: [], agentTask: graph, rccRuntime: core)
+    }, memoryPressureSampler: { .normal }, nativeSessionOpener: { _ in false })
+    store.sessions[0].workspace = root.path; store.composer = "Return two dependent arithmetic answers"; store.send()
+    let deadline = Date().addingTimeInterval(3)
+    while store.isRunning && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    let result = store.sessions[0]
+    let label = C.PartialCoverage(completedNodeIDs: ["n1"], unresolvedNodeIDs: ["n2"]).label()
+    try check(calls == 1 && !store.isRunning && requested == [RCCRunBudgetOptions.appResultContractVersion],
+              "a new submission asked for result contract v2; the return releases admission with no replay")
+    guard let answer = result.messages.firstIndex(where: { $0.role == .assistant && $0.text == "n1: 2" }) else {
+        throw RunnerError.message("RCC partial result: the completed node's answer is delivered")
+    }
+    checks += 1
+    try check(result.messages.firstIndex(where: { $0.role == .system && $0.text == label }) == answer + 1 &&
+              label.contains("1/2") && label.hasSuffix("n2"),
+              "the coverage label sits right beside the partial answer")
+    try check(result.messages.contains { $0.role == .receipt && $0.text.contains("verified_not_dispatched_retry_exhausted") },
+              "the typed failure stays in the receipt")
+    try check(result.agentTask?.nodes.first?.resultSummary?.contains("1/2") == true,
+              "the task graph root names the partial coverage")
+    try check(!result.messages.contains { $0.nativeRecordVerified == true || $0.deterministicExecution != nil },
+              "a partial answer is not an execution certificate")
+    try check(result.lastFailure == nil && result.lastBackendFailure == nil && store.queuedSubmissions.isEmpty,
+              "a partial does not arm another task, backend recovery or fallback")
+    try await Task.sleep(for: .milliseconds(40))
+    try check(calls == 1 && !store.maintenanceLoopRunning, "no model call or automatic queue created")
+    print("RCC partial result: \(checks) checks PASS; typed v2 partial delivered with its coverage; model/native calls 0")
+}
+
 private func rccStartupWarmupSelfTest() throws {
     var checks = 0
     func check(_ value: Bool, _ label: String) throws {
@@ -8855,6 +8926,8 @@ private enum OS1Runner {
         deliveryID: String? = nil,
         submissionID: UUID? = nil,
         routingIntentPolicyVersion: String? = nil,
+        maxNativeDispatches: Int?,
+        resultContractVersion: Int?,
         conversationID: UUID? = nil,
         submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void = { _ in }
@@ -8874,11 +8947,26 @@ private enum OS1Runner {
                 deliveryID: deliveryID,
                 submissionID: submissionID,
                 routingIntentPolicyVersion: routingIntentPolicyVersion,
+                maxNativeDispatches: maxNativeDispatches,
+                resultContractVersion: resultContractVersion,
                 conversationID: conversationID,
                 submissionStartedAt: submissionStartedAt,
                 onActivity: onActivity
             )
         }.value
+    }
+
+    /// K6: the submission's frozen typed cap as `os1 run` arguments. A cap hit
+    /// is a typed hold (native_dispatch_budget_exhausted), never a cheaper
+    /// delivery. Only a submission an older build saved has none (legacy nil).
+    static func nativeDispatchArguments(_ cap: Int?) -> [String] {
+        cap.map { ["--max-native-dispatches", String($0)] } ?? []
+    }
+
+    /// K12b: the submission's frozen result contract as `os1 run` arguments.
+    /// Only a submission an older build saved has none (v1, legacy nil).
+    static func resultContractArguments(_ version: Int?) -> [String] {
+        version.map { ["--result-contract-version", String($0)] } ?? []
     }
 
     /// A failed `os1 run` that left no backend notice. The owner-policy
@@ -8915,6 +9003,8 @@ private enum OS1Runner {
         deliveryID: String?,
         submissionID: UUID?,
         routingIntentPolicyVersion: String?,
+        maxNativeDispatches: Int?,
+        resultContractVersion: Int?,
         conversationID: UUID? = nil,
         submissionStartedAt: Date? = nil,
         onActivity: @escaping @Sendable (RuntimeActivity) -> Void
@@ -8976,6 +9066,10 @@ private enum OS1Runner {
             // without delivering URLs that can activate the external app.
             "--desktop-reveal", "background",
         ]
+        // Every new submission carries a typed cap (K6), frozen at creation.
+        arguments += nativeDispatchArguments(maxNativeDispatches)
+        // K12b: and its result contract, frozen at creation the same way.
+        arguments += resultContractArguments(resultContractVersion)
         let savedResult = submissionID.flatMap { DeliveryOutbox().forSubmission($0.uuidString) }
         if !requireReadOnly, let storedID = deliveryID ?? savedResult?.id { arguments = ["resume-delivery", storedID] }
         else {
@@ -9082,6 +9176,52 @@ private func rccIntentIngressAppSelfTest() async throws {
     let decodedMigrated = try JSONDecoder().decode(PendingSubmission.self, from: JSONEncoder().encode(migrated))
     try check(decodedMigrated.routingIntentPolicyVersion == version && decodedMigrated.id == legacy.id,
               "v2 retry/readback persistence preserves the original marker and task ID")
+    // K6: a new submission freezes the typed native-dispatch cap at creation.
+    // An item an older build saved has no cap and keeps none across retry, so
+    // a same-task-ID resubmit never changes Core's submit fingerprint.
+    let appCap = RCCRunBudgetOptions.appNativeDispatches
+    try check(legacy.maxNativeDispatches == appCap && decodedLegacy.maxNativeDispatches == appCap &&
+              decodedMigrated.maxNativeDispatches == appCap,
+              "a new submission freezes the App native-dispatch cap and persistence preserves it")
+    var preCapObject = try JSONSerialization.jsonObject(with: legacyBytes) as? [String: Any] ?? [:]
+    try check(preCapObject.removeValue(forKey: "maxNativeDispatches") as? Int == appCap,
+              "the frozen cap is stored under its own key")
+    let preCap = try JSONDecoder().decode(PendingSubmission.self,
+                                          from: JSONSerialization.data(withJSONObject: preCapObject))
+    try check(preCap.maxNativeDispatches == nil && preCap.id == legacy.id &&
+              routeFanoutRetrySubmission(preCap).maxNativeDispatches == nil,
+              "an older build's queued item decodes and retries without a cap under the same task ID")
+    let capArguments = OS1Runner.nativeDispatchArguments(appCap)
+    try check(OS1Runner.nativeDispatchArguments(nil).isEmpty &&
+              capArguments == ["--max-native-dispatches", String(appCap)] &&
+              (try RCCRunBudgetOptions.nativeDispatches(capArguments[1])) == appCap,
+              "only a frozen cap reaches os1 run, as a value the CLI accepts; legacy nil stays absent")
+    // K12b: the same freeze for the result contract. A new submission asks
+    // for v2 (typed partial outcomes); an item an older build saved has none
+    // and keeps none across retry, so its task ID's fingerprint never changes.
+    let appContract = RCCRunBudgetOptions.appResultContractVersion
+    try check(appContract == 2 && legacy.resultContractVersion == appContract &&
+              decodedLegacy.resultContractVersion == appContract && decodedMigrated.resultContractVersion == appContract,
+              "a new submission freezes result contract v2 and persistence preserves it")
+    var preContractObject = try JSONSerialization.jsonObject(with: legacyBytes) as? [String: Any] ?? [:]
+    try check(preContractObject.removeValue(forKey: "resultContractVersion") as? Int == appContract,
+              "the frozen result contract is stored under its own key")
+    let preContract = try JSONDecoder().decode(PendingSubmission.self,
+                                               from: JSONSerialization.data(withJSONObject: preContractObject))
+    try check(preContract.resultContractVersion == nil && preContract.id == legacy.id &&
+              routeFanoutRetrySubmission(preContract).resultContractVersion == nil,
+              "an older build's queued item decodes and retries on result contract v1 under the same task ID")
+    let contractArguments = OS1Runner.resultContractArguments(appContract)
+    try check(OS1Runner.resultContractArguments(nil).isEmpty &&
+              contractArguments == ["--result-contract-version", String(appContract)] &&
+              (try RCCRunBudgetOptions.resultContractVersion(contractArguments[1])) == appContract,
+              "only a frozen result contract reaches os1 run, as a value the CLI accepts; legacy nil stays absent")
+    for invalid in ["0", "3", "02", "v2", ""] {
+        do {
+            _ = try RCCRunBudgetOptions.resultContractVersion(invalid)
+            throw RunnerError.message("K12b App ingress: CLI accepted result contract '\(invalid)'")
+        } catch is RCCRunBudgetOptions.Invalid { }
+    }
     try check(try OS1Runner.routingIntentArguments(version: nil, provider: "auto", requireReadOnly: false,
         hostEnabled: true).isEmpty, "host switch alone never upgrades old queue")
     try check(try OS1Runner.routingIntentArguments(version: version, provider: "auto", requireReadOnly: false,
@@ -9112,6 +9252,8 @@ private func rccIntentIngressAppSelfTest() async throws {
     while control.captured == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
     try check(control.captured?.provider == .auto && control.captured?.routingIntentPolicyVersion == version,
               "only a new owner Auto submission is stamped at creation")
+    try check(control.captured?.maxNativeDispatches == appCap, "a new owner submission dispatches with the App cap")
+    try check(control.captured?.resultContractVersion == appContract, "a new owner submission asks for result contract v2")
     // Use the actual App argument writer, CLI option validator, request binder
     // and native-catalog binder in one fake chain. No runtime or provider runs.
     let arguments = try OS1Runner.routingIntentArguments(version: control.captured!.routingIntentPolicyVersion,
@@ -9124,7 +9266,10 @@ private func rccIntentIngressAppSelfTest() async throws {
         sourceFingerprint: String(repeating: "b", count: 64), mode: .auto, materialRefs: [],
         budget: .init(maxAttempts: 2, maxParallel: 4, maxCostUnits: nil, maxDurationMS: 60_000))
     try RCCRoutingIntentIngress.bindRequest(&request, version: parsedCLI, provider: "auto", hostEnabled: true)
+    request.resultContractVersion = try RCCRunBudgetOptions.resultContractVersion(
+        OS1Runner.resultContractArguments(control.captured!.resultContractVersion)[1])
     let decodedRequest = try RCCRuntimeContract.decodeRequest(RCCRuntimeContract.encode(request))
+    try check(decodedRequest.resultContractVersion == 2, "App→CLI→Request carries result contract v2")
     var catalog = RCCNativeCatalogBuilder.Input(taskID: decodedRequest.taskID,
         requestSHA256: decodedRequest.requestSHA256, request: decodedRequest.request,
         providerPreference: "auto", requireReadOnly: true, hasMaterialRefs: false,
@@ -9713,6 +9858,8 @@ private final class SessionStore: ObservableObject {
                 codexCapacity: submission.codexCapacity, claudeCapacity: submission.claudeCapacity,
                 requireReadOnly: submission.readOnlyReconciliation == true, deliveryID: submission.deliveryID,
                 submissionID: submission.id, routingIntentPolicyVersion: submission.routingIntentPolicyVersion,
+                maxNativeDispatches: submission.maxNativeDispatches,
+                resultContractVersion: submission.resultContractVersion,
                 conversationID: submission.sessionID, submissionStartedAt: submission.submittedAt, onActivity: onActivity)
         }
         if storageRoot == nil {
@@ -11909,6 +12056,11 @@ private final class SessionStore: ObservableObject {
                             nativeRecordVerified: localReceipt == nil ? producer.map(stepRecordIsVerified) : nil)
                         answer.routeLanes = laneRecord
                         sessions[target].messages.append(answer)
+                        // K12b: a partial answer (result contract v2) never
+                        // reads as a whole one: say what it covers beside it.
+                        if let partial = core.result?.partial {
+                            sessions[target].messages.append(ChatMessage(role: .system, text: partial.coverage.label()))
+                        }
                     }
                     let note = core.state == .completed
                         ? os1Tr("OpenClaw 작업 조건 확인됨 · 품질 기준 비교는 별도 기록", "OpenClaw task conditions verified · reference quality is a separate record")
@@ -15427,7 +15579,7 @@ private struct OS1DesktopApp: App {
             Task { @MainActor in
                 do { try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
                     try rccDeterministicReceiptSelfTest(); try rccCoreNativeReceiptSelfTest(); try rccStartupWarmupSelfTest();
-                    try await rccCoreBoundarySelfTest(); exit(EXIT_SUCCESS) }
+                    try await rccCoreBoundarySelfTest(); try await rccPartialResultSelfTest(); exit(EXIT_SUCCESS) }
                 catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
             }
             NSApplication.shared.run()
@@ -16120,7 +16272,7 @@ private struct OS1DesktopApp: App {
                 Task { @MainActor in
                     do { try await agentTaskTreeSelfTest(); try await profileMenuSelfTest(); try await rccInstallationObservationSelfTest(); try await rccTerminalDeliverySelfTest();
                         try rccDeterministicReceiptSelfTest(); try rccCoreNativeReceiptSelfTest(); try rccStartupWarmupSelfTest();
-                        try await rccCoreBoundarySelfTest(); try await routeLanesCompletionSelfTest(); exit(EXIT_SUCCESS) }
+                        try await rccCoreBoundarySelfTest(); try await rccPartialResultSelfTest(); try await routeLanesCompletionSelfTest(); exit(EXIT_SUCCESS) }
                     catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
                 }
                 NSApplication.shared.run()

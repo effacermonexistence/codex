@@ -23,7 +23,7 @@ async function directory(t) {
   t.after(() => rm(path, {recursive: true, force: true}));
   return path;
 }
-function task(workspace, attempts = 1, parallel = 1) {
+function task(workspace, attempts = 1, parallel = 1, resultContractVersion = undefined) {
   const request = 'Send two independent arithmetic requests to the specified native routes';
   const text = 'Fixture RCC policy: preserve supported state, no invented authority';
   const host = {workspace, context: null, provider_preference: 'auto', codex_session_id: null,
@@ -32,7 +32,8 @@ function task(workspace, attempts = 1, parallel = 1) {
     request_sha256: sha(request), source_fingerprint: hostContextFingerprint(host),
     policy_sha256: sha(text), mode: 'auto', material_refs: [], host_context: host,
     policy: {source_sha256: sha('fixture source'), projection_sha256: sha(text), text},
-    budget: {max_attempts: attempts, max_parallel: parallel, max_cost_units: null, max_duration_ms: 20_000}};
+    budget: {max_attempts: attempts, max_parallel: parallel, max_cost_units: null, max_duration_ms: 20_000},
+    ...(resultContractVersion === undefined ? {} : {result_contract_version: resultContractVersion})};
 }
 function row(id) {
   const now = Date.now();
@@ -77,6 +78,29 @@ function assertPartial(answer, error, state = 'failed') {
   assert.ok(!answer.result.output.includes('second'));
   assert.ok(!answer.result.output.includes('failure text'));
 }
+// K12: a terminal sibling failure is a typed failure. Only a result contract
+// v2 task carries its partial on the wire, typed (coverage, parent, per-node
+// attempt and output digest); a v1 task shows no result there, and the
+// completed output stays in the durable record for the inspector.
+function assertFailedOutcome(runtime, request, answer, error) {
+  const durable = runtime._load(request.task_id);
+  assert.equal(durable.children.find(child => child.id === 'first').output, '2');
+  assert.equal(durable.result?.output, 'first: 2', 'the durable record keeps the completed output');
+  if (request.result_contract_version !== 2) {
+    assert.equal(answer.state, 'failed'); assert.equal(answer.error, error);
+    assert.equal(answer.result, null, 'a v1 host never receives a failed task with a result');
+    assert.equal(durable.result.partial, undefined);
+    return;
+  }
+  assertPartial(answer, error);
+  const first = durable.children.find(child => child.id === 'first');
+  assert.deepEqual(answer.result.partial.coverage, {completed_node_ids: ['first'], unresolved_node_ids: ['second']});
+  assert.deepEqual(answer.result.partial.nodes, [{node_id: 'first', attempt_id: first.attempt_id,
+    output_sha256: sha('2'), native_receipt_sha256: null}]);
+  const parent = answer.result.partial.parent;
+  assert.equal(parent.task_id, request.task_id); assert.equal(parent.request_sha256, request.request_sha256);
+  assert.ok(Number.isSafeInteger(parent.revision) && parent.revision > 0 && parent.revision <= answer.revision);
+}
 async function fixture(t, request, execute, options = {}) {
   const candidates = [row('a'), row('b'), row('alternative')];
   let plans = 0, catalogCalls = 0;
@@ -92,16 +116,16 @@ async function fixture(t, request, execute, options = {}) {
   return {runtime, counts: () => ({plans, catalogCalls})};
 }
 
-for (const error of ['synthetic_outage', 'synthetic_auth_refusal'])
-  test('completed output survives terminal retry exhaustion: ' + error, async t => {
-    const dir = await directory(t), request = task(dir), calls = [];
+for (const error of ['synthetic_outage', 'synthetic_auth_refusal']) for (const version of [undefined, 1, 2])
+  test('completed output survives terminal retry exhaustion: ' + error + ' (result contract ' + (version ?? 'absent') + ')', async t => {
+    const dir = await directory(t), request = task(dir, 1, 1, version), calls = [];
     const {runtime} = await fixture(t, request, async ticket => {
       calls.push(ticket.candidate_id);
       return ticket.node_id === 'first' ? result(ticket) : failure(ticket, error);
     });
     await runtime.submit(request);
     const answer = await runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 5_000});
-    assertPartial(answer, 'verified_not_dispatched_retry_exhausted');
+    assertFailedOutcome(runtime, request, answer, 'verified_not_dispatched_retry_exhausted');
     assert.deepEqual(calls, ['a', 'b']);
     assert.equal(runtime._load(request.task_id).children[1].attempts, 1);
     await until(() => runtime.activeWorkers === 0);
@@ -110,8 +134,9 @@ for (const error of ['synthetic_outage', 'synthetic_auth_refusal'])
     await runtime.close();
     const reopened = await createRCCRuntime({stateDir: dir});
     t.after(() => reopened.close());
-    assertPartial(reopened.status({schema: 1, task_id: request.task_id}),
-      'verified_not_dispatched_retry_exhausted');
+    const again = reopened.status({schema: 1, task_id: request.task_id});
+    assertFailedOutcome(reopened, request, again, 'verified_not_dispatched_retry_exhausted');
+    assert.deepEqual(again.result, answer.result, 'the same result after restart');
   });
 
 for (const error of ['native_pre_dispatch_failed', 'pre_dispatch_failed',
@@ -147,8 +172,10 @@ for (const error of ['native_pre_dispatch_failed', 'pre_dispatch_failed',
     assert.deepEqual(calls, ['a', 'b']);
   });
 
-test('a failed pre-dispatch sibling waits for an already running completed answer', async t => {
-  const dir = await directory(t), request = task(dir, 1, 2), release = gate(), started = [];
+for (const version of [undefined, 2])
+test('a failed pre-dispatch sibling waits for an already running completed answer (result contract ' +
+  (version ?? 'absent') + ')', async t => {
+  const dir = await directory(t), request = task(dir, 1, 2, version), release = gate(), started = [];
   const {runtime} = await fixture(t, request, async ticket => {
     started.push(ticket.node_id);
     if (ticket.node_id === 'first') { await release.promise; return result(ticket); }
@@ -160,7 +187,7 @@ test('a failed pre-dispatch sibling waits for an already running completed answe
   await until(() => runtime._load(request.task_id).children[1]?.state === 'failed');
   assert.equal(runtime.status({schema: 1, task_id: request.task_id}).state, 'running');
   release.resolve();
-  assertPartial(await runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 5_000}),
+  assertFailedOutcome(runtime, request, await runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 5_000}),
     'verified_not_dispatched_retry_exhausted');
   assert.deepEqual(started, ['first', 'second']);
 });

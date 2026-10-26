@@ -1,0 +1,877 @@
+{
+ "schema": 1,
+ "grammar": "os1-closed-arithmetic-v1",
+ "about": "Shared vectors for Core's zero-model arithmetic (rcc-runtime.mjs zeroModelArithmetic = pureArithmetic, abstaining on a leading-zero number, ?? exactArithmeticQuestion). expected is the exact canonical output, or null when Core must abstain and route to the models. Read by openclaw-rcc-exact-arithmetic.test.mjs and OS1ContextTests RCCExactArithmeticVectorsFixture.",
+ "limits": {
+  "input_chars": 160,
+  "int_digits": 15,
+  "frac_digits": 15,
+  "operands": 16,
+  "paren_depth": 4,
+  "output_digits": 40,
+  "tokens": 64,
+  "intermediate_digits": 256
+ },
+ "vectors": [
+  {
+   "input": "1+1이 뭐야?",
+   "expected": "2",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "2+2는?",
+   "expected": "4",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "3*7은 얼마야?",
+   "expected": "21",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "what is 6*7?",
+   "expected": "42",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "1+1=?",
+   "expected": "2",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "１＋１은?",
+   "expected": "2",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "1+1=",
+   "expected": "2",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "How much is 12 + 30",
+   "expected": "42",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "2×3은 뭐예요?",
+   "expected": "6",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "What’s 2+2?",
+   "expected": "4",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "1+1 몇이야",
+   "expected": "2",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "1+1?",
+   "expected": "2",
+   "why": "wrapped question of 2026-10-15; answer unchanged"
+  },
+  {
+   "input": "1+1이 뭐야? 그리고 설명해줘",
+   "expected": null,
+   "why": "residue after the question"
+  },
+  {
+   "input": "원플러스원",
+   "expected": null,
+   "why": "number word and no digit"
+  },
+  {
+   "input": "5-3은?",
+   "expected": null,
+   "why": "weak shape and only ASCII '-': a score, range or section"
+  },
+  {
+   "input": "1+1 2+2",
+   "expected": null,
+   "why": "two expressions: implicit juxtaposition"
+  },
+  {
+   "input": "1+1이 뭐야 코덱스로",
+   "expected": null,
+   "why": "a provider word after the question"
+  },
+  {
+   "input": "1+1은",
+   "expected": null,
+   "why": "a bare particle without a question mark"
+  },
+  {
+   "input": "5-3?",
+   "expected": null,
+   "why": "weak shape and only ASCII '-'"
+  },
+  {
+   "input": "2+3!",
+   "expected": null,
+   "why": "'!' after a digit is factorial notation"
+  },
+  {
+   "input": "2²+1",
+   "expected": null,
+   "why": "compatibility superscript folds into a digit"
+  },
+  {
+   "input": "6/3은?",
+   "expected": null,
+   "why": "weak shape and only ASCII '/': a date or fraction"
+  },
+  {
+   "input": "1.5+1은?",
+   "expected": "2.5",
+   "why": "K7: a decimal operand is exact (was routed)"
+  },
+  {
+   "input": "1+1+1은?",
+   "expected": "3",
+   "why": "K7: several operators (was routed)"
+  },
+  {
+   "input": "1+1=2?",
+   "expected": null,
+   "why": "a stated result is a claim to check, not a question"
+  },
+  {
+   "input": "what is one plus one?",
+   "expected": null,
+   "why": "number words are never read"
+  },
+  {
+   "input": "what is 1+1이 뭐야",
+   "expected": null,
+   "why": "English prefix with residue"
+  },
+  {
+   "input": "-3+5는?",
+   "expected": null,
+   "why": "weak shape that starts with '-'"
+  },
+  {
+   "input": "1111111111111111+1은?",
+   "expected": null,
+   "why": "a 16-digit operand"
+  },
+  {
+   "input": "5-3",
+   "expected": "2",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": " 7 * 6 ",
+   "expected": "42",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "999999999999999*999999999999999",
+   "expected": "999999999999998000000000000001",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "5--3",
+   "expected": "8",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "-3*-4",
+   "expected": "12",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "1+1",
+   "expected": "2",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "-4+5",
+   "expected": "1",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "10-3",
+   "expected": "7",
+   "why": "legacy bare one-operator expression (pureArithmetic)"
+  },
+  {
+   "input": "1+2*3",
+   "expected": "7",
+   "why": "precedence"
+  },
+  {
+   "input": "2*3+4*5",
+   "expected": "26",
+   "why": "precedence"
+  },
+  {
+   "input": "(1+2)*3",
+   "expected": "9",
+   "why": "parentheses"
+  },
+  {
+   "input": "-(1+2)*3",
+   "expected": "-9",
+   "why": "unary minus before a parenthesis"
+  },
+  {
+   "input": "2*-3",
+   "expected": "-6",
+   "why": "unary minus on an operand"
+  },
+  {
+   "input": "((((1+2))))*3",
+   "expected": "9",
+   "why": "parenthesis depth 4"
+  },
+  {
+   "input": "(((((1+2)))))*3",
+   "expected": null,
+   "why": "parenthesis depth 5"
+  },
+  {
+   "input": "10-3*2는?",
+   "expected": "4",
+   "why": "weak, but '*' is not ambiguous"
+  },
+  {
+   "input": "(10-3)-2는?",
+   "expected": "5",
+   "why": "a parenthesis makes it an expression"
+  },
+  {
+   "input": "8-2-1=",
+   "expected": "5",
+   "why": "left-associative subtraction"
+  },
+  {
+   "input": "16/4/2=",
+   "expected": "2",
+   "why": "left-associative division"
+  },
+  {
+   "input": "7/2는 뭐야?",
+   "expected": null,
+   "why": "the what-is wording over only ASCII '/': July 2nd, not a quotient"
+  },
+  {
+   "input": "1/8=",
+   "expected": "0.125",
+   "why": "finite decimal"
+  },
+  {
+   "input": "1/1024=",
+   "expected": "0.0009765625",
+   "why": "finite decimal, leading zeros"
+  },
+  {
+   "input": "1/3=",
+   "expected": null,
+   "why": "non-terminating: never rounded"
+  },
+  {
+   "input": "1/3*3=",
+   "expected": "1",
+   "why": "a non-terminating intermediate is exact"
+  },
+  {
+   "input": "1/0=",
+   "expected": null,
+   "why": "division by zero"
+  },
+  {
+   "input": "1/(2-2)=",
+   "expected": null,
+   "why": "division by an exact zero"
+  },
+  {
+   "input": "6÷3",
+   "expected": "2",
+   "why": "'÷' is not the ambiguous ASCII '/'"
+  },
+  {
+   "input": "10 나누기 4",
+   "expected": "2.5",
+   "why": "Korean operator word"
+  },
+  {
+   "input": "what is 10 divided by 4?",
+   "expected": "2.5",
+   "why": "English operator words"
+  },
+  {
+   "input": "1/3+2/3=",
+   "expected": "1",
+   "why": "exact rationals"
+  },
+  {
+   "input": "2/0.5=",
+   "expected": "4",
+   "why": "decimal divisor"
+  },
+  {
+   "input": "1-1.25=",
+   "expected": "-0.25",
+   "why": "negative decimal"
+  },
+  {
+   "input": "0/5=",
+   "expected": "0",
+   "why": "zero"
+  },
+  {
+   "input": "６／３은 얼마야?",
+   "expected": "2",
+   "why": "fullwidth forms fold to ASCII"
+  },
+  {
+   "input": "0.1+0.2=",
+   "expected": "0.3",
+   "why": "no binary floating point"
+  },
+  {
+   "input": "1.50+1.50은?",
+   "expected": "3",
+   "why": "no trailing zero"
+  },
+  {
+   "input": "-0*5=",
+   "expected": "0",
+   "why": "'0', never '-0'"
+  },
+  {
+   "input": "2.5*4=",
+   "expected": "10",
+   "why": "integer result of decimals"
+  },
+  {
+   "input": "0.1234567890123456+1=",
+   "expected": null,
+   "why": "a 16-digit fraction"
+  },
+  {
+   "input": "1.2.3",
+   "expected": null,
+   "why": "two decimal points"
+  },
+  {
+   "input": ".5+1",
+   "expected": null,
+   "why": "a fraction without an integer part"
+  },
+  {
+   "input": "1.+1",
+   "expected": null,
+   "why": "a point without fraction digits"
+  },
+  {
+   "input": "6/3",
+   "expected": null,
+   "why": "bare ASCII '/': a date or fraction"
+  },
+  {
+   "input": "10/25",
+   "expected": null,
+   "why": "bare ASCII '/': a date"
+  },
+  {
+   "input": "8/2/2",
+   "expected": null,
+   "why": "bare, only ASCII '/'"
+  },
+  {
+   "input": "10-3-2",
+   "expected": null,
+   "why": "bare, only ASCII '-': a range or score"
+  },
+  {
+   "input": "2.0-1.0",
+   "expected": null,
+   "why": "bare, only ASCII '-'"
+  },
+  {
+   "input": "2024-10-24",
+   "expected": null,
+   "why": "a date"
+  },
+  {
+   "input": "010-1234-5678",
+   "expected": null,
+   "why": "a phone number"
+  },
+  {
+   "input": "6/3은 뭐야?",
+   "expected": null,
+   "why": "the what-is wording asks what '6/3' is (a date); 얼마 asks its value"
+  },
+  {
+   "input": "5-3은 얼마야?",
+   "expected": "2",
+   "why": "a quantity predicate (얼마) over one ASCII '-' asks the value"
+  },
+  {
+   "input": "10-3-2=",
+   "expected": "5",
+   "why": "'=' asks for the value"
+  },
+  {
+   "input": "what is -3+5?",
+   "expected": "2",
+   "why": "English prefix; '+' is not the ambiguous ASCII '-' or '/'"
+  },
+  {
+   "input": "3-4?",
+   "expected": null,
+   "why": "weak, only ASCII '-'"
+  },
+  {
+   "input": "6/3?",
+   "expected": null,
+   "why": "weak, only ASCII '/'"
+  },
+  {
+   "input": "10 빼기 3은?",
+   "expected": "7",
+   "why": "a Korean minus word is not ambiguous"
+  },
+  {
+   "input": "(6/3)",
+   "expected": "2",
+   "why": "a parenthesis lifts the ambiguity gate"
+  },
+  {
+   "input": "2 + 2 = ?",
+   "expected": "4",
+   "why": "'=' then a removed question mark"
+  },
+  {
+   "input": "1 플러스 1",
+   "expected": "2",
+   "why": "Korean word, spaced"
+  },
+  {
+   "input": "1플러스1은?",
+   "expected": "2",
+   "why": "Korean words may touch digits"
+  },
+  {
+   "input": "2 곱하기 3은 뭐야?",
+   "expected": "6",
+   "why": "Korean multiplication word"
+  },
+  {
+   "input": "1 더하기 1은?",
+   "expected": "2",
+   "why": "weak Korean word form (the 귀요미 reading is the residual risk)"
+  },
+  {
+   "input": "3 times 4",
+   "expected": "12",
+   "why": "English word"
+  },
+  {
+   "input": "3 multiplied by 4",
+   "expected": "12",
+   "why": "two-word English operator"
+  },
+  {
+   "input": "1 plus 1",
+   "expected": "2",
+   "why": "English word, spaced"
+  },
+  {
+   "input": "2plus2",
+   "expected": null,
+   "why": "English words need a space on both sides"
+  },
+  {
+   "input": "1 plus1",
+   "expected": null,
+   "why": "English words need a space on both sides"
+  },
+  {
+   "input": "원 더하기 원",
+   "expected": null,
+   "why": "number words are never read"
+  },
+  {
+   "input": "one plus one",
+   "expected": null,
+   "why": "number words are never read"
+  },
+  {
+   "input": "1 더하기 1은 귀요미",
+   "expected": null,
+   "why": "residue after the expression"
+  },
+  {
+   "input": "마이너스 3 더하기 5",
+   "expected": null,
+   "why": "a word is never a unary minus"
+  },
+  {
+   "input": "what is 1 더하기 1?",
+   "expected": "2",
+   "why": "English prefix around a Korean word"
+  },
+  {
+   "input": "2^3",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "2**3",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "50%",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1,000+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "2(3)",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "(5)",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1e3+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "½+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "⑴+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "𝟐+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1−1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "(1+2",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1+2)",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "--3+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1+",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "+1",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1 x 2",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "2·3",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1+1=2",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1+1==",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "?",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1﹒5+1=",
+   "expected": null,
+   "why": "outside the closed grammar"
+  },
+  {
+   "input": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1=",
+   "expected": "16",
+   "why": "16 operands"
+  },
+  {
+   "input": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1=",
+   "expected": null,
+   "why": "17 operands"
+  },
+  {
+   "input": "((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))=",
+   "expected": "10",
+   "why": "59 tokens"
+  },
+  {
+   "input": "((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))+((1))=",
+   "expected": null,
+   "why": "more than 64 tokens"
+  },
+  {
+   "input": "99999999999999*99999999999999*9999999999=",
+   "expected": "99999999989998000000000200009999999999",
+   "why": "38-digit product"
+  },
+  {
+   "input": "9999999999*9999999999*9999999999*9999999999=",
+   "expected": "9999999996000000000599999999960000000001",
+   "why": "40 output digits"
+  },
+  {
+   "input": "9999999999*9999999999*9999999999*9999999999*9=",
+   "expected": null,
+   "why": "41 output digits"
+  },
+  {
+   "input": "999999999999999*999999999999999*999999999999999=",
+   "expected": null,
+   "why": "45-digit product"
+  },
+  {
+   "input": "123456789012345.123456789012345+123456789012345.123456789012345+123456789012345.123456789012345+123456789012345.123456789012345+123456789012345.123456789012345=",
+   "expected": "617283945061725.617283945061725",
+   "why": "160 input characters"
+  },
+  {
+   "input": "123456789012345.123456789012345+123456789012345.123456789012345+123456789012345.123456789012345+123456789012345.123456789012345+123456789012345.123456789012345 =",
+   "expected": null,
+   "why": "161 input characters"
+  },
+  {
+   "input": "7/2는 얼마야?",
+   "expected": "3.5",
+   "why": "a quantity predicate over one ASCII '/': finite decimal quotient"
+  },
+  {
+   "input": "6/3은 얼마야?",
+   "expected": "2",
+   "why": "a quantity predicate over one ASCII '/'"
+  },
+  {
+   "input": "how much is 6/3?",
+   "expected": "2",
+   "why": "'how much is' is a quantity predicate"
+  },
+  {
+   "input": "10/25는 얼마야?",
+   "expected": "0.4",
+   "why": "a quantity predicate over one ASCII '/' (the recorded residual risk: a date asked as a price)"
+  },
+  {
+   "input": "9-5는 몇이야?",
+   "expected": "4",
+   "why": "몇 is a quantity predicate"
+  },
+  {
+   "input": "0.5+1은 뭐야?",
+   "expected": "1.5",
+   "why": "a single leading zero before the point is an ordinary number"
+  },
+  {
+   "input": "(6/3)은 뭐야?",
+   "expected": "2",
+   "why": "a parenthesis makes it an expression even under the what-is wording"
+  },
+  {
+   "input": "1+1이 뭐야…",
+   "expected": "2",
+   "why": "a trailing ellipsis is punctuation ('…' folds to '...')"
+  },
+  {
+   "input": "1+1이 뭐야‥",
+   "expected": "2",
+   "why": "a trailing two-dot leader is punctuation"
+  },
+  {
+   "input": "2+2는…?",
+   "expected": "4",
+   "why": "a trailing run of marks with an ellipsis"
+  },
+  {
+   "input": "3*7은 얼마야…",
+   "expected": "21",
+   "why": "a trailing ellipsis after a quantity predicate"
+  },
+  {
+   "input": "1+1=…",
+   "expected": "2",
+   "why": "'=' then a trailing ellipsis"
+  },
+  {
+   "input": "1…5+1=",
+   "expected": null,
+   "why": "an ellipsis inside the expression is no decimal point"
+  },
+  {
+   "input": "010-1234-5678은 뭐야?",
+   "expected": null,
+   "why": "a phone number asked what it is"
+  },
+  {
+   "input": "010-1234-5678이 뭐야?",
+   "expected": null,
+   "why": "a phone number asked what it is"
+  },
+  {
+   "input": "what is 010-1234-5678?",
+   "expected": null,
+   "why": "a phone number asked what it is"
+  },
+  {
+   "input": "2024-10-24는 뭐야?",
+   "expected": null,
+   "why": "a date asked what it is"
+  },
+  {
+   "input": "what is 2024-10-24?",
+   "expected": null,
+   "why": "a date asked what it is"
+  },
+  {
+   "input": "2024-10-24는 얼마야?",
+   "expected": null,
+   "why": "two ASCII '-' read as a date even under a quantity predicate"
+  },
+  {
+   "input": "10-3-2는 얼마야?",
+   "expected": null,
+   "why": "two ASCII '-' under a quantity predicate: a range or section; '=' asks the value"
+  },
+  {
+   "input": "how much is 10-3-2?",
+   "expected": null,
+   "why": "two ASCII '-' under a quantity predicate"
+  },
+  {
+   "input": "3-4는 뭐야?",
+   "expected": null,
+   "why": "the what-is wording over one ASCII '-': a score"
+  },
+  {
+   "input": "9-5는 뭐야?",
+   "expected": null,
+   "why": "the what-is wording over one ASCII '-': working hours"
+  },
+  {
+   "input": "2021-2022는 뭐야?",
+   "expected": null,
+   "why": "the what-is wording over one ASCII '-': a season"
+  },
+  {
+   "input": "what is 7-11?",
+   "expected": null,
+   "why": "the what-is wording over one ASCII '-': a store"
+  },
+  {
+   "input": "what is 50/50?",
+   "expected": null,
+   "why": "the what-is wording over one ASCII '/': even odds"
+  },
+  {
+   "input": "what is 20/20?",
+   "expected": null,
+   "why": "the what-is wording over one ASCII '/': vision"
+  },
+  {
+   "input": "007+1은 뭐야?",
+   "expected": null,
+   "why": "a number with a leading zero is a code, never a quantity"
+  },
+  {
+   "input": "007+1=",
+   "expected": null,
+   "why": "a leading zero abstains at every strength, '=' included"
+  },
+  {
+   "input": "007+1",
+   "expected": null,
+   "why": "a leading zero abstains at every strength, the bare one-operator form included"
+  },
+  {
+   "input": "010-1234",
+   "expected": null,
+   "why": "a phone-number fragment: a leading zero abstains in the bare form"
+  },
+  {
+   "input": "02-123",
+   "expected": null,
+   "why": "an area code and a number: a leading zero abstains in the bare form"
+  },
+  {
+   "input": "0010*2",
+   "expected": null,
+   "why": "a code with leading zeros, never a quantity"
+  },
+  {
+   "input": "10-03",
+   "expected": null,
+   "why": "a leading zero on the second operand abstains too"
+  },
+  {
+   "input": "０２-１２３",
+   "expected": null,
+   "why": "fullwidth digits fold to the same leading-zero bare form"
+  },
+  {
+   "input": "0+1",
+   "expected": "1",
+   "why": "a single 0 is a number, not a leading zero"
+  },
+  {
+   "input": "-0+1",
+   "expected": "1",
+   "why": "a signed single 0 is a number, not a leading zero"
+  },
+  {
+   "input": "10-0",
+   "expected": "10",
+   "why": "a 0 inside or after a number is no leading zero"
+  }
+ ]
+}

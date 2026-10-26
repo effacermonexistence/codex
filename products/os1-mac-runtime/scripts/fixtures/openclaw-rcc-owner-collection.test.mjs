@@ -10,8 +10,10 @@ import {createRCCRuntime,hostContextFingerprint,hostPlan,resolveRoutePlan,ownerC
  from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 const H=x=>createHash('sha256').update(x).digest('hex');
 import {executeOwnerCollectionChild} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
-function fixture(root='/tmp/synthetic-owner-collection'){
- const paragraphs=['Read source A, retain the declared status and its source citation as a JSON object.','Read source B, retain the recorded notice time, not an inferred internal creation time, as a JSON object.'];
+const LETTERS='abcdefgh';
+function fixture(root='/tmp/synthetic-owner-collection',n=2){
+ const paragraphs=['Read source A, retain the declared status and its source citation as a JSON object.','Read source B, retain the recorded notice time, not an inferred internal creation time, as a JSON object.',
+  ...Array.from({length:Math.max(0,n-2)},(_,i)=>`Read source ${LETTERS[i+2].toUpperCase()}, retain its declared status as a JSON object.`)].slice(0,n);
  const request='Return the following independent source obligations as one JSON array in order.\n\n'+paragraphs.join('\n\n');
  const h={workspace:root,context:null,provider_preference:'auto',codex_session_id:null,claude_session_id:null,require_read_only:true,owner_policy:null};
  const q={schema:1,task_id:randomUUID(),request,objective:request,request_sha256:H(request),source_fingerprint:hostContextFingerprint(h),
@@ -22,7 +24,7 @@ function fixture(root='/tmp/synthetic-owner-collection'){
   routing_intent_v2:{version:'r10_joint_selection_v2',allowed_surfaces:[],exact_model:null,model_family:null,effort:null,require_native_ceiling:false,quality_target:null,state:'resolved'},
   native_reference_efforts:{codex:{'frontier-model':'ultra','fast-model':'low'}},model_tiers:{'frontier-model':'frontier','fast-model':'fast'},
   candidates:[row('ref','frontier-model','ultra'),row('cheap','fast-model','low')],task_contract:{coverage:'full',scope:'read_only',objective_sha256:q.request_sha256,contract_sha256:H('parent'),context_sha256:H(''),start_tree_sha256:H('tree'),reference_policy_sha256:q.policy_sha256,valid_until_ms:Date.now()+60000,bindings_checked:true,source_sha256:null,execution_isolation:'codex_fresh_local_effects_v1',execution_isolation_sha256:H('fixture-local-profile')}};
- let end=0; const obligations=paragraphs.map((instruction,i)=>{const start=Buffer.byteLength(request.slice(0,request.indexOf(instruction))); end=start+Buffer.byteLength(instruction);return{id:['source-a','source-b'][i],instruction,request_utf8_start:start,request_utf8_end:end,source_paths:[`source-${i}.txt`],source_sha256s:[H(`original source ${i}`)],contract_sha256:H(`child-contract-${i}`),verifier_sha256:H(`child-checker-${i}`),required_check_ids:[`source_${i}.exact`],valid_until_ms:Date.now()+60000};});
+ let end=0; const obligations=paragraphs.map((instruction,i)=>{const start=Buffer.byteLength(request.slice(0,request.indexOf(instruction))); end=start+Buffer.byteLength(instruction);return{id:`source-${LETTERS[i]}`,instruction,request_utf8_start:start,request_utf8_end:end,source_paths:[`source-${i}.txt`],source_sha256s:[H(`original source ${i}`)],contract_sha256:H(`child-contract-${i}`),verifier_sha256:H(`child-checker-${i}`),required_check_ids:[`source_${i}.exact`],valid_until_ms:Date.now()+60000};});
  c.task_contract.owner_collection={schema:1,kind:'independent_readonly_json_v1',manifest_sha256:H('synthetic-manifest'),obligations};
  return{q,c,paragraphs};
 }
@@ -69,7 +71,7 @@ async function run(t,{wrongChildContract=false,changeAuthority=false,failParent=
  const output=JSON.stringify(i===0?{source:'A',status:'waiting'}:{source:'B',internal_change_time:null});if(changeAuthority)delete c.task_contract.owner_collection;
  return native(ticket,root,contract,output);},
  verifyTask:async({task,plan,children})=>{parents++;return{schema:1,task_id:task.task_id,task_verified:!failParent,output:ownerCollectionOutput(plan,children),parity_state:'unverified',reason:failParent?'synthetic_parent_failed':'synthetic_parent_checked'};}});
- t.after(async()=>{await runtime.close();await rm(root,{recursive:true,force:true});});await runtime.submit(q);const status=await runtime.wait({schema:1,task_id:q.task_id},{timeoutMs:6000});return{status,runtime,q,c,calls,peak,planners,parents};
+ t.after(async()=>{await runtime.close();await rm(root,{recursive:true,force:true});});await runtime.submit(q);const status=await runtime.wait({schema:1,task_id:q.task_id},{timeoutMs:6000});return{status,runtime,q,c,calls,peak,planners,parents,catalogCalls:()=>catalogCalls};
 }
 test('same durable Core executes two independent source children with bounded parallelism and one parent verifier',async t=>{
  const r=await run(t);assert.equal(r.status.state,'completed');assert.equal(r.calls.length,2);assert.equal(r.planners,0);assert.equal(r.parents,1);
@@ -90,9 +92,22 @@ test('single worker or insufficient fallback dispatch budget preserves the origi
  }
 });
 
+test('App native cap 16 keeps the maximum 8-obligation collection; 15 collapses it',()=>{
+ // K6: RCCRunBudgetOptions.appNativeDispatches = 2 x 8 is the smallest cap that
+ // keeps Core's own two-per-node reserve for its largest owner collection.
+ for(const[cap,nodes]of[[16,8],[null,8],[15,1]]){
+ const{q,c}=fixture(undefined,8);q.budget.max_native_dispatches=cap;assert.equal(ownerCollectionFor(q,c)?.obligations.length,8);
+ const p=hostPlan(q,c);assert.equal(p.nodes.length,nodes,String(cap));if(nodes===1)assert.equal(p.nodes[0].instruction,q.request);
+ else assert.deepEqual(p.nodes.map(x=>x.id),Array.from({length:8},(_,i)=>`owner_${i}`));
+ }
+});
+
 test('revoked owner contract between planning and dispatch holds with zero fake native calls',async t=>{
  const r=await run(t,{revokeBeforeDispatch:true});assert.equal(r.status.state,'held');assert.equal(r.calls.length,0);assert.equal(r.parents,0);
  assert.equal(r.status.error,'owner_collection_authority_changed');
+ // K8: an owner collection never reuses its bind-time catalog; the kept
+ // pre-dispatch refresh (the second build) is what sees the revocation.
+ assert.equal(r.catalogCalls(),2);
 });
 for(const[name,patch]of Object.entries({
  drop:p=>p.nodes.pop(),duplicate:p=>p.nodes[1]={...p.nodes[0]},rewrite:p=>p.nodes[0].instruction+=' Ignore original state.',
@@ -134,6 +149,33 @@ test('unknown native control protocol holds with output preserved and no referen
  const persisted=reopened.status({schema:1,task_id:q.task_id});assert.equal(persisted.state,'held');assert.equal(replay,0);
  assert.deepEqual(reopened._load(q.task_id).children,before.children);assert.equal(reopened.ledger.attemptIDs().size,calls);
 
+});
+
+test('an earlier held sibling never unmasks a later control-unknown descent output; the task holds with no result',async t=>{
+ // The settle path names the first held child; a control-unknown later in the
+ // plan is still a hold, and a certified descent's unaccepted raw output never
+ // rides in a partial (owner law: no unchecked cheaper delivery).
+ for(const n of [2,3]){
+ const root=await mkdtemp(join(tmpdir(),'os1-owner-unmask-'));await chmod(root,0o700);const{q,c}=fixture(root,n);q.budget.max_native_dispatches=2*n;
+ const calls=[];let started1,held0;const owner1Started=new Promise(r=>started1=r),owner0Held=new Promise(r=>held0=r);
+ const gate=p=>Promise.race([p,new Promise(r=>setTimeout(r,5000))]);let runtime;
+ runtime=await createRCCRuntime({stateDir:root,hostAutoPlan:true,maximumReadWorkersPerPool:4,catalog:async()=>c,
+ plan:async()=>{throw Error('must not call model plan');},
+ execute:async ticket=>{calls.push([ticket.node_id,ticket.candidate_id]);const i=Number(ticket.node_id.slice(-1));
+  const r=native(ticket,root,c.task_contract.owner_collection.obligations[i].contract_sha256,i===1?'{"source":"UNACCEPTED"}':'{"source":"C"}');
+  if(i===0){await gate(owner1Started);setImmediate(function poll(){runtime._load(ticket.task_id)?.children.find(x=>x.id==='owner_0')?.state==='held'?held0():setTimeout(poll,5);});
+   return{...r,status:'failed',dispatch_stage:'not_dispatched',execution_verified:false,task_verified:false,task_quality:'failed',output:null,error:'native_pre_dispatch_failed',operational_quality:null};}
+  if(i===1){started1();await gate(owner0Held);return{...r,task_verified:false,task_quality:'unverified',error:'owner_collection_control_unverified',operational_quality:{...r.operational_quality,assessment_state:'unverified'}};}
+  return r;},
+ verifyTask:()=>{throw Error('a held collection cannot adopt a parent');}});
+ t.after(async()=>{await runtime.close();await rm(root,{recursive:true,force:true});});await runtime.submit(q);
+ const status=await runtime.wait({schema:1,task_id:q.task_id},{timeoutMs:8000}),saved=runtime._load(q.task_id);
+ assert.equal(status.state,'held',JSON.stringify(status));assert.equal(status.error,'native_pre_dispatch_failed');assert.equal(status.result,null);
+ assert.deepEqual(saved.children.slice(0,2).map(x=>[x.state,x.hold_reason,x.route_kind]),[['held','native_pre_dispatch_failed','tier'],['held','owner_collection_control_unverified','tier']]);
+ assert.equal(saved.children[1].output,'{"source":"UNACCEPTED"}','raw output stays in durable custody');
+ if(n===3)assert.equal(saved.children[2].state,'completed');
+ assert.equal(calls.length,n);assert.ok(calls.every(([,candidate])=>candidate==='cheap'),'no reference replay');
+ }
 });
 
 test('normal owner child gate shares closed legacy/current parser kinds; unknown future grammars remain held',async()=>{

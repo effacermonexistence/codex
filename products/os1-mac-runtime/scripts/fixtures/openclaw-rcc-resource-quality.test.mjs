@@ -17,7 +17,10 @@ async function fixture(t,{certified=false,alwaysFail=false,unknown=false,effects
  function row(id,model,effort){const now=Date.now();return{id,surface:'codex',transport:'codex_app_server',account_id:'fixture',model,effort,tools:['read'],scope:'read_only',permission_profile:'read_only',quota_pool:'openai_codex',allowed_paths:[],configuration_sha256:sha(id),availability:'available',availability_observed_at_ms:now-1,availability_valid_until_ms:now+60000,quota_remaining_fraction:.8,quota_observed_at_ms:now-1,quota_valid_until_ms:now+60000,quality_state:'policy_admitted',estimated_cost_units:1};}
  const tickets=[]; let decisions=0,verifications=0;
  const rt=await createRCCRuntime({stateDir:root,maximumWorkers:1,hostAutoPlan:true,
- ...(certified?{verifierRegistry:new Map([['trivial:read_only:agent',async()=>{verifications++;return{passed:true};}]])}:{}),
+ // K4: a sound_full node verifier (registration probes it: it must reject its refutation and the Core nonce).
+ ...(certified?{verifierRegistry:new Map([['fixture-sound',{id:'fixture-sound',scope:'read_only',surfaces:['agent'],soundness:'sound_full',applies:()=>true,
+   verify:async input=>{verifications++;return{passed:['valid but partial reference','preserved invalid candidate'].includes(input.output)};},
+   refutations:[{instruction:'fixture instruction',output:'fixture wrong answer'}]}]])}:{}),
  catalog:async task=>({schema:1,task_id:task.task_id,request_sha256:task.request_sha256,candidates:[row('ref','gpt-6-astra','ultra'),row('cheap','gpt-6-luna','low')],model_tiers:{'gpt-6-astra':'frontier','gpt-6-luna':'fast'},native_reference_efforts:{codex:{'gpt-6-astra':'ultra','gpt-6-luna':'low'}},owner_scope:'read_only',chat_lane_eligible:false,request_class:'readonly_lookup'}),
  execute:async ticket=>{
    tickets.push(ticket); const failed=alwaysFail||tickets.length===1;

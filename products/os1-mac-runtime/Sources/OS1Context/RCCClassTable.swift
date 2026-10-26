@@ -13,6 +13,13 @@ import Foundation
 /// `Resources/rcc-class-table.json` is the reviewable artifact. Its exact
 /// bytes are compiled in here and the regression fixture proves the two are
 /// identical, so no runtime file lookup can select another table.
+///
+/// K11: a signed certificate is still not enough. The catalog builder emits
+/// one only when the host also holds the D4 measurement artifact its
+/// `measurement_sha256` names, and that artifact verifies against the current
+/// reference, executor contract, harness profile and validity window
+/// (`RCCClassMeasurement`). The artifact is never selected by lookup: it must
+/// hash to the value compiled in here.
 public struct RCCClassTable: Equatable, Sendable {
     public static let frozenBytes = Data((#"{"class_certificates":{},"class_provider_pins":{},"schema":1}"# + "\n").utf8)
     public static let pinnedSHA256 = "76bc8ac3b8d3e8967d39a1bff3b5c2155348c6adf8ffda0d010135b40ac8dd9f"

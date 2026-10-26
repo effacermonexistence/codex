@@ -670,6 +670,117 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         "anthropic_shared/claude-fable-5-1/max/route_reference"],
               "a certified descent takes the cheapest certified tier, every other node the frontier reference, never opus at max: \((try? routes(referenceBase)) ?? [])")
 
+    // ---- K14: an unclassified offered model is isolated, never a hold -------
+    // `ModelTiers.classification`: the tier table -> tiered, `knownUntiered`
+    // (previous generations, the specialized cyber model) -> known untiered,
+    // anything else -> unclassified. In Auto the builder records the
+    // informational `unclassified_model` (distinct offered models per pool)
+    // and changes nothing else; the real JS resolver binds exactly what it
+    // bound without the model, which is never a reference, descent or target.
+    for (model, tier) in ModelTiers.table {
+        try check(ModelTiers.classification(of: model) == .tiered(tier), "tiered model classified: \(model)")
+    }
+    try check(ModelTiers.classification(of: "claude-fable-5-1[1m]") == .tiered(.frontier), "native suffix keeps the tier")
+    for model in ModelTiers.knownUntiered.sorted() + ["gpt-6-sol[1m]"] {
+        try check(ModelTiers.classification(of: model) == .knownUntiered && ModelTiers.tier(of: model) == nil,
+                  "known untiered model has no tier: \(model)")
+    }
+    for model in ["gpt-6-astra-mini", "claude-opus-5", "fable-6", "gpt-7-astra"] {
+        try check(ModelTiers.classification(of: model) == .unclassified && ModelTiers.tier(of: model) == nil,
+                  "a model in neither table is unclassified: \(model)")
+    }
+    try check(ModelTiers.knownUntiered.isDisjoint(with: ModelTiers.table.keys) && ModelTiers.knownUntiered.count == 9 &&
+              ModelTiers.table.count == 11, "the known untiered set and the tier table are disjoint and unchanged in size")
+    func offering(_ base: B.Input, _ provider: String, _ model: String, _ efforts: [String], rank: Int) -> B.Input {
+        var value = base
+        for effort in efforts {
+            value.profiles.append(.init(action: "k14_\(model)_\(effort)", provider: provider, model: model, effort: effort))
+        }
+        if provider == "codex" { value.codexModels.append(.init(slug: model, supportedEfforts: efforts, priority: rank)) }
+        else { value.claudeModels.append(.init(model: model, supportedEfforts: efforts, nativeRank: rank)) }
+        return value
+    }
+    func k14Catalog(_ output: B.Output) throws -> C.Catalog {
+        try C.decodeCatalog(B.catalogData(output, taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8))))
+    }
+    let baseRoutes = try routes(referenceBase)
+    // S2: a new frontier-looking model, listed natively before every model.
+    let newFrontier = try B.build(offering(referenceInput(), "codex", "gpt-7-astra", ["medium", "max"], rank: -1))
+    let newFrontierCodex = newFrontier.candidates.filter { $0["quota_pool"] as? String == "openai_codex" }
+        .map { $0["model"] as! String }
+    let newFrontierRoutes = try routes(newFrontier)
+    try check(reasons(newFrontier) == ["codex:unclassified_model:1"] && newFrontier.modelTiers == referenceBase.modelTiers &&
+              newFrontierRoutes == baseRoutes &&
+              (newFrontierCodex.lastIndex { ModelTiers.tier(of: $0) != nil } ?? Int.max) <
+                (newFrontierCodex.firstIndex(of: "gpt-7-astra") ?? -1) &&
+              (try k14Catalog(newFrontier)).exclusions == [.init(provider: "codex", reason: "unclassified_model", count: 1)],
+              "an unclassified new frontier-looking model sorts after every tiered row and changes no route: \(reasons(newFrontier)) \(newFrontierRoutes)")
+    // S3: a new non-frontier model; S4: one in the other pool.
+    let newMini = try B.build(offering(referenceInput(), "codex", "gpt-6-nova-mini", ["low"], rank: 5))
+    let newMiniRoutes = try routes(newMini)
+    try check(reasons(newMini) == ["codex:unclassified_model:1"] && newMiniRoutes == baseRoutes,
+              "an unclassified non-frontier model is only reported: \(reasons(newMini)) \(newMiniRoutes)")
+    let newClaude = try B.build(offering(referenceInput(), "claude", "claude-fable-6", ["low", "max"], rank: 3))
+    let newClaudeRoutes = try routes(newClaude)
+    try check(reasons(newClaude) == ["claude:unclassified_model:1"] && newClaudeRoutes == baseRoutes &&
+              newClaude.modelTiers == referenceBase.modelTiers,
+              "an unclassified model in the other pool is only reported: \(reasons(newClaude)) \(newClaudeRoutes)")
+    let twoNew = try B.build(offering(offering(referenceInput(), "codex", "gpt-7-astra", ["max"], rank: -1),
+                                      "codex", "gpt-6-nova-mini", ["low"], rank: 5))
+    try check(reasons(twoNew) == ["codex:unclassified_model:2"], "the count is distinct offered models: \(reasons(twoNew))")
+    // S5: the unconfirmed model replaces the old frontier: the existing
+    // reference_unavailable hold of that pool applies; the other pool serves.
+    var replaced = referenceInput()
+    replaced.profiles.removeAll { $0.model == "gpt-6-astra" }; replaced.codexModels.removeAll { $0.slug == "gpt-6-astra" }
+    replaced = offering(replaced, "codex", "gpt-7-astra", ["medium", "max"], rank: 1)
+    let replacedOut = try B.build(replaced)
+    let replacedRoutes = try routes(replacedOut)
+    try check(reasons(replacedOut) == ["codex:reference_unavailable:1", "codex:unclassified_model:1"] &&
+              replacedRoutes[1] == "anthropic_shared/claude-fable-5-1/max/route_reference" &&
+              !replacedRoutes.contains { $0.contains("gpt-7-astra") },
+              "an unconfirmed frontier never stands in for the absent one: \(reasons(replacedOut)) \(replacedRoutes)")
+    var noFrontier = replaced
+    noFrontier.profiles.removeAll { $0.model == "claude-fable-5-1" }; noFrontier.claudeModels.removeAll { $0.model == "claude-fable-5-1" }
+    let noFrontierRoutes = try routes(B.build(noFrontier))
+    try check(noFrontierRoutes.allSatisfy { $0.hasPrefix("error:no_dispatchable_candidate") },
+              "with no classified frontier anywhere nothing binds, never the unclassified model: \(noFrontierRoutes)")
+    // S6: the owner's own words name their route; no informational reason.
+    var explicitNew = offering(referenceInput(), "codex", "gpt-7-astra", ["medium", "max"], rank: -1)
+    explicitNew.explicitRouteSurfaces = ["codex"]
+    let familyNew = offering(referenceInput("astra로 돌려"), "codex", "gpt-7-astra", ["medium", "max"], rank: -1)
+    var exactNew = offering(referenceInput("use gpt-7-astra reasoning:max"), "codex", "gpt-7-astra", ["medium", "max"], rank: -1)
+    exactNew.routingIntentPolicyVersion = C.RoutingIntentV2.version; exactNew.enableRoutingIntentV2 = true
+    let exactOut = try B.build(exactNew)
+    try check(B.intent(familyNew).modelFamily == "astra" && exactOut.intentV2?.exactModel == "gpt-7-astra" &&
+              [try B.build(explicitNew), try B.build(familyNew), exactOut].allSatisfy { output in
+                  !reasons(output).contains { $0.contains("unclassified_model") } },
+              "an explicit route test, a family word or an exact model emits no unclassified_model")
+    let exactRoute = try route(exactOut)
+    try check(exactRoute.hasPrefix("openai_codex/gpt-7-astra/max/"), "the owner's exact model binds as named: \(exactRoute)")
+    // S7: the contract accepts the informational reason only beside an offered
+    // tier-less row of its provider on a tiered catalog; it never explains an
+    // empty catalog.
+    let flaggedCatalog = try k14Catalog(newFrontier)
+    try check((try C.decodeCatalog(C.encode(flaggedCatalog))) == flaggedCatalog, "a flagged catalog round-trips")
+    var noTiers = flaggedCatalog; noTiers.modelTiers = nil
+    var otherProvider = flaggedCatalog; otherProvider.exclusions = [.init(provider: "claude", reason: "unclassified_model", count: 1)]
+    var allTiered = flaggedCatalog; allTiered.candidates.removeAll { ModelTiers.tier(of: $0.model) == nil }
+    allTiered.quotaScores = allTiered.quotaScores?.filter { model, _ in allTiered.candidates.contains { $0.model == model } }
+    allTiered.nativeReferenceEfforts = allTiered.nativeReferenceEfforts?.mapValues { $0.filter { model, _ in
+        allTiered.candidates.contains { $0.model == model } } }
+    let emptyAlone = C.Catalog(taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)), candidates: [],
+        exclusions: [.init(provider: "codex", reason: "unclassified_model", count: 1)], modelTiers: [:])
+    let emptyBeside = C.Catalog(taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)), candidates: [],
+        exclusions: [.init(provider: "codex", reason: "quota_zero", count: 1), .init(provider: "codex", reason: "unclassified_model", count: 1)])
+    for (label, invalid) in [("without model_tiers", noTiers), ("for a provider with no tier-less row", otherProvider),
+                             ("when every offered row is tiered", allTiered), ("alone on an empty catalog", emptyAlone),
+                             ("beside a real reason on an empty catalog", emptyBeside)] {
+        do { _ = try C.decodeCatalog(C.encode(invalid)); try check(false, "unclassified_model accepted \(label)") } catch { checks += 1 }
+    }
+    let emptyExplained = C.Catalog(taskID: "task-fixture", requestSHA256: C.digest(Data("r".utf8)), candidates: [],
+        exclusions: [.init(provider: "codex", reason: "quota_zero", count: 1)])
+    try check((try C.decodeCatalog(C.encode(emptyExplained))) == emptyExplained, "a real reason still explains an empty catalog")
+
     // ---- Build 407-g: the per-kind table end to end -----------------------
     // The host facts this builder emits (owner_scope, chat_lane_eligible,
     // request_class) drive the real JS host plan (R7) and admission law (R0):
@@ -1733,15 +1844,15 @@ private func legacyRows(_ input: RCCNativeCatalogBuilder.Input, chatRefused: Boo
 /// What the real JS resolver binds for one host node (read-only unless
 /// `scope` says workspace_write) on exactly these catalog bytes, by the one
 /// admission law (build 407): "reference" with no certifying source,
-/// "certified" with a registered gold-blind verifier for the certified class
-/// (R0 (b)). Returns "pool/model/effort/route_kind", then ">model" of its
+/// "certified" with a registered sound_full node verifier that applies to the
+/// node (R0 (b), K4). Returns "pool/model/effort/route_kind", then ">model" of its
 /// escalation reference when it has one, or "error:<code>".
 private func javascriptRoute(_ catalog: Data, admission: String = "reference", now: Date,
                              scope: String = "read_only", explicitRoutes: [String]? = nil, routeIndex: Int = 0) throws -> String {
     let script = """
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
-    const {resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
+    const {resolveRoutePlan,registerNodeVerifiers}=await import(pathToFileURL(process.argv[1]).href);
     const catalog=JSON.parse(readFileSync(0,'utf8'));
     const write=process.argv[4]==='workspace_write';
     const explicit=JSON.parse(process.argv[5]), ordinal=Number(process.argv[6]);
@@ -1751,9 +1862,10 @@ private func javascriptRoute(_ catalog: Data, admission: String = "reference", n
       host_context:{require_read_only:!write,...(explicit?{explicit_routes:explicit.map(surface=>({surface,instruction}))}:{})}};
     const plan={schema:1,task_id:catalog.task_id,request_sha256:catalog.request_sha256,nodes:[{id,
       instruction,dependencies:[],kind:'agent',scope:process.argv[4],owned_paths:write?['Sources/App.swift']:[],context_refs:[]}]};
-    const passes=async()=>({passed:true,reason:'fixture'});
-    const verifierRegistry=process.argv[3]==='certified'?
-      new Map([['trivial:read_only:agent',passes],['trivial:read_only:chat',passes]]):null;
+    const verifierRegistry=process.argv[3]==='certified'?await registerNodeVerifiers(new Map([['fixture-sound',
+      {id:'fixture-sound',scope:'read_only',surfaces:['agent','chat'],soundness:'sound_full',applies:()=>true,
+        refutations:[{instruction:'Explain the login function',output:'fixture wrong answer'}],
+        verify:async input=>({passed:input.output==='fixture answer',reason:'fixture'})}]])):null;
     try {
       const d=resolveRoutePlan(plan,task,catalog,Number(process.argv[2]),{verifierRegistry}).decisions[id];
       process.stdout.write(`${d.quota_pool}/${d.model}/${d.effort}/${d.reason.split(';')[1]}`+

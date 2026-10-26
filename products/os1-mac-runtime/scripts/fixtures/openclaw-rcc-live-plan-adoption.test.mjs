@@ -218,6 +218,18 @@ test('stale, source, permission, partial contract, candidate and graph mismatch 
   const contextHost = {...q.host_context, context: 'a prior statement'};
   const contextual = {...q, host_context: contextHost, source_fingerprint: hostContextFingerprint(contextHost)};
   rejects(compile(contextual, catalog(contextual)), contextual, catalog(contextual));
+  // K7: a bare v3 envelope (no priorMessageCount) is a first turn only at
+  // Core's zero-model sites; this seam still needs an explicit count of 0.
+  const envelopeTask = raw => {
+    const host = {...q.host_context, context: raw};
+    return {...q, host_context: host, source_fingerprint: hostContextFingerprint(host)};
+  };
+  const counted = envelopeTask('{"format":"os1-session-handoff-v3","transcript":"","priorMessageCount":0}');
+  const countedCatalog = catalog(counted);
+  assert.doesNotThrow(() => admitLivePlannerPlan(compile(counted, countedCatalog), counted, countedCatalog, h.capability));
+  const bare = envelopeTask('{"format":"os1-session-handoff-v3","transcript":""}'), bareCatalog = catalog(bare);
+  assert.throws(() => admitLivePlannerPlan(compile(bare, bareCatalog), bare, bareCatalog, h.capability),
+    /live_capability_or_source_unavailable/);
   rejects(good, q, {...c, task_contract: {...c.task_contract, coverage: 'partial'}});
   rejects(good, q, {...c, task_contract: {...c.task_contract, valid_until_ms: now() - 1}});
   rejects(good, q, {...c, request_class: 'writer'});

@@ -275,6 +275,31 @@ func runRCCRuntimeProjectionFixtures() throws {
     claudeRecord.nativeSummary = try summary(provider: "claude", surface: "claude", turn: nil)
     try check(try graph(claudeRecord, core: claudeCore).nodes.last?.provider == nil,
               "Claude native record must have exact session filename, not Codex-style suffix")
+    // K12b: a v2 partial (a failed task) names its coverage on the root: the
+    // counts first, at most three unresolved ids (a display holds at most
+    // eight workers, and the public label redaction keeps a short prefix).
+    func partialCore(_ unresolved: [String]) -> RCCRuntimeContract.Snapshot {
+        .init(taskID: "task", requestSHA256: hash, state: .failed, revision: 9,
+            children: [.init(id: "done", state: .completed, attemptID: "attempt-done", candidateID: nil, instruction: "Return 2",
+                             dependencies: [])] + unresolved.map { .init(id: $0, state: .failed, attemptID: nil, candidateID: nil,
+                             instruction: "Return 4", dependencies: []) },
+            result: .init(output: "done: 2", executionVerified: true, taskVerified: false, parityState: .unverified,
+                nativeReceipt: "/private/fixture/partial.json", taskQuality: .executionOnly,
+                partial: .init(coverage: .init(completedNodeIDs: ["done"], unresolvedNodeIDs: unresolved),
+                    parent: .init(taskID: "task", requestSHA256: hash, revision: 8),
+                    nodes: [.init(nodeID: "done", attemptID: "attempt-done", outputSHA256: SourceContextStore.digest(Data("2".utf8)))])),
+            error: "verified_not_dispatched_retry_exhausted")
+    }
+    let shortRoot = try project(partialCore((1...7).map { "u\($0)" })).nodes[0]
+    try check(shortRoot.state == .failed && shortRoot.resultSummary?.contains("1/8") == true &&
+              shortRoot.resultSummary?.contains("u1, u2, u3 +4") == true && shortRoot.resultSummary?.contains("u4") == false,
+              "a partial root names its coverage counts and at most three unresolved ids")
+    let longRoot = try project(partialCore((1...7).map { "unresolved-obligation-\($0)-" + String(repeating: "x", count: 60) })).nodes[0]
+    try check(longRoot.resultSummary?.contains("1/8") == true && (longRoot.resultSummary?.utf8.count ?? 0) <= 1_000,
+              "long unresolved ids keep the counts and stay within the summary bound")
+    var wholeCore = partialCore(["u1"]); wholeCore.result?.partial = nil; wholeCore.state = .returnedUnverified
+    try check(try project(wholeCore).nodes[0].resultSummary?.hasPrefix("Returned output is retained") == true,
+              "a whole answer's root summary is unchanged")
     try runRCCNativeDisplayObservationFixtures()
     print("RCC Runtime UI projection: \(checks) deterministic checks PASS; no scheduling/provider/model calls")
 }

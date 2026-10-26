@@ -13,10 +13,18 @@ import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { admittedRoute, createRCCRuntime, hostContextFingerprint, hostPlan, resolveRoutePlan,
+import { admittedRoute, createRCCRuntime, hostContextFingerprint, hostPlan, registerNodeVerifiers, resolveRoutePlan,
   routeFamily } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import { auditDeliveryPolicy } from '../route-replay.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
+// R0 (b) (K4): a registered sound_full node verifier applying to every
+// read-only node. Registration refuses one that passes its refutation or
+// the Core nonce, so each fixture verifier accepts only its own answers.
+const soundVerifier = (id, verify, surfaces = ['agent', 'chat']) => registerNodeVerifiers(new Map([[id, {id,
+  scope: 'read_only', surfaces, soundness: 'sound_full', applies: () => true, verify,
+  refutations: [{instruction: 'What does the interval rule in this workspace mean?', output: 'fixture wrong answer'}]}]]));
+const acceptsAnswer = async input => ({passed: input.output === 'answer', reason: 'fixture'});
 const policyText = 'RCC admission fixture policy: candidates do not grant authority.';
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'os1-rcc-admission-fixture-'));
@@ -173,6 +181,21 @@ const contractVerified = (stateDir, ticket) => ({...execution(ticket), task_veri
 const verdict = ({task: value, children}) => ({schema: 1, task_id: value.task_id,
   task_verified: children.every(c => c.state === 'completed'), output: children.map(c => c.output).join('\n'),
   parity_state: 'unverified', reason: 'fixture_deterministic_coverage'});
+// K9: a runtime's routing ledger, after asserting it passes the offline
+// delivery_policy_valid audit, and that the same ledger with one accepted
+// descent forged unchecked does not.
+async function audited(stateDir) {
+  const text = await readFile(join(stateDir, 'routing-ledger', 'routing-ledger.jsonl'), 'utf8');
+  const report = auditDeliveryPolicy({ledgers: [{path: 'ledger', text}]});
+  assert.equal(report.verdict, 'PASS', JSON.stringify(report.violations));
+  const records = text.trim().split('\n').map(line => JSON.parse(line));
+  const accepted = records.find(r => r.check_outcome === 'pass' && r.attempt_state === 'completed');
+  if (accepted) assert.equal(auditDeliveryPolicy({ledgers: [{text: text + JSON.stringify({...accepted,
+    attempt_id: randomUUID(), check_outcome: 'not_run', check_label: null}) + '\n'}]}).verdict, 'FAIL');
+  return records;
+}
+const label = (check_id, outcome = 'pass') => ({score_space: 'check_acceptance_v1', check_id, soundness: 'sound_full', outcome});
+const basisOf = record => [record.delivery_basis, record.check_id, record.check_outcome, record.check_label];
 // Auto with the host-built plan (R7): `plan` must never be called. `execute`
 // receives (ticket, stateDir, call count, runtime).
 async function auto(t, dir, request, value, {execute = (ticket, _stateDir) => execution(ticket), verifierRegistry} = {}) {
@@ -187,7 +210,7 @@ async function auto(t, dir, request, value, {execute = (ticket, _stateDir) => ex
   t.after(async () => { await runtime.close(); });
   await runtime.submit(request);
   const done = await runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 10_000});
-  return {runtime, done, tickets, tuples: tickets.map(tuple), catalogCalls: () => catalogCalls,
+  return {runtime, done, tickets, tuples: tickets.map(tuple), catalogCalls: () => catalogCalls, stateDir,
     events: runtime.events({schema: 1, task_id: request.task_id}).map(event => event.kind)};
 }
 
@@ -228,6 +251,7 @@ test('a stale, partial or expired contract binds the reference; a full read-only
     const result = await auto(t, dir, lookup, pools(lookup, facts('readonly_lookup', {task_contract: contract(lookup, change)})));
     assert.deepEqual(result.tuples, ['codex:gpt-6-astra/ultra'], name);
     assert.match(result.done.children[0].routing_decision.reason, /;admitted_reference_uncertified;/, name);
+    assert.deepEqual(basisOf((await audited(result.stateDir))[0]), ['reference', null, null, null], name);
   }
   // A full read-only contract re-bound to this request: the cheapest tier on
   // an agent surface (a contract judges the workspace, never a chat lane),
@@ -241,6 +265,11 @@ test('a stale, partial or expired contract binds the reference; a full read-only
     const decision = result.done.children[0].routing_decision;
     assert.match(decision.reason, /^resolver;route_tier;admitted_certified_contract;tier_list_0;tier_fast;/);
     assert.equal(result.done.result.task_verified, true);
+    // K9: the contract's own pass on this attempt, a sound_full label.
+    const [record] = await audited(result.stateDir);
+    assert.deepEqual(basisOf(record), ['certified:contract', 'contract:' + sha('contract'), 'pass',
+      label('contract:' + sha('contract'))]);
+    assert.equal(record.verifier_outcome, 'pass');
   }
   // No runnable reference: nothing runs below it (held before any plan).
   const noReference = await auto(t, dir, lookup, pools(lookup, full, {rows: [CODEX_ROWS()[0]]}),
@@ -281,14 +310,26 @@ test('R9: a certified descent escalates exactly once on verifier failure, empty,
     assert.equal(result.done.result.output, 'answer', `${name}: the reference answer, never the descent`);
     assert.equal(result.events.filter(kind => kind === 'ladder_escalated_to_reference').length, 1, name);
     assert.match(result.done.children[0].routing_decision.reason, /;admitted_reference_escalation;/, name);
+    // K9: the contract did not accept this answer; the reference needs no check.
+    const [descent, reference] = await audited(result.stateDir);
+    assert.deepEqual(basisOf(descent), ['certified:contract', 'contract:' + sha('contract'), 'not_returned',
+      label('contract:' + sha('contract'), 'not_returned')], name);
+    assert.deepEqual([descent.attempt_state, descent.escalation_outcome], ['ladder_not_returned', 'escalated'], name);
+    assert.deepEqual(basisOf(reference), ['reference_escalated', null, null, null], name);
   }
   // R0 (b): a registered verifier certifies; its failure escalates once too.
-  const verifierRegistry = new Map([['trivial:read_only:agent', async input =>
-    ({passed: input.selected_config.model === 'gpt-6-astra', reason: 'fixture'})]]);
+  const verifierRegistry = await soundVerifier('fixture-astra-only', async input =>
+    ({passed: input.selected_config?.model === 'gpt-6-astra', reason: 'fixture'}));
   const verified = await auto(t, dir, lookup, pools(lookup, facts('readonly_lookup')), {verifierRegistry});
   assert.deepEqual(verified.tuples, ['codex:gpt-6-luna/low', 'codex:gpt-6-astra/ultra']);
   assert.match(verified.done.children[0].routing_decision.reason, /^tier_escalated_after_verifier_failure;/);
   assert.equal(verified.events.filter(kind => kind === 'ladder_escalated_to_reference').length, 1);
+  // K9: the certifier (a registered sound_full verifier) failed this attempt.
+  const [failedDescent, escalatedReference] = await audited(verified.stateDir);
+  assert.deepEqual(basisOf(failedDescent), ['certified:verifier:fixture-astra-only', 'verifier:fixture-astra-only', 'fail',
+    label('verifier:fixture-astra-only', 'fail')]);
+  assert.deepEqual([failedDescent.attempt_state, failedDescent.verifier_outcome], ['ladder_verifier_failed', 'fail']);
+  assert.deepEqual(basisOf(escalatedReference), ['reference_escalated', null, null, null]);
 });
 
 test('a class certificate binds its own tuple for the request run byte-exact; its format check accepts or escalates', async t => {
@@ -300,10 +341,17 @@ test('a class certificate binds its own tuple for the request run byte-exact; it
   assert.deepEqual(adopted.tuples, ['codex:gpt-6-luna/low']);
   assert.match(adopted.done.children[0].routing_decision.reason,
     /^resolver;route_tier;admitted_certified_class:cert-chat-1;tier_fast;/);
+  // K9: a format check is partial: its pass is the delivery check, never a §4.3 label.
+  assert.deepEqual(basisOf((await audited(adopted.stateDir))[0]),
+    ['certified:class:cert-chat-1', 'class:cert-chat-1:nonempty_text', 'pass', null]);
   const failed = await auto(t, dir, chat, signed, {execute: (ticket, _stateDir, count) =>
     count === 1 ? {...execution(ticket), output: '  '} : execution(ticket)});
   assert.deepEqual(failed.tuples, ['codex:gpt-6-luna/low', 'codex:gpt-6-astra/ultra']);
   assert.equal(failed.done.state, 'completed', failed.done.error);
+  const [classDescent, classReference] = await audited(failed.stateDir);
+  assert.deepEqual(basisOf(classDescent), ['certified:class:cert-chat-1', 'class:cert-chat-1:nonempty_text',
+    'not_returned', null]);
+  assert.equal(classReference.delivery_basis, 'reference_escalated');
   // A certificate for a tuple the catalog does not offer binds the reference.
   const absent = pools(chat, facts('chat_explanatory', {class_certificates: {chat_explanatory: certificate({model: 'gpt-9'})}}));
   const reference = await auto(t, dir, chat, absent);
@@ -503,8 +551,7 @@ test('the per-kind table: every request kind binds the route the design names, r
 
 test('R10: an owner provider choice binds that provider\'s reference even when a certifying source exists', async t => {
   const dir = await fixture(t);
-  const passes = async () => ({passed: true, reason: 'fixture'});
-  const verifierRegistry = new Map([['trivial:read_only:agent', passes], ['trivial:read_only:chat', passes]]);
+  const verifierRegistry = await soundVerifier('fixture-answer', acceptsAnswer);
   const FABLE_LOW = () => [...AGENT_CLAUDE(), poolRow('fable-low', 'anthropic_shared', 'claude', 'claude-fable-5-1', 'low')];
   const lookup = provider => withHost(task(dir, 'What does the interval rule in this workspace mean?'),
     {provider_preference: provider});
@@ -548,6 +595,9 @@ test('R10: an owner provider choice binds that provider\'s reference even when a
     const decision = result.done.children[0].routing_decision;
     assert.match(decision.reason, /^resolver;route_reference;admitted_reference_owner_words;/, name);
     assert.equal(decision.ladder, undefined, `${name}: no descent, no escalation`);
+    // K9: the owner's tuple, counted apart; the control's descent passes the audit too.
+    assert.deepEqual(basisOf((await audited(result.stateDir))[0]), ['owner_words', null, null, null], name);
+    await audited(control.stateDir);
   }
   // A task-level provider choice is the owner's word too; 'auto' at both levels is not.
   const lookupAuto = lookup('auto');
@@ -680,7 +730,7 @@ test('a route never depends on ledger history: passes a descent recorded certify
       return runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 10_000}); };
     return {runtime, tickets, run};
   };
-  const certified = await start(new Map([['trivial:read_only:agent', async () => ({passed: true, reason: 'fixture'})]]));
+  const certified = await start(await soundVerifier('fixture-answer', acceptsAnswer));
   for (let index = 0; index < 3; index++) assert.equal((await certified.run(lookup())).state, 'completed');
   assert.deepEqual(certified.tickets.map(tuple), Array(3).fill('codex:gpt-6-luna/low'));
   await certified.runtime.close();
@@ -688,6 +738,10 @@ test('a route never depends on ledger history: passes a descent recorded certify
     .map(line => JSON.parse(line));
   assert.deepEqual(records.map(record => `${record.model}/${record.effort}:${record.verifier_outcome}`),
     Array(3).fill('gpt-6-luna/low:pass'));
+  // K9: the certifier's pass on each attempt, a sound_full label.
+  for (const record of await audited(stateDir))
+    assert.deepEqual(basisOf(record), ['certified:verifier:fixture-answer', 'verifier:fixture-answer', 'pass',
+      label('verifier:fixture-answer')]);
   const later = await start(null);
   t.after(async () => { await later.runtime.close(); });
   const done = await later.run(lookup());
@@ -762,11 +816,12 @@ test('R9 under every certifying source: a partial, unverified or mismatched oper
   const checks = {partial: {coverage: 'partial', assessment_state: 'execution_only'},
     unverified: {coverage: 'full', assessment_state: 'unverified'},
     mismatch: {coverage: 'full', assessment_state: 'mismatch', failed_check_ids: ['public-test']}};
-  const pass = async () => ({passed: true, reason: 'fixture'});
-  // (b) a registered verifier that would pass anything; (c) a certificate
-  // whose format check the answer meets. Neither adopts a failed check.
+  // (b) a registered verifier that passes the fixture's answer; (c) a
+  // certificate whose format check the answer meets. Neither adopts a
+  // failed check.
+  const verifierRegistry = await soundVerifier('fixture-answer', acceptsAnswer);
   const sources = {
-    verifier: request => [pools(request, facts('readonly_lookup')), new Map([['trivial:read_only:agent', pass]])],
+    verifier: request => [pools(request, facts('readonly_lookup')), verifierRegistry],
     class: request => [pools(request, facts('readonly_lookup', {class_certificates: {readonly_lookup: certificate()}})), undefined],
   };
   for (const [source, admit] of Object.entries(sources)) for (const [name, patch] of Object.entries(checks)) {
@@ -797,6 +852,14 @@ test('exact arithmetic route test: each named surface runs its cheapest tier, ce
   assert.deepEqual(passed.tickets.map(tuple), ['codex:gpt-6-luna/low', 'claude:claude-haiku-4-5/none',
     'claude-chat:claude-haiku-4-5/none']);
   assert.ok(passed.done.children.every(child => /;admitted_certified_exact;/.test(child.routing_decision.reason)));
+  // K9: an explicit route test's exact descent is certified:exact by its route kind.
+  const exactRecords = await audited(passed.stateDir);
+  assert.equal(exactRecords.length, 3);
+  for (const record of exactRecords) {
+    assert.deepEqual(basisOf(record), ['certified:exact', 'exact_arithmetic_v1', 'pass', label('exact_arithmetic_v1')]);
+    assert.deepEqual([record.route_kind, record.host_route_kind, record.verifier_outcome],
+      ['explicit_route', 'tier', 'not_registered']);
+  }
   // A wrong cheap answer is never delivered: that route escalates once to its
   // own surface's reference; a model word on a route still binds the owner's tuple.
   const wrongOnCodex = ticket => ({...execution(ticket),
@@ -808,6 +871,17 @@ test('exact arithmetic route test: each named surface runs its cheapest tier, ce
   assert.deepEqual(escalated.tickets.map(tuple).sort(), ['claude-chat:claude-haiku-4-5/none',
     'claude:claude-haiku-4-5/none', 'codex:gpt-6-astra/ultra', 'codex:gpt-6-luna/low']);
   assert.match(escalated.done.output ?? escalated.done.result?.output ?? JSON.stringify(escalated.done), /4/);
+  const escalatedRecords = await audited(escalated.stateDir);
+  const luna = escalatedRecords.find(record => record.model === 'gpt-6-luna');
+  assert.deepEqual(basisOf(luna), ['certified:exact', 'exact_arithmetic_v1', 'not_returned',
+    label('exact_arithmetic_v1', 'not_returned')]);
+  assert.deepEqual([luna.attempt_state, luna.escalation_outcome], ['ladder_not_returned', 'escalated']);
+  assert.deepEqual(basisOf(escalatedRecords.find(record => record.model === 'gpt-6-astra')),
+    ['reference_escalated', null, null, null]);
+  // The ledger names the check, never the exact answer or the instructions.
+  const ledgerText = await readFile(join(escalated.stateDir, 'routing-ledger', 'routing-ledger.jsonl'), 'utf8');
+  for (const forbidden of ['exact_answer', '2+2', '1+1', '3*3', 'Claude chat'])
+    assert.ok(!ledgerText.includes(forbidden), forbidden);
   assert.equal(admittedRoute({id: 'requested-1', instruction: 'Explain the interval rule.', kind: 'agent',
     scope: 'read_only', dependencies: []}, withHost(task(dir, 'x', {mode: 'explicit_routing_test'}),
     {explicit_routes: [{surface: 'codex', instruction: 'Explain the interval rule.'}]}), {}).source, 'owner_words');

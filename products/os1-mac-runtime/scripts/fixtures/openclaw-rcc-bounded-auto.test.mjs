@@ -6,7 +6,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp, chmod, rm, mkdir, writeFile, readFile, realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createRCCRuntime, hostContextFingerprint, RCCRuntimeError, admitBoundedAutoPlan} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
+import {createRCCRuntime, hostContextFingerprint, RCCRuntimeError, admitBoundedAutoPlan, registerNodeVerifiers} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {createPlannerHostProjection, compileFreshPlannerProposal} from '../../Resources/openclaw-os1-bridge/adaptive-plan-host.mjs';
 import {adaptiveRuntimeOptions} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 import {createLocalPlanPlanner, projectLocalPlannerCandidates} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
@@ -60,20 +60,49 @@ async function harness(t, options = {}) {
   return {directory, runtime, tickets, run};
 }
 
-test('bounded Auto really executes two nodes in same owner and never certifies quality', async t => {
-  const h = await harness(t, {boundedAutoPlanning: true,
-    proposeLocalPlan: async args => {
-      assert.equal(args.candidateCatalog.task_id, args.hostProjection.binding.task_id);
-      return {status: 'proposal', raw_proposal: proposal(), completion_outcome_unknown: false};
-    }}), q = task(h.directory);
-  const done = await h.run(q), saved = h.runtime._load(q.task_id);
-  assert.equal(h.tickets.length, 2); assert.equal(done.state, 'returned_unverified');
-  assert.equal(saved.plan_provenance, 'host_checked_execution_plan_v1');
-  assert.equal(saved.adaptive_routing.live_plan_changed, true);
-  assert.equal(saved.adaptive_routing.quality_certificate, false);
-  assert(saved.children.every(c => c.route_kind === 'execution_only'));
-  assert(h.tickets.every(x => x.original_request === q.request));
-  await h.runtime.submit(q); assert.equal(h.tickets.length, 2, 'no replay');
+// The one law (converged routing architecture v2, K1/K2): the local planner
+// proposes topology only. Every proposed node binds by selectRouteCandidate,
+// a model-authored decomposition needs a plan-shape certificate that does not
+// exist yet, and a planner's candidate id never binds a row.
+const reply = raw => async () => ({status: 'proposal', raw_proposal: raw, completion_outcome_unknown: false});
+const single = (hint = 'reference') => {const raw = JSON.parse(proposal()); raw.nodes = raw.nodes.slice(0, 1);
+  raw.nodes[0].proposed_candidate_id = hint; raw.final_output_proposal = {mode: 'direct_child', node_ids: ['a']};
+  return JSON.stringify(raw);};
+const dependent = () => {const raw = JSON.parse(proposal()); raw.nodes[1].dependencies = ['a'];
+  raw.final_output_proposal = {mode: 'direct_child', node_ids: ['b']}; return JSON.stringify(raw);};
+const cheapHints = raw => {const p = JSON.parse(raw); for (const n of p.nodes) n.proposed_candidate_id = 'cheap'; return JSON.stringify(p);};
+function withCheap(q) {
+  const c = catalog(q);
+  c.candidates.push({...c.candidates[0], id: 'cheap', model: 'gpt-6-luna', effort: 'low', estimated_cost_units: 0,
+    configuration_sha256: H('cheap')});
+  c.model_tiers['gpt-6-luna'] = 'fast';
+  return c;
+}
+const writerTask = dir => {const q = task(dir); q.host_context.require_read_only = false;
+  q.source_fingerprint = hostContextFingerprint(q.host_context); return q;};
+const writerRow = (c, id, patch = {}) => ({...c.candidates[0], id, scope: 'workspace_write',
+  permission_profile: 'workspace_write', tools: ['read', 'write', 'execute'], allowed_paths: ['**'],
+  configuration_sha256: H(id), ...patch});
+
+test('a model decomposition is not admitted without a plan-shape certificate: the request runs once at the reference', async t => {
+  for (const raw of [proposal(), dependent(), cheapHints(proposal())]) {
+    // The wired (K3: not asked) admission refuses the decomposition itself.
+    const direct = task('/private/test'), c = withCheap(direct);
+    const prepared = createPlannerHostProjection({task: direct, catalog: c, scope: 'read_only', nonce: 'fixed_nonce'});
+    assert.throws(() => admitBoundedAutoPlan(compileFreshPlannerProposal(raw, prepared, prepared, {max_nodes: 4}), direct, c),
+      {code: 'bounded_decomposition_not_admissible'});
+    const h = await harness(t, {boundedAutoPlanning: true, catalog: async q => withCheap(q), proposeLocalPlan: reply(raw)});
+    const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
+    assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
+    assert.equal(h.tickets.length, 1);
+    assert.equal(h.tickets[0].instruction, q.request);
+    assert.equal(h.tickets[0].candidate_id, 'reference');
+    assert.equal(saved.plan_provenance, 'host_exact_request');
+    assert.equal(saved.adaptive_routing.live_plan_changed, false);
+    assert.equal(saved.adaptive_routing.quality_certificate, false);
+    assert(saved.children.every(c => c.route_kind === 'reference'));
+    await h.runtime.submit(q); assert.equal(h.tickets.length, 1, 'no replay');
+  }
 });
 test('bad bounded candidate restores original host floor before any dispatch', async t => {
   const raw = JSON.parse(proposal());raw.nodes[0].proposed_candidate_id='foreign';
@@ -82,20 +111,60 @@ test('bad bounded candidate restores original host floor before any dispatch', a
   await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].instruction,q.request);
   assert.equal(h.runtime._load(q.task_id).adaptive_routing.live_plan_changed,false);
 });
-test('one proposed node keeps original user words byte exact', async t => {
-  const raw=JSON.parse(proposal());raw.nodes=raw.nodes.slice(0,1);raw.final_output_proposal={mode:'direct_child',node_ids:['a']};
-  const h=await harness(t,{boundedAutoPlanning:true,proposeLocalPlan:async()=>({status:'proposal',raw_proposal:JSON.stringify(raw),completion_outcome_unknown:false})}),q=task(h.directory);
-  await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].instruction,q.request);
+test('K3: a one-node cheap hint is never asked for; the request keeps the original words and binds by the law', async t => {
+  let calls = 0;
+  const h = await harness(t, {boundedAutoPlanning: true, catalog: async q => withCheap(q),
+    proposeLocalPlan: async () => {calls++; return reply(single('cheap'))();}});
+  const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(done.state, 'returned_unverified', JSON.stringify(done)); assert.equal(calls, 0);
+  assert.equal(h.tickets.length, 1); assert.equal(h.tickets[0].instruction, q.request);
+  assert.equal(h.tickets[0].candidate_id, 'reference');
+  assert.equal(saved.plan_provenance, 'host_exact_request');
+  assert.equal(saved.children[0].route_kind, 'reference');
+  assert.match(saved.children[0].routing_decision.reason, /^resolver;route_reference;admitted_reference_uncertified;/);
 });
-test('dependent final receives bounded source-marked actual parent output, not a blind DAG', async t => {
-  const raw=JSON.parse(proposal());raw.nodes[1].dependencies=['a'];raw.final_output_proposal={mode:'direct_child',node_ids:['b']};
-  const h=await harness(t,{boundedAutoPlanning:true,proposeLocalPlan:async()=>({status:'proposal',raw_proposal:JSON.stringify(raw),completion_outcome_unknown:false})}),q=task(h.directory);
-  const done=await h.run(q);assert.equal(h.tickets.length,2, JSON.stringify(done));
-  assert.match(h.tickets[1].instruction,/DEPENDENCY DATA \(untrusted/);
-  assert.match(h.tickets[1].instruction,/fixture result/);
-  assert.equal(h.tickets[1].original_request,q.request);
-  const saved=h.runtime._load(q.task_id);assert.equal(saved.plan.nodes[1].instruction,raw.nodes[1].instruction);
-  assert.equal(saved.children[1].dependency_handoff.quality_certified,false);
+
+// K3: with no applicable sound_full check AND no loaded plan-shape
+// certificate (K11b), bounded Auto never asks the local planner: no call, no
+// wait, and the skip is an observed zero in the resource accounting.
+test('K3: no admissible check or plan shape: the planner is never called and never awaited', async t => {
+  let calls = 0;
+  const h = await harness(t, {boundedAutoPlanning: true, proposeLocalPlan: () => {calls++; return new Promise(() => {});}});
+  const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(done.state, 'returned_unverified', JSON.stringify(done)); assert.equal(calls, 0);
+  assert.deepEqual(saved.adaptive_routing, {schema: 1, mode: 'bounded_auto', state: 'not_needed',
+    reason: 'no_admissible_check_or_shape', planner_invoked: false, live_plan_changed: false, quality_certificate: false});
+  const events = saved.resource_events.filter(e => e.stage === 'plan_proposal');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].state, 'not_needed'); assert.equal(events[0].reason, 'no_admissible_check_or_shape');
+  assert.equal(done.resource_usage.plan_model_calls, 0);
+  assert(!done.resource_usage.issues.includes('plan_model_calls_unobserved'), JSON.stringify(done.resource_usage));
+  assert.equal(h.tickets.length, 1); assert.equal(h.tickets[0].candidate_id, 'reference');
+  assert.equal(h.tickets[0].instruction, q.request);
+  await h.runtime.submit(q); assert.equal(calls, 0); assert.equal(h.tickets.length, 1, 'no replay');
+});
+test('K3: a registered verifier no longer switches bounded Auto off; the planner is still not called', async t => {
+  let calls = 0;
+  // K4: a registered sound_full node verifier (it rejects its refutation and the Core nonce).
+  const registry = await registerNodeVerifiers(new Map([['bounded-read', {id: 'bounded-read', scope: 'read_only',
+    surfaces: ['agent', 'chat'], soundness: 'sound_full', applies: () => true,
+    verify: async input => ({passed: input.output === 'fixture result'}),
+    refutations: [{instruction: 'fixture instruction', output: 'fixture wrong answer'}]}]]));
+  const h = await harness(t, {boundedAutoPlanning: true, verifierRegistry: registry, catalog: async q => withCheap(q),
+    proposeLocalPlan: async () => {calls++; return reply(single('cheap'))();}});
+  const q = task(h.directory), done = await h.run(q), saved = h.runtime._load(q.task_id);
+  assert.equal(calls, 0);
+  assert.equal(saved.adaptive_routing.mode, 'bounded_auto', 'the registry no longer disables the bounded policy');
+  assert.equal(saved.adaptive_routing.reason, 'no_admissible_check_or_shape');
+  assert.equal(saved.plan_provenance, 'host_exact_request');
+  // The host plan binds the certified descent by the same law, its escalation reference fixed at bind.
+  assert.deepEqual(h.tickets.map(x => x.candidate_id), ['cheap'], JSON.stringify(done));
+  assert.equal(done.state, 'returned_unverified');
+  const [child] = saved.children;
+  assert.equal(child.route_kind, 'tier'); assert.equal(child.ladder.reference_candidate_id, 'reference');
+  assert.equal(child.ladder.certificate_id, 'bounded-read');
+  assert.match(child.routing_decision.reason, /^resolver;route_tier;admitted_certified_verifier;/);
+  assert.equal(done.resource_usage.plan_model_calls, 0);
 });
 test('read-only parent cannot gain write authority from local plan', async t => {
   const raw=JSON.parse(proposal());raw.nodes[0].proposed_scope='workspace_write';raw.nodes[0].proposed_owned_paths=['evil'];
@@ -108,113 +177,114 @@ test('bounded flag is not a shortcut around an existing full task contract or ex
   for (const modifier of [c=>({...c,task_contract:{coverage:'full'}}),c=>({...c,routing_intent_v2:{version:'r10_joint_selection_v2',allowed_surfaces:[],exact_model:null,model_family:null,effort:null,require_native_ceiling:true,quality_target:null,state:'resolved'}})]) {
     const q=task('/private/test'),c=modifier(catalog(q));
     const prepared=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
-    const compiled=compileFreshPlannerProposal(proposal(),prepared,prepared,{max_nodes:4});
+    const compiled=compileFreshPlannerProposal(single(),prepared,prepared,{max_nodes:4});
     assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
   }
 });
 test('bound material cannot be dropped by a model branch', async t => {
-  const h=await harness(t,{boundedAutoPlanning:true,proposeLocalPlan:async()=>({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false})});
+  const h=await harness(t,{boundedAutoPlanning:true,proposeLocalPlan:reply(single())});
   const q=task(h.directory,{material_refs:['source:test:immutable']});
-  await h.run(q);assert.equal(h.tickets.length,2);
+  await h.run(q);assert.equal(h.tickets.length,1);
   for(const ticket of h.tickets) assert.deepEqual(ticket.context_refs,q.material_refs);
 });
-test('execution-only hint cannot use exhausted, stale, unknown or foreign tuple', () => {
-  for(const change of [c=>c.quota_remaining_fraction=0,c=>c.quota_remaining_fraction=null,c=>c.availability_valid_until_ms=0,c=>c.scope='workspace_write']) {
+test('no exhausted, stale or out-of-scope row binds a bounded node', () => {
+  for(const change of [c=>c.quota_remaining_fraction=0,c=>c.availability_valid_until_ms=0,c=>c.scope='workspace_write']) {
     const q=task('/private/test'),c=catalog(q);change(c.candidates[0]);
     const prepared=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
-    const compiled=compileFreshPlannerProposal(proposal(),prepared,prepared,{max_nodes:4});
+    const compiled=compileFreshPlannerProposal(single(),prepared,prepared,{max_nodes:4});
     assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
   }
 });
-
-test('two-pool bounded children overlap instead of merely dispatching twice', async t => {
-  let count=0, release; const barrier=new Promise(r=>release=r);
-  const h=await harness(t,{boundedAutoPlanning:true,
-    catalog:async q=>{const c=catalog(q);const b={...c.candidates[0],id:'anthropic',surface:'claude',transport:'claude_cli',quota_pool:'anthropic_shared',model:'claude-fable-5-1',effort:'max',configuration_sha256:H('anthropic')};c.candidates.push(b);c.model_tiers[b.model]='frontier';return c;},
-    proposeLocalPlan:async()=>({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false}),
-    execute:async ticket=>{h.tickets.push(ticket);if(++count===2)release();await Promise.race([barrier,sleep(1000).then(()=>{throw Error('not parallel');})]);return completed(ticket);}}),q=task(h.directory);
-  const done=await h.run(q);assert.equal(done.state,'returned_unverified');assert.equal(count,2);
-  assert.equal(new Set(h.tickets.map(x=>x.selected_config.quota_pool)).size,2);
+test('a registered verifier certifies a bounded read node: the descent carries its fixed reference escalation', async () => {
+  const q = task('/private/test'), c = withCheap(q);
+  const prepared = createPlannerHostProjection({task: q, catalog: c, scope: 'read_only', nonce: 'fixed_nonce'});
+  const compiled = compileFreshPlannerProposal(single('reference'), prepared, prepared, {max_nodes: 4});
+  // K4: a registered sound_full node verifier (it rejects its refutation and the Core nonce).
+  const registry = await registerNodeVerifiers(new Map([['bounded-read', {id: 'bounded-read', scope: 'read_only',
+    surfaces: ['agent', 'chat'], soundness: 'sound_full', applies: () => true,
+    verify: async input => ({passed: input.output === 'fixture answer'}),
+    refutations: [{instruction: 'fixture instruction', output: 'fixture wrong answer'}]}]]));
+  const uncertified = admitBoundedAutoPlan(compiled, q, c);
+  const [plain] = uncertified.plan.nodes;
+  assert.equal(plain.candidate_id, 'reference'); assert.equal(uncertified.routes[plain.id].kind, 'reference');
+  const certified = admitBoundedAutoPlan(compiled, q, c, Date.now(), registry);
+  const [node] = certified.plan.nodes;
+  assert.equal(node.candidate_id, 'cheap');
+  assert.equal(certified.routes[node.id].kind, 'tier');
+  assert.equal(certified.routes[node.id].ladder.reference_candidate_id, 'reference');
+  assert.equal(certified.routes[node.id].ladder.admitted_by, 'verifier');
+  assert.equal(certified.routes[node.id].ladder.certificate_id, 'bounded-read');
+  assert.match(certified.decisions[node.id].reason, /^bounded_plan;route_tier;admitted_certified_verifier;/);
 });
-test('writer preparation is read-only and ONE host final writer consumes all returned data',async t=>{
-  const h=await harness(t,{boundedAutoPlanning:true,
-    catalog:async q=>{const c=catalog(q);c.owner_scope='workspace_write';c.request_class='writer';c.candidates.push({...c.candidates[0],id:'writer',scope:'workspace_write',permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**'],configuration_sha256:H('writer')});return c;},
-    proposeLocalPlan:async()=>({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false})});
-  const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
-  const done=await h.run(q);assert.equal(done.state,'returned_unverified',JSON.stringify(done));assert.equal(h.tickets.length,3);
-  const writers=h.tickets.filter(x=>x.selected_config.scope==='workspace_write');assert.equal(writers.length,1);
-  assert.equal(writers[0].objective,q.request);assert.equal(writers[0].original_request,q.request);
-  assert.match(writers[0].instruction,/DEPENDENCY DATA/);assert.deepEqual(writers[0].owned_paths,['**']);
+test('writer preparation from a model is not admitted: ONE host writer runs the request', async t => {
+  const h = await harness(t, {boundedAutoPlanning: true, proposeLocalPlan: reply(proposal()),
+    catalog: async q => {const c = catalog(q); c.owner_scope = 'workspace_write'; c.request_class = 'writer';
+      c.candidates.push(writerRow(c, 'writer')); return c;}});
+  const q = writerTask(h.directory), done = await h.run(q);
+  assert.equal(done.state, 'returned_unverified', JSON.stringify(done)); assert.equal(h.tickets.length, 1);
+  const [writer] = h.tickets;
+  assert.equal(writer.selected_config.scope, 'workspace_write'); assert.equal(writer.instruction, q.request);
+  assert.equal(writer.original_request, q.request); assert.deepEqual(writer.owned_paths, ['**']);
+  assert.doesNotMatch(writer.instruction, /DEPENDENCY DATA/);
 });
 test('future telemetry cannot authorize a bounded hint',()=>{
   const q=task('/private/test'),c=catalog(q);c.candidates[0].availability_observed_at_ms=Date.now()+600000;
   const prep=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
-  const compiled=compileFreshPlannerProposal(proposal(),prep,prep,{max_nodes:4});
+  const compiled=compileFreshPlannerProposal(single(),prep,prep,{max_nodes:4});
   assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
 });
-test('oversize dependency is retained and never truncated or sent to a final worker',async t=>{
-  const raw=JSON.parse(proposal());raw.nodes[1].dependencies=['a'];raw.final_output_proposal={mode:'direct_child',node_ids:['b']};
-  const h=await harness(t,{boundedAutoPlanning:true,proposeLocalPlan:async()=>({status:'proposal',raw_proposal:JSON.stringify(raw),completion_outcome_unknown:false}),
-    execute:async ticket=>{h.tickets.push(ticket);return {...completed(ticket),output:'x'.repeat(65000)};}}),q=task(h.directory);
-  const done=await h.run(q);assert.equal(h.tickets.length,1);assert.notEqual(done.state,'completed');
-  assert.equal(h.runtime._load(q.task_id).children[0].output.length,65000);
-});
 
-test('separate finalizer hint chooses exact authorized writer tuple, never a read-only ID', async t=>{
-  const raw=JSON.parse(proposal());raw.nodes=raw.nodes.slice(0,1);raw.final_output_proposal={mode:'direct_child',node_ids:['a'],host_finalizer_candidate_id:'writer_hint'};
+test('a finalizer hint is not a binding: the host writer binds the reference writer row by the law', async t=>{
+  const raw=JSON.parse(single());raw.final_output_proposal.host_finalizer_candidate_id='writer_hint';
   const h=await harness(t,{boundedAutoPlanning:true,catalog:async q=>{const c=catalog(q);c.owner_scope='workspace_write';c.request_class='writer';
-    c.candidates.push({...c.candidates[0],id:'writer_hint',scope:'workspace_write',permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**'],configuration_sha256:H('writer_hint')});return c;},
-    proposeLocalPlan:async()=>({status:'proposal',raw_proposal:JSON.stringify(raw),completion_outcome_unknown:false})});
-  const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
-  await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].candidate_id,'writer_hint');assert.equal(h.tickets[0].instruction,q.request);
+    c.model_tiers['gpt-6-luna']='fast';
+    c.candidates.push(writerRow(c,'writer'),writerRow(c,'writer_hint',{model:'gpt-6-luna',effort:'low',estimated_cost_units:0}));return c;},
+    proposeLocalPlan:reply(JSON.stringify(raw))});
+  const q=writerTask(h.directory);
+  await h.run(q);assert.equal(h.tickets.length,1);assert.equal(h.tickets[0].candidate_id,'writer');assert.equal(h.tickets[0].instruction,q.request);
 });
 
-test('Core independently rejects forged writer permission profile and missing write/execute tools',()=>{
-  for(const modify of [c=>c.permission_profile='read_only',c=>c.tools=['read','execute'],c=>c.tools=['read','write']]) {
-    const q=task('/private/test');q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
-    const c=catalog(q);c.owner_scope='workspace_write';c.request_class='writer';
-    const writer={...c.candidates[0],id:'writer_hint',scope:'workspace_write',permission_profile:'workspace_write',tools:['read','write','execute'],allowed_paths:['**'],configuration_sha256:H('writer_hint')};modify(writer);c.candidates.push(writer);
-    const raw=JSON.parse(proposal());raw.nodes=raw.nodes.slice(0,1);raw.final_output_proposal={mode:'direct_child',node_ids:['a'],host_finalizer_candidate_id:'writer_hint'};
-    const prep=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
-    const compiled=compileFreshPlannerProposal(JSON.stringify(raw),prep,prep,{max_nodes:3});
-    assert.throws(()=>admitBoundedAutoPlan(compiled,q,c));
-  }
+test('a writer row whose permission profile is not its scope binds nothing',()=>{
+  const q=writerTask('/private/test');
+  const c=catalog(q);c.owner_scope='workspace_write';c.request_class='writer';
+  c.candidates.push(writerRow(c,'writer_hint',{permission_profile:'read_only'}));
+  const raw=JSON.parse(single());raw.final_output_proposal.host_finalizer_candidate_id='writer_hint';
+  const prep=createPlannerHostProjection({task:q,catalog:c,scope:'read_only',nonce:'fixed_nonce'});
+  const compiled=compileFreshPlannerProposal(JSON.stringify(raw),prep,prep,{max_nodes:3});
+  assert.throws(()=>admitBoundedAutoPlan(compiled,q,c),{code:/^no_dispatchable_candidate:workspace_write/});
 });
 
-test('ordinary bounded Auto can run an authorized cheap row when frontier reference is unavailable',async t=>{
+test('with no runnable reference bounded Auto holds before any planner call or dispatch (no cheap fallback)',async t=>{
+  let calls=0;
   const h=await harness(t,{boundedAutoPlanning:true,
     catalog:async q=>{const c=catalog(q);c.candidates[0].model='gpt-6-luna';c.candidates[0].effort='low';c.model_tiers={'gpt-6-luna':'fast'};c.exclusions=[{provider:'codex',reason:'reference_unavailable',count:1}];return c;},
-    proposeLocalPlan:async()=>({status:'proposal',raw_proposal:proposal(),completion_outcome_unknown:false})}),q=task(h.directory);
-  const done=await h.run(q);assert.equal(done.state,'returned_unverified',JSON.stringify(done));assert.equal(h.tickets.length,2);
-  assert(h.tickets.every(x=>x.selected_config.model==='gpt-6-luna'&&x.selected_config.effort==='low'));
+    proposeLocalPlan:async()=>{calls++;return {status:'proposal',raw_proposal:single(),completion_outcome_unknown:false};}}),q=task(h.directory);
+  const done=await h.run(q);
+  assert.equal(done.state,'held',JSON.stringify(done));assert.equal(h.tickets.length,0);assert.equal(calls,0);
+  assert.match(h.runtime._load(q.task_id).error,/^no_dispatchable_candidate:/);
 });
 
-test('App-shaped write ceiling/read-only class reaches real local compiler and two overlapping cheap readers', async t => {
-  let calls=0, running=0, overlap=false, release;
-  const barrier=new Promise(resolve=>release=resolve);
+test('App-shaped bounded options: the real local compiler is not asked (K3) and no cheap row binds', async t => {
+  let calls=0;
   const options=adaptiveRuntimeOptions({pluginConfig:{bounded_auto:true},complete:async request=>{
     calls++;
     const input=JSON.parse(request.messages[0].content);
     assert.equal(input.candidate_metadata.owner_scope,'workspace_write','catalog authority ceiling retained');
     assert.equal(input.candidate_metadata.effective_scope,'read_only','separate host-derived effective scope');
     assert.equal(Object.hasOwn(input,'host_finalizer'),false,'read task is not writer preparation');
-    const raw=JSON.parse(proposal());for(const n of raw.nodes)n.proposed_candidate_id='cheap';
     return {provider:'ollama',model:'qwen3.5:4b',responseModel:'qwen3.5:4b',stopReason:'stop',
-      execution:{mode:'direct-provider',owner:{kind:'provider',id:'ollama'}},text:JSON.stringify(raw)};
+      execution:{mode:'direct-provider',owner:{kind:'provider',id:'ollama'}},text:cheapHints(proposal())};
   }});
   const h=await harness(t,{...options,maximumWorkers:4,maximumReadWorkersPerPool:4,
-    catalog:async q=>{const c=catalog(q);c.owner_scope='workspace_write';c.candidates[0].estimated_cost_units=2;
-      c.candidates.push({...c.candidates[0],id:'cheap',model:'gpt-6-luna',effort:'low',estimated_cost_units:1,configuration_sha256:H('cheap')});c.model_tiers['gpt-6-luna']='fast';return c;},
-    execute:async ticket=>{h.tickets.push(ticket);running++;if(running===2){overlap=true;release();}
-      await Promise.race([barrier,sleep(1000).then(()=>{throw Error('read branches did not overlap');})]);return completed(ticket);}});
-  const q=task(h.directory);q.host_context.require_read_only=false;q.source_fingerprint=hostContextFingerprint(q.host_context);
+    catalog:async q=>{const c=withCheap(q);c.owner_scope='workspace_write';return c;}});
+  const q=writerTask(h.directory);
   const original=JSON.stringify(q),done=await h.run(q),saved=h.runtime._load(q.task_id);
-  assert.equal(calls,1);assert.equal(overlap,true);assert.equal(done.state,'returned_unverified');
-  assert.equal(h.tickets.length,2);assert.equal(saved.plan_provenance,'host_checked_execution_plan_v1');
-  assert.equal(saved.adaptive_routing.reason,'bounded_host_checked_proposal');assert.equal(saved.adaptive_routing.quality_certificate,false);
-  assert(h.tickets.every(x=>x.selected_config.scope==='read_only'&&x.selected_config.model==='gpt-6-luna'&&x.selected_config.effort==='low'));
+  assert.equal(calls,0);assert.equal(done.state,'returned_unverified',JSON.stringify(done));
+  assert.equal(h.tickets.length,1);assert.equal(saved.plan_provenance,'host_exact_request');
+  assert.equal(saved.adaptive_routing.quality_certificate,false);
+  assert(h.tickets.every(x=>x.selected_config.scope==='read_only'&&x.selected_config.model==='gpt-6-astra'&&x.selected_config.effort==='ultra'));
   assert(h.tickets.every(x=>x.original_request===q.request&&x.original_objective===q.objective));
-  assert.equal(JSON.stringify(q),original,'original task/policy/source unchanged');assert(!saved.plan.nodes.some(x=>x.id==='host_finalize'));
+  assert.equal(JSON.stringify(q),original,'original task/policy/source unchanged');
 });
 
 test('effective scope is contained by owner ceiling and cannot create a final writer hint',()=>{

@@ -9,10 +9,12 @@ import { tmpdir } from 'node:os';
 import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usage.mjs';
 import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adaptive-routing-policy.mjs';
 import { createPlannerHostProjection, compileFreshPlannerProposal, isLivePlanCapability } from './adaptive-plan-host.mjs';
-import { selectJointRoute, exactConfigFingerprint } from './joint-route-selector.mjs';
+import { selectJointRoute, exactConfigFingerprint, prepareCertifiedDescentPolicy, isPreparedCertifiedDescentPolicy,
+  selectCertifiedDescent } from './joint-route-selector.mjs';
 import { captureRoutingOutcome, validateConfiguredInputObservation } from './routing-outcome-capture.mjs';
 import { isFrozenRoutePredictor, isFrozenRouteInference } from './frozen-route-predictor.mjs';
 import { isCalibratedRoutePredictor, isCalibratedRouteInference } from './calibrated-route-predictor.mjs';
+import { deriveExplicitParallelOwnerContract } from './local-plan-proposal.mjs';
 
 // RCC owns the task state. Model output supplies candidates, never authority.
 // The pinned OpenClaw plugin must call this module from its long-lived Gateway
@@ -38,6 +40,10 @@ function retainedJSON(text) {
   });
 }
 const TERMINAL = new Set(['completed', 'returned_unverified', 'awaiting_install', 'held', 'failed', 'cancelled', 'effects_uncertain']);
+// K12 partial result contract. v2 types a partial outcome; absent means 1.
+const RESULT_CONTRACT_VERSIONS = new Set([1, 2]);
+// A v2 partial may ride an unfinished-answer state; v1 shows none there.
+const PARTIAL_RESULT_STATES = new Set(['failed', 'held', 'cancelled']);
 const QUALITY = new Set(['policy_admitted', 'exact_domain_verified', 'reference_equivalent', 'reference_above', 'unverified', 'mismatch']);
 const PARITY = new Set(['unverified', 'reference_equivalent', 'reference_above', 'mismatch']);
 const TASK_QUALITY = new Set(['execution_only', 'task_verified', 'failed', 'unverified']);
@@ -54,7 +60,15 @@ export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';
 const EXCLUSION_PROVIDERS = new Set(['codex', 'claude']);
 const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unavailable', 'quota_zero',
   'capacity_zero', 'codex_hidden', 'effort_requires_explicit_request', 'explicit_constraint_unavailable',
-  'chat_gate_refused', 'gpt_dropped', 'quota_backoff', 'reference_unavailable']);
+  'chat_gate_refused', 'gpt_dropped', 'quota_backoff', 'reference_unavailable', 'unclassified_model']);
+// K14: an informational exclusion explains no hold. `unclassified_model` says
+// the pool offers a model OS-1 cannot classify (no provider-stated tier and not
+// a known untiered model): it stays isolated by tier routing and the old
+// reference keeps running, so it grants or withholds no reference, never
+// explains an empty catalog, and marks each model-backed delivery
+// `reference_review_required` (publicSnapshot).
+const INFORMATIONAL_EXCLUSIONS = new Set(['unclassified_model']);
+export const REFERENCE_REVIEW_REASON = 'reference_review_required';
 // The one typed execution reason that lets a started backend process count as
 // a verified no-effect attempt: the provider's own stream proved a quota
 // rejection before any work, on a read-only attempt with an unchanged
@@ -122,6 +136,19 @@ export const TIER_ROUTES = Object.freeze({
 // A class certificate's own per-answer format check (R9 (c)), by name. A
 // certificate naming a check this Core does not know certifies nothing.
 const FORMAT_CHECKS = Object.freeze({nonempty_text: output => typeof output === 'string' && output.trim() !== ''});
+// Node verifier registry (R0 (b), K4). A 'sound_full' entry certifies only
+// the nodes its own applies() admits, and only once registerNodeVerifiers
+// probed it with its refutations and a Core nonce; a 'partial' entry (and a
+// legacy family -> function entry) is a failure signal only.
+const VERIFIER_SURFACES = Object.freeze(['agent', 'chat']);
+const VERIFIER_SOUNDNESS = new Set(['sound_full', 'partial']);
+const MAX_NODE_VERIFIERS = 32;
+const MAX_REFUTATIONS = 16;
+// The registries and the frozen entries registerNodeVerifiers built
+// (module-private brands): a raw caller Map, or an entry a caller put into a
+// registered Map afterwards, certifies nothing.
+const REGISTERED_VERIFIERS = new WeakSet();
+const REGISTERED_VERIFIER_ENTRIES = new WeakSet();
 // Swift's QualityDisclosure carries at most this many failed check IDs.
 const MAX_DISCLOSED_CHECKS = 64;
 const INTENT_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -142,10 +169,25 @@ const MAX_LEDGER_FAILURE_INDEX_BYTES = 524_288;
 // failed, it ran and returned nothing deliverable, or it was interrupted
 // before its verifier answered.
 const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted']);
+// K9 (§2.2): the delivery basis a ledger record names, fixed at dispatch: why
+// its tuple may answer. A certified basis names its admitting source (and the
+// verifier or class certificate); 'certified:unrecorded' is a descent recorded
+// without one (an older build), 'unbound' a row no host resolution chose.
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
+// The admitting source's verdict on a descent attempt: it accepted the answer,
+// failed it, or the answer was not returned in a form it accepts.
+// 'certifier_unavailable': the certifier its ladder names was gone at adoption
+// (a configuration fault, never a failure of the route); no check ran.
+const LEDGER_CHECK_OUTCOMES = new Set(['pass', 'fail', 'not_returned', 'certifier_unavailable']);
+// §4.3: the sources whose verdict is a calibration label. A verifier certifies
+// only as a registered 'sound_full' entry (K4); a class format check is partial.
+const SOUND_FULL_CHECK_SOURCES = new Set(['exact', 'contract', 'verifier']);
 // Verdicts a settled attempt stores on its history entry; a restart records
 // them as they were instead of 'interrupted'.
 const SETTLED_VERDICTS = new Set(['pass', 'fail', 'not_returned']);
-// A registered node verifier that does not answer in time counts as a failure.
+// A registered node verifier that does not answer in time counts as a failure
+// (live), and refuses its registration (a probe gets the same bound).
 const NODE_VERIFIER_TIMEOUT_MS = 60_000;
 // The attempt states of a failed cheaper ladder attempt: its verifier failed,
 // or it returned nothing deliverable. Never charged to the owner's budgets.
@@ -426,11 +468,15 @@ function validateTask(task, {allowCoreRouting = false} = {}) {
   const required = ['schema', 'task_id', 'request', 'request_sha256', 'objective', 'policy_sha256',
     'source_fingerprint', 'mode', 'material_refs', 'budget', 'host_context'];
   const optional = ['context', 'workspace', 'native_sessions', 'provider_preference', 'policy', 'routing_intent_policy_version',
-    ...(allowCoreRouting ? ['core_routing'] : [])];
+    'result_contract_version', ...(allowCoreRouting ? ['core_routing'] : [])];
   assert(plain(task) && required.every(key => Object.hasOwn(task, key)) &&
     Object.keys(task).every(key => required.includes(key) || optional.includes(key)), 'task_shape_invalid');
   assert(task.routing_intent_policy_version == null ||
     (task.routing_intent_policy_version === INTENT_V2_VERSION && task.mode === 'auto'), 'intent_policy_version_invalid');
+  // K12: the result contract this host reads (absent = 1). Only a v2 task's
+  // partial outcome is typed on the wire; it is part of the submit fingerprint.
+  assert(task.result_contract_version == null || RESULT_CONTRACT_VERSIONS.has(task.result_contract_version),
+    'result_contract_version_invalid');
   assert(task.schema === 1 && ID.test(task.task_id) && boundedText(task.request, 64_000) &&
     boundedText(task.objective, 8_192) && HASH.test(task.request_sha256) &&
     sha(Buffer.from(task.request)) === task.request_sha256 && HASH.test(task.policy_sha256) &&
@@ -513,12 +559,14 @@ function validateTask(task, {allowCoreRouting = false} = {}) {
 /** The one dispatch rule. Returns null when the row may be dispatched now,
  * otherwise the exact hold/failure code _candidate has always used. */
 function dispatchFailure(candidate, task, now) {
-  if (!(candidate.availability === 'available' && candidate.availability_valid_until_ms > now))
+  // Telemetry observed after `now` (a future-dated row) is no observation yet.
+  if (!(candidate.availability === 'available' && candidate.availability_observed_at_ms <= now &&
+      candidate.availability_valid_until_ms > now))
     return 'candidate_unavailable';
   if (candidate.quality_state === 'mismatch') return 'candidate_quality_mismatch';
   if (candidate.quota_pool !== 'none' && !(candidate.quota_pool !== 'unknown' &&
       candidate.quota_remaining_fraction !== null && candidate.quota_remaining_fraction > 0 &&
-      candidate.quota_valid_until_ms > now))
+      candidate.quota_observed_at_ms <= now && candidate.quota_valid_until_ms > now))
     return 'candidate_quota_unknown_or_exhausted';
   if ((task?.budget?.max_cost_units ?? null) !== null && candidate.estimated_cost_units === null)
     return 'candidate_cost_unknown';
@@ -559,7 +607,9 @@ function scopesAllowed(task) {
  * write authority), before any dispatchability or avoidance. `anyPaths` is
  * for the availability summary, which has no planned paths yet. */
 function eligibleRow(c, node, {widenWrites = false, anyPaths = false} = {}) {
-  if (c.scope !== node.scope || !hostRoutable(c)) return false;
+  // A row whose permission profile is not its scope (the catalog builder
+  // always sets them equal) binds nothing.
+  if (c.scope !== node.scope || c.permission_profile !== c.scope || !hostRoutable(c)) return false;
   // An explicit local route binds its row in localRouteCandidate, never here.
   if (node.kind === 'deterministic' ? !localExactRow(c) : c.surface === 'local') return false;
   return node.scope !== 'workspace_write' || anyPaths || coversOwnedPaths(c, node.owned_paths) ||
@@ -593,6 +643,8 @@ function intentAdmits(candidate, intent) {
 function referenceEffort(rows, intent, catalog) {
   const offered = rows.map(c => c.effort);
   if (intent?.effort) return offered.includes(intent.effort) ? intent.effort : null;
+  // Only reference_unavailable withholds a reference; an informational
+  // exclusion (K14 unclassified_model) neither grants nor withholds one.
   // Ordinary Auto must preserve the provider's missing-reference boundary
   // even on a legacy catalog that also carries per-model metadata. That map
   // describes represented models, not the absent frontier. A named family
@@ -772,11 +824,104 @@ function quotaScore(catalog, model) {
 }
 
 // ---- The admission law (build 407, R0) ----
-/** The surface kinds ('agent', 'chat') a registered gold-blind node verifier
- * covers for the certified class (R0 (b)). Production registers none. */
-function verifiedSurfaceKinds(registry) {
-  return registry instanceof Map ? ['agent', 'chat'].filter(kind =>
-    typeof registry.get(`${CERTIFIED_CLASS}:read_only:${kind}`) === 'function') : [];
+/** K4: validate a node verifier registry and return a frozen, branded COPY
+ * (later changes to the caller's Map change nothing). A Map of at most 32
+ * entries, each either
+ *  - legacy: family (routeFamily, at most 128 chars) -> async function, kept
+ *    as a 'partial' entry: a failure signal for that family, never a
+ *    certifying source; or
+ *  - id -> {id, scope: 'read_only', surfaces (non-empty subset of agent,
+ *    chat), soundness: 'sound_full'|'partial', applies(node, task, catalog),
+ *    verify(input), refutations?}. The id has no ':' (never a family key).
+ *    A 'sound_full' entry needs 1..16 refutations {instruction, output} of
+ *    known-wrong answers: registration runs verify on each, and on a Core
+ *    nonce answer for each instruction, and refuses the registry
+ *    ('verifier_registration_unsound') when any probe passes. It fails
+ *    closed: a probe must answer {passed: false} within the live verifier
+ *    timeout; a throw, a timeout or a malformed verdict refuses it too
+ *    ('verifier_registration_probe_unanswered'). A probe gets exactly the
+ *    input shape a live certifier gets (no receipt, no selected
+ *    configuration: _verifyNode), so a verdict keyed on those cannot pass
+ *    live. Probes can disprove soundness, never prove it: production
+ *    registers none.
+ * Only entries built here, in a registry built here, certify
+ * (soundVerifierFor). An entry already built here is kept as it is (never
+ * probed twice), so a registered Map may be registered again: each call
+ * returns a new Map no caller holds. */
+export async function registerNodeVerifiers(raw) {
+  assert(raw instanceof Map && raw.size <= MAX_NODE_VERIFIERS, 'verifier_registry_invalid');
+  const registry = new Map();
+  for (const [key, value] of raw) {
+    if (REGISTERED_VERIFIER_ENTRIES.has(value) && value.id === key) { registry.set(key, value); continue; }
+    if (typeof value === 'function') {
+      assert(typeof key === 'string' && key.length > 0 && key.length <= 128, 'verifier_registry_invalid');
+      const legacy = Object.freeze({id: key, family: key, soundness: 'partial', scope: null, surfaces: null,
+        applies: null, verify: value, refutations: null});
+      REGISTERED_VERIFIER_ENTRIES.add(legacy);
+      registry.set(key, legacy);
+      continue;
+    }
+    const sound = value?.soundness === 'sound_full';
+    assert(plain(value) && keys(value, ['id', 'scope', 'surfaces', 'soundness', 'applies', 'verify',
+      ...(Object.hasOwn(value, 'refutations') ? ['refutations'] : [])]) &&
+      key === value.id && typeof key === 'string' && ID.test(key) && value.scope === 'read_only' &&
+      Array.isArray(value.surfaces) && value.surfaces.length > 0 && new Set(value.surfaces).size === value.surfaces.length &&
+      value.surfaces.every(kind => VERIFIER_SURFACES.includes(kind)) && VERIFIER_SOUNDNESS.has(value.soundness) &&
+      typeof value.applies === 'function' && typeof value.verify === 'function' &&
+      (sound ? Array.isArray(value.refutations) && value.refutations.length > 0 &&
+        value.refutations.length <= MAX_REFUTATIONS && value.refutations.every(r => keys(r, ['instruction', 'output']) &&
+          boundedText(r.instruction, 12_000) && boundedText(r.output, MAX_OUTPUT_BYTES)) :
+        !Object.hasOwn(value, 'refutations')), 'verifier_registry_invalid');
+    const refutations = sound ? Object.freeze(value.refutations.map(({instruction, output}) =>
+      Object.freeze({instruction, output}))) : null;
+    const entry = Object.freeze({id: key, family: null, soundness: value.soundness, scope: value.scope,
+      surfaces: Object.freeze([...value.surfaces]), applies: value.applies, verify: value.verify, refutations});
+    if (sound) {
+      const probes = [...refutations, ...refutations.map(({instruction}) =>
+        ({instruction, output: 'os1-verifier-registration-nonce:' + randomUUID()}))];
+      for (const {instruction, output} of probes) {
+        let timer, verdict = null;
+        try {
+          verdict = await Promise.race([entry.verify(immutable({schema: 1, task_id: 'verifier_registration_probe',
+            node_id: 'probe', family: key, verifier_id: key, instruction, output, native_receipt: null,
+            selected_config: null})), new Promise(resolve => {
+            timer = setTimeout(() => resolve(null), NODE_VERIFIER_TIMEOUT_MS); timer.unref?.();
+          })]);
+        } catch { verdict = null; }
+        finally { clearTimeout(timer); }
+        if (plain(verdict) && verdict.passed === true) throw new RCCRuntimeError('verifier_registration_unsound');
+        if (!plain(verdict) || verdict.passed !== false) throw new RCCRuntimeError('verifier_registration_probe_unanswered');
+      }
+    }
+    REGISTERED_VERIFIER_ENTRIES.add(entry);
+    registry.set(key, entry);
+  }
+  REGISTERED_VERIFIERS.add(registry);
+  return registry;
+}
+/** Whether a verifier entry's own applicability holds for this node, task
+ * and catalog (copies: a registrant cannot change Core state). A throw or
+ * anything but `true` is not applicable. */
+function verifierApplies(entry, node, task, catalog) {
+  try { return entry.applies(immutable(node), immutable(task), immutable(catalog ?? null)) === true; }
+  catch { return false; }
+}
+/** The entry registered under `id` in a registry registerNodeVerifiers
+ * built, or null (a raw Map, or an entry put in afterwards). */
+function registeredVerifier(registry, id) {
+  const entry = REGISTERED_VERIFIERS.has(registry) && typeof id === 'string' ? registry.get(id) : undefined;
+  return REGISTERED_VERIFIER_ENTRIES.has(entry) && entry.id === id ? entry : null;
+}
+/** R0 (b): the first registered 'sound_full' verifier (in registration
+ * order) for this node's scope whose applies() holds; null otherwise, and
+ * always null for a registry registerNodeVerifiers did not build. */
+function soundVerifierFor(node, task, catalog, registry) {
+  if (!REGISTERED_VERIFIERS.has(registry)) return null;
+  for (const [id, entry] of registry)
+    if (registeredVerifier(registry, id) === entry && entry.soundness === 'sound_full' && entry.scope === node.scope &&
+        verifierApplies(entry, node, task, catalog))
+      return entry;
+  return null;
 }
 /** R0, the one admission law, decided in code at bind before any model call:
  * the reference tuple unless one certifying source exists NOW. Pure: the
@@ -796,7 +941,9 @@ function verifiedSurfaceKinds(registry) {
  *  - (a) 'contract': a full-coverage read-only owner contract that the host
  *    re-bound at catalog time to this exact request, still valid, and a node
  *    running that request byte-exact;
- *  - (b) 'verifier': a registered verifier for the certified class;
+ *  - (b) 'verifier': a registered 'sound_full' node verifier whose own
+ *    applies() admits this node, task and catalog (certificate_id names it;
+ *    only that verifier's pass on THIS attempt accepts the answer, I2);
  *  - (c) 'class': this request class's signed certificate, for a node running
  *    the request byte-exact, whose per-answer format check this Core knows;
  *  - anything else 'uncertified'. A model-authored grade never certifies. */
@@ -839,8 +986,8 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
       contract.bindings_checked === true && contract.objective_sha256 === task.request_sha256 &&
       int(contract.valid_until_ms, 0, Number.MAX_SAFE_INTEGER) && contract.valid_until_ms > now)
     return {class: 'certified', source: 'contract', certificate_id: null};
-  if (verifiedSurfaceKinds(verifierRegistry).length > 0)
-    return {class: 'certified', source: 'verifier', certificate_id: null};
+  const certifier = soundVerifierFor(node, task, catalog, verifierRegistry);
+  if (certifier) return {class: 'certified', source: 'verifier', certificate_id: certifier.id};
   const cls = catalog?.request_class;
   const certificate = own && CERTIFIABLE_CLASSES.has(cls) && plain(catalog.class_certificates) ?
     catalog.class_certificates[cls] : undefined;
@@ -855,11 +1002,51 @@ function admissionToken(admission) {
     admission.source === 'class' ? 'admitted_certified_class:' + admission.certificate_id :
       'admitted_certified_' + admission.source;
 }
+/** K9 (§2.2): an attempt's delivery basis, from the route facts it
+ * dispatched with. Pure. A host-resolved descent (route kind 'tier') is
+ * 'certified:' + its admitting source (the ladder's admitted_by and, for a
+ * verifier or class, its certificate_id), else 'certified:unrecorded'; the
+ * one reference run after a descent failed is 'reference_escalated'; a tuple
+ * the owner's words fixed (an explicit route, an effort or model word, a
+ * provider choice: the 'admitted_reference_owner_words' token) is
+ * 'owner_words'; the reference the law bound is 'reference'; a row no host
+ * resolution chose is 'unbound' ('owner_words' on an explicit route test);
+ * anything else 'unclassified'. Never decided by a model. */
+export function deliveryBasisOf({explicitRoute = false, routeClass = null, routeKind = null, ladder = null,
+  reason = null} = {}) {
+  let basis;
+  if (!ROUTE_CLASSES.includes(routeClass)) basis = explicitRoute ? 'owner_words' : 'unbound';
+  else if (routeKind === 'tier') {
+    const source = plain(ladder) && ladder.escalated !== true ? ladder.admitted_by : null;
+    const id = plain(ladder) && typeof ladder.certificate_id === 'string' ? ladder.certificate_id : null;
+    basis = 'certified:' + (source === 'contract' || source === 'exact' ? source :
+      (source === 'verifier' || source === 'class') && id !== null ? source + ':' + id : 'unrecorded');
+  } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
+  else if (routeKind === 'explicit' ||
+      (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
+  else basis = routeKind === 'reference' ? 'reference' : 'unclassified';
+  return LEDGER_BASIS.test(basis) ? basis : 'unclassified';
+}
+/** K9: the id of the check a certified basis names (null for any other
+ * basis): 'exact_arithmetic_v1'; 'contract:' + the owner contract's
+ * contract_sha256 (or 'contract'); 'verifier:' + the certifying verifier id;
+ * 'class:' + certificate id + ':' + its format check. Pure; never an answer,
+ * an instruction or request text. */
+export function checkIdOf(basis, {formatCheck = null, contractSHA256 = null} = {}) {
+  if (typeof basis !== 'string' || !LEDGER_BASIS.test(basis) || !basis.startsWith('certified:')) return null;
+  const source = basis.slice('certified:'.length);
+  const id = source === 'exact' ? 'exact_arithmetic_v1' :
+    source === 'contract' ? (HASH.test(contractSHA256 ?? '') ? 'contract:' + contractSHA256 : 'contract') :
+      source.startsWith('verifier:') ? source :
+        source.startsWith('class:') && FORMAT_CHECK.test(formatCheck ?? '') ? source + ':' + formatCheck : null;
+  return id !== null && LEDGER_CHECK_ID.test(id) ? id : null;
+}
 /** The rows one pool offers a certified descent, as ordered entries: the
  * certificate's own tuple (c), else the cheapest tier list (a, b). A contract
  * binds an agent surface only (its start tree is the host workspace, which a
- * tool-free chat lane does not run in); a verifier only the surface kinds it
- * is registered for, so it judges every answer it admitted. */
+ * tool-free chat lane does not run in); a verifier only the surface kinds the
+ * certifying entry itself is registered for, so it judges every answer it
+ * admitted. */
 function certifiedEntries(pool, admission, catalog, verifierRegistry) {
   if (admission.source === 'class') {
     const certificate = catalog.class_certificates[catalog.request_class];
@@ -867,7 +1054,7 @@ function certifiedEntries(pool, admission, catalog, verifierRegistry) {
       candidate.model === certificate.model && candidate.effort === certificate.effort)}];
   }
   const kinds = admission.source === 'contract' ? ['agent'] : admission.source === 'exact' ? ['agent', 'chat'] :
-    verifiedSurfaceKinds(verifierRegistry);
+    admission.source === 'verifier' ? registeredVerifier(verifierRegistry, admission.certificate_id)?.surfaces ?? [] : [];
   const rows = pool.rows.filter(({candidate}) => kinds.includes(surfaceKind(candidate.surface)) &&
     (!stagedWriterContract(catalog.task_contract) || (candidate.surface === 'codex' && candidate.transport === 'codex_app_server')));
   return TIER_ROUTES[CERTIFIED_CLASS].map(([tier, effort], index) =>
@@ -876,6 +1063,22 @@ function certifiedEntries(pool, admission, catalog, verifierRegistry) {
 function surfaceToken(candidate) {
   return {chat: 'chat_lane_same_route', local: 'local_exact'}[surfaceKind(candidate.surface)] ?? 'agent_surface';
 }
+/** K10: the stratum a frozen descent cost policy keys one node on, from the
+ * facts the K9 ledger records per attempt (sizes, never text): request class,
+ * node scope, the admitting source and its certificate (a verifier id; null
+ * for a contract), first or later turn (strict withoutConversation),
+ * materials, and the UTF-8 bytes of the instruction plus task and host
+ * context. Throws on a malformed task; the caller then keeps TIER_ROUTES. */
+function descentStratum(node, task, catalog, admission) {
+  const text = value => typeof value === 'string' ? value : '';
+  return {request_class: ID.test(text(catalog.request_class)) ? catalog.request_class : null, scope: node.scope,
+    admitted_by: admission.source, check_id: admission.certificate_id ?? null,
+    turn: withoutConversation(task) ? 'first' : 'not_first', has_materials: (node.context_refs ?? []).length > 0,
+    context_bytes: Buffer.byteLength(text(node.instruction)) + Buffer.byteLength(text(task.context)) +
+      Buffer.byteLength(text(task.host_context?.context))};
+}
+const descentTuple = candidate => ({candidate_id: candidate.id, surface: candidate.surface,
+  quota_pool: candidate.quota_pool, model: candidate.model, effort: candidate.effort});
 
 /** An explicit route that names the local surface (route-all, 2026-10-14)
  * binds the one dispatchable local model row: the model OpenClaw already runs,
@@ -913,9 +1116,16 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * catalog's pool order. The owner's provider word already shaped the catalog.
  *
  * The route is 'reference' (no owner words), 'explicit' (the reference the
- * owner's words leave) or 'tier' (a certified descent, carrying `ladder`). */
+ * owner's words leave) or 'tier' (a certified descent, carrying `ladder`).
+ *
+ * `descentPolicy` (K10, §2.4): a prepared frozen check-acceptance cost policy
+ * (prepareCertifiedDescentPolicy), or null. It only re-ranks F, the fixed
+ * escalation reference plus the R11 pool's dispatchable certified rows, for a
+ * contract or verifier admission; inactive, expired or uncovered, it changes
+ * nothing. */
 function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false,
-                            referenceOnly = false, preferPool = null, verifierRegistry = null} = {}) {
+                            referenceOnly = false, preferPool = null, verifierRegistry = null,
+                            descentPolicy = null} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
   if (explicitRoute?.surface === 'local') return localRouteCandidate(node, task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
@@ -965,30 +1175,70 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     return {...scored[0].offer, skipped: [...skipped, ...passed], offered};
   };
   const referenceOf = pool => intentReferenceRows(pool.rows, catalog, intent);
-  const poolNotes = (pool, chosen) => [...(pinned(pool) ? ['pool_class_pin'] : []),
+  // `scoredBy`: the row whose model's quota score ranked this pool's offer
+  // (R11). K10 can bind another model of that pool, or the escalation
+  // reference, which that score did not rank; null when no score ranked it.
+  const poolNotes = (pool, chosen, scoredBy = chosen) => [...(pinned(pool) ? ['pool_class_pin'] : []),
     ...(affine(pool) ? ['pool_conversation_affinity'] : []),
-    ...(quotaScore(catalog, chosen.model) !== null ? ['pool_scored_by_bound_model'] : [])];
+    ...(scoredBy === null || quotaScore(catalog, scoredBy.model) === null ? [] :
+      [scoredBy.model === chosen.model ? 'pool_scored_by_bound_model' : 'pool_scored_by_tier_hit_model'])];
   const notes = [];
+  let policyReference = null;
   if (admission.class === 'certified') {
     const tier = serve(pool => certifiedEntries(pool, admission, catalog, verifierRegistry), 'tier');
-    const chosen = tier.hit?.candidate ?? null;
+    let chosen = tier.hit?.candidate ?? null;
     // The one escalation target, fixed now: this pool's reference when it can
     // dispatch, else another pool's.
     const target = chosen && [tier.pool, ...pools.filter(other => other !== tier.pool)
       .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
     const isReference = chosen && referenceOf(tier.pool).some(row => row.candidate.id === chosen.id);
-    if (target && !isReference) {
+    // K10 (§2.4): a prepared cost policy may re-rank F = that target plus
+    // THIS pool's dispatchable certified rows (every entry, not only the
+    // first), for a contract or verifier admission only: 'exact' keeps the
+    // owner-named route's cheapest tier, and 'class' has no check-acceptance
+    // labels. Every member of F is already admitted and its answer checked
+    // (I2); the pick is never outside F, and an inactive, expired or
+    // uncovered policy leaves today's TIER_ROUTES choice untouched.
+    let entryIndex = tier.entry?.index ?? null, policySHA256 = null, referenceWins = false;
+    if (target && !isReference && isPreparedCertifiedDescentPolicy(descentPolicy) &&
+        (admission.source === 'contract' || admission.source === 'verifier')) {
+      const excluded = new Set([target.candidate.id, ...referenceOf(tier.pool).map(row => row.candidate.id)]);
+      const descents = [];
+      for (const entry of certifiedEntries(tier.pool, admission, catalog, verifierRegistry))
+        for (const row of entry.rows.filter(usable).sort(order)) {
+          if (excluded.has(row.candidate.id)) continue;
+          excluded.add(row.candidate.id);
+          descents.push({candidate: row.candidate, entryIndex: entry.index});
+        }
+      let selection = null;
+      try {
+        selection = selectCertifiedDescent({now_ms: now, policy: descentPolicy,
+          stratum: descentStratum(node, task, catalog, admission), reference: descentTuple(target.candidate),
+          descents: descents.map(descent => descentTuple(descent.candidate))});
+      } catch { selection = null; }
+      // F membership: only a row Core listed above is ever taken.
+      const picked = selection?.decision === 'descent' ?
+        descents.find(descent => descent.candidate.id === selection.candidate_id) ?? null : null;
+      if (picked || (selection?.decision === 'reference' && selection.candidate_id === target.candidate.id)) {
+        policySHA256 = descentPolicy.sha256;
+        if (picked) { chosen = picked.candidate; entryIndex = picked.entryIndex; } else referenceWins = true;
+      }
+    }
+    const policyToken = policySHA256 === null ? null : 'descent_cost_policy_' + policySHA256.slice(0, 12);
+    if (target && !isReference && !referenceWins) {
       const certificate = admission.source === 'class' ? catalog.class_certificates[catalog.request_class] : null;
       const ladder = {source: 'tier', admitted_by: admission.source, certificate_id: admission.certificate_id,
         format_check: certificate?.format_check ?? null,
         ...(admission.source === 'exact' ? {exact_answer: pureArithmetic(node.instruction)} : {}),
         cheap_model: chosen.model, cheap_effort: chosen.effort,
         reference_model: target.candidate.model, reference_effort: target.candidate.effort,
-        reference_candidate_id: target.candidate.id};
+        reference_candidate_id: target.candidate.id,
+        ...(policySHA256 === null ? {} : {descent_policy_sha256: policySHA256})};
       const why = ['route_tier', admissionToken(admission)];
-      if (admission.source !== 'class') why.push('tier_list_' + tier.entry.index);
+      if (policyToken !== null) why.push(policyToken);
+      if (admission.source !== 'class') why.push('tier_list_' + entryIndex);
       why.push('tier_' + (tierOf(catalog, chosen.model) ?? 'none'), tier.rank, ...tier.skipped, 'effort_' + chosen.effort,
-        ...poolNotes(tier.pool.pool, chosen),
+        ...poolNotes(tier.pool.pool, chosen, tier.hit.candidate),
         'escalation_reference_' + (target.candidate.quota_pool === tier.pool.pool ? 'same_pool' : 'other_pool'),
         surfaceToken(chosen));
       if (avoidPool !== null) why.unshift(tier.pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
@@ -998,10 +1248,20 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     // R9: a descent needs a reference that can dispatch now. Without one, or
     // without a dispatchable certified tuple below it, the node binds the
     // reference itself (which holds when no reference can dispatch, R12).
-    notes.push(!chosen ? 'certified_tuple_undispatchable' : isReference ? 'certified_tuple_is_reference' :
+    // K10: so does a node whose policy found no descent cheaper than it, and
+    // it binds the very reference the policy costed (the escalation target
+    // fixed above), never another pool's reference the R11 reference serve
+    // would rank: that row is outside F and was never costed.
+    if (referenceWins) {
+      notes.push('certified_descent_not_cost_effective', policyToken);
+      const targetPool = pools.find(pool => pool.pool === target.candidate.quota_pool);
+      const same = targetPool === tier.pool;
+      policyReference = {hit: target, pool: targetPool, rank: same ? tier.rank : 'pool_rank_' + ordinal.get(targetPool.pool),
+        skipped: same ? tier.skipped : [], scoredBy: same ? tier.hit.candidate : null};
+    } else notes.push(!chosen ? 'certified_tuple_undispatchable' : isReference ? 'certified_tuple_is_reference' :
       'tier_requires_runnable_reference');
   }
-  const served = serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');
+  const served = policyReference ?? serve(pool => [{index: 0, rows: referenceOf(pool)}], 'reference');
   if (!served.hit)
     throw new RCCRuntimeError(`no_dispatchable_candidate:${node.scope}:` +
       (intent?.model_family || served.offered ? 'deep' : 'reference_unavailable'));
@@ -1013,7 +1273,8 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
   if (intent?.effort) why.push('intent_effort_' + intent.effort);
   if (intent?.model_family) why.push('intent_family_' + intent.model_family);
   why.push(admissionToken(admission), ...notes, 'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), rank, ...skipped,
-    'effort_' + chosen.effort, ...poolNotes(pool.pool, chosen), surfaceToken(chosen));
+    'effort_' + chosen.effort, ...poolNotes(pool.pool, chosen, policyReference === null ? chosen : policyReference.scoredBy),
+    surfaceToken(chosen));
   if (avoidPool !== null) why.unshift(pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
   const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
   if (widened) why.push('owned_paths_workspace');
@@ -1027,6 +1288,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
  * descent needs a dispatchable reference too (R9), so nothing below a
  * reference ever counts. */
 function noDispatchableReason(task, catalog, now) {
+  // Reads no exclusion: an informational one (K14) is never reference absence.
   const scopes = scopesAllowed(task);
   // Only a host-computed exact row means "something can run": the local model
   // row is an explicit route's surface, never a reason to plan Auto work.
@@ -1163,8 +1425,10 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
  * route kind (reference, explicit or tier), the reference effort and, for a
  * certified descent, its ladder (admitting source and escalation row).
  * `verifierRegistry` (Map of family to node verifier) is the R0 (b) source;
- * production registers none. */
-export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null} = {}) {
+ * production registers none. `descentPolicy` (K10) is a prepared frozen
+ * descent cost policy or null; production registers none. */
+export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null,
+                                                                       descentPolicy = null} = {}) {
   if ((task.mode === 'explicit_routing_test' && !explicitTierRouting(task, catalog)) ||
       !plain(plan) || !Array.isArray(plan.nodes))
     return {plan, decisions: {}, routes: {}};
@@ -1179,7 +1443,7 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifie
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
       const {route_class: _grade, ...rest} = node;
-      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry});
+      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy});
       decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
         choice.tier);
       routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
@@ -1221,13 +1485,15 @@ function hostScope(task, catalog) {
  * route test runs one node per route that still runs, keyed by its original
  * ordinal, with that route's own text; no model grades or rewrites either. A
  * big request runs as one session, as the native reference does (R8). */
-export function hostPlan(task, catalog) {
+export function hostPlan(task, catalog, {ownerExplicitParallel = false} = {}) {
   const scope = hostScope(task, catalog);
   const node = (id, instruction) => ({id, instruction, dependencies: [], kind: 'agent', scope,
     owned_paths: scope === 'workspace_write' ? ['**'] : [], context_refs: [...task.material_refs]});
   const base = {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256};
   const collection = ownerCollectionFor(task, catalog);
   if (ownerCollectionPlanEligible(task, collection)) return {...base, nodes: collection.obligations.map((o, i) => node(`owner_${i}`, o.instruction)), final_node_id: null};
+  const ownerParallel = ownerExplicitParallel ? ownerExplicitParallelFor(task, catalog) : null;
+  if (ownerParallel) return ownerExplicitParallelPlan(task, ownerParallel);
   if (task.mode !== 'explicit_routing_test') return {...base, nodes: [node('node_0', task.request)], final_node_id: 'node_0'};
   assert(modelTiers(catalog) !== null, 'explicit_route_catalog_untiered');
   const effective = effectiveExplicitRoutes(task);
@@ -1235,9 +1501,10 @@ export function hostPlan(task, catalog) {
     effective.includes(route) ? [node(explicitRouteNodeID(index), route.instruction)] : [])};
 }
 
-/** Host-enabled execution policy, NOT a quality certificate. Local choices
- * are accepted only inside current host/catalog authority. Certified/FULL
- * requests keep their original R0/checker path. Unknown quality stays unknown. */
+/** Whether a task may ask the local planner for a decomposition proposal.
+ * Not a quality certificate and not a binding: every proposed node is bound by
+ * the one admission law (admitBoundedAutoPlan). Certified/FULL requests keep
+ * their original R0/checker path. Unknown quality stays unknown. */
 function boundedAutoEligible(task, catalog) {
   return task?.mode === 'auto' && task.objective === task.request &&
     ['read_only', 'workspace_write'].includes(hostScope(task, catalog)) &&
@@ -1248,32 +1515,62 @@ function boundedAutoEligible(task, catalog) {
     Object.keys(catalog.class_certificates ?? {}).length === 0 && routingIntent(catalog)?.require_native_ceiling !== true &&
     task.policy?.projection_sha256 === task.policy_sha256 && HASH.test(task.policy?.source_sha256 ?? '');
 }
-function executionPolicyChoice(node, task, catalog, now, {hint = null, avoidIDs = [], avoidPool = null} = {}) {
-  const intent = routingIntent(catalog);
-  const rows = catalog.candidates.filter(c => eligibleRow(c, node) && c.permission_profile === node.scope &&
-    (node.scope !== 'workspace_write' || c.tools.includes('write') && c.tools.includes('execute')) && intentAdmits(c, intent) &&
-    !avoidIDs.includes(c.id) && dispatchable(c, task, now) &&
-    c.availability_observed_at_ms <= now && (c.quota_pool === 'none' || c.quota_observed_at_ms <= now));
-  let chosen;
-  if (hint !== null) {
-    chosen = rows.find(c => c.id === hint);
-    assert(chosen, 'bounded_candidate_not_current_or_allowed');
-  } else {
-    // A missing hint has no invented model confidence. This is a bounded
-    // execution-cost policy, not evidence of equal task quality.
-    const quota = c => Number.isFinite(c.quota_remaining_fraction) && c.quota_observed_at_ms <= now && c.quota_valid_until_ms > now ? c.quota_remaining_fraction : -1;
-    chosen = rows.map((candidate, index) => ({candidate, index})).sort((a, b) =>
-      Number(a.candidate.quota_pool === avoidPool) - Number(b.candidate.quota_pool === avoidPool) ||
-      (a.candidate.estimated_cost_units ?? Infinity) - (b.candidate.estimated_cost_units ?? Infinity) ||
-      EFFORT_ORDER.indexOf(a.candidate.effort) - EFFORT_ORDER.indexOf(b.candidate.effort) ||
-      quota(b.candidate) - quota(a.candidate) || a.index - b.index)[0]?.candidate;
-  }
-  assert(chosen, 'bounded_no_current_candidate');
-  return {candidate: chosen, kind: 'execution_only', routeClass: 'standard', referenceEffort: null,
-    ladder: null, tier: modelTiers(catalog)?.[chosen.model] ?? null,
-    why: 'host_checked_unmeasured_choice;quality_not_certified'};
+// A closed owner-authored partition is task topology, not a model quality
+// claim (K5): it is the owner's own split, so whether it runs never depends on
+// the bounded planner flag, a task contract, a class certificate, a verifier
+// registry or the native ceiling. Each unit still binds by the one law. A
+// partition next to a task contract is held by the caller (and at ticket,
+// assertOwnerExplicitParallelPlan), never merged into one node. The admission
+// facts (owner_scope) must be present: an older catalog without them keeps
+// the original indivisible request.
+function ownerExplicitParallelEligible(task, catalog) {
+  return task?.mode === 'auto' && task.objective === task.request && SCOPES.has(catalog?.owner_scope) &&
+    hostScope(task, catalog) === 'read_only' && !ownerCollectionFor(task, catalog) &&
+    task.policy?.projection_sha256 === task.policy_sha256 && HASH.test(task.policy?.source_sha256 ?? '');
 }
-export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) {
+// Derive afresh from the immutable original request and current host scope.
+// Explicit/owner-collection paths keep their old contract.
+function ownerExplicitParallelFor(task, catalog) {
+  if (!ownerExplicitParallelEligible(task, catalog)) return null;
+  const contract = deriveExplicitParallelOwnerContract(task.request, {scope: 'read_only', maxNodes: 4});
+  if (!contract || contract.request_sha256 !== task.request_sha256 ||
+      contract.units.some(unit => !boundedText(ownerExplicitUnitInstruction(contract, unit), 12_000))) return null;
+  return contract;
+}
+function ownerExplicitUnitInstruction(contract, unit) {
+  return `OS-1 HOST ASSIGNMENT: Perform only owner unit ${unit.label}. Core already owns the split and sibling schedule. Do not plan, spawn, delegate, or schedule sibling units. All constraints in the original request remain binding, including constraints outside this section. Return only this unit's output; do not merge or repeat other units.\n\nORIGINAL GLOBAL CONTEXT (constraints retained; scheduling already owned by Core):\n` +
+    contract.global_prefix.text + '\n\nASSIGNED OWNER UNIT (exact source):\n' + unit.exact_instruction;
+}
+function ownerExplicitParallelPlan(task, contract) {
+  return {schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
+    nodes: contract.units.map(unit => ({id: unit.id, instruction: ownerExplicitUnitInstruction(contract, unit),
+      dependencies: [], kind: 'agent', scope: 'read_only', owned_paths: [], context_refs: [...task.material_refs]})),
+    final_node_id: null};
+}
+export function assertOwnerExplicitParallelPlan(plan, task, catalog) {
+  const contract = ownerExplicitParallelFor(task, catalog);
+  // A partition and a task contract cannot coexist (K5): a refreshed catalog
+  // that gained a contract holds before dispatch, never runs beside it.
+  assert(!contract || catalog.task_contract == null, 'owner_partition_contract_conflict');
+  assert(contract && plan.final_node_id === null && plan.nodes.length === contract.units.length &&
+    plan.nodes.every((node, index) => {
+      const unit = contract.units[index];
+      return node.id === unit.id && node.instruction === ownerExplicitUnitInstruction(contract, unit) &&
+        node.kind === 'agent' && node.scope === 'read_only' && node.dependencies.length === 0 &&
+        node.owned_paths.length === 0 && stable(node.context_refs) === stable(task.material_refs);
+    }), 'owner_explicit_parallel_contract_mismatch');
+  return contract;
+}
+/** A local planner's proposal, admitted under the one law (converged
+ * architecture v2, K1/K2): the planner proposes topology only, and every node
+ * binds by selectRouteCandidate, so a row below the reference binds only when
+ * admittedRoute certifies it and its answer is checked before delivery. The
+ * planner's candidate ids are hints and are never bound. A decomposition that
+ * is not the owner's own partition needs a measured plan-shape certificate
+ * (K11b), and no such certificate exists yet: such a plan is not admitted and
+ * the caller keeps the host plan. */
+export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), verifierRegistry = null,
+                                     descentPolicy = null) {
   assert(boundedAutoEligible(task, catalog) && compiled?.provenance === 'host_unbound_plan' &&
     compiled.execution_authorized === false && compiled.quality_parity_verified === false &&
     compiled.binding?.task_id === task.task_id && compiled.binding.request_sha256 === task.request_sha256 &&
@@ -1290,6 +1587,9 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
   // The model can propose read-only preparatory work, NEVER write authority.
   // A host-authorized writer owns one final original-request node and depends
   // on all preparation. No parallel native writers pretend to be path-sandboxed.
+  // The owner's own partition is never planner-owned (K5): hostPlan builds it
+  // with no planner call, so a proposal for it is not admitted here.
+  assert(writer || ownerExplicitParallelFor(task, catalog) === null, 'bounded_owner_partition_not_planner_owned');
   let proposed = writer ? compiled.plan : lockIndivisibleInstruction(compiled.plan, task).plan;
   assertFinalOutputOwnership(proposed, task);
   if (writer) {
@@ -1299,21 +1599,21 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
       instruction: task.request, dependencies: research.map(n => n.id), scope: 'workspace_write',
       owned_paths: ['**'], context_refs: [...task.material_refs]}], final_node_id: 'host_finalize'};
   }
+  assert(proposed.nodes.length === 1, 'bounded_decomposition_not_admissible');
   const decisions = {}, routes = {};
   const nodes = proposed.nodes.map(node => {
     const finalWriter = writer && node.id === 'host_finalize';
     assert(node.kind === 'agent' && (finalWriter || node.scope === 'read_only' && node.owned_paths.length === 0) &&
       !Object.hasOwn(node, 'candidate_id'), 'bounded_plan_authority_upgrade');
-    const preference = finalWriter ? {proposed_candidate_id: finalizerHint} :
-      compiled.candidate_preferences.find(x => x.node_id === node.id);
-    assert(preference, 'bounded_candidate_hint_missing');
     // Retain every original material for each branch. A model's omission is
     // not authority to discard source context or claim it was already read.
     const checked = {...node, context_refs: [...task.material_refs]};
-    const choice = executionPolicyChoice(checked, task, catalog, now, {hint: preference.proposed_candidate_id});
-    decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, choice.why, null, choice.tier);
-    routes[node.id] = {kind: choice.kind, reference_effort: null, ladder: null};
-    return {...checked, candidate_id: choice.candidate.id};
+    const choice = selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,
+      descentPolicy});
+    decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'bounded_plan;' + choice.why,
+      choice.ladder, choice.tier);
+    routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
+    return {...checked, owned_paths: choice.widened ? ['**'] : checked.owned_paths, candidate_id: choice.candidate.id};
   });
   const plan = validatePlan({...proposed, nodes}, task, catalog);
   return {plan, decisions, routes};
@@ -1326,7 +1626,7 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now()) 
  * must agree with the exact row Core independently selected; a certified
  * descent retains R0's runnable prebound reference and native full checker.
  * The manifest is loaded by the host, never by a task or proposal. */
-function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
+function livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy = null) {
   assert(isLivePlanCapability(capability, now) && capability.valid_until_ms > now &&
     task?.mode === 'auto' && activeIntentV2(task, catalog) &&
     catalog.owner_scope === 'read_only' && hostScope(task, catalog) === 'read_only' &&
@@ -1351,7 +1651,7 @@ function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
   const original = hostPlan(task, catalog);
   assert(original.nodes.length === 1 && admittedRoute(original.nodes[0], task, catalog, now,
     {verifierRegistry}).source === 'contract', 'live_r0_full_contract_required');
-  const reference = resolveRoutePlan(original, task, catalog, now, {verifierRegistry});
+  const reference = resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});
   const route = reference.routes[original.nodes[0].id];
   assert(route?.kind === 'reference' || route?.kind === 'tier' &&
     route.ladder?.admitted_by === 'contract' &&
@@ -1359,8 +1659,9 @@ function livePlannerContext(task, catalog, capability, now, verifierRegistry) {
   'live_reference_fallback_unavailable');
   return reference;
 }
-export function admitLivePlannerPlan(compiled, task, catalog, capability, now = Date.now(), verifierRegistry = null) {
-  const reference = livePlannerContext(task, catalog, capability, now, verifierRegistry);
+export function admitLivePlannerPlan(compiled, task, catalog, capability, now = Date.now(), verifierRegistry = null,
+                                     descentPolicy = null) {
+  const reference = livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy);
   assert(compiled?.provenance === 'host_unbound_plan' && compiled.execution_authorized === false &&
     compiled.quality_parity_verified === false && compiled.binding?.task_id === task.task_id &&
     compiled.binding.request_sha256 === task.request_sha256 &&
@@ -1384,7 +1685,7 @@ export function admitLivePlannerPlan(compiled, task, catalog, capability, now = 
   const admission = admittedRoute(node, task, catalog, now, {verifierRegistry});
   assert(admission.class === 'certified' && admission.source === 'contract',
     'live_r0_full_contract_required');
-  const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry});
+  const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry, descentPolicy});
   const plan = validatePlan(lockIndivisibleInstruction(resolved.plan, task).plan, task, catalog);
   const chosen = plan.nodes[0].candidate_id;
   assert(chosen === reference.plan.nodes[0].candidate_id,
@@ -1630,6 +1931,37 @@ function exactConfig(candidate) {
   return Object.fromEntries(['surface', 'transport', 'account_id', 'model', 'effort', 'tools',
     'scope', 'permission_profile', 'quota_pool', 'allowed_paths', 'configuration_sha256']
     .map(key => [key, immutable(candidate[key])]));
+}
+/** K14, mirroring the host contract: an informational exclusion for provider
+ * P needs a tiered catalog (model_tiers) that offers a P row whose model has no
+ * tier. So it can never stand alone in an empty catalog. */
+function validInformationalExclusions(catalog) {
+  return catalog.exclusions.every(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason) ||
+    (plain(catalog.model_tiers) && catalog.candidates.some(c => plain(c) &&
+      providerOfPool(c.quota_pool) === item.provider && !Object.hasOwn(catalog.model_tiers, c.model))));
+}
+/** K14: whether this catalog offers an unclassified model. */
+function referenceReviewRequired(catalog) {
+  return Array.isArray(catalog?.exclusions) && catalog.exclusions.some(item => item?.reason === 'unclassified_model');
+}
+/** K14: `reason` with one `reference_review_required` segment appended
+ * (idempotent), within the 1 KiB public reason bound: trailing diagnostic
+ * segments are dropped first, so the token always survives. */
+export function referenceReviewReason(reason) {
+  const token = REFERENCE_REVIEW_REASON;
+  const text = typeof reason === 'string' ? reason : '';
+  if (text.split(';').includes(token)) return text;
+  const fits = head => Buffer.byteLength(head) + 1 + Buffer.byteLength(token) <= 1_024;
+  let head = text;
+  while (head && !fits(head)) {
+    const cut = head.lastIndexOf(';');
+    if (cut > 0) { head = head.slice(0, cut); continue; }
+    // One oversized segment: keep its longest prefix that fits.
+    const chars = Array.from(head);
+    while (chars.length && !fits(chars.join(''))) chars.pop();
+    head = chars.join('');
+  }
+  return head.trim() ? head + ';' + token : token;
 }
 function validExclusions(exclusions) {
   return Array.isArray(exclusions) && exclusions.length > 0 && exclusions.length <= 32 &&
@@ -1891,7 +2223,9 @@ function validateCatalog(catalog, task) {
     (catalog.native_reference_efforts === undefined ||
       validNativeReferenceEfforts(catalog.native_reference_efforts, catalog.candidates)) &&
     validAdmissionFacts(catalog, task) &&
-    (catalog.candidates.length > 0 || catalog.exclusions !== undefined), 'catalog_binding_invalid');
+    (catalog.exclusions === undefined || validInformationalExclusions(catalog)) &&
+    (catalog.candidates.length > 0 ||
+      (catalog.exclusions ?? []).some(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason))), 'catalog_binding_invalid');
   assert(Buffer.byteLength(stable(catalog)) <= MAX_CATALOG_BYTES, 'catalog_oversize');
   // An empty catalog is an explicit, explained hold rather than an opaque
   // binding error: say which configured profiles were excluded and why.
@@ -1949,70 +2283,236 @@ function pureArithmetic(request) {
   const result = match[2] === '+' ? a + b : match[2] === '*' ? a * b : a - b;
   return result.toString();
 }
+/** Whether a text pureArithmetic accepted has a number with a leading zero
+ * ("010-1234", "007+1", "02-123"): a phone number or a code, never a quantity.
+ * Every zero-model reading abstains on it (K7), the bare form included;
+ * pureArithmetic itself, the explicit-route exact family, is unchanged. */
+function legacyLeadingZero(text) {
+  return /(?:^|\D)0\d/.test(text);
+}
 
 // Wrapped exact arithmetic (2026-10-15). A plain Auto "1+1이 뭐야?" ran Codex
 // gpt-6-luna/low (29K input tokens) and still ended returned_unverified
 // (no_registered_exact_task_verifier): the bare-expression gate above missed
-// the question wording around the same exact sum. Only these closed whole-
-// request shapes take Core's zero-model exact route; any other word, a number
-// word, an operator word, division, a decimal, a second operator or a second
-// expression abstains (null) and stays with the models.
-const WRAPPED_EXPRESSION = /^(\d{1,15}) ?([+*]) ?(\d{1,15})/;
+// the question wording around the same exact sum. K7 (2026-10-25) widens the
+// closed grammar to os1-closed-arithmetic-v1: several operators with the usual
+// precedence and parentheses, decimal operands, division, and the Korean and
+// English operator words. pureArithmetic above stays the explicit-route exact
+// family (the plugin verifier and the Swift answer-only envelope read only that
+// one shape). The shared vectors are scripts/fixtures/rcc-arithmetic-vectors.json.
 // EXPR, an optional subject/topic particle, an optional closed predicate.
 const KOREAN_ARITHMETIC_SUFFIX = new RegExp('^ ?(?:(은|는|이|가) ?)?(뭐야|뭐냐|뭐니|뭐지|뭐죠|뭐예요|뭐에요|뭔가요|' +
   '얼마야|얼마냐|얼마지|얼마죠|얼마예요|얼마에요|얼마인가요|몇이야|몇이냐|몇이지|몇이에요)?$', 'u');
 // The typographic apostrophe is the same word (macOS/iOS smart punctuation).
 const ENGLISH_ARITHMETIC_PREFIX = /^(?:what is|what's|what’s|how much is) /u;
-/** The exact answer of a whole request that only asks one sum or product, or
- * null. Shapes (after NFKC, '×' as '*', collapsed whitespace, lowercase, at
- * most 160 characters, one trailing run of ?!.。？！ removed):
- *  (a) a bare expression exactly as pureArithmetic reads it ('-' included)
- *      when nothing was removed; with a removed question/end mark only + or *;
- *  (b) EXPR + an optional particle (은|는|이|가) + an optional closed Korean
- *      predicate; a particle alone needs the '?' ("2+2는?");
- *  (c) a closed English prefix (what is | what's | how much is) + EXPR;
- *  (d) EXPR followed by '=' ("1+1=", "1+1=?").
- * Every wrapped shape takes + or * only and unsigned operands: a hyphen next
- * to words reads as a section, score or range ("5-3은?", "3-4?"). A
- * compatibility character other than a fullwidth form that folds into a
- * digit or operator abstains: NFKC turns the exponent in "2²+1" into "22+1".
- * A '!' right after a digit abstains: "2+3!" is factorial notation. */
+export const CLOSED_ARITHMETIC_LIMITS = Object.freeze({input_chars: 160, int_digits: 15, frac_digits: 15,
+  operands: 16, paren_depth: 4, output_digits: 40, tokens: 64, intermediate_digits: 256});
+const CLOSED_ARITHMETIC_NUMBER = /^([0-9]{1,15})(?:\.([0-9]{1,15}))?(?![0-9.])/;
+const CLOSED_ARITHMETIC_SYMBOLS = Object.freeze({'+': '+', '-': '-', '*': '*', '×': '*', '/': '/', '÷': '/'});
+// Korean operator words may touch a digit ("1플러스1"); English ones need a
+// space on both sides ("2plus2" abstains). Never a number word.
+const CLOSED_ARITHMETIC_KOREAN = /^(?:더하기|플러스|빼기|마이너스|곱하기|나누기)/u;
+const CLOSED_ARITHMETIC_ENGLISH = /^(?:plus|minus|times|multiplied by|divided by)(?= )/;
+const CLOSED_ARITHMETIC_WORDS = Object.freeze({더하기: '+', 플러스: '+', 빼기: '-', 마이너스: '-', 곱하기: '*',
+  나누기: '/', plus: '+', minus: '-', times: '*', 'multiplied by': '*', 'divided by': '/'});
+/** The tokens at the start of `body` (one optional space before each) and
+ * the untokenized rest, or null past the token cap. */
+function closedArithmeticTokens(body) {
+  const tokens = [];
+  let at = 0;
+  for (;;) {
+    const spaced = body[at] === ' ', start = spaced ? at + 1 : at, tail = body.slice(start);
+    let token = null, match;
+    if ((match = CLOSED_ARITHMETIC_NUMBER.exec(tail)))
+      token = {kind: 'num', length: match[0].length, int: match[1], frac: match[2] ?? ''};
+    else if (tail[0] === '(' || tail[0] === ')') token = {kind: tail[0], length: 1};
+    else if (tail.length > 0 && Object.hasOwn(CLOSED_ARITHMETIC_SYMBOLS, tail[0]))
+      token = {kind: 'op', length: 1, op: CLOSED_ARITHMETIC_SYMBOLS[tail[0]], symbol: tail[0]};
+    else if ((match = CLOSED_ARITHMETIC_KOREAN.exec(tail)) || (spaced && (match = CLOSED_ARITHMETIC_ENGLISH.exec(tail))))
+      token = {kind: 'op', length: match[0].length, op: CLOSED_ARITHMETIC_WORDS[match[0]], symbol: null};
+    if (token === null) return {tokens, rest: body.slice(at)};
+    if (tokens.length === CLOSED_ARITHMETIC_LIMITS.tokens) return null;
+    tokens.push(token); at = start + token.length;
+  }
+}
+/** Exact BigInt rational {n, d > 0}, reduced; null past the intermediate cap. */
+function closedRational(n, d) {
+  if (d < 0n) { n = -n; d = -d; }
+  let a = n < 0n ? -n : n, b = d;
+  while (b !== 0n) [a, b] = [b, a % b];
+  n /= a; d /= a;
+  const digits = value => (value < 0n ? -value : value).toString().length;
+  return digits(n) > CLOSED_ARITHMETIC_LIMITS.intermediate_digits ||
+    digits(d) > CLOSED_ARITHMETIC_LIMITS.intermediate_digits ? null : {n, d};
+}
+/** expr := term (('+'|'-') term)*; term := unary (('*'|'/') unary)*;
+ * unary := ['-' symbol] primary; primary := NUM | '(' expr ')'. Every token is
+ * consumed; at least one binary operator. Returns the value, whether every
+ * binary operator is an ASCII '-' or '/' with no parenthesis (a date, phone
+ * number, range, score or fraction reading), how many binary operators there
+ * are, whether a unary '-' leads, and whether a number has a leading zero
+ * ("010", "007": a phone number or a code, never written as a quantity). */
+function closedArithmeticValue(tokens) {
+  const binary = [];
+  let at = 0, depth = 0, operands = 0, leadingUnary = false;
+  const operator = ops => tokens[at]?.kind === 'op' && ops.includes(tokens[at].op);
+  function primary() {
+    const token = tokens[at];
+    if (token?.kind === 'num') {
+      at++;
+      if (++operands > CLOSED_ARITHMETIC_LIMITS.operands) return null;
+      return closedRational(BigInt(token.int + token.frac), 10n ** BigInt(token.frac.length));
+    }
+    if (token?.kind !== '(' || ++depth > CLOSED_ARITHMETIC_LIMITS.paren_depth) return null;
+    at++;
+    const value = expr();
+    if (value === null || tokens[at]?.kind !== ')') return null;
+    at++; depth--;
+    return value;
+  }
+  function unary() {
+    // One symbolic minus per operand: no word, no '--3'.
+    const negative = tokens[at]?.kind === 'op' && tokens[at].symbol === '-';
+    if (negative) { if (at === 0) leadingUnary = true; at++; }
+    const value = primary();
+    return value === null ? null : negative ? {n: -value.n, d: value.d} : value;
+  }
+  function term() {
+    let value = unary();
+    while (value !== null && operator(['*', '/'])) {
+      const token = tokens[at++]; binary.push(token);
+      const right = unary();
+      if (right === null || (token.op === '/' && right.n === 0n)) return null;
+      value = token.op === '*' ? closedRational(value.n * right.n, value.d * right.d) :
+        closedRational(value.n * right.d, value.d * right.n);
+    }
+    return value;
+  }
+  function expr() {
+    let value = term();
+    while (value !== null && operator(['+', '-'])) {
+      const token = tokens[at++]; binary.push(token);
+      const right = term();
+      if (right === null) return null;
+      const sign = token.op === '+' ? 1n : -1n;
+      value = closedRational(value.n * right.d + sign * right.n * value.d, value.d * right.d);
+    }
+    return value;
+  }
+  const value = expr();
+  if (value === null || at !== tokens.length || binary.length === 0) return null;
+  return {value, leadingUnary, operators: binary.length,
+    leadingZero: tokens.some(token => token.kind === 'num' && token.int.length > 1 && token.int[0] === '0'),
+    ambiguous: !tokens.some(token => token.kind === '(') &&
+      binary.every(token => token.symbol === '-' || token.symbol === '/')};
+}
+/** The finite decimal of an exact rational, or null: a denominator other than
+ * 2^a·5^b (non-terminating) or more than 40 digits. Never rounded, no
+ * exponent, no grouping, no trailing zero, '0' never '-0'. */
+function closedDecimal({n, d}) {
+  let rest = d, twos = 0, fives = 0;
+  while (rest % 2n === 0n) { rest /= 2n; twos++; }
+  while (rest % 5n === 0n) { rest /= 5n; fives++; }
+  if (rest !== 1n) return null;
+  if (n === 0n) return '0';
+  const places = Math.max(twos, fives), negative = n < 0n;
+  const digits = ((negative ? -n : n) * 10n ** BigInt(places) / d).toString().padStart(places + 1, '0');
+  if (digits.length > CLOSED_ARITHMETIC_LIMITS.output_digits) return null;
+  return (negative ? '-' : '') + (places === 0 ? digits : digits.slice(0, -places) + '.' + digits.slice(-places));
+}
+/** The exact answer of a whole request that only asks one closed arithmetic
+ * expression (os1-closed-arithmetic-v1), or null.
+ * Text: NFKC, collapsed whitespace, lowercase, at most 160 characters; a '!'
+ * right after a digit abstains ("2+3!" is factorial notation); one trailing
+ * run of ?!.。？！ is removed. A compatibility character other than a fullwidth
+ * form or U+3000 that folds into a digit, operator, parenthesis, '.', ',' or
+ * '=' abstains (NFKC turns "2²+1" into "22+1", "½" into "1⁄2"); a mark of the
+ * removed trailing run is punctuation ("1+1이 뭐야…": '…' folds to "...").
+ * Shapes, with the expression EXPR read by closedArithmeticTokens/Value:
+ *  BARE    EXPR alone, nothing removed. pureArithmetic's one-operator form
+ *          keeps its exact legacy reading ('5-3', '5--3', '-3*-4'), except
+ *          that a leading-zero number abstains there too ('02-123').
+ *  WEAK    EXPR with a removed mark, or EXPR + a particle (은|는|이|가) and a
+ *          '?' ("2+2는?").
+ *  STRONG  EXPR + '=' ("1+1=", "1+1=?"); EXPR + an optional particle + a
+ *          closed Korean predicate ("3*7은 얼마야?", "1+1이 뭐야?"); a closed
+ *          English prefix (what is | what's | how much is) + EXPR and nothing
+ *          else.
+ * EXPR: numbers of 1-15 digits with an optional '.' and 1-15 digits; + - * ×
+ * / ÷ ( ); 더하기 플러스 빼기 마이너스 곱하기 나누기 and plus minus times
+ * 'multiplied by' 'divided by'. No number word, no other letter, ',' '^' '%'
+ * 'x' or U+2212; implicit multiplication abstains. At most 64 tokens, 16
+ * numbers and 4 nested parentheses. A number with a leading zero ("010",
+ * "007") is a phone number or a code at every strength: abstain.
+ * Ambiguity: without a parenthesis, an EXPR whose every operator is the ASCII
+ * '-' or '/' may be a date, phone number, store, range, score, section or
+ * fraction ("2024-10-24", "10/25", "7-11", "5-3은?"). It is read as arithmetic
+ * only when the words ask for its value: '=' ("10-3-2="), or a quantity
+ * predicate (얼마 | 몇 | how much is) over ONE such operator ("5-3은 얼마야?").
+ * BARE, WEAK and the what-is wording (뭐야 family, what is | what's) ask what
+ * the thing is ("2024-10-24는 뭐야?", "what is 7-11?") and abstain, and so
+ * does a WEAK EXPR that starts with '-' ("-3+5는?").
+ * Value: exact rationals; division by zero, a non-terminating result
+ * ("1/3=") or more than 40 output digits abstain; never rounded. */
 export function exactArithmeticQuestion(request) {
   if (typeof request !== 'string') return null;
-  for (const ch of request) {
+  const chars = [...request];
+  let marks = chars.length;
+  while (marks > 0 && /^[?!.\u3002\uFF1F\uFF01\s]+$/u.test(chars[marks - 1].normalize('NFKC'))) marks--;
+  for (const ch of chars.slice(0, marks)) {
     const folded = ch.normalize('NFKC');
-    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*=-]/.test(folded)) return null;
+    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*/=().,-]/.test(folded)) return null;
   }
-  let text = request.normalize('NFKC').replace(/×/gu, '*').replace(/\s+/gu, ' ').trim().toLowerCase();
-  if (text.length > 160 || /\d!/.test(text)) return null;
+  let text = request.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
+  if (text.length > CLOSED_ARITHMETIC_LIMITS.input_chars || /\d!/.test(text)) return null;
   const end = /[?!.。？！]+$/u.exec(text);
   const question = end !== null && /[?？]/u.test(end[0]);
   if (end) text = text.slice(0, end.index).trim();
   if (!end) {
     const bare = pureArithmetic(text);
-    if (bare !== null) return bare;
+    if (bare !== null) return legacyLeadingZero(text) ? null : bare;
   }
   const prefix = ENGLISH_ARITHMETIC_PREFIX.exec(text);
   const body = prefix ? text.slice(prefix[0].length) : text;
-  const expression = WRAPPED_EXPRESSION.exec(body);
-  if (!expression) return null;
-  const rest = body.slice(expression[0].length);
-  const answer = pureArithmetic(`${expression[1]}${expression[2]}${expression[3]}`);
-  // (c): nothing may follow the expression.
-  if (prefix) return rest === '' ? answer : null;
-  // (a) with a removed mark, and (d).
-  if (rest === '' || /^ ?=$/u.test(rest)) return answer;
-  // (b): a particle or a predicate (the empty suffix was (a) above).
-  const korean = KOREAN_ARITHMETIC_SUFFIX.exec(rest);
-  if (!korean) return null;
-  return korean[2] !== undefined || question ? answer : null;
+  const read = closedArithmeticTokens(body);
+  if (read === null || read.tokens.length === 0) return null;
+  // asks: what a STRONG shape's words ask for, 'equals' | 'quantity' | 'what'.
+  let strength = null, asks = null;
+  if (prefix) {
+    strength = read.rest === '' ? 'strong' : null;
+    asks = prefix[0].startsWith('how much') ? 'quantity' : 'what';
+  } else if (read.rest === '') strength = end ? 'weak' : 'bare';
+  else if (/^ ?=$/u.test(read.rest)) { strength = 'strong'; asks = 'equals'; }
+  else {
+    const korean = KOREAN_ARITHMETIC_SUFFIX.exec(read.rest);
+    strength = korean === null ? null : korean[2] !== undefined ? 'strong' : question ? 'weak' : null;
+    if (strength === 'strong') asks = /^(?:얼마|몇)/u.test(korean[2]) ? 'quantity' : 'what';
+  }
+  if (strength === null) return null;
+  const expression = closedArithmeticValue(read.tokens);
+  if (expression === null || expression.leadingZero) return null;
+  if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1)))
+    return null;
+  if (strength === 'weak' && expression.leadingUnary) return null;
+  return closedDecimal(expression.value);
+}
+/** Core's zero-model arithmetic answer for a whole Auto request. */
+export function zeroModelArithmetic(request) {
+  const bare = pureArithmetic(request);
+  if (bare !== null) return legacyLeadingZero(request) ? null : bare;
+  return exactArithmeticQuestion(request);
 }
 
 /** Whether a task carries no earlier conversation that could give its words
  * another meaning (a product label, a score, a promotion): no context text on
  * the task or the host, and no native session the host would resume. Every
- * zero-model path requires it (R1). */
-function withoutConversation(task) {
+ * zero-model path requires it (R1). A host envelope must say priorMessageCount
+ * 0: a missing count is unknown history. Only the zero-model sites pass
+ * `bareEnvelopeIsFirstTurn` (K7): there a bare v3 envelope with no count and
+ * nothing else (empty transcript, no source, task context or memory paging)
+ * carries exactly what a null context carries, the same thing Swift
+ * SessionHandoff.decode(nil) returns. Every other caller stays strict. */
+function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {
   const h = task.host_context;
   const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
   if (task.native_sessions != null && Object.keys(task.native_sessions).length !== 0) return false;
@@ -2026,7 +2526,9 @@ function withoutConversation(task) {
     try { x = JSON.parse(raw); } catch { return false; }
     if (JSON.stringify(x) !== raw || !plain(x) ||
         Object.keys(x).some(k => !['format', 'transcript', 'source', 'taskContext', 'memoryPaging', 'priorMessageCount'].includes(k)) ||
-        x.format !== 'os1-session-handoff-v3' || x.priorMessageCount !== 0 ||
+        x.format !== 'os1-session-handoff-v3' ||
+        !(x.priorMessageCount === 0 || (bareEnvelopeIsFirstTurn && !Object.hasOwn(x, 'priorMessageCount') &&
+          x.taskContext == null && x.memoryPaging == null)) ||
         x.transcript !== '' || x.source != null) return false;
     const c = x.taskContext;
     if (c != null) {
@@ -2287,7 +2789,61 @@ function publicResourceUsage(snapshot) {
     quota_savings: s.quota_savings, cash_cost: s.cash_cost,
     accounting_scope: 'observed_attempts_as_of_snapshot_not_future_cost'};
 }
+/** K12 v2 partial: coverage over every child (completed vs unresolved), the
+ * parent task it belongs to, and one entry per node whose output it carries.
+ * A held child whose output is retained is carried and still unresolved. The
+ * partial is built from the same children as its output; a certified descent
+ * its check has not accepted never reaches here (the callers drop it). Core
+ * keeps no digest of a child's native receipt, so that field is null, never a
+ * guess. A completed deterministic node runs on a host-computed exact row and
+ * has no attempt: its attempt_id is null, only there. The parent revision is
+ * bound when the partial is attached. */
+function partialContract(snapshot, returned) {
+  const completed = returned.filter(c => c.state === 'completed').map(c => c.id);
+  const done = new Set(completed);
+  const unresolved = snapshot.children.map(c => c.id).filter(id => !done.has(id));
+  assert(unresolved.length > 0 && snapshot.children.every(c => done.has(c.id) || c.state !== 'completed') &&
+    returned.every(c => ID.test(c.id) && typeof c.output === 'string' && (c.attempt_id === null ?
+      c.state === 'completed' && plain(c.selected_config) && localExactRow(c.selected_config) :
+      typeof c.attempt_id === 'string' && ID.test(c.attempt_id))), 'partial_contract_invalid');
+  return {coverage: {completed_node_ids: completed, unresolved_node_ids: unresolved},
+    parent: {task_id: snapshot.task.task_id, request_sha256: snapshot.task.request_sha256, revision: null},
+    nodes: returned.map(c => ({node_id: c.id, attempt_id: c.attempt_id,
+      output_sha256: sha(Buffer.from(c.output)), native_receipt_sha256: null}))};
+}
+/** K12: attach a v2 partial (inside the attaching update) only if every node
+ * it carries still holds the same attempt and output and its coverage still
+ * matches the children; its parent revision is the one this update writes.
+ * A race drops the whole result (never a stale partial); the original failure
+ * or hold reason stands. A result without a partial passes unchanged. */
+function boundPartialResult(state, result) {
+  if (!result?.partial) return result;
+  const partial = result.partial, children = new Map(state.children.map(c => [c.id, c]));
+  const done = new Set(partial.coverage.completed_node_ids);
+  const current = children.size === done.size + partial.coverage.unresolved_node_ids.length &&
+    [...done, ...partial.coverage.unresolved_node_ids].every(id => children.has(id)) &&
+    state.children.every(c => (c.state === 'completed') === done.has(c.id)) &&
+    partial.nodes.every(node => {
+      const child = children.get(node.node_id);
+      return child?.attempt_id === node.attempt_id && typeof child.output === 'string' &&
+        sha(Buffer.from(child.output)) === node.output_sha256;
+    });
+  return current ? {...result, partial: {...partial, parent: {...partial.parent, revision: state.revision + 1}}} : null;
+}
+/** K12: the wire result, gated exactly like the host contract's
+ * validate(Snapshot): a whole answer (completed, returned_unverified), an
+ * install handoff, or a v2 partial on a failed, held or cancelled task. A v1
+ * task's failed partial (and any older stored one) stays in the durable record
+ * for the inspector; on the wire that task is a typed failure with no result. */
+function publicResult(snapshot) {
+  const result = snapshot.result;
+  if (!result) return null;
+  const shown = snapshot.state === 'completed' || snapshot.state === 'returned_unverified' ||
+    snapshot.install_handoff != null || (result.partial != null && PARTIAL_RESULT_STATES.has(snapshot.state));
+  return shown ? immutable(result) : null;
+}
 function publicSnapshot(snapshot) {
+  const review = referenceReviewRequired(snapshot.catalog);
   return { schema: 1, task_id: snapshot.task.task_id,
     request_sha256: snapshot.task.request_sha256, state: snapshot.state,
     revision: snapshot.revision,
@@ -2300,13 +2856,21 @@ function publicSnapshot(snapshot) {
       return {id, state, attempt_id, candidate_id, selected_config,
         requested_surface: requestedSurface(snapshot, child), instruction, dependencies,
         started_at_ms, finished_at_ms, native_receipt,
-        output_summary: typeof output === 'string' ? output.slice(0, 600) : null,
-        // Why the host chose this exact row. Older snapshots have none.
-        routing_decision: child.routing_decision ? immutable(child.routing_decision) : null,
+        // I2: a descent answer its admitting source has not accepted (waiting
+        // on its verifier, or held) is never shown.
+        output_summary: typeof output === 'string' && (state === 'completed' || !pendingEscalation(child)) ?
+          output.slice(0, 600) : null,
+        // Why the host chose this exact row. Older snapshots have none. K14:
+        // while the catalog offers an unclassified model, a model-backed
+        // child's public reason names reference_review_required (the stored
+        // decision and the ledger stay unchanged).
+        routing_decision: child.routing_decision ? immutable(review && plain(selected_config) && selected_config.transport !== 'local' ?
+          {...child.routing_decision, reason: referenceReviewReason(child.routing_decision.reason)} :
+          child.routing_decision) : null,
         // R6: why a delivered output is not task-verified (present only then).
         ...(child.quality_disclosure ? {quality_disclosure: immutable(child.quality_disclosure)} : {})};
     }),
-    result: snapshot.result ? immutable(snapshot.result) : null,
+    result: publicResult(snapshot),
     install_handoff: snapshot.install_handoff ? immutable(snapshot.install_handoff) : null,
     ...(snapshot.intent_resolution_state ? {routing_intent: {
       state: snapshot.intent_resolution_state,
@@ -2357,22 +2921,30 @@ function stagedWriterDiscarded(result) {
 function tierFailureSignal(result) {
   return typeof result.output !== 'string' || result.output.trim() === '' || result.error != null;
 }
-/** R9: whether the source that admitted a certified descent accepts THIS
- * answer. (a) the owner contract verified it with full coverage; (b) it is
- * structurally sound, and the registered verifier then decides; (c) it is
- * structurally sound and passes the certificate's own format check. Under
- * any source an operational check that ran partially, could not verify or
- * failed is no acceptance. A descent recorded without its admitting source
- * (an older build) is never accepted: it escalates. */
-function certifiedAnswer(ladder, result) {
+/** A descent answer with no structural failure: a non-empty output and no
+ * error, an applied staged writer, and no operational check that ran
+ * partially, could not verify or failed. */
+function descentStructurallySound(result) {
   if (tierFailureSignal(result)) return false;
   if (result.selected_config?.scope === 'workspace_write' && result.staged_writer?.state !== 'applied') return false;
   const q = result.operational_quality;
-  if (q && (q.coverage !== 'full' || ['unverified', 'mismatch'].includes(q.assessment_state))) return false;
+  return !(q && (q.coverage !== 'full' || ['unverified', 'mismatch'].includes(q.assessment_state)));
+}
+/** R9: whether the source that admitted a certified descent accepts THIS
+ * answer. It must be structurally sound, and then (a) the owner contract
+ * verified it with full coverage; (b) the verifier its ladder names
+ * (certificate_id) passed THIS attempt (`verdict`, I2); (c) it passes the
+ * certificate's own format check. A descent recorded without its admitting
+ * source (an older build) is never accepted: it escalates. */
+function certifiedAnswer(ladder, result, verdict = null) {
+  if (!descentStructurallySound(result)) return false;
+  const q = result.operational_quality;
   switch (ladder?.admitted_by) {
     case 'contract': return result.task_verified === true && q?.coverage === 'full' &&
       q.assessment_state === 'task_contract_verified';
-    case 'verifier': return true;
+    case 'verifier': return plain(verdict) && verdict.passed === true && typeof result.attempt_id === 'string' &&
+      verdict.attempt_id === result.attempt_id && typeof ladder.certificate_id === 'string' &&
+      verdict.verifier_id === ladder.certificate_id;
     case 'class': return Object.hasOwn(FORMAT_CHECKS, ladder.format_check) && FORMAT_CHECKS[ladder.format_check](result.output);
     case 'exact': return typeof ladder.exact_answer === 'string' && result.output.trim() === ladder.exact_answer;
     default: return false;
@@ -2448,6 +3020,16 @@ function recordTurnSettlement(entry, result) {
 function siblingRunning(snapshot, nodeID) {
   return snapshot.children.some(c => c.id !== nodeID && c.state === 'running' && c.dispatched_at_ms !== null);
 }
+/** K12: whether a child held with no running sibling leaves its task to the
+ * scheduler's held branch instead of holding the task in place. That branch
+ * already settles a hold reached while a sibling runs: it never carries an
+ * unaccepted descent, and for a v2 task it types the partial over the
+ * completed nodes. So a v2 task's completed answers reach the owner however
+ * the hold was timed. A v1 task, and a child that retains an output (a
+ * handback continuation's report), keep the direct hold. */
+function heldThroughScheduler(snapshot, child) {
+  return snapshot.task?.result_contract_version === 2 && child?.output === null;
+}
 /** The quota-pool lease key of an exact configuration, or null. */
 function poolKeyOf(config) {
   return !plain(config) || config.quota_pool === 'none' ? null : `${config.quota_pool}:${config.account_id}`;
@@ -2507,28 +3089,37 @@ function alive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-/** `verifierRegistry`: Map of task family (routeFamily) to an async node
- * verifier ({schema, task_id, node_id, family, instruction, output,
- * native_receipt, selected_config} -> {passed: boolean, reason}): a
- * registration for the certified class is R0's source (b). Production
- * registers none, so every node runs its reference. `hostAutoPlan` (R7): the
+/** `verifierRegistry`: a Map of node verifiers (registerNodeVerifiers: a
+ * legacy family -> async function entry, a failure signal only; or id ->
+ * {id, scope, surfaces, soundness, applies, verify, refutations}). Each
+ * verify gets {schema, task_id, node_id, family, verifier_id, instruction,
+ * output, native_receipt, selected_config} and returns {passed: boolean,
+ * reason}. Only a probed 'sound_full' entry whose applies() holds is R0's
+ * source (b), and its pass on THIS attempt alone accepts the descent (I2).
+ * Production registers none, so every node runs its reference. `hostAutoPlan` (R7): the
  * host builds every plan itself (hostPlan) and never calls `plan`; injected
  * plans (`plan`) remain for fixtures. `ledgerLog` receives a ledger write
- * failure code, which never fails or holds a task. */
+ * failure code, which never fails or holds a task. `certifiedDescentPolicy`
+ * (K10): a frozen check-acceptance cost policy, prepared once here; it only
+ * re-ranks a contract or verifier descent inside the F Core admitted, and an
+ * invalid, expired or uncovered one changes nothing. Production registers
+ * none. */
 export async function createRCCRuntime({stateDir, catalog, plan, execute, executeContinuation, decideOperationalQuality, resolveIntent,
                                          stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                                          maximumWorkers = 4, maximumReadWorkersPerPool = 1, cancelGraceMs = 5_000,
                                          verifierRegistry = null, hostAutoPlan = false, boundedAutoPlanning = false, ledgerLog = null,
                                          adaptiveRoutingPolicy = null, proposeLocalPlan, jointRouteEvidence = null,
                                          frozenRoutePredictor = null, livePlanCapability = null, calibratedRoutePredictor = null,
-                                         calibratedRouteFixtureExecutor = null} = {}) {
+                                         calibratedRouteFixtureExecutor = null, certifiedDescentPolicy = null} = {}) {
   assert(typeof stateDir === 'string' && isAbsolute(stateDir) && !stateDir.includes('/../'), 'state_dir_invalid');
+  // Type misuse only. A malformed policy object is inactive, never an error.
+  assert(certifiedDescentPolicy === null || plain(certifiedDescentPolicy), 'certified_descent_policy_invalid');
+  const descentPolicy = certifiedDescentPolicy === null ? null : prepareCertifiedDescentPolicy(certifiedDescentPolicy);
   assert(int(maximumWorkers, 1, 16), 'worker_limit_invalid');
   assert(int(maximumReadWorkersPerPool, 1, maximumWorkers), 'pool_reader_limit_invalid');
   assert(int(cancelGraceMs, 100, 30_000), 'cancel_grace_invalid');
-  const registry = verifierRegistry ?? new Map();
-  assert(registry instanceof Map && [...registry].every(([family, verify]) =>
-    typeof family === 'string' && family.length <= 128 && typeof verify === 'function'), 'verifier_registry_invalid');
+  // A frozen copy, registered (and probed) before any state is touched.
+  const registry = await registerNodeVerifiers(verifierRegistry ?? new Map());
   assert(typeof hostAutoPlan === 'boolean' && typeof boundedAutoPlanning === 'boolean', 'host_auto_plan_invalid');
   assert(!boundedAutoPlanning || hostAutoPlan && typeof proposeLocalPlan === 'function', 'bounded_auto_planner_required');
   const adaptivePolicy = decodeAdaptiveRoutingPolicy(adaptiveRoutingPolicy);
@@ -2608,7 +3199,8 @@ export async function createRCCRuntime({stateDir, catalog, plan, execute, execut
                                  maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs,
                                  transaction, verifierRegistry: registry, hostAutoPlan, boundedAutoPlanning, ledger, ledgerLog,
                                  adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
-                                 calibratedRoutePredictor, calibratedRouteFixture: calibratedRouteFixtureExecutor !== null});
+                                 calibratedRoutePredictor, calibratedRouteFixture: calibratedRouteFixtureExecutor !== null,
+                                 descentPolicy});
   runtime.reconcileRestart();
   runtime.reconcileLedger();
   runtime.startQueued();
@@ -2620,7 +3212,7 @@ class RCCRuntime {
                stageSelfUpdate, reconcileInstallation, cancelInstallation, verifyTask, verifyRetainedOwnerControl, emit,
                maximumWorkers, maximumReadWorkersPerPool, cancelGraceMs, transaction, verifierRegistry, hostAutoPlan, boundedAutoPlanning, ledger,
                ledgerLog, adaptivePolicy, proposeLocalPlan, jointRouteEvidence, frozenRoutePredictor, livePlanCapability,
-               calibratedRoutePredictor, calibratedRouteFixture}) {
+               calibratedRoutePredictor, calibratedRouteFixture, descentPolicy}) {
     this.db = db; this.token = token; this.stateDir = stateDir;
     this.catalog = catalog; this.plan = plan;
     this.execute = execute; this.executeContinuation = executeContinuation;
@@ -2637,6 +3229,7 @@ class RCCRuntime {
     this.livePlanCapability = livePlanCapability;
     this.calibratedRoutePredictor = calibratedRoutePredictor;
     this.calibratedRouteFixture = calibratedRouteFixture;
+    this.descentPolicy = descentPolicy;
     this.ledger = ledger; this.ledgerLog = ledgerLog;
     // Dispatched attempts whose ledger record is not written yet, with the
     // route facts fixed at dispatch: an attempt that settles after stop is
@@ -2697,8 +3290,9 @@ class RCCRuntime {
   _hold(taskID, reason, result = null) {
     return this._update(taskID, 'held', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
-      snapshot.state = result ? 'returned_unverified' : 'held';
-      snapshot.error = reason; if (result) snapshot.result = result;
+      const bound = boundPartialResult(snapshot, result);
+      snapshot.state = bound ? 'returned_unverified' : 'held';
+      snapshot.error = reason; if (bound) snapshot.result = bound;
     });
   }
   /** Per-request hard zero, not a usage estimate or global switch. Original
@@ -3198,14 +3792,18 @@ class RCCRuntime {
           const entry = child?.attempt_history?.find(item => item.attempt_id === row.attempt_id);
           const current = child?.attempt_id === row.attempt_id;
           const settled = entry && !UNSETTLED_ATTEMPT_STATES.has(entry.state);
-          const outcome = route.verifier !== true ? 'not_registered' :
+          // K9: a certifier gone at adoption is a configuration fault, never
+          // a parity failure of the route (as when the attempt settled live).
+          const outcome = settled && entry.check_outcome === 'certifier_unavailable' ? 'certifier_unavailable' :
+            route.verifier !== true ? 'not_registered' :
             settled && SETTLED_VERDICTS.has(entry.verifier) ? entry.verifier :
             settled && entry.state === 'verified_not_dispatched' ? 'not_dispatched' : 'interrupted';
           const record = this._ledgerRecord({taskID: row.task_id, nodeID: row.node_id, attemptID: row.attempt_id,
             route}, {usage: entry?.usage ?? null, execution_verified: current && child.execution_verified === true,
             task_quality: current ? child.task_quality ?? null : null,
             routing_outcome_summary: this._outcomeSummary(entry?.routing_outcome)}, outcome, settled ? entry.state : 'interrupted',
-            settled ? entry.escalation_outcome ?? null : null, settled ? entry.dispatched_failure ?? null : null);
+            settled ? entry.escalation_outcome ?? null : null, settled ? entry.dispatched_failure ?? null : null,
+            settled ? entry.check_outcome ?? null : null);
           const write = () => this.ledger.append(record);
           if (this._backlogged(record)) { keep = true; this.ledgerBacklog.set(row.attempt_id, write); }
           write();
@@ -3275,11 +3873,19 @@ class RCCRuntime {
 
   /** Existing partial-result shape, scoped to exactly the supplied returned
    * children. A failed/missing child supplies neither answer nor execution
-   * evidence. This never adopts the quality of the original whole task. */
-  async _partialResult(taskID, returned) {
+   * evidence. This never adopts the quality of the original whole task.
+   * K12: a v2 task (the ORIGINAL task's result_contract_version) also types
+   * the partial (partialContract); its parent revision is bound on attach. A
+   * partial the contract cannot type falls back to this v1 result: never a
+   * replaced failure or hold reason, never a lost answer. */
+  async _partialResult(taskID, returned, snapshot = null) {
     if (!returned.length) return null;
     const output = returned.map(c => `${c.id}: ${c.output}`).join('\n\n');
     assert(Buffer.byteLength(output) <= MAX_OUTPUT_BYTES, 'partial_output_oversize');
+    let partial = null;
+    if (snapshot?.task?.result_contract_version === 2) {
+      try { partial = partialContract(snapshot, returned); } catch { partial = null; }
+    }
     let receipt;
     try { receipt = await this._aggregateReceipt(taskID, returned, output); }
     catch { throw new RCCRuntimeError('aggregate_receipt_unavailable'); }
@@ -3287,7 +3893,7 @@ class RCCRuntime {
       task_quality: 'execution_only', parity_state: 'unverified', native_receipt: receipt,
       native_summary: returned.length === 1 ? returned[0].native_summary : null,
       native_summaries: returned.flatMap(c => c.native_summaries ??
-        (c.native_summary ? [c.native_summary] : []))};
+        (c.native_summary ? [c.native_summary] : [])), ...(partial ? {partial} : {})};
   }
 
   async _verifiedNativeReceiptDigest(result) {
@@ -3686,7 +4292,7 @@ class RCCRuntime {
     const task = executionTask(snapshot);
     let baseline;
     try { baseline = resolveRoutePlan(hostPlan(task, snapshot.catalog), task, snapshot.catalog, Date.now(),
-      {verifierRegistry: this.verifierRegistry}); }
+      {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy}); }
     catch (error) {
       this._restoreCalibratedR0(taskID, 'current_r0_unavailable', prior.baseline, {saved: true});
       throw error;
@@ -3754,7 +4360,9 @@ class RCCRuntime {
   }
 
   async _observeAdaptivePlan(taskID, task, catalog) {
-    const bounded = this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' && this.verifierRegistry.size === 0 && boundedAutoEligible(task, catalog);
+    // K3: a registered verifier no longer switches bounded Auto off; whether
+    // the planner is asked at all is the disposition below.
+    const bounded = this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' && boundedAutoEligible(task, catalog);
     const policy = bounded ? {mode: 'bounded_auto', policy_id: 'host-execution-policy', version: '1',
       max_nodes: hostScope(task, catalog) === 'workspace_write' ? 3 : 4, max_parallel: Math.min(4, task.budget.max_parallel), max_plan_revisions: 0, max_planner_calls: 1} : this.adaptivePolicy;
     if (ownerCollectionFor(task, catalog)) {
@@ -3762,6 +4370,15 @@ class RCCRuntime {
         provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
         usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_supplied_independent_partition'});
       return true; // Actual host partition, not inferred zero-cost history.
+    }
+    // K5: the owner's explicit partition is task topology hostPlan builds; it
+    // runs with no planner call in every adaptive mode (bounded, shadow,
+    // covered_live). The skip is an observed zero (plan_model_calls 0).
+    if (this.hostAutoPlan && ownerExplicitParallelFor(task, catalog)) {
+      this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
+        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_explicit_parallel_partition'});
+      return true;
     }
     if (policy.mode === 'off' || task.mode !== 'auto') return true;
     if (!this._allowModelGeneration(taskID)) return false;
@@ -3777,7 +4394,16 @@ class RCCRuntime {
     // only for shadow observations; it cannot qualify a cheap live route.
     let disposition;
     if (bounded) {
-      disposition = {plan_proposals_enabled: true, reason: 'host_bounded_execution_policy'};
+      // K3: the owner's own partition needs no planner (hostPlan builds it).
+      // Any other model decomposition is admitted only with an applicable
+      // sound_full check (K4) AND a loaded plan-shape certificate (K11b).
+      // The catalog keys are closed (validateCatalog) and have no plan-shape
+      // kind, so no proposal can be admitted and the local planner is never
+      // asked: no call, no 120 s wait.
+      // K11b replaces this line with the real predicate and fills check_ids.
+      // The bounded policy, deadline, scope and admitBoundedAutoPlan stay
+      // wired, not adopted.
+      disposition = {plan_proposals_enabled: false, reason: 'no_admissible_check_or_shape'};
     } else if (policy.mode === 'covered_live') {
       try {
         // Test R0 and the exact source/rights/calibration family BEFORE a local
@@ -3785,7 +4411,7 @@ class RCCRuntime {
         // to ask the model to certify itself.
         assert(this.livePlanCapability?.manifest_sha256 === policy.adoption_manifest_sha256,
           'live_capability_unavailable');
-        livePlannerContext(task, catalog, this.livePlanCapability, Date.now(), this.verifierRegistry);
+        livePlannerContext(task, catalog, this.livePlanCapability, Date.now(), this.verifierRegistry, this.descentPolicy);
         disposition = {plan_proposals_enabled: true, reason: 'live_host_capability_bound'};
       } catch { disposition = {plan_proposals_enabled: false, reason: 'live_capability_or_full_contract_unavailable'}; }
     } else if (typeof workload !== 'string' || scope !== 'read_only') {
@@ -3798,6 +4424,11 @@ class RCCRuntime {
       });
     }
     if (!disposition.plan_proposals_enabled) {
+      // A skipped bounded proposal is an observed zero, not unobserved plan
+      // accounting (plan_model_calls 0, as the owner-collection branch above).
+      if (bounded) this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
+        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        usage_basis: 'openclaw_input_excludes_cache', reason: disposition.reason});
       this._update(taskID, 'adaptive_plan_skipped', snapshot => {
         snapshot.adaptive_routing = {schema: 1, mode: policy.mode,
           state: 'not_needed', reason: disposition.reason, planner_invoked: false,
@@ -3893,11 +4524,11 @@ class RCCRuntime {
           scope: bounded ? 'read_only' : hostScope(freshTask, freshCatalog), nonce});
         compiled = compileFreshPlannerProposal(raw, prepared, fresh, policy);
         if (bounded) {
-          admitBoundedAutoPlan(compiled, freshTask, freshCatalog, Date.now());
+          admitBoundedAutoPlan(compiled, freshTask, freshCatalog, Date.now(), this.verifierRegistry, this.descentPolicy);
           reason = 'bounded_host_checked_proposal';
         } else if (policy.mode === 'covered_live') {
           admitLivePlannerPlan(compiled, freshTask, freshCatalog, this.livePlanCapability,
-            Date.now(), this.verifierRegistry);
+            Date.now(), this.verifierRegistry, this.descentPolicy);
           reason = 'live_host_checked_proposal';
         } else reason = 'shadow_proposal_validated_not_executed';
       }
@@ -4053,16 +4684,17 @@ class RCCRuntime {
     // "1+1은 얼마야?" asks a price, and "3-4" after a score is no sum; a model
     // must see that context (review 2026-10-15). A wrapped question
     // ("1+1이 뭐야?") is the same exact sum: the child keeps the whole request
-    // as its instruction (_completeLocalExact).
+    // as its instruction (_completeLocalExact). K7: a bare v3 envelope with
+    // nothing in it is a null context here, and only here.
     if (task.mode === 'auto' && task.objective.trim() === task.request.trim() && task.host_context.provider_preference === 'auto' &&
         (task.provider_preference == null || task.provider_preference === 'auto') &&
         task.host_context.explicit_routes == null &&
-        task.material_refs.length === 0 && withoutConversation(task)) {
+        task.material_refs.length === 0 && withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
       const checkin = exactLocalGreeting(task.request);
       if (checkin !== null && task.objective.trim() === task.request.trim()) {
         this._completeLocalExact(taskID, 'local_checkin', checkin); return;
       }
-      const answer = pureArithmetic(task.request) ?? exactArithmeticQuestion(task.request);
+      const answer = zeroModelArithmetic(task.request);
       if (answer !== null) {
         this._completeLocalExact(taskID, 'deterministic_arithmetic', answer);
         return;
@@ -4071,7 +4703,8 @@ class RCCRuntime {
     if (!this._allowModelGeneration(taskID)) return;
     task = await this._resolveTaskIntent(taskID);
     if (task === null || this.closed || this.stopping || this.quiescing) return;
-    if (this._load(taskID)?.intent_resolution?.kind === 'local_response' && withoutConversation(task)) {
+    if (this._load(taskID)?.intent_resolution?.kind === 'local_response' &&
+        withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
       this._completeLocalExact(taskID, 'local_checkin', localResponsePathOutput(task.request)); return;
     }
     state = this._update(taskID, 'planning', snapshot => {
@@ -4142,18 +4775,10 @@ class RCCRuntime {
       }
     } else {
       // Nothing that could run now: say why per pool, before a planner call.
-      // Execution-only planning does not claim reference parity and must not
-      // require frontier access merely to start ordinary authorized work.
-      // Certified/FULL/explicit-ceiling paths retain the original R0 gate.
-      let boundedAvailable = false;
-      if (this.boundedAutoPlanning && this.adaptivePolicy.mode === 'off' &&
-          this.verifierRegistry.size === 0 && boundedAutoEligible(admitted, catalog)) {
-        const scope = hostScope(admitted, catalog);
-        try { executionPolicyChoice({kind: 'agent', scope,
-          owned_paths: scope === 'workspace_write' ? ['**'] : []}, admitted, catalog, boundAt);
-          boundedAvailable = true; } catch { /* Keep exact current availability failure. */ }
-      }
-      const blocked = boundedAvailable ? null : noDispatchableReason(task, catalog, boundAt);
+      // Bounded Auto has no shortcut here: with no runnable reference no row
+      // below it can bind (R9), so the task holds whatever the planner might
+      // propose.
+      const blocked = noDispatchableReason(task, catalog, boundAt);
       if (blocked) { this._hold(taskID, blocked); return; }
     }
     if (!this.hostAutoPlan && typeof this.plan !== 'function') {
@@ -4162,6 +4787,14 @@ class RCCRuntime {
       return;
     }
     let plan, decisions, routes, lockedID = null, liveAdopted = false;
+    // K5: the owner's explicit partition is decoupled from the bounded
+    // planner flag, adaptive mode and verifier registry: it is the owner's
+    // topology whenever the host builds the plan.
+    const ownerPartitionEnabled = this.hostAutoPlan;
+    const ownerPartition = ownerPartitionEnabled ? ownerExplicitParallelFor(admitted, catalog) : null;
+    // A partition cannot coexist with a task contract: hold, typed, before any
+    // planner call or plan write; never merge the owner's units into one node.
+    if (ownerPartition && catalog.task_contract != null) { this._hold(taskID, 'owner_partition_contract_conflict'); return; }
     try {
       if (!await this._observeAdaptivePlan(taskID, admitted, catalog)) return;
       // R7: the host builds the plan itself (hostPlan); no model plans or
@@ -4169,14 +4802,15 @@ class RCCRuntime {
       // state, never a model-authored replacement for that state, and the
       // host then binds exact rows by the same admission law.
       let accepted = null;
-      if (this.hostAutoPlan && (this.adaptivePolicy.mode === 'covered_live' || this.boundedAutoPlanning)) {
+      if (!ownerPartition && this.hostAutoPlan && (this.adaptivePolicy.mode === 'covered_live' || this.boundedAutoPlanning)) {
         const observed = this._load(taskID)?.adaptive_routing;
         if (['live_host_checked_proposal', 'bounded_host_checked_proposal'].includes(observed?.reason) && observed.host_bound_compilation) {
           try {
             accepted = observed.reason === 'bounded_host_checked_proposal' ?
-              admitBoundedAutoPlan(observed.host_bound_compilation, admitted, catalog, Date.now()) :
+              admitBoundedAutoPlan(observed.host_bound_compilation, admitted, catalog, Date.now(), this.verifierRegistry,
+                this.descentPolicy) :
               admitLivePlannerPlan(observed.host_bound_compilation, admitted, catalog,
-                this.livePlanCapability, Date.now(), this.verifierRegistry);
+                this.livePlanCapability, Date.now(), this.verifierRegistry, this.descentPolicy);
           } catch {
             // A task/catalog/contract change after the model reply restores
             // the host plan. Never repair a stale proposal by recomputing its
@@ -4189,17 +4823,19 @@ class RCCRuntime {
         }
       }
       if (!this.hostAutoPlan && !this._allowModelGeneration(taskID)) return;
-      const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog) :
+      const proposed = accepted?.plan ?? (this.hostAutoPlan ? hostPlan(admitted, catalog,
+        {ownerExplicitParallel: ownerPartitionEnabled}) :
         await this.plan({task: immutable(admitted), catalog: immutable(catalog)}));
       // Writer serialization is a safety order, not authority to manufacture
       // the planner's final-output dependency coverage.
       assertFinalOutputOwnership(proposed, admitted);
       const resolved = accepted ?? resolveRoutePlan(proposed, admitted, catalog, boundAt,
-        {verifierRegistry: this.verifierRegistry});
+        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy});
       // One indivisible task runs the owner's own words, never a planner
       // paraphrase (lockIndivisibleInstruction); the decision says so.
       const locked = lockIndivisibleInstruction(resolved.plan, admitted);
       plan = validatePlan(locked.plan, admitted, catalog);
+      if (ownerPartition) assertOwnerExplicitParallelPlan(plan, admitted, catalog);
       decisions = resolved.decisions; routes = resolved.routes;
       liveAdopted = accepted !== null;
       lockedID = locked.changed ? plan.nodes[0].id : null;
@@ -4231,6 +4867,13 @@ class RCCRuntime {
           'host_exact_request_shadow' : 'host_exact_request'
         : 'external_plan_callback';
       if (snapshot.owner_collection) snapshot.plan_provenance = 'host_owner_collection_v1';
+      if (ownerPartition) {
+        const contract = assertOwnerExplicitParallelPlan(plan, admitted, catalog);
+        snapshot.owner_explicit_parallel = {schema: 1, contract: immutable(contract),
+          structural_owner_unit_coverage_verified: true, semantic_coverage_verified: false,
+          quality_certificate: false, local_proposal_admitted: liveAdopted};
+        snapshot.plan_provenance = 'host_owner_explicit_parallel_v1';
+      }
       if (calibrated) {
         snapshot.calibrated_route = {...calibrated.record, floor_provenance: snapshot.plan_provenance};
         snapshot.plan_provenance = 'host_calibrated_original_v1';
@@ -4269,7 +4912,11 @@ class RCCRuntime {
         dependencies: node.dependencies, started_at_ms: null, finished_at_ms: null}));
     });
     if (typeof this.execute !== 'function') { this._hold(taskID, 'executor_unavailable'); return; }
-    try { await this._scheduleDAG(taskID); } finally { this.spreadProbes.delete(taskID); }
+    // K8: the catalog this plan was just bound with may admit its first
+    // dispatch, bound to this exact in-process snapshot. A refresh, spread,
+    // re-resolution, restart or later loop changes the binding or drops it.
+    const bindReuse = {binding: this._readyWaveBinding(state)};
+    try { await this._scheduleDAG(taskID, bindReuse); } finally { this.spreadProbes.delete(taskID); }
   }
 
   _completeLocalExact(taskID, kind, output) {
@@ -4358,11 +5005,13 @@ class RCCRuntime {
     const avoidIDs = [...new Set([...(child.avoided_candidate_ids ?? []), node.candidate_id])];
     // An escalated tier route stays at the reference wherever it moves; any
     // other node is admitted again by the same law (R0) against the fresh rows.
+    // A child an older build bound as 'execution_only' (no check) moves to
+    // the reference: its earlier row had no admitting source to keep.
     const escalated = child.ladder?.source === 'tier' && child.ladder.escalated === true;
-    const choice = child.route_kind === 'execution_only' ?
-      executionPolicyChoice(node, executionTask(snapshot), fresh, Date.now(), {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs}) :
-      selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
-        {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs, referenceOnly: escalated, verifierRegistry: this.verifierRegistry});
+    const choice = selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
+      {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs,
+        referenceOnly: escalated || child.route_kind === 'execution_only', verifierRegistry: this.verifierRegistry,
+        descentPolicy: this.descentPolicy});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, fresh, [nodeID]));
@@ -4429,10 +5078,10 @@ class RCCRuntime {
     }
     const pick = (catalog, now) => {
       try {
-        const options = {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry};
-        const choice = child.route_kind === 'execution_only' ?
-          executionPolicyChoice(node, executionTask(snapshot), catalog, now, options) :
-          selectRouteCandidate(node, executionTask(snapshot), catalog, now, options);
+        // An older build's unchecked 'execution_only' child moves only to a reference.
+        const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
+          {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry,
+            descentPolicy: this.descentPolicy, referenceOnly: child.route_kind === 'execution_only'});
         return choice.candidate.quota_pool !== planned.quota_pool &&
           this._leasePossible(choice.candidate, executionTask(snapshot), node.id, false) ? choice : null;
       } catch { return null; }
@@ -4514,9 +5163,27 @@ class RCCRuntime {
       bound_rows: snapshot.bound_rows ?? {}, catalog: snapshot.catalog,
       catalog_bound_at_ms: snapshot.catalog_bound_at_ms})));
   }
+  /** K8: the first dispatch of a freshly admitted single-node host plan,
+   * before any model call after bind, any attempt, repair, re-resolution or
+   * spread. Only the host builds the plan (hostAutoPlan): an injected plan
+   * callback may take any time between bind and dispatch. The native adapter
+   * still re-probes the selected provider's inventory and quota fresh. */
+  _bindCatalogReusable(snapshot, node) {
+    if (!snapshot || snapshot.cancel_requested || TERMINAL.has(snapshot.state) || this.stopping || this.closed ||
+        !this.hostAutoPlan || snapshot.adaptive_routing?.planner_invoked === true || node.kind !== 'agent' ||
+        snapshot.plan?.nodes.length !== 1 ||
+        // Owner authority only the pre-dispatch refresh re-observes, and a
+        // calibrated row's requalification, stay refreshed.
+        snapshot.owner_collection || snapshot.catalog?.task_contract != null ||
+        snapshot.calibrated_route?.state === 'pending_dispatch') return false;
+    const child = snapshot.children.find(c => c.id === node.id);
+    return child?.state === 'queued' && child.attempts === 0 && (child.attempt_history ?? []).length === 0 &&
+      !child.repair_needed && child.continuation == null && child.stage == null &&
+      !(child.re_resolutions > 0) && !(child.spreads > 0) && child.spread !== true;
+  }
   _readyWaveEligible(snapshot, node, candidate) {
     if (!snapshot || snapshot.cancel_requested || TERMINAL.has(snapshot.state) || this.stopping || this.closed ||
-        !candidate || !this._readPoolEligible(candidate, executionTask(snapshot)) ||
+        !candidate || !this._readPoolEligible(candidate, executionTask(snapshot), snapshot) ||
         snapshot.plan?.nodes.length < 2 || node.kind !== 'agent' ||
         !snapshot.plan.nodes.every(n => n.scope === 'read_only' && n.owned_paths.length === 0 &&
           n.dependencies.length === 0)) return false;
@@ -4535,14 +5202,16 @@ class RCCRuntime {
   }
   /** Sharing is bounded to new, independent read-only Codex children of
    * ONE parent. The durable pool lease still fences every other task and all
-   * writes. A resumed native thread is never used by simultaneous turns. */
-  _readPoolEligible(candidate, task) {
+   * writes. A resumed native thread is never used by simultaneous turns.
+   * `state` is the plan the decision is about (K5: a caller may pass the
+   * prospective or current snapshot); by default the persisted one. */
+  _readPoolEligible(candidate, task, state = undefined) {
     if (!(this.maximumReadWorkersPerPool > 1 && task.budget.max_parallel > 1 &&
         candidate.surface === 'codex' && candidate.transport === 'codex_app_server' &&
         candidate.scope === 'read_only' && candidate.permission_profile === 'read_only' &&
         candidate.quota_pool === 'openai_codex' &&
         (task.native_sessions == null || Object.keys(task.native_sessions).length === 0))) return false;
-    const state = this._load(task.task_id);
+    if (state === undefined) state = this._load(task.task_id);
     // _ticket creates fresh side sessions for a real multi-node plan even
     // when the conversation itself already owns a thread. Do not confuse
     // that history with concurrent turns on one resumed native thread.
@@ -4898,8 +5567,9 @@ class RCCRuntime {
     }
   }
 
-  async _scheduleDAG(taskID) {
+  async _scheduleDAG(taskID, bindReuse = null) {
     const active = new Map();
+    let bindTime = bindReuse;
     // Waiting for a busy pool/workspace backs off instead of probing natively.
     let idleDelay = 50;
     const refreshFailures = new Map();
@@ -4938,16 +5608,19 @@ class RCCRuntime {
           // Failure remains failure, but a supported earlier or concurrently
           // completed result must not disappear behind the terminal error.
           // Aggregation failure does not replace that original failure reason.
+          // K12: only a v2 task's partial is shown on the wire (typed); a
+          // v1 failed task stays a typed failure there, its partial durable.
           let partial = null;
           try { partial = await this._partialResult(taskID,
-            snapshot.children.filter(c => c.state === 'completed' && c.output !== null)); }
+            snapshot.children.filter(c => c.state === 'completed' && c.output !== null), snapshot); }
           catch { /* Child records remain intact if no bounded receipt can be assembled. */ }
           this._update(taskID, 'task_failed', state => {
             if (TERMINAL.has(state.state)) return;
             state.state = 'failed';
             state.error = snapshot.children.find(c => c.state === 'failed' && typeof c.failure_reason === 'string')
               ?.failure_reason ?? 'child_failed';
-            if (partial) state.result = partial;
+            const bound = boundPartialResult(state, partial);
+            if (bound) state.result = bound;
           });
         }
         else {
@@ -4955,12 +5628,18 @@ class RCCRuntime {
           // reference) names the hold; any other held child is unverified.
           const reason = snapshot.children.find(c => c.state === 'held' && typeof c.hold_reason === 'string')
             ?.hold_reason ?? 'child_task_quality_unverified';
-          const returned = snapshot.children.filter(c => c.output !== null);
+          // A certified descent's output that its check has not accepted is
+          // never delivered, not even inside a partial result.
+          const returned = snapshot.children.filter(c => c.output !== null &&
+            (c.state === 'completed' || !pendingEscalation(c)));
           // A protocol/control unknown is an actual HOLD, not a delivered
-          // unverified answer and never a reason to replay a model. Every raw
-          // child output/receipt remains in the same durable task/inspector.
-          if (reason === 'owner_collection_control_unverified') { this._hold(taskID, reason); return; }
-          try { this._hold(taskID, reason, await this._partialResult(taskID, returned)); }
+          // unverified answer and never a reason to replay a model, whichever
+          // child holds first (an earlier sibling's hold must not unmask it).
+          // Every raw child output/receipt remains in the same durable task/inspector.
+          if (snapshot.children.some(c => c.state === 'held' && c.hold_reason === 'owner_collection_control_unverified')) {
+            this._hold(taskID, reason); return;
+          }
+          try { this._hold(taskID, reason, await this._partialResult(taskID, returned, snapshot)); }
           catch (error) { this._hold(taskID, error.code ?? 'aggregate_receipt_unavailable'); }
         }
         return;
@@ -4974,6 +5653,8 @@ class RCCRuntime {
       // Only siblings already ready together can share the first successful
       // pre-dispatch refresh. A later loop/wave always starts without it.
       let readyWave = null;
+      // Only the first ready loop may consume the bind-time observation.
+      let bindWave = bindTime; bindTime = null;
       const readyIDs = new Set(ready.map(node => node.id));
       const admissionCurrent = state => state && !state.cancel_requested && !TERMINAL.has(state.state) &&
         !state.children.some(c => ['failed', 'effects_uncertain'].includes(c.state)) &&
@@ -5020,7 +5701,12 @@ class RCCRuntime {
             this._readyWaveEligible(current, node, planned) &&
             readyWave.binding === this._readyWaveBinding(current) &&
             dispatchable(planned, executionTask(current), Date.now());
-          fresh = reusable ? current.catalog :
+          const bound = !reusable && bindWave !== null && planned !== undefined &&
+            bindWave.binding === this._readyWaveBinding(current) &&
+            this._bindCatalogReusable(current, node) &&
+            dispatchable(planned, executionTask(current), Date.now());
+          bindWave = null; // one first dispatch, never a sibling or a retry
+          fresh = reusable || bound ? current.catalog :
             await this._refreshCatalog(taskID, resolverNode ? [] : [node.candidate_id]);
           current = this._load(taskID);
           if (!admissionCurrent(current)) { reResolved = true; break; }
@@ -5080,6 +5766,7 @@ class RCCRuntime {
               if (dispatched) child.uncertain_error = reason;
               else child.hold_reason = reason;
               if (siblingRunning(state, node.id)) return;
+              if (!dispatched && heldThroughScheduler(state, child)) return;
               state.state = dispatched ? 'effects_uncertain' : 'held';
               state.error = reason;
             });
@@ -5102,6 +5789,19 @@ class RCCRuntime {
   }
 
   _ticket(snapshot, node, candidate, attemptID) {
+    if (snapshot.owner_explicit_parallel) {
+      const contract = assertOwnerExplicitParallelPlan(snapshot.plan, executionTask(snapshot), snapshot.catalog);
+      assert(stable(contract) === stable(snapshot.owner_explicit_parallel.contract),
+        'owner_explicit_parallel_source_changed');
+      // Validate the object actually becoming a native payload, not merely
+      // the intended plan in its snapshot. Candidate-only route rebinding
+      // remains legal; source-owned unit fields may never drift with it.
+      const canonical = snapshot.plan.nodes.find(unit => unit.id === node?.id);
+      const fields = ['id', 'instruction', 'kind', 'scope', 'dependencies', 'owned_paths', 'context_refs'];
+      assert(canonical && fields.every(key => stable(node[key]) === stable(canonical[key])) &&
+        candidate.scope === canonical.scope && candidate.permission_profile === 'read_only',
+        'owner_explicit_parallel_ticket_node_mismatch');
+    }
     const policySource = executionTask(snapshot).host_context.owner_policy;
     const sourceSHA = policySource?.sourceSHA256 ?? policySource?.source_sha256 ?? executionTask(snapshot).policy?.source_sha256;
     assert(HASH.test(sourceSHA ?? ''), 'policy_source_unavailable');
@@ -5659,6 +6359,27 @@ class RCCRuntime {
         cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model} : null;
     const observedTask = executionTask(snapshot);
     const qualityContract = snapshot.catalog?.task_contract?.contract_sha256;
+    // K9: the delivery basis and the check it names, from the child's own
+    // route kind (an explicit route test's exact descent is certified:exact),
+    // and the stratum an offline calibration keys on (§4.3; sizes, never text).
+    const deliveryBasis = deliveryBasisOf({explicitRoute, routeClass, routeKind: child.route_kind,
+      ladder: child.ladder, reason: child.routing_decision?.reason});
+    const nodeIndex = snapshot.plan?.nodes.findIndex(n => n.id === child.id) ?? -1;
+    const planNode = nodeIndex >= 0 ? snapshot.plan.nodes[nodeIndex] : null;
+    const obligation = nodeIndex >= 0 ? snapshot.owner_collection?.obligations?.[nodeIndex] : undefined;
+    const checkID = checkIdOf(deliveryBasis, {formatCheck: child.ladder?.format_check ?? null,
+      contractSHA256: (obligation ? obligation.contract_sha256 : qualityContract) ?? null});
+    let stratum = null;
+    if (routeClass !== null) {
+      const text = value => typeof value === 'string' ? value : '';
+      try {
+        stratum = {request_class: ID.test(text(snapshot.catalog?.request_class)) ? snapshot.catalog.request_class : null,
+          turn: withoutConversation(observedTask) ? 'first' : 'not_first',
+          has_materials: (planNode?.context_refs ?? []).length > 0,
+          context_bytes: Buffer.byteLength(text(planNode?.instruction ?? child.instruction)) +
+            Buffer.byteLength(text(observedTask.context)) + Buffer.byteLength(text(observedTask.host_context?.context))};
+      } catch { stratum = null; } // A routing fact for calibration only: it never fails a dispatch.
+    }
     const outcomeContext = this.adaptivePolicy.mode === 'off' && !this.boundedAutoPlanning ? null : {
       identity: {task_id: observedTask.task_id, node_id: child.id,
         candidate_id: candidate.id, request_sha256: observedTask.request_sha256,
@@ -5675,6 +6396,11 @@ class RCCRuntime {
       escalated: routeClass !== null && child.ladder?.escalated === true,
       quota_remaining_fraction: candidate.quota_remaining_fraction, dispatched_at_ms: child.dispatched_at_ms ?? null,
       verifier: Boolean(this._nodeVerifier(snapshot, child.id, candidate)),
+      delivery_basis: deliveryBasis, check_id: checkID, stratum,
+      // K10: the frozen cost policy that chose this descent (and so its one
+      // escalation), when one did; absent otherwise.
+      ...(routeClass !== null && HASH.test(child.ladder?.descent_policy_sha256 ?? '') ?
+        {descent_policy_sha256: child.ladder.descent_policy_sha256} : {}),
       ...(outcomeContext === null ? {} : {outcome_context: outcomeContext})};
   }
   /** Inside a dispatch update: fix the attempt's route facts and mark the
@@ -5700,9 +6426,19 @@ class RCCRuntime {
    * attempt. `dispatchedFailure` 'no_effects': the executor reported that the
    * attempt failed after dispatch with no side effects (the node is still
    * never replayed); null on every other attempt. `host_route_kind` and
-   * `dispatched_failure` are optional: older records lack them. */
+   * `dispatched_failure` are optional: older records lack them.
+   * K9: a route fixed by this build adds `delivery_basis`, `check_id` (a
+   * certified basis only), `check_outcome` (a certified basis only: the
+   * admitting source's verdict on THIS attempt, `checkOutcome`, else
+   * 'not_run'), `check_label` (§4.3, top level: only an exact, contract or
+   * sound_full verifier verdict, never a class format check, a reference or
+   * owner words; it means "accepted within that check's coverage", not
+   * reference-equal quality) and `stratum`. A route pended by an older build
+   * has none of them, and `verifier_outcome` keeps its meaning. K10 adds
+   * `descent_policy_sha256` only when a frozen cost policy chose the descent
+   * (its escalation included). */
   _ledgerRecord({taskID, nodeID, attemptID, route}, outcome, verifierOutcome, attemptState, escalationOutcome = null,
-                dispatchedFailure = null) {
+                dispatchedFailure = null, checkOutcome = null) {
     const record = {schema: 1, task_id: taskID, node_id: nodeID, attempt_id: attemptID,
       family: routeFamily(route.route_class, route.scope, route.surface), route_class: route.route_class,
       scope: route.scope, surface_kind: surfaceKind(route.surface), surface: route.surface,
@@ -5717,12 +6453,33 @@ class RCCRuntime {
         escalationOutcome : null,
       dispatched_failure: dispatchedFailure === 'no_effects' ? 'no_effects' : null,
       dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now(),
+      ...(typeof route.delivery_basis === 'string' ? this._ledgerCheck(route, checkOutcome) : {}),
+      ...(HASH.test(route.descent_policy_sha256 ?? '') ? {descent_policy_sha256: route.descent_policy_sha256} : {}),
       ...(outcome.routing_outcome_summary ? {routing_outcome: outcome.routing_outcome_summary} : {})};
     // Full capture is in the existing attempt row; optional metadata must not
     // turn a bounded legacy ledger/failure entry into a lost oversize record.
     if (record.routing_outcome && Buffer.byteLength(stable(record)) + 1 > MAX_LEDGER_RECORD_BYTES)
       delete record.routing_outcome;
     return record;
+  }
+  /** K9: the delivery-basis fields of a record whose route this build fixed
+   * (re-validated: a stored route is data). */
+  _ledgerCheck(route, checkOutcome) {
+    const basis = LEDGER_BASIS.test(route.delivery_basis) ? route.delivery_basis : 'unclassified';
+    const certified = basis.startsWith('certified:');
+    const check_id = certified && typeof route.check_id === 'string' && LEDGER_CHECK_ID.test(route.check_id) ?
+      route.check_id : null;
+    const check_outcome = !certified ? null : LEDGER_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run';
+    const source = certified ? basis.slice('certified:'.length).split(':')[0] : null;
+    const check_label = check_id !== null && SOUND_FULL_CHECK_SOURCES.has(source) &&
+      ['pass', 'fail', 'not_returned'].includes(check_outcome) ?
+      {score_space: 'check_acceptance_v1', check_id, soundness: 'sound_full', outcome: check_outcome} : null;
+    const s = route.stratum;
+    const stratum = plain(s) && (s.request_class === null || (typeof s.request_class === 'string' && ID.test(s.request_class))) &&
+      ['first', 'not_first'].includes(s.turn) && typeof s.has_materials === 'boolean' &&
+      int(s.context_bytes, 0, Number.MAX_SAFE_INTEGER) ?
+      {request_class: s.request_class, turn: s.turn, has_materials: s.has_materials, context_bytes: s.context_bytes} : null;
+    return {delivery_basis: basis, check_id, check_outcome, check_label, stratum};
   }
   _outcomeSummary(capture) {
     if (!capture) return null;
@@ -5780,7 +6537,8 @@ class RCCRuntime {
       record = this._ledgerRecord(pending, {usage: result?.usage ?? null,
         execution_verified: result?.execution_verified, task_quality: result?.task_quality ?? null,
         routing_outcome_summary: this._outcomeSummary(outcomeCapture)},
-      verifierOutcome, settled, entry?.escalation_outcome ?? null, entry?.dispatched_failure ?? null);
+      verifierOutcome, settled, entry?.escalation_outcome ?? null, entry?.dispatched_failure ?? null,
+      entry?.check_outcome ?? null);
       write = () => this.ledger.append(record);
       write();
     } catch (error) {
@@ -5806,43 +6564,75 @@ class RCCRuntime {
       this._clearLedgerPending(attemptID);
     }
   }
-  /** The registered verifier for a resolved read-only node's family, if any. */
+  /** The node verifier a resolved read-only node's attempt runs, as {verify,
+   * id, family, role}, or null. A descent the verifier source admitted gets
+   * ONLY the certifying entry its ladder names (certificate_id): it must
+   * still be registered 'sound_full', cover this surface kind and apply to
+   * the node, else null and the descent is discarded (I2); after its
+   * escalation the same entry judges the reference as a failure signal.
+   * Every other node gets the first failure signal for it: a legacy entry
+   * of its route family, or an applying 'partial' entry. */
   _nodeVerifier(snapshot, nodeID, candidate) {
     const child = this._resolverNode(snapshot, nodeID);
     if (!child || candidate.scope !== 'read_only' || this.verifierRegistry.size === 0) return null;
     const family = routeFamily(child.routing_decision.route_class, candidate.scope, candidate.surface);
-    const verify = this.verifierRegistry.get(family);
-    return typeof verify === 'function' ? {verify, family} : null;
+    const kind = surfaceKind(candidate.surface);
+    if (child.ladder?.source === 'tier' && child.ladder.admitted_by === 'verifier') {
+      const entry = registeredVerifier(this.verifierRegistry, child.ladder.certificate_id);
+      const planNode = snapshot.plan?.nodes.find(n => n.id === nodeID);
+      return entry?.soundness === 'sound_full' && entry.surfaces.includes(kind) && planNode &&
+        verifierApplies(entry, planNode, executionTask(snapshot), snapshot.catalog) ?
+        {verify: entry.verify, id: entry.id, family, role: child.ladder.escalated === true ? 'signal' : 'certifier'} : null;
+    }
+    for (const entry of this.verifierRegistry.values()) {
+      if (entry.soundness !== 'partial') continue;
+      const planNode = entry.family === null ? snapshot.plan?.nodes.find(n => n.id === nodeID) : null;
+      if (entry.family === family || (entry.family === null && entry.scope === candidate.scope &&
+          entry.surfaces.includes(kind) && planNode && verifierApplies(entry, planNode, executionTask(snapshot), snapshot.catalog)))
+        return {verify: entry.verify, id: entry.id, family, role: 'signal'};
+    }
+    return null;
   }
-  /** Run the family verifier on a returned read-only node. Pass adopts it;
-   * a certified descent that fails goes to _ladderFailed (R9). A rejected
-   * reference or explicit route is delivered with its disclosure (R6), never
-   * replayed; only an undisclosable record (an unterminated turn, reported
-   * effects) is held. Returns the ledger outcome. */
-  async _verifyNode(taskID, node, candidate, result, {verify, family}) {
+  /** Run a node verifier on a returned read-only node. A certifier adopts a
+   * descent only through certifiedAnswer with its pass on THIS attempt (I2);
+   * a signal's pass adopts the node. A certified descent that is not
+   * accepted goes to _ladderFailed (R9). A rejected reference or explicit
+   * route is delivered with its disclosure (R6), never replayed; only an
+   * undisclosable record (an unterminated turn, reported effects) is held.
+   * The attempt records the verifier's id beside its outcome. Returns the
+   * ledger outcome. */
+  async _verifyNode(taskID, node, candidate, result, {verify, id, family, role}) {
     if (!this._allowModelGeneration(taskID)) return 'not_registered';
 
     let passed = false, timer;
+    // A certifier judges the answer to the instruction only: it gets the
+    // input shape its registration probes had (no receipt, no selected
+    // configuration), so no verdict keyed on the row can certify a descent.
+    const certifier = role === 'certifier';
     try {
       const verdict = await Promise.race([verify(immutable({schema: 1, task_id: taskID, node_id: node.id,
-        family, instruction: node.instruction, output: result.output, native_receipt: result.native_receipt ?? null,
-        selected_config: exactConfig(candidate)})), new Promise(resolve => {
+        family, verifier_id: id, instruction: node.instruction, output: result.output,
+        native_receipt: certifier ? null : result.native_receipt ?? null,
+        selected_config: certifier ? null : exactConfig(candidate)})), new Promise(resolve => {
         timer = setTimeout(() => resolve(null), NODE_VERIFIER_TIMEOUT_MS); timer.unref?.();
       })]);
       passed = plain(verdict) && verdict.passed === true;
     } catch { passed = false; }
     finally { clearTimeout(timer); }
-    const outcome = passed ? 'pass' : 'fail';
-    if (this.closed) return outcome;
+    if (this.closed) return passed ? 'pass' : 'fail';
     const state = this._load(taskID);
     const child = state?.children.find(c => c.id === node.id);
     if (!state || TERMINAL.has(state.state) || child?.state !== 'waiting' || child.attempt_id !== result.attempt_id)
-      return outcome;
-    if (!passed && pendingEscalation(child)) {
+      return passed ? 'pass' : 'fail';
+    // A certifier's pass accepts only THIS attempt's answer (I2).
+    const accepted = role === 'certifier' ?
+      certifiedAnswer(child.ladder, result, {passed, attempt_id: result.attempt_id, verifier_id: id}) : passed;
+    const outcome = accepted ? 'pass' : 'fail';
+    if (!accepted && pendingEscalation(child)) {
       await this._ladderFailed(taskID, node, candidate, result, outcome);
       return outcome;
     }
-    if (!passed && disclosable(result, candidate.scope)) {
+    if (!accepted && disclosable(result, candidate.scope)) {
       const disclosure = qualityDisclosure(result, false);
       disclosure.failed_check_ids = ['node_verifier', ...disclosure.failed_check_ids].slice(0, MAX_DISCLOSED_CHECKS);
       this._update(taskID, 'node_verifier_failed_disclosed', snapshot => {
@@ -5851,22 +6641,39 @@ class RCCRuntime {
         Object.assign(target, {state: 'completed', node_verifier: outcome, quality_disclosure: disclosure,
           parity_state: 'unverified'});
         const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
-        if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; }
+        if (attempt) { attempt.state = 'completed'; attempt.verifier = outcome; attempt.verifier_id = id; }
       });
       return outcome;
     }
-    this._update(taskID, passed ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
+    this._update(taskID, accepted ? 'node_verifier_passed' : 'node_verifier_failed', snapshot => {
       const target = snapshot.children.find(c => c.id === node.id);
       if (target?.state !== 'waiting' || target.attempt_id !== result.attempt_id) return;
-      target.state = passed ? 'completed' : 'held'; target.node_verifier = outcome;
-      if (!passed) {
+      target.state = accepted ? 'completed' : 'held'; target.node_verifier = outcome;
+      if (!accepted) {
         target.hold_reason = 'node_verifier_failed';
         target.task_quality = 'failed'; target.parity_state = 'unverified';
       }
       const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
-      if (attempt) { attempt.state = target.state; attempt.verifier = outcome; }
+      if (attempt) {
+        attempt.state = target.state; attempt.verifier = outcome; attempt.verifier_id = id;
+        // K9: the certifier's own pass on THIS attempt is the descent's check.
+        if (accepted && role === 'certifier') attempt.check_outcome = 'pass';
+      }
     });
     return outcome;
+  }
+  /** A pending descent's attempt its admitting source did not accept: its
+   * output is never kept and the child waits for _ladderFailed. */
+  _discardDescentAttempt(taskID, nodeID, result) {
+    this._update(taskID, 'child_returned', snapshot => {
+      const child = snapshot.children.find(c => c.id === nodeID);
+      Object.assign(child, {output: null, execution_verified: false, task_quality: 'unverified',
+        parity_state: 'unverified', native_receipt: result.native_receipt, native_summary: null,
+        usage: result.usage ?? null, finished_at_ms: Date.now(), state: 'waiting', dispatched_at_ms: null});
+      child.attempt_history.at(-1).state = 'ladder_not_returned';
+      child.attempt_history.at(-1).native_receipt = result.native_receipt;
+      child.attempt_history.at(-1).usage = result.usage ?? null;
+    });
   }
   /** A certified descent failed (R9): its verifier failed ('fail') or its
    * admitting source did not accept the answer ('not_returned'). Its output
@@ -5879,7 +6686,9 @@ class RCCRuntime {
    * cancel request) with a typed reason: the scheduler settles the task after
    * every running sibling reconciles. Either way the cheaper attempt's
    * history entry records its escalation outcome ('escalated', or the hold
-   * reason), which the routing ledger keeps. */
+   * reason) and, unless its admitting source already gave one (a pass a
+   * failure signal then overruled, or certifier_unavailable), its check
+   * outcome (K9): the routing ledger keeps both. */
   async _ladderFailed(taskID, node, candidate, result, outcome) {
     const current = () => {
       const state = this._load(taskID);
@@ -5914,7 +6723,7 @@ class RCCRuntime {
         node_verifier: outcome, hold_reason: reason, finished_at_ms: Date.now()});
       const attempt = target.attempt_history.find(entry => entry.attempt_id === result.attempt_id);
       if (attempt) { attempt.state = outcome === 'fail' ? 'ladder_verifier_failed' : 'ladder_not_returned';
-        attempt.verifier = outcome; attempt.escalation_outcome = reason; }
+        attempt.verifier = outcome; attempt.escalation_outcome = reason; attempt.check_outcome ??= outcome; }
     });
   }
   /** Once, read-only only: the certified descent failed, so the node returns
@@ -5969,7 +6778,7 @@ class RCCRuntime {
       state.bound_rows = {...(state.bound_rows ?? {}), [reference.id]: immutable(reference)};
       const attempt = target.attempt_history.find(entry => entry.attempt_id === attemptID);
       if (attempt) { attempt.state = outcome === 'fail' ? 'ladder_verifier_failed' : 'ladder_not_returned';
-        attempt.verifier = outcome; attempt.escalation_outcome = 'escalated'; }
+        attempt.verifier = outcome; attempt.escalation_outcome = 'escalated'; attempt.check_outcome ??= outcome; }
       // Its [dispatched, now] interval: ladderExemptMs exempts the union.
       const dispatchedAt = attempt?.ledger?.dispatched_at_ms;
       const escalatedAt = Date.now();
@@ -6014,6 +6823,7 @@ class RCCRuntime {
         child.dispatched_at_ms = null; child.finished_at_ms = Date.now();
         // Already-dispatched siblings retain their result/receipt custody.
         if (siblingRunning(snapshot, nodeID)) return;
+        if (heldThroughScheduler(snapshot, child)) return;
         snapshot.state = 'held'; snapshot.error = 'native_dispatch_budget_exhausted';
       });
       return false;
@@ -6217,6 +7027,16 @@ class RCCRuntime {
           });
           return;
         }
+        // I2: a descent's answer is adopted only through its admitting
+        // source's acceptance below. A handback or a source repair is neither
+        // that acceptance nor its continuation: it is discarded like any
+        // unaccepted descent, and the node runs its fixed reference once (or
+        // holds, typed), never continuing or staging the cheaper attempt.
+        if (descent && (result.handback || result.repair_source)) {
+          this._discardDescentAttempt(taskID, node.id, result);
+          await this._ladderFailed(taskID, node, candidate, result, 'not_returned');
+          return;
+        }
         // A handback or a source repair settles this attempt now; record it
         // before the continuation chain or the source stage, not after.
         if (result.handback) {
@@ -6259,10 +7079,23 @@ class RCCRuntime {
             result.operational_quality?.coverage === 'full' &&
             result.operational_quality?.assessment_state === 'task_contract_verified' &&
             result.operational_quality?.contract_sha256 === collectionObligation.contract_sha256;
-          const deliverable = collectionChecked && result.execution_verified &&
+          // A descent the verifier source admitted is never adopted here: it
+          // waits for the certifier its ladder names, whose pass on THIS
+          // attempt alone accepts it (I2). With that certifier gone (no
+          // longer registered, sound or applicable) it is discarded, never
+          // delivered, and the node runs its reference once.
+          const verifierDescent = descent && recorded.ladder?.admitted_by === 'verifier';
+          const certifierPresent = verifier?.role === 'certifier' && verifier.id === recorded.ladder?.certificate_id;
+          const answered = collectionChecked && result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
-            boundedText(result.output, MAX_OUTPUT_BYTES) && (!descent || certifiedAnswer(recorded.ladder, result));
+            boundedText(result.output, MAX_OUTPUT_BYTES);
+          const deliverable = answered && (!descent || (verifierDescent ?
+            descentStructurallySound(result) && certifierPresent : certifiedAnswer(recorded.ladder, result)));
           const discard = !deliverable && descent;
+          // K9: a sound answer whose certifier is gone was never checked (a
+          // configuration fault, not a failure of the route).
+          const certifierUnavailable = discard && verifierDescent && answered && descentStructurallySound(result) &&
+            !certifierPresent;
           this._update(taskID, 'child_returned', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             child.output = discard ? null : result.output;
@@ -6280,8 +7113,16 @@ class RCCRuntime {
               child.state === 'waiting' ? 'node_verifier_pending' : child.state;
             child.attempt_history.at(-1).native_receipt = result.native_receipt;
             child.attempt_history.at(-1).usage = result.usage ?? null;
+            // K9: the admitting source's verdict on THIS attempt, kept for
+            // the ledger (also across a restart). An exact, contract or class
+            // acceptance is final here; a certifier's comes from _verifyNode.
+            if (descent && !verifierDescent && deliverable) child.attempt_history.at(-1).check_outcome = 'pass';
+            if (certifierUnavailable) child.attempt_history.at(-1).check_outcome = 'certifier_unavailable';
           });
-          if (discard) { await this._ladderFailed(taskID, node, candidate, result, 'not_returned'); return; }
+          if (discard) {
+            if (certifierUnavailable) verifierOutcome = 'certifier_unavailable';
+            await this._ladderFailed(taskID, node, candidate, result, 'not_returned'); return;
+          }
           if (!deliverable) return;
           verifierOutcome = result.task_verified && result.operational_quality?.coverage === 'full' &&
             result.operational_quality.assessment_state === 'task_contract_verified' ? 'pass' : 'not_registered';
@@ -6350,15 +7191,7 @@ class RCCRuntime {
         const failedChild = current.children.find(c => c.id === node.id);
         if (result.status === 'failed' && result.dispatch_stage === 'dispatched' && result.side_effects === 'none' &&
             pendingEscalation(failedChild) && candidate.scope === 'read_only') {
-          this._update(taskID, 'child_returned', snapshot => {
-            const child = snapshot.children.find(c => c.id === node.id);
-            Object.assign(child, {output: null, execution_verified: false, task_quality: 'unverified',
-              parity_state: 'unverified', native_receipt: result.native_receipt, native_summary: null,
-              usage: result.usage ?? null, finished_at_ms: Date.now(), state: 'waiting', dispatched_at_ms: null});
-            child.attempt_history.at(-1).state = 'ladder_not_returned';
-            child.attempt_history.at(-1).native_receipt = result.native_receipt;
-            child.attempt_history.at(-1).usage = result.usage ?? null;
-          });
+          this._discardDescentAttempt(taskID, node.id, result);
           await this._ladderFailed(taskID, node, candidate, result, 'not_returned');
           return;
         }
@@ -6420,11 +7253,24 @@ class RCCRuntime {
     // collection emit every labelled result; other DAGs have one final owner.
     let candidateOutput;
     try {
-      candidateOutput = snapshot.owner_collection ? ownerCollectionOutput(snapshot.plan, snapshot.children) :
+      const ownerParallel = snapshot.owner_explicit_parallel;
+      if (ownerParallel) {
+        const current = assertOwnerExplicitParallelPlan(snapshot.plan, admittedTask(snapshot), snapshot.catalog);
+        assert(stable(current) === stable(ownerParallel.contract), 'owner_explicit_parallel_source_changed');
+      }
+      candidateOutput = ownerParallel ? ownerParallel.contract.units.map(unit => {
+        const child = byID.get(unit.id);
+        assert(child?.state === 'completed' && typeof child.output === 'string', 'owner_explicit_parallel_output_missing');
+        return `${unit.label}: ${child.output}`;
+      }).join('\n\n') : snapshot.owner_collection ? ownerCollectionOutput(snapshot.plan, snapshot.children) :
         snapshot.plan.final_node_id ? byID.get(snapshot.plan.final_node_id)?.output :
         ordered.length === 1 ? ordered[0].output :
           ordered.map(c => `${c.id}: ${c.output}`).join('\n\n');
-    } catch { this._hold(taskID, 'owner_collection_output_invalid'); return; }
+    } catch (error) {
+      // A refreshed catalog that gained a task contract keeps its typed reason (K5).
+      this._hold(taskID, error?.code === 'owner_partition_contract_conflict' ? error.code : 'owner_collection_output_invalid');
+      return;
+    }
     const output = candidateOutput ?? '';
     if (!boundedText(output, MAX_OUTPUT_BYTES)) {
       this._hold(taskID, 'combined_output_empty_or_oversize'); return;

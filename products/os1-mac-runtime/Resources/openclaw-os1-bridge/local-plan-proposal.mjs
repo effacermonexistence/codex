@@ -38,6 +38,104 @@ function freeze(x) {
   return x;
 }
 
+/**
+ * Extract a CLOSED owner-authored parallel partition, not a model proposal.
+ * The caller must be Core and supply its current effective read-only scope.
+ * Unsupported/ambiguous text returns null and keeps the existing whole-request
+ * route. This grammar neither interprets arbitrary prose nor grants a tool,
+ * scope, candidate, quality result, or permission to execute.
+ */
+export function deriveExplicitParallelOwnerContract(request, options = {}) {
+  try {
+    if (!plain(options) || Object.keys(options).some(k => !['scope', 'maxNodes'].includes(k)) ||
+        Object.values(Object.getOwnPropertyDescriptors(options)).some(d => !own(d, 'value')) ||
+        options.scope !== 'read_only' || !text(request, 12000)) return null;
+    const maximum = own(options, 'maxNodes') ? options.maxNodes : 4;
+    if (!Number.isSafeInteger(maximum) || maximum < 2 || maximum > 4) return null;
+    // A late closed authority condition is no less binding than a prefix one.
+    // Generic `if` in supplied code/data is NOT an authority condition here.
+    if (/\b(?:only\s+after|after\s+(?:obtaining|receiving))\s+(?:an?\s+)?(?:approval|permission|authorization|authorisation|consent)\b|\b(?:if|unless|once|when)\s+(?:explicitly\s+)?(?:approved|authorized|authorised|permitted)\b|(?:승인|허락|허가)\s*(?:받으면|후에만|받은\s*(?:후|뒤)(?:에만)?)/i.test(request.normalize('NFC'))) return null;
+    // An owner directive cannot be recovered by interpreting quoted/data/code
+    // headers as commands. We deliberately abstain on these unsupported forms.
+    if (/```|~~~|^[ \t]*>|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/m.test(request)) return null;
+    // A section-shaped line inside a multiline or unterminated quotation is
+    // data, not a second owner unit. Closed inline quotations remain data in
+    // the exact section. Do not attempt to reinterpret an unsupported span.
+    for (const line of request.split(/\r?\n/)) {
+      let closing = null, escaped = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (closing !== null) { if (ch === closing) closing = null; continue; }
+        if (ch === '"' || ch === '“' || ch === '‘') closing = ch === '“' ? '”' : ch === '‘' ? '’' : ch;
+        else if (ch === "'" && !(i > 0 && /[\p{L}\p{N}]/u.test(line[i - 1]) && /[\p{L}\p{N}]/u.test(line[i + 1] ?? ''))) closing = ch;
+      }
+      if (closing !== null) return null;
+    }
+    const headers = [...request.matchAll(/^([A-Za-z]|[1-9])[ \t]*(?:—|–|:|\)|\.)(?:[ \t]+|(?=\r?$))/gm)];
+    if (headers.length < 2 || headers.length > maximum || headers[0].index === 0 ||
+        new Set(headers.map(h => h[1].toLowerCase())).size !== headers.length) return null;
+    const prefix = request.slice(0, headers[0].index), view = prefix.normalize('NFC');
+    if (/["“”`]|(?:^|\s)'[^'\n]+'|‘[^’\n]+’/.test(view) || /[?？]/.test(view) ||
+        /\b(?:quote|quoted|example|sample|transcript|citation|reported|said|says|wrote|describe|explain|definition|translate|summari[sz]e|proofread)\b|예시|예문|인용|대화\s*기록|전사|번역|요약|설명(?:해|하|해줘)/i.test(view)) return null;
+    // Do not turn an unresolved conditional owner instruction into an
+    // unconditional execution partition. Leave it with the original route.
+    if (/\b(?:if|unless|provided|assuming|approval|permission|authorization|authorisation|consent|approve|approved)\b|\bonly\s+(?:after|once|when)\b|승인|허락|허가|(?:받은|완료된)\s*(?:뒤|후)에만/i.test(view)) return null;
+    const parallel = /\b(?:parallel|concurrent(?:ly)?|simultaneous(?:ly)?)\b|병렬|동시/i;
+    const independent = /\b(?:independent|separate)\s+(?:tasks?|work(?:ers?|items?)?|units?|requests?|subtasks?)\b|\b(?:tasks?|work|units?|requests?)\b[^.!?\n]{0,64}\bindependent(?:ly)?\b|서로\s*독립|독립(?:된|적인|적|으로)?\s*(?:작업|요청|태스크)|각각\s*(?:별도|따로)\s*(?:하위\s*)?(?:작업|요청|태스크)/i;
+    const directive = /\b(?:run|process|handle|execute|perform|do)\b|(?:처리|수행|진행)(?:해|하|합시다)|나눠|분리해/i;
+    const negativeParallel = /\b(?:do\s+not|don't|never|avoid|without|no)\b[^.!?\n]{0,64}\b(?:parallel|concurrent(?:ly)?|simultaneous(?:ly)?)\b|(?:병렬|동시)[^.!?\n]{0,40}(?:하지\s*마|금지|말고|않)|\b(?:sequentially|serially)\b|one\s+at\s+a\s+time|순차(?:로|적으로)?\s*(?:실행|처리|수행)|직렬/i;
+    const negativeIndependent = /\b(?:not|no|never)\s+(?:mutually\s+)?independent\b|독립[^.!?\n]{0,24}(?:아니|않)|서로\s*의존|\bdepend(?:ent|s|ing)?\s+on\b/i;
+    if (!parallel.test(view) || !independent.test(view) || !directive.test(view) ||
+        negativeParallel.test(view) || negativeIndependent.test(view)) return null;
+    // Require an explicit label enumeration agreeing with EVERY section, in
+    // source order. A prefix naming A/B cannot silently authorize extra C/D
+    // headers embedded in supplied data; conflicting enumerations abstain.
+    const separator = '[ \\t]*(?:,|/|&|\\+|\\band\\b|\\bplus\\b|와|과|및|하고|그리고)[ \\t]*';
+    const lists = [...view.matchAll(new RegExp('(?<![A-Za-z0-9_])(?:[A-Za-z]|[1-9])(?:' + separator + '(?:[A-Za-z]|[1-9])){1,7}(?![A-Za-z0-9_])', 'g'))];
+    const labels = headers.map(h => h[1]);
+    if (lists.length === 0 || lists.some(list => {
+      const values = list[0].split(new RegExp(separator, 'g')).filter(Boolean);
+      return values.length !== labels.length || values.some((value, i) => value !== labels[i]);
+    })) return null;
+    // Mixed effectful directives are outside this small read-only grammar.
+    // Recognize closed negative constraints, not a negative phrase followed by
+    // an unresolved exception/additional command. Native scope checks remain
+    // mandatory even when this conservative source extraction succeeds.
+    for (const raw of request.split(/[!?;\n]|\.(?=\s|$)/)) {
+      const clause = raw.normalize('NFC').trim();
+      const effect = /\b(?:create|generate|implement|write|edit|modify|delete|remove|rename|move|copy|overwrite|save|patch|update)\b[^!?;\n]{0,80}(?:\b(?:files?|folders?|directories|directory|repos?|repository|workspace|branch)\b|\b[\w-]+\.[A-Za-z0-9]{1,12}\b)|\b(?:deploy|install|commit|push)\b|(?:파일|폴더|디렉터리|저장소|작업\s*공간|[\w-]+\.[A-Za-z0-9]{1,12})[^!?;\n]{0,40}(?:수정|변경|삭제|작성|생성|저장|고쳐|바꿔|이동|복사)|(?:배포|설치|커밋|푸시)(?:해|하라|하세요|하시오)/i;
+      if (!effect.test(clause)) continue;
+      const negative = /^(?:do\s+not|don't|never|no)\b/i.test(clause) || /하지\s*(?:마|않)|금지/.test(clause);
+      if (!negative || /[,]|\b(?:but|except|instead|then)\b|말고|대신|그리고|한\s*후|한\s*뒤/i.test(clause)) return null;
+    }
+    const span = (start, end) => ({start_utf16: start, end_utf16: end,
+      start_utf8: Buffer.byteLength(request.slice(0, start), 'utf8'),
+      end_utf8: Buffer.byteLength(request.slice(0, end), 'utf8')});
+    const units = headers.map((h, i) => {
+      const end = headers[i + 1]?.index ?? request.length;
+      if (request.slice(h.index + h[0].length, end).trim().length === 0) return null;
+      return {id: `owner_parallel_${i}`, label: h[1],
+        exact_instruction: request.slice(h.index, end), source_span: span(h.index, end)};
+    });
+    if (units.some(unit => unit === null)) return null;
+    // Recognized cross-unit dependence contradicts an independent partition.
+    // This is a closed syntax refusal, not a semantic dependency proof.
+    const label = '(?:' + labels.join('|') + ')';
+    const dependency = new RegExp('(?:[Aa]fter|[Oo]nce|[Ww]hen)\\s+(?:(?:task|unit|step|section)\\s+)?' + label +
+      '\\s+(?:completes?|finishes?|returns?|is\\s+(?:complete|finished|done))\\b|' +
+      '(?:[Uu]se|[Uu]sing|[Cc]onsume|[Bb]ased\\s+on)\\s+(?:the\\s+)?' + label + "(?:'s|’s)?\\s+(?:result|output)\\b|" +
+      '(?:[Uu]se|[Uu]sing|[Cc]onsume)\\s+(?:the\\s+)?(?:result|output)\\s+(?:from|of)\\s+' + label + '(?![A-Za-z0-9_])|' +
+      label + '(?:가|이)?\\s*(?:끝나|끝난|완료|종료|반환)|' + label + '(?:의)?\\s*(?:결과|출력)[^.!?\\n]{0,24}(?:사용|이용|받아|기반)');
+    if (units.some(unit => dependency.test(unit.exact_instruction))) return null;
+    return freeze({schema: 1, kind: 'owner_explicit_parallel_contract', request_sha256: sha(request),
+      scope: 'read_only', global_prefix: {text: prefix, source_span: span(0, headers[0].index)}, units,
+      final_output: {mode: 'ordered_collection', unit_ids: units.map(unit => unit.id)},
+      execution_authorized: false});
+  } catch { return null; }
+}
+
 // A JSON-only parser with depth/duplicate-key checks. JSON.parse alone silently
 // overwrites duplicate keys. Never accept fences, commentary or a JS object
 // with accessors/prototypes as a model reply.
