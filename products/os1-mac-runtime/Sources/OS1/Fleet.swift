@@ -690,9 +690,9 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         }
         let preference = ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto"
         // Fleet remains delivery/check-out custody, not another task router.
-        run = fleetReceiptRun(try await runOpenClawRCCTask(prompt: prompt, workspace: workspace, context: nil,
+        run = try await runOpenClawRCCTask(prompt: prompt, workspace: workspace, context: nil,
             surface: ProviderSurface(rawValue: preference) ?? .auto, codexSessionID: nil,
-            claudeSessionID: nil, requireReadOnly: false, taskID: assignment.jobID))
+            claudeSessionID: nil, requireReadOnly: false, taskID: assignment.jobID)
         guard fleetNativeRunIsDeliverable(run) else {
             throw OS1Error.message("Fleet governed execution has not completed")
         }
@@ -707,7 +707,7 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         revision: assignment.workspaceRevision,
         resultBranch: published.0,
         resultCommit: published.1,
-        run: run
+        run: fleetReceiptRun(run)
     )
     receipt.verification = run.status == "complete" ? "verified" : "unverified"
     let encoder = JSONEncoder()
