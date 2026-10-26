@@ -1253,6 +1253,10 @@ public struct ScopeResolution: Equatable, Sendable {
         // 싶어" (a wish) and "만들고 있어" (in progress) are not requests.
         #"(?:만들|구현하|추가하|작성하|생성하|삭제하|저장하|변경하|편집하)고(?!\s*(?:싶|있))"#,
         #"(?:수정|삭제|변경|편집|추가|구현|작성|생성|저장)\s*(?:하세요|하십시오|해\s*주세요|해\s*주십시오)"#,
+        // Starting a change is the change: "아키텍처 동결하고 구현 시작해"
+        // (2026-10-25, fleet job f0b9ee10) ran read-only on Fable max for
+        // 0.83M tokens and implemented nothing. Not "시작하지 마", "시작해도 돼?".
+        #"(?:구현|수정|변경|편집|추가|작성|개발|리팩터(?:링)?)\s*(?:을|를)?\s*(?:시작|착수|진행|개시)\s*(?:해(?:줘|주세요|라|요)?|하자|하세요|하라)(?=\s|[.!?;,]|$)"#,
         #"(?i)\b(?:delete|create|write|save|rename|remove|edit|modify|update)\s+[\"“][^\"”\n]+\.[A-Za-z0-9]{1,16}[\"”]"#,
         #"(?:수정|삭제|변경|편집|추가)\s*(?:해(?:줘|주세요|라)?|요청(?:합니다|해))"#,
         // Bounded Korean removal imperatives, not questions, quotations or negations.

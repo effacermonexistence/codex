@@ -94,10 +94,12 @@ func runTaskContextFixtures(root: URL) throws {
     }
     // Semantic restrictions are still classified and passed to the backend.
 
-    for request in ["Can I delete result.txt?", "How do I fix the code?", "수정해도 돼?", "고쳐졌는지 확인해", "He said: \"delete result.txt\". Explain the request.", "> delete result.txt\nSummarize this report.", "```sh\nrm result.txt # remove file\n```\n이 명령 설명해"] {
+    for request in ["Can I delete result.txt?", "How do I fix the code?", "수정해도 돼?", "고쳐졌는지 확인해", "He said: \"delete result.txt\". Explain the request.", "> delete result.txt\nSummarize this report.", "```sh\nrm result.txt # remove file\n```\n이 명령 설명해",
+                    "구현 시작하지 마", "구현 시작해도 돼?", "구현 시작했어?", "수정 진행 상황 알려줘", "개발 시작하기 전에 설계만 설명해"] {
         try check(ScopeResolution.resolve(request).scope == .readOnly, "non-authorizing speech act: \(request)")
     }
-    for request in ["파일 삭제 해줘", "문구 수정 요청합니다", "Can you delete result.txt?", "Delete \"result.txt\".", "수정해도 돼? 지금은 result.txt를 삭제해"] {
+    for request in ["파일 삭제 해줘", "문구 수정 요청합니다", "Can you delete result.txt?", "Delete \"result.txt\".", "수정해도 돼? 지금은 result.txt를 삭제해",
+                    "그럼 그 구조로 아키텍처 동결하고 구현 시작해", "구현을 시작해줘", "수정 진행해", "리팩터링 착수하자", "개발 시작하세요"] {
         try check(ScopeResolution.resolve(request).scope == .workspaceWrite, "authorized speech act: \(request)")
     }
     for scope: TaskContext.Scope in [.readOnly, .workspaceWrite] {
