@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "source": "products/os1-mac-runtime/SimulationGarden",
+  "files": [
+    {
+      "path": "THREE-LICENSE.txt",
+      "bytes": 1081,
+      "sha256": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601"
+    },
+    {
+      "path": "assets/index-Ci-Y_xJS.css",
+      "bytes": 7613,
+      "sha256": "63fd33e270077a27d1349fe85bbb118b771852830feb89e7990a4a7dd77d6388"
+    },
+    {
+      "path": "assets/index-hKvnlzM3.js",
+      "bytes": 18599,
+      "sha256": "ba56c73cb5d50cd9db25787f5f3be3ba7349a67b287b7cd165a891c1082dfb8e"
+    },
+    {
+      "path": "classic-reference.png",
+      "bytes": 392989,
+      "sha256": "8a03f347f2d5f6536054249db4eaae09cd1c7c48cc21f0d686b7e2eadf88a71a"
+    },
+    {
+      "path": "index.html",
+      "bytes": 571,
+      "sha256": "198d55814873858d77bde60d15990476b6eec8368d96a659a7aea6e7b5660b9c"
+    },
+    {
+      "path": "reference.json",
+      "bytes": 822,
+      "sha256": "0fe04c8b63050f14e8e7ad434baafa5d8f57b78e17ffcd361f157b8694bb3690"
+    }
+  ]
+}

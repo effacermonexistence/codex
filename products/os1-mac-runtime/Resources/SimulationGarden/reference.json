@@ -1,0 +1,15 @@
+{
+  "format": "classic-source-reference-v1",
+  "game": "StarCraft: Brood War (classic graphics)",
+  "width": 640,
+  "height": 480,
+  "imageSource": "https://satirist.org/pix/starcraft/blog/2019-03-27_scv.png",
+  "pageSource": "https://satirist.org/ai/starcraft/blog/archives/784-produce-workers-closer-to-the-minerals.html",
+  "officialReference": "https://classic.battle.net/scc/terran/basic.shtml",
+  "assetSHA256": "8a03f347f2d5f6536054249db4eaae09cd1c7c48cc21f0d686b7e2eadf88a71a",
+  "defaultAccent": "#EDB3CC",
+  "accentSource": "existing native OS1 Theme.pink (.93,.70,.80)",
+  "rendering": "640x480 source coordinate stage with nearest-neighbor scaling; original HUD and source-pixel sprites; selective faction/selection tint and pixel-chevron trim",
+  "wholeFrameIdentical": false,
+  "nativeEngineChanged": false
+}
