@@ -226,6 +226,16 @@ check("claudeCatalogs(workspace: host.workspace, config: config))?.configured" i
 check("RCCNativeCatalogBuilder.codexInventory(" in catalog_host and "codex.quotaExcludedModels" in catalog_host and
       "input.codexQuotaExhaustedModels = shaped.quotaExhausted" in catalog_host,
       "RCC catalog keeps a quota-exhausted Codex slug marked exhausted, never silently stripped")
+# K11: a table certificate's D4 measurement is read only from host custody, by
+# the hash the signed table names, through the private input gate; the harness
+# scope is the shipped profile's id and version. Nothing else feeds it.
+check("RCCClassMeasurement.custodyPath(home: measurementHome, sha256: certificate.measurementSHA256)" in catalog_host and
+      "let bytes = try? rccPrivateInput(url.path)" in catalog_host and
+      "input.classMeasurements[certificate.measurementSHA256] = bytes" in catalog_host and
+      "input.harnessProfile = RCCClassMeasurement.harnessScope(HarnessProfile.current)" in catalog_host and
+      catalog_host.count("input.classMeasurements[") == 1 and catalog_host.count("input.classTable") == 1 and
+      "input.classTable =" not in catalog_host,
+      "RCC catalog reads class measurements only from custody by their pinned hash (K11)")
 
 # Core-owned intent interpretation: compiler functions are pure native code;
 # OS1 transport submits raw input only, and the same task owns its lifecycle.
@@ -512,6 +522,35 @@ check('"gpt-6-astra": .frontier' in table and '"gpt-6.1-sol": .workhorse' in tab
       "tier table copies provider descriptions; previous-generation and specialized models have no tier")
 check('object["model_tiers"] = output.modelTiers' in BUILDER and "ModelTiers.tier(of: $0.model) == .frontier" in BUILDER,
       "catalog builder emits model_tiers and the frontier reference explanation")
+# K11: the certificate decision sits in admissionFacts (not the serializer),
+# references are computed once in build(), and the wire still emits only the
+# verified facts.classCertificate.
+admission = section(BUILDER, "public static func admissionFacts(", "public static func providersToProbe(")
+MEASUREMENT = (ROOT / "Sources/OS1Context/RCCClassMeasurement.swift").read_text()
+check("RCCClassMeasurement.verified(signed, requestClass: requestClass," in admission and
+      "artifact: input.classMeasurements[signed.measurementSHA256]" in admission and
+      "reference: references[signed.provider]" in admission and
+      "classCertificate: certificate," in admission and
+      "references: [String: RCCClassMeasurement.Reference] = [:]" in admission and
+      "input.classTable.certificate(for: requestClass)" in admission and BUILDER.count("classTable.certificate(for:") == 1,
+      "admissionFacts carries a table certificate only after its measurement artifact verifies (K11)")
+check("admission: admissionFacts(input, references: references))" in BUILDER and
+      'excluded[provider]?["reference_unavailable"] == nil' in BUILDER and
+      "references[provider] = .init(provider: provider, model: frontier.model, effort: ceiling)" in BUILDER,
+      "build computes each pool's current frontier-ceiling reference once and passes it to admissionFacts (K11)")
+emission = section(BUILDER, "if let certificate = facts.classCertificate {", "if let pin = facts.classProviderPin")
+check('object["class_certificates"] = [facts.requestClass.rawValue:' in emission and
+      BUILDER.count('object["class_certificates"]') == 1 and "classCertificateRejection" not in
+      section(BUILDER, "public static func catalogData(", "\n}"),
+      "the catalog emits only the verified certificate; the rejection reason never reaches the wire (K11)")
+check('public static let kind = "os1_rcc_class_measurement_v1"' in MEASUREMENT and
+      "public static let minimumCases: Int64 = 60" in MEASUREMENT and
+      "guard C.isHash(sha256) else { return nil }" in MEASUREMENT and
+      "C.digest(artifact) == certificate.measurementSHA256" in MEASUREMENT and
+      "try? C.checkedObject(data), Set(object.keys) == artifactKeys" in MEASUREMENT and
+      "r.tierDisagreement <= r.referenceAADisagreement" in MEASUREMENT and
+      '"\\(profile.id)@\\(profile.version)"' in MEASUREMENT,
+      "the measurement gate checks hash, strict shape, scope, reference, harness, window and the PASS law (K11)")
 check("export const TIER_ROUTES" in RUNTIME and "'model_tiers'" in RUNTIME and "function tierRouteCandidate(" in RUNTIME and
       "referenceOnly: escalated" in RUNTIME and "pendingEscalation(" in RUNTIME and
       "export function admittedRoute(" in RUNTIME and "function certifiedAnswer(" in RUNTIME,

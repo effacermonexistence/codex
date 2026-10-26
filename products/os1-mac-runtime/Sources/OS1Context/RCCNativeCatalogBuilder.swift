@@ -177,6 +177,14 @@ public enum RCCNativeCatalogBuilder {
         public var taskContract: RCCRuntimeContract.TaskContractFact? = nil
         /// Build 407 (R0(c), R11): the signed class table (empty as shipped).
         public var classTable: RCCClassTable = .frozen
+        /// K11: host-read D4 measurement artifacts, keyed by the
+        /// `measurement_sha256` a table certificate names. Observations only:
+        /// a certificate is emitted only when its artifact verifies
+        /// (`RCCClassMeasurement.verified`).
+        public var classMeasurements: [String: Data] = [:]
+        /// K11: the harness scope this catalog's dispatches run under
+        /// (`RCCClassMeasurement.harnessScope`). Nil loads no certificate.
+        public var harnessProfile: String? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -231,6 +239,9 @@ public enum RCCNativeCatalogBuilder {
         public var taskContract: RCCRuntimeContract.TaskContractFact?
         public var classCertificate: RCCRuntimeContract.ClassCertificate?
         public var classProviderPin: String?
+        /// K11 diagnostics, never on the wire: why this class's table
+        /// certificate was not loaded (nil when loaded or when none exists).
+        public var classCertificateRejection: RCCClassMeasurement.Rejection? = nil
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -407,16 +418,31 @@ public enum RCCNativeCatalogBuilder {
 
     /// The admission facts for `input`, or nil when the host gave no owner
     /// scope. A contract or certificate is carried only as found; the table's
-    /// entries for other classes never reach the catalog.
-    public static func admissionFacts(_ input: Input) -> AdmissionFacts? {
+    /// entries for other classes never reach the catalog. K11: this class's
+    /// table certificate is carried only when its D4 measurement artifact
+    /// verifies against the pool's current reference (`references`, computed
+    /// once in `build`); a caller passing none never gets a certificate.
+    public static func admissionFacts(_ input: Input,
+                                      references: [String: RCCClassMeasurement.Reference] = [:]) -> AdmissionFacts? {
         guard let ownerScope = input.ownerScope else { return nil }
         let requestClass = requestClass(explicitRoute: input.explicitRouteSurfaces != nil,
             catalogReadOnly: catalogReadOnly(input),
             ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible,
             textOperation: ClaudeChatLane.selfContainedTextOperation(input.request), hasMaterial: input.hasMaterialRefs)
+        var certificate: RCCRuntimeContract.ClassCertificate? = nil
+        var rejection: RCCClassMeasurement.Rejection? = nil
+        if let signed = input.classTable.certificate(for: requestClass) {
+            switch RCCClassMeasurement.verified(signed, requestClass: requestClass,
+                artifact: input.classMeasurements[signed.measurementSHA256], now: input.now,
+                executorContractSHA256: input.executorContractSHA256, harnessProfile: input.harnessProfile,
+                reference: references[signed.provider]) {
+            case .success(let verified): certificate = verified
+            case .failure(let reason): rejection = reason
+            }
+        }
         return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,
-                         taskContract: input.taskContract, classCertificate: input.classTable.certificate(for: requestClass),
-                         classProviderPin: input.classTable.providerPin(for: requestClass))
+                         taskContract: input.taskContract, classCertificate: certificate,
+                         classProviderPin: input.classTable.providerPin(for: requestClass), classCertificateRejection: rejection)
     }
 
     /// Providers worth a native probe under the current preference, capacity,
@@ -668,6 +694,20 @@ public enum RCCNativeCatalogBuilder {
             return a.id < b.id
         }
 
+        // K11: each pool's current reference, the one a class measurement
+        // must have been taken against: the pool's first frontier model in
+        // catalog order at that model's native ceiling, with an offered row
+        // (the core's frontier reference); none when the pool records
+        // reference_unavailable.
+        var references: [String: RCCClassMeasurement.Reference] = [:]
+        for provider in ["codex", "claude"] where excluded[provider]?["reference_unavailable"] == nil {
+            guard let frontier = rows.first(where: { $0.provider == provider && ModelTiers.tier(of: $0.model) == .frontier }),
+                  let ceiling = nativeMaximum(provider, frontier.model),
+                  rows.contains(where: { $0.provider == provider && $0.model == frontier.model && $0.effort == ceiling })
+            else { continue }
+            references[provider] = .init(provider: provider, model: frontier.model, effort: ceiling)
+        }
+
         if ["gpt-chat", "chatgpt"].contains(input.providerPreference) { exclude("codex", "gpt_dropped") }
         if rows.isEmpty, !intent.isEmpty || v2 != nil {
             for (provider, count) in intentFiltered where count > 0 && excluded[provider]?["explicit_constraint_unavailable"] == nil {
@@ -694,7 +734,7 @@ public enum RCCNativeCatalogBuilder {
         return Output(candidates: rows.map(\.fields) + local, exclusions: exclusions, pools: rankings, intent: intent, intentV2: v2,
                       modelTiers: tiers, quotaScores: quotaScores, nativeReferenceEfforts: nativeReferenceEfforts,
                       explicitRouteIntents: input.explicitRouteSurfaces == nil ? nil : input.explicitRouteIntents,
-                      admission: admissionFacts(input))
+                      admission: admissionFacts(input, references: references))
     }
 
     /// The local execution row of an explicit route test that names the local

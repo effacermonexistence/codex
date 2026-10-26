@@ -1643,8 +1643,12 @@ func claudeLeanEnvironment(environment: [String: String] = ProcessInfo.processIn
 /// CLAUDE_CODE_* variables, so this travels as an override.
 func claudePromptCacheEnvironment(startsNewSession: Bool, chatLane: Bool, sourceOnly: Bool,
                                   delegatedOneShot: Bool) -> [String: String] {
-    startsNewSession && (chatLane || sourceOnly || delegatedOneShot) ? ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"] : [:]
+    startsNewSession && (chatLane || sourceOnly || delegatedOneShot) ? ["CLAUDE_CODE_PROMPT_CACHE_TTL": claudeOneShotPromptCacheTTL] : [:]
 }
+
+/// The one-shot session's prompt-cache lifetime (owner decision 2026-10-15,
+/// above). A resumable session sets no TTL and keeps the CLI default.
+let claudeOneShotPromptCacheTTL = "5m"
 
 /// Settings for a read-only child OS-1 delegates through the RCC adapter
 /// (build 383). The owner's ~/.claude hooks address the owner's own
@@ -8187,6 +8191,13 @@ private func recordPreDispatchGovernance(
         "owner_policy_original_verified": OwnerPolicyContext.snapshot != nil,
         "drift_policy_state": driftState,
         "route_admission_sha256": admissionDigest ?? NSNull(),
+        // The harness this input was prepared under (K15); its parity with
+        // the providers' own harness is not measured yet (D4 arm ②).
+        "harness_profile": HarnessProfile.current.id,
+        "harness_profile_version": HarnessProfile.current.version,
+        "harness_parity": HarnessProfile.current.parity.rawValue,
+        // The exact id@version string a K11 measurement artifact binds.
+        "harness_scope": RCCClassMeasurement.harnessScope(HarnessProfile.current),
         "meaning": "pre_dispatch_preparation_not_delivery_or_quality",
         "backend_delivery": "not_verified_at_pre_dispatch",
         "recorded_at": ISO8601DateFormatter().string(from: Date())
@@ -8223,6 +8234,10 @@ private func preDispatchGovernanceSelfTest() throws {
           receipt["instructions_sha256"] as? String == sha256Hex(Data(policy.utf8)),
           receipt["meaning"] as? String == "pre_dispatch_preparation_not_delivery_or_quality",
           receipt["backend_delivery"] as? String == "not_verified_at_pre_dispatch",
+          receipt["harness_profile"] as? String == HarnessProfile.current.id,
+          receipt["harness_profile_version"] as? Int == HarnessProfile.current.version,
+          receipt["harness_parity"] as? String == "unverified",
+          receipt["harness_scope"] as? String == "\(HarnessProfile.current.id)@\(HarnessProfile.current.version)",
           !String(decoding: bytes, as: UTF8.self).contains(policy),
           (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 else {
         throw OS1Error.message("Pre-dispatch governance receipt was not bound, private, and source-clean")
@@ -8290,6 +8305,295 @@ private func preDispatchGovernanceSelfTest() throws {
     print("OS-1 pre-dispatch governance: exact channel/input digests and private read-back PASS; provider calls 0")
 }
 
+/// K15 harness identity. Every builder a native turn's model-visible input
+/// comes from is a pure function of its content: no per-attempt id, time or
+/// set order reaches it (N). The rendering of the shipped harness (H0) on
+/// fixed inputs is pinned in HarnessProfile.h0.renderingSHA256, so a change a
+/// model can see (wording, order, a dropped line, the chat-lane predicate)
+/// fails here until it ships as a new profile. Fixture inputs only; no
+/// provider, model, Core or real ~/.claude read.
+private func harnessProfileSelfTest() throws {
+    var checks = 0
+    func check(_ pass: Bool, _ label: String) throws {
+        guard pass else { throw OS1Error.message("Harness profile regression: " + label) }
+        checks += 1
+    }
+    let profile = HarnessProfile.current
+    try check(profile == HarnessProfile.h0 && profile.id == "H0" && profile.version == 1 && profile.parity == .unverified
+              && HarnessProfile.shipped.last == profile && !profile.components.isEmpty
+              && Set(profile.components).isDisjoint(with: HarnessProfile.pendingHItems),
+              "H0 is the current, last shipped profile, its parity is unverified, and no pending H item is part of it")
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-harness-h0-" + UUID().uuidString, isDirectory: true)
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+    let protected = ["a", "b", "c"].map { root.appendingPathComponent("protected-" + $0, isDirectory: true).path }
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+    for path in [workspace.path] + protected { try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true) }
+    try ("# Fixture operating rules\n\n- Never commit tokens." + LeanBackendInstructions.engineMarker + " v26 (fixture)\nengine text\n")
+        .write(to: home.appendingPathComponent(".claude/CLAUDE.md"), atomically: true, encoding: .utf8)
+    try "# Fixture workspace rules\n\n- Run the fixture checks.\n"
+        .write(to: workspace.appendingPathComponent("CLAUDE.md"), atomically: true, encoding: .utf8)
+
+    let projection = "Fixture projection paragraph one.\n\nParagraph two: Conclusion / Core reason / Breaking variable."
+    let routing = "Fixture routing."
+    let sourceSHA256 = String(repeating: "5", count: 64)
+    let snapshot = try JSONDecoder().decode(OwnerPolicySnapshot.self, from: JSONSerialization.data(withJSONObject: [
+        "schema": 1, "sourceSHA256": sourceSHA256, "sourceFile": sourceSHA256 + ".txt",
+        "projectionSHA256": OwnerPolicySnapshot.digest(Data((routing + "\n" + projection).utf8)), "projection": projection,
+        "sourceID": "fixture", "sourceModified": "fixture", "checkedAt": 0, "routing": routing] as [String: Any]))
+    let contract = ExecutorContract(version: "fixture-h0", sha256: String(repeating: "a", count: 64),
+                                    directives: ["Fixture directive one.", "Fixture directive two."])
+    func ticket(_ provider: String, action: String = "cl_fable51_max", permission: String = "read_only",
+                executionID: String = "fixture-h0", sequence: Int = 1, nonce: String = "fixture-nonce",
+                signature: String = "fixture-signature", expiresAt: String = "2099-01-01T00:00:00Z") -> Ticket {
+        Ticket(executionID: executionID, sequence: sequence, provider: provider, action: action,
+               permissionProfile: permission, expiresAt: expiresAt, nonce: nonce, signature: signature)
+    }
+    let sessionID = "00000000-0000-4000-8000-0000000000a1"
+    let objectives = [
+        "translation": "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?",
+        "repository": "이 저장소에서 동시 실행 기본값이 몇인지 소스에서 찾아 한 줄로 답해.",
+        "short": "짧게 답해: TCP와 UDP 차이?",
+        "machine": "Return only JSON with keys a and b.",
+        "readiness": "이 시스템이 맥북을 잃어버려도 복구 가능한지 평가해줘",
+        "lookup": "https://example.com/item?id=1 이거랑 똑같은 제품 찾아줘",
+        "exact": "2+3",
+    ]
+
+    // The model-visible rendering for one set of ticket fields and one order
+    // of the extra protected paths. Labels name the builder and the case.
+    func rendering(executionID: String = "fixture-h0", sequence: Int = 1, nonce: String = "fixture-nonce",
+                   signature: String = "fixture-signature", expiresAt: String = "2099-01-01T00:00:00Z",
+                   protectedOrder: [String] = protected) throws -> String {
+        func t(_ provider: String, _ action: String, _ permission: String = "read_only") -> Ticket {
+            ticket(provider, action: action, permission: permission, executionID: executionID, sequence: sequence,
+                   nonce: nonce, signature: signature, expiresAt: expiresAt)
+        }
+        func argv(_ arguments: [String]) -> String { arguments.joined(separator: "\n<ARG>\n") }
+        return try OwnerPolicyContext.$snapshot.withValue(snapshot) {
+            var sections: [(String, String)] = []
+            let codexFull = executorInstructions(contract: contract, ticket: t("codex", "cx_luna_low"))
+            sections.append(("codex.developer.full", codexFull))
+            sections.append(("codex.developer.projection_note", executorInstructions(contract: contract,
+                ticket: t("codex", "cx_luna_low"), ownerPolicyProjectionInBaseInstructions: true)))
+            let claudeText = claudeExecutorInstructions(contract: contract, ticket: t("claude", "cl_fable51_max"))
+            sections.append(("claude.append_system", claudeText))
+            sections.append(("claude.append_system.recovery", claudeExecutorInstructions(contract: contract,
+                ticket: t("claude", "cl_fable51_max"), recoveringDiscardedCandidate: true, recoveringClarificationOnlyCandidate: true)))
+            for (name, objective) in objectives.sorted(by: { $0.key < $1.key }) {
+                for provider in ["codex", "claude"] {
+                    sections.append(("presentation.\(name).\(provider)", nativePresentationDirective(objective: objective,
+                        provider: provider, exactAnswer: false, hasPreloadedSource: false)))
+                }
+            }
+            sections.append(("presentation.exact.answer_only", nativePresentationDirective(objective: "2+3",
+                provider: "claude", exactAnswer: true, hasPreloadedSource: false)))
+            sections.append(("presentation.readiness.preloaded_source", nativePresentationDirective(
+                objective: objectives["readiness"]!, provider: "codex", exactAnswer: false, hasPreloadedSource: true)))
+            sections.append(("claude.bounded_shell", ClaudeReadOnlyShell.directive))
+            let workspaceContext = LeanBackendInstructions.claudeWorkspaceContext(home: home, workspace: workspace.path)
+            sections.append(("claude.workspace_context", workspaceContext))
+            sections.append(("rcc.envelope.exact", RCCDelegatedEnvelope.prompt(instruction: "2+3", ownerRequest: "2+3을 계산해",
+                answerOnly: true, surface: .codex, scope: .readOnly, taskID: "task-h0", nodeID: "node-1", attemptID: "attempt-1")))
+            sections.append(("rcc.envelope.chat", RCCDelegatedEnvelope.prompt(instruction: "대한민국의 수도는?",
+                ownerRequest: "대한민국의 수도는?", answerOnly: false, surface: .claudeChat, scope: .readOnly,
+                taskID: "task-h0", nodeID: "node-1", attemptID: "attempt-1")))
+            sections.append(("rcc.envelope.task", RCCDelegatedEnvelope.prompt(instruction: "Fix the fixture test.",
+                ownerRequest: "Fix the fixture test and report.", answerOnly: false, surface: .claude, scope: .workspaceWrite,
+                sourceCompletion: " Fixture source completion rule.", taskID: "task-h0", nodeID: "node-2", attemptID: "attempt-2")))
+            sections.append(("rcc.envelope.continuation", RCCDelegatedEnvelope.prompt(instruction: "unused", ownerRequest: "unused",
+                continuation: "Continue the fixture task with full access.", answerOnly: true, surface: .claude, scope: .workspaceWrite,
+                taskID: "task-h0", nodeID: "node-3", attemptID: "attempt-3")))
+            sections.append(("provider_prompt.bare", try providerPrompt(current: "2+3", context: nil)))
+            sections.append(("provider_prompt.full", try providerPrompt(current: "2+3", context: "Fixture prior turn.",
+                r2Evidence: "Fixture source data.", taskContext: "Fixture task state.", workspaceContext: "Fixture hint.",
+                languageDirective: "Answer in Korean.")))
+            let protection = try OS1SourceConfinement.readOnlyProtection(workspace: workspace.path,
+                additionalProtectedPaths: rccReadOnlyAdditionalProtectedPaths(protectedOrder))
+            let claudeInput = claudeText + nativePresentationDirective(objective: objectives["repository"]!, provider: "claude",
+                exactAnswer: false, hasPreloadedSource: false) + ClaudeReadOnlyShell.directive + workspaceContext
+            sections.append(("claude.argv.read_only_protected", argv(try claudeArguments(model: "claude-fable-5-1", effort: "max",
+                instructions: claudeInput, sessionID: sessionID, startNewSession: true, title: "fixture", permissionProfile: "read_only",
+                prompt: objectives["repository"]!, managedDelegation: false, readOnlyProtection: protection))))
+            sections.append(("claude.argv.delegated_read_only", argv(try claudeArguments(model: "claude-opus-5-5", effort: "medium",
+                instructions: claudeInput, sessionID: sessionID, startNewSession: true, title: "fixture", permissionProfile: "read_only",
+                prompt: "Do this task:\nfixture", managedDelegation: true, interactiveHooksDisabled: true, readOnlyProtection: protection))))
+            sections.append(("claude.argv.chat_lane", argv(try claudeArguments(model: "claude-haiku-4-5-20251001", effort: "none",
+                instructions: claudeText, sessionID: sessionID, startNewSession: true, title: "fixture", permissionProfile: "read_only",
+                prompt: objectives["translation"]!, sourceContextOnly: true, managedDelegation: false))))
+            sections.append(("claude.argv.workspace_write_resume", argv(try claudeArguments(model: "claude-fable-5-1", effort: "max",
+                instructions: claudeExecutorInstructions(contract: contract, ticket: t("claude", "cl_fable51_max", "workspace_write")),
+                sessionID: sessionID, startNewSession: false, title: "fixture", permissionProfile: "workspace_write",
+                prompt: "Fix the fixture test.", managedDelegation: true))))
+            return sections.map { "== " + $0.0 + "\n" + $0.1 }.joined(separator: "\n")
+        }
+    }
+
+    // A: determinism. B: per-attempt ticket fields reach no instruction or argv.
+    let first = try rendering(), again = try rendering()
+    try check(first == again, "every H0 builder gives byte-identical output for identical inputs")
+    let otherAttempt = try rendering(executionID: "another-execution", sequence: 9, nonce: "another-nonce",
+                                     signature: "another-signature", expiresAt: "2100-02-02T00:00:00Z")
+    try check(first == otherAttempt, "execution id, sequence, nonce, signature and expiry reach no instruction text or argv")
+
+    // C: a different action changes bytes no earlier than the ticket's action line.
+    try OwnerPolicyContext.$snapshot.withValue(snapshot) {
+        func firstDifference(_ x: String, _ y: String) -> Int {
+            let a = Array(x.utf8), b = Array(y.utf8)
+            var index = 0
+            while index < min(a.count, b.count), a[index] == b[index] { index += 1 }
+            return index
+        }
+        func actionLine(_ text: String) -> Int? {
+            text.range(of: "- action: ").map { text.utf8.distance(from: text.startIndex, to: $0.lowerBound) }
+        }
+        for (provider, build) in [("codex", { executorInstructions(contract: contract, ticket: $0) }),
+                                  ("claude", { claudeExecutorInstructions(contract: contract, ticket: $0) })] as [(String, (Ticket) -> String)] {
+            let fable = build(ticket(provider, action: "cl_fable51_max")), opus = build(ticket(provider, action: "cl_opus55_medium"))
+            guard let line = actionLine(fable), actionLine(opus) == line else {
+                throw OS1Error.message("Harness profile regression: \(provider) instructions lost the action line")
+            }
+            try check(fable != opus && firstDifference(fable, opus) >= line,
+                      "\(provider): a different tuple action changes no byte before the ticket's action line")
+        }
+        // Diagnostic only, not a claim: how much of the assembled Claude
+        // system prompt two objective classes share at one ticket.
+        let base = claudeExecutorInstructions(contract: contract, ticket: ticket("claude"))
+        func assembled(_ name: String) -> String {
+            base + nativePresentationDirective(objective: objectives[name]!, provider: "claude", exactAnswer: name == "exact",
+                                               hasPreloadedSource: false)
+        }
+        print("Harness H0 diagnostic (not a claim): shared Claude prefix bytes translation/repository "
+              + "\(firstDifference(assembled("translation"), assembled("repository"))), translation/exact "
+              + "\(firstDifference(assembled("translation"), assembled("exact"))) of \(assembled("translation").utf8.count)")
+    }
+
+    // D: the read-only lane's protected paths have one order.
+    let (a, b, c) = (protected[0], protected[1], protected[2])
+    try check(rccReadOnlyAdditionalProtectedPaths([b, a, b]) == [a, b]
+              && rccReadOnlyAdditionalProtectedPaths([c, a, b, a]) == [a, b, c]
+              && rccReadOnlyAdditionalProtectedPaths([]).isEmpty,
+              "protected paths are deduplicated and sorted whatever the input order")
+    let sorted = try OS1SourceConfinement.readOnlyProtection(workspace: workspace.path,
+        additionalProtectedPaths: rccReadOnlyAdditionalProtectedPaths([a, b, c]))
+    let permuted = try OS1SourceConfinement.readOnlyProtection(workspace: workspace.path,
+        additionalProtectedPaths: rccReadOnlyAdditionalProtectedPaths([c, b, a, c]))
+    let unsorted = try OS1SourceConfinement.readOnlyProtection(workspace: workspace.path, additionalProtectedPaths: [c, b, a])
+    try check(sorted == permuted && OS1SourceConfinement.claudeReadOnlySettings(sorted) == OS1SourceConfinement.claudeReadOnlySettings(permuted)
+              && unsorted.protectedPaths != sorted.protectedPaths
+              && Set(unsorted.protectedPaths) == Set(sorted.protectedPaths),
+              "the same protected set gives the same --settings bytes and guard profile; only the order was ever unstable")
+    let permutedRendering = try rendering(protectedOrder: [c, a, b, c])
+    try check(first == permutedRendering, "the read-only launch argv is byte-identical for a permuted protected-path input")
+
+    // E: the one-shot prompt-cache lifetime is the named owner constant.
+    let ttl = ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"]
+    try check(claudeOneShotPromptCacheTTL == "5m"
+              && claudePromptCacheEnvironment(startsNewSession: true, chatLane: true, sourceOnly: false, delegatedOneShot: false) == ttl
+              && claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: true, delegatedOneShot: false) == ttl
+              && claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: false, delegatedOneShot: true) == ttl
+              && claudePromptCacheEnvironment(startsNewSession: false, chatLane: true, sourceOnly: true, delegatedOneShot: true).isEmpty
+              && claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: false, delegatedOneShot: false).isEmpty,
+              "one-shot sessions take the named 5-minute TTL; resumed and thread-becoming sessions keep the CLI default")
+
+    // G: the H0 golden. The chat-lane predicate is part of the profile: each
+    // vector records the Claude lane (owner selection off/on, with and
+    // without a source), the GPT lane under the process selection off/on and
+    // whether the explicit choice is refused (its wording is owner-facing
+    // and localized, so only refused/accepted is part of the rendering).
+    let laneObjectives = [
+        "다음 문장을 영문으로 번역해줘: 내일 회의 시간을 오후 3시로 옮겨도 될까요?",
+        "다음 글을 한 줄로 요약해줘: 오늘 회의에서 출시를 2주 미루고 QA 두 명을 추가하기로 했다.",
+        "이 문장 다듬어줘: 우리는 내일 회의를 할것이다.",
+        "Translate into Korean: The meeting moves to 3 pm tomorrow.",
+        "Summarize in one line: we delayed the launch two weeks and added two QA engineers.",
+        "Proofread: Their going to the store tomorow.",
+        "다음 JSON을 YAML로 바꿔줘: {\"a\": 1}",
+        "그럼 실제로 해봐 다 되는지 하나씩 하나씩 4개 다 해봐",
+        "그래서 했냐고",
+        "이 저장소에서 동시 실행 기본값이 몇인지 소스에서 찾아 한 줄로 답해.",
+        "README.md를 번역해서 README.en.md로 저장해",
+        "~/Documents 안에 뭐가 있는지 알려줘",
+        "/tmp/report.txt 요약해줘",
+        "2의 10제곱은?",
+        "4+4",
+        "8*7은?",
+        "1+1",
+        "아니 유성 코는 무슨 뜻인데 도대체?",
+        "대한민국의 수도는?",
+        "왜 하늘은 파란색이야?",
+        "What is the capital of France?",
+        "Explain the difference between TCP and UDP.",
+        "Write a haiku about autumn.",
+        "Is 2^61-1 prime?",
+        "되는지 확인해보자. 되냐?",
+        "야 체크해 봅시다. 너 되냐?",
+        "다 했냐?",
+        "너 되냐? 로그 읽어",
+        "배포 됐냐?",
+        "설치됐어? 안 됐으면 깔아",
+        "usungco.com 등록돼 있어?",
+        "깃 상태 확인해서 커밋해",
+        "너 되냐? 셸 명령 실행해서 확인해",
+        "OS-1 지금 빌드 몇이야?",
+        "codex 쿼터 얼마 남았어?",
+        "이거 고쳐줘",
+        "방금 그거 다시 해줘",
+        "Run the nightly job now",
+        "Fix the failing test in the repo",
+        "https://example.com/item?id=1 이거랑 똑같은 제품 찾아줘",
+    ]
+    func bit(_ value: Bool) -> String { value ? "1" : "0" }
+    let wasSelected = ClaudeChatLane.ownerSelected
+    var laneLines: [String] = []
+    for objective in laneObjectives {
+        let claude = [(false, false), (false, true), (true, false), (true, true)].map { hasSource, selected in
+            bit(claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasSource, objective: objective,
+                               ownerSelected: selected))
+        }.joined()
+        let codex = [false, true].map { selected -> String in
+            ClaudeChatLane.setExplicitSelection(selected)
+            return bit(codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: objective))
+        }.joined()
+        ClaudeChatLane.setExplicitSelection(wasSelected)
+        let refused = [false, true].map { bit(claudeChatLaneRefusal(objective: objective, hasSource: $0) != nil) }.joined()
+        let writer = bit(claudeChatLane(provider: "claude", permission: "workspace_write", hasSource: false, objective: objective,
+                                        ownerSelected: true))
+        laneLines.append("claude=\(claude) codex=\(codex) refused=\(refused) writer=\(writer) \(objective)")
+    }
+    try check(ClaudeChatLane.ownerSelected == wasSelected, "the vectors leave the process chat-lane selection as it was")
+    // Machine paths are normalised: the temporary root (and its realpath and
+    // Data-volume alias, also JSON slash-escaped) and the home OS-1 reads the
+    // owner-policy pointer from (the isolation runner fakes it).
+    func canonical(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+    let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+    var replacements: [(String, String)] = []
+    for (path, label) in [(root.path, "<ROOT>"), (homePath, "<HOME>")] {
+        let forms = Set(["/System/Volumes/Data" + canonical(path), canonical(path), path])
+        for form in forms.sorted(by: { $0.utf8.count > $1.utf8.count }) {
+            replacements += [(form, label), (form.replacingOccurrences(of: "/", with: "\\/"), label)]
+        }
+    }
+    var golden = "HarnessProfile " + profile.id + " v\(profile.version)\n" + first + "\n== chat_lane_predicate\n" + laneLines.joined(separator: "\n")
+    for (form, label) in replacements { golden = golden.replacingOccurrences(of: form, with: label) }
+    try check(!golden.contains("os1-harness-h0-"), "every fixture path is normalised out of the rendering")
+    let digest = sha256Hex(Data(golden.utf8))
+    guard digest == profile.renderingSHA256 else {
+        throw OS1Error.message("Harness profile regression: the \(profile.id) v\(profile.version) rendering is \(digest), pinned "
+            + "\(profile.renderingSHA256). H change: bump harness_profile (new id/version, parity unverified) and re-pin together; "
+            + "an N change must not move this digest")
+    }
+    checks += 1
+    print("OS-1 harness profile \(profile.id) v\(profile.version) (parity \(profile.parity.rawValue)): \(checks) checks PASS; "
+          + "\(laneObjectives.count) chat-lane vectors, rendering pinned \(digest.prefix(12)); model/provider calls 0")
+}
+
 /// The presentation part of a native turn's developer (Codex) or system
 /// (Claude) instructions. `exactAnswer` (a delegated RCC child that OS-1
 /// checks by exact comparison, RCCDelegatedEnvelope.answerOnly) swaps the
@@ -8307,6 +8611,16 @@ func nativePresentationDirective(objective: String, provider: String, exactAnswe
         HumanOutputContract.instructions(for: objective, provider: provider, exactAnswer: exactAnswer) + readinessDirective +
         (exactAnswer ? "" : SourceTransformationContract.instructions) +
         publicWebLookupInstructions(prompt: objective, hasPreloadedSource: hasPreloadedSource)
+}
+
+/// A read-only Claude launch's extra protected paths (OS-1's live roots and
+/// the source tree's own paths), deduplicated in one canonical order. `Set`
+/// order is seeded per process, and this order reaches the Claude
+/// `--settings` deny lists, the sandbox profile and
+/// `execution_configuration_sha256`: the same paths gave different bytes from
+/// launch to launch. The set is unchanged (K15, N).
+func rccReadOnlyAdditionalProtectedPaths(_ paths: [String]) -> [String] {
+    Array(Set(paths)).sorted()
 }
 
 private func execute(
@@ -8762,7 +9076,7 @@ private func execute(
                 ?? OS1SourceWatch.containedRoot(workspace: executionWorkspace)
             let sourcePaths = protectedSourceRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
             readOnlyProtection = try OS1SourceConfinement.readOnlyProtection(workspace: executionWorkspace,
-                additionalProtectedPaths: Array(Set(OS1SourceConfinement.activeRoots + sourcePaths)))
+                additionalProtectedPaths: rccReadOnlyAdditionalProtectedPaths(OS1SourceConfinement.activeRoots + sourcePaths))
         } else { readOnlyProtection = nil }
         RuntimeActivity.emit(.preparing, provider: "claude", surface: executedSurface?.rawValue, model: model, effort: effort)
         if chatLane {
@@ -18102,6 +18416,7 @@ func selfTest() throws {
     try nativeTransportAdmissionSelfTest()
     try InstalledOS1Resources.selfTest()
     try preDispatchGovernanceSelfTest()
+    try harnessProfileSelfTest()
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()
     try RouteAllIntent.selfTest()
@@ -19112,6 +19427,19 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // contract re-bound now; the signed class table is compiled in (empty).
     input.ownerScope = RCCCatalogFacts.ownerScope(request)
     input.taskContract = RCCCatalogFacts.taskContract(request)
+    // K11: a table certificate loads only with its D4 measurement artifact,
+    // read from host custody by the hash the signed table names (private
+    // input gate: owner-only regular file, no link) and verified by the
+    // builder against this harness, executor contract and reference. The
+    // shipped table is empty, so nothing is read.
+    input.harnessProfile = RCCClassMeasurement.harnessScope(HarnessProfile.current)
+    let measurementHome = FileManager.default.homeDirectoryForCurrentUser
+    for certificate in input.classTable.classCertificates.values {
+        if let url = RCCClassMeasurement.custodyPath(home: measurementHome, sha256: certificate.measurementSHA256),
+           let bytes = try? rccPrivateInput(url.path) {
+            input.classMeasurements[certificate.measurementSHA256] = bytes
+        }
+    }
     // An explicit route test keeps its candidate set: a route naming a
     // provider overrides its 0% capacity, and the fan-out sentence is not one
     // effort/model intent for every route.
@@ -19206,6 +19534,12 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         throw OS1Error.message("RCC native catalog exceeds bounded capacity; no profiles discarded")
     } catch RCCNativeCatalogBuilder.Failure.unexplainedEmptyCatalog {
         throw OS1Error.message("RCC native catalog has no configured profile for the admitted providers")
+    }
+    // A table certificate that did not load is a private receipt line (its
+    // class and reason, never artifact content); the catalog carries none.
+    if let facts = output.admission, let rejection = facts.classCertificateRejection {
+        FileHandle.standardError.write(Data(("os1 rcc-catalog: class certificate for " + facts.requestClass.rawValue +
+            " not loaded (" + rejection.rawValue + ")\n").utf8))
     }
     let data = try RCCNativeCatalogBuilder.catalogData(output, taskID: request.taskID, requestSHA256: request.requestSHA256)
     let admitted = try RCCOperationalQuality.constrainCatalogData(data, request: request,
@@ -20646,7 +20980,8 @@ func effortlessRoutingSelfTest() throws {
               sourceOnlyRead.filter { $0 == "--strict-mcp-config" }.count == 1 && mcpValues(sourceOnlyRead) == [claudeEmptyMCPConfiguration],
               "a writer and an own read session keep the owner's MCP configuration; the tool-free lane keeps its own single empty config")
     // The 5-minute cache only for a session that starts new and is one-shot.
-    let ttl = ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"]
+    let ttl = ["CLAUDE_CODE_PROMPT_CACHE_TTL": claudeOneShotPromptCacheTTL]
+    try check(claudeOneShotPromptCacheTTL == "5m", "the one-shot cache lifetime is the owner's 5 minutes")
     try check(claudePromptCacheEnvironment(startsNewSession: true, chatLane: true, sourceOnly: false, delegatedOneShot: false) == ttl &&
               claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: true, delegatedOneShot: false) == ttl &&
               claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: false, delegatedOneShot: true) == ttl,

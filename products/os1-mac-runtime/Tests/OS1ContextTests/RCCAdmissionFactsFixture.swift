@@ -32,7 +32,23 @@ func runRCCAdmissionFactsFixtures() throws {
     var unsigned = T.frozenBytes; unsigned.insert(0x20, at: 0)
     try reject("bytes that differ from the pin are never a table") { _ = try T.decode(unsigned) }
     func signed(_ value: [String: Any]) throws -> (Data, String) { let bytes = try json(value); return (bytes, C.digest(bytes)) }
-    let measurement = C.digest(Data("frozen held-out measurement".utf8))
+    // K11: the certificate names its D4 measurement artifact by hash. The
+    // artifact is scoped to the certificate, the fixture pool's reference
+    // (codex gpt-6-astra at its native ceiling ultra), the executor contract
+    // and a fixture harness, inside a validity window around `now`.
+    let contractSHA = String(repeating: "c", count: 64)
+    let harness = "h0-fixture"
+    let measurementArtifact: [String: Any] = ["schema": 1, "kind": "os1_rcc_class_measurement_v1",
+        "certificate_id": "cert-chat-1", "request_class": "chat_explanatory",
+        "tuple": ["provider": "codex", "model": "gpt-6-luna", "effort": "low"], "format_check": "nonempty_text",
+        "reference": ["provider": "codex", "model": "gpt-6-astra", "effort": "ultra"],
+        "executor_contract_sha256": contractSHA, "harness_scope": harness,
+        "issued_at_ms": Int64(1_789_000_000_000), "valid_until_ms": Int64(1_791_000_000_000),
+        "result": ["verdict": "pass", "n": 60, "accepted_b": 0, "hard_check_regressions": 0,
+                   "tier_disagreement": 2, "reference_aa_disagreement": 3],
+        "evidence_sha256": C.digest(Data("frozen held-out measurement".utf8))]
+    let artifactBytes = try json(measurementArtifact)
+    let measurement = C.digest(artifactBytes)
     let certificate: [String: Any] = ["certificate_id": "cert-chat-1", "provider": "codex", "model": "gpt-6-luna",
                                       "effort": "low", "format_check": "nonempty_text", "measurement_sha256": measurement]
     let (filledBytes, filledPin) = try signed(["schema": 1, "class_certificates": ["chat_explanatory": certificate],
@@ -74,7 +90,6 @@ func runRCCAdmissionFactsFixtures() throws {
 
     // ---- Catalog emission ------------------------------------------------
     let now = Date(timeIntervalSince1970: 1_790_000_000)
-    let contractSHA = String(repeating: "c", count: 64)
     let policy = C.digest(Data("fixture policy".utf8))
     func input(_ request: String, owner: C.Scope?, chat: Bool = false, readOnly: Bool = false, material: Bool = false) -> B.Input {
         var value = B.Input(taskID: "task-fixture", requestSHA256: C.digest(Data(request.utf8)), request: request,
@@ -125,6 +140,8 @@ func runRCCAdmissionFactsFixtures() throws {
         startTreeSHA256: C.digest(Data("tree".utf8)), referencePolicySHA256: policy, validUntilMS: 1_790_000_600_000)
     question.taskContract = fact
     question.classTable = filled
+    question.classMeasurements = [measurement: artifactBytes]
+    question.harnessProfile = harness
     let questionBytes = try catalog(question)
     let questionCatalog = try C.decodeCatalog(questionBytes, request: questionRequest)
     try check(questionCatalog.requestClass == .chatExplanatory && questionCatalog.chatLaneEligible == true &&
@@ -194,6 +211,173 @@ func runRCCAdmissionFactsFixtures() throws {
     try rejectCatalog("a pin keyed by another class") { $0["class_provider_pins"] = ["writer": "codex"] }
     try rejectCatalog("a pin to an unknown pool") { $0["class_provider_pins"] = ["chat_explanatory": "gpt"] }
 
+    // ---- K11: a table certificate loads only with its verified D4 artifact --
+    typealias M = RCCClassMeasurement
+    // The chat question with the certified tuple's own row offered (luna low);
+    // `reference: false` drops the frontier profile, so codex records
+    // reference_unavailable and has no current reference.
+    func k11(_ table: T, _ artifacts: [String: Data], harness profile: String? = harness, at: Date = now,
+             reference: Bool = true) -> B.Input {
+        var value = input(questionText, owner: .readOnly, chat: true)
+        value.taskContract = fact
+        value.profiles.append(.init(action: "c_luna_low", provider: "codex", model: "gpt-6-luna", effort: "low"))
+        value.codexModels.append(.init(slug: "gpt-6-luna", supportedEfforts: ["low"], priority: 1))
+        if !reference { value.profiles.removeAll { $0.model == "gpt-6-astra" } }
+        value.classTable = table; value.classMeasurements = artifacts; value.harnessProfile = profile; value.now = at
+        return value
+    }
+    // A changed artifact with its own re-signed, re-pinned table: the
+    // certificate names exactly that artifact, so only the changed check fails.
+    func measured(_ change: (inout [String: Any]) -> Void, raw: ((Data) -> Data)? = nil) throws -> (T, [String: Data]) {
+        var value = measurementArtifact; change(&value)
+        var bytes = try json(value)
+        if let raw { bytes = raw(bytes) }
+        let hash = C.digest(bytes)
+        let (tableBytes, pin) = try signed(["schema": 1, "class_provider_pins": ["writer": "claude"],
+            "class_certificates": ["chat_explanatory": certificate.merging(["measurement_sha256": hash]) { $1 }]])
+        return (try T.decode(tableBytes, pinnedSHA256: pin), [hash: bytes])
+    }
+    func field(_ key: String, _ value: Any?) -> (inout [String: Any]) -> Void { { $0[key] = value } }
+    func inner(_ key: String, _ name: String, _ value: Any?) -> (inout [String: Any]) -> Void {
+        { artifact in var nested = artifact[key] as! [String: Any]; nested[name] = value; artifact[key] = nested }
+    }
+    func facts(_ value: B.Input) throws -> B.AdmissionFacts { let output = try B.build(value); return output.admission! }
+    func outcome(_ value: B.Input) throws -> M.Rejection? {
+        let found = try facts(value)
+        return found.classCertificate == nil ? found.classCertificateRejection : nil
+    }
+    func expect(_ reason: M.Rejection?, _ label: String, _ change: @escaping (inout [String: Any]) -> Void,
+                raw: ((Data) -> Data)? = nil, at: Date = now) throws {
+        let (table, artifacts) = try measured(change, raw: raw)
+        let got = try outcome(k11(table, artifacts, at: at))
+        try check(got == reason, "K11 \(label): \(reason?.rawValue ?? "loaded"), got \(got?.rawValue ?? "loaded")")
+    }
+    let signedCertificate = filled.certificate(for: .chatExplanatory)!
+    try check(Set(M.Rejection.allCases.map(\.rawValue)) == ["artifact_absent", "hash_mismatch", "malformed", "scope_mismatch",
+        "reference_mismatch", "executor_mismatch", "harness_mismatch", "not_yet_valid", "expired", "result_not_pass"],
+        "K11 names every rejection by a stable reason")
+    try check(M.harnessScope(HarnessProfile.current) == "H0@1",
+              "K11 binds the shipped harness by id AND version (a new descriptor never inherits a measurement)")
+
+    // K11-a valid: loaded, and the wire is exactly today's certificate emission.
+    let valid = k11(filled, [measurement: artifactBytes])
+    let validFacts = try facts(valid)
+    try check(validFacts.classCertificate == signedCertificate && validFacts.classCertificateRejection == nil,
+              "K11-a: a verified artifact loads the class certificate")
+    let validBytes = try catalog(valid)
+    var bare = valid; bare.classTable = .empty
+    var expected = try object(catalog(bare)); expected["class_certificates"] = ["chat_explanatory": certificate]
+    try check(try json(object(validBytes)) == json(expected) && validBytes == (try json(expected)),
+              "K11-a: the catalog wire is unchanged (the same certificate object, no new key)")
+    try check(try C.decodeCatalog(validBytes, request: questionRequest).classCertificates == ["chat_explanatory": signedCertificate],
+              "K11-a: Core's contract accepts the emitted certificate")
+
+    // K11-b the shipped (empty) table: inert whatever artifact is on disk.
+    var shipped = valid; shipped.classTable = .frozen
+    var shippedBare = shipped; shippedBare.classMeasurements = [:]; shippedBare.harnessProfile = nil
+    let shippedFacts = try facts(shipped)
+    try check(shippedFacts.classCertificate == nil && shippedFacts.classCertificateRejection == nil &&
+              (try catalog(shipped)) == (try catalog(shippedBare)),
+              "K11-b: with the shipped table an artifact changes no catalog byte")
+
+    // K11-c absent artifact: only the certificate drops; every other fact stays.
+    let absent = k11(filled, [:])
+    try check(try outcome(absent) == .artifactAbsent, "K11-c: no artifact, no certificate")
+    var absentBare = absent; absentBare.classTable = .empty
+    let absentObject = try object(catalog(absent))
+    try check((try catalog(absent)) == (try catalog(absentBare)) && absentObject["owner_scope"] as? String == "read_only" &&
+              absentObject["request_class"] as? String == "chat_explanatory" && absentObject["chat_lane_eligible"] as? Bool == true &&
+              absentObject["task_contract"] != nil && absentObject["class_certificates"] == nil,
+              "K11-c: owner scope, class, chat flag and contract are emitted unchanged")
+    var pinnedChat = absent
+    pinnedChat.classTable = RCCClassTable(classCertificates: filled.classCertificates, classProviderPins: ["chat_explanatory": "claude"])
+    let pinnedFacts = try facts(pinnedChat)
+    try check(pinnedFacts.classProviderPin == "claude" && pinnedFacts.classCertificate == nil,
+              "K11-c: a class pin is not a quality descent and stays when the certificate drops")
+
+    // K11-d hash binding.
+    var appended = artifactBytes; appended.append(0x20)
+    try check(try outcome(k11(filled, [measurement: appended])) == .hashMismatch, "K11-d: one appended byte is another artifact")
+    let other = try json(measurementArtifact.merging(["result": ["verdict": "pass", "n": 61, "accepted_b": 0,
+        "hard_check_regressions": 0, "tier_disagreement": 2, "reference_aa_disagreement": 3]]) { $1 })
+    try check(try outcome(k11(filled, [measurement: other])) == .hashMismatch,
+              "K11-d: a different (even passing) artifact under the named hash is refused")
+
+    // K11-e validity window (now = 1_790_000_000_000 ms).
+    try expect(.expired, "valid_until == now", field("valid_until_ms", Int64(1_790_000_000_000)))
+    try expect(nil, "valid_until == now + 1 ms", field("valid_until_ms", Int64(1_790_000_000_001)))
+    try expect(.notYetValid, "issued_at == now + 1 ms", field("issued_at_ms", Int64(1_790_000_000_001)))
+    try expect(nil, "issued_at == now", field("issued_at_ms", Int64(1_790_000_000_000)))
+    try check(try outcome(k11(filled, [measurement: artifactBytes], at: Date(timeIntervalSince1970: 1_791_000_000))) == .expired &&
+              outcome(k11(filled, [measurement: artifactBytes], at: Date(timeIntervalSince1970: 1_788_000_000))) == .notYetValid,
+              "K11-e: the host clock at catalog build decides the window")
+
+    // K11-f scope: the artifact must be this certificate's own measurement.
+    try expect(.scopeMismatch, "another request class", field("request_class", "text_operation"))
+    try expect(.scopeMismatch, "another tuple model", inner("tuple", "model", "gpt-6.1-sol"))
+    try expect(.scopeMismatch, "another tuple effort", inner("tuple", "effort", "medium"))
+    try expect(.scopeMismatch, "another tuple provider", inner("tuple", "provider", "claude"))
+    try expect(.scopeMismatch, "another format check", field("format_check", "exact_json"))
+    try expect(.scopeMismatch, "another certificate id", field("certificate_id", "other"))
+
+    // K11-g reference: measured against the pool's CURRENT frontier ceiling.
+    try expect(.referenceMismatch, "a reference below the native ceiling", inner("reference", "effort", "max"))
+    try expect(.referenceMismatch, "a workhorse reference", inner("reference", "model", "gpt-6.1-sol"))
+    try expect(.referenceMismatch, "another pool's reference",
+               field("reference", ["provider": "claude", "model": "claude-fable-5-1", "effort": "max"]))
+    let held = k11(filled, [measurement: artifactBytes], reference: false)
+    try check(try B.build(held).exclusions.contains { $0.provider == "codex" && $0.reason == "reference_unavailable" } &&
+              outcome(held) == .referenceMismatch, "K11-g: a pool without a current reference loads no certificate")
+
+    // K11-h executor contract and harness profile.
+    try expect(.executorMismatch, "another executor contract", field("executor_contract_sha256", String(repeating: "d", count: 64)))
+    try check(try outcome(k11(filled, [measurement: artifactBytes], harness: nil)) == .harnessMismatch,
+              "K11-h: no harness profile, no certificate")
+    try check(try outcome(k11(filled, [measurement: artifactBytes], harness: "h1")) == .harnessMismatch,
+              "K11-h: a measurement under another harness does not load")
+    // One encoding: the scope travels as `harness_scope` (id@version, the
+    // pre-dispatch receipt's key), never as the receipt's bare-id key.
+    try expect(.malformed, "the harness under the receipt's bare-id key",
+               { artifact in let scope = artifact.removeValue(forKey: "harness_scope"); artifact["harness_profile"] = scope })
+
+    // K11-i the measurement must PASS the class law.
+    try expect(.resultNotPass, "verdict fail", inner("result", "verdict", "fail"))
+    try expect(.resultNotPass, "59 cases", inner("result", "n", 59))
+    try expect(.resultNotPass, "an accepted_B", inner("result", "accepted_b", 1))
+    try expect(.resultNotPass, "a hard-check regression", inner("result", "hard_check_regressions", 1))
+    try expect(.resultNotPass, "tier disagreement above the reference's A/A", inner("result", "tier_disagreement", 4))
+    try expect(.resultNotPass, "a negative disagreement", inner("result", "tier_disagreement", -1))
+    try expect(.resultNotPass, "A/A disagreement above n", inner("result", "reference_aa_disagreement", 61))
+    try expect(.resultNotPass, "an evidence pointer that is not a hash", field("evidence_sha256", "evidence"))
+
+    // K11-j strict shape.
+    try expect(.malformed, "an extra top-level key", field("note", "x"))
+    try expect(.malformed, "a missing key", field("evidence_sha256", nil))
+    try expect(.malformed, "an extra result key", inner("result", "score", 1))
+    try expect(.malformed, "an extra reference key", inner("reference", "scope", "read_only"))
+    try expect(.malformed, "schema 2", field("schema", 2))
+    try expect(.malformed, "an unknown kind", field("kind", "os1_rcc_class_measurement_v2"))
+    try expect(.malformed, "a bool for an integer", field("issued_at_ms", true))
+    try expect(.malformed, "a fraction for an integer", field("issued_at_ms", 1.5))
+    try expect(.malformed, "a string for an integer", inner("result", "n", "60"))
+    try expect(.malformed, "an executor contract that is not a hash", field("executor_contract_sha256", "contract"))
+    try expect(.malformed, "a duplicate key", { _ in }, raw: { Data(("{\"schema\":1," + String(decoding: $0.dropFirst(), as: UTF8.self)).utf8) })
+    try expect(.malformed, "not JSON", { _ in }, raw: { _ in Data("measurement".utf8) })
+
+    // K11-k a direct caller that computed no reference never gets a certificate.
+    let direct = B.admissionFacts(valid)
+    try check(direct?.classCertificate == nil && direct?.classCertificateRejection == .referenceMismatch,
+              "K11-k: admissionFacts without references fails closed")
+
+    // K11-l host custody path.
+    let home = URL(fileURLWithPath: "/Users/fixture", isDirectory: true)
+    try check(M.custodyPath(home: home, sha256: measurement)?.path ==
+              "/Users/fixture/.os1/rcc-runtime/class-measurements/\(measurement).json",
+              "K11-l: the artifact lives under the host's class-measurements directory by its hash")
+    try check(M.custodyPath(home: home, sha256: "../" + measurement.dropLast(3)) == nil &&
+              M.custodyPath(home: home, sha256: measurement.uppercased()) == nil && M.custodyPath(home: home, sha256: "") == nil,
+              "K11-l: only a lowercase SHA-256 names a custody file")
+
     // ---- Ticket delegation flag (K13: reserved, refused, always managed) ----
     let host = questionRequest.hostContext!
     let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "acct-codex", model: "gpt-6-astra",
@@ -257,5 +441,5 @@ func runRCCAdmissionFactsFixtures() throws {
     children[0]["quality_disclosure"] = disclosed; extra["children"] = children
     try reject("a disclosure has no extra field") { _ = try C.decodeSnapshot(json(extra)) }
 
-    print("RCC admission facts (407-a/f): \(checks) table/class/catalog/ticket/disclosure checks PASS; provider calls 0")
+    print("RCC admission facts (407-a/f, K11): \(checks) table/class/measurement/catalog/ticket/disclosure checks PASS; provider calls 0")
 }

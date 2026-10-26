@@ -51,6 +51,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-native-preparation-only") { try runRCCNativePreparationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-delegated-envelope-only") { try runRCCDelegatedEnvelopeFixtures(); return }
         if CommandLine.arguments.contains("--rcc-exact-arithmetic-only") { try runRCCExactArithmeticVectorFixtures(); return }
+        if CommandLine.arguments.contains("--harness-profile-only") { try runHarnessProfileFixtures(); return }
         if CommandLine.arguments.contains("--codex-turn-rejection-only") { try runCodexTurnRejectionFixtures(); return }
         if CommandLine.arguments.contains("--inline-projection-display-only") { try InlineProjectionDisplayFixture.run(); return }
         if CommandLine.arguments.contains("--rcc-runtime-projection-only") { try runRCCRuntimeProjectionFixtures(); return }
@@ -87,6 +88,7 @@ final class SourceContextTests {
         try runRCCConfiguredInputObservationFixtures()
         try runRCCDelegatedEnvelopeFixtures()
         try runRCCExactArithmeticVectorFixtures()
+        try runHarnessProfileFixtures()
         try runCodexTurnRejectionFixtures()
         try runRCCRuntimeProjectionFixtures()
         try InlineProjectionDisplayFixture.run()
