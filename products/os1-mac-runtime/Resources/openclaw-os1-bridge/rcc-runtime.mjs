@@ -2283,6 +2283,13 @@ function pureArithmetic(request) {
   const result = match[2] === '+' ? a + b : match[2] === '*' ? a * b : a - b;
   return result.toString();
 }
+/** Whether a text pureArithmetic accepted has a number with a leading zero
+ * ("010-1234", "007+1", "02-123"): a phone number or a code, never a quantity.
+ * Every zero-model reading abstains on it (K7), the bare form included;
+ * pureArithmetic itself, the explicit-route exact family, is unchanged. */
+function legacyLeadingZero(text) {
+  return /(?:^|\D)0\d/.test(text);
+}
 
 // Wrapped exact arithmetic (2026-10-15). A plain Auto "1+1이 뭐야?" ran Codex
 // gpt-6-luna/low (29K input tokens) and still ended returned_unverified
@@ -2423,7 +2430,8 @@ function closedDecimal({n, d}) {
  * removed trailing run is punctuation ("1+1이 뭐야…": '…' folds to "...").
  * Shapes, with the expression EXPR read by closedArithmeticTokens/Value:
  *  BARE    EXPR alone, nothing removed. pureArithmetic's one-operator form
- *          keeps its exact legacy reading ('5-3', '5--3', '-3*-4').
+ *          keeps its exact legacy reading ('5-3', '5--3', '-3*-4'), except
+ *          that a leading-zero number abstains there too ('02-123').
  *  WEAK    EXPR with a removed mark, or EXPR + a particle (은|는|이|가) and a
  *          '?' ("2+2는?").
  *  STRONG  EXPR + '=' ("1+1=", "1+1=?"); EXPR + an optional particle + a
@@ -2462,7 +2470,7 @@ export function exactArithmeticQuestion(request) {
   if (end) text = text.slice(0, end.index).trim();
   if (!end) {
     const bare = pureArithmetic(text);
-    if (bare !== null) return bare;
+    if (bare !== null) return legacyLeadingZero(text) ? null : bare;
   }
   const prefix = ENGLISH_ARITHMETIC_PREFIX.exec(text);
   const body = prefix ? text.slice(prefix[0].length) : text;
@@ -2490,7 +2498,9 @@ export function exactArithmeticQuestion(request) {
 }
 /** Core's zero-model arithmetic answer for a whole Auto request. */
 export function zeroModelArithmetic(request) {
-  return pureArithmetic(request) ?? exactArithmeticQuestion(request);
+  const bare = pureArithmetic(request);
+  if (bare !== null) return legacyLeadingZero(request) ? null : bare;
+  return exactArithmeticQuestion(request);
 }
 
 /** Whether a task carries no earlier conversation that could give its words
@@ -3009,6 +3019,16 @@ function recordTurnSettlement(entry, result) {
 /** Another child of this task is still running a dispatched attempt. */
 function siblingRunning(snapshot, nodeID) {
   return snapshot.children.some(c => c.id !== nodeID && c.state === 'running' && c.dispatched_at_ms !== null);
+}
+/** K12: whether a child held with no running sibling leaves its task to the
+ * scheduler's held branch instead of holding the task in place. That branch
+ * already settles a hold reached while a sibling runs: it never carries an
+ * unaccepted descent, and for a v2 task it types the partial over the
+ * completed nodes. So a v2 task's completed answers reach the owner however
+ * the hold was timed. A v1 task, and a child that retains an output (a
+ * handback continuation's report), keep the direct hold. */
+function heldThroughScheduler(snapshot, child) {
+  return snapshot.task?.result_contract_version === 2 && child?.output === null;
 }
 /** The quota-pool lease key of an exact configuration, or null. */
 function poolKeyOf(config) {
@@ -5746,6 +5766,7 @@ class RCCRuntime {
               if (dispatched) child.uncertain_error = reason;
               else child.hold_reason = reason;
               if (siblingRunning(state, node.id)) return;
+              if (!dispatched && heldThroughScheduler(state, child)) return;
               state.state = dispatched ? 'effects_uncertain' : 'held';
               state.error = reason;
             });
@@ -6802,6 +6823,7 @@ class RCCRuntime {
         child.dispatched_at_ms = null; child.finished_at_ms = Date.now();
         // Already-dispatched siblings retain their result/receipt custody.
         if (siblingRunning(snapshot, nodeID)) return;
+        if (heldThroughScheduler(snapshot, child)) return;
         snapshot.state = 'held'; snapshot.error = 'native_dispatch_budget_exhausted';
       });
       return false;

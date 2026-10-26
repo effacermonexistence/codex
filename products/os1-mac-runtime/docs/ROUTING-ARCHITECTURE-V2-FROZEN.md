@@ -71,6 +71,12 @@
 
 **K1/I1 정정.** 이 표의 이전 판은 K1을 '구현'으로만 적었다. 그래서 K1이 §2.2 I1의 셋째 bind 조건(재실행 예산: `max_attempts ≥ 2`, native cap 여유)까지 넣은 것처럼 읽혔는데, 틀렸다. 그 조건은 넣지 않았다. 하강 bind(`admittedRoute`·`tierRouteCandidate`)는 `max_attempts`도 native cap 여유도 읽지 않는다. 그 여유를 읽는 곳은 계획 시점 적격 조건 둘뿐이다: `ownerCollectionPlanEligible`(cap ≥ 2×obligation)과 `_calibratedContext`(여유 ≥ 2). App 계획에서는 `max_attempts`가 2(main.swift)이고, K6 cap 16 = 2×8(8은 Core가 받는 최대 노드·obligation 수)이므로 계획 시점에는 노드당 2회 여유가 선다. 그러나 cap은 무과금 하강과 무료 사전 실행 거부까지 모든 native dispatch를 센다. 그래서 bind 시점 여유는 보장되지 않는다. 뒤쪽 노드의 하강이 여유 2 미만에서 bind될 수 있고, 그때 escalation은 `native_dispatch_budget_exhausted` hold가 된다(fail-closed, 더 싼 답 전달 없음). bind 시점 여유 조건은 미해결로 남는다(K6·K10 세부 기록 참고).
 
+**최종 리뷰 수정 (build 436 전).** 독립 반증을 통과한 minor 지적 네 개를 고쳤다. 모두 D1이다(모델·provider 호출 0).
+- **K7** bare 한 연산자 형태도 앞자리가 0인 수에서 abstain한다(`'02-123'`, `'007+1'`, `'010-1234'`). 이전에는 zero-model 경로가 `pureArithmetic`을 먼저 불러 `'02-123'`을 `-121`로 답했다. `pureArithmetic` 자체(explicit-route `certified:exact` 계열)는 그대로다. 공유 vector에 이 형태들과 `'0+1'`·`'-0+1'`·`'10-0'`(0 하나는 앞자리 0이 아님)을 더했다.
+- **K6×K12** v2 task의 cap hold나 사전 dispatch 오류 hold가 실행 중인 형제 없이 일어나도 task를 그 자리에서 held로 두지 않고 scheduler의 held 정산을 거친다. 그래서 완료된 답은 형제가 실행 중이었는지와 무관하게 형식 partial(`returned_unverified`)로 전달된다. v1 task와 출력을 보유한 child(handback continuation)는 이전처럼 그 자리에서 hold한다.
+- **K9×K12** `route-replay.mjs delivery --snapshots`가 attempt 없는 완료 deterministic DAG 노드(plan kind `deterministic`, host가 계산한 local exact 행)를 `zero_model:deterministic_node`로 센다. 그 밖의 attempt 없는 child는 여전히 `delivered_without_attempt`다.
+- **release** `build-release.sh`의 모든 `node --test` 줄에 `--test-timeout=180000`을 붙였다(Node 기본값은 무한). wiring 검사가 이를 고정한다.
+
 ### 단계별 gate 상태
 
 | 단계 | 상태 | 근거 |
@@ -99,7 +105,7 @@
 - **K6** cap을 argv 리터럴이 아니라 제출마다 고정한다(이전 빌드 제출은 nil) — budget이 Core 제출 fingerprint에 들어가서 같은 ID retry가 `idempotency_conflict`가 된다.
 - **K7** (a)는 좁은 형태만 넣었다 — 넓은 형태는 '모르는 이력은 모델에게' fixture를 뒤집는다(lead 결정 D9).
 - **K7** `pureArithmetic`은 바꾸지 않았다 — explicit-route `certified:exact` 계열이고 plugin verifier·Swift envelope과 짝이다.
-- **K7** ASCII `-`·`/`만 있는 식은 '='나 수량 술어(얼마·몇·how much is)가 있을 때만 산술로 읽고, 앞자리가 0인 수는 abstain한다 — 날짜·전화번호를 zero-model 산술로 답하지 않기 위해서다(HEAD는 모델로 보냈다).
+- **K7** ASCII `-`·`/`만 있는 식은 '='나 수량 술어(얼마·몇·how much is)가 있을 때만 산술로 읽고, 앞자리가 0인 수는 bare 한 연산자 형태를 포함해 모든 강도에서 abstain한다 — 날짜·전화번호를 zero-model 산술로 답하지 않기 위해서다(HEAD는 감싼 형태를 모델로 보냈고, bare '02-123'은 -121로 답했다. bare 형태는 최종 리뷰에서 고쳤다).
 - **K7** 소수 피연산자를 더했다 — 동결 행에 없던 확장이며, 답은 유한 소수만 낸다.
 - **K8** 술어 한정형에 `hostAutoPlan` 조건까지 더했다 — 문자 그대로 하면 calibrated 재검사가 공회전하고 contract 재관측을 건너뛴다(lead 결정 D9).
 - **K9** 라벨은 top-level `check_label`에 둔다 — `_outcomeSummary`는 adaptive가 꺼지면 null이고 8 KB를 넘으면 지워진다.
@@ -141,7 +147,7 @@
 - I1 bind 시점 cap 여유 조건(위 K1/I1 정정).
 - partial·legacy 신호 verifier의 pass가 `verifier_outcome` `pass`로 `stats`에 세인다(K4·K9). 정확한 판정은 `check_outcome`·`check_label`에 있다.
 - K10 정책 생산자가 없다(K9 ledger의 check-acceptance로 `p_lower`·c를 맞추는 스크립트 없음). 비용 단위는 token이지 quota가 아니다.
-- K12 held·cancelled 상태 partial의 생산자가 없고, `native_receipt_sha256`은 null이다.
+- K12 v2의 cap·사전 dispatch 오류 hold는 이제 scheduler 정산으로 형식 partial을 낸다. 그 밖에 task를 그 자리에서 hold하는 곳(시간·비용 예산 등)과 cancelled에는 partial 생산자가 없고, `native_receipt_sha256`은 null이다.
 - K14 tier 있는 alias가 더 새 모델로 다시 풀리면 알림이 뜨지 않는다(alias drift).
 - K7 남은 모호성 위험: 첫 턴 '10/25는 얼마야?'를 날짜로, '1 더하기 1은?'을 밈으로 뜻한 경우.
 

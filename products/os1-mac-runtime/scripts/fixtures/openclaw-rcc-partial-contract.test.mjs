@@ -415,6 +415,50 @@ test('one law: an unaccepted certified descent is never carried; it is unresolve
   }
 });
 
+test('K6 x K12: a hold reached with no running sibling still types the v2 partial', async t => {
+  const dir = await directory(t);
+  const nodes = [node('first', 'a'), node('second', 'b'), node('third', 'c')];
+  for (const cause of ['native_cap', 'pre_dispatch_error']) {
+    for (const version of [undefined, 2]) {
+      // One worker: 'first' and 'second' complete one after another, then
+      // 'third' is held while nothing runs: the native cap of two refuses its
+      // dispatch, or an error stops it before dispatch. A v2 task settles
+      // through the same held branch as a hold met while a sibling runs (the
+      // one-law test above); a v1 task keeps its direct hold, no result.
+      const request = task(dir, {version, parallel: 1, nativeCap: cause === 'native_cap' ? 2 : null});
+      const reason = cause === 'native_cap' ? 'native_dispatch_budget_exhausted' : 'fixture_ticket_unavailable';
+      const dispatched = [];
+      const runtime = await fixture(t, request, {nodes, maximumWorkers: 1, maximumReadWorkersPerPool: 1,
+        execute: async ticket => { dispatched.push(ticket.node_id); return result(ticket); }});
+      if (cause === 'pre_dispatch_error') {
+        const ticket = runtime._ticket.bind(runtime);
+        runtime._ticket = (snapshot, n, ...rest) => {
+          if (n.id === 'third') throw Object.assign(Error('fixture ticket unavailable'), {code: reason});
+          return ticket(snapshot, n, ...rest);
+        };
+      }
+      await runtime.submit(request);
+      const answer = await wait(runtime, request);
+      const label = cause + ' v' + (version ?? 1);
+      assert.deepEqual(dispatched, ['first', 'second'], label + ': nothing more dispatched');
+      const durable = runtime._load(request.task_id);
+      const third = durable.children.find(c => c.id === 'third');
+      assert.deepEqual([third.state, third.hold_reason, third.output], ['held', reason, null], label);
+      assert.equal(answer.error, reason, label);
+      if (version === 2) {
+        assert.equal(answer.state, 'returned_unverified', label);
+        assertWirePartial(answer, request, durable);
+        assert.deepEqual(answer.result.partial.coverage,
+          {completed_node_ids: ['first', 'second'], unresolved_node_ids: ['third']}, label);
+        assert.equal(answer.result.output, 'first: 2\n\nsecond: 4', label);
+      } else {
+        assert.equal(answer.state, 'held', label);
+        assert.equal(answer.result, null, label);
+      }
+    }
+  }
+});
+
 test('a derived intent task keeps the version; the partial binds the original task', async t => {
   const dir = await directory(t), request = task(dir, {version: 2, request: '다 넘겨봐 1+1 2+2'});
   const routes = [{surface: 'codex', instruction: '1+1'}, {surface: 'codex', instruction: '2+2'}];

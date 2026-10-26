@@ -477,8 +477,13 @@ for fixture in ("local-plan-proposal", "local-plan-planner", "joint-selector", "
                 "adaptive-joint-shadow", "routing-outcome-capture", "adaptive-prompt-views",
                 "frozen-route-artifacts", "frozen-route-predictor", "frozen-runtime",
                 "calibrated-plugin", "calibrated-route-evidence", "calibrated-route-predictor", "calibrated-admission"):
-    check('node --test "$script_dir/fixtures/openclaw-rcc-' + fixture + '.test.mjs"' in RELEASE,
+    check('node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-' + fixture + '.test.mjs"' in RELEASE,
           "release executes exact pure routing fixture: " + fixture)
+# Node's default per-test timeout is infinite: a release fixture whose await
+# never settles would stall build-release.sh instead of failing it.
+NODE_TEST_LINES = re.findall(r"^node --test\b.*$", RELEASE, re.M)
+check(len(NODE_TEST_LINES) >= 50 and all(" --test-timeout=180000 " in line for line in NODE_TEST_LINES),
+      "every release node --test line carries a per-test timeout")
 check('"--append-system-prompt"' in MAIN and '"developerInstructions": instructions' in MAIN,
       "native execution retains real provider-supported governance channels")
 DISPLAY = (ROOT / "Sources/OS1Context/RCCNativeDisplayReceipts.swift").read_text()
@@ -635,7 +640,12 @@ check("!this.hostAutoPlan" in REUSE and "snapshot.adaptive_routing?.planner_invo
 ARITH_TEST = (ROOT / "scripts/fixtures/openclaw-rcc-exact-arithmetic.test.mjs").read_text()
 CONTEXT_TESTS = (ROOT / "Tests/OS1ContextTests/SourceContextTests.swift").read_text()
 check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exec(request);" in RUNTIME and
-      "export function zeroModelArithmetic(request) {\n  return pureArithmetic(request) ?? exactArithmeticQuestion(request);" in RUNTIME and
+      "export function zeroModelArithmetic(request) {\n  const bare = pureArithmetic(request);\n"
+      "  if (bare !== null) return legacyLeadingZero(request) ? null : bare;\n"
+      "  return exactArithmeticQuestion(request);" in RUNTIME and
+      # A bare one-operator leading-zero number ('02-123') abstains like
+      # every other strength; pureArithmetic itself is unchanged.
+      "if (bare !== null) return legacyLeadingZero(text) ? null : bare;" in RUNTIME and
       "const answer = zeroModelArithmetic(task.request);" in RUNTIME and
       # Only '=' or one '-'/'/' under a quantity predicate reads a date- or
       # phone-shaped EXPR as arithmetic; a leading-zero number never is.
@@ -710,11 +720,11 @@ check("isLivePlanCapability(capability, now)" in live_context and "activeIntentV
       "contract.coverage === 'full'" in live_context and "contract.context_sha256" in live_context and
       "live_r0_full_contract_required" in live_context and "live_reference_fallback_unavailable" in live_context,
       "bounded live seam rechecks current custody, fresh Auto scope, original metadata and full native R0 floor")
-check('node --test "$script_dir/fixtures/openclaw-rcc-live-plan-adoption.test.mjs"' in RELEASE and
+check('node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-live-plan-adoption.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-live-plan-adoption.test.mjs").is_file(),
       "release executes live-capability revocation, reachability and full-checker fallback fixtures")
 for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rcc-reference-floor"):
-    check(f'node --test "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
+    check(f'node --test --test-timeout=180000 "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
           (ROOT / f"scripts/fixtures/{fixture}.test.mjs").is_file(),
           "release runs the build-407 fixture " + fixture)
 

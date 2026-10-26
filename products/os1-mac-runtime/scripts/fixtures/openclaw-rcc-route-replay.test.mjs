@@ -14,9 +14,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { checkIdOf, createRCCRuntime, deliveryBasisOf, hostContextFingerprint, openRoutingLedger,
+import { LOCAL_WORKER_MODEL, checkIdOf, createRCCRuntime, deliveryBasisOf, hostContextFingerprint, openRoutingLedger,
   registerNodeVerifiers } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import { NON_DELIVERY_STATES, auditDeliveryPolicy, canonicalJSON, parseLedgerText } from '../route-replay.mjs';
+import { LOCAL_WORKER_MODEL as REPLAY_LOCAL_WORKER_MODEL, NON_DELIVERY_STATES, auditDeliveryPolicy, canonicalJSON,
+  parseLedgerText } from '../route-replay.mjs';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'route-replay.mjs');
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -355,8 +356,68 @@ test('route-replay delivery: a held, failed or cancelled task\'s partial result 
   }
 });
 
+test('route-replay delivery: a completed deterministic DAG node is zero_model, any other attemptless child FAILs', async t => {
+  assert.equal(REPLAY_LOCAL_WORKER_MODEL, LOCAL_WORKER_MODEL, 'the audit mirrors the runtime local model execution row');
+  // A real durable runtime: a v2 plan of two deterministic nodes on a
+  // host-computed local exact row. No attempt, no ledger record, no model.
+  const dir = await fixture(t), text = 'Send independent arithmetic requests', policy = 'Deterministic node fixture policy';
+  const host = {workspace: dir, context: null, provider_preference: 'auto', codex_session_id: null,
+    claude_session_id: null, require_read_only: true, owner_policy: null};
+  const request = {schema: 1, task_id: randomUUID(), request: text, objective: text, request_sha256: sha(text),
+    source_fingerprint: hostContextFingerprint(host), policy_sha256: sha(policy), mode: 'auto', material_refs: [],
+    host_context: host, policy: {source_sha256: sha('fixture source'), projection_sha256: sha(policy), text: policy},
+    budget: {max_attempts: 1, max_parallel: 2, max_cost_units: null, max_duration_ms: 20_000}, result_contract_version: 2};
+  const now = Date.now();
+  const local = {id: 'local-exact', surface: 'local', transport: 'local', account_id: 'fixture', model: 'exact',
+    effort: 'none', tools: [], scope: 'read_only', permission_profile: 'read_only', quota_pool: 'none', allowed_paths: [],
+    configuration_sha256: sha('local-exact'), availability: 'available', availability_observed_at_ms: now - 1,
+    availability_valid_until_ms: now + 30_000, quota_remaining_fraction: null, quota_observed_at_ms: null,
+    quota_valid_until_ms: null, quality_state: 'policy_admitted', estimated_cost_units: 1};
+  const deterministic = (id, instruction) => ({id, candidate_id: local.id, instruction, dependencies: [],
+    kind: 'deterministic', scope: 'read_only', owned_paths: [], context_refs: []});
+  const runtime = await createRCCRuntime({stateDir: join(dir, 'state'), maximumWorkers: 2, maximumReadWorkersPerPool: 2,
+    catalog: async q => ({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, candidates: [local]}),
+    plan: async ({task: q}) => ({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256,
+      nodes: [deterministic('d', '1+1'), deterministic('e', '2+2')], final_node_id: null}),
+    execute: async () => { throw Error('a deterministic node never executes a model'); },
+    verifyTask: () => { throw Error('no parent adoption'); }});
+  t.after(async () => { await runtime.close(); });
+  await runtime.submit(request);
+  const done = await runtime.wait({schema: 1, task_id: request.task_id}, {timeoutMs: 10_000});
+  assert.equal(done.state, 'returned_unverified', done.error);
+  const stored = runtime._load(request.task_id);
+  assert.ok(stored.plan_provenance !== 'deterministic_no_model', 'a DAG plan, not the task-level zero-model path');
+  assert.deepEqual(stored.children.map(c => [c.id, c.state, c.attempt_id, c.attempt_history.length]),
+    [['d', 'completed', null, 0], ['e', 'completed', null, 0]]);
+  // The ledger holds other tasks' valid records; this task has none.
+  const ledgers = [{path: 'fixture', text: jsonl(VALID())}];
+  const auditOne = snapshot => auditDeliveryPolicy({ledgers,
+    snapshots: [{task_id: request.task_id, snapshot: JSON.stringify(snapshot)}]});
+  const report = auditOne(stored);
+  assert.equal(report.verdict, 'PASS', JSON.stringify(report.violations));
+  assert.deepEqual(report.delivery.by_basis, {'zero_model:deterministic_node': 2});
+  // Fail closed: the same attemptless child is a violation unless it is a
+  // completed deterministic plan node on a host-computed local exact row.
+  const variants = {
+    not_completed: s => { s.children[0].state = 'held'; },
+    agent_plan_node: s => { s.plan.nodes[0].kind = 'agent'; },
+    not_in_plan: s => { s.plan.nodes = s.plan.nodes.filter(n => n.id !== 'd'); },
+    remote_row: s => { Object.assign(s.children[0].selected_config, {surface: 'codex', transport: 'codex_app_server'}); },
+    quota_pool: s => { s.children[0].selected_config.quota_pool = 'openai_codex'; },
+    tools: s => { s.children[0].selected_config.tools = ['read']; },
+    local_model_row: s => { s.children[0].selected_config.model = LOCAL_WORKER_MODEL; },
+    no_config: s => { s.children[0].selected_config = null; }};
+  for (const [label, mutate] of Object.entries(variants)) {
+    const snapshot = structuredClone(stored);
+    mutate(snapshot);
+    const failed = auditOne(snapshot);
+    assert.equal(failed.verdict, 'FAIL', label);
+    assert.deepEqual(failed.violations.map(v => `${v.rule}:${v.node_id}`), ['delivered_without_attempt:d'], label);
+  }
+});
+
 // ---- Core: the records a real durable runtime writes. ----
-const policyText = 'RCC route replay fixture policy: candidates do not grant authority.';
+const policyText ='RCC route replay fixture policy: candidates do not grant authority.';
 const LOOKUP = 'What does the interval rule in this workspace mean?';
 function task(dir, request = LOOKUP) {
   const host = {workspace: dir, context: null, provider_preference: 'auto', codex_session_id: null,

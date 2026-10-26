@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "grammar": "os1-closed-arithmetic-v1",
- "about": "Shared vectors for Core's zero-model arithmetic (rcc-runtime.mjs zeroModelArithmetic = pureArithmetic ?? exactArithmeticQuestion). expected is the exact canonical output, or null when Core must abstain and route to the models. Read by openclaw-rcc-exact-arithmetic.test.mjs and OS1ContextTests RCCExactArithmeticVectorsFixture.",
+ "about": "Shared vectors for Core's zero-model arithmetic (rcc-runtime.mjs zeroModelArithmetic = pureArithmetic, abstaining on a leading-zero number, ?? exactArithmeticQuestion). expected is the exact canonical output, or null when Core must abstain and route to the models. Read by openclaw-rcc-exact-arithmetic.test.mjs and OS1ContextTests RCCExactArithmeticVectorsFixture.",
  "limits": {
   "input_chars": 160,
   "int_digits": 15,
@@ -827,6 +827,51 @@
    "input": "007+1=",
    "expected": null,
    "why": "a leading zero abstains at every strength, '=' included"
+  },
+  {
+   "input": "007+1",
+   "expected": null,
+   "why": "a leading zero abstains at every strength, the bare one-operator form included"
+  },
+  {
+   "input": "010-1234",
+   "expected": null,
+   "why": "a phone-number fragment: a leading zero abstains in the bare form"
+  },
+  {
+   "input": "02-123",
+   "expected": null,
+   "why": "an area code and a number: a leading zero abstains in the bare form"
+  },
+  {
+   "input": "0010*2",
+   "expected": null,
+   "why": "a code with leading zeros, never a quantity"
+  },
+  {
+   "input": "10-03",
+   "expected": null,
+   "why": "a leading zero on the second operand abstains too"
+  },
+  {
+   "input": "０２-１２３",
+   "expected": null,
+   "why": "fullwidth digits fold to the same leading-zero bare form"
+  },
+  {
+   "input": "0+1",
+   "expected": "1",
+   "why": "a single 0 is a number, not a leading zero"
+  },
+  {
+   "input": "-0+1",
+   "expected": "1",
+   "why": "a signed single 0 is a number, not a leading zero"
+  },
+  {
+   "input": "10-0",
+   "expected": "10",
+   "why": "a 0 inside or after a number is no leading zero"
   }
  ]
 }

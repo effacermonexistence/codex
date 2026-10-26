@@ -22,7 +22,9 @@
  *    holds its output: a completed or returned_unverified result, or the
  *    partial result a held, failed or cancelled task retains (deliveryOf);
  *    that attempt's record must exist and be policy-valid. The per-attempt
- *    rules above still apply.
+ *    rules above still apply. A child with no attempt is delivered only as
+ *    zero_model: a task-level zero-model answer, or a completed deterministic
+ *    DAG node on a host-computed local exact row (deterministic_node).
  *  - Records without delivery_basis (older builds) are legacy: counted,
  *    never proof; --include-legacy fails on an unprovable lower-tuple one.
  *
@@ -146,6 +148,22 @@ function basisViolations(record, delivered) {
 function legacyUnprovable(record, delivered) {
   return delivered && LOWER_TUPLE_KINDS.has(ranAs(record)) && record.verifier_outcome !== 'pass';
 }
+// rcc-runtime.mjs LOCAL_WORKER_MODEL: the local model execution row, never a
+// host-computed exact row (the route-replay fixture pins the two equal).
+export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';
+/** K12: a completed deterministic DAG node, the one attemptless child the
+ * runtime's partial contract types as delivered (attempt_id null): its plan
+ * node is kind 'deterministic' and it ran on a host-computed local exact row
+ * (local surface and transport, no quota pool, no tools, not the local model
+ * execution row). Any other attemptless child stays a violation. */
+function deterministicNode(snapshot, child) {
+  const node = plain(snapshot.plan) && Array.isArray(snapshot.plan.nodes) ?
+    snapshot.plan.nodes.find(item => plain(item) && item.id === child.id) : undefined;
+  const config = child.selected_config;
+  return child.state === 'completed' && node?.kind === 'deterministic' && plain(config) &&
+    config.surface === 'local' && config.transport === 'local' && config.quota_pool === 'none' &&
+    Array.isArray(config.tools) && config.tools.length === 0 && config.model !== LOCAL_WORKER_MODEL;
+}
 
 /** K9: audit `delivery_policy_valid` over routing-ledger generations
  * ([{path, bytes|text}]) and, optionally, task snapshots ([{task_id,
@@ -232,6 +250,7 @@ export function auditDeliveryPolicy({ledgers, snapshots = null, includeLegacy = 
         const attemptless = child.attempt_id == null && (child.attempt_history ?? []).length === 0;
         if (attemptless) {
           if (snapshot.plan_provenance === 'deterministic_no_model') count('zero_model:deterministic_no_model');
+          else if (deterministicNode(snapshot, child)) count('zero_model:deterministic_node');
           else violate('delivered_without_attempt', null, {task_id: taskID, node_id: child.id ?? null});
           continue;
         }
