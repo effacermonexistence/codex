@@ -307,9 +307,12 @@ private struct FleetExecutionReceipt: Codable {
     let resultBranch: String?
     let resultCommit: String?
     let run: RunSummary
+    /// "unverified" whenever the run is not a verified completion: the reader
+    /// must not take a delivered reference answer for a checked one.
+    var verification: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case schema, profile, repository, revision, run
+        case schema, profile, repository, revision, run, verification
         case jobID = "job_id"
         case nodeRole = "node_role"
         case deviceID = "device_id"
@@ -687,15 +690,15 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         }
         let preference = ["codex", "claude"].contains(assignment.profile) ? assignment.profile : "auto"
         // Fleet remains delivery/check-out custody, not another task router.
-        run = try await runOpenClawRCCTask(prompt: prompt, workspace: workspace, context: nil,
+        run = fleetReceiptRun(try await runOpenClawRCCTask(prompt: prompt, workspace: workspace, context: nil,
             surface: ProviderSurface(rawValue: preference) ?? .auto, codexSessionID: nil,
-            claudeSessionID: nil, requireReadOnly: false, taskID: assignment.jobID)
-        guard run.status == "complete", !run.steps.isEmpty, run.steps.allSatisfy({ $0.exitCode == 0 }) else {
+            claudeSessionID: nil, requireReadOnly: false, taskID: assignment.jobID))
+        guard fleetNativeRunIsDeliverable(run) else {
             throw OS1Error.message("Fleet governed execution has not completed")
         }
         published = try fleetCommitResult(assignment, workspace: workspace)
     }
-    let receipt = FleetExecutionReceipt(
+    var receipt = FleetExecutionReceipt(
         jobID: assignment.jobID,
         nodeRole: role,
         deviceID: try deviceID(),
@@ -706,11 +709,32 @@ private func executeFleetAssignment(_ assignment: FleetAssignment, role: String,
         resultCommit: published.1,
         run: run
     )
+    receipt.verification = run.status == "complete" ? "verified" : "unverified"
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     let data = try encoder.encode(receipt)
     guard data.count <= 65_536 else { throw OS1Error.message("Fleet result exceeds the signed result limit") }
     return String(decoding: data, as: UTF8.self)
+}
+
+/// Since build 436 (K1/K2) Core settles every reference answer that no
+/// registered verifier checked as returned_unverified: a delivered answer,
+/// labelled unverified, not a failed job. Until build 438 the fleet accepted
+/// only "complete", so all 17 fleet jobs from 2026-10-11 to 10-26 were reported
+/// failed, 8 of them after Core had answered (7.93M paid tokens discarded).
+func fleetNativeRunIsDeliverable(_ run: RunSummary) -> Bool {
+    ["complete", "returned_unverified"].contains(run.status) && !run.steps.isEmpty && run.steps.allSatisfy { $0.exitCode == 0 }
+}
+
+/// The fleet hands back the answer, not Core's task record. A Core snapshot is
+/// 84-168 KB (median 94 KB for returned_unverified on 2026-10-26), over the
+/// 64 KB signed result limit; the record stays on this Mac under monitorTaskID.
+func fleetReceiptRun(_ run: RunSummary) -> RunSummary {
+    var bounded = RunSummary(status: run.status, steps: run.steps)
+    bounded.monitorTaskID = run.monitorTaskID
+    bounded.workflowBlocker = run.workflowBlocker
+    bounded.routingNotices = run.routingNotices
+    return bounded
 }
 
 /// An automatic fleet job routes with the same capacity mix as a new app
@@ -1425,6 +1449,11 @@ func fleetResultStatusIsValid(_ run: RunSummary, profile: String) -> Bool {
             $0.action == "exo_distributed_inference" && $0.revasDisposition == "unverified_candidate"
         }
     }
+    // A reference answer no verifier checked: valid as an unverified delivery,
+    // never as an EXO candidate passed off as a native run.
+    if run.status == "returned_unverified" {
+        return run.steps.allSatisfy { $0.action != "exo_distributed_inference" && $0.revasDisposition != "unverified_candidate" }
+    }
     // A reviewed draft (build 289) is an adopted answer that a review replaced:
     // valid only beside the adopted review that names it. Build 289's first
     // fleet-run of a reviewed answer was refused here as an integrity failure.
@@ -1626,6 +1655,36 @@ func fleetSelfTest() throws {
     try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [draft, review]), profile: "os1"), "a draft without its review accepted")
     draft.revasDisposition = "retry"
     try check(!fleetResultStatusIsValid(RunSummary(status: "complete", steps: [draft, review]), profile: "os1"), "an unadopted step accepted")
+    // Build 438: a reference answer Core returned unverified is delivered,
+    // labelled, inside the signed limit; job fa75ee58 (2026-10-26) was discarded.
+    let reference = RunStepSummary(sequence: 1, provider: "claude", action: "cl_fable51_max", model: "claude-fable-5-1", effort: "max",
+        revasDisposition: "execution_only", sessionID: "fixture-reference", permissionProfile: "read_only", exitCode: 0,
+        output: "answer", stderr: "", durationMS: 1, nativeRecord: nil)
+    let unverified = RunSummary(status: "returned_unverified", steps: [reference])
+    try check(fleetNativeRunIsDeliverable(unverified), "returned_unverified reference answer discarded")
+    try check(fleetResultStatusIsValid(unverified, profile: "claude"), "returned_unverified receipt refused")
+    try check(!fleetNativeRunIsDeliverable(RunSummary(status: "workflow_blocked", steps: [reference])), "blocked run delivered")
+    try check(!fleetNativeRunIsDeliverable(RunSummary(status: "returned_unverified", steps: [])), "empty unverified run delivered")
+    try check(!fleetResultStatusIsValid(RunSummary(status: "returned_unverified", steps: [candidate]), profile: "codex"), "EXO candidate passed as unverified native run")
+    let failedStep = RunStepSummary(sequence: 1, provider: "claude", action: "cl_fable51_max", model: "claude-fable-5-1", effort: "max",
+        revasDisposition: "execution_only", sessionID: "fixture-failed", permissionProfile: "read_only", exitCode: 1,
+        output: "", stderr: "failed", durationMS: 1, nativeRecord: nil)
+    try check(!fleetNativeRunIsDeliverable(RunSummary(status: "returned_unverified", steps: [failedStep])), "failed step delivered")
+    try check(!fleetResultStatusIsValid(RunSummary(status: "returned_unverified", steps: [failedStep]), profile: "claude"), "failed step accepted")
+    var heavy = unverified
+    heavy.localRouterReceipt = String(repeating: "x", count: 100_000)
+    heavy.routingNotices = ["notice"]
+    heavy.monitorTaskID = "fixture-task"
+    let bounded = fleetReceiptRun(heavy)
+    try check(bounded.localRouterReceipt == nil && bounded.rccRuntime == nil && bounded.agentTask == nil && bounded.taskContext == nil
+        && bounded.routingNotices == ["notice"] && bounded.monitorTaskID == "fixture-task" && bounded.steps.count == 1
+        && bounded.status == "returned_unverified", "fleet receipt kept the Core record or lost the answer")
+    var labelled = FleetExecutionReceipt(jobID: assignment.jobID, nodeRole: "air", deviceID: "air", profile: "claude",
+        repository: request.workspaceRepository, revision: request.workspaceRevision, resultBranch: nil, resultCommit: nil, run: bounded)
+    labelled.verification = "unverified"
+    let labelledBytes = try JSONEncoder().encode(labelled)
+    try check(labelledBytes.count <= 65_536 && (try JSONDecoder().decode(FleetExecutionReceipt.self, from: labelledBytes)).verification == "unverified",
+        "unverified label lost or receipt over the signed limit")
     let receipt = FleetExecutionReceipt(jobID: assignment.jobID, nodeRole: "air", deviceID: "air", profile: "exo",
         repository: request.workspaceRepository, revision: request.workspaceRevision, resultBranch: nil, resultCommit: nil,
         run: RunSummary(status: "candidate", steps: [candidate]))
