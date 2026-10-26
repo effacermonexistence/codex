@@ -171,6 +171,14 @@ func testPromptIntentPolicy() throws {
                   "<<autonomous-loop-dynamic>>", "[SYSTEM NOTIFICATION - NOT USER INPUT]\nsomething", "<ci-monitor-event>x</ci-monitor-event>"] {
         try expect(PromptIntentPolicy.decision(for: block) == .harnessGenerated, "harness block dispatched: \(block.prefix(24))")
     }
+    // Verbatim compaction continuation dispatched as Fleet job fa75ee58 on
+    // 2026-10-26 (0.59M Fable max tokens), and the summary that opens a
+    // continued session.
+    for block in ["The context window filled up while you were working, so the conversation was compacted. Please continue from where you left off.",
+                  "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.",
+                  "Stop hook feedback:\nRemote completion guard: commit and push before finishing."] {
+        try expect(PromptIntentPolicy.decision(for: block) == .harnessGenerated, "harness continuation dispatched: \(block.prefix(32))")
+    }
     for phrase in ["계속 진행해", "계속해줘", "  continue  ", "ok", "네", "go on", "다시 해봐", "Proceed."] {
         try expect(PromptIntentPolicy.decision(for: phrase) == .notStandalone, "continuation phrase dispatched: \(phrase)")
     }

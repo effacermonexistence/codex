@@ -50,6 +50,19 @@ public enum PromptIntentPolicy {
         "<<autonomous-loop", "[SYSTEM NOTIFICATION", "<skill-format>",
     ]
 
+    /// Text the agent harness writes itself after a context compaction or a
+    /// Stop hook (matched case-insensitively). Without that session's context
+    /// it cannot run: on 2026-10-26 fleet job fa75ee58 dispatched "The context
+    /// window filled up while you were working, so the conversation was
+    /// compacted. Please continue from where you left off." and spent 0.59M
+    /// Fable max tokens on an answer nobody asked for.
+    public static let harnessContinuationMarkers = [
+        "this session is being continued from a previous conversation",
+        "the conversation was compacted",
+        "continue from where you left off",
+        "stop hook feedback",
+    ]
+
     /// Whole-prompt continuation phrases that depend on prior turns.
     public static let continuationPhrases: Set<String> = [
         "계속", "계속해", "계속해줘", "계속 진행해", "계속진행해", "진행해", "진행해줘", "이어서", "이어서 해줘",
@@ -70,7 +83,8 @@ public enum PromptIntentPolicy {
 
     public static func isHarnessGenerated(_ prompt: String) -> Bool {
         let head = String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_000))
-        return harnessMarkers.contains { head.contains($0) }
+        let lowered = head.lowercased()
+        return harnessMarkers.contains { head.contains($0) } || harnessContinuationMarkers.contains { lowered.contains($0) }
     }
 
     public static func isStandaloneTask(_ prompt: String) -> Bool {
