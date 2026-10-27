@@ -66,13 +66,48 @@ public enum ClaudeChatLane {
 
     /// True when the request asks for work rather than an answer. A text
     /// operation's own instruction ends this way too ("번역해줘"), so this is
-    /// asked about the whole request, never about the instruction alone. An
-    /// imperative that only asks for an explanation (`answerImperative`) is
-    /// not work; every other part of the request is still judged.
+    /// asked about the whole request, never about the instruction alone.
+    /// The native lane predicates (`conversationalQuestion`,
+    /// `readOnlyQuestion`, `readOnlyInformationRequest`) keep this reading
+    /// unchanged in build 441; only `RequestProfile` reads the answer-aware
+    /// one below.
     public static func asksForWork(_ prompt: String) -> Bool {
+        let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+        return actionTerms.contains(where: value.contains)
+    }
+
+    /// `asksForWork` with the conflation fixed (build 441, owner order
+    /// 2026-10-27): an imperative that only asks for an explanation
+    /// (`answerImperative`) is not work; every other part of the request is
+    /// still judged. `RequestProfile` reads this; the native lane predicates
+    /// do not (a "?"-ended "…설명해줘?" stays off the native chat lane).
+    public static func asksForWorkBeyondAnswer(_ prompt: String) -> Bool {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
             .replacingOccurrences(of: answerImperative, with: " ", options: .regularExpression)
         return actionTerms.contains(where: value.contains)
+    }
+
+    /// The content guards `conversationalQuestion` applies before it lets a
+    /// question take the tool-free chat lane, without its "?" and ending
+    /// rules: no lookup or current-facts word, no code, system or OS-1 term,
+    /// no English work verb, no digit and no dotted name. Build 441's RCC
+    /// chat-lane fact for an answer in any ending (`rccChatLaneEligible`)
+    /// requires these too, so an explanation of the workspace's changes, an
+    /// error, OS-1's routing or a release never reaches a lane with no tools.
+    public static func answerNeedsNoLookup(_ prompt: String) -> Bool {
+        let value = prompt.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.unicodeScalars.contains(where: { CharacterSet.decimalDigits.contains($0) }),
+              value.range(of: #"[A-Za-z0-9_\-]\.[A-Za-z]{1,6}(?![A-Za-z])"#, options: .regularExpression) == nil
+        else { return false }
+        let lower = value.lowercased()
+        func mentions(_ terms: [String]) -> Bool {
+            terms.contains { term in
+                term.unicodeScalars.allSatisfy(\.isASCII)
+                    ? lower.range(of: "\\b\(NSRegularExpression.escapedPattern(for: term))\\b", options: .regularExpression) != nil
+                    : lower.contains(term)
+            }
+        }
+        return !mentions(lookupTerms) && !mentions(technicalTerms) && !mentions(workVerbs) && !mentions(statusQuestions)
     }
 
     /// True when the request needs the full Claude Code lane.

@@ -1203,7 +1203,7 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * nothing. */
 function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false,
                             referenceOnly = false, preferPool = null, verifierRegistry = null,
-                            descentPolicy = null, headroom = null} = {}) {
+                            descentPolicy = null, headroom = null, planNodes = 1} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
   if (explicitRoute?.surface === 'local') return localRouteCandidate(node, task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
@@ -1266,10 +1266,13 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     // Build 441 (owner order, 2026-10-27): the grade's first dispatchable
     // tuple, in R11 order, below a reference that can dispatch now (this
     // pool's, else another's), fixed here as its one escalation (K2/R9), and
-    // only with re-run headroom at bind (amended I1). Never certified.
+    // only with re-run headroom at bind (amended I1). Never certified. The
+    // headroom is the task's, so only a one-node plan may hold it: two graded
+    // siblings would each count the same two dispatches (review of 441).
+    const sole = planNodes === 1;
     const used = plain(headroom) ? headroom : {attempts: 0, native_dispatches: 0};
     const cap = task.budget?.max_native_dispatches;
-    const roomy = (task.budget?.max_attempts ?? 0) - (used.attempts ?? 0) >= 2 &&
+    const roomy = sole && (task.budget?.max_attempts ?? 0) - (used.attempts ?? 0) >= 2 &&
       (cap == null || cap - (used.native_dispatches ?? 0) >= 2);
     const graded = roomy ? serve(pool => GRADED_ROUTES[admission.grade].map(([tier, effort], index) =>
       ({index, rows: entryRows(pool.rows, {tier, effort}, catalog, catalog?.routing_intent_v2 ?? null)})), 'graded') : null;
@@ -1293,7 +1296,8 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     }
     // Not bound below the reference: the node binds the reference, admitted as
     // uncertified (its reason never names a graded admission), with the note.
-    notes.push('graded_' + admission.grade + '_' + (!roomy ? 'requires_dispatch_headroom' :
+    notes.push('graded_' + admission.grade + '_' + (!sole ? 'requires_single_node_plan' :
+      !roomy ? 'requires_dispatch_headroom' :
       !chosen ? 'tuple_undispatchable' : isReference ? 'tuple_is_reference' : 'requires_runnable_reference'));
     admission = UNCERTIFIED_ADMISSION;
   }
@@ -1558,7 +1562,8 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifie
         SCOPES.has(node.scope) && ['agent', 'deterministic'].includes(node.kind) &&
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
       const {route_class: _grade, ...rest} = node;
-      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy});
+      const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy,
+        planNodes: plan.nodes.length});
       decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
         choice.tier);
       routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
@@ -5152,7 +5157,7 @@ class RCCRuntime {
     const choice = selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
       {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs,
         referenceOnly: escalated || child.route_kind === 'execution_only', verifierRegistry: this.verifierRegistry,
-        descentPolicy: this.descentPolicy,
+        descentPolicy: this.descentPolicy, planNodes: snapshot.plan.nodes.length,
         headroom: {attempts: chargedAttempts(child, true), native_dispatches: nativeDispatchCount(snapshot)}});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
@@ -5226,6 +5231,7 @@ class RCCRuntime {
         const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
           {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry,
             descentPolicy: this.descentPolicy, referenceOnly: child.route_kind === 'execution_only',
+            planNodes: snapshot.plan.nodes.length,
             headroom: {attempts: chargedAttempts(child, true), native_dispatches: nativeDispatchCount(snapshot)}});
         return choice.candidate.quota_pool !== planned.quota_pool &&
           this._leasePossible(choice.candidate, executionTask(snapshot), node.id, false) ? choice : null;

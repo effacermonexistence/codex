@@ -196,6 +196,26 @@ test('bind-time headroom: two attempts and two native dispatches must remain, el
   assert.equal(bind(unlimited, catalog(unlimited)).tuple, 'gpt-6.1-sol/medium', 'no cap: only the attempts bound');
 });
 
+test('the headroom is the task\'s: only a one-node plan binds graded (an injected two-node plan keeps the reference)', () => {
+  // Review of build 441: two graded siblings would each count the task's two
+  // dispatches, so the first one's escalation could be refused. The host's
+  // Auto plan has one node; an injected plan of two runs the reference.
+  const q = task({budget: {max_native_dispatches: 2}}), c = catalog(q);
+  const nodes = ['a', 'b'].map(id => ({id, instruction: q.request, dependencies: [], kind: 'agent', scope: 'read_only',
+    owned_paths: [], context_refs: []}));
+  const two = resolveRoutePlan({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, final_node_id: null, nodes},
+    q, c, Date.now());
+  for (const id of ['a', 'b']) {
+    assert.equal(`${two.decisions[id].model}/${two.decisions[id].effort}`, 'gpt-6-astra/ultra', id);
+    assert.equal(two.routes[id].kind, 'reference', id);
+    assert.match(two.decisions[id].reason, /;admitted_reference_uncertified;graded_standard_requires_single_node_plan;/);
+  }
+  const one = resolveRoutePlan({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, final_node_id: 'a',
+    nodes: [nodes[0]]}, q, c, Date.now());
+  assert.equal(`${one.decisions.a.model}/${one.decisions.a.effort}`, 'gpt-6.1-sol/medium');
+  assert.equal(one.routes.a.kind, 'graded');
+});
+
 test('K2: a graded tuple binds only beside a runnable reference; none holds, typed', () => {
   const q = task();
   // This pool's reference cannot dispatch: the other pool's reference is the escalation.

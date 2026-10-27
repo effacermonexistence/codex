@@ -220,12 +220,20 @@ check('public static let silentRuleLine = "Apply these OS-1 runtime rules silent
       'mention one only if it blocks the request."' in ENVELOPE and ENVELOPE.count("silentRuleLine") == 3,
       "the envelope's silent-rule line is one constant, used once on the rules line")
 # H1: the RCC child's host-side rules, as the direct/native path has them.
-check("rccIsolatesReadOnlyClaudeHome(surface: surface, permissionProfile: signed.permissionProfile,\n"
-      "                resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)\n"
-      "                ? try sourceAnswerWorkspace() : h.workspace" in native and
-      native.index("rccIsolatesReadOnlyClaudeHome(surface: surface") < native.index("var before = workspaceHash(workspace)") <
+check("isolatedHome = !surface.forcesChatLane && rccIsolatesReadOnlyClaudeHome(surface: surface,\n"
+      "            permissionProfile: signed.permissionProfile,\n"
+      "            resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)" in native and
+      ": isolatedHome ? try sourceAnswerWorkspace() : h.workspace" in native and
+      native.index("isolatedHome = !surface.forcesChatLane") < native.index("var before = workspaceHash(workspace)") <
       native.index("executionWorkspace = workspace; executionWorkspaceBefore = before"),
       "a fresh read-only Claude agent child never starts in HOME; the hash and executed workspace are the isolated one")
+# Review of build 441: as on the native path, execute keeps HOME as its
+# workspace (--safe-mode, drift scope) and runs in the answer workspace; the
+# isolated session is ephemeral, so no later turn resumes it from HOME.
+check("workspace: isolatedHome ? h.workspace : workspace," in native and "surfaceOverride: surface, workspaceOverride: workspace," in native
+      and "delegatedOneShotSession: stagedTransaction != nil || isolatedHome ||" in native
+      and native.count("if stagedTransaction != nil || isolatedHome {\n") == 2,
+      "the isolated child keeps native argv parity and never becomes the conversation's Claude thread")
 helper = section(MAIN, "func rccIsolatesReadOnlyClaudeHome(", "\n}\n")
 check("surface == .claude && !resumesNativeSession &&" in helper and
       'ExecutionWorkspace.usesSourceIsolation(provider: "claude", permission: permissionProfile, hasSource: false,' in helper,
@@ -699,7 +707,8 @@ check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability
       "policyReference = {hit: target, pool: targetPool," in TIER_ROUTE and
       "...poolNotes(tier.pool.pool, chosen, tier.hit.candidate)," in TIER_ROUTE and
       "'pool_scored_by_tier_hit_model'" in TIER_ROUTE and
-      "selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy});" in RUNTIME and
+      "selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy,\n"
+      "        planNodes: plan.nodes.length});" in RUNTIME and
       "selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,\n      descentPolicy});" in
       section(RUNTIME, "export function admitBoundedAutoPlan(", "function livePlannerContext(") and
       "resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});" in
@@ -842,7 +851,7 @@ check("transaction.stageAssessment(artifact: a)" in native and
 check('record.error = descriptor.state == .discarded ? "native_staged_writer_discarded" : "native_staged_writer_held"' in native,
       "only exact host discard can signal clean-reference replay; unknown state stays held")
 
-check("delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(" in native and
+check("delegatedOneShotSession: stagedTransaction != nil || isolatedHome || rccDelegatedSessionOneShot(" in native and
       "step.nativeSessionEphemeralWorkspace = true" in native and "checkStep.nativeSessionEphemeralWorkspace = true" in native and
       "step.nativeSessionEphemeralWorkspace != true &&" in APP and
       '!nativeSessionRebinds(ephemeralAnswer, bound: nil)' in APP,

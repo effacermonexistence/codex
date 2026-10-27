@@ -9,8 +9,9 @@ enum RCCCatalogFacts {
 
     /// R2: the owner request runs read-only (affirmative only), from the same
     /// predicate the native path uses; attached material counts as a source.
-    static func ownerScope(_ request: C.Request) -> C.Scope {
-        ownerRequestRunsReadOnly(request.request, attachedSource: !request.materialRefs.isEmpty) ? .readOnly : .workspaceWrite
+    static func ownerScope(_ request: C.Request, profileAnswer: Bool = true) -> C.Scope {
+        ownerRequestRunsReadOnly(request.request, attachedSource: !request.materialRefs.isEmpty, profileAnswer: profileAnswer)
+            ? .readOnly : .workspaceWrite
     }
 
     /// R0(a): the owner contract for exactly this request text, re-checked now

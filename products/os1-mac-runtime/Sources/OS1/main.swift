@@ -1729,11 +1729,16 @@ func rccFleetReadOnlySessionOneShot(hostWorkspace: String, scope: RCCRuntimeCont
 /// - Only HOME (`hasSource: false`): an RCC-delivered source is bound input
 ///   text (`rcc-bound-source-input-v1`) beside a project the child may still
 ///   need to read, and a project workspace does not collide.
-/// - Never a resumed native session or a continuation: Claude keeps a
-///   session's transcript under the directory it ran in, so a session the
-///   conversation started in HOME cannot be resumed from another directory.
-///   That attempt keeps today's pre-dispatch collision, which dispatches
-///   nothing and is re-resolved safely.
+/// - Never a resumed native session or a continuation: the thread a
+///   conversation holds was started elsewhere (the isolated session itself
+///   is ephemeral: the adapter marks its step `nativeSessionEphemeralWorkspace`,
+///   so it never becomes the conversation's thread and no later turn resumes
+///   it), and resuming a HOME-started thread from another directory is not
+///   verified. Such an attempt keeps today's pre-dispatch collision, which
+///   dispatches nothing and is re-resolved safely.
+/// - As on the native path, `execute` still receives HOME as its workspace
+///   (its --safe-mode and drift scope) and runs in the answer workspace
+///   (`workspaceOverride`).
 func rccIsolatesReadOnlyClaudeHome(surface: ProviderSurface, permissionProfile: String, resumesNativeSession: Bool,
                                    hostWorkspace: String,
                                    home: String = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path) -> Bool {
@@ -4195,14 +4200,19 @@ func claudeChatLane(provider: String, permission: String, hasSource: Bool, objec
 /// answer that needs no tool (`RequestProfile.answersWithoutTools`) whatever
 /// its ending ("슈뢰딩거 방정식 설명해봐"), under the owner-selected lane's own
 /// conditions (no machine material, shell, path, image or source), which the
-/// RCC adapter enforces again before a claude-chat dispatch. The native
-/// (non-RCC) lane predicate is unchanged.
+/// RCC adapter enforces again before a claude-chat dispatch, and the narrow
+/// lane's own content guards (`ClaudeChatLane.answerNeedsNoLookup`: no
+/// lookup, code, system or OS-1 term, work verb, digit or dotted name), so
+/// "변경사항 설명해줘", "에러 메시지 설명해줘" or "라우팅 규칙이 뭐야?" never
+/// reach a lane with no tools. The native (non-RCC) lane predicate is
+/// unchanged.
 func rccChatLaneEligible(objective: String, hasSource: Bool, providerPreference: String,
                          profile: RequestProfile) -> Bool {
     claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasSource, objective: objective,
                    ownerSelected: RCCNativeCatalogBuilder.normalizedPreference(providerPreference) == "claude-chat") ||
-        (profile.answersWithoutTools && claudeChatLane(provider: "claude", permission: "read_only",
-            hasSource: hasSource, objective: objective, ownerSelected: true))
+        (profile.answersWithoutTools && ClaudeChatLane.answerNeedsNoLookup(objective) &&
+            claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasSource, objective: objective,
+                           ownerSelected: true))
 }
 
 /// OpenAI's side of the same lane: a Codex ticket that would qualify for the
@@ -4471,9 +4481,14 @@ func providerSurfaceRoutingSelfTest() throws {
         !rccChatLaneEligible(objective: explanations[0], hasSource: true, providerPreference: "auto",
                              profile: profiled(explanations[0], source: true))
             && !ownerRequestRunsReadOnly(explanations[0], attachedSource: true)))
+    // In every ending, "?" included ("…설명해줘?"): the native predicate reads
+    // `ClaudeChatLane.asksForWork`, which build 441 left as it was.
     checks.append(("the native lane predicate is unchanged for an explanation imperative",
-        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: explanations[0])
-            && !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: explanations[0])))
+        (explanations + ["슈뢰딩거 방정식 설명해줘?", "왜 그런지 설명해줘?", "어떻게 하는 건지 설명해줘?", "차이 설명해줘?"])
+            .allSatisfy { text in
+                !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: text)
+                    && !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: text)
+            }))
     checks.append(("a build or deploy order needs the shell and stays off the chat lane and the read-only scope",
         ["빌드해줘", "배포해봐", "테스트 돌려봐"].allSatisfy { text in
             promptRequiresShellCapability(text) && !ownerRequestRunsReadOnly(text, attachedSource: false) &&
@@ -4486,6 +4501,26 @@ func providerSurfaceRoutingSelfTest() throws {
                 !profiled(text).gradable
         } && !ownerRequestRunsReadOnly("그럼 실제로 해봐", attachedSource: false)
           && !ownerRequestRunsReadOnly("이 코드 설명하고 고쳐줘", attachedSource: false)))
+    // Review of build 441: an order to write the answer down, place it,
+    // deliver it or define a code object keeps its write scope and the
+    // reference; the workspace's changes, an error, OS-1's routing and a
+    // release never reach the tool-free lane.
+    let reviewOrders = ["슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", "Explain the Schrödinger equation and email it to Sebastien",
+                        "주석으로 설명 달아줘", "PR 설명 써줘", "User 타입 정의해줘", "팀장한테 말해줘", "메일로 설명해줘"]
+    checks.append(("an order to write, place, deliver or define stays a writer off the chat lane",
+        reviewOrders.allSatisfy { text in
+            !ownerRequestRunsReadOnly(text, attachedSource: false) && !profiled(text).gradable &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: profiled(text))
+        }))
+    checks.append(("workspace state, errors, OS-1 terms and current facts never take the tool-free lane",
+        ["변경사항 설명해줘", "PR 설명해줘", "에러 메시지 설명해줘", "라우팅 규칙이 뭐야?", "모델 선택 기준이 뭐야?",
+         "작년 노벨 물리학상이 뭐야?", "GPT-6.1 출시 내용 설명해줘", "Explain the new iPhone 17 features",
+         "오에스원 라우팅이 어떻게 동작하는지 설명해줘"].allSatisfy { text in
+            !profiled(text).gradable &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: profiled(text))
+        } && ["변경사항 설명해줘", "PR 설명해줘", "에러 메시지 설명해줘"].allSatisfy {
+            !ownerRequestRunsReadOnly($0, attachedSource: false)
+        } && !profiled("REVAS가 뭐야?").gradable))
 
     // The refusal is what stops an explicit chat-lane choice from becoming the
     // full lane. Each structural condition is named before dispatch.
@@ -8832,7 +8867,7 @@ private func rccExecuteChildRulesSelfTest() throws {
     try check(isolates(.claude, "read_only", home.path) && isolates(.claude, "read_only", home.path + "/"),
               "a fresh read-only Claude agent child whose host workspace is HOME runs in the answer workspace")
     try check(!isolates(.claude, "read_only", home.path, resumed: true),
-              "a resumed session or a continuation keeps its directory (its transcript lives there); it still stops before dispatch")
+              "a resumed session or a continuation is not moved (cross-directory resume unverified); it still stops before dispatch")
     try check(!isolates(.claude, "read_only", project.path) && !isolates(.claude, "workspace_write", home.path),
               "a project workspace and a writer keep the host workspace")
     try check(!isolates(.codex, "read_only", home.path) && !isolates(.gptChat, "read_only", home.path)
@@ -12597,7 +12632,10 @@ func runResponseAvailability(_ prompt: String, hasAttachments: Bool = false,
             persistence: "verified", desktopVisibility: "control_only"))])
 }
 
-func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool) -> Bool {
+/// `profileAnswer: false` leaves out build 441's answer-only verdict (the
+/// pre-441 reading), for a request a registered workspace-write owner
+/// contract covers (`rccNativeCatalog`).
+func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool, profileAnswer: Bool = true) -> Bool {
     // The owner selecting the bounded chat lane on the rail is the same
     // authority statement as a self-contained text operation: answer from the
     // request, touch nothing. It has to reach the scope here, because the
@@ -12626,8 +12664,8 @@ func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool) -> Bool {
     // changes nothing on this machine: it runs read-only. `RequestProfile`
     // refuses any write, shell, path, image, material, machine, project,
     // external-system, external-action or complaint signal.
-    let answerOnly = !attachedSource && RequestProfile.classify(prompt, shellNeed: promptRequiresShellCapability(prompt),
-                                                                hasMaterial: false).answersWithoutTools
+    let answerOnly = profileAnswer && !attachedSource &&
+        RequestProfile.classify(prompt, shellNeed: promptRequiresShellCapability(prompt), hasMaterial: false).answersWithoutTools
     return selfContainedText || readOnlyQuestion || cardCheckIn || answerOnly
 }
 
@@ -19701,6 +19739,17 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // 440: one certificate, chat_explanatory, on the owner decision).
     input.ownerScope = RCCCatalogFacts.ownerScope(request)
     input.taskContract = RCCCatalogFacts.taskContract(request)
+    // Build 441 review: a registered workspace-write owner contract for
+    // exactly this request outranks the profile's answer verdict. Neither its
+    // owner scope nor its chat lane comes from the profile, so a contract-
+    // backed write keeps its writer rows (catalogReadOnly).
+    if let contract = input.taskContract, contract.scope == .workspaceWrite, contract.bindingsChecked,
+       request.mode != .explicitRoutingTest {
+        input.ownerScope = RCCCatalogFacts.ownerScope(request, profileAnswer: false)
+        input.chatLaneEligible = claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasMaterial,
+            objective: request.request,
+            ownerSelected: RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "claude-chat")
+    }
     input.requestProfile = requestProfile
     // K11: a table certificate loads only with its D4 measurement artifact,
     // read from host custody by the hash the signed table names (private
@@ -20132,6 +20181,8 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
     let timing = try RCCNativePreparationTiming(taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID,
         configurationSHA256: t.configurationSHA256, sourceFingerprint: t.sourceFingerprint, provider: provider)
     var stagedTransaction: RCCStagedWriterTransaction.Transaction?
+    /// A read-only Claude agent child moved out of HOME (rccIsolatesReadOnlyClaudeHome).
+    var isolatedHome = false
     var receiptPersisted = false
     var nativeDisplay: RCCNativeDisplayStore.Publisher?
     defer {
@@ -20262,10 +20313,15 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         // it is a selected lane: never hand a tool-free lane the real workspace.
         // A fresh read-only Claude agent child never starts in HOME, where the
         // read-only guard collides with Claude's own state (rccIsolatesReadOnlyClaudeHome).
+        // As on the native path, execute still receives HOME as its workspace
+        // (--safe-mode, drift scope) and runs in the answer workspace; the
+        // session it starts there is ephemeral and never becomes the
+        // conversation's thread (step below), so no later turn resumes it.
+        isolatedHome = !surface.forcesChatLane && rccIsolatesReadOnlyClaudeHome(surface: surface,
+            permissionProfile: signed.permissionProfile,
+            resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)
         var workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true)
-            : rccIsolatesReadOnlyClaudeHome(surface: surface, permissionProfile: signed.permissionProfile,
-                resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)
-                ? try sourceAnswerWorkspace() : h.workspace
+            : isolatedHome ? try sourceAnswerWorkspace() : h.workspace
         timing.mark(.workspaceHashStarted)
         var before = workspaceHash(workspace)
         timing.mark(.workspaceHashReady)
@@ -20352,7 +20408,8 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         try ParallelAgentRuntime.$managedDelegation.withValue(true) {
         try OwnerPolicyContext.$snapshot.withValue(policy) {
             try execute(ticket: signed, prompt: nativePrompt,
-                workspace: workspace, timeout: config.executionTimeoutSeconds, idleTimeout: config.providerIdleTimeoutSeconds,
+                workspace: isolatedHome ? h.workspace : workspace, timeout: config.executionTimeoutSeconds,
+                idleTimeout: config.providerIdleTimeoutSeconds,
                 trustedCodexModels: codex.models, providerSessionID: t.nativeResumeSessionID, model: t.selectedConfig.model,
                 effort: t.selectedConfig.effort.rawValue, executorContract: config.executorContract,
                 desktopReveal: .never, workspaceBeforeHash: before, objectivePrompt: t.instruction,
@@ -20370,7 +20427,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
                 surfaceOverride: surface, workspaceOverride: workspace,
                 // Only a side session that never becomes the conversation's
                 // thread takes the 5-minute cache (rccDelegatedSessionOneShot).
-                delegatedOneShotSession: stagedTransaction != nil || rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
+                delegatedOneShotSession: stagedTransaction != nil || isolatedHome || rccDelegatedSessionOneShot(resumedSessionID: t.nativeResumeSessionID,
                     conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
                     continuing: t.continuation != nil, chatLane: surface.forcesChatLane) ||
                     rccFleetReadOnlySessionOneShot(hostWorkspace: h.workspace, scope: t.selectedConfig.scope,
@@ -20538,7 +20595,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         if RCCNativeAttemptOutcome.nativeSessionDetached(resumedSessionID: t.nativeResumeSessionID,
             conversationSessionID: provider == "codex" ? h.codexSessionID : h.claudeSessionID,
             chatLane: surface.forcesChatLane) { step.nativeSessionDetached = true }
-        if stagedTransaction != nil {
+        // A staged writer's clone, or the answer workspace a HOME read-only
+        // Claude child ran in: never conversation continuity (a later turn
+        // resuming it would start in HOME and stop at the guard).
+        if stagedTransaction != nil || isolatedHome {
             step.nativeSessionEphemeralWorkspace = true
             step.nativeSessionDetached = true
         }
@@ -20609,7 +20669,7 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             // from the receipt alone (the provider's own words included).
             step.failureCause = RCCNativeAttemptOutcome.failureCause(kind: rccFailureCauseKind(rejected.cause),
                 message: rccFailureCauseMessage(rejected))
-            if stagedTransaction != nil {
+            if stagedTransaction != nil || isolatedHome {
                 step.nativeSessionEphemeralWorkspace = true
                 step.nativeSessionDetached = true
             }

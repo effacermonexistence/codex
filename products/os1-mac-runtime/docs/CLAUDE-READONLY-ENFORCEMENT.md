@@ -92,9 +92,14 @@ host workspace was HOME hit this collision before dispatch (task 6c611eea).
 Harness H1 (build 441, `rccIsolatesReadOnlyClaudeHome`) applies the same HOME
 rule there: such a child runs in the source-answer workspace, whose guard is
 built whole. As for every read-only Claude child, the guard protects that
-workspace and the OS-1 source roots, not the rest of HOME. A resumed Claude
-session or a continuation is not moved (its transcript lives under the
-directory it ran in) and still stops at the collision.
+workspace and the OS-1 source roots, not the rest of HOME. As on the native
+path, the executor still receives HOME as its workspace (`--safe-mode`, drift
+scope) and runs in the answer workspace. The session it starts there is
+ephemeral (`native_session_ephemeral_workspace`): it never becomes the
+conversation's thread, so no later turn resumes it from HOME and collides. A
+resumed Claude session or a continuation is not moved, because resuming a
+HOME-started thread from another directory is not verified; it still stops
+at the collision.
 
 ## Outcome and evidence integrity
 
