@@ -395,7 +395,11 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
 /// result. Answers are not copied: when `answersInText` is set they are read
 /// back from that message's text, which they reproduce exactly.
 struct RouteLanesRecord: Codable, Equatable, Sendable {
-    static let currentSchema = 1
+    /// 2 since build 441: an `observed` lane's model comes from its attempt's
+    /// native-display sidecar. A schema-1 record (builds up to 440) marked a
+    /// finished lane observed from the step's model, which is the selected
+    /// configuration; `upgraded` reads it back as selected.
+    static let currentSchema = 2
     var schema: Int
     var submissionID: UUID
     var taskStatus: RouteLaneStatus
@@ -412,6 +416,25 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
          lanes: [RouteLane], answersInText: Bool) {
         schema = Self.currentSchema; self.submissionID = submissionID; self.taskStatus = taskStatus
         self.taskNote = taskNote; self.taskReason = taskReason; self.lanes = lanes; self.answersInText = answersInText
+    }
+
+    /// A record as this build reads it: a schema-1 record's observed lanes
+    /// become selected (their model and reasoning were the step's, i.e. the
+    /// selection; a selection kept beside a differing "observation" is the
+    /// one restored). Any other schema is returned as found.
+    static func upgraded(_ record: RouteLanesRecord) -> RouteLanesRecord {
+        guard record.schema == 1 else { return record }
+        var upgraded = record
+        upgraded.schema = currentSchema
+        upgraded.lanes = record.lanes.map { lane in
+            guard lane.configuration == .observed else { return lane }
+            var selected = lane
+            if let model = lane.selectedModel { selected.model = model; selected.effort = lane.selectedEffort ?? lane.effort }
+            selected.selectedModel = nil; selected.selectedEffort = nil
+            selected.configuration = .selected
+            return selected
+        }
+        return upgraded
     }
 
     var isValid: Bool {
@@ -636,7 +659,7 @@ struct RouteLanesField: Codable, Equatable, Sendable {
         self.wrappedValue = wrappedValue?.isValid == true ? wrappedValue : nil
     }
     init(from decoder: Decoder) throws {
-        let value = try? RouteLanesRecord(from: decoder)
+        let value = (try? RouteLanesRecord(from: decoder)).map(RouteLanesRecord.upgraded)
         wrappedValue = value?.isValid == true ? value : nil
     }
     func encode(to encoder: Encoder) throws {

@@ -6958,23 +6958,53 @@ private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: Pen
 }
 
 /// What admitted the routes whose answers a Core receipt delivers, read from
-/// Core's routing reasons (`admitted_*` tokens). Display only: it certifies
-/// nothing, and only exact, contract and sound-full verifier sources ever
-/// earn certified wording, which this basis never produces.
+/// Core's routing reasons (`admitted_*` tokens), and what Core's task check
+/// said (`core.error`). Display only: it certifies nothing, and only exact,
+/// contract and sound-full verifier sources ever earn certified wording,
+/// which this basis never produces.
 private enum RCCReceiptRouteBasis: Equatable {
+    /// Core's task verifier ran and did not verify the task (an exact route
+    /// or owner-collection check rejected it).
+    case taskCheckFailed
+    /// Core's task verifier could not run.
+    case taskCheckUnavailable
     /// Host-profile graded admission: a predicted route, no answer check.
     case graded
     /// The build-440 owner-decision class certificate: a format check only.
     case ownerDecision
     /// Any other class certificate: a measured class, a format check only.
     case classFormat
-    /// A reference, an owner's tuple, an escalation, or no reason recorded.
+    /// A delivered route an exact, contract or verifier certifier checked;
+    /// the task itself is not verified.
+    case certifiedRoute
+    /// A reference, an owner's tuple, an escalation, or no reason recorded,
+    /// with no task verifier registered: no answer check ran.
     case other
+    /// The same, when Core's reason says neither that no check was
+    /// registered nor that one ran: the task's quality is unverified.
+    case unknownCheck
 
+    static let taskCheckFailedReason = "core_task_check_ran_not_verified"
+    static let taskCheckUnavailableReason = "core_task_check_unavailable"
     static let gradedReason = "core_graded_route_predicted_quality_unverified"
     static let ownerDecisionReason = "core_owner_decision_route_format_check_only"
     static let classFormatReason = "core_class_route_format_check_only"
+    static let certifiedRouteReason = "core_certified_route_task_unverified"
     static let otherReason = "core_result_preserved_without_task_or_reference_verification"
+    static let unknownCheckReason = "core_result_task_quality_unverified"
+
+    /// Core's task verdict reasons (`verifyTask`, rcc-plugin.mjs): only these
+    /// two say no answer check ran; `task_verifier_unavailable` says one
+    /// could not run; an exact-route or owner-collection reason says one ran
+    /// and did not verify the task.
+    static func taskCheck(_ error: String?) -> RCCReceiptRouteBasis? {
+        switch error {
+        case "no_registered_exact_task_verifier"?, "parent_task_verifier_unavailable"?: return .other
+        case "task_verifier_unavailable"?: return .taskCheckUnavailable
+        case let reason? where reason.hasPrefix("exact_") || reason.hasPrefix("owner_collection_"): return .taskCheckFailed
+        default: return nil
+        }
+    }
 
     /// The owner decision's certificate id, from its compiled bytes.
     static let ownerDecisionCertificateID: String? = (try? JSONSerialization.jsonObject(
@@ -6984,6 +7014,10 @@ private enum RCCReceiptRouteBasis: Equatable {
     /// the answer predicted; a format check is named only when every
     /// delivered route had one.
     init(_ core: RCCRuntimeContract.Snapshot) {
+        let check = Self.taskCheck(core.error)
+        // A task check that ran and did not verify, or could not run, is
+        // what the receipt says first, whatever admitted the route.
+        if let check, check != .other { self = check; return }
         let delivered = core.children.filter { [.completed, .succeeded].contains($0.state) }
         let tokens = delivered.map { Set(($0.routingDecision?.reason ?? "").split(separator: ";").map(String.init)) }
         let owner = Self.ownerDecisionCertificateID.map { "admitted_certified_class:" + $0 }
@@ -6991,15 +7025,23 @@ private enum RCCReceiptRouteBasis: Equatable {
         else if !tokens.isEmpty, let owner, tokens.allSatisfy({ $0.contains(owner) }) { self = .ownerDecision }
         else if !tokens.isEmpty, tokens.allSatisfy({ $0.contains { $0.hasPrefix("admitted_certified_class:") } }) {
             self = .classFormat
-        } else { self = .other }
+        } else if tokens.contains(where: { $0.contains { token in
+            ["admitted_certified_exact", "admitted_certified_contract", "admitted_certified_verifier"]
+                .contains { token == $0 || token.hasPrefix($0 + ":") } } }) {
+            self = .certifiedRoute
+        } else { self = check ?? .unknownCheck }
     }
 
     var qualityReason: String {
         switch self {
+        case .taskCheckFailed: return Self.taskCheckFailedReason
+        case .taskCheckUnavailable: return Self.taskCheckUnavailableReason
         case .graded: return Self.gradedReason
         case .ownerDecision: return Self.ownerDecisionReason
         case .classFormat: return Self.classFormatReason
+        case .certifiedRoute: return Self.certifiedRouteReason
         case .other: return Self.otherReason
+        case .unknownCheck: return Self.unknownCheckReason
         }
     }
 }
@@ -7011,6 +7053,11 @@ private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation)
         case RCCReceiptRouteBasis.gradedReason: return os1Tr("예측 경로 · 품질 미검증", "Predicted route · quality unverified")
         case RCCReceiptRouteBasis.ownerDecisionReason: return os1Tr("오너 결정 경로 · 형식 검사만", "Owner-decision route · format check only")
         case RCCReceiptRouteBasis.classFormatReason: return os1Tr("측정 클래스 경로 · 형식 검사만", "Measured class route · format check only")
+        case RCCReceiptRouteBasis.taskCheckFailedReason: return os1Tr("과제 검사 실행 · 검증 안 됨", "Task check ran · not verified")
+        case RCCReceiptRouteBasis.taskCheckUnavailableReason: return os1Tr("검사를 실행하지 못함", "A check could not run")
+        case RCCReceiptRouteBasis.certifiedRouteReason:
+            return os1Tr("경로 답 검사 실행 · 과제 미검증", "Route answer check ran · task unverified")
+        case RCCReceiptRouteBasis.unknownCheckReason: return os1Tr("과제 품질 미검증", "Task quality unverified")
         default:
             // Ran with no check of the answer, or a check that could not run.
             return quality.state == .executionOnly ? os1Tr("답변 검사 안 함", "No answer check ran")
@@ -8350,6 +8397,38 @@ private func rccCoreNativeReceiptSelfTest() throws {
     try check((couldNotRun.contains("검사를 실행하지 못함") || couldNotRun.contains("A check could not run")) &&
               !couldNotRun.contains("답변 검사 안 함") && !couldNotRun.contains("No answer check ran"),
               "a check that could not run reads like no check at all: \(couldNotRun)")
+    // Review of build 441: what Core's task verifier said comes first. Only
+    // "no verifier registered" reads as no check; a verifier that ran and
+    // rejected the task (the explicit route test's exact check), one that
+    // could not run, a certified route's own check and any other reason
+    // never read "No answer check ran".
+    func verdict(_ error: String, _ reasons: [String?]) throws -> ChatMessage {
+        var core = try fixture(reasons.count)
+        core.error = error
+        for (index, reason) in reasons.enumerated() {
+            core.children[index].routingDecision = reason.map { .init(routeClass: "standard", resolvedCandidateID: "fixture",
+                surface: .codex, model: "fixture-model", effort: .low, quotaPool: .openAICodex, reason: $0,
+                quotaRemainingFraction: nil) }
+        }
+        return rccCoreReceipt(core, submission: submission, localReceipt: nil, note: "Result received")
+    }
+    let rejected = try verdict("exact_route_output_or_binding_mismatch", [
+        "tier_escalated_after_failure_signal;route_reference;admitted_reference_escalation;tier_frontier;same_pool;effort_ultra;agent_surface",
+        "resolver;route_tier;admitted_certified_exact;tier_list_0;tier_fast;pool_rank_1;effort_none;escalation_reference_same_pool;agent_surface"])
+    let checkUnavailable = try verdict("task_verifier_unavailable", ["route_reference;admitted_reference_uncertified"])
+    let certifiedChild = try verdict("no_registered_exact_task_verifier", ["resolver;route_tier;admitted_certified_contract;tier_fast"])
+    let unknownReason = try verdict("installed_task_quality_unverified", ["route_reference;admitted_reference_uncertified"])
+    for (receipt, reason, korean, english) in [
+        (rejected, RCCReceiptRouteBasis.taskCheckFailedReason, "과제 검사 실행 · 검증 안 됨", "Task check ran · not verified"),
+        (checkUnavailable, RCCReceiptRouteBasis.taskCheckUnavailableReason, "검사를 실행하지 못함", "A check could not run"),
+        (certifiedChild, RCCReceiptRouteBasis.certifiedRouteReason, "경로 답 검사 실행 · 과제 미검증", "Route answer check ran · task unverified"),
+        (unknownReason, RCCReceiptRouteBasis.unknownCheckReason, "과제 품질 미검증", "Task quality unverified")] {
+        let line = statusLine(receipt)
+        try check(receipt.taskQuality?.reason == reason && (line.contains(korean) || line.contains(english)) &&
+                  !line.contains("답변 검사 안 함") && !line.contains("No answer check ran") &&
+                  receipt.taskQuality?.taskCompletionVerified == false,
+                  "Core's task check is misread (\(reason)): \(line)")
+    }
     for receipt in [graded, owner, measured, reference, escalated, mixedGraded, mixedOwner] {
         let line = statusLine(receipt).lowercased()
         try check(!line.contains("certif") && !line.contains("인증") && !line.contains("검증됨 · 과제") &&
@@ -24727,6 +24806,28 @@ private func routeLanesSelfTest() throws {
         object["routeLanes"] = try JSONSerialization.jsonObject(with: Data(corrupt.utf8), options: .fragmentsAllowed)
         let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
         try check(decoded.routeLanes == nil && decoded.text == output, "a corrupt lane record broke its message: \(corrupt)")
+    }
+    // A record saved by build 440 or earlier (schema 1) marked a finished
+    // lane observed from the step's model, which is the selection: it reads
+    // back as selected, the selection kept beside it restored. 441 writes 2.
+    do {
+        try check(record.schema == 2 && RouteLanesRecord.currentSchema == 2, "a new lane record is not schema 2")
+        var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        var lanes = object["routeLanes"] as! [String: Any]
+        var rows = lanes["lanes"] as! [[String: Any]]
+        try check(rows.count >= 2, "the fixture record has fewer than two lanes")
+        rows[0]["configuration"] = "observed"; rows[0]["model"] = "gpt-6-astra"; rows[0]["effort"] = "ultra"
+        rows[0].removeValue(forKey: "selectedModel"); rows[0].removeValue(forKey: "selectedEffort")
+        rows[1]["configuration"] = "observed"; rows[1]["model"] = "gpt-6-luna"; rows[1]["effort"] = "low"
+        rows[1]["selectedModel"] = "gpt-6.1-sol"; rows[1]["selectedEffort"] = "medium"
+        lanes["lanes"] = rows; lanes["schema"] = 1; object["routeLanes"] = lanes
+        let old = try JSONDecoder().decode(ChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
+        let first = old.routeLanes?.lanes[0], second = old.routeLanes?.lanes[1]
+        try check(old.routeLanes?.schema == 2 && first?.configuration == .selected && first?.model == "gpt-6-astra" &&
+                  first?.effort == "ultra" && second?.configuration == .selected && second?.model == "gpt-6.1-sol" &&
+                  second?.effort == "medium" && second?.selectedModel == nil &&
+                  old.routeLanes?.lanes.allSatisfy({ $0.configuration != .observed }) == true,
+                  "a schema-1 lane still reads as observed: \(String(describing: old.routeLanes?.lanes.prefix(2)))")
     }
 
     // Colour means status: no route uses a status hue, and routes differ.
