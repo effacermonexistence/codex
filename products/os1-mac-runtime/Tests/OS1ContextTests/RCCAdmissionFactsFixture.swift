@@ -281,7 +281,7 @@ func runRCCAdmissionFactsFixtures() throws {
     try check(Set(M.Rejection.allCases.map(\.rawValue)) == ["artifact_absent", "hash_mismatch", "malformed", "scope_mismatch",
         "reference_mismatch", "executor_mismatch", "harness_mismatch", "not_yet_valid", "expired", "result_not_pass"],
         "K11 names every rejection by a stable reason")
-    try check(M.harnessScope(HarnessProfile.current) == "H0@1",
+    try check(M.harnessScope(HarnessProfile.current) == "H1@1",
               "K11 binds the shipped harness by id AND version (a new descriptor never inherits a measurement)")
 
     // K11-a valid: loaded, and the wire is exactly today's certificate emission.
