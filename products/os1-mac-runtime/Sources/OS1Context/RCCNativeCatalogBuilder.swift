@@ -175,7 +175,9 @@ public enum RCCNativeCatalogBuilder {
         public var ownerScope: RCCRuntimeContract.Scope? = nil
         /// Build 407 (R0(a)): an owner contract the host re-bound at catalog time.
         public var taskContract: RCCRuntimeContract.TaskContractFact? = nil
-        /// Build 407 (R0(c), R11): the signed class table (empty as shipped).
+        /// Build 407 (R0(c), R11): the signed class table. Build 440 ships one
+        /// certificate, `chat_explanatory`, whose basis is the compiled owner
+        /// decision (`RCCClassOwnerDecision`), not a D4 measurement.
         public var classTable: RCCClassTable = .frozen
         /// K11: host-read D4 measurement artifacts, keyed by the
         /// `measurement_sha256` a table certificate names. Observations only:
@@ -419,9 +421,11 @@ public enum RCCNativeCatalogBuilder {
     /// The admission facts for `input`, or nil when the host gave no owner
     /// scope. A contract or certificate is carried only as found; the table's
     /// entries for other classes never reach the catalog. K11: this class's
-    /// table certificate is carried only when its D4 measurement artifact
-    /// verifies against the pool's current reference (`references`, computed
-    /// once in `build`); a caller passing none never gets a certificate.
+    /// table certificate is carried only when `RCCClassMeasurement.verified`
+    /// admits it against the pool's current reference (`references`, computed
+    /// once in `build`): by its D4 measurement artifact, or, for the build-440
+    /// `chat_explanatory` certificate only, by the compiled owner decision
+    /// (`RCCClassOwnerDecision`); a caller passing none never gets a certificate.
     public static func admissionFacts(_ input: Input,
                                       references: [String: RCCClassMeasurement.Reference] = [:]) -> AdmissionFacts? {
         guard let ownerScope = input.ownerScope else { return nil }

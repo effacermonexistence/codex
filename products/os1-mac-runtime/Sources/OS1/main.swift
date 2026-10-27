@@ -4350,6 +4350,19 @@ func providerSurfaceRoutingSelfTest() throws {
     checks.append(("a build or code under test keeps the full lane",
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "빌드 잘 되는지 보자") &&
         !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: "이 코드 잘 되는지 보자")))
+    // Review of build 440: the invitation is a check-in only as the whole
+    // request (a comma is a rendering, not a word); a lookup or code question
+    // beside it, a test order with no responder named, or a thing as the
+    // subject never reaches the tool-free lane through it.
+    checks.append(("the invitation with a comma is still the GPT chat check-in",
+        codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: "자, 이제 네가 얼마나 잘 되는지 보자")))
+    checks.append(("a question or an order does not ride the invitation onto the tool-free lane",
+        ["최신 아이폰 가격 얼마니? 이제 너 얼마나 잘하는지 보자", "그 버그 원인이 뭐니? 잘하는지 보자", "그럼 되는지 보자",
+         "빌드 끝났어? 그럼 이제 잘 되는지 보자", "테스트가 통과하는지 볼까",
+         "자 이제 네가 얼마나 잘 되는지 보자. 빌드 다시 해볼래?"].allSatisfy { objective in
+            !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: objective) &&
+            !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: objective)
+        }))
     checks.append(("a check-in about a deployment keeps a lane that can look",
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "배포 됐냐?")))
     checks.append(("an order beside a check-in keeps the full lane",
@@ -19454,7 +19467,8 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
             model: $0.value.model, effort: $0.value.effort) })
     try RCCRoutingIntentIngress.bindCatalog(&input, request: request)
     // Build 407 admission facts (R0, R2): the owner scope, and an owner
-    // contract re-bound now; the signed class table is compiled in (empty).
+    // contract re-bound now; the signed class table is compiled in (build
+    // 440: one certificate, chat_explanatory, on the owner decision).
     input.ownerScope = RCCCatalogFacts.ownerScope(request)
     input.taskContract = RCCCatalogFacts.taskContract(request)
     // K11: a table certificate loads only with its D4 measurement artifact,

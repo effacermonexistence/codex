@@ -13,17 +13,17 @@ public enum StatusCheckIn {
     /// A sentence that ends the way a question does, with or without "?"
     /// (voice dictation drops it): "됐냐", "설치 됨", "어떻게 된 거야".
     static let questionEnding = #"(?:냐|니|나|까|거야|건가|건지|이야|인가|는지|됐어|했어|됨|됐음|했음|임|중이야|거지|맞지|맞아)$"#
-    /// "되는지 확인해보자": the owner's own way to open a check-in. Build 440
-    /// (2026-10-27): also the owner inviting a look at THIS responder, "자 이제
-    /// 네가 얼마나 잘 되는지 보자", by structure, not a sentence table: framing
-    /// words, an optional second-person subject (never a thing: "빌드 잘 되는지
-    /// 보자" stays work), optional 얼마나/잘, the state verb, then 보자/볼까/
-    /// 볼게/확인해 보자. Any other subject, or an order beside it, is work.
-    static let checkOpener = #"^(?:(?:자|야|그럼|일단|한번|아니)\s*)*(?:(?:라우팅|이거|그거)\s*(?:이|가)?\s*)?(?:잘\s*)?(?:되는지|됐는지|작동하는지)\s*(?:한번\s*)?확인해\s?(?:보자|볼까)$|^(?:(?:자|야|그럼|일단|이제|한번|아니)\s*)*(?:(?:네가|너가|니가|너|넌)\s*)?(?:얼마나\s*)?(?:잘\s*)?(?:되는지|하는지|잘하는지|작동하는지)\s*(?:한번\s*)?(?:보자|볼까|볼게|볼께|확인해\s?보자|확인해\s?볼까)$"#
-    /// The opener's own state verb, so a test invitation with no other asking
-    /// word ("이제 너 얼마나 잘하는지 보자") reaches the sentence check, where
-    /// only the anchored `checkOpener` (or a question) can accept it.
-    static let openerAsking = #"(?:잘\s?)?하는지\s*(?:한번\s*)?(?:보자|볼까|볼게|볼께|확인해\s?(?:보자|볼까))"#
+    /// "되는지 확인해보자": the owner's own way to open a check-in.
+    static let checkOpener = #"^(?:(?:자|야|그럼|일단|한번|아니)\s*)*(?:(?:라우팅|이거|그거)\s*(?:이|가)?\s*)?(?:잘\s*)?(?:되는지|됐는지|작동하는지)\s*(?:한번\s*)?확인해\s?(?:보자|볼까)$"#
+    /// Build 440 (owner, 2026-10-27): the owner inviting a look at THIS
+    /// responder, "자 이제 네가 얼마나 잘 되는지 보자", by structure, not a
+    /// sentence table: framing words, then either a second-person subject
+    /// (optional 얼마나/잘; 하는지 only as 잘하는지) or, with no subject,
+    /// exactly "얼마나 잘"; the state verb, optional 한번, then 보자/볼까/볼게/
+    /// 확인해 보자. A bare "(그럼/일단) 되는지 보자" names no responder and is
+    /// this owner's "try it and see" order, so it stays work, as does any
+    /// thing as the subject ("빌드 잘 되는지 보자", "테스트가 통과하는지 볼까").
+    static let testInvitation = #"^(?:(?:자|야|그럼|일단|이제|한번|아니)\s*)*(?:(?:네가|너가|니가|너|넌)\s*(?:얼마나\s*)?(?:잘\s*)?(?:되는\s?지|잘\s*하는\s?지|작동하는\s?지)|얼마나\s*잘\s*(?:되는\s?지|하는\s?지|작동하는\s?지))\s*(?:한번\s*)?(?:보자|볼까|볼게|볼께|확인해\s?보자|확인해\s?볼까)$"#
     /// The owner checking the response, not ordering the agent to inspect a
     /// workspace: "야 나 한번 체크해 볼게. 너 되냐?" (build 355). Strip only
     /// this opener so ASR without punctuation still leaves the actual state
@@ -48,12 +48,12 @@ public enum StatusCheckIn {
     public static func matches(_ request: String) -> Bool {
         let text = request.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !text.isEmpty, text.count <= maximumCharacters, !text.contains("\n"), !text.contains("/"),
-              text.range(of: asking, options: [.regularExpression, .caseInsensitive]) != nil
-                || text.range(of: openerAsking, options: .regularExpression) != nil,
               !RouteFanout.containsName(text),
               // "사파리 쓰면 안 되냐?": may I, not is it done.
               text.range(of: #"면\s*안\s*(?:되|돼)"#, options: .regularExpression) == nil,
               text.range(of: RouteFanout.expression, options: [.regularExpression, .caseInsensitive]) == nil else { return false }
+        if standaloneTestInvitation(text) { return true }
+        guard text.range(of: asking, options: [.regularExpression, .caseInsensitive]) != nil else { return false }
         var sentences: [(text: String, asked: Bool)] = []
         var current = ""
         for character in text {
@@ -81,6 +81,28 @@ public enum StatusCheckIn {
             return sentence.asked || value.range(of: questionEnding, options: .regularExpression) != nil
                 || value.range(of: #"^(?:is|are|was|did|does|has|have)\s"#, options: .regularExpression) != nil
         }
+    }
+
+    /// The build-440 test invitation counts only as the WHOLE request: after
+    /// self-check openers and neutral sentences ("야.") there is exactly one
+    /// part, and it is `testInvitation`. Any other sentence beside it, a
+    /// question included ("최신 아이폰 가격 얼마니? 이제 너 얼마나 잘하는지
+    /// 보자", "빌드 끝났어? 그럼 이제 잘 되는지 보자", "…보자. 빌드 다시
+    /// 해볼래?"), leaves the request to the build-439 sentence check, where the
+    /// invitation is a command ending (…자) and so work. Commas, tildes and a
+    /// trailing ㅋ/ㅎ run are renderings of the same sentence, not words.
+    static func standaloneTestInvitation(_ text: String) -> Bool {
+        let parts = text.components(separatedBy: CharacterSet(charactersIn: ".!?？。"))
+            .map { $0.replacingOccurrences(of: #"[,，~～]"#, with: " ", options: .regularExpression)
+                .replacingOccurrences(of: #"\s*[ㅋㅎ]+$"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map { $0.replacingOccurrences(of: selfCheckOpener, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0.range(of: neutral, options: .regularExpression) == nil }
+            .map { $0.replacingOccurrences(of: #"(?:\s+(?:도대체|진짜|지금|그래서|그럼))+$"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression) }
+        return parts.count == 1 && parts[0].range(of: testInvitation, options: .regularExpression) != nil
     }
 
     /// Things outside OS-1 that only a tool can check now.
@@ -218,15 +240,33 @@ public enum StatusCheckIn {
             check(answersFromCard(text), "the card answers: \(text)")
         }
         // Build 440 (owner, 2026-10-27): inviting a look at this responder is a
-        // check-in by structure; a thing as the subject, or an order, is work.
+        // check-in by structure, only as the whole request; a thing as the
+        // subject, no responder, or any other sentence beside it is work.
         for text in ["자 이제 네가 얼마나 잘 되는지 보자", "이제 너 얼마나 잘하는지 보자", "얼마나 잘 되는지 한번 보자",
-                     "야 니가 얼마나 잘 작동하는지 볼까", "넌 얼마나 잘 되는지 확인해 보자", "자 이제 네가 얼마나 잘 되는지 보자."] {
+                     "야 니가 얼마나 잘 작동하는지 볼까", "넌 얼마나 잘 되는지 확인해 보자", "자 이제 네가 얼마나 잘 되는지 보자.",
+                     "자, 이제 네가 얼마나 잘 되는지 보자", "자 이제, 네가 얼마나 잘 되는지 보자", "자 이제 네가 얼마나 잘 되는지 보자~",
+                     "자 이제 너 얼마나 잘하는지 보자 ㅋㅋ", "자 이제 네가 얼마나 잘 되는 지 보자", "야. 자 이제 네가 얼마나 잘 되는지 보자",
+                     "야 나 한번 체크해 볼게. 너 얼마나 잘하는지 보자", "이제 너 얼마나 잘하는지 볼까?"] {
             check(matches(text) && answersFromCard(text), "a test invitation is a check-in: \(text)")
         }
         for text in ["빌드 잘 되는지 보자", "테스트 돌려서 되는지 보자", "이 코드 잘 되는지 보자", "사이트 잘 되는지 보자",
                      "되는지 보고 안 되면 고쳐", "그럼 실제로 해봐 다 되는지", "라우팅 되는지 보자", "그 사람이 영어를 잘하는지 보자",
-                     "자 이제 네가 얼마나 잘 되는지 보자. 안 되면 고쳐", "네가 얼마나 잘 되는지 보자 터미널에서 확인해줘"] {
-            check(!matches(text), "a thing or an order beside the invitation is work: \(text)")
+                     "자 이제 네가 얼마나 잘 되는지 보자. 안 되면 고쳐", "네가 얼마나 잘 되는지 보자 터미널에서 확인해줘",
+                     // No responder named: "try it and see" (review of build 440).
+                     "되는지 보자", "일단 되는지 보자", "그럼 되는지 보자.", "이제 되는지 확인해 보자", "그럼 작동하는지 보자",
+                     "일단 잘 되는지 한번 볼게", "자 이제 잘 작동하는지 볼까", "그럼 얼마나 되는지 보자", "이제 니가 하는지 보자",
+                     // A thing as the subject in the 볼까 form.
+                     "테스트가 통과하는지 볼까", "이 함수가 제대로 동작하는지 볼까", "그 사람이 영어를 잘하는지 볼까",
+                     "새 버전이 제대로 동작하는지 한번 볼까",
+                     // Another sentence beside the invitation, a question included.
+                     "최신 아이폰 가격 얼마니? 이제 너 얼마나 잘하는지 보자", "그 버그 원인이 뭐니? 잘하는지 보자",
+                     "오늘 원달러 환율 얼마니? 자 이제 네가 얼마나 잘 되는지 보자", "지금 비트코인 시세 얼마니? 하는지 보자",
+                     "고쳤어? 이제 잘 되는지 보자", "빌드 끝났어? 그럼 이제 잘 되는지 보자",
+                     "테스트 다 통과했냐? 이제 얼마나 잘 되는지 보자", "패치 적용됐어? 그럼 되는지 보자",
+                     "쿼터 얼마나 남았어? 그럼 얼마나 되는지 보자", "각각 라우팅을 시켜오라니까? 되는지 보자.",
+                     "자 이제 네가 얼마나 잘 되는지 보자. 빌드 다시 해볼래?", "이제 네가 얼마나 잘 되는지 보자. 앱 다시 깔아줄래?",
+                     "이제 너 얼마나 잘하는지 보자. 스키마 하나 짜볼래?", "일 시작해볼까? 이제 네가 얼마나 잘하는지 보자"] {
+            check(!matches(text), "a thing, no responder, or another sentence beside the invitation is work: \(text)")
         }
         for text in ["배포 됐냐?", "사이트 살아있어?", "야 너 R2 연결 돼있냐?", "푸시 됐어?", "PR 머지됐어?", "설치됐어? 안 됐으면 깔아",
                      "야 나 한번 체크해 볼게. 서버 되냐?", "너 되냐? Can you check the shell?", "로그에는 작동 중이야?"] {
