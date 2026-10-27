@@ -123,8 +123,11 @@ private struct ExecutionRoutePresentation: Equatable {
                 executionLine = compactExecutionLine + " · " + distinct.joined(separator: "/")
                 modelLine = nil
                 reasoningLine = os1Tr("추론: 경로별 표시", "Reasoning: per route")
-                detail = os1Tr("OpenClaw가 작업을 경로 \(lanes.lanes.count)개(\(distinct.joined(separator: ", ")))로 나눴습니다. 경로마다 모델·추론·상태를 대화에 나란히 표시합니다. 모델은 Core가 선택한 설정이며 관측된 실행이 아닙니다.",
-                               "OpenClaw split the task into \(lanes.lanes.count) routes (\(distinct.joined(separator: ", "))). Each route's model, reasoning and status are shown side by side in the conversation. Models are Core's selection, not observed execution.")
+                let anyObserved = lanes.lanes.contains { $0.configuration == .observed }
+                detail = os1Tr("OpenClaw가 작업을 경로 \(lanes.lanes.count)개(\(distinct.joined(separator: ", ")))로 나눴습니다. 경로마다 모델·추론·상태를 대화에 나란히 표시합니다. " +
+                                (anyObserved ? "각 경로의 모델은 선택값인지 관측값인지 함께 표시합니다." : "모델은 Core가 선택한 설정이며 관측된 실행이 아닙니다."),
+                               "OpenClaw split the task into \(lanes.lanes.count) routes (\(distinct.joined(separator: ", "))). Each route's model, reasoning and status are shown side by side in the conversation. " +
+                                (anyObserved ? "Each route's model is marked selected or observed." : "Models are Core's selection, not observed execution."))
             } else {
                 let lane = lanes.lanes[0]
                 executionLine = os1Tr("라우팅: \(names[0])", "Route: \(names[0])")
@@ -132,8 +135,12 @@ private struct ExecutionRoutePresentation: Equatable {
                 modelLine = lane.model.flatMap { $0.isEmpty ? nil : os1Tr("모델: \($0)", "Model: \($0)") }
                 reasoningLine = os1Tr("추론: ", "Reasoning: ") +
                     (lane.effort.map(RouteLanesRenderer.effortLabel) ?? os1Tr("기록 없음", "not recorded"))
-                detail = os1Tr("OpenClaw Core가 이 경로에 선택한 설정입니다. 관측된 실행이 아닙니다.",
-                               "The configuration OpenClaw Core selected for this route; not observed execution.")
+                detail = lane.configuration == .observed
+                    ? os1Tr("이 시도의 네이티브 세션 기록에서 관측한 모델·추론입니다.",
+                            "The model and reasoning observed in this attempt's native session record.") +
+                        (RouteLanesRenderer.observedDiffersNote(lane).map { " · " + $0 } ?? "")
+                    : os1Tr("OpenClaw Core가 이 경로에 선택한 설정입니다. 관측된 실행이 아닙니다.",
+                            "The configuration OpenClaw Core selected for this route; not observed execution.")
             }
             return
         }
@@ -6911,8 +6918,10 @@ private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: Pen
             requiredCheckIDs: [], failedCheckIDs: Array(failedChecks.prefix(64)))
         unchanged = ChatMessage(role: .receipt, text: unchanged.text + disclosureText, taskQuality: quality)
     } else if !result.taskVerified, result.taskQuality == .executionOnly || result.taskQuality == .unverified {
+        // The reason names what admitted the delivered route (Core's own
+        // routing words): it changes the receipt's wording, never its state.
         quality = .init(state: result.taskQuality == .executionOnly ? .executionOnly : .unverified,
-            reason: "core_result_preserved_without_task_or_reference_verification", contractSHA256: "",
+            reason: RCCReceiptRouteBasis(core).qualityReason, contractSHA256: "",
             artifactSHA256: appSHA256Hex(result.output), requiredCheckIDs: [], failedCheckIDs: [])
     } else { quality = nil } // A Core flag alone is not TaskQualityEvidence proof.
     let nativeChildren = core.children.filter {
@@ -6948,9 +6957,65 @@ private func rccCoreReceipt(_ core: RCCRuntimeContract.Snapshot, submission: Pen
         nativeRecordVerified: true, taskQuality: quality)
 }
 
+/// What admitted the routes whose answers a Core receipt delivers, read from
+/// Core's routing reasons (`admitted_*` tokens). Display only: it certifies
+/// nothing, and only exact, contract and sound-full verifier sources ever
+/// earn certified wording, which this basis never produces.
+private enum RCCReceiptRouteBasis: Equatable {
+    /// Host-profile graded admission: a predicted route, no answer check.
+    case graded
+    /// The build-440 owner-decision class certificate: a format check only.
+    case ownerDecision
+    /// Any other class certificate: a measured class, a format check only.
+    case classFormat
+    /// A reference, an owner's tuple, an escalation, or no reason recorded.
+    case other
+
+    static let gradedReason = "core_graded_route_predicted_quality_unverified"
+    static let ownerDecisionReason = "core_owner_decision_route_format_check_only"
+    static let classFormatReason = "core_class_route_format_check_only"
+    static let otherReason = "core_result_preserved_without_task_or_reference_verification"
+
+    /// The owner decision's certificate id, from its compiled bytes.
+    static let ownerDecisionCertificateID: String? = (try? JSONSerialization.jsonObject(
+        with: RCCClassOwnerDecision.frozenBytes) as? [String: Any])?["certificate_id"] as? String
+
+    /// The weakest claim among the delivered routes: any graded route makes
+    /// the answer predicted; a format check is named only when every
+    /// delivered route had one.
+    init(_ core: RCCRuntimeContract.Snapshot) {
+        let delivered = core.children.filter { [.completed, .succeeded].contains($0.state) }
+        let tokens = delivered.map { Set(($0.routingDecision?.reason ?? "").split(separator: ";").map(String.init)) }
+        let owner = Self.ownerDecisionCertificateID.map { "admitted_certified_class:" + $0 }
+        if tokens.contains(where: { $0.contains { $0.hasPrefix("admitted_graded_") } }) { self = .graded }
+        else if !tokens.isEmpty, let owner, tokens.allSatisfy({ $0.contains(owner) }) { self = .ownerDecision }
+        else if !tokens.isEmpty, tokens.allSatisfy({ $0.contains { $0.hasPrefix("admitted_certified_class:") } }) {
+            self = .classFormat
+        } else { self = .other }
+    }
+
+    var qualityReason: String {
+        switch self {
+        case .graded: return Self.gradedReason
+        case .ownerDecision: return Self.ownerDecisionReason
+        case .classFormat: return Self.classFormatReason
+        case .other: return Self.otherReason
+        }
+    }
+}
+
 private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation) -> String {
     switch quality.state {
-    case .executionOnly, .unverified: return os1Tr("과제 품질 미검증", "Task quality unverified")
+    case .executionOnly, .unverified:
+        switch quality.reason {
+        case RCCReceiptRouteBasis.gradedReason: return os1Tr("예측 경로 · 품질 미검증", "Predicted route · quality unverified")
+        case RCCReceiptRouteBasis.ownerDecisionReason: return os1Tr("오너 결정 경로 · 형식 검사만", "Owner-decision route · format check only")
+        case RCCReceiptRouteBasis.classFormatReason: return os1Tr("측정 클래스 경로 · 형식 검사만", "Measured class route · format check only")
+        default:
+            // Ran with no check of the answer, or a check that could not run.
+            return quality.state == .executionOnly ? os1Tr("답변 검사 안 함", "No answer check ran")
+                : os1Tr("검사를 실행하지 못함", "A check could not run")
+        }
     case .taskContractVerified: return os1Tr("과제 계약 검증됨 · 기준 비교 없음", "Task contract verified · no reference comparison")
     case .referenceEquivalent: return os1Tr("고정 기준과 동등", "Equivalent to locked reference")
     case .referenceAbove: return os1Tr("고정 기준보다 우위", "Above locked reference")
@@ -6958,8 +7023,24 @@ private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation)
     }
 }
 
+/// The step's recorded disposition in the receipt's words. Only an actual
+/// REVAS adoption reads "REVAS adopted": an execution-only step ran with no
+/// check of its answer, and a retried, rejected or replaced attempt was not
+/// adopted.
+private func revasDispositionReceipt(_ step: AppRunStep) -> String {
+    switch step.revasDisposition {
+    case "control_verified": return "OS-1 control verified"
+    case "adopted": return "REVAS adopted"
+    case "execution_only": return "execution only · no answer check ran"
+    default:
+        let code = step.revasDisposition.range(of: "^[a-z0-9_]{1,64}$", options: .regularExpression) != nil
+            ? step.revasDisposition.replacingOccurrences(of: "_", with: " ") : "unrecorded"
+        return "REVAS " + code + " · not adopted"
+    }
+}
+
 private func executionReceipt(_ step: AppRunStep, source: SourceReference? = nil) -> String {
-    let control = "\(step.routeTitle) · \(step.executionDetail) · \(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(step.revasDisposition == "control_verified" ? "OS-1 control verified" : "REVAS adopted") · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
+    let control = "\(step.routeTitle) · \(step.executionDetail) · \(backendTierLabel(action: step.action, provider: step.provider)) · \(step.model ?? "provider default") · \(step.effort) reasoning · \(revasDispositionReceipt(step)) · \(step.reviewedDraft.map { os1Tr("\($0) 초안을 코드와 대조해 검토", "checked the \($0) draft against the code") + " · " } ?? "")\(nativeRecordReceipt(step)) · \(step.workflowStage.map { "workflow \($0) · " } ?? "")step \(step.sequence) · \(step.durationMS / 1_000)s · exit \(step.exitCode)" +
         (step.provider != "local" && source != nil ? " · source snapshot delivered: \(source!.sha256)" : "")
     let quality = step.taskQuality.map { "\nTask quality: \($0.state.rawValue) · \($0.reason) · artifact \($0.artifactSHA256)" }
         ?? "\nTask quality: historical execution-only record; no reference comparison is recorded"
@@ -8161,8 +8242,8 @@ private func rccCoreNativeReceiptSelfTest() throws {
                   "\(count) metadata survives message persistence")
         let display = timelineAttributedDocument(messages: [receipt], queuedSubmissions: [], isRunning: false,
             workspace: "/tmp/fixture", expandAll: true).string
-        let separated = (display.contains("실행 기록 확인됨") && display.contains("과제 품질 미검증")) ||
-            (display.contains("Execution record verified") && display.contains("Task quality unverified"))
+        let separated = (display.contains("실행 기록 확인됨") && display.contains("답변 검사 안 함")) ||
+            (display.contains("Execution record verified") && display.contains("No answer check ran"))
         try check(separated && !display.contains("실행 기록 미확인") && !display.contains("Execution record unverified"),
                   "\(count) execution and quality labels stay separate in either interface language")
         if mixed { try check(receipt.provider == nil && receipt.executionSurface == nil,
@@ -8211,6 +8292,84 @@ private func rccCoreNativeReceiptSelfTest() throws {
               !ordinary.text.contains("partial.schedule.capacity") &&
               !ordinary.text.contains("Checker unavailable") && !ordinary.text.contains("검사기 사용 불가"),
               "ordinary unverified result does not invent a known check failure or checker outage")
+
+    // The receipt says what admitted the delivered route, from Core's own
+    // routing words, and never certifies it: execution-only and a check
+    // that could not run read apart; a graded route is a prediction; the
+    // owner decision and a class certificate checked the format only.
+    func statusLine(_ receipt: ChatMessage) -> String {
+        timelineAttributedDocument(messages: [receipt], queuedSubmissions: [], isRunning: false,
+            workspace: "/tmp/fixture").string
+    }
+    func admitted(_ reasons: [String?]) throws -> ChatMessage {
+        var core = try fixture(reasons.count)
+        for (index, reason) in reasons.enumerated() {
+            core.children[index].routingDecision = reason.map { .init(routeClass: "standard", resolvedCandidateID: "fixture",
+                surface: .codex, model: "fixture-model", effort: .low, quotaPool: .openAICodex, reason: $0,
+                quotaRemainingFraction: nil) }
+        }
+        return rccCoreReceipt(core, submission: submission, localReceipt: nil, note: "Result received")
+    }
+    try check(RCCReceiptRouteBasis.ownerDecisionCertificateID == "owner-chat-fast-20261027",
+        "the owner decision's certificate id is not read from its compiled bytes")
+    let graded = try admitted(["resolver;route_reference;admitted_graded_standard;tier_workhorse;effort_medium;agent_surface"])
+    let gradedLine = statusLine(graded)
+    try check(graded.taskQuality?.state == .executionOnly &&
+              graded.taskQuality?.reason == RCCReceiptRouteBasis.gradedReason &&
+              (gradedLine.contains("예측 경로 · 품질 미검증") || gradedLine.contains("Predicted route · quality unverified")),
+              "a graded route does not read as a predicted route of unverified quality: \(gradedLine)")
+    let owner = try admitted(["resolver;admitted_certified_class:owner-chat-fast-20261027;tier_fast;effort_low;chat_surface"])
+    let ownerLine = statusLine(owner)
+    try check(owner.taskQuality?.reason == RCCReceiptRouteBasis.ownerDecisionReason &&
+              (ownerLine.contains("오너 결정 경로 · 형식 검사만") || ownerLine.contains("Owner-decision route · format check only")),
+              "the owner-decision class does not read as a format check only: \(ownerLine)")
+    let measured = try admitted(["resolver;admitted_certified_class:readonly-lookup-d4;tier_fast;effort_low;agent_surface"])
+    try check(measured.taskQuality?.reason == RCCReceiptRouteBasis.classFormatReason &&
+              (statusLine(measured).contains("측정 클래스 경로 · 형식 검사만") ||
+               statusLine(measured).contains("Measured class route · format check only")),
+              "a measured class certificate does not read as a format check only")
+    let reference = try admitted(["resolver;route_reference;admitted_reference_uncertified;tier_frontier;effort_ultra;agent_surface"])
+    let escalated = try admitted(["tier_escalated_after_failure_signal;route_reference;admitted_reference_escalation;agent_surface"])
+    let unrecorded = try admitted([nil])
+    for (receipt, label) in [(reference, "reference"), (escalated, "escalated reference"), (unrecorded, "unrecorded reason")] {
+        let line = statusLine(receipt)
+        try check(receipt.taskQuality?.reason == RCCReceiptRouteBasis.otherReason &&
+                  (line.contains("답변 검사 안 함") || line.contains("No answer check ran")) &&
+                  !line.contains("예측 경로") && !line.contains("Predicted route"),
+                  "a \(label) answer reads as anything but a route with no answer check: \(line)")
+    }
+    // One graded route makes the whole answer a prediction; a format check
+    // is named only when every delivered route had one.
+    let mixedGraded = try admitted(["route_reference;admitted_reference_uncertified", "route_reference;admitted_graded_light"])
+    let mixedOwner = try admitted(["route_reference;admitted_reference_uncertified",
+                                   "admitted_certified_class:owner-chat-fast-20261027"])
+    try check(mixedGraded.taskQuality?.reason == RCCReceiptRouteBasis.gradedReason &&
+              mixedOwner.taskQuality?.reason == RCCReceiptRouteBasis.otherReason,
+              "a mixed delivery claims more than its weakest route")
+    let couldNotRun = statusLine(unavailableReceipt)
+    try check((couldNotRun.contains("검사를 실행하지 못함") || couldNotRun.contains("A check could not run")) &&
+              !couldNotRun.contains("답변 검사 안 함") && !couldNotRun.contains("No answer check ran"),
+              "a check that could not run reads like no check at all: \(couldNotRun)")
+    for receipt in [graded, owner, measured, reference, escalated, mixedGraded, mixedOwner] {
+        let line = statusLine(receipt).lowercased()
+        try check(!line.contains("certif") && !line.contains("인증") && !line.contains("검증됨 · 과제") &&
+                  receipt.taskQuality?.taskCompletionVerified == false,
+                  "an uncertified route gained certified wording or state: \(line)")
+    }
+    let savedGraded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(graded))
+    try check(savedGraded.taskQuality == graded.taskQuality && statusLine(savedGraded) == gradedLine,
+              "a saved graded receipt loses what admitted its route")
+    // The legacy step receipt says "REVAS adopted" only for an adoption.
+    func legacy(_ disposition: String) -> String {
+        executionReceipt(AppRunStep(sequence: 1, provider: "codex", action: "execute", model: "gpt-6.1-sol", effort: "medium",
+            revasDisposition: disposition, sessionID: "8eaa48c6-af59-4f4c-a2be-9a0ec3b6fc41", permissionProfile: "read_only",
+            exitCode: 0, output: "answer", stderr: "", durationMS: 1, nativeRecord: nil))
+    }
+    try check(legacy("adopted").contains("REVAS adopted") && legacy("control_verified").contains("OS-1 control verified") &&
+              legacy("execution_only").contains("execution only · no answer check ran") &&
+              ["execution_only", "retry", "rejected", "reviewed_draft", "pending"].allSatisfy { !legacy($0).contains("REVAS adopted") } &&
+              legacy("retry").contains("REVAS retry · not adopted"),
+              "a legacy step that was not adopted reads \"REVAS adopted\"")
 
     var noSummary = try fixture(1, missing: true)
     noSummary.children[0].qualityDisclosure = mismatch.children[0].qualityDisclosure
@@ -12051,16 +12210,17 @@ private final class SessionStore: ObservableObject {
                         }
                     }
                     // The routes the task ran, kept with its result as lanes. The
-                    // local deterministic path ran no route and keeps none.
+                    // local deterministic path ran no route and keeps none. A
+                    // step's model is the bound one: only the run's projected
+                    // graph (native-display sidecars) observes a model.
                     let observations = summary.steps.map { step in
                         RouteLanesRecord.Observation(surface: step.executedSurface?.rawValue ?? step.surface,
-                            model: step.model, effort: step.effort, output: step.output,
-                            verified: stepRecordIsVerified(step))
+                            output: step.output, verified: stepRecordIsVerified(step))
                     }
                     let resultText = core.result?.output.isEmpty == false ? core.result?.output : nil
                     let laneRecord = localReceipt == nil
                         ? RouteLanesRecord.build(core: core, submissionID: submission.id, messageText: resultText,
-                            observations: observations) : nil
+                            observations: observations, displayGraph: summary.agentTask) : nil
                     if let output = resultText {
                         // The owner already selected the returned result. Do
                         // not emit all intermediate children as separate final
@@ -12283,7 +12443,8 @@ private final class SessionStore: ObservableObject {
                     )
                     answer.work = work; work = nil
                     // One verified route: its model, reasoning and status in
-                    // one line above the answer.
+                    // one line above the answer. The step names the model
+                    // the route was bound to, not one observed to run.
                     if ["codex", "claude"].contains(step.provider), stepRecordIsVerified(step),
                        let model = step.model, !model.isEmpty {
                         let surface = step.executedSurface?.rawValue ?? step.surface ?? step.provider
@@ -12291,7 +12452,7 @@ private final class SessionStore: ObservableObject {
                         answer.routeLanes = RouteLanesRecord(submissionID: submission.id,
                             taskStatus: step.exitCode == 0 ? .completed : .failed, lanes: [RouteLane(id: "step-\(step.sequence)",
                                 surface: surface, label: RouteLaneSurface.title(surface) == nil ? step.routeTitle : nil, model: model,
-                                effort: step.effort, configuration: .observed, status: step.exitCode == 0 ? .completed : .failed,
+                                effort: step.effort, configuration: .selected, status: step.exitCode == 0 ? .completed : .failed,
                                 executionVerified: true, startedAt: ended.addingTimeInterval(-Double(max(0, step.durationMS)) / 1000),
                                 finishedAt: ended)], answersInText: true)
                     }
@@ -24419,26 +24580,72 @@ private func routeLanesSelfTest() throws {
     try check(![os1Tr("로컬", "Local"), RouteLanesTaskNote.conditionsVerified.title, "작업"].contains(where: recordJSON.contains),
         "a saved record holds interface words: \(recordJSON.prefix(240))")
     // Only a verified record of exactly one lane's output, claimed by no
-    // other lane, observes its model.
-    let observed = RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output, observations: [
-        .init(surface: "codex", model: "gpt-6-luna", effort: "low", output: "4", verified: true),
-        .init(surface: "claude", model: "claude-haiku-4-5", effort: "none", output: "2", verified: false)])
-    try check(observed?.lanes[1].configuration == .observed && observed?.lanes[1].executionVerified == true &&
-        observed?.lanes[1].selectedModel == nil && observed?.lanes[2].configuration == .selected &&
-        observed?.lanes[3].configuration == .selected, "an unverified or other lane's output upgraded a lane to observed")
+    // other lane, gives that lane its ✓. A run step's model is the bound
+    // one, so a verified record observes no model.
+    let verifiedSteps: [RouteLanesRecord.Observation] = [.init(surface: "codex", output: "4", verified: true),
+                                                          .init(surface: "claude", output: "2", verified: false)]
+    let verifiedOnly = RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output,
+        observations: verifiedSteps)
+    try check(verifiedOnly?.lanes[1].executionVerified == true && verifiedOnly?.lanes[2].executionVerified == nil &&
+        verifiedOnly?.lanes.allSatisfy({ $0.configuration == .selected && $0.selectedModel == nil }) == true &&
+        verifiedOnly?.lanes[1].model == "gpt-6-luna" && verifiedOnly?.lanes[1].effort == "low",
+        "a verified execution record, or an unverified one, relabeled a selected model as observed")
     let twins = [F.Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
                          started: 0, finished: 3),
                  F.Route(surface: .codex, model: "gpt-6-luna", effort: .low, instruction: "2+2", state: .completed, output: "4",
                          started: 0, finished: 4)]
     let twinRecord = RouteLanesRecord.build(core: F.core(taskID: "lanes-fixture-twins", request: "x", state: .completed,
         routes: twins, base: base, result: F.joined(twins)), submissionID: submission, messageText: F.joined(twins), observations: [
-        .init(surface: "codex", model: "gpt-6-luna-pro", effort: "high", output: "4", verified: true)])
+        .init(surface: "codex", output: "4", verified: true)])
     try check(twinRecord?.lanes.allSatisfy { $0.configuration == .selected && $0.executionVerified == nil } == true,
-        "one record of an output two lanes share observed both lanes")
-    let differs = RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output, observations: [
-        .init(surface: "codex", model: "gpt-6-luna-pro", effort: "high", output: "4", verified: true)])
-    try check(differs?.lanes[1].model == "gpt-6-luna-pro" && differs?.lanes[1].selectedModel == "gpt-6-luna" &&
-        differs?.lanes[1].selectedEffort == "low", "an observed model that differs from Core's selection lost the selection")
+        "one record of an output two lanes share verified both lanes")
+    // Only the native-display sidecar of a lane's own attempt observes its
+    // model: the run's projected graph carries it on that child's worker.
+    func sighted(_ child: String, provider: String? = "codex", model: String?, effort: String?,
+                 turn: UUID? = nil) throws -> ParallelAgentTask.Snapshot {
+        var graph = try F.graph(completed, conversationID: UUID(), submissionID: turn ?? submission, request: "route test",
+            observedAt: now, firstObservedAt: base)
+        let node = RCCRuntimeProjection.inspectionIdentity(taskID: completed.taskID, childID: child).nodeID
+        guard let index = graph.nodes.firstIndex(where: { $0.id == node }) else {
+            throw RunnerError.message("Routing lanes: the fixture graph has no worker for \(child)")
+        }
+        graph.nodes[index].provider = provider; graph.nodes[index].model = model; graph.nodes[index].effort = effort
+        return graph
+    }
+    func sightedRecord(_ graph: ParallelAgentTask.Snapshot) -> RouteLanesRecord? {
+        RouteLanesRecord.build(core: completed, submissionID: submission, messageText: output, observations: verifiedSteps,
+            displayGraph: graph)
+    }
+    let same = sightedRecord(try sighted("requested-2", model: "gpt-6-luna", effort: "low"))
+    try check(same?.lanes[1].configuration == .observed && same?.lanes[1].selectedModel == nil &&
+        same?.lanes[1].observedDiffersFromSelected == false && same?.lanes[1].executionVerified == true &&
+        [0, 2, 3].allSatisfy { same?.lanes[$0].configuration == .selected },
+        "a sidecar observation equal to the selection is not observed, or reached another lane")
+    let differs = sightedRecord(try sighted("requested-2", model: "gpt-6-luna-pro", effort: "high"))
+    try check(differs?.lanes[1].model == "gpt-6-luna-pro" && differs?.lanes[1].effort == "high" &&
+        differs?.lanes[1].selectedModel == "gpt-6-luna" && differs?.lanes[1].selectedEffort == "low" &&
+        differs?.lanes[1].observedDiffersFromSelected == true,
+        "an observed model that differs from the selection lost the selection")
+    let unexposed = sightedRecord(try sighted("requested-3", provider: "claude", model: "claude-haiku-4-5", effort: nil))
+    try check(unexposed?.lanes[2].configuration == .observed && unexposed?.lanes[2].effort == nil &&
+        unexposed?.lanes[2].selectedEffort == "none" && unexposed?.lanes[2].observedDiffersFromSelected == false,
+        "reasoning the native record did not expose was filled from the selection or read as a difference")
+    for (graph, why) in [(try sighted("requested-2", model: "gpt-6-luna-pro", effort: "high", turn: UUID()), "another turn's graph"),
+                         (try sighted("requested-2", model: nil, effort: nil), "a progress-only sidecar"),
+                         (try sighted("requested-2", provider: nil, model: "gpt-6-luna-pro", effort: "high"), "a worker with no native provider")] {
+        try check(sightedRecord(graph)?.lanes.allSatisfy({ $0.configuration == .selected && $0.selectedModel == nil }) == true,
+            "\(why) observed a model")
+    }
+    // The card says when what ran is not what was selected, and only then.
+    func card(_ record: RouteLanesRecord?) -> String {
+        var message = ChatMessage(role: .assistant, text: output); message.routeLanes = record
+        return timelineAttributedDocument(messages: [ChatMessage(role: .user, text: "route test"), message],
+            queuedSubmissions: [], isRunning: false, workspace: "/tmp").string
+    }
+    let differsNote = os1Tr("관측값 · 선택값과 다름", "observed · differs from selected")
+    try check(card(differs).contains(differsNote) && card(differs).contains("gpt-6-luna-pro") &&
+        !card(same).contains(differsNote) && !card(unexposed).contains(differsNote) && !card(verifiedOnly).contains(differsNote),
+        "the card does not say, or wrongly says, that the observed configuration differs from the selected one")
     // A task verifier's rewritten result is not split into lanes.
     let rewritten = F.core(taskID: "lanes-fixture-2", request: "route test", state: .completed, routes: F.routeAll,
         base: base, result: "Every route answered: 2, 4, 2, 4.")
@@ -24556,6 +24763,28 @@ private func routeLanesSelfTest() throws {
         "live lanes do not show the selected model as selected")
     try check(live.lanes.map(\.surface) == ["codex", "claude", "local"] && live.lanes[0].title == "Codex · 17*23",
         "live lanes lost their routes")
+    // ✓ on a live lane needs a verified record of its attempt. A running
+    // attempt's progress-only sidecar names its provider and nothing else.
+    var progressOnly = graph, sealed = graph
+    let running = graph.nodes.firstIndex { $0.role == .worker && $0.state == .running }!
+    progressOnly.nodes[running].provider = "codex"
+    progressOnly.nodes[running].progressText = (graph.nodes[running].progressText ?? "") +
+        " · native progress observed; model/reasoning not exposed"
+    let progressLane = RouteLanesPresentation(liveGraph: progressOnly)?.lanes[0]
+    try check(progressLane?.executionVerified != true && progressLane?.configuration == .selected &&
+        progressLane?.model == "gpt-6-luna", "a progress-only sidecar earned a live ✓ or an observed model")
+    let returnedIndex = graph.nodes.firstIndex { $0.role == .worker && $0.state == .succeeded }!
+    sealed.nodes[returnedIndex].provider = "claude"
+    sealed.nodes[returnedIndex].model = "qwen-observed"
+    sealed.nodes[returnedIndex].effort = nil
+    sealed.nodes[returnedIndex].progressText = (graph.nodes[returnedIndex].progressText ?? "") +
+        " · native claude execution verified · observed qwen-observed / reasoning not exposed"
+    let sealedLanes = RouteLanesPresentation(liveGraph: sealed)?.lanes
+    let sealedLane = sealedLanes?.first { $0.id == graph.nodes[returnedIndex].id.uuidString.lowercased() }
+    try check(sealedLane?.executionVerified == true && sealedLane?.configuration == .observed &&
+        sealedLane?.model == "qwen-observed" && sealedLane?.effort == nil && sealedLane?.selectedModel == "qwen3.5:4b" &&
+        sealedLane?.selectedEffort == "none" && sealedLane?.observedDiffersFromSelected == true,
+        "a sealed observation on a live lane lost its ✓, borrowed the selected reasoning or hid the selection")
     let returned = F.core(taskID: "lanes-live-2", request: "x", state: .running,
         routes: F.routeAll, base: liveBase, result: nil)
     let returnedLanes = RouteLanesPresentation(liveGraph: try F.graph(returned, conversationID: conversation,
@@ -24607,6 +24836,12 @@ private func routeLanesSelfTest() throws {
         ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex"), lanes: live).executionLine.contains("Codex") &&
         !ExecutionRoutePresentation(activity: RuntimeActivity(.executing, provider: "codex"), lanes: live).executionLine.contains("3"),
         "the badge contradicts the lanes, or lanes rename a recorded executor")
+    // The badge never calls an observed model Core's selection.
+    let sealedBadge = ExecutionRoutePresentation(activity: activity, lanes: RouteLanesPresentation(liveGraph: sealed))
+    try check(badge.detail.contains(os1Tr("모델은 Core가 선택한 설정", "Models are Core's selection")) &&
+        !sealedBadge.detail.contains(os1Tr("모델은 Core가 선택한 설정", "Models are Core's selection")) &&
+        sealedBadge.detail.contains(os1Tr("선택값인지 관측값인지", "marked selected or observed")),
+        "the badge calls an observed lane's model Core's selection")
 
     // The transcript: lanes in place of the joined answers.
     let history2 = [ChatMessage(role: .user, text: "route test"), message]
