@@ -728,6 +728,22 @@ for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rc
     check(f'node --test --test-timeout=180000 "$script_dir/fixtures/{fixture}.test.mjs"' in RELEASE and
           (ROOT / f"scripts/fixtures/{fixture}.test.mjs").is_file(),
           "release runs the build-407 fixture " + fixture)
+# Change 2 (build 441, owner order 2026-10-27): the host-profile graded
+# admission is a non-certifying third outcome with its own route kind, basis
+# and screen outcome; its fixture is release-gated.
+graded_admission = section(RUNTIME, "function hostProfileGrade(", "/** The routing-reason token that names the admission. */")
+check("validRequestProfile(profile)" in graded_admission and "profile.tool_need === 'none'" in graded_admission and
+      "!intentConstrains(routingIntent(catalog))" in graded_admission and
+      "catalog.owner_scope === 'read_only'" in graded_admission and
+      "{class: 'graded', source: GRADED_SOURCE, certificate_id: null, grade}" in RUNTIME and
+      "graded:(?:light|standard)" in RUNTIME and "'screen_pass'" in RUNTIME and
+      "kind: 'graded'" in RUNTIME and "routeClass: GRADED_CLASS" in RUNTIME and
+      "const kind = intentConstrains(intent) ? 'explicit' : 'reference';" in RUNTIME and
+      "(choice.kind === 'tier' || choice.kind === 'graded')" in RUNTIME and
+      "'request_profile'" in RUNTIME and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-graded-admission.test.mjs"' in RELEASE and
+      (ROOT / "scripts/fixtures/openclaw-rcc-graded-admission.test.mjs").is_file(),
+      "change 2: host-profile graded admission is uncertified, gated by owner words and the request profile, release-gated")
 
 # Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
 # sign-in looked signed out on every live catalog.

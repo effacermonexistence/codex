@@ -100,7 +100,13 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // owner's own words leave) unless a certifying source exists before dispatch:
 //  (a) a full-coverage owner contract the host re-bound to this exact request;
 //  (b) a registered gold-blind node verifier for the certified class;
-//  (c) a signed class certificate (rcc-class-table.json, empty as shipped).
+//  (c) a signed class certificate (rcc-class-table.json; build 440 ships one,
+//      chat_explanatory, on the compiled owner decision).
+// Build 441 (owner order, 2026-10-27) adds ONE non-certifying outcome:
+// 'graded' (source host_profile), the host's deterministic request profile of
+// an answer-only, tool-free, light or standard request with no owner routing
+// words. It runs a lower tuple below a runnable reference only with re-run
+// headroom, labelled as predicted and quality-unverified, never certified.
 // A bounded full-contract writer may descend only with the native host's exact
 // staged-workspace capability: failed candidates never touch the original.
 // No model-authored grade lowers a tuple. A certified read-only node runs the
@@ -116,8 +122,8 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // admitted supported effort).
 const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'];
 // Recorded route classes. 'deep' names a node bound at a reference (or an
-// owner-chosen tuple), 'trivial' a certified descent; 'standard' survives
-// only in persisted decisions of older builds.
+// owner-chosen tuple), 'trivial' a certified descent, 'standard' a host-profile
+// graded route (build 441; older builds' persisted decisions used it too).
 export const ROUTE_CLASSES = Object.freeze(['trivial', 'standard', 'deep']);
 const CERTIFIED_CLASS = 'trivial';
 // Provider-stated model tiers, strongest first (Swift ModelTiers is the owner).
@@ -133,6 +139,25 @@ export const TIER_ROUTES = Object.freeze({
   trivial: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
   deep: Object.freeze([['frontier', REFERENCE_EFFORT]]),
 });
+// Build 441 (owner order, 2026-10-27): the host-profile graded lists, keyed by
+// the request profile's difficulty. A prediction from the owner's request
+// text and host facts, NOT a certification: the route is 'graded' (class
+// 'standard'), its basis 'graded:<grade>', its acceptance a structural screen
+// recorded as such, and any failure signal escalates once to the reference
+// fixed at bind. Deep and unknown work keeps the reference.
+export const GRADED_ROUTES = Object.freeze({
+  light: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
+  standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high']]),
+});
+const GRADED_CLASS = 'standard';
+const GRADED_SOURCE = 'host_profile';
+// The request profile (catalog request_profile, Swift RequestProfile).
+const REQUEST_PROFILE_POLICY = 'host_profile_v1';
+const PROFILE_ANSWER_KINDS = new Set(['answer_only', 'work', 'unknown']);
+const PROFILE_TOOL_NEEDS = new Set(['current_facts', 'workspace', 'shell', 'write', 'none']);
+const PROFILE_DIFFICULTIES = new Set(['light', 'standard', 'deep', 'unknown']);
+const PROFILE_SIGNAL = /^[a-z][a-z0-9_]{0,63}$/;
+const MAX_PROFILE_SIGNALS = 32;
 // A class certificate's own per-answer format check (R9 (c)), by name. A
 // certificate naming a check this Core does not know certifies nothing.
 const FORMAT_CHECKS = Object.freeze({nonempty_text: output => typeof output === 'string' && output.trim() !== ''});
@@ -173,13 +198,17 @@ const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted'])
 // its tuple may answer. A certified basis names its admitting source (and the
 // verifier or class certificate); 'certified:unrecorded' is a descent recorded
 // without one (an older build), 'unbound' a row no host resolution chose.
-const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
 const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
 // The admitting source's verdict on a descent attempt: it accepted the answer,
 // failed it, or the answer was not returned in a form it accepts.
 // 'certifier_unavailable': the certifier its ladder names was gone at adoption
 // (a configuration fault, never a failure of the route); no check ran.
 const LEDGER_CHECK_OUTCOMES = new Set(['pass', 'fail', 'not_returned', 'certifier_unavailable']);
+// Build 441: a graded attempt's structural screen (descentStructurallySound),
+// never a check pass: it passed the screen, failed it, was not returned, or a
+// failure-signal verifier (never a certifier) failed it.
+const GRADED_CHECK_OUTCOMES = new Set(['screen_pass', 'screen_fail', 'not_returned', 'fail']);
 // §4.3: the sources whose verdict is a calibration label. A verifier certifies
 // only as a registered 'sound_full' entry (K4); a class format check is partial.
 const SOUND_FULL_CHECK_SOURCES = new Set(['exact', 'contract', 'verifier']);
@@ -946,6 +975,11 @@ function soundVerifierFor(node, task, catalog, registry) {
  *    only that verifier's pass on THIS attempt accepts the answer, I2);
  *  - (c) 'class': this request class's signed certificate, for a node running
  *    the request byte-exact, whose per-answer format check this Core knows;
+ *  - build 441, NOT certifying: {class: 'graded', source: 'host_profile',
+ *    grade}, only when no source above applies, the owner gave no routing
+ *    constraint, and the host's request profile reads the node (the request
+ *    itself, read-only agent) as an answer-only, tool-free, light or standard
+ *    request (hostProfileGrade);
  *  - anything else 'uncertified'. A model-authored grade never certifies. */
 export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRegistry = null} = {}) {
   const reference = source => ({class: 'reference', source, certificate_id: null});
@@ -993,12 +1027,45 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
     catalog.class_certificates[cls] : undefined;
   if (plain(certificate) && Object.hasOwn(FORMAT_CHECKS, certificate.format_check))
     return {class: 'certified', source: 'class', certificate_id: certificate.certificate_id};
+  const grade = hostProfileGrade(node, task, catalog);
+  if (grade !== null) return {class: 'graded', source: GRADED_SOURCE, certificate_id: null, grade};
   return reference('uncertified');
 }
 const ESCALATION_ADMISSION = Object.freeze({class: 'reference', source: 'escalation', certificate_id: null});
+const UNCERTIFIED_ADMISSION = Object.freeze({class: 'reference', source: 'uncertified', certificate_id: null});
+/** Whether an owner routing intent (catalog routing_intent_v2 or the legacy
+ * routing_intent, or an explicit route's own words) carries a real
+ * constraint: a surface, an exact model, a model family, an effort, a quality
+ * target or the native ceiling. A resolved v2 intent whose fields are all
+ * empty is the owner saying nothing about routing (build 441 label fix:
+ * before it, its mere presence named the route explicit / owner_words). */
+function intentConstrains(intent) {
+  return plain(intent) && ((Array.isArray(intent.allowed_surfaces) && intent.allowed_surfaces.length > 0) ||
+    intent.exact_model != null || intent.model_family != null || intent.effort != null ||
+    intent.quality_target != null || intent.require_native_ceiling === true);
+}
+/** Build 441: the grade a host-profile graded route may bind ('light' or
+ * 'standard'), or null. Only for the request itself on a read-only agent node
+ * (no materials) of an Auto task the host runs read-only, with no owner
+ * routing constraint (no explicit route test, no provider other than auto, no
+ * surface, model, effort, quality or native-ceiling words), and only when the
+ * catalog's request profile is answer_only with no tool need. Pure; host
+ * facts only, never a model. */
+function hostProfileGrade(node, task, catalog) {
+  const profile = catalog?.request_profile;
+  if (!(node?.kind === 'agent' && node.scope === 'read_only' && node.instruction === task?.request &&
+      task.mode === 'auto' && task.objective === task.request &&
+      (node.context_refs ?? []).length === 0 && (task.material_refs ?? []).length === 0 &&
+      catalog.owner_scope === 'read_only' && !intentConstrains(routingIntent(catalog)) &&
+      [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto') &&
+      validRequestProfile(profile) && profile.answer_kind === 'answer_only' && profile.tool_need === 'none'))
+    return null;
+  return Object.hasOwn(GRADED_ROUTES, profile.difficulty) ? profile.difficulty : null;
+}
 /** The routing-reason token that names the admission. */
 function admissionToken(admission) {
   return admission.class === 'reference' ? 'admitted_reference_' + admission.source :
+    admission.class === 'graded' ? 'admitted_graded_' + admission.grade :
     admission.source === 'class' ? 'admitted_certified_class:' + admission.certificate_id :
       'admitted_certified_' + admission.source;
 }
@@ -1009,9 +1076,11 @@ function admissionToken(admission) {
  * one reference run after a descent failed is 'reference_escalated'; a tuple
  * the owner's words fixed (an explicit route, an effort or model word, a
  * provider choice: the 'admitted_reference_owner_words' token) is
- * 'owner_words'; the reference the law bound is 'reference'; a row no host
- * resolution chose is 'unbound' ('owner_words' on an explicit route test);
- * anything else 'unclassified'. Never decided by a model. */
+ * 'owner_words'; the reference the law bound is 'reference'; a host-profile
+ * graded route (build 441, route kind 'graded') is 'graded:' + its grade,
+ * never certified; a row no host resolution chose is 'unbound'
+ * ('owner_words' on an explicit route test); anything else 'unclassified'.
+ * Never decided by a model. */
 export function deliveryBasisOf({explicitRoute = false, routeClass = null, routeKind = null, ladder = null,
   reason = null} = {}) {
   let basis;
@@ -1021,6 +1090,9 @@ export function deliveryBasisOf({explicitRoute = false, routeClass = null, route
     const id = plain(ladder) && typeof ladder.certificate_id === 'string' ? ladder.certificate_id : null;
     basis = 'certified:' + (source === 'contract' || source === 'exact' ? source :
       (source === 'verifier' || source === 'class') && id !== null ? source + ':' + id : 'unrecorded');
+  } else if (routeKind === 'graded') {
+    const grade = plain(ladder) && ladder.escalated !== true && ladder.admitted_by === GRADED_SOURCE ? ladder.grade : null;
+    basis = typeof grade === 'string' && Object.hasOwn(GRADED_ROUTES, grade) ? 'graded:' + grade : 'unclassified';
   } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
   else if (routeKind === 'explicit' ||
       (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
@@ -1116,7 +1188,13 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * catalog's pool order. The owner's provider word already shaped the catalog.
  *
  * The route is 'reference' (no owner words), 'explicit' (the reference the
- * owner's words leave) or 'tier' (a certified descent, carrying `ladder`).
+ * owner's words leave), 'tier' (a certified descent, carrying `ladder`) or,
+ * build 441, 'graded' (a host-profile graded route, route class 'standard',
+ * carrying the same ladder shape with admitted_by 'host_profile': NOT
+ * certified). A graded route binds only with re-run headroom at bind
+ * (`headroom`: the attempts already charged and native dispatches already
+ * made; none for a fresh plan): two attempts and two native dispatches must
+ * remain, so its one escalation can run (I1 as amended by change 2).
  *
  * `descentPolicy` (K10, §2.4): a prepared frozen check-acceptance cost policy
  * (prepareCertifiedDescentPolicy), or null. It only re-ranks F, the fixed
@@ -1125,11 +1203,11 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * nothing. */
 function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false,
                             referenceOnly = false, preferPool = null, verifierRegistry = null,
-                            descentPolicy = null} = {}) {
+                            descentPolicy = null, headroom = null} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
   if (explicitRoute?.surface === 'local') return localRouteCandidate(node, task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
-  const admission = referenceOnly ? ESCALATION_ADMISSION : admittedRoute(node, task, catalog, now, {verifierRegistry});
+  let admission = referenceOnly ? ESCALATION_ADMISSION : admittedRoute(node, task, catalog, now, {verifierRegistry});
   const ordinal = new Map();
   for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
   const usable = row => !avoidIDs.includes(row.candidate.id) && dispatchable(row.candidate, task, now);
@@ -1184,6 +1262,41 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
       [scoredBy.model === chosen.model ? 'pool_scored_by_bound_model' : 'pool_scored_by_tier_hit_model'])];
   const notes = [];
   let policyReference = null;
+  if (admission.class === 'graded') {
+    // Build 441 (owner order, 2026-10-27): the grade's first dispatchable
+    // tuple, in R11 order, below a reference that can dispatch now (this
+    // pool's, else another's), fixed here as its one escalation (K2/R9), and
+    // only with re-run headroom at bind (amended I1). Never certified.
+    const used = plain(headroom) ? headroom : {attempts: 0, native_dispatches: 0};
+    const cap = task.budget?.max_native_dispatches;
+    const roomy = (task.budget?.max_attempts ?? 0) - (used.attempts ?? 0) >= 2 &&
+      (cap == null || cap - (used.native_dispatches ?? 0) >= 2);
+    const graded = roomy ? serve(pool => GRADED_ROUTES[admission.grade].map(([tier, effort], index) =>
+      ({index, rows: entryRows(pool.rows, {tier, effort}, catalog, catalog?.routing_intent_v2 ?? null)})), 'graded') : null;
+    const chosen = graded?.hit?.candidate ?? null;
+    const target = chosen && [graded.pool, ...pools.filter(other => other !== graded.pool)
+      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
+    const isReference = chosen && referenceOf(graded.pool).some(row => row.candidate.id === chosen.id);
+    if (target && !isReference) {
+      const ladder = {source: 'tier', admitted_by: GRADED_SOURCE, grade: admission.grade, certificate_id: null,
+        format_check: null, cheap_model: chosen.model, cheap_effort: chosen.effort,
+        reference_model: target.candidate.model, reference_effort: target.candidate.effort,
+        reference_candidate_id: target.candidate.id};
+      const why = ['route_graded', admissionToken(admission), 'graded_list_' + graded.entry.index,
+        'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), graded.rank, ...graded.skipped, 'effort_' + chosen.effort,
+        ...poolNotes(graded.pool.pool, chosen, graded.hit.candidate),
+        'escalation_reference_' + (target.candidate.quota_pool === graded.pool.pool ? 'same_pool' : 'other_pool'),
+        surfaceToken(chosen)];
+      if (avoidPool !== null) why.unshift(graded.pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+      return {candidate: chosen, why: why.join(';'), widened: false, kind: 'graded', tier: tierOf(catalog, chosen.model),
+        routeClass: GRADED_CLASS, referenceEffort: referenceOf(graded.pool)[0]?.candidate.effort ?? null, ladder};
+    }
+    // Not bound below the reference: the node binds the reference, admitted as
+    // uncertified (its reason never names a graded admission), with the note.
+    notes.push('graded_' + admission.grade + '_' + (!roomy ? 'requires_dispatch_headroom' :
+      !chosen ? 'tuple_undispatchable' : isReference ? 'tuple_is_reference' : 'requires_runnable_reference'));
+    admission = UNCERTIFIED_ADMISSION;
+  }
   if (admission.class === 'certified') {
     const tier = serve(pool => certifiedEntries(pool, admission, catalog, verifierRegistry), 'tier');
     let chosen = tier.hit?.candidate ?? null;
@@ -1267,7 +1380,9 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
       (intent?.model_family || served.offered ? 'deep' : 'reference_unavailable'));
   const {hit, pool, rank, skipped} = served;
   const chosen = hit.candidate;
-  const kind = intent ? 'explicit' : 'reference';
+  // Build 441 label fix: explicit (owner_words) only when the owner's intent
+  // carries a real constraint; a resolved empty v2 intent is the reference.
+  const kind = intentConstrains(intent) ? 'explicit' : 'reference';
   const why = ['route_' + kind];
   if (explicitRoute) why.push('explicit_route_surface_' + explicitRoute.surface.replace(/[^a-z0-9]/g, '_'));
   if (intent?.effort) why.push('intent_effort_' + intent.effort);
@@ -1370,7 +1485,7 @@ function referenceRouteCandidate(node, task, catalog, now, {avoidPool = null, av
       skipped.push(`skipped_${rank}_${reference.effort === null ? 'no_reference' : 'reference_undispatchable'}`);
       continue;
     }
-    const chosen = atReference.candidate, kind = intent ? 'explicit' : 'reference';
+    const chosen = atReference.candidate, kind = intentConstrains(intent) ? 'explicit' : 'reference';
     const why = ['route_' + kind];
     if (intent?.effort) why.push('intent_effort_' + intent.effort);
     if (intent?.model_family) why.push('intent_family_' + intent.model_family);
@@ -2054,7 +2169,7 @@ function validAdmissionFacts(catalog, task) {
   const present = ['owner_scope', 'chat_lane_eligible', 'request_class'].map(key => catalog[key] !== undefined);
   if (!present.some(Boolean))
     return catalog.task_contract === undefined && catalog.class_certificates === undefined &&
-      catalog.class_provider_pins === undefined;
+      catalog.class_provider_pins === undefined && catalog.request_profile === undefined;
   const cls = catalog.request_class, chat = catalog.chat_lane_eligible;
   if (!present.every(Boolean) || !SCOPES.has(catalog.owner_scope) || typeof chat !== 'boolean' ||
       !REQUEST_CLASSES.has(cls) || (cls === 'explicit_route') !== (task.mode === 'explicit_routing_test')) return false;
@@ -2063,6 +2178,7 @@ function validAdmissionFacts(catalog, task) {
   if ((cls === 'chat_explanatory' || cls === 'text_operation') && !chat) return false;
   if (cls === 'readonly_material' && !(Array.isArray(task.material_refs) && task.material_refs.length > 0)) return false;
   return (catalog.task_contract === undefined || validTaskContract(catalog.task_contract, catalog, task)) &&
+    (catalog.request_profile === undefined || validRequestProfile(catalog.request_profile)) &&
     (catalog.class_certificates === undefined || validClassCertificates(catalog.class_certificates, cls)) &&
     (catalog.class_provider_pins === undefined ||
       (cls !== 'explicit_route' && keys(catalog.class_provider_pins, [cls]) &&
@@ -2191,6 +2307,20 @@ export function ownerCollectionOutput(plan, children) {
   });
   return JSON.stringify(objects);
 }
+/** Build 441: the host's request profile (Swift RequestProfile, policy
+ * host_profile_v1): its enums, sorted unique evidence tokens, and a
+ * difficulty exactly when the request is answer-only. A routing fact for the
+ * graded admission only, never a certificate. */
+function validRequestProfile(profile) {
+  return keys(profile, ['schema', 'policy', 'answer_kind', 'tool_need', 'difficulty', 'signals']) &&
+    profile.schema === 1 && profile.policy === REQUEST_PROFILE_POLICY &&
+    PROFILE_ANSWER_KINDS.has(profile.answer_kind) && PROFILE_TOOL_NEEDS.has(profile.tool_need) &&
+    PROFILE_DIFFICULTIES.has(profile.difficulty) &&
+    (profile.answer_kind === 'answer_only') === (profile.difficulty !== 'unknown') &&
+    Array.isArray(profile.signals) && profile.signals.length <= MAX_PROFILE_SIGNALS &&
+    profile.signals.every((signal, index) => typeof signal === 'string' && PROFILE_SIGNAL.test(signal) &&
+      (index === 0 || profile.signals[index - 1] < signal));
+}
 /** The signed class table's certificate for this request's class only (R0(c)). */
 function validClassCertificates(certificates, cls) {
   const certificate = plain(certificates) ? certificates[cls] : undefined;
@@ -2206,7 +2336,7 @@ function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
   const optional = ['exclusions', 'routing_intent', 'routing_intent_v2', 'model_tiers', 'explicit_route_intents', 'quota_scores',
     'native_reference_efforts', 'owner_scope', 'chat_lane_eligible', 'request_class', 'task_contract',
-    'class_certificates', 'class_provider_pins'];
+    'class_certificates', 'class_provider_pins', 'request_profile'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
     Object.keys(catalog).every(key => required.includes(key) || optional.includes(key)) &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
@@ -2906,10 +3036,21 @@ function ladderExemptMs(snapshot) {
   if (end !== null) union += end - start;
   return legacy + union;
 }
-/** A certified descent bound below its reference that still has its one
- * escalation (R9). */
+/** A certified descent (or, build 441, a host-profile graded route) bound
+ * below its reference that still has its one escalation (R9). */
 function pendingEscalation(child) {
-  return child?.route_kind === 'tier' && child.ladder != null && child.ladder.escalated !== true;
+  return (child?.route_kind === 'tier' || child?.route_kind === 'graded') && child.ladder != null &&
+    child.ladder.escalated !== true;
+}
+/** Native executor submissions this task already made (K6 cap accounting,
+ * shared with _admitNativeDispatch): every non-local attempt, never refunded. */
+function nativeDispatchCount(snapshot) {
+  return snapshot.native_dispatches ?? snapshot.children.reduce((total, child) =>
+    total + (child.attempt_history ?? []).filter(entry => {
+      const row = snapshot.catalog?.candidates.find(c => c.id === entry.candidate_id) ??
+        snapshot.bound_rows?.[entry.candidate_id];
+      return row?.transport !== 'local'; // unknown old rows are conservative
+    }).length, 0);
 }
 /** A certified descent's structural failure signals: an output that is only
  * whitespace, or a failure the native adapter recorded beside a finished
@@ -5011,7 +5152,8 @@ class RCCRuntime {
     const choice = selectRouteCandidate(node, executionTask(snapshot), fresh, Date.now(),
       {avoidPool: failed?.quota_pool ?? decided ?? null, avoidIDs,
         referenceOnly: escalated || child.route_kind === 'execution_only', verifierRegistry: this.verifierRegistry,
-        descentPolicy: this.descentPolicy});
+        descentPolicy: this.descentPolicy,
+        headroom: {attempts: chargedAttempts(child, true), native_dispatches: nativeDispatchCount(snapshot)}});
     const next = {...snapshot.plan, nodes: snapshot.plan.nodes.map(n =>
       n.id === nodeID ? {...n, candidate_id: choice.candidate.id} : n)};
     const plan = validatePlan(next, admittedTask(snapshot), repairCatalog(snapshot, next, fresh, [nodeID]));
@@ -5036,10 +5178,12 @@ class RCCRuntime {
         target.ladder = {...target.ladder, reference_candidate_id: choice.candidate.id,
           reference_model: choice.candidate.model, reference_effort: choice.candidate.effort};
       } else {
-        // A certified descent keeps its source and takes the escalation
-        // target of its new pool; anything else runs the reference.
+        // A certified descent (or a graded route that still has headroom)
+        // keeps its source and takes the escalation target of its new pool;
+        // anything else runs the reference.
         target.route_kind = choice.kind;
-        target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
+        target.ladder = (choice.kind === 'tier' || choice.kind === 'graded') && choice.ladder ?
+          {...choice.ladder, escalated: false} : null;
       }
       target.routing_decision = withInstructionLock(target, routingDecision(
         escalated ? target.routing_decision.route_class : choice.routeClass,
@@ -5081,7 +5225,8 @@ class RCCRuntime {
         // An older build's unchecked 'execution_only' child moves only to a reference.
         const choice = selectRouteCandidate(node, executionTask(snapshot), catalog, now,
           {avoidPool: planned.quota_pool, avoidIDs: [node.candidate_id], verifierRegistry: this.verifierRegistry,
-            descentPolicy: this.descentPolicy, referenceOnly: child.route_kind === 'execution_only'});
+            descentPolicy: this.descentPolicy, referenceOnly: child.route_kind === 'execution_only',
+            headroom: {attempts: chargedAttempts(child, true), native_dispatches: nativeDispatchCount(snapshot)}});
         return choice.candidate.quota_pool !== planned.quota_pool &&
           this._leasePossible(choice.candidate, executionTask(snapshot), node.id, false) ? choice : null;
       } catch { return null; }
@@ -5120,7 +5265,8 @@ class RCCRuntime {
         // The other pool's route, admitted by the same law (R0): a certified
         // descent takes the escalation target of its new pool.
         target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort;
-        target.ladder = choice.kind === 'tier' && choice.ladder ? {...choice.ladder, escalated: false} : null;
+        target.ladder = (choice.kind === 'tier' || choice.kind === 'graded') && choice.ladder ?
+          {...choice.ladder, escalated: false} : null;
         target.routing_decision = withInstructionLock(target, routingDecision(choice.routeClass,
           choice.candidate, `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier));
       });
@@ -6354,7 +6500,7 @@ class RCCRuntime {
     // A named route the host resolved keeps the route kind it ran as (tier,
     // reference, explicit); null otherwise (and absent in older records).
     const hostKind = explicitRoute && routeClass !== null && typeof child.route_kind === 'string' ? child.route_kind : null;
-    const ladder = routeClass !== null && child.route_kind === 'tier' && child.ladder ?
+    const ladder = routeClass !== null && (child.route_kind === 'tier' || child.route_kind === 'graded') && child.ladder ?
       {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort,
         cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model} : null;
     const observedTask = executionTask(snapshot);
@@ -6469,7 +6615,11 @@ class RCCRuntime {
     const certified = basis.startsWith('certified:');
     const check_id = certified && typeof route.check_id === 'string' && LEDGER_CHECK_ID.test(route.check_id) ?
       route.check_id : null;
-    const check_outcome = !certified ? null : LEDGER_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run';
+    // Build 441: a graded attempt records its structural screen (never 'pass',
+    // never a check id or label); every other uncertified basis records none.
+    const check_outcome = basis.startsWith('graded:') ?
+      (GRADED_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run') :
+      !certified ? null : LEDGER_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run';
     const source = certified ? basis.slice('certified:'.length).split(':')[0] : null;
     const check_label = check_id !== null && SOUND_FULL_CHECK_SOURCES.has(source) &&
       ['pass', 'fail', 'not_returned'].includes(check_outcome) ?
@@ -6810,12 +6960,7 @@ class RCCRuntime {
 
     const native = candidate.transport !== 'local';
     const current = this._load(taskID), cap = executionTask(current).budget.max_native_dispatches;
-    const count = snapshot => snapshot.native_dispatches ?? snapshot.children.reduce((total, child) =>
-      total + (child.attempt_history ?? []).filter(entry => {
-        const row = snapshot.catalog?.candidates.find(c => c.id === entry.candidate_id) ??
-          snapshot.bound_rows?.[entry.candidate_id];
-        return row?.transport !== 'local'; // unknown old rows are conservative
-      }).length, 0);
+    const count = nativeDispatchCount;
     if (native && cap != null && count(current) >= cap) {
       this._update(taskID, 'native_dispatch_budget_exhausted', snapshot => {
         const child = snapshot.children.find(c => c.id === nodeID);
@@ -7085,12 +7230,18 @@ class RCCRuntime {
           // longer registered, sound or applicable) it is discarded, never
           // delivered, and the node runs its reference once.
           const verifierDescent = descent && recorded.ladder?.admitted_by === 'verifier';
+          // Build 441: a host-profile graded route is accepted by the
+          // structural screen alone (no failure signal), recorded as a screen
+          // result, never as a certified pass; anything else escalates once.
+          const gradedDescent = descent && recorded.route_kind === 'graded' &&
+            recorded.ladder?.admitted_by === GRADED_SOURCE;
           const certifierPresent = verifier?.role === 'certifier' && verifier.id === recorded.ladder?.certificate_id;
           const answered = collectionChecked && result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
             boundedText(result.output, MAX_OUTPUT_BYTES);
           const deliverable = answered && (!descent || (verifierDescent ?
-            descentStructurallySound(result) && certifierPresent : certifiedAnswer(recorded.ladder, result)));
+            descentStructurallySound(result) && certifierPresent : gradedDescent ? descentStructurallySound(result) :
+              certifiedAnswer(recorded.ladder, result)));
           const discard = !deliverable && descent;
           // K9: a sound answer whose certifier is gone was never checked (a
           // configuration fault, not a failure of the route).
@@ -7116,7 +7267,9 @@ class RCCRuntime {
             // K9: the admitting source's verdict on THIS attempt, kept for
             // the ledger (also across a restart). An exact, contract or class
             // acceptance is final here; a certifier's comes from _verifyNode.
-            if (descent && !verifierDescent && deliverable) child.attempt_history.at(-1).check_outcome = 'pass';
+            if (descent && !verifierDescent && deliverable)
+              child.attempt_history.at(-1).check_outcome = gradedDescent ? 'screen_pass' : 'pass';
+            if (gradedDescent && discard) child.attempt_history.at(-1).check_outcome = 'screen_fail';
             if (certifierUnavailable) child.attempt_history.at(-1).check_outcome = 'certifier_unavailable';
           });
           if (discard) {

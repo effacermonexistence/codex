@@ -11,9 +11,13 @@
  *
  * `delivery` (K9) audits `delivery_policy_valid` (§2.2): every delivered
  * child's basis is zero_model:*, reference, reference_escalated or
- * owner_words (owner tuples are counted separately), or certified:<source>
- * with that source's pass on THIS attempt (I2). Policy enforcement only:
- * never accepted_B, quality parity or a quota saving.
+ * owner_words (owner tuples are counted separately), certified:<source>
+ * with that source's pass on THIS attempt (I2), or (change 2, build 441)
+ * graded:<grade>: a host-profile graded route, never certified, counted
+ * separately as predicted and quality-unverified, delivered only with its
+ * structural screen pass on THIS attempt (check_outcome screen_pass, no check
+ * id or label). Policy enforcement only: never accepted_B, quality parity or
+ * a quota saving.
  *  - Without --snapshots a certified attempt counts as delivered unless its
  *    state proves its output never reached the owner (NON_DELIVERY_STATES,
  *    fail closed: a new state FAILs, it never passes).
@@ -73,6 +77,8 @@ export const NON_DELIVERY_STATES = Object.freeze(new Set(['ladder_not_returned',
   'cancelled', 'failed', 'owner_collection_control_unverified']));
 const CERTIFIED_BASIS = /^certified:(contract|exact|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128})$/;
 const REFERENCE_BASES = new Set(['reference', 'reference_escalated', 'owner_words']);
+// Change 2 (build 441): a host-profile graded route's basis. Never certified.
+const GRADED_BASIS = /^graded:(light|standard)$/;
 const ZERO_MODEL_BASIS = /^zero_model:[a-z0-9_]{1,64}$/;
 const LABEL_SOURCES = new Set(['exact', 'contract', 'verifier']);
 const LABEL_OUTCOMES = new Set(['pass', 'fail', 'not_returned']);
@@ -123,7 +129,15 @@ function basisViolations(record, delivered) {
   const rules = [];
   const basis = record.delivery_basis;
   const tier = ranAs(record) === 'tier';
+  const graded = ranAs(record) === 'graded';
   const nullChecks = record.check_id == null && record.check_outcome == null && record.check_label == null;
+  if (typeof basis === 'string' && GRADED_BASIS.test(basis)) {
+    if (!graded || !plain(record.ladder) || record.escalated !== false) rules.push('graded_basis_route_mismatch');
+    if (record.check_id != null || record.check_label != null) rules.push('check_label_on_graded_basis');
+    if (delivered && record.check_outcome !== 'screen_pass') rules.push('graded_delivery_without_screen_pass');
+    return rules;
+  }
+  if (graded) rules.push('graded_route_without_graded_basis');
   if (typeof basis === 'string' && CERTIFIED_BASIS.test(basis)) {
     if (!tier || !plain(record.ladder) || record.escalated !== false) rules.push('certified_basis_route_mismatch');
     if (delivered && record.check_outcome !== 'pass') rules.push('certified_delivery_without_pass');
@@ -292,6 +306,10 @@ export function auditDeliveryPolicy({ledgers, snapshots = null, includeLegacy = 
       duplicate_identical: duplicates, identity_conflicts: conflicts.size, k9_records: k9, legacy_records: legacy.records},
     by_basis: byBasis,
     owner_words: byBasis.owner_words ?? {attempts: 0, possibly_delivered: 0},
+    // Change 2: predicted, quality-unverified graded routes, never certified.
+    graded: Object.entries(byBasis).filter(([basis]) => GRADED_BASIS.test(basis))
+      .reduce((sum, [, value]) => ({attempts: sum.attempts + value.attempts,
+        possibly_delivered: sum.possibly_delivered + value.possibly_delivered}), {attempts: 0, possibly_delivered: 0}),
     delivery, violations: list, legacy, claim_boundary: CLAIM_BOUNDARY};
 }
 
