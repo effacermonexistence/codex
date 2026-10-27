@@ -39,6 +39,16 @@ public enum RCCClassOwnerDecision {
     public static let frozenBytes = Data((#"{"certificate_id":"owner-chat-fast-20261027","decided_on":"2026-10-27","escalation":"reference_once_on_format_check_failure","format_check":"nonempty_text","kind":"os1_rcc_class_owner_decision_v1","owner_words":["무슨 아스트라를 또 또 아스트라를 쓰면 또 고쳐야 되잖아","왜 이게 안 고쳐지는데"],"request_class":"chat_explanatory","schema":1,"tuple":{"effort":"low","model":"gpt-6-luna","provider":"codex"}}"# + "\n").utf8)
     public static let pinnedSHA256 = "af958f76401c42133b8f90db2fcae11fd5eb62c5c4f51a27e9df54e780cce36f"
 
+    /// Lead narrowing after the build-440 review: inside `chat_explanatory`
+    /// the decision covers only a request about this responder or OS-1's own
+    /// state (`StatusCheckIn.stateOnly`: the owner's test invitation, a
+    /// liveness or install question). The chat lane also admits knowledge,
+    /// current-fact, code and follow-up questions ("Swift에서 actor reentrancy가
+    /// 왜 생겨?", "최신 아이폰 가격 얼마니? 너 되냐?"); those are quality-bearing
+    /// answers and keep the reference. Checked by the host on the owner's own
+    /// request text before the certificate is emitted.
+    public static func admits(request: String) -> Bool { StatusCheckIn.stateOnly(request) }
+
     private struct Tuple: Decodable, Equatable { let provider: String, model: String, effort: String }
     private struct Decision: Decodable {
         let schema: Int, kind: String, certificateID: String, decidedOn: String, requestClass: String, tuple: Tuple

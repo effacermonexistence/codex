@@ -298,12 +298,15 @@ func runRCCAdmissionFactsFixtures() throws {
               "K11-a: Core's contract accepts the emitted certificate")
 
     // K11-b the shipped table (build 440: its one owner-decision
-    // certificate): no custody artifact changes a catalog byte.
+    // certificate): no custody artifact changes a catalog byte. "co가 무슨
+    // 뜻이야?" is a knowledge question, outside the decision's state-only
+    // scope (440-d), so the certificate drops; a custody file cannot bring it
+    // back. The scope's own loads are 440-a and 440-d.
     var shipped = valid; shipped.classTable = .frozen
     var shippedBare = shipped; shippedBare.classMeasurements = [:]
     var shippedForged = shipped; shippedForged.classMeasurements = [D.pinnedSHA256: artifactBytes]
     let shippedFacts = try facts(shipped)
-    try check(shippedFacts.classCertificate == ownerCertificate && shippedFacts.classCertificateRejection == nil &&
+    try check(shippedFacts.classCertificate == nil && shippedFacts.classCertificateRejection == .scopeMismatch &&
               (try catalog(shipped)) == (try catalog(shippedBare)) && (try catalog(shipped)) == (try catalog(shippedForged)),
               "K11-b: with the shipped table a custody artifact changes no catalog byte")
 
@@ -469,6 +472,20 @@ func runRCCAdmissionFactsFixtures() throws {
         let found = try facts(value)
         try check(found.classCertificate == nil && found.classCertificateRejection == reason &&
                   (try catalog(value)) == (try catalog(emptyTable)), "440-c: \(label): \(reason.rawValue), reference")
+    }
+    // (d) lead narrowing: inside chat_explanatory only a state-only check-in
+    // carries the certificate; a knowledge, current-fact, code or rider
+    // question on the chat lane drops it to the reference (scope_mismatch).
+    for text in ["너 되냐?", "설치됐어?", "다 끝났어? 너 되냐?", "자, 이제 네가 얼마나 잘 되는지 보자"] {
+        let found = try facts(live(text, chat: true))
+        try check(found.requestClass == .chatExplanatory && found.classCertificate == ownerCertificate &&
+                  found.classCertificateRejection == nil, "440-d: a state-only check-in loads the owner decision: \(text)")
+    }
+    for text in ["최신 아이폰 가격 얼마니? 너 되냐?", "이 함수 왜 에러 나니? 너 잘 되냐", "Swift에서 actor reentrancy가 왜 생겨?",
+                 "RCC 라우팅에서 쿼터 계산은 어떤 식으로 하니? 너 되냐?", "co가 무슨 뜻이야?", "그게 왜 그래?"] {
+        let value = live(text, chat: true)
+        try check((try facts(value)).requestClass == .chatExplanatory, "440-d: chat-lane question stays chat_explanatory: \(text)")
+        try dropsOwner(value, .scopeMismatch, "a chat-lane question that is not state only keeps the reference: \(text)")
     }
     func ownerTable(_ certificate: C.ClassCertificate, as requestClass: String = "chat_explanatory") throws -> T {
         let fields = try object(C.encode(certificate))

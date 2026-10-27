@@ -436,12 +436,20 @@ public enum RCCNativeCatalogBuilder {
         var certificate: RCCRuntimeContract.ClassCertificate? = nil
         var rejection: RCCClassMeasurement.Rejection? = nil
         if let signed = input.classTable.certificate(for: requestClass) {
-            switch RCCClassMeasurement.verified(signed, requestClass: requestClass,
-                artifact: input.classMeasurements[signed.measurementSHA256], now: input.now,
-                executorContractSHA256: input.executorContractSHA256, harnessProfile: input.harnessProfile,
-                reference: references[signed.provider]) {
-            case .success(let verified): certificate = verified
-            case .failure(let reason): rejection = reason
+            // The owner decision's own scope inside its class (build 440 lead
+            // narrowing): a request that is not a state-only check-in drops
+            // the certificate and binds the reference.
+            if signed.measurementSHA256 == RCCClassOwnerDecision.pinnedSHA256,
+               !RCCClassOwnerDecision.admits(request: input.request) {
+                rejection = .scopeMismatch
+            } else {
+                switch RCCClassMeasurement.verified(signed, requestClass: requestClass,
+                    artifact: input.classMeasurements[signed.measurementSHA256], now: input.now,
+                    executorContractSHA256: input.executorContractSHA256, harnessProfile: input.harnessProfile,
+                    reference: references[signed.provider]) {
+                case .success(let verified): certificate = verified
+                case .failure(let reason): rejection = reason
+                }
             }
         }
         return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,

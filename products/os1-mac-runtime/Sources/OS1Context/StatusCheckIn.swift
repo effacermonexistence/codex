@@ -105,6 +105,30 @@ public enum StatusCheckIn {
         return parts.count == 1 && parts[0].range(of: testInvitation, options: .regularExpression) != nil
     }
 
+    /// A check-in about this responder or OS-1's own state and nothing else:
+    /// the standalone test invitation, or a check-in whose every sentence left
+    /// after openers and neutral framing asks after state ("설치됐어?", "다
+    /// 끝났어? 너 되냐?"). `matches` also lets a plain question ride along
+    /// ("최신 아이폰 가격 얼마니? 너 되냐?", "이 함수 왜 에러 나니? 너 잘 되냐",
+    /// "되는지 확인해보자. 빌드 다시 해볼래?"): a rider asks about something
+    /// else, so it is not state only.
+    public static func stateOnly(_ request: String) -> Bool {
+        guard answersFromCard(request) else { return false }
+        let text = request.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if standaloneTestInvitation(text) { return true }
+        for raw in text.components(separatedBy: CharacterSet(charactersIn: ".!?？。")) {
+            let stripped: String = raw.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: selfCheckOpener, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            let value: String = stripped.replacingOccurrences(of: #"(?:\s+(?:도대체|진짜|지금|그래서|그럼))+$"#, with: "",
+                                                              options: .regularExpression)
+            if value.isEmpty || value.range(of: neutral, options: .regularExpression) != nil
+                || value.range(of: checkOpener, options: .regularExpression) != nil { continue }
+            if value.range(of: asking, options: [.regularExpression, .caseInsensitive]) == nil { return false }
+        }
+        return true
+    }
+
     /// Things outside OS-1 that only a tool can check now.
     static let externalSubject = #"사이트|웹|배포|서버|r2|알투|깃허브|기타보|기탑|github|(?<![A-Za-z])pr(?![A-Za-z])|머지|merge|푸시|push|커밋|commit|백업|backup|연결|connect|도메인|domain|링크|url|railway|레일웨이|cloudflare|클라우드플레어|인스타|instagram|scv|결제|payment|데이터베이스|database|(?<![A-Za-z])db(?![A-Za-z])|deploy|site|server|터미널|셸|쉘|명령|로그|파일|스크립트|(?<![A-Za-z])(?:shell|terminal|command|logs?|files?|scripts?)(?![A-Za-z])"#
 
@@ -271,6 +295,18 @@ public enum StatusCheckIn {
         for text in ["배포 됐냐?", "사이트 살아있어?", "야 너 R2 연결 돼있냐?", "푸시 됐어?", "PR 머지됐어?", "설치됐어? 안 됐으면 깔아",
                      "야 나 한번 체크해 볼게. 서버 되냐?", "너 되냐? Can you check the shell?", "로그에는 작동 중이야?"] {
             check(!answersFromCard(text), "needs a look: \(text)")
+        }
+        // Build 440 lead narrowing: the owner-decision fast tier covers only a
+        // check-in that is about state and nothing else.
+        for text in ["자 이제 네가 얼마나 잘 되는지 보자", "자, 이제 네가 얼마나 잘 되는지 보자", "너 되냐?", "야 너 지금 작동하냐?",
+                     "설치됐어?", "다 끝났어?", "아직 333이야?", "다 끝났어? 너 되냐?", "되는지 확인해보자. 되냐?",
+                     "야 나 한번 체크해 볼게. 너 되냐?", "is it working?", "Hey, let me check. Are you working?"] {
+            check(stateOnly(text), "a state-only check-in: \(text)")
+        }
+        for text in ["최신 아이폰 가격 얼마니? 너 되냐?", "오늘 원달러 환율 얼마니? 너 되냐?", "이 함수 왜 에러 나니? 너 잘 되냐",
+                     "RCC 라우팅에서 쿼터 계산은 어떤 식으로 하니? 너 되냐?", "되는지 확인해보자. 빌드 다시 해볼래?",
+                     "Swift에서 actor reentrancy가 왜 생겨?", "그게 왜 그래?", "co가 무슨 뜻이야?", "배포 됐냐?"] {
+            check(!stateOnly(text), "a rider question or a non-check-in is not state only: \(text)")
         }
         let stagedAt = Date(timeIntervalSince1970: 1_791_000_000)
         let intent = SelfUpdate.Intent(build: 334, version: "0.9.268", sourceRoot: "/tmp/os1-side", sourceCommit: "d5799590681d96e5e",
