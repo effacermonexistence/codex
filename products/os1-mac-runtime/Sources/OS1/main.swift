@@ -1708,6 +1708,57 @@ func rccFleetReadOnlySessionOneShot(hostWorkspace: String, scope: RCCRuntimeCont
     return UUID(uuidString: String(job)) != nil
 }
 
+/// Whether an RCC delegated Claude agent attempt runs in the source-answer
+/// workspace instead of the host workspace (harness H1,
+/// `rcc_readonly_claude_home_isolation_v1`). The rcc-execute path hands
+/// `execute` its own workspace (`workspaceOverride`), so the native path's
+/// `providerExecutionWorkspace` never ran for it. Since the read-only guard
+/// (63f3c070, 2026-10-24) a read-only Claude agent child whose host workspace
+/// is HOME failed before dispatch every time: HOME contains Claude's own
+/// `.claude` / `.claude.json`, the guard throws `providerStateCollision`, and
+/// Core re-resolved the child to the other pool (task 6c611eea). The native
+/// path never starts a read-only Claude in HOME (`ExecutionWorkspace.
+/// usesSourceIsolation` → `sourceAnswerWorkspace`); this applies the same
+/// HOME rule, so the guard stays whole and gets no provider-state carve-out
+/// (docs/CLAUDE-READONLY-ENFORCEMENT.md). The guard then protects the answer
+/// workspace and OS-1's source roots, exactly what it protects for any other
+/// read-only Claude child's workspace and for the native path's isolated
+/// one; it never covered the rest of the machine, and it does not here.
+/// - Only the Claude agent surface: the chat lane already takes the answer
+///   workspace (`providerExecutionWorkspace`); Codex and writers keep theirs.
+/// - Only HOME (`hasSource: false`): an RCC-delivered source is bound input
+///   text (`rcc-bound-source-input-v1`) beside a project the child may still
+///   need to read, and a project workspace does not collide.
+/// - Never a resumed native session or a continuation: Claude keeps a
+///   session's transcript under the directory it ran in, so a session the
+///   conversation started in HOME cannot be resumed from another directory.
+///   That attempt keeps today's pre-dispatch collision, which dispatches
+///   nothing and is re-resolved safely.
+func rccIsolatesReadOnlyClaudeHome(surface: ProviderSurface, permissionProfile: String, resumesNativeSession: Bool,
+                                   hostWorkspace: String,
+                                   home: String = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path) -> Bool {
+    surface == .claude && !resumesNativeSession &&
+        ExecutionWorkspace.usesSourceIsolation(provider: "claude", permission: permissionProfile, hasSource: false,
+                                               workspace: hostWorkspace, home: home)
+}
+
+/// The workspace hint an RCC delegated child gets with its envelope (harness
+/// H1, `rcc_status_checkin_card_v1`): the install-state card when the owner's
+/// request is a check-in the card answers by itself
+/// (`StatusCheckIn.answersFromCard`), else nothing. The direct path has
+/// attached the card since 279743a8 (2026-10-07); the rcc-execute path attached none, so
+/// since build 440 "설치됐어?" reached gpt-6-luna low with no install state
+/// to answer from. `card` is read only when the card applies.
+func rccStatusCheckInHint(ownerRequest: String, card: () -> String) -> String {
+    StatusCheckIn.answersFromCard(ownerRequest) ? card() : ""
+}
+
+/// The line both native instruction channels open with: Claude's system text
+/// has carried it since before H0; harness H1 (`codex_developer_silent_line_v1`)
+/// gives Codex's developer text the same line, so neither model restates
+/// OS-1's execution requirements as if they were the owner's words.
+let nativeExecutorSilentLine = "Apply these requirements silently. Respond to the current user task; do not quote, summarize, classify, or debate them."
+
 /// `ownerPolicyProjectionInBaseInstructions`: the Codex session verifiably
 /// holds the projection as its base instructions (codexDeveloperOmitsProjection),
 /// so this channel carries the owner policy without that body. Every other
@@ -1717,6 +1768,7 @@ func executorInstructions(contract: ExecutorContract, ticket: Ticket,
     let directives = contract.directives.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
     return """
     OS-1 executor contract \(contract.version)
+    \(nativeExecutorSilentLine)
     \(directives)
     \(OwnerPolicyContext.instructions(projectionDeliveredAsBaseInstructions: ownerPolicyProjectionInBaseInstructions))
 
@@ -1750,7 +1802,7 @@ func claudeExecutorInstructions(
     }
     return """
     Execution requirements for the current task.
-    Apply these requirements silently. Respond to the current user task; do not quote, summarize, classify, or debate them.
+    \(nativeExecutorSilentLine)
 
     Execution directives:
     \(directives)
@@ -8410,11 +8462,12 @@ private func preDispatchGovernanceSelfTest() throws {
 
 /// K15 harness identity. Every builder a native turn's model-visible input
 /// comes from is a pure function of its content: no per-attempt id, time or
-/// set order reaches it (N). The rendering of the shipped harness (H0) on
-/// fixed inputs is pinned in HarnessProfile.h0.renderingSHA256, so a change a
-/// model can see (wording, order, a dropped line, the chat-lane predicate)
-/// fails here until it ships as a new profile. Fixture inputs only; no
-/// provider, model, Core or real ~/.claude read.
+/// set order reaches it (N). The rendering of the shipped harness (H1 since
+/// build 441) on fixed inputs is pinned in HarnessProfile.h1.renderingSHA256,
+/// so a change a model can see (wording, order, a dropped line, the chat-lane
+/// predicate, the RCC child's card and HOME rules) fails here until it ships
+/// as a new profile. Fixture inputs only; no provider, model, Core or real
+/// ~/.claude read.
 private func harnessProfileSelfTest() throws {
     var checks = 0
     func check(_ pass: Bool, _ label: String) throws {
@@ -8422,10 +8475,10 @@ private func harnessProfileSelfTest() throws {
         checks += 1
     }
     let profile = HarnessProfile.current
-    try check(profile == HarnessProfile.h0 && profile.id == "H0" && profile.version == 1 && profile.parity == .unverified
-              && HarnessProfile.shipped.last == profile && !profile.components.isEmpty
+    try check(profile == HarnessProfile.h1 && profile.id == "H1" && profile.version == 1 && profile.parity == .unverified
+              && HarnessProfile.shipped == [HarnessProfile.h0, HarnessProfile.h1] && !profile.components.isEmpty
               && Set(profile.components).isDisjoint(with: HarnessProfile.pendingHItems),
-              "H0 is the current, last shipped profile, its parity is unverified, and no pending H item is part of it")
+              "H1 is the current, last shipped profile after H0, its parity is unverified, and no pending H item is part of it")
 
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-harness-h0-" + UUID().uuidString, isDirectory: true)
     let home = root.appendingPathComponent("home", isDirectory: true)
@@ -8513,6 +8566,13 @@ private func harnessProfileSelfTest() throws {
             sections.append(("provider_prompt.full", try providerPrompt(current: "2+3", context: "Fixture prior turn.",
                 r2Evidence: "Fixture source data.", taskContext: "Fixture task state.", workspaceContext: "Fixture hint.",
                 languageDirective: "Answer in Korean.")))
+            // H1: the RCC child of a card check-in carries the install-state
+            // card as its workspace hint (a fixture card: the live one reads
+            // this machine's install state).
+            let checkIn = RCCDelegatedEnvelope.prompt(instruction: "설치됐어?", ownerRequest: "설치됐어?", answerOnly: false,
+                surface: .codex, scope: .readOnly, taskID: "task-h0", nodeID: "node-0", attemptID: "attempt-4")
+            sections.append(("rcc.provider_prompt.status_checkin", try providerPrompt(current: checkIn, context: nil,
+                workspaceContext: rccStatusCheckInHint(ownerRequest: "설치됐어?", card: { "Fixture install-state card." }))))
             let protection = try OS1SourceConfinement.readOnlyProtection(workspace: workspace.path,
                 additionalProtectedPaths: rccReadOnlyAdditionalProtectedPaths(protectedOrder))
             let claudeInput = claudeText + nativePresentationDirective(objective: objectives["repository"]!, provider: "claude",
@@ -8536,7 +8596,7 @@ private func harnessProfileSelfTest() throws {
 
     // A: determinism. B: per-attempt ticket fields reach no instruction or argv.
     let first = try rendering(), again = try rendering()
-    try check(first == again, "every H0 builder gives byte-identical output for identical inputs")
+    try check(first == again, "every \(profile.id) builder gives byte-identical output for identical inputs")
     let otherAttempt = try rendering(executionID: "another-execution", sequence: 9, nonce: "another-nonce",
                                      signature: "another-signature", expiresAt: "2100-02-02T00:00:00Z")
     try check(first == otherAttempt, "execution id, sequence, nonce, signature and expiry reach no instruction text or argv")
@@ -8568,7 +8628,7 @@ private func harnessProfileSelfTest() throws {
             base + nativePresentationDirective(objective: objectives[name]!, provider: "claude", exactAnswer: name == "exact",
                                                hasPreloadedSource: false)
         }
-        print("Harness H0 diagnostic (not a claim): shared Claude prefix bytes translation/repository "
+        print("Harness \(profile.id) diagnostic (not a claim): shared Claude prefix bytes translation/repository "
               + "\(firstDifference(assembled("translation"), assembled("repository"))), translation/exact "
               + "\(firstDifference(assembled("translation"), assembled("exact"))) of \(assembled("translation").utf8.count)")
     }
@@ -8601,7 +8661,7 @@ private func harnessProfileSelfTest() throws {
               && claudePromptCacheEnvironment(startsNewSession: true, chatLane: false, sourceOnly: false, delegatedOneShot: false).isEmpty,
               "one-shot sessions take the named 5-minute TTL; resumed and thread-becoming sessions keep the CLI default")
 
-    // G: the H0 golden. The chat-lane predicate is part of the profile: each
+    // G: the current profile's golden. The chat-lane predicate is part of the profile: each
     // vector records the Claude lane (owner selection off/on, with and
     // without a source), the GPT lane under the process selection off/on and
     // whether the explicit choice is refused (its wording is owner-facing
@@ -8683,7 +8743,25 @@ private func harnessProfileSelfTest() throws {
             replacements += [(form, label), (form.replacingOccurrences(of: "/", with: "\\/"), label)]
         }
     }
+    // H1: the RCC delegated child's rules. Which owner requests carry the
+    // install-state card (rcc_status_checkin_card_v1), and which attempts
+    // leave a HOME workspace for the answer workspace
+    // (rcc_readonly_claude_home_isolation_v1). Labels only, no paths.
+    var childLines = laneObjectives.map { "card=" + bit(!rccStatusCheckInHint(ownerRequest: $0, card: { "card" }).isEmpty) + " " + $0 }
+    for (surface, permission, path, resumed, label) in [
+        (ProviderSurface.claude, "read_only", home.path, false, "claude read_only home fresh"),
+        (.claude, "read_only", home.path + "/", false, "claude read_only home/ fresh"),
+        (.claude, "read_only", home.path, true, "claude read_only home resumed"),
+        (.claude, "read_only", workspace.path, false, "claude read_only project fresh"),
+        (.claude, "workspace_write", home.path, false, "claude workspace_write home fresh"),
+        (.claudeChat, "read_only", home.path, false, "claude-chat read_only home fresh"),
+        (.codex, "read_only", home.path, false, "codex read_only home fresh"),
+    ] as [(ProviderSurface, String, String, Bool, String)] {
+        childLines.append("home_isolation=" + bit(rccIsolatesReadOnlyClaudeHome(surface: surface, permissionProfile: permission,
+            resumesNativeSession: resumed, hostWorkspace: path, home: home.path)) + " " + label)
+    }
     var golden = "HarnessProfile " + profile.id + " v\(profile.version)\n" + first + "\n== chat_lane_predicate\n" + laneLines.joined(separator: "\n")
+        + "\n== rcc_child_rules\n" + childLines.joined(separator: "\n")
     for (form, label) in replacements { golden = golden.replacingOccurrences(of: form, with: label) }
     try check(!golden.contains("os1-harness-h0-"), "every fixture path is normalised out of the rendering")
     let digest = sha256Hex(Data(golden.utf8))
@@ -8694,7 +8772,87 @@ private func harnessProfileSelfTest() throws {
     }
     checks += 1
     print("OS-1 harness profile \(profile.id) v\(profile.version) (parity \(profile.parity.rawValue)): \(checks) checks PASS; "
-          + "\(laneObjectives.count) chat-lane vectors, rendering pinned \(digest.prefix(12)); model/provider calls 0")
+          + "\(laneObjectives.count) chat-lane vectors, \(childLines.count) RCC child-rule vectors, rendering pinned \(digest.prefix(12)); "
+          + "model/provider calls 0")
+}
+
+/// Build 441 (harness H1): the two host-side rules the rcc-execute path now
+/// applies to a delegated child, as the direct/native path already did: the
+/// install-state card for a card check-in (rccStatusCheckInHint) and no
+/// fresh read-only Claude agent child in HOME (rccIsolatesReadOnlyClaudeHome).
+/// Fixture home and inputs only; no provider, model, Core, real ~/.claude or
+/// live install state is read.
+private func rccExecuteChildRulesSelfTest() throws {
+    var checks = 0
+    func check(_ pass: Bool, _ label: String) throws {
+        guard pass else { throw OS1Error.message("RCC delegated child rules regression: " + label) }
+        checks += 1
+    }
+    // The status card: attached exactly when the card answers the owner's request.
+    var cardReads = 0
+    let fixtureCard = "Fixture install-state card."
+    func card() -> String { cardReads += 1; return fixtureCard }
+    let answered = ["설치됐어?", "되는지 확인해보자. 되냐?", "다 끝났어? 너 되냐?", "자 이제 네가 얼마나 잘 되는지 보자", "아직 333이야?"]
+    for request in answered {
+        try check(rccStatusCheckInHint(ownerRequest: request, card: card) == fixtureCard, "the card answers \"\(request)\"")
+    }
+    for request in ["배포 됐냐?", "설치됐어? 안 됐으면 깔아", "너 되냐? 로그 읽어", "usungco.com 등록돼 있어?",
+                    "슈뢰딩거 방정식 설명해봐", "README.md 요약해줘", "1+1", "이거 고쳐줘"] {
+        try check(rccStatusCheckInHint(ownerRequest: request, card: card).isEmpty,
+                  "no card for \"\(request)\" (an order, an external subject or no check-in)")
+    }
+    try check(cardReads == answered.count, "the live card is read only for a request it answers")
+    let checkIn = RCCDelegatedEnvelope.prompt(instruction: "설치됐어?", ownerRequest: "설치됐어?", answerOnly: false,
+        surface: .codex, scope: .readOnly, taskID: "task", nodeID: "node_0", attemptID: "attempt")
+    let carried = try providerPrompt(current: checkIn, context: nil,
+        workspaceContext: rccStatusCheckInHint(ownerRequest: "설치됐어?", card: card))
+    try check(carried.contains("--- OS-1 WORKSPACE HINTS ---\n" + fixtureCard + "\n--- END OS-1 WORKSPACE HINTS ---")
+              && carried.hasSuffix("--- CURRENT USER REQUEST ---\n" + checkIn),
+              "a check-in child gets the card as its workspace hint, and the envelope stays the terminal, verbatim request")
+    let question = RCCDelegatedEnvelope.prompt(instruction: "슈뢰딩거 방정식 설명해봐", ownerRequest: "슈뢰딩거 방정식 설명해봐",
+        answerOnly: false, surface: .codex, scope: .readOnly, taskID: "task", nodeID: "node_0", attemptID: "attempt")
+    try check(try providerPrompt(current: question, context: nil,
+                                 workspaceContext: rccStatusCheckInHint(ownerRequest: "슈뢰딩거 방정식 설명해봐", card: card)) == question,
+              "any other child with no context still receives exactly its envelope")
+
+    // HOME: a fresh read-only Claude agent child leaves it; nothing else does.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-rcc-child-rules-" + UUID().uuidString, isDirectory: true)
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let project = home.appendingPathComponent("Developer/repo", isDirectory: true)
+    let answer = home.appendingPathComponent("Library/Application Support/OS-1/source-answer-workspace", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    for folder in [home.appendingPathComponent(".claude"), project, answer] {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+    try Data("{}".utf8).write(to: home.appendingPathComponent(".claude.json"))
+    func isolates(_ surface: ProviderSurface, _ permission: String, _ workspace: String, resumed: Bool = false) -> Bool {
+        rccIsolatesReadOnlyClaudeHome(surface: surface, permissionProfile: permission, resumesNativeSession: resumed,
+                                      hostWorkspace: workspace, home: home.path)
+    }
+    try check(isolates(.claude, "read_only", home.path) && isolates(.claude, "read_only", home.path + "/"),
+              "a fresh read-only Claude agent child whose host workspace is HOME runs in the answer workspace")
+    try check(!isolates(.claude, "read_only", home.path, resumed: true),
+              "a resumed session or a continuation keeps its directory (its transcript lives there); it still stops before dispatch")
+    try check(!isolates(.claude, "read_only", project.path) && !isolates(.claude, "workspace_write", home.path),
+              "a project workspace and a writer keep the host workspace")
+    try check(!isolates(.codex, "read_only", home.path) && !isolates(.gptChat, "read_only", home.path)
+              && !isolates(.claudeChat, "read_only", home.path),
+              "Codex keeps HOME; a chat lane already takes the answer workspace through providerExecutionWorkspace")
+    // Why: the read-only guard collides with Claude's own state in HOME and
+    // dispatches nothing; the answer workspace and a project do not collide,
+    // and the guard is built whole (no provider-state carve-out).
+    do {
+        _ = try OS1SourceConfinement.readOnlyProtection(workspace: home.path, home: home)
+        throw OS1Error.message("RCC delegated child rules regression: a HOME read-only guard was admitted")
+    } catch OS1SourceConfinement.ReadOnlyProtectionError.providerStateCollision { checks += 1 }
+    for folder in [answer, project] {
+        let protection = try OS1SourceConfinement.readOnlyProtection(workspace: folder.path, home: home)
+        let canonical = realpath(folder.path, nil).map { resolved -> String in defer { free(resolved) }; return String(cString: resolved) }
+        try check(canonical != nil && protection.protectedPaths.first == canonical
+                  && !protection.protectedPaths.contains(where: { $0.hasSuffix("/.claude") || $0.hasSuffix("/.claude.json") }),
+                  "the guard admits \(folder.lastPathComponent) whole, with no provider-state path in it")
+    }
+    print("OS-1 RCC delegated child rules (card check-in, read-only Claude out of HOME): \(checks) checks PASS; model/provider calls 0")
 }
 
 /// The presentation part of a native turn's developer (Codex) or system
@@ -18527,6 +18685,7 @@ func selfTest() throws {
     try InstalledOS1Resources.selfTest()
     try preDispatchGovernanceSelfTest()
     try harnessProfileSelfTest()
+    try rccExecuteChildRulesSelfTest()
     try ChatGPTHandoff.selfTest()
     try RouteFanout.selfTest()
     try RouteAllIntent.selfTest()
@@ -20101,7 +20260,12 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         defer { OS1SourceConfinement.activeRoots = []; withExtendedLifetime(custody.lease) {} }
         // The catalog admitted this chat-lane row through the chat gate, so
         // it is a selected lane: never hand a tool-free lane the real workspace.
-        var workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true) : h.workspace
+        // A fresh read-only Claude agent child never starts in HOME, where the
+        // read-only guard collides with Claude's own state (rccIsolatesReadOnlyClaudeHome).
+        var workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true)
+            : rccIsolatesReadOnlyClaudeHome(surface: surface, permissionProfile: signed.permissionProfile,
+                resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)
+                ? try sourceAnswerWorkspace() : h.workspace
         timing.mark(.workspaceHashStarted)
         var before = workspaceHash(workspace)
         timing.mark(.workspaceHashReady)
@@ -20162,7 +20326,10 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
             answerOnly: answerOnly, surface: t.selectedConfig.surface,
             scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion + (stagedTransaction?.directive ?? ""),
             taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)
-        let nativePrompt = try providerPrompt(current: delegated, context: h.context, r2Evidence: sourceDelivery.payload)
+        // A check-in the install-state card answers is answered from it, as on
+        // the direct path, not from a cold model (rccStatusCheckInHint).
+        let nativePrompt = try providerPrompt(current: delegated, context: h.context, r2Evidence: sourceDelivery.payload,
+            workspaceContext: rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard))
         try sourceDelivery.recordPrepared(ticket: t, prompt: nativePrompt)
         let protected = protectedRoot.map { OS1SourceConfinement.protectedPaths(root: $0) } ?? []
         sourceConfined = sourceRoot != nil && t.selectedConfig.scope == .workspaceWrite

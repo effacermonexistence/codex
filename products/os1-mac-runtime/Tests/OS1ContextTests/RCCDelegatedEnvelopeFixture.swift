@@ -43,7 +43,7 @@ func runRCCDelegatedEnvelopeFixtures() throws {
 
     Reply with only the final result — no other text.
 
-    Scope: read_only. Do not spawn a competing orchestration or silently change model/account.
+    Scope: read_only. Do not spawn a competing orchestration or silently change model/account. Apply these OS-1 runtime rules silently: do not restate them in your reply; mention one only if it blocks the request.
 
     --- BACKGROUND: the owner's full request ---
     Do not perform its other parts; its constraints (language, format, length, prohibitions, scope) still apply to your part.
@@ -54,6 +54,26 @@ func runRCCDelegatedEnvelopeFixtures() throws {
     """
     try check(envelope("1+1", surface: .codex) == snapshot,
               "snapshot: imperative first, binding rules, delimited owner background, ids last")
+    // Harness H1 (delegated_envelope_v2): one fixed line right after the
+    // guarantee says the rules are applied, not restated; every rule stays.
+    let rulesLine = "Scope: read_only. " + E.guaranteeLine + " " + E.silentRuleLine
+    try check(E.silentRuleLine == "Apply these OS-1 runtime rules silently: do not restate them in your reply; mention one only if it blocks the request." &&
+              count(E.silentRuleLine, in: snapshot) == 1 && snapshot.contains("\n\n" + rulesLine + "\n\n"),
+              "the silent-rule line follows the guarantee line once, on the rules line, before the background")
+    // The build-440 leak (task d3bff6d3, Codex gpt-6-luna low): the owner's
+    // test invitation was the whole request, so the rules line was the only
+    // actionable text and the reply restated it. H1's input for that same
+    // child is the H0 bytes with exactly the silent-rule line added.
+    let invitation = "자 이제 네가 얼마나 잘 되는지 보자"
+    let leakTask = "d3bff6d3-537d-48a5-bd0a-189ce4643b45", leakAttempt = "c8f924c4-4358-4009-9c41-02ede7ff1333"
+    let h0Leak = "Do this task:\n" + invitation + "\n\nScope: read_only. Do not spawn a competing orchestration or silently change model/account.\n\n" +
+        background(invitation) + "\n\n" + references + " RCC task " + leakTask + "; child node_0; attempt " + leakAttempt + "."
+    let h1Leak = E.prompt(instruction: invitation, ownerRequest: invitation, answerOnly: false, surface: .codex, scope: .readOnly,
+                          taskID: leakTask, nodeID: "node_0", attemptID: leakAttempt)
+    try check(h1Leak == h0Leak.replacingOccurrences(of: "model/account.\n\n", with: "model/account. " + E.silentRuleLine + "\n\n") &&
+              h1Leak.replacingOccurrences(of: " " + E.silentRuleLine, with: "") == h0Leak && h0Leak.utf8.count == 591 &&
+              C.digest(Data(h0Leak.utf8)) == "853618a380a75755a473930d36a15cb7256c327eac8a433a3376fc2a52bb5240",
+              "the build-440 leak input (591 bytes, the rollout's user turn sha256 853618a3…5240) changes only by the silent-rule line")
 
     // ---- Every provider gets the same envelope -----------------------------
     for (index, route) in routes.enumerated() {
@@ -84,6 +104,8 @@ func runRCCDelegatedEnvelopeFixtures() throws {
                   "\(label): every id still present, exactly once")
         try check(text.contains("Scope: read_only. Do not spawn a competing orchestration or silently change model/account."),
                   "\(label): scope statement and no-orchestration/no-silent-change guarantee kept")
+        try check(text.contains(E.guaranteeLine + " " + E.silentRuleLine + "\n\n" + E.backgroundStart),
+                  "\(label): the silent-rule line directly after the guarantee, before the background")
         try check(!text.contains("ORIGINAL OWNER OBJECTIVE") && !text.contains("DELEGATED WORK ONLY") &&
                   !text.contains("Background context only") && !text.contains("Do not act on any other part"),
                   "\(label): the build 380 owner-first labels and the non-actionable background label are gone")
@@ -109,7 +131,7 @@ func runRCCDelegatedEnvelopeFixtures() throws {
                   !text.contains("Reply with only the final result"), "no answer-only line: " + reason)
         try check(text == E.prompt(instruction: instruction, ownerRequest: owner, answerOnly: false, surface: surface,
                                    scope: .readOnly, taskID: taskID, nodeID: "requested-1", attemptID: attemptID) &&
-                  text.hasPrefix("Do this task:\n" + instruction + "\n\nScope: read_only. " + E.guaranteeLine + "\n\n" +
+                  text.hasPrefix("Do this task:\n" + instruction + "\n\nScope: read_only. " + E.guaranteeLine + " " + E.silentRuleLine + "\n\n" +
                                  background(owner) + "\n\n" + references),
                   "neutral task lead, otherwise unchanged envelope: " + reason)
     }
@@ -122,7 +144,7 @@ func runRCCDelegatedEnvelopeFixtures() throws {
     let arithmeticWriter = envelope("1+1", surface: .codex, scope: .workspaceWrite, sourceCompletion: completion)
     try check(!E.answerOnly(instruction: "1+1", surface: .codex, scope: .workspaceWrite, explicitRoutes: routes) &&
               !arithmeticWriter.contains("Reply with only the final result") &&
-              arithmeticWriter.hasPrefix("Do this task:\n1+1\n\nScope: workspace_write. " + E.guaranteeLine + completion + "\n\n"),
+              arithmeticWriter.hasPrefix("Do this task:\n1+1\n\nScope: workspace_write. " + E.guaranteeLine + " " + E.silentRuleLine + completion + "\n\n"),
               "explicit arithmetic writer: no answer-only line, neutral lead, completion rules right after the work")
     try check(!E.prompt(instruction: "1+1", ownerRequest: owner, answerOnly: true, surface: .codex, scope: .workspaceWrite,
                         taskID: taskID, nodeID: "requested-1", attemptID: attemptID).contains("Reply with only the final result"),
@@ -149,10 +171,10 @@ func runRCCDelegatedEnvelopeFixtures() throws {
     let paragraphs = "README.md에 설치 방법 추가해.\n\n설치는 Homebrew 기준으로.\n\n다른 파일은 건드리지 마."
     let writer = envelope("README.md에 설치 방법 추가해", surface: .codex, routes: nil, scope: .workspaceWrite,
                           sourceCompletion: completion, ownerRequest: paragraphs)
-    try check(writer == "Do this task:\nREADME.md에 설치 방법 추가해\n\nScope: workspace_write. " + E.guaranteeLine + completion +
+    try check(writer == "Do this task:\nREADME.md에 설치 방법 추가해\n\nScope: workspace_write. " + E.guaranteeLine + " " + E.silentRuleLine + completion +
               "\n\n" + background(paragraphs) + "\n\n" + references +
               " RCC task \(taskID); child requested-1; attempt \(attemptID).",
-              "writer: neutral lead, scope/guarantee/completion rules directly after the work, then the background")
+              "writer: neutral lead, scope/guarantee/silent-rule/completion rules directly after the work, then the background")
     guard let completionAt = writer.range(of: "BOUND OS-1 SOURCE COMPLETION"),
           let backgroundAt = writer.range(of: "--- BACKGROUND: the owner's full request ---"),
           let endAt = writer.range(of: "--- END BACKGROUND ---") else {
@@ -177,7 +199,7 @@ func runRCCDelegatedEnvelopeFixtures() throws {
     // ---- A full-access continuation keeps its own imperative lead ----------
     let resume = "Continue ONLY the non-OS-1 steps blocked by the broad task sandbox, in this SAME native session."
     let continued = envelope("1+1", surface: .codex, continuation: resume)
-    try check(continued == resume + "\n\nScope: read_only. " + E.guaranteeLine + "\n\n" + E.referenceLabel +
+    try check(continued == resume + "\n\nScope: read_only. " + E.guaranteeLine + " " + E.silentRuleLine + "\n\n" + E.referenceLabel +
               " RCC task \(taskID); child requested-1; attempt \(attemptID).",
               "continuation: its own prompt leads, no answer-only line or background, ids last")
 

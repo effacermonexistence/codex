@@ -55,7 +55,8 @@ public enum RCCClassMeasurement {
     /// The harness scope a measurement binds: the profile id AND version, so
     /// a new descriptor (an H change) never inherits an older measurement.
     /// One encoding: the artifact's `harness_scope` and the pre-dispatch
-    /// receipt's `harness_scope` are both this string ("H0@1"), so a D4
+    /// receipt's `harness_scope` are both this string ("H1@1" since build
+    /// 441, "H0@1" before), so a D4
     /// producer copies it from a receipt verbatim.
     public static func harnessScope(_ profile: HarnessProfile.Descriptor) -> String { "\(profile.id)@\(profile.version)" }
 

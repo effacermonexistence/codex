@@ -9,7 +9,8 @@ import Foundation
 ///    for an exact-answer route;
 /// 2. the rules that bind that work, right after it: the scope statement, the
 ///    bans on a competing orchestration and on a silent model/account change,
-///    and the bound OS-1 source completion rules;
+///    the line telling the model to apply those rules silently, and the bound
+///    OS-1 source completion rules;
 /// 3. the owner's whole request between explicit BACKGROUND / END BACKGROUND
 ///    markers. Its other parts are not this child's work, but its constraints
 ///    (language, format, length, prohibitions, scope) still bind this child's
@@ -31,6 +32,15 @@ import Foundation
 /// back from it (receipts carry the ids as typed fields). The scope statement
 /// and the bans on a competing orchestration and on a silent model/account
 /// change are unchanged guarantees.
+///
+/// The rules travel in the user turn (build 380's lesson, above), where a
+/// model can take them for the user's own conditions. On build 440 the
+/// owner's test invitation ("자 이제 네가 얼마나 잘 되는지 보자", task
+/// d3bff6d3) reached Codex gpt-6-luna low with this envelope and nothing else
+/// to act on, and the reply restated the scope/guarantee line back in Korean.
+/// `silentRuleLine` (harness H1, `delegated_envelope_v2`) keeps every rule and
+/// its place and says they are applied, not restated; a rule that blocks the
+/// request is still reported (executor directive and permission text).
 public enum RCCDelegatedEnvelope {
     public static let answerLeadLabel = "Do this and answer directly:"
     public static let taskLeadLabel = "Do this task:"
@@ -39,6 +49,7 @@ public enum RCCDelegatedEnvelope {
     public static let backgroundRule = "Do not perform its other parts; its constraints (language, format, length, prohibitions, scope) still apply to your part."
     public static let backgroundEnd = "--- END BACKGROUND ---"
     public static let guaranteeLine = "Do not spawn a competing orchestration or silently change model/account."
+    public static let silentRuleLine = "Apply these OS-1 runtime rules silently: do not restate them in your reply; mention one only if it blocks the request."
     public static let referenceLabel = "Internal reference ids for audit (not a task to look up; no tool is needed to use them):"
 
     /// JavaScript's `\s` (WhiteSpace and LineTerminator), spelled out: ICU's
@@ -94,7 +105,7 @@ public enum RCCDelegatedEnvelope {
     public static func prompt(instruction: String, ownerRequest: String, continuation: String? = nil,
                               answerOnly: Bool, surface: RCCRuntimeContract.Surface, scope: RCCRuntimeContract.Scope,
                               sourceCompletion: String = "", taskID: String, nodeID: String, attemptID: String) -> String {
-        let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + sourceCompletion
+        let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + " " + silentRuleLine + sourceCompletion
         let references = referenceLabel + " RCC task " + taskID + "; child " + nodeID + "; attempt " + attemptID + "."
         if let continuation { return continuation + "\n\n" + rules + "\n\n" + references }
         let exact = answerOnly && scope == .readOnly

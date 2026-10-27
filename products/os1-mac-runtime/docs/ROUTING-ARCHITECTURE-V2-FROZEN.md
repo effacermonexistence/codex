@@ -82,7 +82,7 @@
 | K12 | 구현 | `6a57f69d` | K12a(계약, v1 publicSnapshot gate 수정, v2 생산자)와 K12b(App·CLI v2 전송, 부분 결과 라벨) 둘 다. K12 항목에서 swift build·OS1ContextTests·`os1 self-test` 통과(lead 결정 D7 조건) |
 | K13 | 부분 | `44702ec7` | C3 주장 철회, `allow_native_subagents: true`를 모든 surface에서 거부, managed 위임 고정. typed `delegation` wire 객체는 주석으로만 예약(연기) |
 | K14 | 구현 | `6a57f69d` | 미분류 모델은 정보성 exclusion `unclassified_model`로 격리한다(pool hold 없음). 모델 행 전달마다 `reference_review_required` 알림. 서명된 profile 모델만 감지 |
-| K15 | 부분 | `f91f0b2d` | N 항목 (a) 보호 경로 정렬, (b) TTL 상수, H0 v1 harness profile과 rendering 고정. (c) Codex resume 동일 바이트는 연기, H 항목 C4a·C4d는 미적용. build 440의 chat-lane 술어 변경은 변경 1에 따라 `H0@1`을 유지했다(새 descriptor 없음) |
+| K15 | 부분 | `f91f0b2d`, build 441 | N 항목 (a) 보호 경로 정렬, (b) TTL 상수, H0 v1 harness profile과 rendering 고정. (c) Codex resume 동일 바이트는 연기, H 항목 C4a·C4d는 미적용. build 440의 chat-lane 술어 변경은 변경 1에 따라 `H0@1`을 유지했다(새 descriptor 없음). build 441(오너 지시 2026-10-27)은 모델이 보는 변경 넷을 새 descriptor `H1@1`(parity unverified)로 올렸다: delegated envelope v2(guarantee 줄 바로 뒤 `silentRuleLine`, build 440 시험 초대 답이 규칙 줄을 되읊은 task d3bff6d3), Codex developer 첫머리의 apply-silently 줄(Claude system text와 같은 줄), RCC child의 status check-in card, HOME read-only Claude agent child의 answer workspace 격리. H0 항목은 그 rendering 그대로 `shipped`에 남고 `current`는 H1이다. `H0@1`에 묶인 D4 측정은 없었으므로 넘겨받을 측정도 없다 |
 | K16 | 구현 | `4a63fa08` | `route-replay.mjs usage`(M1)와 `quota-replay.py`(M2/M3 추정 라벨, pool별 M4 15% 판정). 카드와 M4 artifact가 없어 M2/M3는 not_computed, M4는 NOT_RUN |
 
 **K1/I1 정정.** 이 표의 이전 판은 K1을 '구현'으로만 적었다. 그래서 K1이 §2.2 I1의 셋째 bind 조건(재실행 예산: `max_attempts ≥ 2`, native cap 여유)까지 넣은 것처럼 읽혔는데, 틀렸다. 그 조건은 넣지 않았다. 하강 bind(`admittedRoute`·`tierRouteCandidate`)는 `max_attempts`도 native cap 여유도 읽지 않는다. 그 여유를 읽는 곳은 계획 시점 적격 조건 둘뿐이다: `ownerCollectionPlanEligible`(cap ≥ 2×obligation)과 `_calibratedContext`(여유 ≥ 2). App 계획에서는 `max_attempts`가 2(main.swift)이고, K6 cap 16 = 2×8(8은 Core가 받는 최대 노드·obligation 수)이므로 계획 시점에는 노드당 2회 여유가 선다. 그러나 cap은 무과금 하강과 무료 사전 실행 거부까지 모든 native dispatch를 센다. 그래서 bind 시점 여유는 보장되지 않는다. 뒤쪽 노드의 하강이 여유 2 미만에서 bind될 수 있고, 그때 escalation은 `native_dispatch_budget_exhausted` hold가 된다(fail-closed, 더 싼 답 전달 없음). bind 시점 여유 조건은 미해결로 남는다(K6·K10 세부 기록 참고).
@@ -167,9 +167,9 @@
 - K14 tier 있는 alias가 더 새 모델로 다시 풀리면 알림이 뜨지 않는다(alias drift).
 - K7 남은 모호성 위험: 첫 턴 '10/25는 얼마야?'를 날짜로, '1 더하기 1은?'을 밈으로 뜻한 경우.
 - 변경 1의 범위: 처음 커밋의 인증서는 `chat_explanatory` class 전체를 덮어, 상태 질문 옆에 붙은 질문("최신 아이폰 가격 얼마니? 너 되냐?")과 `conversationalQuestion` 용어 목록 밖의 기술 질문·이어지는 턴("Swift에서 actor reentrancy가 왜 생겨?", "그게 왜 그래?")까지 luna low로 보냈다. lead가 결정의 범위를 상태만 묻는 check-in으로 좁혀 해결했다(변경 1 범위 항목, fixture 440-d). class 자체(`chatLaneEligible && !textOperation`)와 그 chat lane 판정은 build 439 그대로이고, 이런 질문은 여전히 tool 없는 chat lane에서 레퍼런스로 돈다.
-- 변경 1의 chat-lane 술어 변경이 `H0@1` 아래에 있다(변경 1 harness 항목). D4 arm ② 전에 descriptor bump 여부를 정한다.
+- 변경 1의 chat-lane 술어 변경이 `H0@1` 아래에 있다(변경 1 harness 항목). build 441이 harness를 `H1@1`로 올렸다(K15 행). 그래서 이 술어는 이제 H1 아래에 있고 D4 arm ②가 잴 대상도 H1이다. golden의 chat-lane vector 40개에 초대 문장이 없는 것은 그대로다(초대 양성·음성은 `StatusCheckIn.selfTest`와 `providerSurfaceRoutingSelfTest`가 고정한다).
 - bridge `rcc-runtime.mjs` 103행 주석 "(rcc-class-table.json, empty as shipped)"은 build 440 표와 맞지 않았다. 변경 2의 bridge 재고정 때 고쳤다.
-- 변경 2의 RCC chat-lane 사실 확장(도구 없는 `answer_only`)은 chat_lane_predicate_v1의 RCC 쪽 변경이다. native 술어와 H0 golden은 그대로라 golden은 이 변경을 잡지 않는다(변경 1과 같은 처지). 같은 build의 harness bump(envelope, B 부분) 때 descriptor 구성요소에 함께 기록할지 정한다.
+- 변경 2의 RCC chat-lane 사실 확장(도구 없는 `answer_only`)은 chat_lane_predicate_v1의 RCC 쪽 변경이다. native 술어와 H0 golden은 그대로라 golden은 이 변경을 잡지 않는다(변경 1과 같은 처지). build 441의 H1 descriptor가 chat_lane_predicate_v1을 포함하므로 이 확장도 H1 아래에 있다(golden 재고정은 merge 뒤).
 - graded route의 품질은 측정하지 않았다(D4 NOT_RUN). 이전 ledger에서 `gpt-6.1-sol` medium은 14회 중 escalation 0회, `gpt-6-luna` low는 11회 중 3회였다. 기록일 뿐 품질 근거는 아니다.
 
 ### 롤백 매트릭스

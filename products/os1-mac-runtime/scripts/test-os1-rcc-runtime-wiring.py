@@ -210,10 +210,31 @@ check('"Do not spawn a competing orchestration or silently change model/account.
       "its constraints (language, format, length, prohibitions, scope) still apply to your part." in ENVELOPE and
       "Do not act on any other part" not in ENVELOPE,
       "envelope keeps the guarantees, delimits the background, keeps owner constraints binding, labels ids as references")
-check('let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + sourceCompletion' in ENVELOPE and
+check('let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + " " + silentRuleLine + sourceCompletion' in ENVELOPE and
       'guard scope == .readOnly, let explicitRoutes,' in ENVELOPE and
       'scope == .readOnly && (answerOnly || ProviderSurface(rawValue: surface.rawValue)?.forcesChatLane == true)' in ENVELOPE,
       "answer-only needs read_only like the verifier; the direct lead only for read-only answer children")
+# Harness H1: the rules are applied, not restated (build-440 leak, task
+# d3bff6d3); the line never moves after the source completion rules.
+check('public static let silentRuleLine = "Apply these OS-1 runtime rules silently: do not restate them in your reply; '
+      'mention one only if it blocks the request."' in ENVELOPE and ENVELOPE.count("silentRuleLine") == 3,
+      "the envelope's silent-rule line is one constant, used once on the rules line")
+# H1: the RCC child's host-side rules, as the direct/native path has them.
+check("rccIsolatesReadOnlyClaudeHome(surface: surface, permissionProfile: signed.permissionProfile,\n"
+      "                resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)\n"
+      "                ? try sourceAnswerWorkspace() : h.workspace" in native and
+      native.index("rccIsolatesReadOnlyClaudeHome(surface: surface") < native.index("var before = workspaceHash(workspace)") <
+      native.index("executionWorkspace = workspace; executionWorkspaceBefore = before"),
+      "a fresh read-only Claude agent child never starts in HOME; the hash and executed workspace are the isolated one")
+helper = section(MAIN, "func rccIsolatesReadOnlyClaudeHome(", "\n}\n")
+check("surface == .claude && !resumesNativeSession &&" in helper and
+      'ExecutionWorkspace.usesSourceIsolation(provider: "claude", permission: permissionProfile, hasSource: false,' in helper,
+      "the HOME rule is the native path's usesSourceIsolation, Claude agent only, never for a resumed session")
+check("workspaceContext: rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard))" in native and
+      native.index("let delegated = RCCDelegatedEnvelope.prompt(") < native.index("workspaceContext: rccStatusCheckInHint(") and
+      "StatusCheckIn.answersFromCard(ownerRequest) ? card() : \"\"" in MAIN and
+      "try rccExecuteChildRulesSelfTest()" in MAIN,
+      "a card check-in's RCC child carries the install-state card the direct path attaches; os1 self-test pins both rules")
 check("const parts = /^\\s*(-?\\d{1,9})\\s*([+*\\-])\\s*(-?\\d{1,9})\\s*$/u.exec(instruction);" in PLUGIN and
       "arithmeticResult(node.instruction)" in PLUGIN and
       "/^\\s*(-?\\d{1,9})\\s*([+*\\-])\\s*(-?\\d{1,9})\\s*$/u" in ENVELOPE,
