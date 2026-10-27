@@ -50,15 +50,28 @@ public enum ClaudeChatLane {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
         if projectTerms.contains(where: value.contains) { return true }
         if workspaceTerms.contains(where: value.contains) { return true }
-        return value.range(of: #"(?:^|\s)(?:~|\.{1,2})?/[^\s]|\bhttps?://|[A-Za-z0-9_-]+\.[A-Za-z]{1,6}\b"#,
-                           options: .regularExpression) != nil
+        return value.range(of: machinePathPattern, options: .regularExpression) != nil
     }
+    /// A path, a URL or a file name in the text.
+    static let machinePathPattern = #"(?:^|\s)(?:~|\.{1,2})?/[^\s]|\bhttps?://|[A-Za-z0-9_-]+\.[A-Za-z]{1,6}\b"#
+
+    /// Build 441 (owner order, 2026-10-27): an imperative ending after a
+    /// communicative stem asks for an answer, not work: "설명해봐", "설명 좀
+    /// 해줘", "비교해줘", "정의해 줘", "말해봐", "증명해봐", "유도해줘". The
+    /// ending alone ("그럼 실제로 해봐") and any other stem ("실행해봐",
+    /// "정리해줘", "고쳐줘") stay work. Before this, "슈뢰딩거 방정식 설명해봐"
+    /// counted as an order, lost the chat lane and ran the top model at its
+    /// native ceiling as a lookup.
+    static let answerImperative = #"(?:설명|비교|정의|증명|유도|(?<![가-힣])말)(?:을|를)?(?:\s*(?:좀|한번|한 번|쉽게|간단히|자세히|짧게|다시))*\s*(?:해\s*봐|해\s*줘|해라|하라)"#
 
     /// True when the request asks for work rather than an answer. A text
     /// operation's own instruction ends this way too ("번역해줘"), so this is
-    /// asked about the whole request, never about the instruction alone.
+    /// asked about the whole request, never about the instruction alone. An
+    /// imperative that only asks for an explanation (`answerImperative`) is
+    /// not work; every other part of the request is still judged.
     public static func asksForWork(_ prompt: String) -> Bool {
         let value = prompt.precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: answerImperative, with: " ", options: .regularExpression)
         return actionTerms.contains(where: value.contains)
     }
 

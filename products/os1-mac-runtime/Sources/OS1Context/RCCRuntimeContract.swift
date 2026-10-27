@@ -545,14 +545,21 @@ public enum RCCRuntimeContract {
         public var classCertificates: [String: ClassCertificate]?
         /// The signed class table's reference-pool pin for `request_class` only (R11).
         public var classProviderPins: [String: String]?
+        /// Optional (build 441), beside the admission facts only: the host's
+        /// deterministic `RequestProfile` of the request (answer kind, tool
+        /// need, difficulty). A routing fact for Core's graded admission,
+        /// never a certificate. Absent in older catalogs.
+        public var requestProfile: RequestProfile?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
                     exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil,
                     modelTiers: [String: String]? = nil, explicitRouteIntents: [RoutingIntentConstraint?]? = nil,
                     quotaScores: [String: Int]? = nil, nativeReferenceEfforts: [String: [String: String]]? = nil,
                     ownerScope: Scope? = nil, chatLaneEligible: Bool? = nil, requestClass: RequestClass? = nil,
                     taskContract: TaskContractFact? = nil, classCertificates: [String: ClassCertificate]? = nil,
-                    classProviderPins: [String: String]? = nil, routingIntentV2: RoutingIntentV2? = nil) {
+                    classProviderPins: [String: String]? = nil, routingIntentV2: RoutingIntentV2? = nil,
+                    requestProfile: RequestProfile? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
+            self.requestProfile = requestProfile
             self.routingIntentV2 = routingIntentV2
             self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
             self.explicitRouteIntents = explicitRouteIntents; self.quotaScores = quotaScores
@@ -568,7 +575,7 @@ public enum RCCRuntimeContract {
             case nativeReferenceEfforts = "native_reference_efforts"
             case ownerScope = "owner_scope", chatLaneEligible = "chat_lane_eligible", requestClass = "request_class"
             case taskContract = "task_contract", classCertificates = "class_certificates"
-            case classProviderPins = "class_provider_pins"
+            case classProviderPins = "class_provider_pins", requestProfile = "request_profile"
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -592,6 +599,7 @@ public enum RCCRuntimeContract {
             taskContract = try c.decodeIfPresent(TaskContractFact.self, forKey: .taskContract)
             classCertificates = try c.decodeIfPresent([String: ClassCertificate].self, forKey: .classCertificates)
             classProviderPins = try c.decodeIfPresent([String: String].self, forKey: .classProviderPins)
+            requestProfile = try c.decodeIfPresent(RequestProfile.self, forKey: .requestProfile)
         }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
@@ -1533,11 +1541,15 @@ public enum RCCRuntimeContract {
         let facts = [value.ownerScope != nil, value.chatLaneEligible != nil, value.requestClass != nil]
         guard facts.allSatisfy({ $0 }) || !facts.contains(true) else { throw Rejection.invalidObservation }
         guard let requestClass = value.requestClass, let ownerScope = value.ownerScope, let chat = value.chatLaneEligible else {
-            guard value.taskContract == nil, value.classCertificates == nil, value.classProviderPins == nil else {
+            guard value.taskContract == nil, value.classCertificates == nil, value.classProviderPins == nil,
+                  value.requestProfile == nil else {
                 throw Rejection.invalidObservation
             }
             return
         }
+        // Build 441: a request profile is structurally valid (enums, schema,
+        // policy, sorted unique signals, a difficulty exactly for an answer).
+        if let profile = value.requestProfile, !profile.valid { throw Rejection.invalidObservation }
         switch requestClass {
         case .writer: guard ownerScope == .workspaceWrite, !chat else { throw Rejection.invalidObservation }
         case .chatExplanatory, .textOperation: guard chat else { throw Rejection.invalidObservation }
@@ -2115,7 +2127,8 @@ public enum RCCRuntimeContract {
     private static let collectionShape = Shape.object(["schema", "kind", "manifest_sha256", "obligations"], ["obligations": .array(collectionObligationShape)])
     private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256", "owner_collection"], ["owner_collection": collectionShape])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape)])
+    private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals"])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])

@@ -187,6 +187,10 @@ public enum RCCNativeCatalogBuilder {
         /// K11: the harness scope this catalog's dispatches run under
         /// (`RCCClassMeasurement.harnessScope`). Nil loads no certificate.
         public var harnessProfile: String? = nil
+        /// Build 441: the host's deterministic `RequestProfile` of the request
+        /// (`RequestProfile.classify` with the host's shell and material
+        /// facts). Emitted beside the admission facts only; nil emits none.
+        public var requestProfile: RequestProfile? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -244,6 +248,9 @@ public enum RCCNativeCatalogBuilder {
         /// K11 diagnostics, never on the wire: why this class's table
         /// certificate was not loaded (nil when loaded or when none exists).
         public var classCertificateRejection: RCCClassMeasurement.Rejection? = nil
+        /// Build 441: the host's request profile, a routing fact for Core's
+        /// graded admission (never a certificate); nil emits none.
+        public var requestProfile: RequestProfile? = nil
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -454,7 +461,8 @@ public enum RCCNativeCatalogBuilder {
         }
         return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,
                          taskContract: input.taskContract, classCertificate: certificate,
-                         classProviderPin: input.classTable.providerPin(for: requestClass), classCertificateRejection: rejection)
+                         classProviderPin: input.classTable.providerPin(for: requestClass), classCertificateRejection: rejection,
+                         requestProfile: input.requestProfile)
     }
 
     /// Providers worth a native probe under the current preference, capacity,
@@ -819,6 +827,11 @@ public enum RCCNativeCatalogBuilder {
                     try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(certificate))]
             }
             if let pin = facts.classProviderPin { object["class_provider_pins"] = [facts.requestClass.rawValue: pin] }
+            // Build 441, optional: the host's request profile, beside the
+            // facts only (Core's graded admission reads it; never a certificate).
+            if let profile = facts.requestProfile {
+                object["request_profile"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(profile))
+            }
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }

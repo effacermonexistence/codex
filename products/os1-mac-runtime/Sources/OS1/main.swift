@@ -4138,6 +4138,21 @@ func claudeChatLane(provider: String, permission: String, hasSource: Bool, objec
         && ImageInput.encodeAll(in: objective).isEmpty
 }
 
+/// The RCC catalog's chat-lane fact for an Auto (not explicit-route) request:
+/// the narrow predicate above, or (build 441, owner order 2026-10-27) an
+/// answer that needs no tool (`RequestProfile.answersWithoutTools`) whatever
+/// its ending ("슈뢰딩거 방정식 설명해봐"), under the owner-selected lane's own
+/// conditions (no machine material, shell, path, image or source), which the
+/// RCC adapter enforces again before a claude-chat dispatch. The native
+/// (non-RCC) lane predicate is unchanged.
+func rccChatLaneEligible(objective: String, hasSource: Bool, providerPreference: String,
+                         profile: RequestProfile) -> Bool {
+    claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasSource, objective: objective,
+                   ownerSelected: RCCNativeCatalogBuilder.normalizedPreference(providerPreference) == "claude-chat") ||
+        (profile.answersWithoutTools && claudeChatLane(provider: "claude", permission: "read_only",
+            hasSource: hasSource, objective: objective, ownerSelected: true))
+}
+
 /// OpenAI's side of the same lane: a Codex ticket that would qualify for the
 /// Claude chat lane runs as GPT chat (tools and customizations off, no
 /// workspace). The predicate is shared so the two lanes cannot drift apart.
@@ -4374,6 +4389,51 @@ func providerSurfaceRoutingSelfTest() throws {
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "usungco.com 등록돼 있어?")))
     checks.append(("a conversational question with an attached source keeps the agent",
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: true, objective: sideQuestion)))
+    // Build 441 (owner order, 2026-10-27): "야, 쇼레든거 방조식 설명해봐" counted
+    // "해봐" as an order, ran write-scoped as readonly_lookup and bound
+    // gpt-6-astra ultra. An answer that needs no tool, in any ending, now runs
+    // read-only and is the RCC catalog's chat-lane fact (chat_explanatory),
+    // while an order, a tool or file need, current facts or a prior artifact
+    // keeps its scope and lane. The native lane predicate is unchanged.
+    let explanations = ["슈뢰딩거 방정식 설명해봐", "야, 쇼레든거 방조식 설명해봐", "뉴턴 운동법칙 쉽게 설명해줘",
+                        "뉴턴 운동법칙 쉽게 설명해 주세요", "뉴턴 운동법칙 쉽게 설명해줄래?", "뉴턴 운동법칙 쉽게 설명해",
+                        "파이썬 list와 tuple 차이 설명해봐"]
+    func profiled(_ text: String, source: Bool = false) -> RequestProfile {
+        RequestProfile.classify(text, shellNeed: promptRequiresShellCapability(text), hasMaterial: source)
+    }
+    checks.append(("an explanation in any ending is read-only, needs no shell and is the RCC chat-lane fact",
+        explanations.allSatisfy { text in
+            !promptRequiresShellCapability(text) && ownerRequestRunsReadOnly(text, attachedSource: false) &&
+                profiled(text).gradable &&
+                rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: profiled(text))
+        }))
+    // The chat lane keeps its own (substring) machine-material rule: "difference"
+    // contains "diff", so this English explanation gets no chat row, but it is
+    // still read-only and graded on the agent rows.
+    let english = "Explain the difference between TCP and UDP."
+    checks.append(("an English explanation is read-only and gradable; the chat lane keeps its own material rule",
+        !promptRequiresShellCapability(english) && ownerRequestRunsReadOnly(english, attachedSource: false) &&
+            profiled(english).gradable &&
+            !rccChatLaneEligible(objective: english, hasSource: false, providerPreference: "auto", profile: profiled(english))))
+    checks.append(("with an attached source the explanation is not the chat-lane fact",
+        !rccChatLaneEligible(objective: explanations[0], hasSource: true, providerPreference: "auto",
+                             profile: profiled(explanations[0], source: true))
+            && !ownerRequestRunsReadOnly(explanations[0], attachedSource: true)))
+    checks.append(("the native lane predicate is unchanged for an explanation imperative",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: explanations[0])
+            && !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: explanations[0])))
+    checks.append(("a build or deploy order needs the shell and stays off the chat lane and the read-only scope",
+        ["빌드해줘", "배포해봐", "테스트 돌려봐"].allSatisfy { text in
+            promptRequiresShellCapability(text) && !ownerRequestRunsReadOnly(text, attachedSource: false) &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: profiled(text))
+        }))
+    checks.append(("work, files, current facts and prior artifacts keep their lane",
+        ["그럼 실제로 해봐", "README.md 설명해줘", "이 함수 설명해봐", "아까 그거 설명해줘", "오늘 환율 설명해줘",
+         "로그 확인해봐", "이 코드 설명하고 고쳐줘", "슈뢰딩거 방정식 설명해서 파일에 저장해줘"].allSatisfy { text in
+            !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: profiled(text)) &&
+                !profiled(text).gradable
+        } && !ownerRequestRunsReadOnly("그럼 실제로 해봐", attachedSource: false)
+          && !ownerRequestRunsReadOnly("이 코드 설명하고 고쳐줘", attachedSource: false)))
 
     // The refusal is what stops an explicit chat-lane choice from becoming the
     // full lane. Each structural condition is named before dispatch.
@@ -12403,7 +12463,14 @@ func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool) -> Bool {
     // A check-in the status card answers ("되는지 확인해보자. 되냐?") asks for
     // the chat lane too: the answer is the install state, already attached.
     let cardCheckIn = !attachedSource && StatusCheckIn.answersFromCard(prompt) && !promptRequiresShellCapability(prompt)
-    return selfContainedText || readOnlyQuestion || cardCheckIn
+    // Build 441 (owner order, 2026-10-27): an answer that needs no tool, in
+    // any ending ("슈뢰딩거 방정식 설명해봐", "뉴턴 운동법칙 쉽게 설명해줘"),
+    // changes nothing on this machine: it runs read-only. `RequestProfile`
+    // refuses any write, shell, path, image, material, machine, project,
+    // external-system, external-action or complaint signal.
+    let answerOnly = !attachedSource && RequestProfile.classify(prompt, shellNeed: promptRequiresShellCapability(prompt),
+                                                                hasMaterial: false).answersWithoutTools
+    return selfContainedText || readOnlyQuestion || cardCheckIn || answerOnly
 }
 
 func runTaskWithOwnerPolicy(
@@ -19443,6 +19510,11 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     let config = try RuntimeConfig.load()
     let now = Date()
     let hasMaterial = !request.materialRefs.isEmpty
+    // Build 441 (owner order, 2026-10-27): the request's deterministic
+    // profile, from the owner's text and host facts only (R0): answer kind,
+    // tool need and difficulty. Core's graded admission reads it.
+    let requestProfile = RequestProfile.classify(request.request, shellNeed: promptRequiresShellCapability(request.request),
+                                                 hasMaterial: hasMaterial)
     // The narrow chat-lane predicate, the same one the executor uses. An
     // explicit route names its own payload, so each Claude-chat route must
     // pass on its own instruction (the owner named that lane for it).
@@ -19454,9 +19526,8 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
                            objective: $0.instruction, ownerSelected: true)
         }
     } else {
-        chatEligible = claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasMaterial,
-            objective: request.request,
-            ownerSelected: RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "claude-chat")
+        chatEligible = rccChatLaneEligible(objective: request.request, hasSource: hasMaterial,
+            providerPreference: host.providerPreference, profile: requestProfile)
     }
     var input = RCCNativeCatalogBuilder.Input(taskID: request.taskID, requestSHA256: request.requestSHA256,
         request: request.request, providerPreference: host.providerPreference, requireReadOnly: host.requireReadOnly,
@@ -19471,6 +19542,7 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // 440: one certificate, chat_explanatory, on the owner decision).
     input.ownerScope = RCCCatalogFacts.ownerScope(request)
     input.taskContract = RCCCatalogFacts.taskContract(request)
+    input.requestProfile = requestProfile
     // K11: a table certificate loads only with its D4 measurement artifact,
     // read from host custody by the hash the signed table names (private
     // input gate: owner-only regular file, no link) and verified by the

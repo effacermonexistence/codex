@@ -141,7 +141,7 @@ func runRCCAdmissionFactsFixtures() throws {
         try B.catalogData(B.build(value), taskID: value.taskID, requestSHA256: value.requestSHA256)
     }
     let factKeys: Set<String> = ["owner_scope", "chat_lane_eligible", "request_class", "task_contract",
-                                 "class_certificates", "class_provider_pins"]
+                                 "class_certificates", "class_provider_pins", "request_profile"]
     let writeText = "Fix the login bug in Sources/App.swift"
     let legacy = try object(catalog(input(writeText, owner: nil)))
     try check(factKeys.isDisjoint(with: legacy.keys), "a host without an owner scope (before 407) emits no admission facts")
@@ -576,6 +576,109 @@ func runRCCAdmissionFactsFixtures() throws {
                   "440-b: Core binds \(label) to the reference astra ultra: \(route)")
     }
 
+    // ---- Build 441 (owner order, 2026-10-27): graded admission, end to end.
+    // The host's deterministic request profile rides the Swift-built catalog;
+    // Core's own resolver binds a general explanation to the standard grade
+    // (never the top model at its ceiling because nothing certifies it),
+    // stable across phrasing, and keeps the reference or the owner's tuple for
+    // deep, tool, file, current-fact, prior-artifact and owner-worded work.
+    // The host facts the OS1 executable computes (promptRequiresShellCapability,
+    // ownerRequestRunsReadOnly, the RCC chat-lane formula) are fixed here as
+    // they are for these texts; `os1 self-test` pins those functions.
+    func profiled(_ text: String, shell: Bool = false, v2: Bool = true) -> B.Input {
+        let found = RequestProfile.classify(text, shellNeed: shell, hasMaterial: false)
+        let chat = found.answersWithoutTools || ClaudeChatLane.conversationalQuestion(text)
+        var value = live(text, owner: chat ? .readOnly : .workspaceWrite, chat: chat)
+        value.profiles += [.init(action: "cx_6astra_max", provider: "codex", model: "gpt-6-astra", effort: "max"),
+                           .init(action: "cx_61sol_low", provider: "codex", model: "gpt-6.1-sol", effort: "low"),
+                           .init(action: "cx_61sol_medium", provider: "codex", model: "gpt-6.1-sol", effort: "medium"),
+                           .init(action: "cx_61sol_high", provider: "codex", model: "gpt-6.1-sol", effort: "high"),
+                           .init(action: "cl_opus55_medium", provider: "claude", model: "claude-opus-5-5", effort: "medium"),
+                           .init(action: "cl_haiku45", provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none")]
+        value.codexModels.insert(.init(slug: "gpt-6.1-sol", supportedEfforts: ["low", "medium", "high"], priority: 1), at: 1)
+        value.codexModels[2].priority = 2
+        value.claudeModels = [.init(model: "claude-fable-5-1", supportedEfforts: ["max"], nativeRank: 0),
+                              .init(model: "claude-opus-5-5", supportedEfforts: ["medium"], nativeRank: 1),
+                              .init(model: "claude-haiku-4-5-20251001", supportedEfforts: ["none"], nativeRank: 2)]
+        value.requestProfile = found
+        if v2 {
+            value.enableRoutingIntentV2 = true
+            value.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        }
+        return value
+    }
+    let explanations = ["슈뢰딩거 방정식 설명해봐", "야, 쇼레든거 방조식 설명해봐", "뉴턴 운동법칙 쉽게 설명해줘",
+                        "뉴턴 운동법칙 쉽게 설명해 주세요", "뉴턴 운동법칙 쉽게 설명해줄래?", "뉴턴 운동법칙 쉽게 설명해",
+                        "뉴턴 운동법칙 쉽게 설명해봐", "뉴턴 운동법칙 쉽게 설명 좀 해줘", "파이썬 list와 tuple 차이 설명해봐"]
+    let kept: [(String, Bool, String)] = [
+        ("슈뢰딩거 방정식을 엄밀하게 유도해줘", false, "deep derivation"), ("피타고라스 정리를 증명해봐", false, "deep proof"),
+        ("로그인 화면 아키텍처 설계해줘", false, "design"), ("README.md 설명해줘", false, "a named file"),
+        ("빌드해줘", true, "a build"), ("배포해봐", true, "a deploy"), ("오늘 환율 설명해줘", false, "current facts"),
+        ("이 함수 설명해봐", false, "a prior artifact"), ("아까 그거 설명해줘", false, "a prior artifact"),
+        ("그럼 실제로 해봐", false, "a bare pro-verb")]
+    var gradedCases: [(request: String, catalog: [String: Any], write: Bool)] = []
+    for text in explanations {
+        let value = profiled(text)
+        let built = try catalog(value)
+        var v2Request = try request(text, mode: .auto)
+        v2Request.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        let facts = try C.decodeCatalog(built, request: v2Request)
+        try check(facts.requestClass == .chatExplanatory && facts.ownerScope == .readOnly && facts.chatLaneEligible == true &&
+                  facts.requestProfile?.gradable == true && facts.requestProfile?.difficulty == .standard &&
+                  facts.classCertificates == nil && facts.routingIntentV2?.allowedSurfaces.isEmpty == true,
+                  "441: an explanation is chat_explanatory, read-only, standard-gradable, uncertified: \(text)")
+        try check((try object(built))["candidates"].flatMap { $0 as? [[String: Any]] }?.contains {
+                      $0["surface"] as? String == "claude-chat" } == true, "441: the chat lane offers claude-chat rows: \(text)")
+        gradedCases.append((text, try object(built), false))
+    }
+    for (text, shell, _) in kept { gradedCases.append((text, try object(catalog(profiled(text, shell: shell))), false)) }
+    let ownerWords = ["최대 리즈닝으로 슈뢰딩거 방정식 설명해봐", "gpt-6-astra로 슈뢰딩거 방정식 설명해봐"]
+    for text in ownerWords { gradedCases.append((text, try object(catalog(profiled(text))), false)) }
+    let lightText = "슈뢰딩거 방정식이 뭐야?"
+    gradedCases.append((lightText, try object(catalog(profiled(lightText))), false))
+    let gradedRoutes = try coreRoutes(gradedCases, now: now,
+        runtime: root.appendingPathComponent("Resources/openclaw-os1-bridge/rcc-runtime.mjs"))
+    try check(gradedRoutes.count == gradedCases.count, "441: Core resolved every Swift-built catalog")
+    var models = Set<String>(), efforts = Set<String>()
+    for (index, text) in explanations.enumerated() {
+        let route = gradedRoutes[index]
+        try check(route["model"] as? String == "gpt-6.1-sol" && route["effort"] as? String == "medium" &&
+                  route["surface"] as? String == "codex" && route["kind"] as? String == "graded" &&
+                  route["route_class"] as? String == "standard" && route["admitted_by"] as? String == "host_profile" &&
+                  route["grade"] as? String == "standard" && route["certificate_id"] is NSNull &&
+                  route["reference_model"] as? String == "gpt-6-astra" && route["reference_effort"] as? String == "ultra" &&
+                  route["basis"] as? String == "graded:standard" &&
+                  (route["reason"] as? String)?.hasPrefix("resolver;route_graded;admitted_graded_standard;graded_list_0;") == true &&
+                  (route["reason"] as? String)?.contains("certified") == false,
+                  "441: Core binds the standard grade (sol medium, astra ultra its escalation), never certified: \(text): \(route)")
+        models.insert(route["model"] as? String ?? ""); efforts.insert(route["effort"] as? String ?? "")
+    }
+    try check(Set(gradedRoutes.prefix(explanations.count).map { "\($0["model"] ?? "")/\($0["effort"] ?? "")" }).count == 1,
+              "441: every phrasing of the same explanation binds the same tuple")
+    for (offset, (text, _, label)) in kept.enumerated() {
+        let route = gradedRoutes[explanations.count + offset]
+        try check(route["model"] as? String == "gpt-6-astra" && route["effort"] as? String == "ultra" &&
+                  route["kind"] as? String == "reference" && route["basis"] as? String == "reference" &&
+                  route["admitted_by"] is NSNull &&
+                  (route["reason"] as? String)?.hasPrefix("resolver;route_reference;admitted_reference_uncertified;") == true,
+                  "441: \(label) keeps the reference (no owner words, not owner_words): \(text): \(route)")
+        models.insert(route["model"] as? String ?? ""); efforts.insert(route["effort"] as? String ?? "")
+    }
+    for (offset, text) in ownerWords.enumerated() {
+        let route = gradedRoutes[explanations.count + kept.count + offset]
+        try check(route["model"] as? String == "gpt-6-astra" && route["kind"] as? String == "explicit" &&
+                  route["basis"] as? String == "owner_words" && route["admitted_by"] is NSNull &&
+                  (route["reason"] as? String)?.hasPrefix("resolver;route_explicit;") == true,
+                  "441: the owner's model or ceiling words keep the owner's tuple: \(text): \(route)")
+    }
+    let lightRoute = gradedRoutes[explanations.count + kept.count + ownerWords.count]
+    try check(lightRoute["model"] as? String == "gpt-6-luna" && lightRoute["effort"] as? String == "low" &&
+              lightRoute["kind"] as? String == "graded" && lightRoute["basis"] as? String == "graded:light",
+              "441: a short definitional question binds the light grade: \(lightRoute)")
+    models.insert(lightRoute["model"] as? String ?? ""); efforts.insert(lightRoute["effort"] as? String ?? "")
+    try check(models.count == 3 && efforts.count == 3 && efforts.contains("low") && efforts.contains("medium") &&
+              efforts.contains("ultra"), "441: not always luna, not always low, not always the ceiling: \(models) \(efforts)")
+
     // ---- Ticket delegation flag (K13: reserved, refused, always managed) ----
     let host = questionRequest.hostContext!
     let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "acct-codex", model: "gpt-6-astra",
@@ -662,11 +765,14 @@ private func coreRoutes(_ cases: [(request: String, catalog: [String: Any], writ
         codex_session_id: null, claude_session_id: null, require_read_only: !write, owner_policy: null};
       const task = {schema: 1, task_id: catalog.task_id, request, request_sha256: catalog.request_sha256, objective: request,
         policy_sha256: sha(policyText), source_fingerprint: hostContextFingerprint(host), mode: 'auto', material_refs: [],
-        budget: {max_attempts: 2, max_parallel: 4, max_cost_units: null, max_duration_ms: 60000}, host_context: host,
-        policy: {source_sha256: sha('fixture source'), projection_sha256: sha(policyText), text: policyText}};
+        budget: {max_attempts: 2, max_parallel: 4, max_cost_units: null, max_duration_ms: 60000, max_native_dispatches: 16},
+        host_context: host,
+        policy: {source_sha256: sha('fixture source'), projection_sha256: sha(policyText), text: policyText},
+        ...(catalog.routing_intent_v2 === undefined ? {} : {routing_intent_policy_version: catalog.routing_intent_v2.version})};
       const {decisions, routes} = resolveRoutePlan(hostPlan(task, catalog), task, catalog, now);
       const decision = decisions.node_0, route = routes.node_0, ladder = route.ladder ?? null;
       return {surface: decision.surface, model: decision.model, effort: decision.effort, reason: decision.reason,
+        route_class: decision.route_class, grade: ladder?.grade ?? null,
         kind: route.kind, admitted_by: ladder?.admitted_by ?? null, certificate_id: ladder?.certificate_id ?? null,
         format_check: ladder?.format_check ?? null, reference_model: ladder?.reference_model ?? null,
         reference_effort: ladder?.reference_effort ?? null,
