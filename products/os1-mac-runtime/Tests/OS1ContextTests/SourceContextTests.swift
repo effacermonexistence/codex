@@ -268,6 +268,14 @@ final class SourceContextTests {
         try runRoutingOrderInterpreterFixtures()
         try StatusCheckIn.selfTest()
         print("Status check-in: self-test passed")
+        try ModelPriceTable.selfTest()
+        let resourcePrices = try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/model-price-table.json"))
+        guard resourcePrices == ModelPriceTable.compiledBytes else {
+            throw NSError(domain: "ModelPriceTable", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Resources/model-price-table.json differs from the compiled table"])
+        }
+        print("Model price table: compiled = resource, validation, refresh fallback PASS")
         try runConversationalQuestionFixtures()
         try runWebsiteDeliveryRelevanceFixtures()
         try runReadOnlyLookupFixtures()
