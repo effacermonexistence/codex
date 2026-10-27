@@ -187,9 +187,12 @@ enum RouteLaneSurface {
     }
 }
 
-/// Where a lane's model and reasoning come from. Core's selected
-/// configuration is what it bound; only a verified native record of the
-/// returned output is an observation of what ran.
+/// Where a lane's model and reasoning come from. `selected` is the
+/// configuration the route was bound to (a run step's model is that same
+/// value). `observed` is only what the native-display sidecar of the lane's
+/// own attempt read from the provider's native session record, as the
+/// projection passes it on (`RCCRuntimeProjection`); a verified execution
+/// record alone does not observe a model.
 enum RouteLaneConfigProvenance: String, Codable, Sendable {
     case selected, observed
 }
@@ -275,10 +278,11 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
     /// The graph's own title, kept only when it is neither shape above.
     var label: String?
     var model: String?
+    /// nil on an observed lane whose native record exposed no reasoning.
     var effort: String?
     var configuration: RouteLaneConfigProvenance?
-    /// Core's selected model and reasoning, kept only when the observed
-    /// configuration differs from them.
+    /// The selected model and reasoning, kept on an observed lane only when
+    /// the observation differs from them or exposed no reasoning.
     var selectedModel: String?
     var selectedEffort: String?
     var status: RouteLaneStatus
@@ -336,6 +340,24 @@ struct RouteLane: Codable, Equatable, Sendable, Identifiable {
 
     /// What this lane can truthfully say about itself.
     var reason: String? { coreReason ?? Self.reason(for: status) }
+
+    /// The observed model, or an observed reasoning, is not the one
+    /// selected. Reasoning the native record did not expose is unknown, not
+    /// a difference.
+    var observedDiffersFromSelected: Bool {
+        guard configuration == .observed, let selectedModel else { return false }
+        return selectedModel != model || (effort != nil && selectedEffort != nil && effort != selectedEffort)
+    }
+
+    /// Builds an observed configuration over a selected one. `selected*`
+    /// stay only when they say something the observation does not.
+    mutating func observe(model observedModel: String, effort observedEffort: String?) {
+        let selected = (model, effort)
+        model = observedModel; effort = observedEffort; configuration = .observed
+        if selected.0 != observedModel || selected.1 != observedEffort {
+            selectedModel = selected.0; selectedEffort = selected.1
+        }
+    }
 
     static func reason(for status: RouteLaneStatus) -> String? {
         switch status {
@@ -445,19 +467,23 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
     }
 
     /// One returned step as the run reported it, for matching a lane's exact
-    /// output to the native record that produced it.
+    /// output to the verified native record that produced it. It carries no
+    /// model: a step's model is the configuration the attempt was bound to,
+    /// never an observation of what ran.
     struct Observation {
         let surface: String?
-        let model: String?
-        let effort: String?
         let output: String
         let verified: Bool
     }
 
     /// The finished Core task's lanes. `messageText` is the text of the
     /// message the record is attached to (nil when the task returned none).
+    /// `displayGraph` is the run's own projection of this task: a worker's
+    /// model and reasoning there come only from the native-display sidecar
+    /// of that child's attempt, and only those mark a lane observed.
     static func build(core: RCCRuntimeContract.Snapshot, submissionID: UUID, messageText: String?,
-                      observations: [Observation] = []) -> RouteLanesRecord? {
+                      observations: [Observation] = [],
+                      displayGraph: ParallelAgentTask.Snapshot? = nil) -> RouteLanesRecord? {
         guard !core.children.isEmpty || !(core.skippedRoutes ?? []).isEmpty else { return nil }
         let terminal = [.completed, .failed, .held, .cancelled, .returnedUnverified, .effectsUncertain].contains(core.state)
         let statuses = core.children.map { laneStatus($0.state, taskTerminal: terminal) }
@@ -497,6 +523,7 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
         }
         var claims: [Int: Int] = [:]
         for indices in matches.values { for index in indices { claims[index, default: 0] += 1 } }
+        let sightings = observedConfigurations(core: core, submissionID: submissionID, graph: displayGraph)
 
         var lanes: [RouteLane] = []
         for (index, child) in core.children.enumerated() {
@@ -510,16 +537,11 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
                 status: statuses[index],
                 startedAt: child.startedAtMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
                 finishedAt: child.finishedAtMS.map { Date(timeIntervalSince1970: Double($0) / 1000) })
+            // ✓: a verified native record of exactly this lane's output.
             if let found = matches[child.id], found.count == 1, let only = found.first, claims[only] == 1 {
-                let step = observations[only]
                 lane.executionVerified = true
-                if let observed = step.model, !observed.isEmpty {
-                    if observed != model || (step.effort ?? effort) != effort {
-                        lane.selectedModel = model; lane.selectedEffort = effort
-                    }
-                    lane.model = observed; lane.effort = step.effort ?? effort; lane.configuration = .observed
-                }
             }
+            if let seen = sightings[child.id] { lane.observe(model: seen.model, effort: seen.effort) }
             let display = RCCRuntimeProjection.inspectionIdentity(taskID: core.taskID, childID: child.id)
             lane.inspection = RouteLaneInspection(submissionID: submissionID, planID: display.planID,
                 requestSHA256: core.requestSHA256, nodeID: display.nodeID)
@@ -542,6 +564,29 @@ struct RouteLanesRecord: Codable, Equatable, Sendable {
             taskReason: taskStatus == .completed ? nil : core.error.map(humanizedCode), lanes: lanes,
             answersInText: answersInText)
         return record.isValid ? record : nil
+    }
+
+    /// Each child's observed model and reasoning, read from the display graph
+    /// the run projected for exactly this task and turn. The projection gives
+    /// a worker a model only from the native-display sidecar of that child's
+    /// current attempt, bound to its verified native receipt; a graph of
+    /// another task, turn or request, or a worker without a native provider,
+    /// observes nothing.
+    static func observedConfigurations(core: RCCRuntimeContract.Snapshot, submissionID: UUID,
+                                       graph: ParallelAgentTask.Snapshot?) -> [String: (model: String, effort: String?)] {
+        guard let graph, let bound = try? graph.validated(submissionID: submissionID, requestSHA256: core.requestSHA256)
+        else { return [:] }
+        var seen: [String: (model: String, effort: String?)] = [:]
+        for child in core.children {
+            let identity = RCCRuntimeProjection.inspectionIdentity(taskID: core.taskID, childID: child.id)
+            guard bound.planID == identity.planID,
+                  let node = bound.nodes.first(where: { $0.id == identity.nodeID && $0.role == .worker }),
+                  ["codex", "claude"].contains(node.provider ?? ""),
+                  let model = node.model, !model.isEmpty, model.utf8.count <= 256,
+                  node.effort.map({ RCCRuntimeContract.Effort(rawValue: $0) != nil }) ?? true else { continue }
+            seen[child.id] = (model, node.effort)
+        }
+        return seen
     }
 
     static func laneStatus(_ state: RCCRuntimeContract.ChildState, taskTerminal: Bool) -> RouteLaneStatus {
@@ -723,14 +768,17 @@ struct RouteLanesPresentation: Equatable {
         case .cancelled: status = .cancelled
         case .interrupted: status = .interrupted
         }
-        let observed = node.model != nil
         var lane = RouteLane(id: node.id.uuidString.lowercased(), surface: surface, explicitRoute: explicit,
             instruction: explicit ? node.title.components(separatedBy: " · ").dropFirst().joined(separator: " · ") : nil,
             planIndex: explicit ? nil : planned.map { max(0, $0) },
             label: explicit || planned != nil ? nil : node.title,
-            model: node.model ?? selectedModel, effort: node.effort ?? selection?[2],
-            configuration: observed ? .observed : (selectedModel == nil ? nil : .selected), status: status,
+            model: selectedModel, effort: selection?[2],
+            configuration: selectedModel == nil ? nil : .selected, status: status,
             startedAt: node.startedAt, finishedAt: node.finishedAt)
+        // The projection names a worker's model only from its attempt's
+        // native-display sidecar (a sealed one: progress carries no model).
+        // Its reasoning is that record's, or unknown; never the selection's.
+        if let observed = node.model, !observed.isEmpty { lane.observe(model: observed, effort: node.effort) }
         lane.progressText = node.progressText
         if let native = node.nativeProgress, native.isValid {
             let counts = os1Tr("관측 도구 요청 \(native.toolsRequested) · 반환 \(native.toolsReturned)",
@@ -739,8 +787,18 @@ struct RouteLanesPresentation: Equatable {
         }
         lane.publicOutputSummary = node.publicOutputSummary
         lane.qualityDisclosure = node.qualityDisclosure
-        if node.provider != nil || progress?.contains("execution verified") == true { lane.executionVerified = true }
+        if Self.verifiedRecord(node) { lane.executionVerified = true }
         return lane
+    }
+
+    /// ✓ on a live lane: a verified record of the attempt exists. The
+    /// projection says "native <provider> execution verified" only when it
+    /// witnessed the attempt's own verified receipt; a provider named by a
+    /// progress-only sidecar of a running attempt is not that. The local
+    /// deterministic display graph names provider "local" only after its
+    /// receipt was bound (`RCCDeterministicReceipt.displayGraph`).
+    static func verifiedRecord(_ node: ParallelAgentTask.Node) -> Bool {
+        node.provider == "local" || node.progressText?.contains(" execution verified") == true
     }
 }
 
@@ -931,18 +989,26 @@ enum RouteLanesRenderer {
         return model + " · " + os1Tr("추론 ", "reasoning ") + effortLabel(effort)
     }
 
+    /// "· 관측값 · 선택값과 다름" beside an observed configuration that is not
+    /// the selected one.
+    static func observedDiffersNote(_ lane: RouteLane) -> String? {
+        lane.observedDiffersFromSelected ? os1Tr("관측값 · 선택값과 다름", "observed · differs from selected") : nil
+    }
+
     private static func configurationTip(_ lane: RouteLane) -> String {
         var tip: String
         switch lane.configuration {
         case .observed:
-            tip = os1Tr("검증된 실행 기록에서 관측한 모델·추론", "Model and reasoning observed in the verified execution record")
+            tip = os1Tr("이 시도의 네이티브 세션 기록에서 관측한 모델·추론",
+                        "Model and reasoning observed in this attempt's native session record")
+            if lane.effort == nil { tip += os1Tr(" · 기록이 추론을 공개하지 않음", " · the record exposes no reasoning") }
             if let selected = lane.selectedModel {
-                tip += os1Tr(" · Core 선택값: ", " · Core selected: ") + selected +
+                tip += os1Tr(" · 선택값: ", " · selected: ") + selected +
                     (lane.selectedEffort.map { " · " + reasoningTag($0) } ?? "")
             }
         case .selected:
-            tip = os1Tr("OpenClaw Core가 이 경로에 선택한 설정 · 관측된 실행이 아님",
-                        "The configuration OpenClaw Core selected for this route · not observed execution")
+            tip = os1Tr("이 경로에 선택된 설정 · 관측된 실행이 아님",
+                        "The configuration selected for this route · not observed execution")
         case nil:
             tip = os1Tr("실행 설정이 공개되지 않음", "Execution configuration not exposed")
         }
@@ -1014,6 +1080,9 @@ enum RouteLanesRenderer {
         // Live, the model on screen is Core's selection, not yet observed.
         if now != nil, lane.configuration == .selected {
             line.append(piece(" · " + os1Tr("선택값", "selected"), NSFont.systemFont(ofSize: 10), RouteLanePalette.muted))
+        }
+        if let differs = observedDiffersNote(lane) {
+            line.append(piece(" · " + differs, NSFont.systemFont(ofSize: 10), RouteLanePalette.muted))
         }
         line.append(piece("   ", NSFont.systemFont(ofSize: 11), RouteLanePalette.muted))
         line.append(pill(lane.status))
@@ -1137,9 +1206,9 @@ enum RouteLanesRenderer {
             effortLine.append(piece(os1Tr("추론\u{00A0}미공개", "reasoning\u{00A0}not\u{00A0}exposed"), NSFont.systemFont(ofSize: 10.5),
                                     RouteLanePalette.muted))
         }
-        // The observed model differs from the one Core selected: say so.
-        if lane.configuration == .observed, lane.selectedModel != nil {
-            effortLine.append(piece(" · " + os1Tr("관측됨", "observed"), NSFont.systemFont(ofSize: 10), RouteLanePalette.muted))
+        // The observed configuration is not the one selected: say so.
+        if let differs = observedDiffersNote(lane) {
+            effortLine.append(piece(" · " + differs, NSFont.systemFont(ofSize: 10), RouteLanePalette.muted))
         }
         paragraph(effortLine, after: 1, tip: configurationTip(lane))
         // Every pill row has the same shape: a clock, or a dash without one.
