@@ -4336,6 +4336,20 @@ func providerSurfaceRoutingSelfTest() throws {
     checks.append(("a card check-in takes the Claude chat lane",
         claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "되는지 확인해보자. 되냐?")
             && ownerRequestRunsReadOnly("되는지 확인해보자. 되냐?", attachedSource: false)))
+    // Build 440 (owner, 2026-10-27): "자 이제 네가 얼마나 잘 되는지 보자" ran
+    // Codex gpt-6-astra ultra as a lookup. A test invitation of this responder
+    // is a check-in: read-only, chat-lane eligible (the chat_explanatory
+    // class the owner-decision certificate binds to luna low) and it runs on
+    // the GPT chat lane; a thing as its subject stays work on the full lane.
+    let invitation = "자 이제 네가 얼마나 잘 되는지 보자"
+    checks.append(("the owner's test invitation is a read-only GPT chat check-in",
+        claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: invitation) &&
+        codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: invitation) &&
+        !ClaudeChatLane.selfContainedTextOperation(invitation) &&
+        ownerRequestRunsReadOnly(invitation, attachedSource: false)))
+    checks.append(("a build or code under test keeps the full lane",
+        !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "빌드 잘 되는지 보자") &&
+        !codexChatLane(provider: "codex", permission: "read_only", hasSource: false, objective: "이 코드 잘 되는지 보자")))
     checks.append(("a check-in about a deployment keeps a lane that can look",
         !claudeChatLane(provider: "claude", permission: "read_only", hasSource: false, objective: "배포 됐냐?")))
     checks.append(("an order beside a check-in keeps the full lane",
@@ -19447,7 +19461,9 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // read from host custody by the hash the signed table names (private
     // input gate: owner-only regular file, no link) and verified by the
     // builder against this harness, executor contract and reference. The
-    // shipped table is empty, so nothing is read.
+    // shipped table's one certificate (chat_explanatory, build 440) names the
+    // owner decision compiled into the binary (`RCCClassOwnerDecision`): its
+    // custody lookup finds nothing and the builder never needs one.
     input.harnessProfile = RCCClassMeasurement.harnessScope(HarnessProfile.current)
     let measurementHome = FileManager.default.homeDirectoryForCurrentUser
     for certificate in input.classTable.classCertificates.values {

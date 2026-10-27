@@ -1,0 +1,1 @@
+{"certificate_id":"owner-chat-fast-20261027","decided_on":"2026-10-27","escalation":"reference_once_on_format_check_failure","format_check":"nonempty_text","kind":"os1_rcc_class_owner_decision_v1","owner_words":["무슨 아스트라를 또 또 아스트라를 쓰면 또 고쳐야 되잖아","왜 이게 안 고쳐지는데"],"request_class":"chat_explanatory","schema":1,"tuple":{"effort":"low","model":"gpt-6-luna","provider":"codex"}}

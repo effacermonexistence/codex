@@ -1,1 +1,1 @@
-{"class_certificates":{},"class_provider_pins":{},"schema":1}
+{"class_certificates":{"chat_explanatory":{"certificate_id":"owner-chat-fast-20261027","effort":"low","format_check":"nonempty_text","measurement_sha256":"af958f76401c42133b8f90db2fcae11fd5eb62c5c4f51a27e9df54e780cce36f","model":"gpt-6-luna","provider":"codex"}},"class_provider_pins":{},"schema":1}

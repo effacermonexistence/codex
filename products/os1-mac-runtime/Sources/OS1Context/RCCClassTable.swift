@@ -1,14 +1,18 @@
 import Foundation
 
-/// Build 407 (R0(c), R11): the signed class table. It ships EMPTY: no request
-/// class is certified for a cheaper (provider, model, effort) tuple and no
-/// class pins a reference pool, so every node without an owner contract or a
+/// Build 407 (R0(c), R11): the signed class table. Build 440 (owner order
+/// 2026-10-27): it certifies exactly ONE class, `chat_explanatory`, for
+/// (codex, gpt-6-luna, low) with the `nonempty_text` format check, on the
+/// basis of the compiled owner decision (`RCCClassOwnerDecision`) its
+/// `measurement_sha256` names. No other class is certified and no class pins
+/// a reference pool, so every other node without an owner contract or a
 /// registered verifier binds the reference.
 ///
-/// A class enters only after a frozen held-out measurement (at least 60 cases,
-/// the tier's disagreement with the reference no larger than the reference's
-/// own A/A disagreement, zero hard-check regressions) with owner sign-off, in
-/// a separate build that changes `frozenBytes` AND re-pins `pinnedSHA256`.
+/// Any other class enters only after a frozen held-out measurement (at least
+/// 60 cases, the tier's disagreement with the reference no larger than the
+/// reference's own A/A disagreement, zero hard-check regressions) with owner
+/// sign-off, in a separate build that changes `frozenBytes` AND re-pins
+/// `pinnedSHA256`.
 ///
 /// `Resources/rcc-class-table.json` is the reviewable artifact. Its exact
 /// bytes are compiled in here and the regression fixture proves the two are
@@ -18,11 +22,12 @@ import Foundation
 /// one only when the host also holds the D4 measurement artifact its
 /// `measurement_sha256` names, and that artifact verifies against the current
 /// reference, executor contract, harness profile and validity window
-/// (`RCCClassMeasurement`). The artifact is never selected by lookup: it must
-/// hash to the value compiled in here.
+/// (`RCCClassMeasurement`); the owner-decision certificate is judged by the
+/// compiled decision instead. The artifact is never selected by lookup: it
+/// must hash to the value compiled in here.
 public struct RCCClassTable: Equatable, Sendable {
-    public static let frozenBytes = Data((#"{"class_certificates":{},"class_provider_pins":{},"schema":1}"# + "\n").utf8)
-    public static let pinnedSHA256 = "76bc8ac3b8d3e8967d39a1bff3b5c2155348c6adf8ffda0d010135b40ac8dd9f"
+    public static let frozenBytes = Data((#"{"class_certificates":{"chat_explanatory":{"certificate_id":"owner-chat-fast-20261027","effort":"low","format_check":"nonempty_text","measurement_sha256":"af958f76401c42133b8f90db2fcae11fd5eb62c5c4f51a27e9df54e780cce36f","model":"gpt-6-luna","provider":"codex"}},"class_provider_pins":{},"schema":1}"# + "\n").utf8)
+    public static let pinnedSHA256 = "41bdb810b4d04e6d271d743d8ba98b249f4d26a64b2c731e3e17849fe9e66957"
 
     public typealias C = RCCRuntimeContract
     /// Request class (raw value) -> certificate; certifiable classes only.

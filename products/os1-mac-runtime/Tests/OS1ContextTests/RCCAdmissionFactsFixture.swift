@@ -23,12 +23,37 @@ func runRCCAdmissionFactsFixtures() throws {
         try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 
-    // ---- Signed class table: ships empty, pinned, identical to the resource.
-    let resource = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("Resources/rcc-class-table.json")
+    // ---- Signed class table (build 440): ONE owner-decision certificate,
+    // chat_explanatory only, pinned, identical to the resource.
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let resource = root.appendingPathComponent("Resources/rcc-class-table.json")
     try check(try Data(contentsOf: resource) == T.frozenBytes, "the compiled-in table is byte-identical to Resources/rcc-class-table.json")
     try check(C.digest(T.frozenBytes) == T.pinnedSHA256, "the compiled-in table carries its pinned hash")
-    try check(try T.decode(T.frozenBytes) == .empty && T.frozen == .empty, "the shipped table is empty: no class is certified or pinned")
+    typealias D = RCCClassOwnerDecision
+    let ownerCertificate = C.ClassCertificate(certificateID: "owner-chat-fast-20261027", provider: "codex", model: "gpt-6-luna",
+                                              effort: .low, formatCheck: "nonempty_text", measurementSHA256: D.pinnedSHA256)
+    try check(try T.decode(T.frozenBytes) == T(classCertificates: ["chat_explanatory": ownerCertificate], classProviderPins: [:]) &&
+              T.frozen == (try T.decode(T.frozenBytes)),
+              "the shipped table certifies chat_explanatory for (codex, gpt-6-luna, low, nonempty_text) by the owner decision and pins nothing")
+    try check(C.RequestClass.allCases.filter { T.frozen.certificate(for: $0) != nil } == [.chatExplanatory] &&
+              C.RequestClass.allCases.allSatisfy { T.frozen.providerPin(for: $0) == nil },
+              "exactly ONE class is certified (not text_operation, lookup, material, writer or explicit_route)")
+    // The owner decision the certificate names: compiled bytes, pinned hash,
+    // byte-identical reviewable resource, the date, the owner's words, the one
+    // class and the exact tuple.
+    try check(try Data(contentsOf: root.appendingPathComponent("Resources/rcc-class-owner-decision.json")) == D.frozenBytes,
+              "the compiled owner decision is byte-identical to Resources/rcc-class-owner-decision.json")
+    try check(C.digest(D.frozenBytes) == D.pinnedSHA256 && D.requestClass == .chatExplanatory,
+              "the compiled owner decision carries its pinned hash and certifies chat_explanatory only")
+    let decisionObject = try JSONSerialization.jsonObject(with: D.frozenBytes) as! [String: Any]
+    try check(decisionObject["kind"] as? String == "os1_rcc_class_owner_decision_v1" &&
+              decisionObject["decided_on"] as? String == "2026-10-27" &&
+              decisionObject["request_class"] as? String == "chat_explanatory" &&
+              decisionObject["tuple"] as? [String: String] == ["provider": "codex", "model": "gpt-6-luna", "effort": "low"] &&
+              decisionObject["format_check"] as? String == "nonempty_text" &&
+              (decisionObject["owner_words"] as? [String])?.contains("왜 이게 안 고쳐지는데") == true,
+              "the owner decision names the date, the owner's words, the one class and the exact tuple")
     var unsigned = T.frozenBytes; unsigned.insert(0x20, at: 0)
     try reject("bytes that differ from the pin are never a table") { _ = try T.decode(unsigned) }
     func signed(_ value: [String: Any]) throws -> (Data, String) { let bytes = try json(value); return (bytes, C.digest(bytes)) }
@@ -272,13 +297,15 @@ func runRCCAdmissionFactsFixtures() throws {
     try check(try C.decodeCatalog(validBytes, request: questionRequest).classCertificates == ["chat_explanatory": signedCertificate],
               "K11-a: Core's contract accepts the emitted certificate")
 
-    // K11-b the shipped (empty) table: inert whatever artifact is on disk.
+    // K11-b the shipped table (build 440: its one owner-decision
+    // certificate): no custody artifact changes a catalog byte.
     var shipped = valid; shipped.classTable = .frozen
-    var shippedBare = shipped; shippedBare.classMeasurements = [:]; shippedBare.harnessProfile = nil
+    var shippedBare = shipped; shippedBare.classMeasurements = [:]
+    var shippedForged = shipped; shippedForged.classMeasurements = [D.pinnedSHA256: artifactBytes]
     let shippedFacts = try facts(shipped)
-    try check(shippedFacts.classCertificate == nil && shippedFacts.classCertificateRejection == nil &&
-              (try catalog(shipped)) == (try catalog(shippedBare)),
-              "K11-b: with the shipped table an artifact changes no catalog byte")
+    try check(shippedFacts.classCertificate == ownerCertificate && shippedFacts.classCertificateRejection == nil &&
+              (try catalog(shipped)) == (try catalog(shippedBare)) && (try catalog(shipped)) == (try catalog(shippedForged)),
+              "K11-b: with the shipped table a custody artifact changes no catalog byte")
 
     // K11-c absent artifact: only the certificate drops; every other fact stays.
     let absent = k11(filled, [:])
@@ -378,6 +405,160 @@ func runRCCAdmissionFactsFixtures() throws {
               M.custodyPath(home: home, sha256: measurement.uppercased()) == nil && M.custodyPath(home: home, sha256: "") == nil,
               "K11-l: only a lowercase SHA-256 names a custody file")
 
+    // ---- Build 440: the owner-decision certificate (owner order 2026-10-27) --
+    // Production-like observations: the signed Codex profiles of the reference
+    // (astra ultra), the certified tuple (luna low) and Claude's reference
+    // (fable max), both pools signed in with fresh quota, the shipped harness.
+    let invitationText = "자 이제 네가 얼마나 잘 되는지 보자"
+    try check(StatusCheckIn.answersFromCard(invitationText) && !ClaudeChatLane.selfContainedTextOperation(invitationText),
+              "440: the owner's test invitation is a card check-in, not a text operation (the chat_explanatory class)")
+    let shippedHarness = M.harnessScope(HarnessProfile.current)
+    func live(_ text: String, owner scope: C.Scope = .readOnly, chat: Bool = false, readOnly: Bool = false,
+              explicit: [String]? = nil, table: T = .frozen, harness profile: String? = shippedHarness,
+              reference: Bool = true) -> B.Input {
+        var value = input(text, owner: scope, chat: chat, readOnly: readOnly)
+        value.profiles = [.init(action: "cx_6astra_ultra", provider: "codex", model: "gpt-6-astra", effort: "ultra"),
+                          .init(action: "cx_6luna_low", provider: "codex", model: "gpt-6-luna", effort: "low"),
+                          .init(action: "cl_fable_max", provider: "claude", model: "claude-fable-5-1", effort: "max")]
+        if !reference { value.profiles.removeAll { $0.model == "gpt-6-astra" } }
+        value.codexModels = [.init(slug: "gpt-6-astra", supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], priority: 0),
+                             .init(slug: "gpt-6-luna", supportedEfforts: ["low", "medium", "high", "xhigh", "max"], priority: 1)]
+        value.codexQuota = .init(accountID: "acct-codex", observedAt: now, source: .codexNative,
+                                 windows: [.init(bucket: "weekly", usedPercent: 40, resetsAt: now.addingTimeInterval(3600))])
+        value.claudeQuota = .init(accountID: "acct-claude", observedAt: now, source: .claudeNative,
+                                  windows: [.init(bucket: "weekly_all", usedPercent: 40, resetsAt: now.addingTimeInterval(3600))])
+        value.explicitRouteSurfaces = explicit
+        value.classTable = table; value.harnessProfile = profile
+        return value
+    }
+    // (a) chat_explanatory with the shipped table: the certificate loads with
+    // no custody artifact, and the catalog offers the certified tuple's own
+    // read-only Codex row (the Codex agent row that runs as GPT chat).
+    let chatLive = live(invitationText, chat: true)
+    let chatFacts = try facts(chatLive)
+    try check(chatFacts.requestClass == .chatExplanatory && chatFacts.classCertificate == ownerCertificate &&
+              chatFacts.classCertificateRejection == nil, "440-a: chat_explanatory loads the owner-decision certificate")
+    let chatLiveBytes = try catalog(chatLive)
+    let chatLiveCatalog = try C.decodeCatalog(chatLiveBytes, request: try request(invitationText))
+    try check(chatLiveCatalog.classCertificates == ["chat_explanatory": ownerCertificate] && chatLiveCatalog.classProviderPins == nil,
+              "440-a: the catalog carries only the chat_explanatory certificate and Core's contract accepts it")
+    try check((try object(chatLiveBytes))["candidates"].flatMap { $0 as? [[String: Any]] }?.contains {
+                  $0["surface"] as? String == "codex" && $0["model"] as? String == "gpt-6-luna" &&
+                  $0["effort"] as? String == "low" && $0["scope"] as? String == "read_only" &&
+                  ($0["quota_remaining_fraction"] as? Double ?? 0) > 0 } == true,
+              "440-a: the catalog offers a dispatchable read-only (codex, gpt-6-luna, low) row")
+    // (b) every other class: no certificate, the same bytes as an empty table.
+    let lookupLiveText = "What does the interval rule in this workspace mean?"
+    let textOperationText = "다음 문장을 영문으로 번역해줘: 내일 회의를 오후 3시로 옮겨도 될까요?"
+    let others: [(String, C.RequestClass, B.Input)] = [
+        ("readonly_lookup", .readonlyLookup, live(lookupLiveText)),
+        ("text_operation", .textOperation, live(textOperationText, chat: true)),
+        ("writer", .writer, live(writeText, owner: .workspaceWrite)),
+        ("explicit_route", .explicitRoute, live("1+1 Codex한테", owner: .readOnly, explicit: ["codex"]))]
+    for (label, expectedClass, value) in others {
+        var emptyTable = value; emptyTable.classTable = .empty
+        let found = try facts(value)
+        try check(found.requestClass == expectedClass && found.classCertificate == nil && found.classCertificateRejection == nil &&
+                  (try catalog(value)) == (try catalog(emptyTable)),
+                  "440-b: \(label) carries no certificate: the same catalog bytes as an empty table")
+    }
+    // (c) tampering fails closed to the reference (the certificate drops; no
+    // other fact changes).
+    func dropsOwner(_ value: B.Input, _ reason: M.Rejection, _ label: String) throws {
+        var emptyTable = value; emptyTable.classTable = .empty
+        let found = try facts(value)
+        try check(found.classCertificate == nil && found.classCertificateRejection == reason &&
+                  (try catalog(value)) == (try catalog(emptyTable)), "440-c: \(label): \(reason.rawValue), reference")
+    }
+    func ownerTable(_ certificate: C.ClassCertificate, as requestClass: String = "chat_explanatory") throws -> T {
+        let fields = try object(C.encode(certificate))
+        let (bytes, pin) = try signed(["schema": 1, "class_certificates": [requestClass: fields], "class_provider_pins": [:]])
+        return try T.decode(bytes, pinnedSHA256: pin)
+    }
+    var widened = ownerCertificate; widened.model = "gpt-6-astra"
+    try dropsOwner(live(invitationText, chat: true, table: try ownerTable(widened)), .scopeMismatch,
+                   "a re-signed table naming the decision for another model")
+    var effortChanged = ownerCertificate; effortChanged.effort = .medium
+    try dropsOwner(live(invitationText, chat: true, table: try ownerTable(effortChanged)), .scopeMismatch,
+                   "a re-signed table naming the decision for another effort")
+    var otherProvider = ownerCertificate; otherProvider.provider = "claude"; otherProvider.model = "claude-haiku-4-5-20251001"
+    try dropsOwner(live(invitationText, chat: true, table: try ownerTable(otherProvider)), .scopeMismatch,
+                   "a re-signed table naming the decision for Claude haiku")
+    var otherCheck = ownerCertificate; otherCheck.formatCheck = "exact_json"
+    try dropsOwner(live(invitationText, chat: true, table: try ownerTable(otherCheck)), .scopeMismatch,
+                   "a re-signed table naming the decision with another format check")
+    var otherID = ownerCertificate; otherID.certificateID = "owner-chat-fast-other"
+    try dropsOwner(live(invitationText, chat: true, table: try ownerTable(otherID)), .scopeMismatch,
+                   "a re-signed table naming the decision under another certificate id")
+    try dropsOwner(live(textOperationText, chat: true, table: try ownerTable(ownerCertificate, as: "text_operation")),
+                   .scopeMismatch, "a re-signed table naming the decision for text_operation")
+    try dropsOwner(live(lookupLiveText, table: try ownerTable(ownerCertificate, as: "readonly_lookup")),
+                   .scopeMismatch, "a re-signed table naming the decision for readonly_lookup")
+    var tamperedDecision = D.frozenBytes; tamperedDecision.insert(0x20, at: 0)
+    var forgedDecision = ownerCertificate; forgedDecision.measurementSHA256 = C.digest(tamperedDecision)
+    var heldForgery = live(invitationText, chat: true, table: try ownerTable(forgedDecision))
+    heldForgery.classMeasurements = [C.digest(tamperedDecision): tamperedDecision]
+    try dropsOwner(heldForgery, .malformed, "a re-signed table naming a changed decision held in custody")
+    try dropsOwner(live(invitationText, chat: true, table: try ownerTable(forgedDecision)), .artifactAbsent,
+                   "a re-signed table naming a changed decision nobody holds")
+    try dropsOwner(live(invitationText, chat: true, harness: nil), .harnessMismatch, "no attested harness")
+    try dropsOwner(live(invitationText, chat: true, reference: false), .referenceMismatch,
+                   "a Codex pool without a current reference")
+    try check(B.admissionFacts(chatLive)?.classCertificateRejection == .referenceMismatch,
+              "440-c: admissionFacts without references fails closed")
+    // The compiled bytes themselves: one changed byte is not the decision.
+    try check(D.verified(ownerCertificate, requestClass: .chatExplanatory, harnessProfile: shippedHarness,
+                         reference: .init(provider: "codex", model: "gpt-6-astra", effort: "ultra")) == .success(ownerCertificate) &&
+              D.verified(ownerCertificate, requestClass: .chatExplanatory, harnessProfile: shippedHarness,
+                         reference: .init(provider: "codex", model: "gpt-6-astra", effort: "ultra"),
+                         bytes: tamperedDecision) == .failure(.hashMismatch) &&
+              D.verified(ownerCertificate, requestClass: .chatExplanatory, harnessProfile: shippedHarness,
+                         reference: .init(provider: "codex", model: "gpt-6-astra", effort: "ultra"),
+                         bytes: tamperedDecision, pinned: C.digest(tamperedDecision)) == .failure(.hashMismatch) &&
+              D.verified(ownerCertificate, requestClass: .textOperation, harnessProfile: shippedHarness,
+                         reference: .init(provider: "codex", model: "gpt-6-astra", effort: "ultra")) == .failure(.scopeMismatch),
+              "440-c: a changed decision byte or a re-pinned changed decision is refused; the decision certifies chat only")
+    var tamperedTable = T.frozenBytes; tamperedTable.insert(0x20, at: 0)
+    try reject("440-c: a changed shipped table is unsigned (the runtime then falls back to the empty table)") {
+        _ = try T.decode(tamperedTable)
+    }
+    // Another current reference does not lapse the decision (it names none),
+    // where a D4 measurement taken against astra ultra would be refused.
+    var otherReference = chatLive
+    otherReference.profiles[0] = .init(action: "cx_6astra_max", provider: "codex", model: "gpt-6-astra", effort: "max")
+    otherReference.codexModels[0].supportedEfforts = ["low", "medium", "high", "xhigh", "max"]
+    try check(try facts(otherReference).classCertificate == ownerCertificate,
+              "440: the owner decision binds the class and tuple, never one reference tuple")
+
+    // (a)/(b) end to end: Core binds the Swift-built catalogs. chat_explanatory
+    // descends to luna low admitted by the class certificate (delivery basis
+    // certified:class:<id>, its one escalation the reference); every other
+    // class binds the reference exactly as before.
+    let routes = try coreRoutes([
+        (invitationText, try object(chatLiveBytes), false),
+        (lookupLiveText, try object(catalog(others[0].2)), false),
+        (textOperationText, try object(catalog(others[1].2)), false),
+        (writeText, try object(catalog(others[2].2)), true)], now: now,
+        runtime: root.appendingPathComponent("Resources/openclaw-os1-bridge/rcc-runtime.mjs"))
+    try check(routes.count == 4, "440: Core resolved every Swift-built catalog (\(routes.count)): \(routes)")
+    let chatRoute = routes[0]
+    try check(chatRoute["model"] as? String == "gpt-6-luna" && chatRoute["effort"] as? String == "low" &&
+              chatRoute["surface"] as? String == "codex" && chatRoute["kind"] as? String == "tier" &&
+              chatRoute["admitted_by"] as? String == "class" &&
+              chatRoute["certificate_id"] as? String == "owner-chat-fast-20261027" &&
+              chatRoute["format_check"] as? String == "nonempty_text" &&
+              chatRoute["reference_model"] as? String == "gpt-6-astra" && chatRoute["reference_effort"] as? String == "ultra" &&
+              chatRoute["basis"] as? String == "certified:class:owner-chat-fast-20261027" &&
+              (chatRoute["reason"] as? String)?.hasPrefix("resolver;route_tier;admitted_certified_class:owner-chat-fast-20261027;") == true,
+              "440-a: Core binds chat_explanatory to codex gpt-6-luna low, ladder admitted_by class: \(chatRoute)")
+    for (label, route) in zip(["readonly_lookup", "text_operation", "writer"], routes.dropFirst()) {
+        try check(route["model"] as? String == "gpt-6-astra" && route["effort"] as? String == "ultra" &&
+                  route["kind"] as? String == "reference" && route["admitted_by"] is NSNull &&
+                  route["basis"] as? String == "reference" &&
+                  (route["reason"] as? String)?.contains(";admitted_reference_uncertified;") == true,
+                  "440-b: Core binds \(label) to the reference astra ultra: \(route)")
+    }
+
     // ---- Ticket delegation flag (K13: reserved, refused, always managed) ----
     let host = questionRequest.hostContext!
     let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "acct-codex", model: "gpt-6-astra",
@@ -442,4 +623,59 @@ func runRCCAdmissionFactsFixtures() throws {
     try reject("a disclosure has no extra field") { _ = try C.decodeSnapshot(json(extra)) }
 
     print("RCC admission facts (407-a/f, K11): \(checks) table/class/measurement/catalog/ticket/disclosure checks PASS; provider calls 0")
+}
+
+/// Build 440: runs Core's own host plan and route resolver
+/// (`hostPlan` -> `resolveRoutePlan`, then `deliveryBasisOf`) in Node on
+/// Swift-built catalogs, one Auto task per catalog at the catalog's own clock.
+/// Importing the module starts no runtime; no model, provider or network call.
+private func coreRoutes(_ cases: [(request: String, catalog: [String: Any], write: Bool)], now: Date,
+                        runtime: URL) throws -> [[String: Any]] {
+    let script = #"""
+    import {readFileSync} from 'node:fs';
+    import {createHash} from 'node:crypto';
+    import {pathToFileURL} from 'node:url';
+    const {hostPlan, resolveRoutePlan, deliveryBasisOf, hostContextFingerprint} =
+      await import(pathToFileURL(process.argv[1]).href);
+    const sha = text => createHash('sha256').update(text).digest('hex');
+    const {now, cases} = JSON.parse(readFileSync(0, 'utf8'));
+    const policyText = 'owner-decision fixture policy';
+    process.stdout.write(JSON.stringify(cases.map(({request, catalog, write}) => {
+      const host = {workspace: '/tmp/os1-owner-decision-fixture', context: null, provider_preference: 'auto',
+        codex_session_id: null, claude_session_id: null, require_read_only: !write, owner_policy: null};
+      const task = {schema: 1, task_id: catalog.task_id, request, request_sha256: catalog.request_sha256, objective: request,
+        policy_sha256: sha(policyText), source_fingerprint: hostContextFingerprint(host), mode: 'auto', material_refs: [],
+        budget: {max_attempts: 2, max_parallel: 4, max_cost_units: null, max_duration_ms: 60000}, host_context: host,
+        policy: {source_sha256: sha('fixture source'), projection_sha256: sha(policyText), text: policyText}};
+      const {decisions, routes} = resolveRoutePlan(hostPlan(task, catalog), task, catalog, now);
+      const decision = decisions.node_0, route = routes.node_0, ladder = route.ladder ?? null;
+      return {surface: decision.surface, model: decision.model, effort: decision.effort, reason: decision.reason,
+        kind: route.kind, admitted_by: ladder?.admitted_by ?? null, certificate_id: ladder?.certificate_id ?? null,
+        format_check: ladder?.format_check ?? null, reference_model: ladder?.reference_model ?? null,
+        reference_effort: ladder?.reference_effort ?? null,
+        basis: deliveryBasisOf({routeClass: decision.route_class, routeKind: route.kind, ladder, reason: decision.reason})};
+    })));
+    """#
+    let pinnedNode = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/node-v24.20.0/bin/node")
+    let process = Process(), input = Pipe(), output = Pipe(), errors = Pipe()
+    if let override = ProcessInfo.processInfo.environment["OS1_RCC_CONTRACT_NODE"] { process.executableURL = URL(fileURLWithPath: override) }
+    else if FileManager.default.isExecutableFile(atPath: pinnedNode.path) { process.executableURL = pinnedNode }
+    else { process.executableURL = URL(fileURLWithPath: "/usr/bin/env") }
+    process.arguments = (process.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
+        ["--input-type=module", "-e", script, runtime.path]
+    process.standardInput = input; process.standardOutput = output; process.standardError = errors
+    try process.run()
+    let payload: [String: Any] = ["now": Int64(now.timeIntervalSince1970 * 1000),
+        "cases": cases.map { ["request": $0.request, "catalog": $0.catalog, "write": $0.write] as [String: Any] }]
+    try input.fileHandleForWriting.write(contentsOf: JSONSerialization.data(withJSONObject: payload))
+    try input.fileHandleForWriting.close()
+    let bytes = output.fileHandleForReading.readDataToEndOfFile()
+    let failure = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    process.waitUntilExit()
+    guard process.terminationStatus == 0,
+          let routes = (try? JSONSerialization.jsonObject(with: bytes)) as? [[String: Any]] else {
+        throw NSError(domain: "RCCAdmissionFactsFixture", code: 2,
+                      userInfo: [NSLocalizedDescriptionKey: "440: Core route resolution failed: " + String(failure.suffix(2000))])
+    }
+    return routes
 }

@@ -18,6 +18,10 @@ import Foundation
 ///   accepted_B, no hard-check regression, the tier's disagreement with the
 ///   reference no larger than the reference's own A/A disagreement.
 ///
+/// Build 440: the one exception is the owner-decision certificate of
+/// `chat_explanatory` (`RCCClassOwnerDecision`, owner order 2026-10-27),
+/// judged by the compiled decision instead of a D4 artifact.
+///
 /// Anything else drops ONLY the certificate (the node binds the reference);
 /// every other admission fact stays. Core cannot see host custody, so this is
 /// a host attestation like `task_contract.bindings_checked`; the catalog wire
@@ -106,9 +110,19 @@ public enum RCCClassMeasurement {
     /// The certificate when its artifact passes every check above, else the
     /// first failing check. `reference` is the certificate pool's current
     /// reference; nil (none, or a direct caller that computed none) rejects.
+    ///
+    /// Build 440: a certificate naming the compiled owner decision
+    /// (`RCCClassOwnerDecision.pinnedSHA256`) is judged by that decision
+    /// instead of a D4 measurement; a custody artifact plays no part in it.
+    /// Every other hash keeps the measurement gate below, which refuses an
+    /// owner-decision kind (it is not `os1_rcc_class_measurement_v1`).
     public static func verified(_ certificate: C.ClassCertificate, requestClass: C.RequestClass, artifact: Data?, now: Date,
                                 executorContractSHA256: String, harnessProfile: String?,
                                 reference: Reference?) -> Result<C.ClassCertificate, Rejection> {
+        if certificate.measurementSHA256 == RCCClassOwnerDecision.pinnedSHA256 {
+            return RCCClassOwnerDecision.verified(certificate, requestClass: requestClass, harnessProfile: harnessProfile,
+                                                  reference: reference)
+        }
         guard let artifact else { return .failure(.artifactAbsent) }
         guard C.isHash(certificate.measurementSHA256), C.digest(artifact) == certificate.measurementSHA256 else {
             return .failure(.hashMismatch)

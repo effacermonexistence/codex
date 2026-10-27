@@ -13,8 +13,17 @@ public enum StatusCheckIn {
     /// A sentence that ends the way a question does, with or without "?"
     /// (voice dictation drops it): "됐냐", "설치 됨", "어떻게 된 거야".
     static let questionEnding = #"(?:냐|니|나|까|거야|건가|건지|이야|인가|는지|됐어|했어|됨|됐음|했음|임|중이야|거지|맞지|맞아)$"#
-    /// "되는지 확인해보자": the owner's own way to open a check-in.
-    static let checkOpener = #"^(?:(?:자|야|그럼|일단|한번|아니)\s*)*(?:(?:라우팅|이거|그거)\s*(?:이|가)?\s*)?(?:잘\s*)?(?:되는지|됐는지|작동하는지)\s*(?:한번\s*)?확인해\s?(?:보자|볼까)$"#
+    /// "되는지 확인해보자": the owner's own way to open a check-in. Build 440
+    /// (2026-10-27): also the owner inviting a look at THIS responder, "자 이제
+    /// 네가 얼마나 잘 되는지 보자", by structure, not a sentence table: framing
+    /// words, an optional second-person subject (never a thing: "빌드 잘 되는지
+    /// 보자" stays work), optional 얼마나/잘, the state verb, then 보자/볼까/
+    /// 볼게/확인해 보자. Any other subject, or an order beside it, is work.
+    static let checkOpener = #"^(?:(?:자|야|그럼|일단|한번|아니)\s*)*(?:(?:라우팅|이거|그거)\s*(?:이|가)?\s*)?(?:잘\s*)?(?:되는지|됐는지|작동하는지)\s*(?:한번\s*)?확인해\s?(?:보자|볼까)$|^(?:(?:자|야|그럼|일단|이제|한번|아니)\s*)*(?:(?:네가|너가|니가|너|넌)\s*)?(?:얼마나\s*)?(?:잘\s*)?(?:되는지|하는지|잘하는지|작동하는지)\s*(?:한번\s*)?(?:보자|볼까|볼게|볼께|확인해\s?보자|확인해\s?볼까)$"#
+    /// The opener's own state verb, so a test invitation with no other asking
+    /// word ("이제 너 얼마나 잘하는지 보자") reaches the sentence check, where
+    /// only the anchored `checkOpener` (or a question) can accept it.
+    static let openerAsking = #"(?:잘\s?)?하는지\s*(?:한번\s*)?(?:보자|볼까|볼게|볼께|확인해\s?(?:보자|볼까))"#
     /// The owner checking the response, not ordering the agent to inspect a
     /// workspace: "야 나 한번 체크해 볼게. 너 되냐?" (build 355). Strip only
     /// this opener so ASR without punctuation still leaves the actual state
@@ -39,7 +48,8 @@ public enum StatusCheckIn {
     public static func matches(_ request: String) -> Bool {
         let text = request.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !text.isEmpty, text.count <= maximumCharacters, !text.contains("\n"), !text.contains("/"),
-              text.range(of: asking, options: [.regularExpression, .caseInsensitive]) != nil,
+              text.range(of: asking, options: [.regularExpression, .caseInsensitive]) != nil
+                || text.range(of: openerAsking, options: .regularExpression) != nil,
               !RouteFanout.containsName(text),
               // "사파리 쓰면 안 되냐?": may I, not is it done.
               text.range(of: #"면\s*안\s*(?:되|돼)"#, options: .regularExpression) == nil,
@@ -206,6 +216,17 @@ public enum StatusCheckIn {
                      "야 나 한번 체크해 볼게. 너 되냐?", "너 잘 되냐", "한번 체크해보자 되냐",
                      "Hey, let me check. Are you working?", "let me check are you working"] {
             check(answersFromCard(text), "the card answers: \(text)")
+        }
+        // Build 440 (owner, 2026-10-27): inviting a look at this responder is a
+        // check-in by structure; a thing as the subject, or an order, is work.
+        for text in ["자 이제 네가 얼마나 잘 되는지 보자", "이제 너 얼마나 잘하는지 보자", "얼마나 잘 되는지 한번 보자",
+                     "야 니가 얼마나 잘 작동하는지 볼까", "넌 얼마나 잘 되는지 확인해 보자", "자 이제 네가 얼마나 잘 되는지 보자."] {
+            check(matches(text) && answersFromCard(text), "a test invitation is a check-in: \(text)")
+        }
+        for text in ["빌드 잘 되는지 보자", "테스트 돌려서 되는지 보자", "이 코드 잘 되는지 보자", "사이트 잘 되는지 보자",
+                     "되는지 보고 안 되면 고쳐", "그럼 실제로 해봐 다 되는지", "라우팅 되는지 보자", "그 사람이 영어를 잘하는지 보자",
+                     "자 이제 네가 얼마나 잘 되는지 보자. 안 되면 고쳐", "네가 얼마나 잘 되는지 보자 터미널에서 확인해줘"] {
+            check(!matches(text), "a thing or an order beside the invitation is work: \(text)")
         }
         for text in ["배포 됐냐?", "사이트 살아있어?", "야 너 R2 연결 돼있냐?", "푸시 됐어?", "PR 머지됐어?", "설치됐어? 안 됐으면 깔아",
                      "야 나 한번 체크해 볼게. 서버 되냐?", "너 되냐? Can you check the shell?", "로그에는 작동 중이야?"] {

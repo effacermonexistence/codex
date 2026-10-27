@@ -359,6 +359,76 @@ test('a class certificate binds its own tuple for the request run byte-exact; it
   assert.match(reference.done.children[0].routing_decision.reason, /;certified_tuple_undispatchable;/);
 });
 
+// Build 440 (owner order 2026-10-27): the SHIPPED signed table, the bytes the
+// host compiles in (RCCAdmissionFactsFixture proves them identical), certifies
+// chat_explanatory only, by the compiled owner decision. Core binds that
+// certificate's own tuple, codex gpt-6-luna low, admitted by 'class'; its
+// format check accepts or escalates once; every other class stays on the
+// reference exactly as before (the host emits no certificate for it).
+test('build 440: the shipped owner-decision certificate binds chat_explanatory to luna low; other classes keep the reference', async t => {
+  const dir = await fixture(t);
+  const shipped = JSON.parse(await readFile(new URL('../../Resources/rcc-class-table.json', import.meta.url), 'utf8'));
+  const decision = await readFile(new URL('../../Resources/rcc-class-owner-decision.json', import.meta.url));
+  assert.deepEqual(Object.keys(shipped.class_certificates), ['chat_explanatory']);
+  assert.deepEqual(shipped.class_provider_pins, {});
+  const owner = shipped.class_certificates.chat_explanatory;
+  assert.deepEqual(owner, {certificate_id: 'owner-chat-fast-20261027', provider: 'codex', model: 'gpt-6-luna', effort: 'low',
+    format_check: 'nonempty_text', measurement_sha256: createHash('sha256').update(decision).digest('hex')});
+  const chat = task(dir, '자 이제 네가 얼마나 잘 되는지 보자');
+  const signed = pools(chat, facts('chat_explanatory', {class_certificates: {chat_explanatory: owner}}));
+  const adopted = await auto(t, dir, chat, signed);
+  assert.equal(adopted.done.state, 'completed', adopted.done.error);
+  assert.deepEqual(adopted.tuples, ['codex:gpt-6-luna/low']);
+  assert.match(adopted.done.children[0].routing_decision.reason,
+    /^resolver;route_tier;admitted_certified_class:owner-chat-fast-20261027;tier_fast;/);
+  const [record] = await audited(adopted.stateDir);
+  assert.deepEqual(basisOf(record), ['certified:class:owner-chat-fast-20261027',
+    'class:owner-chat-fast-20261027:nonempty_text', 'pass', null]);
+  assert.equal(record.stratum.request_class, 'chat_explanatory');
+  assert.deepEqual(record.ladder, {cheap_effort: 'low', reference_effort: 'ultra', cheap_model: 'gpt-6-luna',
+    reference_model: 'gpt-6-astra'});
+  // An empty answer fails the format check: one escalation to the reference.
+  const failed = await auto(t, dir, chat, signed, {execute: (ticket, _stateDir, count) =>
+    count === 1 ? {...execution(ticket), output: ' \n'} : execution(ticket)});
+  assert.equal(failed.done.state, 'completed', failed.done.error);
+  assert.deepEqual(failed.tuples, ['codex:gpt-6-luna/low', 'codex:gpt-6-astra/ultra']);
+  assert.equal(failed.events.filter(kind => kind === 'ladder_escalated_to_reference').length, 1);
+  const [descent, escalated] = await audited(failed.stateDir);
+  assert.deepEqual(basisOf(descent), ['certified:class:owner-chat-fast-20261027',
+    'class:owner-chat-fast-20261027:nonempty_text', 'not_returned', null]);
+  assert.equal(escalated.delivery_basis, 'reference_escalated');
+  // The App routes with routing intent v2: a resolved intent naming nothing
+  // changes owner-word semantics only, so the class descent stands; one that
+  // requires the native ceiling binds the reference.
+  const v2Task = {...chat, routing_intent_policy_version: 'r10_joint_selection_v2'};
+  const v2Catalog = {...signed, routing_intent_v2: {version: 'r10_joint_selection_v2', allowed_surfaces: [], exact_model: null,
+    model_family: null, effort: null, require_native_ceiling: false, quality_target: null, state: 'resolved'}};
+  const v2Route = resolveRoutePlan(hostPlan(v2Task, v2Catalog), v2Task, v2Catalog);
+  assert.deepEqual([v2Route.decisions.node_0.model, v2Route.decisions.node_0.effort, v2Route.routes.node_0.kind,
+    v2Route.routes.node_0.ladder.admitted_by], ['gpt-6-luna', 'low', 'tier', 'class']);
+  const ceiling = {...v2Catalog, routing_intent_v2: {...v2Catalog.routing_intent_v2, require_native_ceiling: true}};
+  assert.equal(resolveRoutePlan(hostPlan(v2Task, ceiling), v2Task, ceiling).decisions.node_0.model, 'gpt-6-astra');
+  // readonly_lookup, text_operation and writer: no certificate on the wire.
+  const others = [
+    ['readonly_lookup', task(dir, 'What does the interval rule in this workspace mean?'), 'codex:gpt-6-astra/ultra'],
+    ['text_operation', task(dir, '다음 문장을 영문으로 번역해줘: 내일 회의를 오후 3시로 옮겨도 될까요?'), 'codex:gpt-6-astra/ultra'],
+    ['writer', task(dir, 'Fix the login bug in Sources/App.swift', {write: true}), 'codex:gpt-6-astra/ultra']];
+  for (const [cls, request, expected] of others) {
+    const result = await auto(t, dir, request, pools(request, facts(cls)));
+    assert.equal(result.done.state, 'completed', `${cls}: ${result.done.error}`);
+    assert.deepEqual(result.tuples, [expected], cls);
+    assert.match(result.done.children[0].routing_decision.reason, /;admitted_reference_uncertified;/, cls);
+    assert.equal((await audited(result.stateDir))[0].delivery_basis, 'reference', cls);
+  }
+  // The owner's words still own an explicit route, the certificate notwithstanding.
+  const explicit = task(dir, 'co가 무슨 뜻이야?', {mode: 'explicit_routing_test'});
+  assert.deepEqual(admittedRoute({id: 'requested-1', instruction: explicit.request, dependencies: [], kind: 'agent',
+    scope: 'read_only', owned_paths: [], context_refs: []}, {...explicit, host_context: {...explicit.host_context,
+    explicit_routes: [{surface: 'codex', instruction: explicit.request}]}},
+  pools(explicit, facts('chat_explanatory', {class_certificates: {chat_explanatory: owner}}))),
+  {class: 'reference', source: 'owner_words', certificate_id: null});
+});
+
 test('R11: a class pin, then conversation affinity, choose between equal-quality references', async t => {
   const dir = await fixture(t);
   const lookup = task(dir, 'What does the interval rule in this workspace mean?');
