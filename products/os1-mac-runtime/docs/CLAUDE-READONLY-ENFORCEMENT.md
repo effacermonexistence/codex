@@ -85,6 +85,17 @@ The collision is reported as `read_only_provider_state_collision`; unavailable
 protection as `read_only_workspace_guard_unavailable`. No alternate account,
 write profile, hidden retry, or unsandboxed continuation is introduced.
 
+The RCC `rcc-execute` path chooses its own workspace, so the native path's
+HOME rule (`ExecutionWorkspace.usesSourceIsolation` → the source-answer
+workspace) did not reach it, and every fresh read-only Claude agent child whose
+host workspace was HOME hit this collision before dispatch (task 6c611eea).
+Harness H1 (build 441, `rccIsolatesReadOnlyClaudeHome`) applies the same HOME
+rule there: such a child runs in the source-answer workspace, whose guard is
+built whole. As for every read-only Claude child, the guard protects that
+workspace and the OS-1 source roots, not the rest of HOME. A resumed Claude
+session or a continuation is not moved (its transcript lives under the
+directory it ran in) and still stops at the collision.
+
 ## Outcome and evidence integrity
 
 The existing before/after workspace fingerprints are reused; this patch adds no
