@@ -1,46 +1,59 @@
-# OS1 Classic Terran Session Surface
+# OS1 Voxel Workshop
 
-Native entry: `os1.rail.simulation` (시뮬레이션). Existing native UUIDs, titles, send/stop/new methods, permissions, queues and provider sessions remain authoritative. This changes presentation, not the execution engine.
+Minecraft-inspired **procedural 3D presentation** for the existing OS1 session engine. Native entry remains `os1.rail.simulation` (시뮬레이션). `src/main.js` uses `VoxelScene`; existing native UUIDs, titles, send/stop/new methods, permissions, drafts, queues and provider sessions remain authoritative.
 
-## Classic reference
+## Active visual architecture
 
-The stage uses StarCraft 1 / Brood War classic graphics at 640×480, not SC2 or a generated 3D substitute. Source screenshot: https://satirist.org/pix/starcraft/blog/2019-03-27_scv.png . Source article: https://satirist.org/ai/starcraft/blog/archives/784-produce-workers-closer-to-the-minerals.html . Official visual cross-reference: https://classic.battle.net/scc/terran/basic.shtml . The original image supplies the Command Center, HUD, portrait, wireframe and command grid. Current terrain is an atlas of 23 decoded jungle megatiles (CV5 groups 8/9); workers and minerals use decoded source GRP atlases. `classic-sprites.json` and `classic-terrain.json` record pinned source identities and asset hashes. SCVs have 17 half-circle directions, mirrored west-facing poses, and three animation poses; Claude workers use the Probe atlas. This is an OS1 activity visualization, not a complete RTS engine. Nearest-neighbor scaling preserves the low-resolution character. The whole themed frame is intentionally not pixel-identical to the source.
+`voxel-scene.js` and `voxel-world.js` build real Three.js block geometry: terrain, trees, water, mining lodge, ore banks and articulated humanoid miners with pickaxes. Terrain and worker parts are instanced; worker limbs, yaw and cargo follow the shared native-driven motion state. Canvas textures are generated locally for block surfaces, contact shadows and text labels. No active screenshot plane, SCV sprite sheet, remote texture, CDN, external font or network art loader is used.
 
-Faction and wireframe paint use CSS-filtered canvas layers; team-color sprite atlases use a canvas multiply/mask pass. These do not depend on unsupported `CanvasRenderingContext2D.filter`. Selection rings and HUD emphasis use the same native accent.
+Three.js is pinned to **0.180.0**, bundled locally by Vite, with `THREE-LICENSE.txt` retained. WebGL failure displays an explicit alert; it is not silently replaced with the earlier scene or fake activity. The viewport follows available native window space rather than a fixed screenshot ratio. This is a replacement design, not a pixel-identical restoration claim.
 
-## One appearance authority
+The **17 declared bundled files plus `manifest.json`** remain the established package inventory. Legacy `classic-reference.png`, classic sprite/terrain PNGs and provenance JSON files remain **unloaded historical/recovery assets**; their byte identities are checked, but they are not an active fallback. Their presence does not mean that classic graphics are rendered. Only the compiled entry JS/CSS and entry HTML change appearance.
 
-Settings → Appearance → Accent color offers eight swatches and a custom native color picker. OS1 Pink is the existing native `.93, .70, .80` color, represented as `#EDB3CC`. This is not asserted to be a copied Codex pink. Codex's documented appearance workflow supplies the settings interaction reference: https://learn.chatgpt.com/docs/reference/settings . Direct CUA inspection of the Codex app was unavailable; no permissions were broadened or restriction bypassed.
+## Session and result contract
 
-The optional `accentColor` field lives in the existing private OS1 settings file. Older files load pink without a migration write. Only six-digit hex colors cross the trusted native snapshot bridge. `accentHex` is part of snapshot deduplication. A color change redraws existing workers; it does not recreate sessions, reset phase, dispatch work, change routing, or overwrite drafts. Theme controls open the actual OS1 Settings sheet. The UI does not store a second preferences/session database.
+- **One miner = one actual OS1 session UUID.** All admitted working and queued sessions remain on the field independently of six-row roster pages or search. Historical sessions stay accessible without flooding the initial world.
+- **Working:** the authoritative native `working` state drives base → ore → mining → cargo return → repeat. Independent workers can run concurrently. Trips and limb motion are cosmetic activity, not measured progress or token consumption.
+- **Idle, queued, failed and terminal:** motion and body pose freeze. Queued work is not represented as executing. A terminal result marker means a result awaits review, not that quality or success is certified.
+- **Inspection and retirement:** the result must belong to the current request, selected UUID and exact revision. Its native status/partial/error/receipt boundary is retained. Displaying the result records inspection; the owner must then explicitly confirm it. Only the accepted native review receipt removes that miner from the world.
+- **Retirement is not deletion.** It does not archive/delete the conversation, alter messages, purge queues or approve task quality. Bounded private `simulation-presentation.json` receipts are presentation state, not another session database. Inspection/review do not call draft-saving native selection.
+- **Reassignment:** accepted work on the same UUID brings the same miner back without creating another session. Existing native draft, permission, execution and queue gates remain unchanged.
 
-## Live gameplay contract
+## Resources, unknowns and appearance
 
-- **One worker = one actual native OS1 session UUID.** Running and queued sessions are admitted independently of roster search or pagination. The roster shows six rows per page; that is not a four- or six-worker battlefield cap. Historical conversations remain available through the all-sessions roster without flooding the initial field.
-- **Running:** authoritative native `working` state drives repeated base → minerals → drilling → cargo return. Direction/pose frames and local separation make parallel workers independently visible. Mining trips are cosmetic activity indicators, not progress or token measurements.
-- **Stopped/returned/failed/queued:** movement and mining stop at the current position; queued work is not shown as executing. Returned output and errors remain inspectable. A result belongs to the current user request and exact result revision, not an older answer in that session.
-- **Review and retirement:** opening a matching result first records inspection; the owner must then press the explicit result-confirmation button. Only an accepted native review receipt retires that worker from the field. This never deletes or archives the conversation, edits its messages, purges a queue, or certifies that the task succeeded. Presentation receipts live in a separate bounded private `simulation-presentation.json`, not a replacement session database.
-- **Same-session reuse:** a new accepted assignment on the same UUID brings the same worker back. Selection alone does not erase a review receipt. Existing native send, stop, permissions, draft-preservation and queue paths stay authoritative.
-- **Hidden view:** expensive painting and movement suspend while the native surface or document is hidden; resuming does not accumulate a hidden-time movement jump.
+Only supplied native observations drive resource presentation. Valid complete RCC telemetry supplies **observed token use for the current request**, not lifetime conversation spend. Cached provider data may separately supply **remaining quota percentage**, source, freshness/retained-estimate basis and observation time. Percentages are never converted into absolute token balances. Published quota is account-scoped and filtered again after account/provider changes; account identifiers do not enter the WebKit payload.
 
-## Tokens and minerals
+Unmeasured or unusable balances stay unknown: neutral ore location markers and explicit `? 미측정`, never fabricated zero/full blue banks. Exact zero and exact full are distinct from any partial positive ratio. Partial ore retains at least one and at most eleven visual chunks; those chunks are an abstract ratio display, **not a token count**. Tiny or near-full percentages use `<0.1%` / `>99.9%` rather than rounding into false endpoints. Raw observations are not rounded or changed.
 
-Only measured native data is displayed. A complete validated RCC resource receipt supplies the current request's **observed token use**, not a lifetime session sum. A cached provider observation may separately supply a **remaining quota percentage** with its source, freshness/retained-estimate basis and observation time. A quota percentage is not converted into an absolute token balance. Codex and Claude mineral banks use their own supplied provider observations.
+OS1 Settings → Appearance remains the single accent authority. Default OS1 Pink is `#EDB3CC`; native theme changes recolor shared building, hat and selection materials without replacing sessions, restarting work or changing motion phase.
 
-Missing, partial, expired, account-mismatched or otherwise unusable observations remain unknown. Unknown banks are dim location markers explicitly labeled `? 미측정`, not apparently full blue balances; unknown HUD values are not fabricated zeroes. A genuinely supplied remaining token count/capacity can drive a depletion ratio. Animation cycles never increment usage or manufacture a balance.
+## Preview and controls
 
-## Model-free preview
+**동작 미리보기 · 실제 작업/토큰 아님** identifies a separate synthetic 12-miner cohort. Pause, resume, finish/review and example-quota controls invoke no providers. Native controls are disabled and every native bridge dispatch is also blocked. Synthetic IDs, results and examples never enter native state. Mode changes clear visible instance cohorts without displaying preview miners as live work; native positions remain available when returning to **실제 세션으로**.
 
-The visible **동작 미리보기 · 실제 작업/토큰 아님** banner identifies a separate synthetic 12-worker cohort. Its pause, same-worker resume, finish/review and example-quota controls allow motion inspection without provider calls. Every native dispatch is blocked in preview mode; synthetic workers, results and sample percentages never enter the native snapshot or session store. Entering/exiting preview clears cross-cohort departure fades, preserving native worker positions without briefly displaying synthetic units as live work. Return with **실제 세션으로**.
+Click a miner to select it. Wheel zooms; right-drag orbits; Shift/middle-drag pans. The 1–9 hotbar exposes new miner, prompt, stop, result, focus, map, reassign, chat and menu. Native command modifiers are not stolen by game shortcuts. Provider-visible execution begins only through the existing native send path.
 
-The local-file WKWebView remains nonpersistent, exact-file/main-frame gated and `connect-src none`. Native command modifiers are excluded from game hotkeys. Changing theme does not grant tool permissions or launch a provider call.
+## Bounded rendering cost
 
-## Verification
+The static world uses shared geometry, procedural textures and instanced terrain. Workforce body/shadow/marker parts use at most **30 instanced batches across three appearance classes**, rather than a separate draw-call rig per session; this is not a claim that the entire frame has only 30 draw calls. Larger workforces disable per-miner dynamic shadow casting while keeping all identities represented.
 
-Run `node ../scripts/build-simulation-garden.mjs`, `node ../scripts/test-simulation-garden.mjs`, `node ../scripts/test-terran-motion.mjs`, and `node ../scripts/test-classic-theme.mjs` from this folder. The source/integrity check invokes the portable isolated frontend contract in `../scripts/test-gameplay-contract.mjs`; it can also run directly, with optional `--output /absolute/receipt.json`. Motion testing invokes the maintained `tests/workshop-state.test.mjs` state-machine tests, not the removed fixed-duration interpolation model. Native settings fixtures: `OS1ContextTests --appearance-only`.
+Pixel ratio is capped at 1.5. Sustained slow frame scheduling can lower it to 1.0 and reduce the shadow map from the high setting to 1024. Camera interpolation remains smooth. Hidden surfaces suspend rendering, and a visible but idle world with a settled camera does not continuously submit GPU frames. Resize, selection, theme and snapshot changes redraw on demand. Diagnostics report the renderer's observed FPS/draw calls and quality mode; these are separate from backend activity and token evidence.
 
-The isolated frontend harness executes actual control-flow modules with synthetic native snapshots and DOM/Canvas API doubles. It verifies admission, movement state, exact result binding, explicit retirement, hidden-view handling, resource draw calls and preview isolation; it is **not pixel/browser/native-provider proof**. Test/source hashes identify the checked artifacts. Actual native screen observation, current installed artifact identity and queue/message preservation still require separate receipts. The earlier native two-turn Codex test remains historical engine evidence, not a new provider run for these changes.
+## Verification and deployment boundary
 
-Repair method: inspected the abstract of https://arxiv.org/abs/2310.01798 (intrinsic self-correction limits). Adopt only after deterministic regression, actual rendered observation, and native settings/restart readback, rather than fluent self-review. No private source or log was sent in a research query.
+From this folder:
 
-Local installation must use the existing verified, queue-preserving installer and private paging snapshot/restore drill with explicit runtime/config/signer identity checks. If another verified native release has become active, preserve that newer baseline and rebuild the presentation changes against it; do not overwrite it with an older compiled app. A successful source test or build does not establish installation. Historical SC2 resources remain recoverable through Git and the previous verified app recovery point.
+```sh
+node ../scripts/build-simulation-garden.mjs
+node ../scripts/test-simulation-garden.mjs
+node ../scripts/test-gameplay-contract.mjs
+node ../scripts/test-voxel-scene.mjs
+node ../scripts/test-terran-motion.mjs
+node ../scripts/test-classic-theme.mjs
+```
+
+The last script keeps its historical filename for release callers; its active visual checks now cover native accent and voxel materials/viewport, not obsolete classic rendering. Source tests preserve the native origin/main-frame/UUID gates, current-result review boundary, account-scoped quota and exact artifact manifest. The nine maintained field/motion tests remain unchanged.
+
+`test-gameplay-contract.mjs` executes actual main/field/motion code with an **explicit VoxelScene renderer test double**. `test-voxel-scene.mjs` executes the actual scene/world plus pinned Three CPU geometry and state with **DOM surfaces and the WebGL driver doubled**. They check lifecycle, pose freeze, parallel identities, resource boundaries, scene isolation, CPU raycast, rendering budgets, disposal and visible failure handling. Neither is real GPU pixel/FPS/cost, native UI or provider-run proof. Actual native rendering, installed artifact identity and preservation require separate receipts.
+
+This task is a static presentation update against the installed 441 source baseline: no native engine field, RPC, session schema, permission or provider implementation is changed by these frontend files. Deployment belongs to the existing verified, queue-preserving installation path and must preserve the current native binaries, CLI/configuration, messages, queues and signer continuity. Source/build success alone is not an installation or user-adoption claim.

@@ -11,7 +11,7 @@ import vm from 'node:vm';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const read=file=>fs.readFileSync(path.join(root,file),'utf8');
 const app=read('Sources/OS1App/OS1App.swift'),view=read('Sources/OS1App/SimulationGardenView.swift');
-const js=read('SimulationGarden/src/main.js'),scene=read('SimulationGarden/src/terran-scene.js'),field=read('SimulationGarden/src/field-state.js');
+const js=read('SimulationGarden/src/main.js'),scene=read('SimulationGarden/src/voxel-scene.js'),field=read('SimulationGarden/src/field-state.js');
 const telemetry=read('Sources/OS1App/SimulationTelemetry.swift'),presentation=read('Sources/OS1Context/SimulationPresentation.swift');
 const reports=[];function check(name,fn){fn();reports.push(name);}
 // Match one actual Swift function/branch, including its balanced nested
@@ -131,11 +131,13 @@ check('actual worker field is independent from roster page/search',()=>{
  assert(js.includes('scene?.sync(workers,currentID(),data.visible'));
  assert(!/sync\(visibleRoster\(/.test(js));assert(field.includes("s.status === 'queued'"));
 });
-check('source sprite animation, active gate and hidden-paint guard retained',()=>{
- assert(scene.includes('advanceColony(all,dt,active)')&&scene.includes("s.status==='working'"));
- assert(scene.includes("document.visibilityState==='hidden'"));
- assert(scene.includes('spriteFrame(u)')&&scene.includes('for(const s of this.sessions)'));
- assert(scene.includes('this.departures.clear();this.sessions=[]'),'mode change must not fade preview into native');
+check('active entry selects procedural voxel rendering, never a classic-art fallback',()=>{
+ assert(/import\s*\{\s*VoxelScene\s*\}\s*from\s*['"]\.\/voxel-scene\.js['"]/.test(js));
+ assert(!/from\s*['"]\.\/(?:terran-scene|scene)\.js['"]/.test(js),'old scene may remain source history but cannot be active');
+ assert(/export\s+class\s+VoxelScene/.test(scene));
+ assert(scene.includes('advanceColony')&&scene.includes('visibilityState'));
+ assert(!/classic-reference\.png|classic-terrain\.png|scv-body\.png|scv-team\.png|probe-body\.png/.test(scene),'no active source-art loader');
+ assert(!/new\s+(?:THREE\.)?(?:TextureLoader|ImageLoader)|\bfetch\s*\(/.test(scene),'voxel art must remain procedural and local');
 });
 check('token telemetry preserves usage versus account quota scope',()=>{
  assert(telemetry.includes('RuntimeResourcePresentation.resources(usage)')&&telemetry.includes('RuntimeResourcePresentation.quota('));
@@ -151,6 +153,7 @@ const declared=new Set(manifest.files.map(e=>e.path));
 check('exact resource manifest and required gameplay assets',()=>{
  assert.equal(manifest.schema,1);assert.equal(manifest.source,'products/os1-mac-runtime/SimulationGarden');
  assert.equal(declared.size,manifest.files.length,'duplicate manifest path');
+ assert.equal(manifest.files.length,17,'voxel replacement retains the exact17 declared historical/bundle files');
  for(const file of required)assert(declared.has(file),'missing bundled gameplay asset '+file);
  assert(manifest.files.some(e=>/^assets\/index-[\w-]+\.js$/.test(e.path)));
  assert(manifest.files.some(e=>/^assets\/index-[\w-]+\.css$/.test(e.path)));
@@ -162,7 +165,7 @@ check('exact resource manifest and required gameplay assets',()=>{
  const actual=[];function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){assert(!e.isSymbolicLink());const file=path.join(dir,e.name);if(e.isDirectory())walk(file);else if(path.relative(dest,file)!=='manifest.json')actual.push(path.relative(dest,file));}}
  walk(dest);assert.deepEqual(actual.sort(),[...declared].sort(),'undeclared/stale bundled file');
 });
-check('source assets and original atlas dimensions match frozen metadata',()=>{
+check('unloaded historical assets retain frozen identity and atlas layout',()=>{
  for(const file of required.filter(f=>f!=='index.html'))assert.deepEqual(fs.readFileSync(path.join(root,'SimulationGarden/public',file)),fs.readFileSync(path.join(dest,file)),'stale bundled source asset '+file);
  const reference=JSON.parse(fs.readFileSync(path.join(dest,'reference.json'),'utf8'));
  assert.equal(createHash('sha256').update(fs.readFileSync(path.join(dest,'classic-reference.png'))).digest('hex'),reference.assetSHA256);
@@ -173,7 +176,7 @@ check('source assets and original atlas dimensions match frozen metadata',()=>{
  }
  assert.equal(atlas.scvBody.frames,51);assert.equal(atlas.scvAnimation.directions,17);
 });
-check('decoded source terrain megatiles retain exact image identity and layout',()=>{
+check('unloaded historical terrain retains exact identity without active source-art loading',()=>{
  const terrain=JSON.parse(fs.readFileSync(path.join(dest,'classic-terrain.json'),'utf8'));
  assert.equal(terrain.format,'sc1-megatile-atlas-v1');assert.equal(terrain.image,'classic-terrain.png');
  assert.deepEqual(terrain.groupIDs,[8,9]);assert.equal(terrain.frames,23);assert.equal(new Set(terrain.tileIDs).size,23);
@@ -182,14 +185,16 @@ check('decoded source terrain megatiles retain exact image identity and layout',
  assert.equal(createHash('sha256').update(bytes).digest('hex'),terrain.imageSHA256);
  assert.equal(bytes.subarray(1,4).toString(),'PNG');assert.equal(bytes.readUInt32BE(16),terrain.columns*terrain.tileSize);
  assert.equal(bytes.readUInt32BE(20),Math.ceil(terrain.frames/terrain.columns)*terrain.tileSize);
- assert(scene.includes('classic-terrain.png'),'actual renderer must load the source tile atlas');
+ assert(!scene.includes('classic-terrain.png'),'historical terrain must not be loaded by the active voxel renderer');
 });
-check('strict local CSP and classic self-contained executable scripts',()=>{
+check('strict local CSP and local self-contained voxel executable scripts',()=>{
  const html=fs.readFileSync(path.join(dest,'index.html'),'utf8');assert(!html.includes('type="module"'));
  assert(html.includes("connect-src 'none'")&&html.includes("frame-src 'none'"));assert(!/https?:\/\//.test(html));
  for(const[,file]of html.matchAll(/(?:src|href)="\.\/([^"?#]+)"/g))assert(declared.has(file),'missing entry resource '+file);
- for(const file of[...declared].filter(f=>f.endsWith('.js')))new vm.Script(fs.readFileSync(path.join(dest,file),'utf8'),{filename:file});
+ for(const file of[...declared].filter(f=>f.endsWith('.js'))){const code=fs.readFileSync(path.join(dest,file),'utf8');new vm.Script(code,{filename:file});assert(!/classic-reference\.png|classic-terrain\.png|scv-body\.png|probe-body\.png/.test(code),'bundled entry still contains a legacy artwork loader');}
 });
 const behavior=JSON.parse(execFileSync(process.execPath,[path.join(root,'scripts/test-gameplay-contract.mjs')],{encoding:'utf8',maxBuffer:1_000_000}));
 assert.equal(behavior.status,'PASS');
-console.log(JSON.stringify({status:'PASS',sourceChecks:reports.length,sourceChecksPassed:reports,behaviorChecks:behavior.checks,assetFiles:manifest.files.length,sourceSHA256:behavior.sourceSHA256,manifestSHA256:createHash('sha256').update(fs.readFileSync(path.join(dest,'manifest.json'))).digest('hex'),basis:'deterministic source/resource integrity and isolated actual frontend control flow; not native screen/provider proof'},null,2));
+const voxel=JSON.parse(execFileSync(process.execPath,[path.join(root,'scripts/test-voxel-scene.mjs')],{encoding:'utf8',maxBuffer:2_000_000}));
+assert.equal(voxel.status,'PASS');
+console.log(JSON.stringify({status:'PASS',sourceChecks:reports.length,sourceChecksPassed:reports,behaviorChecks:behavior.checks,voxelChecks:voxel.checks,voxelScope:voxel.scope,assetFiles:manifest.files.length,sourceSHA256:behavior.sourceSHA256,manifestSHA256:createHash('sha256').update(fs.readFileSync(path.join(dest,'manifest.json'))).digest('hex'),basis:'deterministic source/resource integrity and isolated actual frontend control flow; not native screen/provider proof'},null,2));

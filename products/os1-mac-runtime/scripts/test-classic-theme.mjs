@@ -21,6 +21,12 @@ check(view.includes('.nonPersistent()'),'native appearance does not share websit
 check(app.includes('accentHex: store.appSettings.resolvedAccentColor'),'settings is sole theme authority');
 check(app.includes('if action == "settings" { profileNavigation.sheet = .settings; return }'),'theme opens actual OS1 Settings');
 check(app.includes('OS1AppearanceSettingsRow(accent: store.appSettings.resolvedAccentColor)'),'native palette chooser');
-const scene=read('SimulationGarden/src/terran-scene.js');check(scene.includes('layer.style.webkitFilter=filter'),'WebKit CSS filter layers');check(!scene.includes('c.filter='),'no unsupported Canvas filter dependency');
-const ref=JSON.parse(read('SimulationGarden/public/reference.json'));check(ref.width===640&&ref.height===480,'classic 640x480 stage');check(ref.wholeFrameIdentical===false,'intentional theme changes are not called full-frame identity');
-console.log(JSON.stringify({status:'PASS',checks,scope:'theme normalization, native bridge, source contracts; no provider calls'}));
+// Keep this historical script name for release callers; its active visual
+// contract is now the explicitly user-authorized procedural voxel replacement.
+const scene=read('SimulationGarden/src/voxel-scene.js'),world=read('SimulationGarden/src/voxel-world.js');
+check(scene.includes('normalizeAccent(value)')&&scene.includes('this.world?.updateAccent(next)')&&scene.includes('this.workforce?.setAccent(next)'),'same validated native accent reaches world and worker materials');
+check(world.includes('materials.accent.color.set(hex)')&&world.includes('this.hatMaterial.color.set(hex)')&&world.includes('this.selection.material.color.set(hex)'),'voxel architecture, hats and selection use the shared accent');
+check(scene.includes('container.clientWidth')&&scene.includes('container.clientHeight')&&scene.includes('this.renderer.setSize(w,h,false)'),'voxel viewport resizes to native available space, not fixed screenshot dimensions');
+check(!/classic-reference\.png|classic-terrain\.png|scv-body\.png/.test(scene),'historical artwork is not an active visual fallback');
+check(JSON.parse(read('SimulationGarden/package.json')).dependencies.three==='0.180.0','3D renderer is pinned locally, not a floating CDN dependency');
+console.log(JSON.stringify({status:'PASS',checks,scope:'native accent normalization/origin gate and active voxel material/viewport source contracts; no provider calls or GPU pixel claim'}));
