@@ -175,6 +175,101 @@ public enum LocalRequestClassifier {
         return Receipt(model: model, answer: answer, outcome: "adopted", latencyMS: elapsed())
     }
 
+    // MARK: Kept warm (build 441 part 3, lead decision 2026-10-27)
+    //
+    // A cold classifier (first load, 10-16 s) misses the 12 s bound and the
+    // request routes on the keyword profile, whose soft rails then send it to
+    // the reference. The running App's existing idle poll (the frontier
+    // monitor's, every 5 minutes; no new loop) keeps the classifier model
+    // resident while the owner uses OS-1: when nothing runs, memory pressure
+    // is normal, and the owner sent a request (or opened the App) within
+    // `warmActivityWindow`, it loads the model if `/api/ps` does not list it,
+    // or extends its residency when it would expire within
+    // `warmRefreshMargin`; one tiny no-generation request, never a prompt.
+    //
+    // Memory, measured 2026-10-27 on this 16 GB Mac (Ollama 0.35.1): the 9B
+    // classifier holds 5.63 GB resident at its 4096-token context and
+    // OpenClaw's 4B 4.35 GB at its 32768-token context; Ollama would not keep
+    // both (loading either one evicted the other), with about 10.5 GB of swap
+    // already in use. So the default keeps the 9B warm only inside the
+    // owner's activity window and never under memory pressure; outside it the
+    // model unloads `keepAlive` after its last use. An evicting OpenClaw call
+    // (an explicit local route, a local chat answer) costs the next
+    // classification one reload (about 4-5 s from the page cache), which the
+    // 12 s bound still admits.
+
+    /// The owner activity that keeps the classifier warm.
+    public static let warmActivityWindow: TimeInterval = 2 * 3600
+    /// Residency left below which the poll extends it (twice the 5-minute poll).
+    public static let warmRefreshMargin: TimeInterval = 10 * 60
+
+    /// What the poll does this time, and why.
+    public enum WarmDecision: Equatable, Sendable {
+        case skip(String)
+        case load(model: String, refresh: Bool)
+    }
+    /// The host facts alone: why no load may happen now, or nil.
+    static func warmGate(idle: Bool, memoryPressure: RunAdmission.MemoryPressure, lastOwnerActivity: Date?,
+                         now: Date) -> String? {
+        guard idle else { return "busy" }
+        guard memoryPressure == .normal else { return "memory_pressure" }
+        guard let activity = lastOwnerActivity, now >= activity, now.timeIntervalSince(activity) <= warmActivityWindow else {
+            return "owner_inactive"
+        }
+        return nil
+    }
+    /// The pure decision: nothing runs, normal memory pressure, the owner
+    /// active within the window, an installed classifier model, and that model
+    /// not resident for at least `warmRefreshMargin` more.
+    public static func warmDecision(idle: Bool, memoryPressure: RunAdmission.MemoryPressure, lastOwnerActivity: Date?,
+                                    installed: [String]?, loaded: [RoutingOrderInterpreter.LoadedModel]?,
+                                    now: Date = Date()) -> WarmDecision {
+        if let reason = warmGate(idle: idle, memoryPressure: memoryPressure, lastOwnerActivity: lastOwnerActivity, now: now) {
+            return .skip(reason)
+        }
+        guard let installed, let loaded else { return .skip("ollama_unavailable") }
+        guard let model = choose(installed: installed) else { return .skip("model_absent") }
+        guard let resident = loaded.first(where: { $0.name == model }) else { return .load(model: model, refresh: false) }
+        if let expiry = resident.expiresAt, expiry.timeIntervalSince(now) > warmRefreshMargin { return .skip("warm") }
+        return .load(model: model, refresh: true)
+    }
+
+    /// One receipt line for the App's private log: the decision and, for a
+    /// load, whether Ollama answered and how long it took.
+    public struct WarmReceipt: Equatable, Sendable {
+        public var decision: WarmDecision
+        public var loaded: Bool?
+        public var latencyMS: Int
+        public var publicLine: String {
+            switch decision {
+            case .skip(let reason): return "local classifier warm: skip \(reason)"
+            case .load(let model, let refresh):
+                return "local classifier warm: \(refresh ? "refresh" : "load") \(model) " +
+                    "\(loaded == true ? "ok" : "failed") \(latencyMS) ms"
+            }
+        }
+    }
+    /// The poll's step: read Ollama's inventory and residency (fail fast when
+    /// it is down), decide, and load or refresh through the one Ollama client.
+    /// Only reads Ollama when the host facts allow a load at all.
+    public static func keepWarm(idle: Bool, memoryPressure: RunAdmission.MemoryPressure, lastOwnerActivity: Date?,
+                                now: Date = Date(),
+                                installed: @Sendable () async -> [String]? = { await RoutingOrderInterpreter.ollamaInstalledModels() },
+                                loaded: @Sendable () async -> [RoutingOrderInterpreter.LoadedModel]? = {
+                                    await RoutingOrderInterpreter.ollamaLoadedModels() },
+                                load: @Sendable (String) async -> Bool = { model in
+                                    await RoutingOrderInterpreter.ollamaLoad(model: model, keepAlive: LocalRequestClassifier.keepAlive) }) async -> WarmReceipt {
+        if let reason = warmGate(idle: idle, memoryPressure: memoryPressure, lastOwnerActivity: lastOwnerActivity, now: now) {
+            return WarmReceipt(decision: .skip(reason), loaded: nil, latencyMS: 0)
+        }
+        let decision = warmDecision(idle: idle, memoryPressure: memoryPressure, lastOwnerActivity: lastOwnerActivity,
+                                    installed: await installed(), loaded: await loaded(), now: now)
+        guard case .load(let model, _) = decision else { return WarmReceipt(decision: decision, loaded: nil, latencyMS: 0) }
+        let started = Date()
+        let ok = await load(model)
+        return WarmReceipt(decision: decision, loaded: ok, latencyMS: max(0, Int(Date().timeIntervalSince(started) * 1000)))
+    }
+
     // MARK: Per-task reading (one classification per task)
 
     /// Core builds a task's catalog more than once (bind, then each refresh

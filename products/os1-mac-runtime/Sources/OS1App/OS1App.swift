@@ -10067,6 +10067,10 @@ private final class SessionStore: ObservableObject {
     /// In-process guard for the daily list-price refresh: one attempt a day
     /// even when its receipt could not be written.
     private var modelPriceRefreshAttemptedAt: Date?
+    /// Build 441 part 3: when the owner last used OS-1 here (opened the App or
+    /// sent a request); the local request classifier stays warm only within
+    /// `LocalRequestClassifier.warmActivityWindow` of it.
+    private var ownerActivityAt: Date?
 
     let voiceDictation: VoiceDictationController
 
@@ -10116,14 +10120,17 @@ private final class SessionStore: ObservableObject {
         if storageRoot == nil {
             let monitor = FrontierNewsMonitor()
             frontierMonitor = monitor
+            ownerActivityAt = Date()
             frontierMonitorTask = Task { [weak self] in
                 await self?.refreshFrontierSignals()
                 await self?.refreshModelPricesIfDue()
+                await self?.keepRequestClassifierWarm()
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(FrontierNewsMonitor.defaultPollInterval))
                     guard !Task.isCancelled, self != nil else { return }
                     await self?.refreshFrontierSignals()
                     await self?.refreshModelPricesIfDue()
+                    await self?.keepRequestClassifierWarm()
                 }
             }
         }
@@ -10182,6 +10189,26 @@ private final class SessionStore: ObservableObject {
                                                      lastAttemptInProcess: modelPriceRefreshAttemptedAt) else { return }
         modelPriceRefreshAttemptedAt = now
         _ = await Task.detached(priority: .utility) { await ModelPriceRefresh.run(now: now, dryRun: false) }.value
+    }
+
+    /// Build 441 part 3: the local request classifier kept resident while the
+    /// owner uses OS-1, on the frontier monitor's poll (no new loop), only
+    /// while no run is active or starting and memory pressure is normal
+    /// (`LocalRequestClassifier.keepWarm`). The Ollama reads and the one
+    /// no-generation load run off the main actor; a load's receipt line goes
+    /// to this process's stderr.
+    func keepRequestClassifierWarm(now: Date = Date()) async {
+        guard customStorageRoot == nil else { return }
+        let idle = activeRuns.isEmpty && inFlightSubmissions.isEmpty
+        let pressure = memoryPressureSampler()
+        let activity = ownerActivityAt
+        let receipt = await Task.detached(priority: .utility) {
+            await LocalRequestClassifier.keepWarm(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, now: now)
+        }.value
+        // Only a load or refresh is worth a line; a skip recurs every poll.
+        if case .load = receipt.decision {
+            FileHandle.standardError.write(Data(("os1 app: " + receipt.publicLine + "\n").utf8))
+        }
     }
 
     var frontierLatestActionableItem: FrontierNewsItem? {
@@ -11356,6 +11383,7 @@ private final class SessionStore: ObservableObject {
     func send() {
         refreshRunAdmissionPressure()
         let submitTimestamp = Date()
+        ownerActivityAt = submitTimestamp
         // Permission is not a recording. Finalization/transcription, however,
         // accepts one send intent instead of dropping an immediate Return.
         guard voiceDictation.phase != .authorizing else { return }

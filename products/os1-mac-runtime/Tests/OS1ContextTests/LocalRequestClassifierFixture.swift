@@ -132,10 +132,14 @@ func runLocalRequestClassifierFixtures() throws {
     try check(!invitation.answersLocally && invitation.toolNeed == .workspace && invitation.signals.contains("status_check_in") &&
               P.railsDecide(keyword("자 이제 네가 얼마나 잘 되는지 보자"), request: "자 이제 네가 얼마나 잘 되는지 보자"),
               "the invitation is a status check-in: its rail decides: \(invitation)")
+    // Build 441 part 3: "짜봐" with no write scope and no place is a soft
+    // order, so the local reading decides QMGR: design/deep (policy A keeps the reference).
     let qmgr = keyword("QMGR 통합하게 스키마 좀 짜봐")
-    try check(P.railsDecide(qmgr, request: "QMGR 통합하게 스키마 좀 짜봐") &&
-              combined("QMGR 통합하게 스키마 좀 짜봐", answer(.design, .deep, .none)).answerKind == .work,
-              "QMGR: an order rail already keeps the reference; the local reading only names it design")
+    let qmgrRead = combined("QMGR 통합하게 스키마 좀 짜봐", answer(.design, .deep, .none))
+    try check(qmgr.answerKind == .work && qmgr.signals.contains("soft_order") && !P.railsDecide(qmgr, request: "QMGR 통합하게 스키마 좀 짜봐") &&
+              qmgrRead.taskType == .design && qmgrRead.difficulty == .deep && !qmgrRead.gradable && qmgrRead.valid &&
+              qmgrRead.signals.contains("llm_overrules_soft_rail"),
+              "QMGR: a soft order; the local reading names it design/deep, never gradable: \(qmgrRead)")
     let rate = combined("오늘 원달러 환율 설명해줘", answer(.explain, .standard, .none))
     try check(rate.toolNeed == .currentFacts && rate.answersReadOnly && !rate.answersWithoutTools &&
               rate.signals.contains("rail_overrules_llm"), "today's rate stays current facts whatever the model says: \(rate)")
@@ -194,6 +198,147 @@ func runLocalRequestClassifierFixtures() throws {
         let shell = text == "빌드해줘"
         try check(combined(text, nil, shell: shell).valid && !combined(text, nil, shell: shell).gradable, "LLM down: a rail stays: \(text)")
     }
+    // ---- Build 441 part 3 (lead decision 2026-10-27): soft and hard rails.
+    // Soft: a generic imperative ending with no external effect, a generic
+    // programming word in a general question, an adverbial or locative
+    // demonstrative. The adopted local reading decides them (and may raise
+    // them); under the keyword fallback they stay rails exactly as before.
+    let bored = "심심한데 아무 얘기나 해줘"
+    try check(keyword(bored).answerKind == .work && keyword(bored).signals.contains("soft_order") &&
+              !P.railsDecide(keyword(bored), request: bored), "a generic 해줘 is a soft order: \(keyword(bored))")
+    let boredChat = combined(bored, answer(.chat, .light, .none))
+    try check(boredChat.answersLocally && boredChat.answerKind == .answerOnly && boredChat.valid &&
+              boredChat.signals.contains("llm_overrules_soft_rail"), "local chat: the local row answers it: \(boredChat)")
+    try check(combined(bored, nil).answerKind == .work && combined(bored, nil).classifier == P.keywordClassifier,
+              "keyword fallback: the soft order stays a rail")
+    try check(combined(bored, answer(.chat, .light, .execution)).answerKind == .work,
+              "the local reading may still raise a soft rail to work")
+    // "만들어" is a soft ending, but ScopeResolution reads every "만들어" as a
+    // write order and write scope is hard: an example stays work (the local
+    // model is not asked; it would read write, policy A's reference anyway).
+    let example = "예시 하나 만들어봐"
+    try check(keyword(example).signals.contains("write_scope") && P.railsDecide(keyword(example), request: example) &&
+              combined(example, answer(.write, .standard, .none)).answerKind == .work &&
+              !combined(example, answer(.write, .standard, .none)).gradable &&
+              combined(example, answer(.write, .standard, .none)).taskType == .write,
+              "write scope is hard: an example made stays work: \(combined(example, answer(.write, .standard, .none)))")
+    // A generic programming word in a general question.
+    let methods = "파이썬 함수랑 메서드 차이 설명해줘"
+    let methodsRead = combined(methods, answer(.explain, .standard, .none))
+    try check(keyword(methods).toolNeed == .workspace && keyword(methods).signals.contains("soft_material") &&
+              !P.railsDecide(keyword(methods), request: methods) && methodsRead.gradable && methodsRead.difficulty == .standard &&
+              methodsRead.taskType == .explain && methodsRead.toolNeed == .none && methodsRead.valid,
+              "a programming word in a general question: graded standard: \(methodsRead)")
+    try check(!combined(methods, nil).gradable && combined(methods, nil).toolNeed == .workspace,
+              "keyword fallback: the soft material stays a rail")
+    try check(combined(methods, answer(.explain, .standard, .workspace)).toolNeed == .workspace,
+              "the local reading may raise it to the workspace")
+    // More soft readings, each decided by the local reading.
+    for (text, local) in [("지수 함수가 뭐야?", answer(.explain, .light, .none)),
+                          ("비트코인 가격이 왜 이렇게 떨어졌는지 설명해줘", answer(.explain, .standard, .currentFacts)),
+                          ("고기압과 저기압의 차이 설명해줘", answer(.explain, .standard, .none)),
+                          ("저기압이 뭐야?", answer(.explain, .light, .none)),
+                          ("위에 좋은 음식이 왜 좋은지 설명해줘", answer(.explain, .standard, .none)),
+                          ("슈뢰딩거 방정식 이 뭐야?", answer(.explain, .standard, .none)),
+                          ("What did OpenAI announce this week?", answer(.explain, .standard, .currentFacts)),
+                          ("슈뢰딩거 방정식 설명 좀 자세하게 해봐", answer(.explain, .standard, .none)),
+                          ("슈뢰딩거 방정식 해설해줘", answer(.explain, .standard, .none)),
+                          ("시 한 편 써줘", answer(.write, .standard, .none)),
+                          ("Write a haiku about autumn.", answer(.write, .light, .none)),
+                          ("에세이에 대해 써줘", answer(.write, .standard, .none))] as [(String, L.Answer)] {
+        let value = combined(text, local)
+        try check(!P.railsDecide(keyword(text), request: text) && value.answerKind == .answerOnly && value.valid &&
+                  value.taskType?.rawValue == local.taskType.rawValue &&
+                  (local.needsTools == .currentFacts ? value.toolNeed == .currentFacts : value.toolNeed == .none),
+                  "a soft rail yields to the local reading: \(text) -> \(value)")
+        try check(!combined(text, nil).answersWithoutTools && !combined(text, nil).gradable,
+                  "keyword fallback keeps the soft rail: \(text) -> \(combined(text, nil))")
+    }
+    // Hard rails stand even when the fake local reading says chat or explain.
+    let hard: [(String, Bool)] = [
+        ("README.md 설명해줘", false), ("슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", false), ("빌드해줘", true),
+        ("그럼 실제로 해봐", false), ("다시 해봐", false), ("계속해", false), ("했냐고", false), ("설치됐어?", false),
+        ("이거 고쳐", false), ("아까 그거 다시 해봐", false), ("이 함수 설명해봐", false), ("그 이유가 뭐야?", false),
+        ("위에 쓴 거 다시 설명해줘", false), ("네가 전에 말한 방법 다시 설명해줘", false),
+        ("Explain what you said before in simpler terms", false), ("Explain this concept: entropy", false),
+        ("슈뢰딩거 방정식 설명을 노트에 적어줘", false), ("슈뢰딩거 방정식 설명 구글 독스에 써줘", false),
+        ("슈뢰딩거 방정식 설명을 메모에 남겨줘", false), ("슈뢰딩거 방정식 설명해서 세바스찬한테 보내", false),
+        ("Explain the Schrödinger equation and email it to Sebastien", false),
+        ("Explain the Schrödinger equation and save it as a note", false), ("메일로 설명해줘", false),
+        ("User 타입 정의해줘", false), ("R2에서 QMGR 자료 가져와봐", false), ("깃허브에 푸시해", false), ("오에스원 라우팅이 어떻게 동작하는지 설명해줘", false),
+        ("알씨씨 레바스 원리 설명해줘", false), ("REVAS가 뭐야?", false), ("라우팅 왜 계속 astra로 가냐", false),
+        ("explain the error", false), ("우리 서버 왜 느려?", false), ("내 데스크탑에 있는 보고서 요약해줘", false),
+        ("자 이제 네가 얼마나 잘 되는지 보자", false), ("제일 똑똑한 모델로 TCP 혼잡 제어 설명해줘", false),
+        ("think hard and explain TCP congestion control", false)]
+    for (text, shell) in hard {
+        try check(P.railsDecide(keyword(text, shell: shell), request: text), "a hard rail decides: \(text) -> \(keyword(text, shell: shell))")
+        for local in [answer(.chat, .light, .none), answer(.explain, .standard, .none), answer(.explain, .light, .none)] {
+            let value = combined(text, local, shell: shell)
+            try check(!value.answersLocally && !value.gradable && value.valid,
+                      "a hard rail stands against the local reading: \(text) -> \(value)")
+        }
+    }
+    for text in ["오늘 환율 알려줘", "지금 비트코인 시세 알려줘"] {
+        let value = combined(text, answer(.chat, .light, .none))
+        try check(value.toolNeed == .currentFacts && !value.answersLocally && !value.answersWithoutTools,
+                  "current facts stay current facts against a chat reading: \(text) -> \(value)")
+    }
+    // The owner's own files are hard material, even when the only order is a generic ending.
+    try check(keyword("내 데스크탑에 있는 보고서 요약해줘").signals.contains("owner_material") &&
+              keyword("내 데스크탑에 있는 보고서 요약해줘").toolNeed == .workspace &&
+              keyword("my documents 정리해줘").signals.contains("owner_material") &&
+              !keyword("내일 날씨 알려줘").signals.contains("owner_material"), "the owner's own files are material")
+
+    // ---- Build 441 part 3: the classifier kept warm (pure decision, fake Ollama).
+    let now = Date()
+    typealias LM = RoutingOrderInterpreter.LoadedModel
+    func decide(idle: Bool = true, pressure: RunAdmission.MemoryPressure = .normal, activity: Date? = now,
+                installed: [String]? = ["qwen3.5:4b", "qwen3.5:9b"], loaded: [LM]? = []) -> L.WarmDecision {
+        L.warmDecision(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, installed: installed, loaded: loaded, now: now)
+    }
+    try check(L.warmActivityWindow == 7200 && L.warmRefreshMargin == 600, "warm within two hours of the owner; refresh with 10 minutes left")
+    try check(decide() == .load(model: "qwen3.5:9b", refresh: false), "idle, normal, active, not resident: load the 9B")
+    try check(decide(installed: ["qwen3.5:4b"]) == .load(model: "qwen3.5:4b", refresh: false), "only the 4B installed: load it")
+    try check(decide(loaded: [LM(name: "qwen3.5:9b", expiresAt: now.addingTimeInterval(1500))]) == .skip("warm"),
+              "resident for 25 more minutes: nothing to do")
+    try check(decide(loaded: [LM(name: "qwen3.5:9b", expiresAt: now.addingTimeInterval(300))]) == .load(model: "qwen3.5:9b", refresh: true),
+              "resident for 5 more minutes: extend it")
+    try check(decide(loaded: [LM(name: "qwen3.5:4b", expiresAt: now.addingTimeInterval(1500))]) == .load(model: "qwen3.5:9b", refresh: false),
+              "OpenClaw's 4B resident: the classifier model is still loaded")
+    try check(decide(idle: false) == .skip("busy") && decide(pressure: .warning) == .skip("memory_pressure") &&
+              decide(pressure: .critical) == .skip("memory_pressure") && decide(pressure: .unknown) == .skip("memory_pressure") &&
+              decide(activity: nil) == .skip("owner_inactive") &&
+              decide(activity: now.addingTimeInterval(-7201)) == .skip("owner_inactive") &&
+              decide(activity: now.addingTimeInterval(60)) == .skip("owner_inactive") &&
+              decide(installed: nil) == .skip("ollama_unavailable") && decide(loaded: nil) == .skip("ollama_unavailable") &&
+              decide(installed: ["llama3:8b"]) == .skip("model_absent"),
+              "never while busy, under memory pressure, with the owner away, Ollama down or no classifier model")
+    final class Calls: @unchecked Sendable { var reads = 0; var loads: [String] = [] }
+    func warm(idle: Bool, installed: [String]?, loaded: [LM]?, ok: Bool) -> (L.WarmReceipt, Calls) {
+        let calls = Calls()
+        final class Box: @unchecked Sendable { var value: L.WarmReceipt? }
+        let box = Box(), done = DispatchSemaphore(value: 0)
+        Task.detached {
+            box.value = await L.keepWarm(idle: idle, memoryPressure: .normal, lastOwnerActivity: now, now: now,
+                installed: { calls.reads += 1; return installed }, loaded: { calls.reads += 1; return loaded },
+                load: { model in calls.loads.append(model); return ok })
+            done.signal()
+        }
+        done.wait()
+        return (box.value!, calls)
+    }
+    let (loadedReceipt, loadCalls) = warm(idle: true, installed: ["qwen3.5:9b"], loaded: [], ok: true)
+    try check(loadedReceipt.decision == .load(model: "qwen3.5:9b", refresh: false) && loadedReceipt.loaded == true &&
+              loadCalls.loads == ["qwen3.5:9b"] && loadedReceipt.publicLine.hasPrefix("local classifier warm: load qwen3.5:9b ok"),
+              "the poll loads the classifier once: \(loadedReceipt.publicLine)")
+    let (busyReceipt, busyCalls) = warm(idle: false, installed: ["qwen3.5:9b"], loaded: [], ok: true)
+    try check(busyReceipt.decision == .skip("busy") && busyCalls.reads == 0 && busyCalls.loads.isEmpty,
+              "busy: Ollama is not even read")
+    let (failedReceipt, _) = warm(idle: true, installed: ["qwen3.5:9b"], loaded: [], ok: false)
+    try check(failedReceipt.loaded == false && failedReceipt.publicLine.contains("failed"), "a failed load is recorded, never retried in the poll")
+    try check(RoutingOrderInterpreter.ollamaDate("2026-10-27T18:49:35.842119-07:00") ==
+              ISO8601DateFormatter().date(from: "2026-10-28T01:49:35Z"), "Ollama's microsecond RFC 3339 expiry parses")
+
     // Wire: both or neither, strictly checked; Codable round trip.
     var broken = schrodinger; broken.taskType = nil
     try check(!broken.valid, "a classifier without a task type is invalid")

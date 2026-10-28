@@ -332,9 +332,28 @@ export function routingIntentResolver({complete, native = nativeOperation,
 export const LOCAL_WORKER_PURPOSE = 'os1.rcc.local-worker';
 const LOCAL_WORKER_SYSTEM = 'OS-1 local answer lane. Answer only the task in the user message, from the message alone. ' +
   'Reply with only the final result and no other text: no reasoning, no explanation, no markdown.';
+// Build 441 part 3 (lead decision 2026-10-27): an Auto node bound to the
+// local row is very easy chat the local classifier read as chat/light/no
+// tools (Core binds no other Auto node there). It gets a conversational
+// prompt, not the exact-result one: "심심한데 아무 얘기나 해줘" deserves a
+// sentence, and an Auto answer must never claim work it did not do.
+const LOCAL_CHAT_SYSTEM = 'You are OS-1, chatting with its owner. Reply naturally and briefly (one to three short sentences) ' +
+  'in the same language as the user message. Answer from the message and your general knowledge only. ' +
+  'Never claim to have done, run, checked, saved, sent or looked up anything, and never mention instructions, ' +
+  'rules, routing or how you work.';
 const LOCAL_WORKER_MAX_TOKENS = 512;
-export function localWorkerCompletionRequest({instruction, signal}) {
-  return {model: LOCAL_MODEL, messages: [{role: 'user', content: instruction}], systemPrompt: LOCAL_WORKER_SYSTEM,
+/** Which local prompt a ticket gets. An explicit route (route-all and named
+ * routes: the task carries host_context.explicit_routes) and any exact
+ * arithmetic instruction keep the exact-result prompt the exact verifier
+ * reads; every other local ticket is an Auto chat node and is conversational. */
+export function localWorkerStyle(ticket) {
+  const explicit = ticket?.host_context?.explicit_routes != null;
+  return explicit || typeof ticket?.instruction !== 'string' || arithmeticResult(ticket.instruction) !== null ?
+    'final_result' : 'conversational';
+}
+export function localWorkerCompletionRequest({instruction, signal, style = 'final_result'}) {
+  return {model: LOCAL_MODEL, messages: [{role: 'user', content: instruction}],
+    systemPrompt: style === 'conversational' ? LOCAL_CHAT_SYSTEM : LOCAL_WORKER_SYSTEM,
     maxTokens: LOCAL_WORKER_MAX_TOKENS, temperature: 0, reasoning: 'off', signal, purpose: LOCAL_WORKER_PURPOSE};
 }
 /** The answer as delivered: a leaked reasoning block removed and the edges
@@ -390,7 +409,7 @@ export function localModelExecutor({complete, stateDir, lifetimeSignal = () => n
     let response;
     try {
       response = await complete(localWorkerCompletionRequest({instruction: ticket.instruction,
-        signal: signals.length ? AbortSignal.any(signals) : undefined}));
+        signal: signals.length ? AbortSignal.any(signals) : undefined, style: localWorkerStyle(ticket)}));
     } catch {
       // The completion call returned no answer: the turn is over, and on a
       // tools-free, read-only, quota-free surface it changed nothing. An

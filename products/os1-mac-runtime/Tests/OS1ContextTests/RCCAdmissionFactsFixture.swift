@@ -742,7 +742,23 @@ func runRCCAdmissionFactsFixtures() throws {
          combinedInput("엔트로피가 뭐야?", explainLight, codexUsed: 90, claudeUsed: 10), "codex:gpt-6-luna/low", "graded:light"),
         ("price: Codex quota exhausted binds sonnet, not opus", "쉐딩과 방정식 설명해 봐봐",
          combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard, codexExhausted: true),
-         "claude-chat:claude-sonnet-5-5/medium", "graded:standard")]
+         "claude-chat:claude-sonnet-5-5/medium", "graded:standard"),
+        // Build 441 part 3 (lead decision 2026-10-27): soft rails yield to the
+        // local reading; hard rails stand against any reading; the keyword
+        // fallback keeps every rail.
+        ("part 3: a soft 해줘 read as chat: the local row", "심심한데 아무 얘기나 해줘",
+         combinedInput("심심한데 아무 얘기나 해줘", chatLight), "local:qwen3.5:4b/none", "graded:light"),
+        ("part 3: write scope stays hard (만들어)", "예시 하나 만들어봐",
+         combinedInput("예시 하나 만들어봐", LA(taskType: .write, difficulty: .standard, needsTools: .none)),
+         "codex:gpt-6-astra/ultra", "reference"),
+        ("part 3: a programming word in a general question", "파이썬 함수랑 메서드 차이 설명해줘",
+         combinedInput("파이썬 함수랑 메서드 차이 설명해줘", explainStandard), "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("part 3: a prior-turn reference stands against a chat reading", "아까 그거 다시 해봐",
+         combinedInput("아까 그거 다시 해봐", chatLight), "codex:gpt-6-astra/ultra", "reference"),
+        ("part 3: a placement stands against an explain reading", "슈뢰딩거 방정식 설명을 노트에 적어줘",
+         combinedInput("슈뢰딩거 방정식 설명을 노트에 적어줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
+        ("part 3: LLM down, the soft rail stays", "심심한데 아무 얘기나 해줘",
+         combinedInput("심심한데 아무 얘기나 해줘", nil), "codex:gpt-6-astra/ultra", "reference")]
     var part2Cases: [(request: String, catalog: [String: Any], write: Bool)] = []
     for item in part2 {
         let built = try catalog(item.input)

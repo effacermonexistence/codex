@@ -820,6 +820,24 @@ check("export const DEEP_POLICY = 'reference_first';" in RUNTIME and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-classifier.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-local-classifier.test.mjs").is_file(),
       "part 2: profile mapping, price-aware graded choice, local chat row and policy A, release-gated")
+# Build 441 part 3 (lead decision 2026-10-27): soft rails yield to an adopted
+# local reading (hard rails never do), Auto local chat answers with a
+# conversational prompt, and the App's existing idle poll keeps the classifier warm.
+profile_source = (ROOT / "Sources/OS1Context/RequestProfile.swift").read_text()
+check("hardWorkRail(keyword) || hardWorkspaceRail(keyword) || keyword.signals.contains(\"text_operation\")" in profile_source and
+      "let hardWork = workRail && hardWorkRail(k), hardWorkspace = workspaceRail && hardWorkspaceRail(k)" in profile_source and
+      'signals.insert("soft_order")' in profile_source and 'signals.insert("soft_material")' in profile_source and
+      'signals.insert("soft_deictic")' in profile_source and '"llm_overrules_soft_rail"' in profile_source,
+      "part 3: only hard rails decide or stand against the local reading; soft ones stay rails in the keyword fallback")
+check("export function localWorkerStyle(ticket)" in PLUGIN and "style: localWorkerStyle(ticket)" in PLUGIN and
+      "const LOCAL_CHAT_SYSTEM = " in PLUGIN and "ticket?.host_context?.explicit_routes != null" in PLUGIN and
+      "arithmeticResult(ticket.instruction) !== null" in PLUGIN,
+      "part 3: an Auto local chat ticket is answered conversationally; explicit routes and arithmetic keep the exact prompt")
+check("await self?.keepRequestClassifierWarm()" in APP and APP.count("await self?.keepRequestClassifierWarm()") == 2 and
+      "LocalRequestClassifier.keepWarm(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, now: now)" in APP and
+      "ownerActivityAt = submitTimestamp" in APP and "public static func ollamaLoad(model: String, keepAlive: String" in
+      (ROOT / "Sources/OS1Context/RoutingOrderInterpreter.swift").read_text(),
+      "part 3: the frontier monitor's poll keeps the classifier warm (no new loop), through the one Ollama client")
 
 # Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
 # sign-in looked signed out on every live catalog.

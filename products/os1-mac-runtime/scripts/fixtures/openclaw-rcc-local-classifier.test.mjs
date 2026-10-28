@@ -15,6 +15,7 @@ import {join} from 'node:path';
 import {DEEP_POLICIES, DEEP_POLICY, GRADED_LISTS, LOCAL_WORKER_MODEL, TIER_FAILURE_PRIORS, admittedRoute, createRCCRuntime,
   deliveryBasisOf, hostContextFingerprint, hostPlan, resolveRoutePlan} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {auditDeliveryPolicy} from '../route-replay.mjs';
+import {localWorkerStyle} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
 const VERSION = 'r10_joint_selection_v2';
@@ -308,6 +309,10 @@ test('a local chat answer is delivered on its structural screen, graded and unve
   const {done, tickets, saved, ledger, text} = await harness(t, ticket => completed(ticket, {output: '좋아, 보자!'}));
   assert.deepEqual(tickets.map(tuple), [`local:${LOCAL_WORKER_MODEL}/none`]);
   assert.equal(tickets[0].instruction, '자 이제 네가 얼마나 잘 되는지 보자');
+  // Build 441 part 3: Core's own Auto local ticket gets the conversational
+  // prompt (no explicit routes, not arithmetic), never the exact-result one.
+  assert.equal(tickets[0].host_context.explicit_routes, undefined);
+  assert.equal(localWorkerStyle(tickets[0]), 'conversational');
   assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
   assert.equal(done.result.output, '좋아, 보자!');
   assert.equal(saved.children[0].route_kind, 'graded');

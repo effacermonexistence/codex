@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createRCCRuntime, dispatchable, hostContextFingerprint, hostPlan, LOCAL_WORKER_MODEL, localWorkerRow,
   resolveRoutePlan } from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import { LOCAL_WORKER_PURPOSE, localModelExecutor, localWorkerCompletionRequest,
+import { LOCAL_WORKER_PURPOSE, localModelExecutor, localWorkerCompletionRequest, localWorkerStyle,
   normalizeLocalOutput, registerRCCRuntime, verifyExactExplicitArithmetic } from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -192,6 +192,42 @@ test('the local executor sends only the instruction to the pinned model and writ
     {...ticket, attempt_id: randomUUID()});
   assert.equal(prose.output, '1+1 = 2'); assert.equal(prose.task_quality, 'execution_only');
   assert.equal(normalizeLocalOutput('<think>unfinished'), '');
+});
+
+test('an Auto chat ticket gets the conversational prompt; explicit routes and arithmetic keep the exact one', async t => {
+  // Build 441 part 3 (lead decision 2026-10-27): Core binds an Auto node to
+  // the local row only for local-read very easy chat; it is answered as
+  // conversation, never as "final result only", and never claims work.
+  const dir = await fixture(t);
+  const config = (({id, availability, availability_observed_at_ms, availability_valid_until_ms, quota_remaining_fraction,
+    quota_observed_at_ms, quota_valid_until_ms, quality_state, estimated_cost_units, ...rest}) => rest)(LOCAL_ROW());
+  const base = {task_id: 'task-local', node_id: 'n1', candidate_id: 'cfg-local',
+    configuration_sha256: LOCAL_ROW().configuration_sha256, owned_paths: [], selected_config: config};
+  const auto = {...base, instruction: '심심한데 아무 얘기나 해줘', original_request: '심심한데 아무 얘기나 해줘',
+    host_context: explicitTask(dir, null, {request: '심심한데 아무 얘기나 해줘'}).host_context};
+  const explicit = {...base, instruction: '1+1', original_request: INCIDENT, host_context: explicitTask(dir).host_context};
+  const autoArithmetic = {...auto, instruction: '2*3'};
+  const explicitProse = {...explicit, instruction: '안녕'};
+  assert.equal(localWorkerStyle(auto), 'conversational');
+  assert.equal(localWorkerStyle(explicit), 'final_result');
+  assert.equal(localWorkerStyle(autoArithmetic), 'final_result');
+  assert.equal(localWorkerStyle(explicitProse), 'final_result', 'an explicit route keeps the exact-result prompt');
+  assert.equal(localWorkerStyle({}), 'final_result');
+  const seen = [];
+  const execute = localModelExecutor({stateDir: dir, complete: async request => { seen.push(request); return completion('심심하면 퀴즈 하나 낼까요?'); }});
+  const chat = await execute({...auto, attempt_id: randomUUID()});
+  await execute({...explicit, attempt_id: randomUUID()});
+  const [chatPrompt, exactPrompt] = seen.map(request => request.systemPrompt);
+  assert.match(chatPrompt, /naturally and briefly/);
+  assert.match(chatPrompt, /same language as the user message/);
+  assert.match(chatPrompt, /Never claim to have done/);
+  assert.doesNotMatch(chatPrompt, /final result/);
+  assert.match(exactPrompt, /only the final result/);
+  assert.deepEqual(seen[0].messages, [{role: 'user', content: '심심한데 아무 얘기나 해줘'}], 'only the request, as before');
+  assert.equal(seen[0].temperature, 0); assert.equal(seen[0].reasoning, 'off'); assert.equal(seen[0].purpose, LOCAL_WORKER_PURPOSE);
+  // A conversational answer is an execution-only delivery, never task-verified.
+  assert.equal(chat.output, '심심하면 퀴즈 하나 낼까요?'); assert.equal(chat.task_quality, 'execution_only');
+  assert.equal(chat.task_verified, false);
 });
 
 test('the local executor never adopts a foreign or broken answer and never fabricates an outcome', async t => {

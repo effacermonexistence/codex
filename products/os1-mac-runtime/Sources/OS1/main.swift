@@ -4548,6 +4548,19 @@ func providerSurfaceRoutingSelfTest() throws {
                 !ownerRequestRunsReadOnly(text, attachedSource: false, profile: value) == !ownerRequestRunsReadOnly(text, attachedSource: false) &&
                 !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: value)
         }))
+    // Build 441 part 3: a soft rail (a generic 해줘, a programming word in a
+    // general question) is the adopted local reading's to decide; the host's
+    // scope and chat-lane facts follow the combined profile.
+    let bored = combined("심심한데 아무 얘기나 해줘", LocalRequestClassifier.Answer(taskType: .chat, difficulty: .light, needsTools: .none))
+    let methods = combined("파이썬 함수랑 메서드 차이 설명해줘", readsAsAnswer)
+    checks.append(("a soft rail yields to the local reading; the host facts follow it",
+        !RequestProfile.railsDecide(profiled("심심한데 아무 얘기나 해줘"), request: "심심한데 아무 얘기나 해줘") && bored.answersLocally &&
+            ownerRequestRunsReadOnly("심심한데 아무 얘기나 해줘", attachedSource: false, profile: bored) &&
+            rccChatLaneEligible(objective: "심심한데 아무 얘기나 해줘", hasSource: false, providerPreference: "auto", profile: bored) &&
+            !ownerRequestRunsReadOnly("심심한데 아무 얘기나 해줘", attachedSource: false) &&
+            methods.gradable && ownerRequestRunsReadOnly("파이썬 함수랑 메서드 차이 설명해줘", attachedSource: false, profile: methods) &&
+            !rccChatLaneEligible(objective: "파이썬 함수랑 메서드 차이 설명해줘", hasSource: false, providerPreference: "auto",
+                                 profile: methods)))
     // One reading per task: a stored receipt is reused without asking Ollama.
     let classificationHome = FileManager.default.temporaryDirectory.appendingPathComponent("os1-cls-selftest-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: classificationHome) }

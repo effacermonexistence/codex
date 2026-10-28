@@ -1049,6 +1049,72 @@ public enum RoutingOrderInterpreter {
         }
     }
 
+    // MARK: Residency (build 441 part 3: the request classifier kept warm)
+
+    /// One model the loopback Ollama holds in memory (`/api/ps`).
+    public struct LoadedModel: Equatable, Sendable {
+        public var name: String
+        public var expiresAt: Date?
+        public var bytes: Int?
+        public init(name: String, expiresAt: Date?, bytes: Int? = nil) {
+            self.name = name; self.expiresAt = expiresAt; self.bytes = bytes
+        }
+    }
+    /// The Ollama API root of `endpoint` (".../api/chat" -> ".../api/").
+    static func apiURL(_ endpoint: URL, _ name: String) -> URL {
+        endpoint.deletingLastPathComponent().appendingPathComponent(name)
+    }
+    /// A bounded, loopback-only, proxy-free JSON call; nil on any failure.
+    static func ollamaJSON(_ url: URL, body: Data?, timeout: TimeInterval) async -> [String: Any]? {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url)
+        if let body {
+            request.httpMethod = "POST"; request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        guard url.host == "127.0.0.1", let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 256_000 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+    /// The installed model names (`/api/tags`), nil when Ollama does not
+    /// answer (a refused connection returns at once).
+    public static func ollamaInstalledModels(endpoint: URL = endpoint, timeout: TimeInterval = 1.5) async -> [String]? {
+        guard let object = await ollamaJSON(apiURL(endpoint, "tags"), body: nil, timeout: timeout),
+              let models = object["models"] as? [[String: Any]] else { return nil }
+        return models.compactMap { $0["name"] as? String }
+    }
+    /// The models Ollama holds in memory now (`/api/ps`) with their expiry; nil when Ollama does not answer.
+    public static func ollamaLoadedModels(endpoint: URL = endpoint, timeout: TimeInterval = 1.5) async -> [LoadedModel]? {
+        guard let object = await ollamaJSON(apiURL(endpoint, "ps"), body: nil, timeout: timeout),
+              let models = object["models"] as? [[String: Any]] else { return nil }
+        return models.compactMap { row in
+            guard let name = row["name"] as? String else { return nil }
+            let expiry = (row["expires_at"] as? String).flatMap(ollamaDate)
+            return LoadedModel(name: name, expiresAt: expiry, bytes: (row["size_vram"] as? NSNumber)?.intValue)
+        }
+    }
+    /// Ollama's RFC 3339 time with any number of fractional digits
+    /// ("2026-10-27T18:49:35.842119-07:00"), to the second.
+    public static func ollamaDate(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value.replacingOccurrences(of: #"\.[0-9]+"#, with: "", options: .regularExpression))
+    }
+    /// Load `model` (or extend its residency) without generating anything:
+    /// the chat endpoint with no messages, `keep_alive` set. The same runner
+    /// options as the classifier's own call (none), so the classifier finds
+    /// the runner this loads. True when Ollama answered `done`.
+    public static func ollamaLoad(model: String, keepAlive: String, endpoint: URL = endpoint,
+                                  timeout: TimeInterval = 60) async -> Bool {
+        guard let body = try? JSONSerialization.data(withJSONObject: ["model": model, "messages": [Any](),
+                                                                      "keep_alive": keepAlive], options: [.sortedKeys]),
+              let object = await ollamaJSON(endpoint, body: body, timeout: timeout) else { return false }
+        return object["done"] as? Bool == true
+    }
+
     // MARK: Self-test (no model, no config, no network)
 
     /// What a model that agrees with everything the request can say would

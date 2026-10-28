@@ -20,9 +20,9 @@ import Foundation
 ///   write order. `unknown` for everything else, including a bare pro-verb
 ///   with no content stem ("그럼 실제로 해봐" is work) and a text operation
 ///   (quality-bearing text generation keeps its own class).
-/// - `tool_need`: `write`, `shell`, `workspace` (machine material, a deictic
-///   reference to earlier artifacts, turns or the workspace, a status
-///   check-in), `current_facts` (latest, today, prices, news, search, the
+/// - `tool_need`: `write`, `shell`, `workspace` (machine material, the
+///   owner's own files or machine, a deictic reference to earlier artifacts,
+///   turns or the workspace, a status check-in), `current_facts` (latest, today, prices, news, search, the
 ///   chat lane's lookup words, a year or a versioned name), else `none`.
 /// - `difficulty`, from the shape of the task only, never its topic
 ///   ("science" or "Python" alone never raises it): `deep` for a proof,
@@ -207,6 +207,88 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// Words that also ask, for counting the asks of one request.
     static let askWords = ["how", "what", "who", "when", "where", "which", "어떤", "언제", "누가", "누구", "어디", "어느"]
 
+    // MARK: Soft rails (build 441 part 3, lead decision 2026-10-27)
+    //
+    // Some keyword rails are evidence of work or of a workspace need only in
+    // the keyword router's own eyes: an imperative ending with no external
+    // effect ("심심한데 아무 얘기나 해줘"), a programming word in a general
+    // question ("파이썬 함수랑 메서드 차이 설명해줘"), an adverbial or locative
+    // demonstrative with no referent ("왜 이렇게 떨어졌는지", "저기압"). These are
+    // SOFT: when the local classifier's reading was adopted, that reading
+    // decides them; under the keyword fallback (no local reading) they stay
+    // rails exactly as before. Every other rail is HARD and the local reading
+    // can never lower it: write scope, shell need, named path, image, attached
+    // material, external system, external actions and placement or delivery
+    // orders, owner-project and OS-1 vocabulary, status check-ins, prior-turn
+    // and demonstrative-noun references, current facts, a text operation and
+    // strongest-model words. The keyword profile marks a rail that rests on
+    // soft evidence only with `soft_order`, `soft_material` or `soft_deictic`.
+
+    /// Generic imperative or creation endings with no external effect
+    /// (`ClaudeChatLane.actionTerms` minus these stay hard: edits, status,
+    /// continuation, save). "만들어" is soft here, but `ScopeResolution` reads
+    /// every "만들어" as a write order, and write scope is a hard rail.
+    static let softActionTerms = ["해봐", "해 봐", "해라", "해줘", "해 줘", "하라", "만들어"]
+    /// Writing the answer out with no place named (`ClaudeChatLane.orderTerms`
+    /// minus these stay hard). "…에 적어/써" is a placement and stays hard.
+    static let softOrderTerms = ["써줘", "써 줘", "적어", "정리해"]
+    /// Composing ("…짜줘") with no place named (`placementOrders` minus these
+    /// stay hard). Defining a code object ("User 타입 정의해줘", `definitionOrder`)
+    /// is writing code and stays hard: measured 2026-10-27, the 9B model read
+    /// it as explain/standard.
+    static let softPlacementOrders = ["짜줘", "짜 줘", "짜봐", "짜 봐"]
+    /// English generation verbs with no external effect; every other verb of
+    /// `englishOrder` (fix, run, send, save, post, …) stays hard.
+    static let softEnglishOrderVerbs: Set<String> = ["make", "create", "write", "draft", "compose", "implement"]
+    static let englishOrderVerbs = ["continue", "resume", "proceed", "fix", "make", "build", "create", "write", "add", "remove",
+                                    "delete", "change", "run", "start", "finish", "deploy", "install", "commit", "push", "send",
+                                    "email", "post", "save", "share", "upload", "publish", "draft", "compose", "implement"]
+    static func englishOrderPattern(_ verbs: [String]) -> String {
+        #"(?:^|[.!?;\n]\s*|\b(?:please|and|then|now|also|first)\s+)(?:"# + verbs.joined(separator: "|") + #")\b"#
+    }
+    /// Writing or composing INTO a place ("노트에 적어줘", "구글 독스에 써줘",
+    /// "노션에 정리해"): a placement, hard. "…에 대해 써줘" (about) and "…안에 써줘"
+    /// (within) are not places.
+    static let locativePlacement = #"(?<![안내중])(?:에|에다|에다가)(?!\s*(?:대해|대한|관해|관한|대하여|관하여|따라|맞게|맞춰))\s+(?:[가-힣A-Za-z0-9]+\s+){0,2}?(?:적어|써|정리|짜|만들어|작성)"#
+    /// Fillers around a bare pro-verb: "그럼 실제로 해봐", "다시 해봐", "빨리 해"
+    /// order the work under discussion (a prior-turn reference, hard).
+    static let proVerbFillers: Set<String> = ["그럼", "그러면", "그래서", "이제", "일단", "실제로", "직접", "진짜", "정말", "한번", "한",
+                                              "번", "좀", "빨리", "어서", "자", "야", "그냥", "지금", "당장", "바로", "다시", "또", "제발",
+                                              "얼른", "다", "전부", "모두", "하나씩", "그래", "응", "어", "음", "제대로", "똑바로", "잘",
+                                              "끝까지", "마저", "please", "now", "just", "again", "it", "do", "go", "ahead"]
+    static let proVerbEndings = #"해\s*봐|해\s*줘|해라|하라|해요|해"#
+    /// Code, systems and OS-1's own behaviour among `ClaudeChatLane.technicalTerms`
+    /// that are OS-1 vocabulary (hard); the rest are generic programming words (soft).
+    static let os1TechnicalTerms = ["라우팅", "쿼터", "routing", "quota"]
+    /// A technical word with a specific owner or article ("the error", "my
+    /// function", "우리 서버"): this machine's material, hard.
+    static let specificTechnicalPattern = #"\b(?:the|my|our|your)\s+(?:errors?|bugs?|servers?|databases?|functions?|class(?:es)?|methods?|models?|apis?|sdks?|tokens?|variables?)\b|(?:^|[\s,.!?~])(?:내|우리|제|저희|네|너의|니)\s*(?:함수|변수|클래스|메서드|에러|오류|버그|서버|데이터베이스|모델|토큰)"#
+    /// Demonstrative pronouns and prior-turn time words (hard); the adverbial
+    /// and locative forms in `deicticTerms` (이런, 그렇게, 거기, 저기, 위에, 아래 …) are soft.
+    static let hardDeicticTerms = ["이거", "이것", "이게", "이건", "이걸", "그거", "그것", "그게", "그건", "그걸",
+                                   "저거", "저것", "저게", "저건", "저걸", "아까", "방금", "앞에서", "앞서", "지난번", "저번", "이전에"]
+    /// "이/그/저 + noun" (hard), not before a question word ("방정식 이 뭐야?" is a
+    /// spoken subject particle).
+    static let demonstrativeNounPattern = #"(?:^|[\s,.!?~])(?:이|그|저)\s+(?!(?:뭐|무엇|무슨|어떻|어떤|어느|왜|어디|언제|누구|누가|얼마|몇))[가-힣A-Za-z]"#
+    /// The content above or below in this conversation ("위에 쓴 거", "아래 내용"), hard.
+    static let aboveBelowReferentPattern = #"(?:위|아래)(?:에서|에|의|쪽)?\s*(?:말|쓴|적은|적힌|얘기|이야기|설명|내용|글|코드|답|대답|문단|문장|목록|리스트|표|거|것|링크|사진|이미지|파일|부분|예시|질문)"#
+    /// English references that stay hard; "this/these/those" before a time
+    /// noun ("this week") is a date, not a referent.
+    static let hardDeicticWords = ["above", "earlier", "previous", "attached", "you said", "you mentioned", "you told",
+                                   "you wrote", "your answer", "your last", "your previous", "last answer", "previous answer"]
+    /// The owner's own files or machine: possessive + a file, folder,
+    /// document or machine noun (hard material, beside attached material).
+    static let ownerMaterialPattern = #"(?:^|[\s,.!?~])(?:내|우리|제|저희)\s*(?:데스크탑|데스크톱|바탕화면|다운로드|폴더|파일|문서|보고서|자료|사진|메모|드라이브|맥북|컴퓨터|노트북)|\b(?:my|our)\s+(?:desktop|downloads|folders?|files?|documents?|reports?|notes|photos?|drive|computer|mac|macbook|laptop)\b"#
+    static let hardEnglishDemonstrative = #"\b(?:this|these|those)\b(?!\s+(?:week|weekend|year|month|morning|afternoon|evening|night|quarter|season|semester|time|spring|summer|fall|autumn|winter)\b)"#
+
+    /// Whether `lower` (normalized, lower-cased) orders only the work under
+    /// discussion: a soft ending with nothing left but fillers.
+    static func bareProVerb(_ lower: String) -> Bool {
+        let rest = lower.replacingOccurrences(of: proVerbEndings, with: " ", options: .regularExpression)
+        let words = rest.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        return words.allSatisfy { proVerbFillers.contains($0) }
+    }
+
     // MARK: Classification
 
     /// The profile of `request` with the host's own facts: whether it needs a
@@ -247,6 +329,10 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             signals.insert("machine_material")
         }
         if mentions(ClaudeChatLane.externalSystems) { signals.insert("external_system") }
+        // Build 441 part 3: the owner's own files or machine ("내 데스크탑에 있는
+        // 보고서", "my documents"): material on this machine, a hard rail
+        // (a generic imperative ending no longer carries such a request alone).
+        if matches(ownerMaterialPattern, lower) { signals.insert("owner_material") }
         if deicticTerms.contains(where: lower.contains) || mentions(deicticWords) || matches(priorTurnPattern, lower) ||
             lower.range(of: #"(?:^|[\s,.!?~])(?:이|그|저)\s+[가-힣A-Za-z]"#, options: .regularExpression) != nil {
             signals.insert("deictic")
@@ -267,6 +353,33 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             ClaudeChatLane.orderTerms.contains(where: lower.contains) || placementOrders.contains(where: lower.contains) ||
             matches(definitionOrder, lower)
         if order { signals.insert("work_order") }
+        // Build 441 part 3: an order resting only on soft endings is a soft rail.
+        if order {
+            let residual = lower.replacingOccurrences(of: ClaudeChatLane.answerImperative, with: " ", options: .regularExpression)
+            let hardOrder = ClaudeChatLane.actionTerms.contains { !softActionTerms.contains($0) && residual.contains($0) } ||
+                matches(englishOrderPattern(englishOrderVerbs.filter { !softEnglishOrderVerbs.contains($0) }), lower) ||
+                ClaudeChatLane.orderTerms.contains { !softOrderTerms.contains($0) && lower.contains($0) } ||
+                placementOrders.contains { !softPlacementOrders.contains($0) && lower.contains($0) } ||
+                matches(locativePlacement, lower) || matches(definitionOrder, lower) || bareProVerb(lower)
+            if !hardOrder { signals.insert("soft_order") }
+        }
+        // Machine material resting only on generic programming words in a general question.
+        if signals.contains("machine_material") {
+            let hardMaterial = mentions(ClaudeChatLane.projectTerms) || mentions(ClaudeChatLane.workspaceTerms) ||
+                mentions(ClaudeChatLane.localWorkTerms) || mentions(os1TechnicalTerms) ||
+                mentions(workspaceStateTerms) || mentions(ownerProjectTerms) ||
+                lower.range(of: ClaudeChatLane.machinePathPattern, options: .regularExpression) != nil ||
+                lower.range(of: #"[A-Za-z0-9_\-]\.[A-Za-z]{1,6}(?![A-Za-z])"#, options: .regularExpression) != nil ||
+                matches(specificTechnicalPattern, lower)
+            if !hardMaterial { signals.insert("soft_material") }
+        }
+        // A deictic resting only on adverbial or locative demonstratives.
+        if signals.contains("deictic") {
+            let hardDeictic = hardDeicticTerms.contains(where: lower.contains) || mentions(hardDeicticWords) ||
+                matches(hardEnglishDemonstrative, lower) || matches(priorTurnPattern, lower) ||
+                matches(demonstrativeNounPattern, lower) || matches(aboveBelowReferentPattern, lower)
+            if !hardDeictic { signals.insert("soft_deictic") }
+        }
         let textOperation = ClaudeChatLane.selfContainedTextOperation(value)
         if textOperation { signals.insert("text_operation") }
         // The ask itself.
@@ -283,14 +396,14 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         if write { tool = .write }
         else if shellNeed { tool = .shell }
         else if !signals.isDisjoint(with: ["material", "named_path", "image", "machine_material", "external_system",
-                                           "deictic", "status_check_in", "status_question", "failure_complaint",
+                                           "owner_material", "deictic", "status_check_in", "status_question", "failure_complaint",
                                            "external_action"]) { tool = .workspace }
         else if signals.contains("current_facts") { tool = .currentFacts }
         else { tool = .none }
 
         let blocked = write || shellNeed || order || externalAction || textOperation ||
             !signals.isDisjoint(with: ["material", "named_path", "image", "machine_material", "external_system",
-                                       "failure_complaint", "status_check_in", "status_question"])
+                                       "owner_material", "failure_complaint", "status_check_in", "status_question"])
         let kind: AnswerKind = (stem || conversational) && !blocked ? .answerOnly
             : (write || shellNeed || order || externalAction) ? .work : .unknown
 
@@ -354,14 +467,38 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     }
 
     /// Whether the keyword rails already fix this request's route, so the
-    /// local classifier has nothing it may decide: work (a write, shell need,
-    /// order or external action), a workspace need, a text operation (a
-    /// quality-bearing text deliverable stays on policy A) or the owner asking
-    /// for the strongest model. The local model can never lower these, so it
-    /// is not asked (no latency, no residency) and the profile stays `keyword_v1`.
+    /// local classifier has nothing it may decide: HARD work (a write, shell
+    /// need, external action or a hard order), a HARD workspace need, a text
+    /// operation (a quality-bearing text deliverable stays on policy A) or the
+    /// owner asking for the strongest model. The local model can never lower
+    /// these, so it is not asked (no latency, no residency) and the profile
+    /// stays `keyword_v1`. A rail resting on soft evidence only (build 441
+    /// part 3) does not decide: the local reading does.
     public static func railsDecide(_ keyword: RequestProfile, request: String) -> Bool {
-        keyword.answerKind == .work || keyword.toolNeed == .workspace || keyword.signals.contains("text_operation") ||
+        hardWorkRail(keyword) || hardWorkspaceRail(keyword) || keyword.signals.contains("text_operation") ||
             asksForStrongest(request)
+    }
+
+    /// Build 441 part 3: the keyword profile is work for a reason the local
+    /// reading may never lower (write scope, shell need, an external action or
+    /// a hard order), not only for a soft imperative ending.
+    public static func hardWorkRail(_ keyword: RequestProfile) -> Bool {
+        let s = keyword.signals
+        return keyword.answerKind == .work && (s.contains("write_scope") || s.contains("shell") ||
+            s.contains("external_action") || (s.contains("work_order") && !s.contains("soft_order")))
+    }
+    /// Build 441 part 3: the keyword profile needs the workspace for a reason
+    /// the local reading may never lower (material, a path, an image, an
+    /// external system, a status check-in or question, a failure complaint, an
+    /// external action, project or OS-1 material, a referring deictic), not
+    /// only for a generic programming word or an adverbial demonstrative.
+    public static func hardWorkspaceRail(_ keyword: RequestProfile) -> Bool {
+        let s = Set(keyword.signals)
+        return keyword.toolNeed == .workspace &&
+            (!s.isDisjoint(with: ["material", "named_path", "image", "external_system", "owner_material", "status_check_in",
+                                  "status_question", "failure_complaint", "external_action"]) ||
+                (s.contains("machine_material") && !s.contains("soft_material")) ||
+                (s.contains("deictic") && !s.contains("soft_deictic")))
     }
 
     /// The profile the RCC catalog emits: the keyword profile's hard rails
@@ -369,12 +506,16 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// (DESIGN-2 "Combination"). Deterministic for the same keyword profile,
     /// request and local answer.
     ///
-    /// - Rails stand and are never lowered: work (write scope, shell, an order
-    ///   or external action) stays work; a workspace need (material, a path,
-    ///   an image, machine material, a project or external system, a deictic
-    ///   reference, a status check-in or question, a failure complaint) stays
-    ///   workspace; current facts stay current facts; a text operation stays a
-    ///   `write` task; the owner asking for the strongest model stays deep.
+    /// - Hard rails stand and are never lowered: work (write scope, shell, a
+    ///   hard order or external action) stays work; a hard workspace need
+    ///   (material, a path, an image, project or OS-1 material, an external
+    ///   system, a referring deictic, a status check-in or question, a failure
+    ///   complaint) stays workspace; current facts stay current facts; a text
+    ///   operation stays a `write` task; the owner asking for the strongest
+    ///   model stays deep.
+    /// - Soft rails (build 441 part 3: `soft_order`, `soft_material`,
+    ///   `soft_deictic` alone) yield to an adopted local reading (signal
+    ///   `llm_overrules_soft_rail`) and stay rails without one.
     /// - The local model may raise: to current facts, to a workspace need, or
     ///   (needs_tools `execution`) to work. An `action` label with no execution
     ///   need, where no rail stands, reads as an `explain` answer.
@@ -411,10 +552,18 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         }
         let classifier = localClassifierPrefix + model
         let labelled = TaskType(rawValue: local.taskType.rawValue) ?? .unknown
+        // Build 441 part 3: under an adopted local reading only the HARD rails
+        // stand; a soft order, generic programming word or adverbial
+        // demonstrative is the local reading's to decide.
+        let hardWork = workRail && hardWorkRail(k), hardWorkspace = workspaceRail && hardWorkspaceRail(k)
+        let softYield = (workRail && !hardWork) || (workspaceRail && !hardWorkspace)
+        // The keyword's answer kind without a soft order (an order is what made it work).
+        let keywordKind: AnswerKind = k.answerKind == .work && !hardWork ? .unknown : k.answerKind
+        let keywordTool: ToolNeed = k.toolNeed == .workspace && !hardWorkspace ? .none : k.toolNeed
         let reading = ["llm_task_" + local.taskType.rawValue, "llm_difficulty_" + local.difficulty.rawValue,
-                       "llm_tools_" + local.needsTools.rawValue]
+                       "llm_tools_" + local.needsTools.rawValue] + (softYield ? ["llm_overrules_soft_rail"] : [])
         let workTask: TaskType = [.action, .write, .design].contains(labelled) ? labelled : textOperation ? .write : .action
-        if workRail {
+        if hardWork {
             return finish(.work, k.toolNeed, .unknown, workTask, classifier, reading + (workTask != labelled ? ["rail_overrules_llm"] : []))
         }
         // Only the tool need raises to work (needs_tools `execution`). An
@@ -422,22 +571,22 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         // tool rail stands, is a request for an answer ("오늘 환율 알려줘" read
         // as action/light/current_facts on 2026-10-27): it reads as explain.
         if local.needsTools == .execution {
-            let tool: ToolNeed = k.toolNeed == .none || k.toolNeed == .currentFacts ? .workspace : k.toolNeed
+            let tool: ToolNeed = keywordTool == .none || keywordTool == .currentFacts ? .workspace : keywordTool
             return finish(.work, tool, .unknown, workTask, classifier, reading + ["llm_raised_work"])
         }
         let task: TaskType = labelled == .action ? .explain : labelled
         let unlabelled = labelled == .action ? ["llm_action_without_execution"] : []
         let difficulty: Difficulty = quality ? .deep : Difficulty(rawValue: local.difficulty.rawValue) ?? .standard
         let lowered = k.answerKind == .answerOnly && k.difficulty != difficulty ? ["llm_sets_difficulty"] : []
-        if workspaceRail || local.needsTools == .workspace {
-            let kind: AnswerKind = workspaceRail ? k.answerKind : .answerOnly
+        if hardWorkspace || local.needsTools == .workspace {
+            let kind: AnswerKind = hardWorkspace ? keywordKind : .answerOnly
             return finish(kind, .workspace, difficulty, task, classifier,
-                          reading + unlabelled + (workspaceRail ? [] : ["llm_raised_tools"]) + lowered)
+                          reading + unlabelled + (hardWorkspace ? [] : ["llm_raised_tools"]) + lowered)
         }
         if textOperation {
             let writeTask: TaskType = [.write, .design].contains(task) ? task : .write
-            let tool: ToolNeed = factsRail || local.needsTools == .currentFacts ? .currentFacts : k.toolNeed
-            return finish(k.answerKind, tool, .unknown, writeTask, classifier,
+            let tool: ToolNeed = factsRail || local.needsTools == .currentFacts ? .currentFacts : keywordTool
+            return finish(keywordKind, tool, .unknown, writeTask, classifier,
                           reading + (writeTask != labelled ? ["rail_overrules_llm"] : []))
         }
         // No rail: the local reading decides; it may only raise current facts.
