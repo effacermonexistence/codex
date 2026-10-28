@@ -25,8 +25,8 @@ check(app.includes('OS1AppearanceSettingsRow(accent: store.appSettings.resolvedA
 // contract is now the explicitly user-authorized procedural voxel replacement.
 const scene=read('SimulationGarden/src/voxel-scene.js'),world=read('SimulationGarden/src/voxel-world.js');
 check(scene.includes('normalizeAccent(value)')&&scene.includes('this.world?.updateAccent(next)')&&scene.includes('this.workforce?.setAccent(next)'),'same validated native accent reaches world and worker materials');
-check(world.includes('materials.accent.color.set(hex)')&&world.includes('this.hatMaterial.color.set(hex)')&&world.includes('this.selection.material.color.set(hex)'),'voxel architecture, hats and selection use the shared accent');
-check(scene.includes('container.clientWidth')&&scene.includes('container.clientHeight')&&scene.includes('this.renderer.setSize(w,h,false)'),'voxel viewport resizes to native available space, not fixed screenshot dimensions');
-check(!/classic-reference\.png|classic-terrain\.png|scv-body\.png/.test(scene),'historical artwork is not an active visual fallback');
+check(world.includes('materials.accent.color.set(hex)')&&world.includes('this.teamMaterial.color.set(hex)')&&world.includes('this.selection.material.color.set(hex)'),'industrial Command Center, mechanical team panels and selection use the shared accent');
+check(scene.includes('this.renderer.setSize(640,316,false)')&&scene.includes('canvas(640,480)'),'original640x480HUD stage and640x3163Dground viewport remain locked');
+check(scene.includes("loadImage('./classic-reference.png')")&&scene.includes('drawImage(this.hudImage,0,316,640,164,0,316,640,164)')&&!/classic-terrain\.png|scv-body\.png/.test(scene),'original source HUD is cropped below the3Dfield; mechanical units are not source sprites');
 check(JSON.parse(read('SimulationGarden/package.json')).dependencies.three==='0.180.0','3D renderer is pinned locally, not a floating CDN dependency');
 console.log(JSON.stringify({status:'PASS',checks,scope:'native accent normalization/origin gate and active voxel material/viewport source contracts; no provider calls or GPU pixel claim'}));

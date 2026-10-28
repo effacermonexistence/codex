@@ -1,50 +1,50 @@
-# OS1 Voxel Workshop
+# OS1 Terran — voxel style only
 
-Minecraft-inspired **procedural 3D presentation** for the existing OS1 session engine. Native entry remains `os1.rail.simulation` (시뮬레이션). `src/main.js` uses `VoxelScene`; existing native UUIDs, titles, send/stop/new methods, permissions, drafts, queues and provider sessions remain authoritative.
+**StarCraft objects and layout stay fixed; Minecraft is a rendering style, not permission to replace them.** The active scene is SCV utility mechs, an industrial Terran Command Center, eight blue mineral crystal banks, flat grass/dirt and the original classic HUD. No human miners, lodge, village, island or wooden scenery belongs to this target. The superseded humanoid/lodge scene is not an accepted visual baseline or fallback.
 
-## Active visual architecture
+Native entry remains `os1.rail.simulation`. `src/main.js` uses `VoxelScene`; existing OS1 UUIDs, names, send/stop/new paths, permissions, drafts, queues and provider sessions remain authoritative. This is a static presentation change against native build 441, not another engine or session database.
 
-`voxel-scene.js` and `voxel-world.js` build real Three.js block geometry: terrain, trees, water, mining lodge, ore banks and articulated humanoid miners with pickaxes. Terrain and worker parts are instanced; worker limbs, yaw and cargo follow the shared native-driven motion state. Canvas textures are generated locally for block surfaces, contact shadows and text labels. No active screenshot plane, SCV sprite sheet, remote texture, CDN, external font or network art loader is used.
+## Object and layout floor
 
-Three.js is pinned to **0.180.0**, bundled locally by Vite, with `THREE-LICENSE.txt` retained. WebGL failure displays an explicit alert; it is not silently replaced with the earlier scene or fake activity. The viewport follows available native window space rather than a fixed screenshot ratio. This is a replacement design, not a pixel-identical restoration claim.
+- **SCV:** mechanical chassis, enclosed cockpit, plated legs, claw, drill arm/rotor, team panels and blue cargo. It is not a human avatar renamed SCV. Claude may use the original gold hovering **Probe** identity; unknown routing remains a pending SCV appearance rather than an asserted provider identity.
+- **Command Center:** stacked octagonal industrial metal hull, raised control structure, silver loading ramp, segmented team paint and vents/pipes. Its ground anchor remains `BASE = (350,205)`.
+- **Minerals:** all eight banks remain blue crystal clusters at the unchanged `MINERALS` coordinates. Provider observations may affect quantity/brightness, not replace blue crystals with purple rocks or another object class.
+- **Ground:** flat grass/dirt. Block geometry/materials provide the style; a new island, village, trees or terrain composition must not replace the original battlefield.
+- **Default projection:** the original `640×316` ground layout is locked by an orthographic camera and depth compensation. Actual Three CPU projection tests check the Command Center and all eight mineral anchors within one pixel. This is a ground-coordinate test, not a whole rendered-frame pixel-identity claim. Pan/zoom are explicit view changes; fit restores the reference view.
 
-The **17 declared bundled files plus `manifest.json`** remain the established package inventory. Legacy `classic-reference.png`, classic sprite/terrain PNGs and provenance JSON files remain **unloaded historical/recovery assets**; their byte identities are checked, but they are not an active fallback. Their presence does not mean that classic graphics are rendered. Only the compiled entry JS/CSS and entry HTML change appearance.
+The source floor is independently tested through actual geometry parts, octagonal hull primitives, crystal vertex colors, flat ground and projected coordinates—not merely object labels. A style-only request must not silently change object identity, scope or criterion. The earlier substitution is covered by existing object-substitution/criterion-drift/enforcement rules; no new foundational primitive is introduced.
 
-## Session and result contract
+## Original HUD authority
 
-- **One miner = one actual OS1 session UUID.** All admitted working and queued sessions remain on the field independently of six-row roster pages or search. Historical sessions stay accessible without flooding the initial world.
-- **Working:** the authoritative native `working` state drives base → ore → mining → cargo return → repeat. Independent workers can run concurrently. Trips and limb motion are cosmetic activity, not measured progress or token consumption.
-- **Idle, queued, failed and terminal:** motion and body pose freeze. Queued work is not represented as executing. A terminal result marker means a result awaits review, not that quality or success is certified.
-- **Inspection and retirement:** the result must belong to the current request, selected UUID and exact revision. Its native status/partial/error/receipt boundary is retained. Displaying the result records inspection; the owner must then explicitly confirm it. Only the accepted native review receipt removes that miner from the world.
-- **Retirement is not deletion.** It does not archive/delete the conversation, alter messages, purge queues or approve task quality. Bounded private `simulation-presentation.json` receipts are presentation state, not another session database. Inspection/review do not call draft-saving native selection.
-- **Reassignment:** accepted work on the same UUID brings the same miner back without creating another session. Existing native draft, permission, execution and queue gates remain unchanged.
+The fixed `640×480` classic stage, bottom HUD, portrait, wireframe, minimap positions and command hotspots are restored from the native441 source baseline. Only the upper `640×316` battlefield is rendered in 3D.
 
-## Resources, unknowns and appearance
+The bundled original `classic-reference.png` is the HUD authority (SHA-256 `8a03f347f2d5f6536054249db4eaae09cd1c7c48cc21f0d686b7e2eadf88a71a`). `drawHUD` copies **only source rows 316–479** to the same destination rows; the source screenshot's upper battlefield is never painted behind the 3D view. The wireframe uses its original source rectangle and the accepted accent tint. Dynamic minimap/session text overlays are intentional, so the entire HUD/frame is not advertised as pixel-identical.
 
-Only supplied native observations drive resource presentation. Valid complete RCC telemetry supplies **observed token use for the current request**, not lifetime conversation spend. Cached provider data may separately supply **remaining quota percentage**, source, freshness/retained-estimate basis and observation time. Percentages are never converted into absolute token balances. Published quota is account-scoped and filtered again after account/provider changes; account identifiers do not enter the WebKit payload.
+The 17 declared bundle files plus `manifest.json` retain the established package inventory. `classic-reference.png` is actively used for the HUD; sprite/terrain atlases and provenance JSON remain unused historical/recovery assets. They are not a flat-sprite battlefield fallback. Three.js is pinned locally to **0.180.0** with its license; 3D field geometry and small procedural textures need no CDN, external image/font or network loader. WebGL failure is an explicit alert, not a silently substituted theme.
 
-Unmeasured or unusable balances stay unknown: neutral ore location markers and explicit `? 미측정`, never fabricated zero/full blue banks. Exact zero and exact full are distinct from any partial positive ratio. Partial ore retains at least one and at most eleven visual chunks; those chunks are an abstract ratio display, **not a token count**. Tiny or near-full percentages use `<0.1%` / `>99.9%` rather than rounding into false endpoints. Raw observations are not rounded or changed.
+## Sessions, results and resources
 
-OS1 Settings → Appearance remains the single accent authority. Default OS1 Pink is `#EDB3CC`; native theme changes recolor shared building, hat and selection materials without replacing sessions, restarting work or changing motion phase.
+One worker is one actual native session UUID. All admitted working/queued sessions remain on the field regardless of six-row roster pagination/search. Native `working` alone advances base → minerals → drilling → cargo return. Terminal, stopped, failed and queued states freeze position, phase, cargo and mechanical pose; queued is not executing. Animation trips are not measured progress or token consumption.
 
-## Preview and controls
+A returned result retains the native current-request status/partial/error/receipt boundary. The selected UUID and exact revision must first be displayed, then explicitly confirmed through the existing native review gate. Only the accepted receipt retires the worker visually. This does not delete/archive the session, edit messages, purge queues or certify quality. Inspection/review do not enter draft-saving native selection. Accepted reassignment on the same UUID restores the same worker without duplicating the session. Presentation receipts remain bounded/private `simulation-presentation.json` state.
 
-**동작 미리보기 · 실제 작업/토큰 아님** identifies a separate synthetic 12-miner cohort. Pause, resume, finish/review and example-quota controls invoke no providers. Native controls are disabled and every native bridge dispatch is also blocked. Synthetic IDs, results and examples never enter native state. Mode changes clear visible instance cohorts without displaying preview miners as live work; native positions remain available when returning to **실제 세션으로**.
+Validated RCC telemetry is observed usage for the current request, not lifetime spend. Account-scoped provider quota percentages remain separate from absolute token quantities. Account/provider scope is rechecked after asynchronous reads and before snapshot publication; account identifiers do not enter WebKit data. Missing/unusable balances stay explicitly unknown with dim blue markers and `? 미측정`, not fabricated zero/full quantities. Exact0/100 endpoints remain distinct from partial ratios; tiny/near-full labels use `<0.1%`/`>99.9%`, without altering raw values. Visual chunks are ratio markers, not a token count.
 
-Click a miner to select it. Wheel zooms; right-drag orbits; Shift/middle-drag pans. The 1–9 hotbar exposes new miner, prompt, stop, result, focus, map, reassign, chat and menu. Native command modifiers are not stolen by game shortcuts. Provider-visible execution begins only through the existing native send path.
+OS1 Settings → Appearance is the single accent authority (`#EDB3CC` default pink). Building/team panels, selection and accepted wireframe tint share it; recoloring does not recreate sessions or change routing/state.
 
-## Bounded rendering cost
+## Preview, controls and rendering cost
 
-The static world uses shared geometry, procedural textures and instanced terrain. Workforce body/shadow/marker parts use at most **30 instanced batches across three appearance classes**, rather than a separate draw-call rig per session; this is not a claim that the entire frame has only 30 draw calls. Larger workforces disable per-miner dynamic shadow casting while keeping all identities represented.
+The prominently labeled model-free 12-worker preview is a separate synthetic cohort. Pause/resume/finish/review/example quota controls make no provider calls; native bridge dispatch is hard-blocked. Synthetic IDs/results never enter native state. Mode changes clear visible instance cohorts without blending preview objects into live work; returning to actual sessions preserves their positions.
 
-Pixel ratio is capped at 1.5. Sustained slow frame scheduling can lower it to 1.0 and reduce the shadow map from the high setting to 1024. Camera interpolation remains smooth. Hidden surfaces suspend rendering, and a visible but idle world with a settled camera does not continuously submit GPU frames. Resize, selection, theme and snapshot changes redraw on demand. Diagnostics report the renderer's observed FPS/draw calls and quality mode; these are separate from backend activity and token evidence.
+The original command hotspots and minimap remain in place. Click a worker/list row, use G/Enter for a prompt, S stop, N new session, F9 roster, F10 menu, F11 result and F12 diagnostics. Wheel zooms and right/middle/Shift-drag pans the reference battlefield. Native command modifiers are not stolen.
+
+Geometry/materials are shared and worker parts are instanced; tests retain 300 distinct worker identities with bounded mechanical batches rather than dropping parallel units. DPR is capped at 1.5, with a 1.0 / 1024-shadow balanced mode after sustained slow scheduling. Large workforces reduce dynamic shadow cost. Hidden views suspend rendering; a visible idle field with a settled camera does not submit perpetual GPU frames. These are implementation bounds, not a promise of measured FPS on every device.
 
 ## Verification and deployment boundary
 
-From this folder:
+Run from this folder:
 
 ```sh
-node ../scripts/build-simulation-garden.mjs
 node ../scripts/test-simulation-garden.mjs
 node ../scripts/test-gameplay-contract.mjs
 node ../scripts/test-voxel-scene.mjs
@@ -52,8 +52,6 @@ node ../scripts/test-terran-motion.mjs
 node ../scripts/test-classic-theme.mjs
 ```
 
-The last script keeps its historical filename for release callers; its active visual checks now cover native accent and voxel materials/viewport, not obsolete classic rendering. Source tests preserve the native origin/main-frame/UUID gates, current-result review boundary, account-scoped quota and exact artifact manifest. The nine maintained field/motion tests remain unchanged.
+Source/security tests retain 17 strict native/origin/result/account-scope/artifact gates. Main lifecycle tests use an explicit renderer facade double. The actual-class CPU tests execute real SCV/Probe/Command Center/crystal geometry and Three projection/state with DOM/HUD-raster/WebGL-driver doubles. Source HUD SHA/crop verification is **not output-pixel proof**. Actual GPU/browser/native UI and installed data preservation require separate operator receipts. Earlier human/lodge assertions were the wrong target and are not accepted evidence for this scene.
 
-`test-gameplay-contract.mjs` executes actual main/field/motion code with an **explicit VoxelScene renderer test double**. `test-voxel-scene.mjs` executes the actual scene/world plus pinned Three CPU geometry and state with **DOM surfaces and the WebGL driver doubled**. They check lifecycle, pose freeze, parallel identities, resource boundaries, scene isolation, CPU raycast, rendering budgets, disposal and visible failure handling. Neither is real GPU pixel/FPS/cost, native UI or provider-run proof. Actual native rendering, installed artifact identity and preservation require separate receipts.
-
-This task is a static presentation update against the installed 441 source baseline: no native engine field, RPC, session schema, permission or provider implementation is changed by these frontend files. Deployment belongs to the existing verified, queue-preserving installation path and must preserve the current native binaries, CLI/configuration, messages, queues and signer continuity. Source/build success alone is not an installation or user-adoption claim.
+Native source, CLI, configuration, capabilities, provider behavior and stored session/queue objects are outside this frontend change. Deployment belongs to the verified queue-preserving installation path, with current baseline and signer checks. Code-signature renewal may change signed executable bytes; unchanged native payload must be verified separately rather than described as whole-file byte identity. Source/tests/staging alone do not prove installation or visual adoption. Publication of the superseded Minecraft-world concept is postponed; only the corrected object may proceed through its own adoption gate.
