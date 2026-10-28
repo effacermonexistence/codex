@@ -1,0 +1,56 @@
+{
+  "excerpts": {
+    "claude-pricing.excerpt.html": {
+      "bytes": 32805,
+      "cut": "the base price <table> verbatim from its start up to its Claude Mythos 5.1 row (thead, the five lead rows, the 'Additional models' group header and the next <tbody> opening), then its Claude Opus 5 and Claude Haiku 4.5 rows and '</tbody></table>'; a newline; the batch <table> through its Claude Fable 5.1 row and '</tbody></table>'; a newline",
+      "from": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "sha256": "0129809298dae7542b43258e827381dacdbb7aad3c64b6a6df847a791a0473ea"
+    },
+    "claude-pricing.excerpt.md": {
+      "bytes": 3670,
+      "cut": "lines 11-16 (heading and table header) with rows 17, 21, 22, 27, 29, 34, 35, 36 (Fable 5.1, Opus 5.5, Opus 5, Opus 4.1, Sonnet 5.5, Haiku 5.5 x2, Haiku 4.5), a blank line, then lines 184-190 (batch table head and first rows), verbatim",
+      "from": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+      "sha256": "8fbafd215164897419a509072a3c96c889c0f133246fbd1f74e630f8374b6257"
+    },
+    "openai-pricing.excerpt.html": {
+      "bytes": 8749,
+      "cut": "the TextTokenPricingTables astro-island start tags of the standard (flagship), batch and standard (cyber model group) tiers, verbatim and in page order, each followed by a newline",
+      "from": "https://developers.openai.com/api/docs/pricing",
+      "sha256": "46173428bba808830628c572aa2b48ed8a2a57cb5ee38f6a5a529165a590b3e0"
+    },
+    "openai-pricing.excerpt.md": {
+      "bytes": 2718,
+      "cut": "lines 31-44 (flagship Standard pricing data table), 85-94 (Batch table, first rows) and 245-251 (cyber Standard pricing data table), verbatim, sections separated by one blank line",
+      "from": "https://developers.openai.com/api/docs/pricing.md",
+      "sha256": "a2edb76d882f3a77af9631929c366bc85bd84dd393100ce3c36c77595e4797d8"
+    }
+  },
+  "note": "Minimal verbatim excerpts of the providers' own pricing pages for the os1 pricing refresh parser fixtures. The full pages are not kept; their hashes identify the copies the excerpts were cut from.",
+  "pages": [
+    {
+      "bytes": 582552,
+      "fetched_at": "2026-10-27T23:46:25Z",
+      "sha256": "fe2aa78e0f5567fa6a1aa779da0513d71a374eb5cf38da0160ff4e9a8ecec4c9",
+      "url": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "bytes": 22824,
+      "fetched_at": "2026-10-27T23:48:02Z",
+      "sha256": "93d302a9b7a384877533bc3ab5bb48eebf4b56bd6add0f194095054b2a13f952",
+      "url": "https://developers.openai.com/api/docs/pricing.md"
+    },
+    {
+      "bytes": 1336208,
+      "fetched_at": "2026-10-27T23:46:26Z",
+      "sha256": "6d36b9fe0f3167a693c946560b4546f119cfdcbf67d6ad728338716a12835418",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "bytes": 53425,
+      "fetched_at": "2026-10-27T23:48:02Z",
+      "sha256": "31ba8ce4d0f3b4b6a4e96e53e6edb58ccd3cb1ccea5916576e0e230549b72670",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+    }
+  ],
+  "schema": 1
+}
