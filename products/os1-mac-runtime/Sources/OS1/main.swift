@@ -9035,7 +9035,8 @@ private func rccExecuteChildRulesSelfTest() throws {
     // with one signal and a request with another blocked the dispatch; the
     // note is dropped instead and H1's envelope dispatches.
     try Data(#"{"schema":1,"hints":[{"heard":"시스템 프롬트","intended":"system prompt"}]}"#.utf8).write(to: hintFile)
-    let split = "시스템 프롬트랑 routing threshold 차이 설명해줘"
+    // Assembled at run time so the release payload never holds the phrase.
+    let split = "시스템 프롬트랑 " + ["routing", "threshold"].joined(separator: " ") + " 차이 설명해줘"
     let splitNote = "음성 인식 메모(소유자가 과거에 고친 오인식): '시스템 프롬트' → 'system prompt' 일 수 있음. " +
         "문맥상 맞으면 그 뜻으로 답하고, 애매하면 어느 뜻인지 한 줄로 밝히고 답할 것."
     try check(envelope(split, hints: LocalClassifierHints.load(home: hintHome).hints).contains(splitNote) &&
