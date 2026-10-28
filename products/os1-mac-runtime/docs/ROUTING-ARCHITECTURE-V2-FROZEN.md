@@ -27,6 +27,35 @@
     - **가격 기반 선택.** Swift가 행마다 `estimated_cost_units`에 `ModelPriceTable.current()`(하루 한 번 refresh, 아니면 compiled)의 typical call USD를 싣는다(local 행은 0). Core는 고른 목록 안에서 **모든 pool**의 dispatch 가능한 행 가운데 가장 싼 것을 고르고, 같으면 R11 순서(pin, affinity, quota score, pool 순서, 그다음 목록 순서)로 정한다. quota 소진 행과 stale 행은 그대로 빠진다. 가격 없는 catalog(옛 host)는 part 1 순서 그대로다(`cost_unpriced`). cheap-first 판단을 reason에 남긴다. 기대 비용 = cheap + p_fail × reference를 reference와 비교한다. p_fail은 tier별 사전값이다(옛 ledger: luna low 11회 중 3회, sol medium 14회 중 0회; Laplace (f+1)/(n+2); 기록 없는 tier와 local은 1/2; `TIER_FAILURE_PRIORS`). token `cheap_first`/`reference_first`와 `expected_usd_*`, `reference_usd_*`, `p_fail_*`가 남는다. `reference_first`면 레퍼런스를 bind하고 note `graded_<grade>_reference_first`를 남긴다. 품질 주장은 하지 않는다. reason에는 `graded_profile_<list>`와 `classifier_local_llm`/`classifier_keyword`도 붙는다.
     - **K7 넓힘.** 한국어 '무엇' 술어(뭐야, 뭐냐 계열)가 음이 아닌 일반 정수 둘 사이의 ASCII '-' 하나를 물으면 계산기가 정확히 답한다("1-1은 뭐냐?" → 0; qwen 9B는 틀렸다). '/'(날짜 읽기), 연산자 둘 이상, 소수, 부호, 앞자리 0, 네 자리 수 둘(연도 범위 "2021-2022는 뭐야?"), 영어 "what is 7-11?"은 그대로 보류한다. 공유 벡터에서 "3-4는 뭐야?"(점수)와 "9-5는 뭐야?"(근무 시간)가 보류에서 값(-1, 4)으로 바뀌었다(설계가 요구한 모양 그대로다). '+'는 원래 모호하지 않으므로 "1+1은 뭐냐?"는 전부터 답했다.
     - **그대로인 것.** 오너 단어, explicit route, 인증 출처, escalation 1회 사다리, cap과 headroom, 단일 node 규칙, 라벨(`graded:<grade>`, `admitted_graded_<grade>`). graded route와 local route는 예측이지 인증이 아니다. bridge pin `rccRuntimeModuleSHA256`을 다시 고정했다. 품질 동등성과 쿼터 절감은 측정하지 않았다.
+  - **변경 2 part 3: soft/hard rail, local chat 말투, classifier 미리 데우기 (같은 날 lead 결정, build 441 part 3).** part 2의 실측(243 요청)에서 남은 과지출의 대부분은 키워드 rail이 local 읽기를 이긴 경우였다. "심심한데 아무 얘기나 해줘"는 local이 chat으로 읽었는데 "해줘" 주문 rail 때문에 astra로 갔고, "만들어", "해줘", "함수", "모델" 오탐이 나머지를 차지했다. 바뀐 것은 아래다.
+    - **hard rail.** local 읽기가 절대 낮추지 못한다. 대상은 다음과 같다.
+      - write scope(`ScopeResolution`), shell 필요, 이름 붙은 경로, 이미지, 첨부 material과 source.
+      - 오너 자신의 파일과 기기("내 데스크탑에 있는 보고서", "my documents"; 새 신호 `owner_material`). "해줘"가 soft가 되면서 이런 요청을 혼자 붙잡을 rail이 없어져 넣었다. 키워드 fallback에서도 workspace다.
+      - external system, 외부 행동, 배치·전달 주문. 예: 보내, 올려, 남겨, 저장, 전달, 메일로, 카톡으로, post/email/send/save/upload/publish/share, "…에 적어/써/정리". "…에 대해 써줘"와 "…안에 써줘"는 장소가 아니다.
+      - 편집·상태·계속 주문(고쳐, 수정, 바꿔, 지워, 했냐, 됐어, 계속, 진행, 시작)과 코드 객체 정의("User 타입 정의해줘"). 실측에서 9B는 이 정의 요청을 explain/standard로 읽었다.
+      - 내용 없는 대동사("그럼 실제로 해봐", "다시 해봐", "빨리 해").
+      - 오너 프로젝트와 OS-1 어휘(ASR 철자 포함). `projectTerms`, `workspaceTerms`, `localWorkTerms`, 작업공간 상태 어휘, 경로·파일 이름, 그리고 `technicalTerms` 가운데 라우팅·쿼터·routing·quota다.
+      - 특정 대상을 가리키는 기술어("the error", "우리 서버").
+      - 상태 check-in과 상태 질문, 실패 호소.
+      - 이전 턴 참조와 지시대명사·지시관형사+명사. 예: 아까, 방금, 전에 말한, what you said, 이거/그거, "이/그/저 + 명사", "위에 쓴 거", "this concept". 의문사 앞의 "이"("방정식 이 뭐야?")와 "this week" 같은 시간 표현은 제외한다.
+      - current_facts, text operation, 가장 강한 모델이나 think hard 요청.
+    - **soft rail.** local 읽기가 채택되면 그 읽기가 정한다. 키워드 fallback에서만 전처럼 rail로 남는다. 대상은 다음과 같다.
+      - 외부 효과 없는 일반 명령 어미(신호 `soft_order`): 해줘, 해봐, 해라, 하라, 써줘, 적어, 정리해, 짜줘/짜봐, 그리고 영어 make/create/write/draft/compose/implement.
+      - 일반 질문 속 프로그래밍 단어(신호 `soft_material`): `technicalTerms`의 나머지(함수, 변수, 클래스, 메서드, 에러, 오류, 버그, 서버, 데이터베이스, 토큰, 모델, api, sdk, function, class, model 등).
+      - 명사 지시 대상이 없는 부사·장소 지시어(신호 `soft_deictic`): 이렇게, 그렇게, 이런, 그런, 거기, 저기, 위에, 아래. 예: "왜 이렇게 떨어졌는지", "저기압", "위에 좋은 음식".
+    - **판정 방식.** 키워드 프로필은 rail이 soft 증거만으로 섰을 때 위 신호를 붙이고, answer_kind·tool_need·difficulty 판정은 바꾸지 않는다. `railsDecide`는 hard rail만 본다. soft rail만 있으면 local에 묻는다. `combine`은 local 읽기가 있으면 hard rail만 세우고 신호 `llm_overrules_soft_rail`을 남긴다. local은 여전히 어떤 rail로든 올릴 수 있다. local 결과가 없으면 soft rail도 전처럼 rail이다.
+    - **"만들어".** soft 어미지만 `ScopeResolution`이 모든 "만들어"를 쓰기 주문으로 읽고(`positiveEdit` 부분문자열), write scope는 hard다. 그래서 "예시 하나 만들어봐"는 work(레퍼런스) 그대로다. local도 write로 읽어 정책 A면 결과가 같다. "블랙홀은 어떻게 만들어져?"와 "치즈는 어떻게 만들어?"도 여전히 쓰기로 읽혀 레퍼런스로 간다. 실행 권한을 정하는 `ScopeResolution`을 바꿔야 고칠 수 있어 이번에는 건드리지 않았다(미해결 항목).
+    - **local chat 말투 (`rcc-plugin.mjs` `localWorkerStyle`).** Core는 local이 chat·light·도구 없음으로 읽었을 때만 Auto node를 local 행에 묶는다. 그런 ticket(explicit route 없음, 산수 아님)은 대화용 system prompt를 받는다. 요청 언어로 짧고 자연스럽게 답하고, 한 일·확인·전송을 주장하지 않으며, 지시나 내부 규칙을 말하지 않는다. explicit route(route-all과 named)와 정확 산수 지시는 "final result only" prompt 그대로이고, 정확 검사기도 그대로다. 대화 답은 execution-only 전달이며 task-verified가 아니다. bridge pin `rccRuntimePluginSHA256`을 다시 고정했다. `rcc-runtime.mjs`는 바뀌지 않았다.
+    - **classifier 미리 데우기 (`LocalRequestClassifier.keepWarm`).** App의 기존 idle poll(frontier monitor, 5분 간격)을 쓰고 새 루프는 없다. 다음 셋을 모두 만족할 때만 움직인다: 실행 중인 run이 없음, memory pressure normal, 오너가 2시간 안에 요청을 보냈거나 App을 열었음. 그때 `/api/ps`에 classifier 모델이 없으면 생성 없는 적재 요청(`/api/chat`, messages 없음, `keep_alive` 30m)을 한 번 보내고, 남은 상주가 10분 아래면 연장한다. Ollama client는 `RoutingOrderInterpreter`의 것 하나다.
+    - **실측 (2026-10-27, 16 GB Mac, Ollama 0.35.1).** 9B는 5.63 GB(context 4096), OpenClaw 4B는 4.35 GB(context 32768)를 상주로 쓴다. Ollama는 둘을 함께 두지 않았다. 어느 쪽을 적재해도 다른 쪽이 내려갔고, swap은 이미 약 10.5 GB 사용 중이었다.
+      - 적재(page cache에서): 9B 4.3-5.0 s, 4B 2.2-3.1 s. 연장 요청은 0.04-0.05 s다.
+      - 분류: cold(모델 미상주, page cache) 7.3 s, warm 3.0-4.0 s, OpenClaw 4B가 9B를 내린 뒤 8.2 s. 모두 12 s 상한 안이다. 디스크에서의 cold 적재(10-16 s)만 상한을 넘는다.
+      - 기본값: 9B를 오너 활동 창 안에서, memory pressure가 normal일 때만 데운다. 창 밖에서는 마지막 사용 30분 뒤 내려간다. local chat 답(4B)은 9B를 내리고, 다음 분류가 재적재 약 4-8 s를 치른다.
+    - **실측 route (zero quota, 같은 243 요청, 실제 9B).** local 읽기는 part 2와 하나도 다르지 않았다(temperature 0, seed 7). 지연은 median 4.1 s, p90 4.6 s, max 5.4 s이고 243개 모두 채택되었다. local에 묻는 요청은 150개에서 174개로 늘었다.
+      - route: astra ultra 103 → 89, sol medium 105 → 115, luna low 30 → 33, local 2 → 3. 계산기 2와 harness 한계 1(astra high 행 없음)은 그대로다.
+      - 내려간 14개: "파이썬으로 피보나치 함수 어떻게 짜는지 알려줘", "비트코인 가격이 왜 이렇게 떨어졌는지 설명해줘", "What did OpenAI announce this week?"는 sol. "고기압과 저기압의 차이 설명해줘", "저기압이 뭐야?", "지수 함수가 뭐야?"는 luna. "위에 좋은 음식이 왜 좋은지 설명해줘", "슈뢰딩거 방정식 이 뭐야?"와 "얘기해봐", "해설해줘", "자세하게 해봐", "더 해줘", "제대로 해봐"는 sol. "심심한데 아무 얘기나 해줘"는 local이다.
+      - 새로 묻게 된 나머지 10개(에세이, 이메일, 보고서, 커버레터, 소설, 투자자 메일, QMGR, PPT, 합의 알고리즘, 트롤리 논증)는 local이 write, design 또는 deep으로 읽어 레퍼런스 그대로다.
+      - 이 14개 가운데 local의 오독으로 route가 바뀐 것은 없다. 경계 사례는 하나다: "고기압과 저기압의 차이 설명해줘"는 light(luna)로 읽혔고, 키워드라면 standard다.
 
 ### §8 오너 질문 기본값 (오너가 따로 정하기 전까지 적용)
 
@@ -179,8 +208,16 @@
 - bridge `rcc-runtime.mjs` 103행 주석 "(rcc-class-table.json, empty as shipped)"은 build 440 표와 맞지 않았다. 변경 2의 bridge 재고정 때 고쳤다.
 - 변경 2의 RCC chat-lane 사실 확장(도구 없는 `answer_only`)은 chat_lane_predicate_v1의 RCC 쪽 변경이다. native 술어와 H0 golden은 그대로라 golden은 이 변경을 잡지 않는다(변경 1과 같은 처지). build 441의 H1 descriptor가 chat_lane_predicate_v1을 포함하므로 이 확장도 H1 아래에 있다(golden 재고정은 merge 뒤).
 - 변경 2 part 2의 K7 넓힘은 "3-4는 뭐야?"(점수)와 "9-5는 뭐야?"(근무 시간)를 계산기로 답한다(설계가 요구한 모양이다). 이것을 막으려면 '-' 앞뒤 수의 범위나 문맥으로 더 좁혀야 하고, 오너 결정이 필요하다.
-- 변경 2 part 2의 local classifier는 cold 적재(10-16 s)를 12 s에서 끊는다. 30분 넘게 쉬면 첫 요청은 키워드 프로필로 간다. 미리 데우기는 넣지 않았다.
+- 변경 2 part 2의 local classifier는 디스크 cold 적재(10-16 s)를 12 s에서 끊는다. part 3의 미리 데우기는 오너 활동 창(2시간) 안에서만 돈다. 그래서 오래 쉰 뒤 App을 다시 쓰기 전 첫 요청, memory pressure가 normal이 아닐 때, OS-1 CLI만 쓸 때(App이 없으면 poll도 없다)는 여전히 키워드 프로필(soft rail 포함)로 갈 수 있다. 9B와 OpenClaw 4B는 이 Mac에서 함께 상주하지 못한다. local chat 답과 explicit local route는 다음 분류에 재적재(약 4-8 s)를 얹는다. local chat을 9B로 돌리거나 classifier를 32K context의 4B로 공유하면 없어지지만, 둘 다 별도 결정이다.
 - 정책 B(`workhorse_first`)는 구현과 fixture만 있고 내보내지 않았다. B를 켜는 durable Core 옵션은 없다(resolver fixture 옵션만 있다).
+- 변경 2 part 3 뒤에 남은 hard rail 과잉 상승(비용만 든다, 243 요청 실측 16개).
+  - `ScopeResolution`이 의문·피동 "만들어"를 쓰기로 읽는다: "블랙홀은 어떻게 만들어져"(2), "치즈는 어떻게 만들어?", "무지개는 어떻게 만들어지는지".
+  - `workspaceTerms`와 `localWorkTerms`의 일반어가 부분문자열로 걸린다: "자바스크립트"(스크립트), "로그 함수", "튜링 테스트", "코드 진행", "토마토 소스", "bank account", "the usage of whom".
+  - OS-1 backend 이름: "GPT랑 Claude 차이".
+  - 상태 질문 어휘 "됐는지": "GPT-6 언제 출시됐는지".
+  - 문장 안에서 지시 대상을 이미 받은 지시관형사+명사: "이 계약서 조항 … 제3조: …", "Explain this concept: entropy", "그 이유는".
+  - 반대로 같은 실측에서 local이 놓친 26개(README.md, OS-1과 오너 프로젝트 어휘 5개, 이전 턴 4개, 가장 강한 모델 5개, 배치·전달 7개, 했냐고, 이 함수, 고쳐지는데, 라우팅 왜 astra)는 hard rail이 잡았다.
+  - soft로 바꾼 범주가 만드는 새 위험(lead 결정 그대로다): local은 "이렇게 설명해줘"를 explain/light/none(luna)으로, "모델 선택 기준이 뭐야?"를 explain/standard/none(sol)으로 읽는다. 키워드 프로필은 둘 다 rail(이전 턴, OS-1 질문)이었다.
 - 변경 2 프로필의 과잉 상승(비용만 든다): 주제어가 표지를 켠다("설계도가 뭐야?"·"원인과 결과의 차이"는 deep, "이진 검색"·"가격 탄력성"·"현재완료"는 current_facts, "저기압"·"로그 함수"·"자바스크립트"는 deictic·workspace, `technicalTerms`의 "모델"·"함수"·"class"가 들어간 개념 설명은 workspace). 어미 사이 부사("설명 좀 자세하게 해봐"는 work, "자세히"는 graded), "?" 없는 어간 없는 질문("Who invented the telephone"), ASR 띄어쓰기("방정식 이 뭐야?"), 쉼표·마침표로 끊은 군말("야. 음. …", "Keep it short.")이 같은 내용을 레퍼런스로 보낸다. "블랙홀은 어떻게 만들어져?"는 build 440부터 쓰기 주문으로 읽힌다. 모두 고치면 graded가 넓어지므로 품질 근거 없이 넓히지 않았다.
 - 설계 문서의 안정성 조항은 "뭐야?"를 같은 프로필이어야 할 어미에 넣고, light 규칙은 "X가 뭐야"를 light로 정한다. 구현은 light 규칙을 따른다("슈뢰딩거 방정식이 뭐야?"는 light, "…설명해봐"는 standard). 오너 결정이 필요하다.
 - HOME read-only Claude agent child 격리(H1)는 native 경로와 같은 경계다: 가드는 answer workspace와 OS-1 source만 지키고, 오너 설정의 Bash 허용 규칙이 read-only lane에 합쳐지므로 Bash는 HOME의 다른 곳에 쓸 수 있다. build 440에서는 같은 child가 dispatch 전에 collision으로 멈췄다. 모든 read-only Claude child(프로젝트 workspace 포함)가 같은 처지라 이 변경만의 문제는 아니지만, HOME 전체 쓰기 보호는 별도 결정이다.
