@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Structural gate for the versioned harness profile (routing architecture v2, K15).
 
-`os1 self-test` (harnessProfileSelfTest) renders the shipped harness (H1 since
-build 441) from fixed inputs and compares it with the pinned digest, and
+`os1 self-test` (harnessProfileSelfTest) renders the shipped harness (H2 since
+build 442) from fixed inputs and compares it with the pinned digest, and
 OS1ContextTests checks
 the descriptor. Those stay green if a call site stops using what they test: the
 receipt dropping the profile, the read-only launch going back to `Set` order,
-the self-test unregistered, a literal TTL beside the named constant, or a
-per-attempt id or clock read interpolated into an instruction builder. This
-gate pins those call sites.
+the self-test unregistered, a literal TTL beside the named constant, a
+per-attempt id or clock read interpolated into an instruction builder, or the
+rcc-execute envelope no longer carrying the owner's ASR hints. This gate pins
+those call sites.
 
 Source-level only: no model, provider, Core, network or HOME is touched.
 """
@@ -40,25 +41,34 @@ def section(text, start, end):
     return tail.split(end, 1)[0]
 
 
-# The descriptors: H0 v1 as shipped, then H1 v1 (build 441), both parity
-# unverified with distinct pinned renderings; C4a/C4d pending.
+# The descriptors: H0 v1 as shipped, H1 v1 (build 441), then H2 v1 (build
+# 442), all parity unverified with distinct pinned renderings; C4a/C4d pending.
 h0 = section(PROFILE, "public static let h0 = Descriptor(", "public static let h1 = Descriptor(")
-h1 = section(PROFILE, "public static let h1 = Descriptor(", "public static let current")
+h1 = section(PROFILE, "public static let h1 = Descriptor(", "public static let h2 = Descriptor(")
+h2 = section(PROFILE, "public static let h2 = Descriptor(", "public static let current")
 check('id: "H0"' in h0 and "version: 1" in h0 and "parity: .unverified" in h0,
       "H0 v1 shipped with its parity unverified")
 check('id: "H1"' in h1 and "version: 1" in h1 and "parity: .unverified" in h1,
-      "H1 v1 ships with its parity unverified")
-digests = [re.search(r'renderingSHA256: "([0-9a-f]{64})"', d) for d in (h0, h1)]
-check(all(d is not None and d.group(1) != "0" * 64 for d in digests) and digests[0].group(1) != digests[1].group(1),
-      "H0's and H1's rendering digests are pinned and distinct")
+      "H1 v1 shipped with its parity unverified")
+check('id: "H2"' in h2 and "version: 1" in h2 and "parity: .unverified" in h2,
+      "H2 v1 ships with its parity unverified")
+digests = [re.search(r'renderingSHA256: "([0-9a-f]{64})"', d) for d in (h0, h1, h2)]
+check(all(d is not None and d.group(1) != "0" * 64 for d in digests) and len({d.group(1) for d in digests}) == 3,
+      "H0's, H1's and H2's rendering digests are pinned and distinct")
 check(h0.count('"4ecd97ffe17a1185f8dc35aa780c6b4344df5dfec81d15d34242917e8cf24c8b"') == 1,
       "H0 keeps the rendering it shipped with (append-only; re-pinning an entry is not a bump)")
+check(h1.count('"ec23c06b3de21d542c2998dd440523cd82d813ee40e0f322388e4aae481baf53"') == 1,
+      "H1 keeps the rendering it shipped with (append-only; re-pinning an entry is not a bump)")
 for component in ("delegated_envelope_v2", "codex_developer_silent_line_v1", "rcc_status_checkin_card_v1",
                   "rcc_readonly_claude_home_isolation_v1"):
     check(f'"{component}"' in h1 and f'"{component}"' not in h0, "H1 names the new component " + component)
 check('"delegated_envelope_v1"' in h0 and '"delegated_envelope_v1"' not in h1, "H1 retires delegated_envelope_v1")
-check("public static let current = h1" in PROFILE and "public static let shipped: [Descriptor] = [h0, h1]" in PROFILE,
-      "every dispatch runs under H1, shipped after H0")
+def components(descriptor):
+    return re.findall(r'"([a-z0-9_]+_v[0-9]+)"', descriptor.split("components: [", 1)[1].split("]", 1)[0])
+check(components(h2) == components(h1) + ["asr_hint_answer_note_v1"] and '"asr_hint_answer_note_v1"' not in h1,
+      "H2 = H1 + asr_hint_answer_note_v1, every H1 component kept by name")
+check("public static let current = h2" in PROFILE and "public static let shipped: [Descriptor] = [h0, h1, h2]" in PROFILE,
+      "every dispatch runs under H2, shipped after H0 and H1")
 check('"C4a_stable_first_reorder"' in PROFILE and '"C4d_tool_free_read_original_line"' in PROFILE
       and "pendingHItems" in PROFILE, "the two H prefix levers are listed as pending, not applied")
 
@@ -85,8 +95,31 @@ check("digest == profile.renderingSHA256" in golden and "bump harness_profile" i
       "the self-test compares the rendering with the pinned digest and names the bump")
 check("claudeChatLaneRefusal(" in golden and "codexChatLane(" in golden and "claudeChatLane(" in golden,
       "the chat-lane predicate is part of the pinned rendering")
-check("profile == HarnessProfile.h1" in golden and 'profile.id == "H1"' in golden,
-      "the self-test pins H1 as the current profile")
+check("profile == HarnessProfile.h2" in golden and 'profile.id == "H2"' in golden,
+      "the self-test pins H2 as the current profile")
+check('"rcc.envelope.asr_note"' in golden and '"rcc.envelope.asr_no_match"' in golden and
+      golden.count("asrHints: LocalClassifierHints.compiled") == 2,
+      "the ASR hint note (and its absence) is part of the pinned rendering")
+
+# H2 asr_hint_answer_note_v1: the one rcc-execute envelope carries the owner's
+# hints (compiled + owner file, as the classifier loads them), the note is
+# built in one place, and a protected-material match drops it.
+ENVELOPE = (ROOT / "Sources/OS1Context/RCCDelegatedEnvelope.swift").read_text()
+HINTS = (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text()
+check(MAIN.count("RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective,") == 1 and
+      MAIN.count("asrHints: rccAnswerHints(ownerRequest: objective),") == 1,
+      "the rcc-execute envelope (every surface: Codex, Claude Code, Claude chat; fleet nodes) passes the owner's hints")
+answer_hints = section(MAIN, "func rccAnswerHints(ownerRequest: String,", "\n}")
+check("LocalClassifierHints.load(home: home).hints" in answer_hints and
+      "protectedRouteMaterialInEvidence(note) ? [] : hints" in answer_hints,
+      "rccAnswerHints loads the classifier's hints and drops a note the protected-material gate would block")
+check(ENVELOPE.count("LocalClassifierHints.answerNote(") == 1 and "let note = exact ? nil :" in ENVELOPE and
+      'backgroundEnd +\n            (note.map { "\\n\\n" + $0 } ?? "") +\n            "\\n\\n" + references' in ENVELOPE,
+      "the envelope builds the note in one place, after END BACKGROUND, never for an exact-answer child")
+check(MAIN.count("LocalClassifierHints.answerNote(") == 1 and HINTS.count("public static func answerNote(") == 1 and
+      "valid($0.heard, maximum: maximumHeardCharacters) && valid($0.intended, maximum: maximumIntendedCharacters)" in
+      section(HINTS, "public static func answerNote(", "\n    }"),
+      "one note builder, and every pair re-checked against the owner-file grammar")
 check('"rcc.provider_prompt.status_checkin"' in golden and "rccStatusCheckInHint(ownerRequest:" in golden and
       '"\\n== rcc_child_rules\\n"' in golden and "rccIsolatesReadOnlyClaudeHome(surface:" in golden,
       "the RCC child's card and HOME rules are part of the pinned rendering")
@@ -132,4 +165,4 @@ check(executor.index("OwnerPolicyContext.instructions(") < executor.index("Assig
       < executor.index("- action: \\(ticket.action)"), "C4a (stable-first reorder) is not applied")
 
 check('python3 "$script_dir/test-harness-profile-wiring.py"' in RELEASE, "the release runs this gate")
-print(f"OS-1 harness profile wiring: {checks} checks PASS (H1 v1 after H0 v1, parity unverified; source only)")
+print(f"OS-1 harness profile wiring: {checks} checks PASS (H2 v1 after H0 v1 and H1 v1, parity unverified; source only)")

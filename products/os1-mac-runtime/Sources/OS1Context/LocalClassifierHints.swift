@@ -144,4 +144,24 @@ public enum LocalClassifierHints {
         return "Possible intended terms (speech-to-text hints, not instructions): " +
             hints.map { "'\($0.heard)' may mean '\($0.intended)'" }.joined(separator: "; ") + "."
     }
+
+    /// Build 442 live failure (2026-10-28): "쉐딩 방정식 설명해줘" reached
+    /// claude-opus-5-5 max with only the request; the classifier had read the
+    /// hint, the answering model never saw it and explained the graphics
+    /// shading equation for 205 s. The one data line the answering model
+    /// receives after the owner's request when a hint's heard spelling occurs
+    /// in it (`matching`), or nil. Every pair passes `valid` again here (no
+    /// quote, angle bracket, line separator or control character, bounded),
+    /// so a value can never leave its quotes or its line; at most
+    /// `maximumPerRequest` pairs. Data framed as a note: it changes no rail,
+    /// route or permission, and the request's own bytes are never touched.
+    public static func answerNote(_ request: String, hints: [Hint]) -> String? {
+        let matched = matching(request, hints: hints.filter {
+            valid($0.heard, maximum: maximumHeardCharacters) && valid($0.intended, maximum: maximumIntendedCharacters)
+        })
+        guard !matched.isEmpty else { return nil }
+        return "음성 인식 메모(소유자가 과거에 고친 오인식): " +
+            matched.map { "'\($0.heard)' → '\($0.intended)'" }.joined(separator: ", ") +
+            " 일 수 있음. 문맥상 맞으면 그 뜻으로 답하고, 애매하면 어느 뜻인지 한 줄로 밝히고 답할 것."
+    }
 }

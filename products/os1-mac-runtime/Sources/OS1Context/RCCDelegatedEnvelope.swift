@@ -41,6 +41,13 @@ import Foundation
 /// `silentRuleLine` (harness H1, `delegated_envelope_v2`) keeps every rule and
 /// its place and says they are applied, not restated; a rule that blocks the
 /// request is still reported (executor directive and permission text).
+///
+/// Harness H2 (`asr_hint_answer_note_v1`, build 442 live failure 2026-10-28):
+/// when an owner speech-to-text hint (`LocalClassifierHints`, compiled plus
+/// the owner file) matches the owner's request, ONE note line
+/// (`LocalClassifierHints.answerNote`) follows END BACKGROUND, before the
+/// ids. The request's bytes, the rules and their order are unchanged; no
+/// matching hint, a continuation or an exact-answer child gets no line.
 public enum RCCDelegatedEnvelope {
     public static let answerLeadLabel = "Do this and answer directly:"
     public static let taskLeadLabel = "Do this task:"
@@ -102,17 +109,22 @@ public enum RCCDelegatedEnvelope {
     ///   ignored unless the scope is read-only.
     /// - surface: the selected surface; a chat lane gets the direct lead.
     /// - sourceCompletion: the bound OS-1 source completion rules, verbatim.
+    /// - asrHints: the owner's speech-to-text hints (`LocalClassifierHints.load`);
+    ///   one note line after the background when one matches `ownerRequest`.
     public static func prompt(instruction: String, ownerRequest: String, continuation: String? = nil,
                               answerOnly: Bool, surface: RCCRuntimeContract.Surface, scope: RCCRuntimeContract.Scope,
-                              sourceCompletion: String = "", taskID: String, nodeID: String, attemptID: String) -> String {
+                              sourceCompletion: String = "", asrHints: [LocalClassifierHints.Hint] = [],
+                              taskID: String, nodeID: String, attemptID: String) -> String {
         let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + " " + silentRuleLine + sourceCompletion
         let references = referenceLabel + " RCC task " + taskID + "; child " + nodeID + "; attempt " + attemptID + "."
         if let continuation { return continuation + "\n\n" + rules + "\n\n" + references }
         let exact = answerOnly && scope == .readOnly
         let lead = directAnswer(answerOnly: exact, surface: surface, scope: scope) ? answerLeadLabel : taskLeadLabel
+        let note = exact ? nil : LocalClassifierHints.answerNote(ownerRequest, hints: asrHints)
         return lead + "\n" + instruction + (exact ? "\n\n" + answerOnlyLine : "") +
             "\n\n" + rules +
             "\n\n" + backgroundStart + "\n" + backgroundRule + "\n" + ownerRequest + "\n" + backgroundEnd +
+            (note.map { "\n\n" + $0 } ?? "") +
             "\n\n" + references
     }
 }
