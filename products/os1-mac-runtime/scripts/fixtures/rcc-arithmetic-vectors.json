@@ -790,23 +790,23 @@
   },
   {
    "input": "3-4는 뭐야?",
-   "expected": null,
-   "why": "the what-is wording over one ASCII '-': a score"
+   "expected": "-1",
+   "why": "build 441 part 2 (owner order 2026-10-27, K7 widening): the Korean what-is wording over one ASCII '-' between plain integers asks the value (a score reading is no longer held)"
   },
   {
    "input": "9-5는 뭐야?",
-   "expected": null,
-   "why": "the what-is wording over one ASCII '-': working hours"
+   "expected": "4",
+   "why": "build 441 part 2 (K7 widening): the Korean what-is wording over one ASCII '-' between plain integers asks the value (a working-hours reading is no longer held)"
   },
   {
    "input": "2021-2022는 뭐야?",
    "expected": null,
-   "why": "the what-is wording over one ASCII '-': a season"
+   "why": "the what-is wording over one ASCII '-': two four-digit operands read as a season or year span (a date reading), still held after the build 441 part 2 widening"
   },
   {
    "input": "what is 7-11?",
    "expected": null,
-   "why": "the what-is wording over one ASCII '-': a store"
+   "why": "the English what-is wording over one ASCII '-': a store; the build 441 part 2 widening is the Korean wording only"
   },
   {
    "input": "what is 50/50?",
@@ -872,6 +872,61 @@
    "input": "10-0",
    "expected": "10",
    "why": "a 0 inside or after a number is no leading zero"
+  },
+  {
+   "input": "1-1은 뭐냐?",
+   "expected": "0",
+   "why": "build 441 part 2 (owner order 2026-10-27): the calculator answers it, never a model (qwen 9B answered it wrongly)"
+  },
+  {
+   "input": "1-1이 뭐야?",
+   "expected": "0",
+   "why": "build 441 part 2: one ASCII '-' between plain integers under the Korean what-is wording"
+  },
+  {
+   "input": "7-2는 뭐냐?",
+   "expected": "5",
+   "why": "build 441 part 2: one ASCII '-' between plain integers under the Korean what-is wording"
+  },
+  {
+   "input": "10-15는 뭐야?",
+   "expected": "-5",
+   "why": "build 441 part 2: a negative difference is still the exact value"
+  },
+  {
+   "input": "1-1은?",
+   "expected": null,
+   "why": "weak shape and only ASCII '-': the widening needs the what-is predicate"
+  },
+  {
+   "input": "1.5-1은 뭐야?",
+   "expected": null,
+   "why": "the widening reads plain integers only: a decimal under the what-is wording stays held"
+  },
+  {
+   "input": "10-03은 뭐야?",
+   "expected": null,
+   "why": "a leading zero is a code or a number, never a quantity: still held"
+  },
+  {
+   "input": "-1-1은 뭐야?",
+   "expected": null,
+   "why": "a signed operand is not a plain integer: still held"
+  },
+  {
+   "input": "10-3-2는 뭐야?",
+   "expected": null,
+   "why": "two ASCII '-' under the what-is wording: still held"
+  },
+  {
+   "input": "what is 9-5?",
+   "expected": null,
+   "why": "the English what-is wording is not widened"
+  },
+  {
+   "input": "1900-2000은 뭐야?",
+   "expected": null,
+   "why": "two four-digit operands: a year span, still held"
   }
  ]
 }

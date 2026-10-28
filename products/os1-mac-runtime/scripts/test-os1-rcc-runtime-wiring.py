@@ -679,8 +679,14 @@ check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exe
       "const answer = zeroModelArithmetic(task.request);" in RUNTIME and
       # Only '=' or one '-'/'/' under a quantity predicate reads a date- or
       # phone-shaped EXPR as arithmetic; a leading-zero number never is.
+      # Build 441 part 2 (owner order 2026-10-27): the Korean what-is wording
+      # over ONE '-' between plain integers is a value too ("1-1은 뭐냐?"),
+      # never a year span; '/', several operators and English stay held.
       "if (expression === null || expression.leadingZero) return null;" in RUNTIME and
-      "if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1)))" in RUNTIME and
+      "if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1) ||\n"
+      "      (koreanWhat && plainIntegerDifference(read.tokens))))" in RUNTIME and
+      "tokens[1].kind === 'op' && tokens[1].symbol === '-' &&" in RUNTIME and
+      "!(tokens[0].int.length === 4 && tokens[2].int.length === 4);" in RUNTIME and
       "function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {" in RUNTIME and
       RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 2 and
       RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 2 and
@@ -708,7 +714,7 @@ check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability
       "...poolNotes(tier.pool.pool, chosen, tier.hit.candidate)," in TIER_ROUTE and
       "'pool_scored_by_tier_hit_model'" in TIER_ROUTE and
       "selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy,\n"
-      "        planNodes: plan.nodes.length});" in RUNTIME and
+      "        planNodes: plan.nodes.length, deepPolicy});" in RUNTIME and
       "selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,\n      descentPolicy});" in
       section(RUNTIME, "export function admitBoundedAutoPlan(", "function livePlannerContext(") and
       "resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});" in
@@ -716,7 +722,7 @@ check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability
       "livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy);" in
       section(RUNTIME, "export function admitLivePlannerPlan(", "const resolved = resolveRoutePlan(compiled.plan") and
       "const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry, descentPolicy});" in RUNTIME and
-      "{verifierRegistry = null,\n                                                                       descentPolicy = null} = {}) {" in RUNTIME and
+      "{verifierRegistry = null,\n                                                                       descentPolicy = null, deepPolicy = DEEP_POLICY} = {}) {" in RUNTIME and
       RUNTIME.count("descentPolicy: this.descentPolicy") == 4 and RUNTIME.count("this.descentPolicy") == 10 and
       "prepareCertifiedDescentPolicy(certifiedDescentPolicy)" in RUNTIME and
       "certifiedDescentPolicy" not in PLUGIN and "descentPolicy" not in PLUGIN and
@@ -762,11 +768,11 @@ for fixture in ("openclaw-rcc-admission", "openclaw-rcc-host-plan", "openclaw-rc
 # admission is a non-certifying third outcome with its own route kind, basis
 # and screen outcome; its fixture is release-gated.
 graded_admission = section(RUNTIME, "function hostProfileGrade(", "/** The routing-reason token that names the admission. */")
-check("validRequestProfile(profile)" in graded_admission and "profile.tool_need === 'none'" in graded_admission and
+check("validRequestProfile(profile)" in graded_admission and "['none', 'current_facts'].includes(profile.tool_need)" in graded_admission and
       "!intentConstrains(routingIntent(catalog))" in graded_admission and
       "catalog.owner_scope === 'read_only'" in graded_admission and
-      "{class: 'graded', source: GRADED_SOURCE, certificate_id: null, grade}" in RUNTIME and
-      "graded:(?:light|standard)" in RUNTIME and "'screen_pass'" in RUNTIME and
+      "{class: 'graded', source: GRADED_SOURCE, certificate_id: null, ...graded}" in RUNTIME and
+      "graded:(?:light|standard|deep)" in RUNTIME and "'screen_pass'" in RUNTIME and
       "kind: 'graded'" in RUNTIME and "routeClass: GRADED_CLASS" in RUNTIME and
       "const kind = intentConstrains(intent) ? 'explicit' : 'reference';" in RUNTIME and
       "(choice.kind === 'tier' || choice.kind === 'graded')" in RUNTIME and
@@ -774,6 +780,46 @@ check("validRequestProfile(profile)" in graded_admission and "profile.tool_need 
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-graded-admission.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-graded-admission.test.mjs").is_file(),
       "change 2: host-profile graded admission is uncertified, gated by owner words and the request profile, release-gated")
+# Build 441 part 2 (owner order 2026-10-27, DESIGN-2): the local classifier
+# reads the request beside the provider probes, once per task, under the
+# keyword rails; Core maps the profile's task type, difficulty and tool need,
+# picks the cheapest dispatchable row of the list by host list price, binds the
+# local row only for local-read very easy chat on a first turn, and ships
+# policy A for deep work. Release-gated.
+catalog_profile = section(MAIN, "private func rccNativeCatalog(", "/// A continuation inherits the SAME task's private executed receipt")
+check("!RequestProfile.railsDecide(keywordProfile, request: request.request)" in catalog_profile and
+      catalog_profile.index("let localReading = consultLocal ? Task.detached {") < catalog_profile.index("let config = try RuntimeConfig.load()") and
+      catalog_profile.index("let codexProbe = ") < catalog_profile.index("let reading = await localReading.value") and
+      "RequestProfile.combine(keyword: keywordProfile, request: request.request,\n                                                local: reading.adopted?.answer, model: reading.adopted?.model)" in catalog_profile and
+      "input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)" in catalog_profile and
+      "if request.mode != .explicitRoutingTest && !contractBackedWrite {" in catalog_profile and
+      "input.priceTable = ModelPriceTable.current().table" in catalog_profile and
+      "RCCNativeCatalogBuilder.autoLocalRowEligible(input)" in catalog_profile and
+      "func rccLocalClassification(taskID: String, requestSHA256: String, request: String," in MAIN and
+      "LocalRequestClassifier.cachedReceipt(key: key, directory: directory)" in MAIN and
+      "LocalRequestClassifier.store(receipt, key: key, directory: directory)" in MAIN,
+      "part 2: the local reading starts first, runs beside the probes, once per task, combined under the rails")
+classifier_source = (ROOT / "Sources/OS1Context/LocalRequestClassifier.swift").read_text()
+check("RoutingOrderInterpreter.ollamaAsk(endpoint: endpoint, model: model, timeout: timeout, schema: schemaJSON," in classifier_source and
+      'public static let preferredModels = ["qwen3.5:9b", "qwen3.5:4b"]' in classifier_source and
+      "public static let timeout: TimeInterval = 12" in classifier_source and
+      'public static let keepAlive = "30m"' in classifier_source and
+      "URLSession" not in classifier_source and "public static let chatEndpoint = RoutingOrderInterpreter.endpoint" in classifier_source and
+      "inventory: { LocalRouterBridge.installedModelNames() }" in MAIN,
+      "part 2: one Ollama client (the interpreter's), 9B else 4B, a 12 s bound, resident 30 minutes")
+tier_route = section(RUNTIME, "function tierRouteCandidate(", "/** Null when something in an allowed scope can run;")
+check("export const DEEP_POLICY = 'reference_first';" in RUNTIME and
+      "export const GRADED_LISTS = Object.freeze({" in RUNTIME and
+      "chat_light: Object.freeze([['local', 'none'], ['fast', 'low']])," in RUNTIME and
+      "explain_standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium']])," in RUNTIME and
+      "const agentOnly = catalog.request_profile?.tool_need === 'current_facts';" in tier_route and
+      "profileAnswersLocally(catalog) && withoutConversation(task)" in tier_route and
+      "decision = expected < reference ? 'cheap_first' : 'reference_first';" in tier_route and
+      "(task.mode === 'auto' && node.instruction === task.request && profileAnswersLocally(catalog) &&" in RUNTIME and
+      RUNTIME.count("deepPolicy = DEEP_POLICY") == 3 and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-classifier.test.mjs"' in RELEASE and
+      (ROOT / "scripts/fixtures/openclaw-rcc-local-classifier.test.mjs").is_file(),
+      "part 2: profile mapping, price-aware graded choice, local chat row and policy A, release-gated")
 
 # Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
 # sign-in looked signed out on every live catalog.

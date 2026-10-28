@@ -49,6 +49,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-routing-intent-ingress-only") { try runRCCRoutingIntentIngressFixtures(); return }
         if CommandLine.arguments.contains("--rcc-admission-facts-only") { try runRCCAdmissionFactsFixtures(); return }
         if CommandLine.arguments.contains("--request-profile-only") { try runRequestProfileFixtures(); return }
+        if CommandLine.arguments.contains("--local-request-classifier-only") { try runLocalRequestClassifierFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
         if CommandLine.arguments.contains("--rcc-configured-input-only") { try runRCCConfiguredInputObservationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-preparation-only") { try runRCCNativePreparationFixtures(); return }
@@ -86,6 +87,7 @@ final class SourceContextTests {
         try runRCCNativeCatalogBuilderFixtures()
         try runRCCRoutingIntentIngressFixtures()
         try runRequestProfileFixtures()
+        try runLocalRequestClassifierFixtures()
         try runRCCAdmissionFactsFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
         try runRCCNativePreparationFixtures()

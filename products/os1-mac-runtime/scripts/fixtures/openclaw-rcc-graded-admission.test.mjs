@@ -13,7 +13,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {chmod, mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {GRADED_ROUTES, ROUTE_CLASSES, admittedRoute, createRCCRuntime, deliveryBasisOf, hostContextFingerprint, hostPlan,
+import {GRADED_LISTS, ROUTE_CLASSES, admittedRoute, createRCCRuntime, deliveryBasisOf, hostContextFingerprint, hostPlan,
   registerNodeVerifiers, resolveRoutePlan} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {auditDeliveryPolicy} from '../route-replay.mjs';
 
@@ -83,17 +83,22 @@ function bind(q, c, options = {}) {
 }
 
 test('the graded lists are the locked design and never reach the frontier or max', () => {
-  assert.deepEqual(GRADED_ROUTES, {light: [['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']],
-    standard: [['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high']]});
-  for (const entries of Object.values(GRADED_ROUTES))
-    for (const [tier, effort] of entries) assert(tier !== 'frontier' && !['max', 'ultra', 'xhigh'].includes(effort));
+  // Build 441 part 2 (DESIGN-2 "Core mapping"): keyed by what the profile reads.
+  assert.deepEqual(GRADED_LISTS, {chat_light: [['local', 'none'], ['fast', 'low']],
+    explain_light: [['fast', 'low'], ['efficient', 'low']],
+    explain_standard: [['workhorse', 'medium'], ['efficient', 'medium']],
+    current_facts: [['workhorse', 'medium']], deep_workhorse: [['workhorse', 'xhigh']]});
+  for (const [list, entries] of Object.entries(GRADED_LISTS))
+    for (const [tier, effort] of entries)
+      assert(tier !== 'frontier' && !['max', 'ultra'].includes(effort) && (effort !== 'xhigh' || list === 'deep_workhorse'));
   assert(ROUTE_CLASSES.includes('standard'));
 });
 
 test('a standard answer binds the graded workhorse at medium, uncertified, with the reference fixed as its escalation', () => {
   const q = task(), c = catalog(q);
   const admission = admittedRoute(hostPlan(q, c).nodes[0], q, c);
-  assert.deepEqual(admission, {class: 'graded', source: 'host_profile', certificate_id: null, grade: 'standard'});
+  assert.deepEqual(admission, {class: 'graded', source: 'host_profile', certificate_id: null, grade: 'standard',
+    list: 'explain_standard', classifier: 'keyword'});
   const {decision, route, tuple, basis} = bind(q, c);
   assert.equal(tuple, 'gpt-6.1-sol/medium');
   assert.equal(decision.route_class, 'standard');
@@ -123,8 +128,11 @@ test('a light definitional answer binds the fast tier at low; deep and unknown k
   assert.equal(light.tuple, 'gpt-6-luna/low');
   assert.equal(light.basis, 'graded:light');
   assert.match(light.decision.reason, /;admitted_graded_light;/);
+  // Build 441 part 2: a current-facts answer is graded too (agent surfaces
+  // only, openclaw-rcc-local-classifier.test.mjs); everything else here keeps
+  // the reference.
   for (const [answer, need, difficulty] of [['answer_only', 'none', 'deep'], ['unknown', 'none', 'unknown'],
-    ['work', 'none', 'unknown'], ['answer_only', 'current_facts', 'standard'], ['answer_only', 'workspace', 'standard'],
+    ['work', 'none', 'unknown'], ['answer_only', 'workspace', 'standard'],
     ['work', 'shell', 'unknown'], ['work', 'write', 'unknown']]) {
     const t = task(), c = catalog(t, {request_profile: profile(answer, need, difficulty)});
     const bound = bind(t, c);

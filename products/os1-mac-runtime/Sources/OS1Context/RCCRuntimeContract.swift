@@ -1548,7 +1548,8 @@ public enum RCCRuntimeContract {
             return
         }
         // Build 441: a request profile is structurally valid (enums, schema,
-        // policy, sorted unique signals, a difficulty exactly for an answer).
+        // policy, sorted unique signals, a difficulty exactly for an answer;
+        // part 2: its classifier provenance and task type both or neither).
         if let profile = value.requestProfile, !profile.valid { throw Rejection.invalidObservation }
         switch requestClass {
         case .writer: guard ownerScope == .workspaceWrite, !chat else { throw Rejection.invalidObservation }
@@ -2127,7 +2128,7 @@ public enum RCCRuntimeContract {
     private static let collectionShape = Shape.object(["schema", "kind", "manifest_sha256", "obligations"], ["obligations": .array(collectionObligationShape)])
     private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256", "owner_collection"], ["owner_collection": collectionShape])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
-    private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals"])
+    private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals", "classifier", "task_type"])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])

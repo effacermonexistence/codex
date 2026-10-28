@@ -102,7 +102,7 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "8b0a4617d4060a50a03e2c764c4ae266bbc9383e7d28afd1c4bfffbbfb8df648"
+    static let rccRuntimeModuleSHA256 = "916498f45a37dad506636448fe14b089d08417665622b5ff9c0b933d24ec0664"
     static let rccRuntimePluginSHA256 = "89f297d30281f679854f06f1ce8b28d044b53b87a9d07786da746909543c7df9"
     static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
@@ -378,23 +378,36 @@ enum LocalRouterBridge {
               let m = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
               m["enabled"] as? Bool == true, m["model"] as? String == model,
               m["model_digest"] as? String == modelDigest else { return false }
+        return (loopbackInventory(timeout: timeout) ?? []).contains {
+            $0["name"] as? String == model && $0["digest"] as? String == modelDigest
+        }
+    }
+    /// Build 441 part 2: the installed local model names for the request
+    /// classifier (`LocalRequestClassifier.classify`'s inventory), from the
+    /// same loopback inventory read; nil when Ollama does not answer
+    /// (a refused connection returns at once: fail fast).
+    static func installedModelNames(timeout: TimeInterval = LocalRequestClassifier.inventoryTimeout) -> [String]? {
+        loopbackInventory(timeout: timeout)?.compactMap { $0["name"] as? String }
+    }
+    /// The loopback Ollama inventory (`/api/tags` rows), bounded by `timeout`; nil on any failure.
+    private static func loopbackInventory(timeout: TimeInterval) -> [[String: Any]]? {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout + 1
         configuration.connectionProxyDictionary = [:]
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
-        final class Box: @unchecked Sendable { var ready = false }
+        final class Box: @unchecked Sendable { var rows: [[String: Any]]? }
         let box = Box(), done = DispatchSemaphore(value: 0)
         session.dataTask(with: URL(string: "http://127.0.0.1:11434/api/tags")!) { data, response, _ in
             defer { done.signal() }
             guard (response as? HTTPURLResponse)?.statusCode == 200, let data, data.count <= 128_000,
                   let tags = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let installed = tags["models"] as? [[String: Any]] else { return }
-            box.ready = installed.contains { $0["name"] as? String == model && $0["digest"] as? String == modelDigest }
+            box.rows = installed
         }.resume()
-        guard done.wait(timeout: .now() + timeout + 2) == .success else { return false }
-        return box.ready
+        guard done.wait(timeout: .now() + timeout + 2) == .success else { return nil }
+        return box.rows
     }
 
     private static func verifyGatewayOllamaVersion() async throws {

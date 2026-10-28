@@ -78,7 +78,8 @@ export const NON_DELIVERY_STATES = Object.freeze(new Set(['ladder_not_returned',
 const CERTIFIED_BASIS = /^certified:(contract|exact|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128})$/;
 const REFERENCE_BASES = new Set(['reference', 'reference_escalated', 'owner_words']);
 // Change 2 (build 441): a host-profile graded route's basis. Never certified.
-const GRADED_BASIS = /^graded:(light|standard)$/;
+// Part 2: graded:deep is deep policy B's basis (workhorse first; not shipped).
+const GRADED_BASIS = /^graded:(light|standard|deep)$/;
 const ZERO_MODEL_BASIS = /^zero_model:[a-z0-9_]{1,64}$/;
 const LABEL_SOURCES = new Set(['exact', 'contract', 'verifier']);
 const LABEL_OUTCOMES = new Set(['pass', 'fail', 'not_returned']);

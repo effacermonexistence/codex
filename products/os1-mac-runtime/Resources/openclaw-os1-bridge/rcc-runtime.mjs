@@ -139,16 +139,41 @@ export const TIER_ROUTES = Object.freeze({
   trivial: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
   deep: Object.freeze([['frontier', REFERENCE_EFFORT]]),
 });
-// Build 441 (owner order, 2026-10-27): the host-profile graded lists, keyed by
-// the request profile's difficulty. A prediction from the owner's request
-// text and host facts, NOT a certification: the route is 'graded' (class
+// Build 441 (owner order, 2026-10-27): the host-profile graded lists. A
+// prediction from the owner's request text, host facts and (part 2) the local
+// classifier's reading under the keyword rails, NOT a certification: the route is 'graded' (class
 // 'standard'), its basis 'graded:<grade>', its acceptance a structural screen
 // recorded as such, and any failure signal escalates once to the reference
 // fixed at bind. Deep and unknown work keeps the reference.
-export const GRADED_ROUTES = Object.freeze({
-  light: Object.freeze([['fast', 'low'], ['efficient', 'low'], ['workhorse', 'low']]),
-  standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium'], ['workhorse', 'high']]),
+// Build 441 part 2 (owner order 2026-10-27, DESIGN-2 "Core mapping"): the
+// graded tier lists are keyed by what the request profile reads (task type,
+// difficulty, tool need), not by difficulty alone. The grade (light,
+// standard, deep) names the delivery basis graded:<grade>; the list names the
+// tuples. 'local' is the local model's row (Auto very easy chat only, first
+// turn, never certified); a current-facts list binds agent surfaces only
+// (tools and web), never a tool-free chat row.
+export const GRADED_LISTS = Object.freeze({
+  chat_light: Object.freeze([['local', 'none'], ['fast', 'low']]),
+  explain_light: Object.freeze([['fast', 'low'], ['efficient', 'low']]),
+  explain_standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium']]),
+  current_facts: Object.freeze([['workhorse', 'medium']]),
+  deep_workhorse: Object.freeze([['workhorse', 'xhigh']]),
 });
+const GRADES = new Set(['light', 'standard', 'deep']);
+// Deep work (a proof, a design, a deliverable, any deep answer): policy A
+// binds the reference straight away; policy B ('workhorse_first') runs the
+// workhorse at xhigh first, escalating once to the reference. B is
+// implemented and tested but not shipped: the owner chooses it. Either way a
+// workspace writer, a workspace need or work keeps the reference.
+export const DEEP_POLICIES = Object.freeze(['reference_first', 'workhorse_first']);
+export const DEEP_POLICY = 'reference_first';
+// The cheap-first decision's failure prior per tier (pre-V2 routing ledger,
+// compiled: gpt-6-luna low 3 escalations in 11 runs, gpt-6.1-sol medium 0 in
+// 14), with a Laplace prior: (failures + 1) / (runs + 2). A tier with no
+// record (efficient, the local model) has the uniform prior 1/2. A cost
+// comparison only, never a quality claim.
+export const TIER_FAILURE_PRIORS = Object.freeze({fast: Object.freeze({failures: 3, runs: 11}),
+  workhorse: Object.freeze({failures: 0, runs: 14})});
 const GRADED_CLASS = 'standard';
 const GRADED_SOURCE = 'host_profile';
 // The request profile (catalog request_profile, Swift RequestProfile).
@@ -158,6 +183,11 @@ const PROFILE_TOOL_NEEDS = new Set(['current_facts', 'workspace', 'shell', 'writ
 const PROFILE_DIFFICULTIES = new Set(['light', 'standard', 'deep', 'unknown']);
 const PROFILE_SIGNAL = /^[a-z][a-z0-9_]{0,63}$/;
 const MAX_PROFILE_SIGNALS = 32;
+// Build 441 part 2: the profile's classifier provenance and task type (both
+// or neither; Swift RequestProfile.classifier / taskType).
+const PROFILE_CLASSIFIER = /^(?:keyword_v1|local_llm:[a-z0-9][a-z0-9._:-]{0,63})$/;
+const PROFILE_TASK_TYPES = new Set(['chat', 'explain', 'design', 'write', 'action', 'unknown']);
+const PROFILE_ANSWER_TASK_TYPES = new Set(['chat', 'explain', 'design', 'write']);
 // A class certificate's own per-answer format check (R9 (c)), by name. A
 // certificate naming a check this Core does not know certifies nothing.
 const FORMAT_CHECKS = Object.freeze({nonempty_text: output => typeof output === 'string' && output.trim() !== ''});
@@ -198,7 +228,7 @@ const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted'])
 // its tuple may answer. A certified basis names its admitting source (and the
 // verifier or class certificate); 'certified:unrecorded' is a descent recorded
 // without one (an older build), 'unbound' a row no host resolution chose.
-const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
 const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
 // The admitting source's verdict on a descent attempt: it accepted the answer,
 // failed it, or the answer was not returned in a form it accepts.
@@ -976,12 +1006,13 @@ function soundVerifierFor(node, task, catalog, registry) {
  *  - (c) 'class': this request class's signed certificate, for a node running
  *    the request byte-exact, whose per-answer format check this Core knows;
  *  - build 441, NOT certifying: {class: 'graded', source: 'host_profile',
- *    grade}, only when no source above applies, the owner gave no routing
- *    constraint, and the host's request profile reads the node (the request
- *    itself, read-only agent) as an answer-only, tool-free, light or standard
- *    request (hostProfileGrade);
+ *    grade, list, classifier}, only when no source above applies, the owner
+ *    gave no routing constraint, and the host's request profile reads the node
+ *    (the request itself, read-only agent) as an answer needing no tool or
+ *    only current facts, light or standard (part 2: or, under deep policy B,
+ *    deep work) (hostProfileGrade);
  *  - anything else 'uncertified'. A model-authored grade never certifies. */
-export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRegistry = null} = {}) {
+export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRegistry = null, deepPolicy = DEEP_POLICY} = {}) {
   const reference = source => ({class: 'reference', source, certificate_id: null});
   const providerChosen = value => value != null && value !== 'auto';
   // An explicit route test's exact arithmetic payload is certified by its
@@ -1027,8 +1058,8 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
     catalog.class_certificates[cls] : undefined;
   if (plain(certificate) && Object.hasOwn(FORMAT_CHECKS, certificate.format_check))
     return {class: 'certified', source: 'class', certificate_id: certificate.certificate_id};
-  const grade = hostProfileGrade(node, task, catalog);
-  if (grade !== null) return {class: 'graded', source: GRADED_SOURCE, certificate_id: null, grade};
+  const graded = hostProfileGrade(node, task, catalog, {policy: deepPolicy});
+  if (graded !== null) return {class: 'graded', source: GRADED_SOURCE, certificate_id: null, ...graded};
   return reference('uncertified');
 }
 const ESCALATION_ADMISSION = Object.freeze({class: 'reference', source: 'escalation', certificate_id: null});
@@ -1044,23 +1075,53 @@ function intentConstrains(intent) {
     intent.exact_model != null || intent.model_family != null || intent.effort != null ||
     intent.quality_target != null || intent.require_native_ceiling === true);
 }
-/** Build 441: the grade a host-profile graded route may bind ('light' or
- * 'standard'), or null. Only for the request itself on a read-only agent node
- * (no materials) of an Auto task the host runs read-only, with no owner
- * routing constraint (no explicit route test, no provider other than auto, no
- * surface, model, effort, quality or native-ceiling words), and only when the
- * catalog's request profile is answer_only with no tool need. Pure; host
- * facts only, never a model. */
-function hostProfileGrade(node, task, catalog) {
+/** Build 441 (part 2, DESIGN-2 "Core mapping"): the graded route a host
+ * profile may bind, {grade, list, classifier}, or null. Only for the request
+ * itself on a read-only agent node (no materials) of an Auto task the host
+ * runs read-only, with no owner routing constraint (no explicit route test,
+ * no provider other than auto, no surface, model, effort, quality or
+ * native-ceiling words), and only for an answer the profile reads as needing
+ * no tool or only current facts. Then, by task type, difficulty and tool:
+ *  - chat, light, no tool: chat_light (the local row first, else fast/low);
+ *  - explain (or chat) light, no tool: explain_light;
+ *  - explain (or chat) standard, no tool: explain_standard;
+ *  - explain (or chat) light or standard, current facts: current_facts
+ *    (agent surfaces only, the workhorse at medium);
+ *  - design, write or any deep answer: policy A (DEEP_POLICY
+ *    'reference_first') keeps the reference; policy B ('workhorse_first',
+ *    not shipped) binds deep_workhorse below it.
+ * A profile without a task type (build 441 part 1) reads as explain. `policy`
+ * overrides DEEP_POLICY for fixtures only. Pure; host facts only. */
+function hostProfileGrade(node, task, catalog, {policy = DEEP_POLICY} = {}) {
   const profile = catalog?.request_profile;
   if (!(node?.kind === 'agent' && node.scope === 'read_only' && node.instruction === task?.request &&
       task.mode === 'auto' && task.objective === task.request &&
       (node.context_refs ?? []).length === 0 && (task.material_refs ?? []).length === 0 &&
       catalog.owner_scope === 'read_only' && !intentConstrains(routingIntent(catalog)) &&
       [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto') &&
-      validRequestProfile(profile) && profile.answer_kind === 'answer_only' && profile.tool_need === 'none'))
+      validRequestProfile(profile) && profile.answer_kind === 'answer_only' &&
+      ['none', 'current_facts'].includes(profile.tool_need)))
     return null;
-  return Object.hasOwn(GRADED_ROUTES, profile.difficulty) ? profile.difficulty : null;
+  const type = profile.task_type ?? 'explain';
+  const classifier = profile.classifier?.startsWith('local_llm:') ? 'local_llm' : 'keyword';
+  const answer = type === 'chat' || type === 'explain';
+  if (answer && ['light', 'standard'].includes(profile.difficulty)) {
+    const list = profile.tool_need === 'current_facts' ? 'current_facts' :
+      type === 'chat' && profile.difficulty === 'light' ? 'chat_light' : 'explain_' + profile.difficulty;
+    return {grade: profile.difficulty, list, classifier};
+  }
+  // Deep work: a design, a deliverable, any deep answer (the tool need is
+  // none or current facts here; a workspace writer never reaches this).
+  return policy === 'workhorse_first' && GRADES.has(profile.difficulty) ?
+    {grade: 'deep', list: 'deep_workhorse', classifier} : null;
+}
+/** Build 441 part 2: whether a catalog's profile asks for the local row (Auto
+ * very easy chat, read by the local classifier; the host offers the row only
+ * then). Pure. */
+function profileAnswersLocally(catalog) {
+  const profile = catalog?.request_profile;
+  return validRequestProfile(profile) && profile.task_type === 'chat' && profile.answer_kind === 'answer_only' &&
+    profile.tool_need === 'none' && profile.difficulty === 'light' && profile.classifier?.startsWith('local_llm:') === true;
 }
 /** The routing-reason token that names the admission. */
 function admissionToken(admission) {
@@ -1092,7 +1153,7 @@ export function deliveryBasisOf({explicitRoute = false, routeClass = null, route
       (source === 'verifier' || source === 'class') && id !== null ? source + ':' + id : 'unrecorded');
   } else if (routeKind === 'graded') {
     const grade = plain(ladder) && ladder.escalated !== true && ladder.admitted_by === GRADED_SOURCE ? ladder.grade : null;
-    basis = typeof grade === 'string' && Object.hasOwn(GRADED_ROUTES, grade) ? 'graded:' + grade : 'unclassified';
+    basis = typeof grade === 'string' && GRADES.has(grade) ? 'graded:' + grade : 'unclassified';
   } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
   else if (routeKind === 'explicit' ||
       (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
@@ -1203,11 +1264,11 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * nothing. */
 function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidIDs = [], widenWrites = false,
                             referenceOnly = false, preferPool = null, verifierRegistry = null,
-                            descentPolicy = null, headroom = null, planNodes = 1} = {}) {
+                            descentPolicy = null, headroom = null, planNodes = 1, deepPolicy = DEEP_POLICY} = {}) {
   const explicitRoute = explicitRouteOf(node, task, catalog);
   if (explicitRoute?.surface === 'local') return localRouteCandidate(node, task, catalog, now, {avoidIDs});
   const intent = explicitRoute ? explicitRoute.intent : routingIntent(catalog);
-  let admission = referenceOnly ? ESCALATION_ADMISSION : admittedRoute(node, task, catalog, now, {verifierRegistry});
+  let admission = referenceOnly ? ESCALATION_ADMISSION : admittedRoute(node, task, catalog, now, {verifierRegistry, deepPolicy});
   const ordinal = new Map();
   for (const c of catalog.candidates) if (!ordinal.has(c.quota_pool)) ordinal.set(c.quota_pool, ordinal.size);
   const usable = row => !avoidIDs.includes(row.candidate.id) && dispatchable(row.candidate, task, now);
@@ -1262,43 +1323,119 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
       [scoredBy.model === chosen.model ? 'pool_scored_by_bound_model' : 'pool_scored_by_tier_hit_model'])];
   const notes = [];
   let policyReference = null;
+  if (admission.class === 'reference' && admission.source === 'uncertified') {
+    // Build 441 part 2: an answer the profile reads as deep work (a design, a
+    // deliverable, any deep answer) keeps the reference under policy A; say so.
+    const deep = hostProfileGrade(node, task, catalog, {policy: 'workhorse_first'});
+    if (deep?.list === 'deep_workhorse' && deepPolicy === 'reference_first')
+      notes.push('deep_policy_reference_first', 'classifier_' + deep.classifier);
+  }
   if (admission.class === 'graded') {
-    // Build 441 (owner order, 2026-10-27): the grade's first dispatchable
-    // tuple, in R11 order, below a reference that can dispatch now (this
-    // pool's, else another's), fixed here as its one escalation (K2/R9), and
+    // Build 441 (owner order, 2026-10-27): a graded tuple below a reference
+    // that can dispatch now, fixed here as its one escalation (K2/R9), and
     // only with re-run headroom at bind (amended I1). Never certified. The
     // headroom is the task's, so only a one-node plan may hold it: two graded
     // siblings would each count the same two dispatches (review of 441).
+    // Part 2 (DESIGN-2): the profile's tier list (GRADED_LISTS), and within it
+    // the cheapest dispatchable row of EVERY pool by the host's list price
+    // (estimated_cost_units: USD of one typical call), ties in R11 order;
+    // quota-exhausted and stale rows stay out (dispatchable). Very easy chat
+    // (chat_light) may take the local model's row, on the first turn only (it
+    // answers from the request alone). A current-facts answer binds agent
+    // surfaces only. An unpriced catalog keeps the part-1 order (each pool's
+    // first entry with a dispatchable row, then R11).
     const sole = planNodes === 1;
     const used = plain(headroom) ? headroom : {attempts: 0, native_dispatches: 0};
     const cap = task.budget?.max_native_dispatches;
     const roomy = sole && (task.budget?.max_attempts ?? 0) - (used.attempts ?? 0) >= 2 &&
       (cap == null || cap - (used.native_dispatches ?? 0) >= 2);
-    const graded = roomy ? serve(pool => GRADED_ROUTES[admission.grade].map(([tier, effort], index) =>
-      ({index, rows: entryRows(pool.rows, {tier, effort}, catalog, catalog?.routing_intent_v2 ?? null)})), 'graded') : null;
-    const chosen = graded?.hit?.candidate ?? null;
-    const target = chosen && [graded.pool, ...pools.filter(other => other !== graded.pool)
-      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
-    const isReference = chosen && referenceOf(graded.pool).some(row => row.candidate.id === chosen.id);
+    const entries = GRADED_LISTS[admission.list] ?? [];
+    const intentV2 = catalog?.routing_intent_v2 ?? null;
+    const agentOnly = catalog.request_profile?.tool_need === 'current_facts';
+    const surfaceAllowed = row => !agentOnly || surfaceKind(row.candidate.surface) === 'agent';
+    const options = [];
+    if (roomy) {
+      pools.forEach((pool, position) => entries.forEach(([tier, effort], index) => {
+        if (tier === 'local') return;
+        for (const row of entryRows(pool.rows, {tier, effort}, catalog, intentV2))
+          if (usable(row) && surfaceAllowed(row)) options.push({row, pool, index, position});
+      }));
+      if (entries.some(([tier]) => tier === 'local') && profileAnswersLocally(catalog) && withoutConversation(task))
+        catalog.candidates.forEach((candidate, index) => {
+          if (hostRoutable(candidate) && localWorkerRow(candidate) && candidate.scope === node.scope &&
+              !avoidIDs.includes(candidate.id) && dispatchable(candidate, task, now))
+            options.push({row: {candidate, index}, pool: null, index: entries.findIndex(([tier]) => tier === 'local'),
+              position: -1});
+        });
+    }
+    const cost = option => typeof option.row.candidate.estimated_cost_units === 'number' ?
+      option.row.candidate.estimated_cost_units : null;
+    const priced = options.some(option => cost(option) !== null);
+    let pick = null, skipped = [], rankToken = null;
+    if (priced) {
+      const r11Of = option => option.pool === null ? [0, 0, 0, 0] : r11Keys(option.pool.pool);
+      const score = option => option.pool === null ? null : quotaScore(catalog, option.row.candidate.model);
+      const ranked = [...options].sort((a, b) =>
+        ((cost(a) === null) - (cost(b) === null)) || (cost(a) !== null && cost(b) !== null ? cost(a) - cost(b) : 0) ||
+        (r11Of(a).map((v, i) => v - r11Of(b)[i]).find(d => d !== 0) ?? 0) ||
+        ((score(a) === null) - (score(b) === null)) || (score(a) !== null && score(b) !== null ? score(b) - score(a) : 0) ||
+        (a.position - b.position) || (a.index - b.index) || order(a.row, b.row));
+      pick = ranked[0];
+      skipped = ['price_choice', 'priced_options_' + ranked.length];
+    } else if (options.some(option => option.pool === null)) {
+      pick = options.find(option => option.pool === null);
+    } else if (roomy) {
+      const graded = serve(pool => entries.flatMap(([tier, effort], index) => tier === 'local' ? [] :
+        [{index, rows: entryRows(pool.rows, {tier, effort}, catalog, intentV2).filter(surfaceAllowed)}]), 'graded');
+      if (graded.hit) {
+        pick = {row: graded.hit, pool: graded.pool, index: graded.entry.index, position: pools.indexOf(graded.pool)};
+        skipped = graded.skipped; rankToken = graded.rank;
+      }
+    }
+    const chosen = pick?.row.candidate ?? null;
+    const home = pick?.pool ?? null;
+    const local = chosen !== null && home === null;
+    const target = chosen && (home ? [home, ...pools.filter(other => other !== home)
+      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))] : pools).map(other => best(referenceOf(other))).find(Boolean);
+    const isReference = chosen && home && referenceOf(home).some(row => row.candidate.id === chosen.id);
+    // The cheap-first decision (recorded, never a quality claim): the cheap
+    // tuple plus its prior failure chance times the one reference re-run,
+    // against the reference straight away. Reference-first binds the reference.
+    let decision = null, costTokens = [];
     if (target && !isReference) {
+      const prior = TIER_FAILURE_PRIORS[local ? 'local' : tierOf(catalog, chosen.model)] ?? {failures: 0, runs: 0};
+      const pFail = (prior.failures + 1) / (prior.runs + 2);
+      const cheap = chosen.estimated_cost_units, reference = target.candidate.estimated_cost_units;
+      if (typeof cheap === 'number' && typeof reference === 'number') {
+        const expected = cheap + pFail * reference;
+        decision = expected < reference ? 'cheap_first' : 'reference_first';
+        costTokens = ['expected_usd_' + expected.toFixed(6), 'reference_usd_' + reference.toFixed(6),
+          'p_fail_' + pFail.toFixed(4)];
+      } else decision = 'cost_unpriced';
+    }
+    const profileTokens = ['graded_profile_' + admission.list, 'classifier_' + admission.classifier];
+    if (target && !isReference && decision !== 'reference_first') {
       const ladder = {source: 'tier', admitted_by: GRADED_SOURCE, grade: admission.grade, certificate_id: null,
         format_check: null, cheap_model: chosen.model, cheap_effort: chosen.effort,
         reference_model: target.candidate.model, reference_effort: target.candidate.effort,
         reference_candidate_id: target.candidate.id};
-      const why = ['route_graded', admissionToken(admission), 'graded_list_' + graded.entry.index,
-        'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), graded.rank, ...graded.skipped, 'effort_' + chosen.effort,
-        ...poolNotes(graded.pool.pool, chosen, graded.hit.candidate),
-        'escalation_reference_' + (target.candidate.quota_pool === graded.pool.pool ? 'same_pool' : 'other_pool'),
-        surfaceToken(chosen)];
-      if (avoidPool !== null) why.unshift(graded.pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
-      return {candidate: chosen, why: why.join(';'), widened: false, kind: 'graded', tier: tierOf(catalog, chosen.model),
-        routeClass: GRADED_CLASS, referenceEffort: referenceOf(graded.pool)[0]?.candidate.effort ?? null, ladder};
+      const why = ['route_graded', admissionToken(admission), 'graded_list_' + pick.index,
+        'tier_' + (local ? 'local' : tierOf(catalog, chosen.model) ?? 'none'),
+        local ? 'local_model_row' : rankToken ?? 'pool_rank_' + ordinal.get(home.pool), ...skipped,
+        'effort_' + chosen.effort, ...(home ? poolNotes(home.pool, chosen, chosen) : []),
+        'escalation_reference_' + (home && target.candidate.quota_pool === home.pool ? 'same_pool' : 'other_pool'),
+        local ? 'local_model' : surfaceToken(chosen), ...profileTokens, decision, ...costTokens];
+      if (avoidPool !== null && home) why.unshift(home.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+      return {candidate: chosen, why: why.join(';'), widened: false, kind: 'graded', tier: local ? null : tierOf(catalog, chosen.model),
+        routeClass: GRADED_CLASS, referenceEffort: home ? referenceOf(home)[0]?.candidate.effort ?? null : target.candidate.effort,
+        ladder};
     }
     // Not bound below the reference: the node binds the reference, admitted as
     // uncertified (its reason never names a graded admission), with the note.
     notes.push('graded_' + admission.grade + '_' + (!sole ? 'requires_single_node_plan' :
       !roomy ? 'requires_dispatch_headroom' :
-      !chosen ? 'tuple_undispatchable' : isReference ? 'tuple_is_reference' : 'requires_runnable_reference'));
+      !chosen ? 'tuple_undispatchable' : isReference ? 'tuple_is_reference' :
+      decision === 'reference_first' ? 'reference_first' : 'requires_runnable_reference'), ...profileTokens, ...costTokens);
     admission = UNCERTIFIED_ADMISSION;
   }
   if (admission.class === 'certified') {
@@ -1547,7 +1684,10 @@ const PLANNED_NODE_KEYS = ['id', 'instruction', 'dependencies', 'kind', 'route_c
  * production registers none. `descentPolicy` (K10) is a prepared frozen
  * descent cost policy or null; production registers none. */
 export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifierRegistry = null,
-                                                                       descentPolicy = null} = {}) {
+                                                                       descentPolicy = null, deepPolicy = DEEP_POLICY} = {}) {
+  // Build 441 part 2: `deepPolicy` is a fixture seam for policy B; every
+  // production caller binds with the shipped DEEP_POLICY (policy A).
+  assert(DEEP_POLICIES.includes(deepPolicy), 'deep_policy_invalid');
   if ((task.mode === 'explicit_routing_test' && !explicitTierRouting(task, catalog)) ||
       !plain(plan) || !Array.isArray(plan.nodes))
     return {plan, decisions: {}, routes: {}};
@@ -1563,7 +1703,7 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifie
         allowedPaths(node.owned_paths) && Array.isArray(node.dependencies), 'plan_node_invalid');
       const {route_class: _grade, ...rest} = node;
       const choice = selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy,
-        planNodes: plan.nodes.length});
+        planNodes: plan.nodes.length, deepPolicy});
       decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
         choice.tier);
       routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
@@ -2317,7 +2457,14 @@ export function ownerCollectionOutput(plan, children) {
  * difficulty exactly when the request is answer-only. A routing fact for the
  * graded admission only, never a certificate. */
 function validRequestProfile(profile) {
-  return keys(profile, ['schema', 'policy', 'answer_kind', 'tool_need', 'difficulty', 'signals']) &&
+  // Part 2: classifier and task_type travel together (an older profile has neither).
+  const combined = plain(profile) && Object.hasOwn(profile, 'classifier');
+  return keys(profile, ['schema', 'policy', 'answer_kind', 'tool_need', 'difficulty', 'signals',
+    ...(combined ? ['classifier', 'task_type'] : [])]) &&
+    (!combined || (typeof profile.classifier === 'string' && PROFILE_CLASSIFIER.test(profile.classifier) &&
+      PROFILE_TASK_TYPES.has(profile.task_type) &&
+      (profile.answer_kind !== 'answer_only' || PROFILE_ANSWER_TASK_TYPES.has(profile.task_type)) &&
+      (!profile.classifier.startsWith('local_llm:') || profile.task_type !== 'unknown'))) &&
     profile.schema === 1 && profile.policy === REQUEST_PROFILE_POLICY &&
     PROFILE_ANSWER_KINDS.has(profile.answer_kind) && PROFILE_TOOL_NEEDS.has(profile.tool_need) &&
     PROFILE_DIFFICULTIES.has(profile.difficulty) &&
@@ -2586,7 +2733,9 @@ function closedDecimal({n, d}) {
  * predicate (얼마 | 몇 | how much is) over ONE such operator ("5-3은 얼마야?").
  * BARE, WEAK and the what-is wording (뭐야 family, what is | what's) ask what
  * the thing is ("2024-10-24는 뭐야?", "what is 7-11?") and abstain, and so
- * does a WEAK EXPR that starts with '-' ("-3+5는?").
+ * does a WEAK EXPR that starts with '-' ("-3+5는?"). Build 441 part 2: the
+ * Korean what-is wording over ONE '-' between two plain integers asks the
+ * value ("1-1은 뭐냐?" = 0; plainIntegerDifference), except a year span.
  * Value: exact rationals; division by zero, a non-terminating result
  * ("1/3=") or more than 40 output digits abstain; never rounded. */
 export function exactArithmeticQuestion(request) {
@@ -2612,7 +2761,7 @@ export function exactArithmeticQuestion(request) {
   const read = closedArithmeticTokens(body);
   if (read === null || read.tokens.length === 0) return null;
   // asks: what a STRONG shape's words ask for, 'equals' | 'quantity' | 'what'.
-  let strength = null, asks = null;
+  let strength = null, asks = null, koreanWhat = false;
   if (prefix) {
     strength = read.rest === '' ? 'strong' : null;
     asks = prefix[0].startsWith('how much') ? 'quantity' : 'what';
@@ -2622,14 +2771,29 @@ export function exactArithmeticQuestion(request) {
     const korean = KOREAN_ARITHMETIC_SUFFIX.exec(read.rest);
     strength = korean === null ? null : korean[2] !== undefined ? 'strong' : question ? 'weak' : null;
     if (strength === 'strong') asks = /^(?:얼마|몇)/u.test(korean[2]) ? 'quantity' : 'what';
+    koreanWhat = strength === 'strong' && asks === 'what';
   }
   if (strength === null) return null;
   const expression = closedArithmeticValue(read.tokens);
   if (expression === null || expression.leadingZero) return null;
-  if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1)))
+  if (expression.ambiguous && !(asks === 'equals' || (asks === 'quantity' && expression.operators === 1) ||
+      (koreanWhat && plainIntegerDifference(read.tokens))))
     return null;
   if (strength === 'weak' && expression.leadingUnary) return null;
   return closedDecimal(expression.value);
+}
+/** Build 441 part 2 (owner order 2026-10-27; K7 widening): the Korean
+ * what-is wording ("1-1은 뭐냐?") asks the value of exactly one ASCII '-'
+ * between two plain non-negative integers (digits only, no leading zero, no
+ * sign, no parenthesis): the calculator answers it, never a model (qwen 9B
+ * answered "1-1은 뭐냐?" wrongly). Two four-digit operands ("2021-2022는
+ * 뭐야?") read as a year span (a date reading) and abstain, as do '/', more
+ * than one operator, a decimal, a sign and the English "what is 7-11?". */
+function plainIntegerDifference(tokens) {
+  return tokens.length === 3 && tokens[0].kind === 'num' && tokens[2].kind === 'num' &&
+    tokens[1].kind === 'op' && tokens[1].symbol === '-' &&
+    tokens[0].frac === '' && tokens[2].frac === '' &&
+    !(tokens[0].int.length === 4 && tokens[2].int.length === 4);
 }
 /** Core's zero-model arithmetic answer for a whole Auto request. */
 export function zeroModelArithmetic(request) {
@@ -2784,11 +2948,18 @@ function validatePlan(plan, task, catalog) {
       node.context_refs.length <= 128 &&
       node.context_refs.every(x => task.material_refs.includes(x)), 'plan_node_invalid');
     const c = candidates.get(node.candidate_id);
-    // The local model executes only an explicit route that names the local
+    // The local model executes an explicit route that names the local
     // surface; Auto never routes ordinary work to it (route-all, 2026-10-14).
+    // Build 441 part 2 (owner order 2026-10-27): Auto's one exception is very
+    // easy chat the local classifier read as such, the request itself on a
+    // read-only first-turn node with no materials (a graded route below a
+    // runnable reference, never certified).
     if (node.kind === 'agent' && c.surface === 'local')
-      assert(task.mode === 'explicit_routing_test' && localWorkerRow(c) && node.scope === 'read_only' &&
-        node.dependencies.length === 0, 'local_agent_node_not_explicit');
+      assert(localWorkerRow(c) && node.scope === 'read_only' && node.dependencies.length === 0 &&
+        (task.mode === 'explicit_routing_test' ||
+          (task.mode === 'auto' && node.instruction === task.request && profileAnswersLocally(catalog) &&
+            (node.context_refs ?? []).length === 0 && (task.material_refs ?? []).length === 0 &&
+            withoutConversation(task))), 'local_agent_node_not_explicit');
     if (node.kind === 'deterministic')
       assert(task.mode !== 'explicit_routing_test' && localExactRow(c) && node.scope === 'read_only' &&
         pureArithmetic(node.instruction) !== null, 'deterministic_node_not_exact');

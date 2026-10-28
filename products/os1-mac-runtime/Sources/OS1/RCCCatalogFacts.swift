@@ -9,8 +9,11 @@ enum RCCCatalogFacts {
 
     /// R2: the owner request runs read-only (affirmative only), from the same
     /// predicate the native path uses; attached material counts as a source.
-    static func ownerScope(_ request: C.Request, profileAnswer: Bool = true) -> C.Scope {
-        ownerRequestRunsReadOnly(request.request, attachedSource: !request.materialRefs.isEmpty, profileAnswer: profileAnswer)
+    /// Build 441 part 2: `profile` is the catalog's combined request profile
+    /// (nil: the keyword profile, as before).
+    static func ownerScope(_ request: C.Request, profileAnswer: Bool = true, profile: RequestProfile? = nil) -> C.Scope {
+        ownerRequestRunsReadOnly(request.request, attachedSource: !request.materialRefs.isEmpty, profileAnswer: profileAnswer,
+                                 profile: profile)
             ? .readOnly : .workspaceWrite
     }
 

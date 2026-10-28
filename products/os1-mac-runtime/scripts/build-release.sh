@@ -126,6 +126,9 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-one-law.tes
 # Change 2 (build 441): the host-profile graded admission (uncertified, one
 # escalation, bind-time headroom, the empty-v2 label fix, route-replay graded basis).
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-graded-admission.test.mjs"
+# Build 441 part 2 (owner order 2026-10-27): local-classifier profile mapping,
+# price-aware graded choice, the local chat row and the deep policy.
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-classifier.test.mjs"
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"

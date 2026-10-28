@@ -37,8 +37,9 @@ import Foundation
 ///   names the local surface: the one tools-free, read-only, quota-free row of
 ///   the model OpenClaw already runs (`localWorkerModel`), available only when
 ///   the host's live readiness probe found it (`localModel`), unavailable when
-///   it did not. Auto never gets one: ordinary work is not routed to the
-///   local model in this build.
+///   it did not. Auto gets one only for very easy chat (build 441 part 2,
+///   owner order 2026-10-27: `autoLocalRowEligible`); ordinary work is
+///   never routed to the local model.
 /// - An active Claude quota cooldown (`ClaudeQuotaBackoff`, left by a real
 ///   execution rejection) excludes the cooled family, or every Claude profile
 ///   when it is account-wide, with `quota_backoff`; it is never probed. An
@@ -190,7 +191,17 @@ public enum RCCNativeCatalogBuilder {
         /// Build 441: the host's deterministic `RequestProfile` of the request
         /// (`RequestProfile.classify` with the host's shell and material
         /// facts). Emitted beside the admission facts only; nil emits none.
+        /// Part 2: the host passes the combined profile
+        /// (`RequestProfile.combine`, keyword rails first, then the local
+        /// classifier's reading).
         public var requestProfile: RequestProfile? = nil
+        /// Build 441 part 2: list prices (`ModelPriceTable.current()`). Each
+        /// priced row's `estimated_cost_units` is then the USD of one typical
+        /// OS-1 call on its model (`callUSD`, rounded to a millionth), the
+        /// local model's row 0; nil (and an unpriced model) keeps null. A
+        /// relative cost signal for Core's price-aware choice, never a quota
+        /// or quality claim.
+        public var priceTable: ModelPriceTable? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -582,7 +593,7 @@ public enum RCCNativeCatalogBuilder {
                         "quota_remaining_fraction": remaining.map { $0 / 100 as Any } ?? NSNull(),
                         "quota_observed_at_ms": estimate.map { Int64($0.observedAt.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
                         "quota_valid_until_ms": estimate.map { Int64($0.validUntil.timeIntervalSince1970 * 1000) as Any } ?? NSNull(),
-                        "quality_state": "policy_admitted", "estimated_cost_units": NSNull()]
+                        "quality_state": "policy_admitted", "estimated_cost_units": estimatedCost(input, model: profile.model)]
                     rows.append(Row(fields: fields, provider: profile.provider, model: profile.model, surface: surface,
                                     effort: profile.effort, scope: scope, id: id, remaining: remaining.map { $0 / 100 },
                                     action: profile.action))
@@ -757,14 +768,31 @@ public enum RCCNativeCatalogBuilder {
                       admission: admissionFacts(input, references: references))
     }
 
+    /// Build 441 part 2: one row's estimated USD for a typical call, or null.
+    static func estimatedCost(_ input: Input, model: String) -> Any {
+        guard let table = input.priceTable, let usd = table.callUSD(model: model), usd.isFinite, usd >= 0 else { return NSNull() }
+        return (usd * 1_000_000).rounded() / 1_000_000
+    }
+    /// Build 441 part 2 (owner order 2026-10-27): Auto offers the local row
+    /// only for very easy chat: a combined profile the local classifier read
+    /// as chat, light and tool-free (`RequestProfile.answersLocally`), with
+    /// no material, under the Auto preference. Core binds it as a graded
+    /// route below a runnable reference, never certified.
+    public static func autoLocalRowEligible(_ input: Input) -> Bool {
+        input.explicitRouteSurfaces == nil && !input.hasMaterialRefs &&
+            normalizedPreference(input.providerPreference) == "auto" && input.requestProfile?.answersLocally == true
+    }
     /// The local execution row of an explicit route test that names the local
-    /// surface (empty otherwise, and when the host did not probe the model):
-    /// read-only, no tools, no quota pool, transport `local`, effort none.
+    /// surface, or (build 441 part 2) of an Auto chat request
+    /// (`autoLocalRowEligible`); empty otherwise, and when the host did not
+    /// probe the model: read-only, no tools, no quota pool, transport
+    /// `local`, effort none.
     /// Its identity is fixed by its configuration, so a catalog refresh before
     /// dispatch finds the same row; its availability is the probe's own
     /// result for two minutes from the probe, never assumed.
     static func localRow(_ input: Input) -> [[String: Any]] {
-        guard input.explicitRouteSurfaces?.contains("local") == true, let observed = input.localModel else { return [] }
+        guard input.explicitRouteSurfaces?.contains("local") == true || autoLocalRowEligible(input),
+              let observed = input.localModel else { return [] }
         let tuple = ["local", "local", localWorkerAccount, localWorkerModel, "none", "read_only",
                      input.executorContractSHA256].joined(separator: "\n")
         let digest = RCCRuntimeContract.digest(Data(tuple.utf8))
@@ -776,7 +804,8 @@ public enum RCCNativeCatalogBuilder {
                  "availability": observed.ready ? "available" : "unavailable",
                  "availability_observed_at_ms": at, "availability_valid_until_ms": at + 120_000,
                  "quota_remaining_fraction": NSNull(), "quota_observed_at_ms": NSNull(), "quota_valid_until_ms": NSNull(),
-                 "quality_state": "policy_admitted", "estimated_cost_units": NSNull()]]
+                 "quality_state": "policy_admitted",
+                 "estimated_cost_units": input.priceTable == nil ? NSNull() as Any : 0.0 as Any]]
     }
 
     /// The exact catalog bytes `os1 rcc-catalog` prints. `exclusions` appears

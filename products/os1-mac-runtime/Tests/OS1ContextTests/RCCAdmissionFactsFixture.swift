@@ -679,6 +679,103 @@ func runRCCAdmissionFactsFixtures() throws {
     try check(models.count == 3 && efforts.count == 3 && efforts.contains("low") && efforts.contains("medium") &&
               efforts.contains("ultra"), "441: not always luna, not always low, not always the ceiling: \(models) \(efforts)")
 
+    // ---- Build 441 part 2 (owner order, 2026-10-27): the local classifier's
+    // reading combined under the keyword rails, list prices on every row, and
+    // Core's price-aware choice, end to end on Swift-built catalogs. The local
+    // readings are fixed here (fake transport: LocalRequestClassifierFixture);
+    // the host's owner scope and chat-lane fact for a combined profile are
+    // computed as `ownerRequestRunsReadOnly(profile:)` / `rccChatLaneEligible`
+    // compute them for these texts (`os1 self-test` pins those functions).
+    typealias LA = LocalRequestClassifier.Answer
+    func combinedInput(_ text: String, _ local: LA?, shell: Bool = false, codexUsed: Double = 40, claudeUsed: Double = 40,
+                       sonnet: Bool = true, codexExhausted: Bool = false) -> B.Input {
+        let keyword = RequestProfile.classify(text, shellNeed: shell, hasMaterial: false)
+        let consulted = RequestProfile.railsDecide(keyword, request: text) ? nil : local
+        let combined = RequestProfile.combine(keyword: keyword, request: text, local: consulted,
+                                              model: consulted == nil ? nil : "qwen3.5:9b")
+        let readOnly = !shell && (combined.answersReadOnly || ClaudeChatLane.conversationalQuestion(text))
+        let chat = readOnly && combined.answersWithoutTools && ClaudeChatLane.answerNeedsNoLookup(text)
+        var value = live(text, owner: readOnly ? .readOnly : .workspaceWrite, chat: chat)
+        value.profiles += [.init(action: "cx_61sol_medium", provider: "codex", model: "gpt-6.1-sol", effort: "medium"),
+                           .init(action: "cl_opus55_medium", provider: "claude", model: "claude-opus-5-5", effort: "medium"),
+                           .init(action: "cl_haiku45", provider: "claude", model: "claude-haiku-4-5-20251001", effort: "none")]
+        if sonnet { value.profiles.append(.init(action: "cl_sonnet55_medium", provider: "claude", model: "claude-sonnet-5-5", effort: "medium")) }
+        value.codexModels.insert(.init(slug: "gpt-6.1-sol", supportedEfforts: ["low", "medium", "high"], priority: 1), at: 1)
+        value.codexModels[2].priority = 2
+        value.claudeModels = [.init(model: "claude-fable-5-1", supportedEfforts: ["max"], nativeRank: 0),
+                              .init(model: "claude-opus-5-5", supportedEfforts: ["medium"], nativeRank: 1),
+                              .init(model: "claude-sonnet-5-5", supportedEfforts: ["medium"], nativeRank: 2),
+                              .init(model: "claude-haiku-4-5-20251001", supportedEfforts: ["none"], nativeRank: 3)]
+        value.codexQuota = .init(accountID: "acct-codex", observedAt: now, source: .codexNative,
+                                 windows: [.init(bucket: "weekly", usedPercent: codexUsed, resetsAt: now.addingTimeInterval(3600))])
+        value.claudeQuota = .init(accountID: "acct-claude", observedAt: now, source: .claudeNative,
+                                  windows: [.init(bucket: "weekly_all", usedPercent: claudeUsed, resetsAt: now.addingTimeInterval(3600))])
+        if codexExhausted { value.codexQuotaExhaustedModels = ["gpt-6.1-sol", "gpt-6-luna"] }
+        value.requestProfile = combined
+        value.priceTable = .compiled
+        value.enableRoutingIntentV2 = true
+        value.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        if B.autoLocalRowEligible(value) { value.localModel = .init(ready: true, at: now) }
+        return value
+    }
+    let explainStandard = LA(taskType: .explain, difficulty: .standard, needsTools: .none)
+    let chatLight = LA(taskType: .chat, difficulty: .light, needsTools: .none)
+    let explainLight = LA(taskType: .explain, difficulty: .light, needsTools: .none)
+    let part2: [(label: String, text: String, input: B.Input, expect: String, basis: String)] = [
+        ("the owner's ASR explanation", "쉐딩과 방정식 설명해 봐봐", combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard),
+         "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("very easy chat: the local model", "안녕! 좋은 아침이야", combinedInput("안녕! 좋은 아침이야", chatLight),
+         "local:qwen3.5:4b/none", "graded:light"),
+        ("current facts: an agent surface", "오늘 원달러 환율 설명해줘", combinedInput("오늘 원달러 환율 설명해줘", explainStandard),
+         "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("rail: a named file", "README.md 설명해줘", combinedInput("README.md 설명해줘", explainStandard),
+         "codex:gpt-6-astra/ultra", "reference"),
+        ("rail: a placement order", "슈뢰딩거 방정식 설명 정리해서 노션에 올려줘",
+         combinedInput("슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
+        ("rail: a build", "빌드해줘", combinedInput("빌드해줘", chatLight, shell: true), "codex:gpt-6-astra/ultra", "reference"),
+        ("LLM down: keyword fallback", "안녕! 좋은 아침이야", combinedInput("안녕! 좋은 아침이야", nil),
+         "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("price: sol over opus at one tier (Claude ranked first)", "쉐딩과 방정식 설명해 봐봐",
+         combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard, codexUsed: 90, claudeUsed: 10, sonnet: false),
+         "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("price: luna over haiku 4.5 (Claude ranked first)", "엔트로피가 뭐야?",
+         combinedInput("엔트로피가 뭐야?", explainLight, codexUsed: 90, claudeUsed: 10), "codex:gpt-6-luna/low", "graded:light"),
+        ("price: Codex quota exhausted binds sonnet, not opus", "쉐딩과 방정식 설명해 봐봐",
+         combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard, codexExhausted: true),
+         "claude-chat:claude-sonnet-5-5/medium", "graded:standard")]
+    var part2Cases: [(request: String, catalog: [String: Any], write: Bool)] = []
+    for item in part2 {
+        let built = try catalog(item.input)
+        var v2Request = try request(item.text, mode: .auto)
+        v2Request.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        let decoded = try C.decodeCatalog(built, request: v2Request)
+        try check(decoded.requestProfile == item.input.requestProfile && decoded.requestProfile?.valid == true &&
+                  decoded.candidates.allSatisfy { $0.estimatedCostUnits != nil },
+                  "part 2: the Swift contract accepts the combined profile and every row is priced: \(item.label)")
+        part2Cases.append((item.text, try object(built), item.input.ownerScope == .workspaceWrite))
+    }
+    let localBuilt = try object(catalog(part2[1].input))
+    try check((localBuilt["candidates"] as? [[String: Any]])?.contains { $0["surface"] as? String == "local" &&
+                  $0["estimated_cost_units"] as? Double == 0 && $0["model"] as? String == B.localWorkerModel } == true &&
+              (try object(catalog(part2[0].input))["candidates"] as? [[String: Any]])?.contains { $0["surface"] as? String == "local" } == false,
+              "part 2: Auto offers the local row only for very easy chat, priced 0")
+    let pricedRow = (try object(catalog(part2[0].input))["candidates"] as? [[String: Any]])?.first { $0["model"] as? String == "gpt-6-astra" }
+    try check(pricedRow?["estimated_cost_units"] as? Double == 0.195, "part 2: astra's typical call is $0.195 on the wire")
+    let part2Routes = try coreRoutes(part2Cases, now: now,
+        runtime: root.appendingPathComponent("Resources/openclaw-os1-bridge/rcc-runtime.mjs"))
+    try check(part2Routes.count == part2.count, "part 2: Core resolved every Swift-built catalog")
+    for (item, route) in zip(part2, part2Routes) {
+        let tuple = "\(route["surface"] as? String ?? ""):\(route["model"] as? String ?? "")/\(route["effort"] as? String ?? "")"
+        try check(tuple == item.expect && route["basis"] as? String == item.basis &&
+                  (item.basis == "reference" || (route["reason"] as? String)?.contains(";cheap_first;") == true),
+                  "part 2: \(item.label): \(tuple) \(route["basis"] ?? "") \(route["reason"] ?? "")")
+    }
+    try check((part2Routes[0]["reason"] as? String)?.contains(";classifier_local_llm;") == true &&
+              (part2Routes[6]["reason"] as? String)?.contains(";classifier_keyword;") == true &&
+              (part2Routes[1]["reason"] as? String)?.contains(";graded_profile_chat_light;") == true &&
+              (part2Routes[2]["reason"] as? String)?.contains(";graded_profile_current_facts;") == true,
+              "part 2: the reason names the classifier and the profile list")
+
     // ---- Ticket delegation flag (K13: reserved, refused, always managed) ----
     let host = questionRequest.hostContext!
     let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "acct-codex", model: "gpt-6-astra",

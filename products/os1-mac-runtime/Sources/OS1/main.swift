@@ -4521,6 +4521,48 @@ func providerSurfaceRoutingSelfTest() throws {
         } && ["변경사항 설명해줘", "PR 설명해줘", "에러 메시지 설명해줘"].allSatisfy {
             !ownerRequestRunsReadOnly($0, attachedSource: false)
         } && !profiled("REVAS가 뭐야?").gradable))
+    // Build 441 part 2 (owner order, 2026-10-27): the RCC catalog's combined
+    // profile (keyword rails first, then the local classifier's reading). A
+    // current-facts answer runs read-only (a read-only agent looks it up) but
+    // never on the tool-free lane; small talk the keywords cannot read is an
+    // answer; a rail stands whatever the local model says; the native path's
+    // keyword-only scope is unchanged.
+    func combined(_ text: String, _ local: LocalRequestClassifier.Answer?) -> RequestProfile {
+        RequestProfile.combine(keyword: profiled(text), request: text, local: local, model: local == nil ? nil : "qwen3.5:9b")
+    }
+    let readsAsAnswer = LocalRequestClassifier.Answer(taskType: .explain, difficulty: .standard, needsTools: .none)
+    let rate = combined("오늘 원달러 환율 설명해줘", readsAsAnswer)
+    checks.append(("a combined current-facts answer is read-only, never the tool-free chat lane",
+        rate.toolNeed == .currentFacts && ownerRequestRunsReadOnly("오늘 원달러 환율 설명해줘", attachedSource: false, profile: rate) &&
+            !rccChatLaneEligible(objective: "오늘 원달러 환율 설명해줘", hasSource: false, providerPreference: "auto", profile: rate) &&
+            !ownerRequestRunsReadOnly("오늘 원달러 환율 설명해줘", attachedSource: false, profile: nil) ==
+            !ownerRequestRunsReadOnly("오늘 원달러 환율 설명해줘", attachedSource: false)))
+    let greeting = combined("안녕! 좋은 아침이야", LocalRequestClassifier.Answer(taskType: .chat, difficulty: .light, needsTools: .none))
+    checks.append(("small talk the local model reads as chat is a read-only answer for the local row",
+        greeting.answersLocally && ownerRequestRunsReadOnly("안녕! 좋은 아침이야", attachedSource: false, profile: greeting) &&
+            combined("안녕! 좋은 아침이야", nil).gradable))
+    checks.append(("a rail stands whatever the local model reads",
+        ["빌드해줘", "README.md 설명해줘", "슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", "그럼 실제로 해봐"].allSatisfy { text in
+            let value = combined(text, readsAsAnswer)
+            return RequestProfile.railsDecide(profiled(text), request: text) && !value.answersReadOnly &&
+                !ownerRequestRunsReadOnly(text, attachedSource: false, profile: value) == !ownerRequestRunsReadOnly(text, attachedSource: false) &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: value)
+        }))
+    // One reading per task: a stored receipt is reused without asking Ollama.
+    let classificationHome = FileManager.default.temporaryDirectory.appendingPathComponent("os1-cls-selftest-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: classificationHome) }
+    let storedReading = LocalRequestClassifier.Receipt(model: "qwen3.5:9b", answer: readsAsAnswer, outcome: "adopted", latencyMS: 5)
+    LocalRequestClassifier.store(storedReading, key: LocalRequestClassifier.cacheKey(taskID: "selftest-task",
+        requestSHA256: sha256Hex(Data("쉐딩과 방정식 설명해 봐봐".utf8))), directory: LocalRequestClassifier.cacheDirectory(home: classificationHome))
+    final class ReadingBox: @unchecked Sendable { var value: LocalRequestClassifier.Receipt? }
+    let readingBox = ReadingBox(), readingDone = DispatchSemaphore(value: 0)
+    Task.detached {
+        readingBox.value = await rccLocalClassification(taskID: "selftest-task", requestSHA256: sha256Hex(Data("쉐딩과 방정식 설명해 봐봐".utf8)),
+            request: "쉐딩과 방정식 설명해 봐봐", home: classificationHome)
+        readingDone.signal()
+    }
+    checks.append(("a task's later catalog builds reuse its first local reading",
+        readingDone.wait(timeout: .now() + 5) == .success && readingBox.value == storedReading))
 
     // The refusal is what stops an explicit chat-lane choice from becoming the
     // full lane. Each structural condition is named before dispatch.
@@ -12635,7 +12677,8 @@ func runResponseAvailability(_ prompt: String, hasAttachments: Bool = false,
 /// `profileAnswer: false` leaves out build 441's answer-only verdict (the
 /// pre-441 reading), for a request a registered workspace-write owner
 /// contract covers (`rccNativeCatalog`).
-func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool, profileAnswer: Bool = true) -> Bool {
+func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool, profileAnswer: Bool = true,
+                              profile: RequestProfile? = nil) -> Bool {
     // The owner selecting the bounded chat lane on the rail is the same
     // authority statement as a self-contained text operation: answer from the
     // request, touch nothing. It has to reach the scope here, because the
@@ -12664,8 +12707,12 @@ func ownerRequestRunsReadOnly(_ prompt: String, attachedSource: Bool, profileAns
     // changes nothing on this machine: it runs read-only. `RequestProfile`
     // refuses any write, shell, path, image, material, machine, project,
     // external-system, external-action or complaint signal.
-    let answerOnly = profileAnswer && !attachedSource &&
-        RequestProfile.classify(prompt, shellNeed: promptRequiresShellCapability(prompt), hasMaterial: false).answersWithoutTools
+    // Build 441 part 2: the RCC catalog passes its combined profile (keyword
+    // rails first, then the local classifier's reading); an answer that at
+    // most looks up the world as it is now (current facts) changes nothing
+    // here either: a read-only agent can look it up.
+    let answerOnly = profileAnswer && !attachedSource && (profile.map(\.answersReadOnly) ??
+        RequestProfile.classify(prompt, shellNeed: promptRequiresShellCapability(prompt), hasMaterial: false).answersWithoutTools)
     return selfContainedText || readOnlyQuestion || cardCheckIn || answerOnly
 }
 
@@ -19704,14 +19751,31 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     guard Set(request.materialRefs.filter { $0.hasPrefix(RCCBoundSourceInput.prefix) }) == Set(bound) else {
         throw SourceContextError.invalid
     }
-    let config = try RuntimeConfig.load()
-    let now = Date()
     let hasMaterial = !request.materialRefs.isEmpty
     // Build 441 (owner order, 2026-10-27): the request's deterministic
     // profile, from the owner's text and host facts only (R0): answer kind,
     // tool need and difficulty. Core's graded admission reads it.
-    let requestProfile = RequestProfile.classify(request.request, shellNeed: promptRequiresShellCapability(request.request),
+    let keywordProfile = RequestProfile.classify(request.request, shellNeed: promptRequiresShellCapability(request.request),
                                                  hasMaterial: hasMaterial)
+    // Build 441 part 2 (owner order, 2026-10-27): the LOCAL model reads the
+    // request too (free, no quota), started here, before every other step,
+    // and running beside the provider probes below; it is awaited only once
+    // they are done. Only for an Auto request whose keyword rails do not
+    // already fix the route (`RequestProfile.railsDecide`: the local reading
+    // could never lower them). Once per task: every later build of this task
+    // reuses the first reading (`rccLocalClassification`).
+    let consultLocal = request.mode == .auto &&
+        RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "auto" &&
+        !RequestProfile.railsDecide(keywordProfile, request: request.request)
+    let (readingTaskID, readingSHA256, readingText) = (request.taskID, request.requestSHA256, request.request)
+    let localReading = consultLocal ? Task.detached {
+        await rccLocalClassification(taskID: readingTaskID, requestSHA256: readingSHA256, request: readingText)
+    } : nil
+    let config = try RuntimeConfig.load()
+    let now = Date()
+    // Without a local reading: the keyword profile, a keyword unknown with no
+    // rail reading as an answer at standard (never the reference for that alone).
+    var requestProfile = RequestProfile.combine(keyword: keywordProfile, request: request.request, local: nil, model: nil)
     // The narrow chat-lane predicate, the same one the executor uses. An
     // explicit route names its own payload, so each Claude-chat route must
     // pass on its own instruction (the owner named that lane for it).
@@ -19737,14 +19801,16 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // Build 407 admission facts (R0, R2): the owner scope, and an owner
     // contract re-bound now; the signed class table is compiled in (build
     // 440: one certificate, chat_explanatory, on the owner decision).
-    input.ownerScope = RCCCatalogFacts.ownerScope(request)
+    input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: request.mode == .explicitRoutingTest ? nil : requestProfile)
     input.taskContract = RCCCatalogFacts.taskContract(request)
     // Build 441 review: a registered workspace-write owner contract for
     // exactly this request outranks the profile's answer verdict. Neither its
     // owner scope nor its chat lane comes from the profile, so a contract-
     // backed write keeps its writer rows (catalogReadOnly).
+    var contractBackedWrite = false
     if let contract = input.taskContract, contract.scope == .workspaceWrite, contract.bindingsChecked,
        request.mode != .explicitRoutingTest {
+        contractBackedWrite = true
         input.ownerScope = RCCCatalogFacts.ownerScope(request, profileAnswer: false)
         input.chatLaneEligible = claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasMaterial,
             objective: request.request,
@@ -19840,10 +19906,32 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         input.auth[provider] = observed.signedIn == false ? .signedOut
             : observed.mode == .subscription && observed.billing == .includedSubscription ? .subscription : .nonSubscription
     }
+    // Build 441 part 2: the local reading, combined under the keyword rails.
+    // It may move the owner scope and the chat-lane fact (an answer it reads
+    // as tool-free or current-facts only runs read-only), never past a rail
+    // and never past a bound workspace-write owner contract.
+    if let localReading {
+        let reading = await localReading.value
+        FileHandle.standardError.write(Data(("os1 rcc-catalog: " + reading.publicLine + "\n").utf8))
+        requestProfile = RequestProfile.combine(keyword: keywordProfile, request: request.request,
+                                                local: reading.adopted?.answer, model: reading.adopted?.model)
+        input.requestProfile = requestProfile
+    }
+    if request.mode != .explicitRoutingTest && !contractBackedWrite {
+        input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)
+        input.chatLaneEligible = rccChatLaneEligible(objective: request.request, hasSource: hasMaterial,
+            providerPreference: host.providerPreference, profile: requestProfile)
+    }
+    // Build 441 part 2: list prices, so Core picks the cheapest dispatchable
+    // row of a graded route's tier list (a fresh daily refresh, else compiled).
+    input.priceTable = ModelPriceTable.current().table
     // An explicit route that names the local surface (route-all) gets the
     // one local model row, available only when the live probe finds the
-    // pinned model now. Nothing local is probed for any other task.
-    if request.mode == .explicitRoutingTest, (host.explicitRoutes ?? []).contains(where: { $0.surface == .local }) {
+    // pinned model now; build 441 part 2: so does an Auto request the local
+    // classifier read as very easy chat. Nothing local is probed for any
+    // other task.
+    if (request.mode == .explicitRoutingTest && (host.explicitRoutes ?? []).contains(where: { $0.surface == .local })) ||
+        RCCNativeCatalogBuilder.autoLocalRowEligible(input) {
         let ready = LocalRouterBridge.localModelReady()
         input.localModel = .init(ready: ready, at: Date())
     }
@@ -19872,6 +19960,24 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         sourceBound: OS1SourceWatch.containedRoot(workspace: host.workspace) != nil)
     _ = try RCCRuntimeContract.decodeCatalog(admitted, request: request)
     return admitted
+}
+
+/// Build 441 part 2: the local classifier's reading of one task's request,
+/// once per task. The first catalog build asks the local model
+/// (`LocalRequestClassifier.classify`, bounded) and keeps the receipt in the
+/// private per-task store; every later build of the same task (the refresh
+/// before each dispatch) reuses it, so a task's profile, and the rows it
+/// offers, never change between its bind and its dispatch. A failed or
+/// timed-out first reading is kept as well: the whole task then routes on the
+/// keyword profile.
+func rccLocalClassification(taskID: String, requestSHA256: String, request: String,
+                            home: URL = FileManager.default.homeDirectoryForCurrentUser) async -> LocalRequestClassifier.Receipt {
+    let directory = LocalRequestClassifier.cacheDirectory(home: home)
+    let key = LocalRequestClassifier.cacheKey(taskID: taskID, requestSHA256: requestSHA256)
+    if let cached = LocalRequestClassifier.cachedReceipt(key: key, directory: directory) { return cached }
+    let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() })
+    LocalRequestClassifier.store(receipt, key: key, directory: directory)
+    return receipt
 }
 
 /// A continuation inherits the SAME task's private executed receipt, never a

@@ -1005,7 +1005,13 @@ public enum RoutingOrderInterpreter {
     /// The local Ollama chat call the probe measured: no streaming, no
     /// thinking, the schema as the output format, temperature 0, seed 7, a
     /// bounded answer, loopback only and no proxy, bounded by `timeout`.
-    public static func ollamaAsk(endpoint: URL = endpoint, model: String = model, timeout: TimeInterval = timeout) -> Ask {
+    /// Build 441 part 2: the one OS-1 Ollama client. The request classifier
+    /// (`LocalRequestClassifier`) passes its own schema, answer bound and
+    /// residency (`keep_alive`); the defaults are this interpreter's call,
+    /// byte for byte.
+    public static func ollamaAsk(endpoint: URL = endpoint, model: String = model, timeout: TimeInterval = timeout,
+                                 schema: String = schemaJSON, maximumTokens: Int = maximumAnswerTokens,
+                                 keepAlive: String? = nil) -> Ask {
         { system, request in
             // The schema goes out byte for byte: its property order is the
             // order the model fills the answer in, and a dictionary would
@@ -1015,8 +1021,9 @@ public enum RoutingOrderInterpreter {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]
                 return String(decoding: try encoder.encode(value), as: UTF8.self)
             }
-            let body = #"{"model":"# + (try quoted(model)) + #","stream":false,"think":false,"format":"# + schemaJSON +
-                #","options":{"temperature":0,"seed":7,"num_predict":\#(maximumAnswerTokens)},"messages":[{"role":"system","content":"# + (try quoted(system)) +
+            let residency = try keepAlive.map { #","keep_alive":"# + (try quoted($0)) } ?? ""
+            let body = #"{"model":"# + (try quoted(model)) + #","stream":false,"think":false"# + residency + #","format":"# + schema +
+                #","options":{"temperature":0,"seed":7,"num_predict":\#(maximumTokens)},"messages":[{"role":"system","content":"# + (try quoted(system)) +
                 #"},{"role":"user","content":"# + (try quoted(request)) + "}]}"
             guard (try? JSONSerialization.jsonObject(with: Data(body.utf8))) != nil else { throw Failure.transport("request_shape") }
             let configuration = URLSessionConfiguration.ephemeral
