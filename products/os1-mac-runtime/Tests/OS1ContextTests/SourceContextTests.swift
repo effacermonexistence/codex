@@ -74,6 +74,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--routing-interpreter-only") { try runRoutingOrderInterpreterFixtures(); return }
         if CommandLine.arguments.contains("--codex-dictation-auth-only") { try runCodexDictationAuthorizationFixtures(); return }
         if CommandLine.arguments.contains("--codex-native-dictation-only") { try runCodexNativeDictationFixtures(); return }
+        if CommandLine.arguments.contains("--codex-file-dictation-only") { try runCodexDictationFileTranscriptionFixtures(); return }
         if CommandLine.arguments.contains("--inspection-network-denial-only") { try runClaudeInspectionNetworkDenialFixtures(); return }
         if CommandLine.arguments.contains("--parallel-agent-task-only") { try runParallelAgentTaskFixtures(); return }
         if CommandLine.arguments.contains("--task-quality-correction-only") { try runTaskQualityCorrectionFixtures(); return }
@@ -241,6 +242,7 @@ final class SourceContextTests {
         try runVoiceProcessFixtures()
         try runCodexNativeDictationFixtures()
         try runCodexDictationAuthorizationFixtures()
+        try runCodexDictationFileTranscriptionFixtures()
         try runTakeoverFixtures()
         try runCodexSessionIndexFixtures()
         try runBackendHealthFixtures()

@@ -19086,6 +19086,7 @@ func usage() {
               [--codex-session-id UUID] [--claude-session-id UUID]
               [--codex-capacity 0...100] [--claude-capacity 0...100]
               [--desktop-reveal never|background|always]
+      os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300]
       os1 version
       os1 rcc-warmup
     """)
@@ -19342,6 +19343,10 @@ struct OS1Main {
                 let output = command == "rcc-catalog" ? try await rccNativeCatalog(input) : try await rccNativeAdapter(input)
                 print(String(decoding: output, as: UTF8.self))
             case "version", "--version", "-V": print(os1RuntimeVersionString)
+            // Owner order 2026-10-28: dictation quality equal to Codex's own.
+            // One WAV through the App's Codex-native batch lane and credential
+            // source; stdout is the transcript only, exit status is the outcome.
+            case "dictation": exit(await DictationCommand.run(arguments))
             case "doctor": try doctor()
             // Owner-facing sign-in for the backends, with more than one
             // account each. OS-1 starts the provider's own browser login and
