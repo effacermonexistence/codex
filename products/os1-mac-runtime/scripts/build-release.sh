@@ -93,6 +93,10 @@ python3 "$script_dir/test-codex-audio-tap-wiring.py"
 python3 "$script_dir/test-voice-send-ui-wiring.py"
 python3 "$script_dir/test-voice-fixture-diagnostic.py"
 python3 "$script_dir/test-browser-dictation-wiring.py"
+# Build 445: `os1 dictation transcribe` (the App's Codex dictation lane) and the
+# Handy bridge that calls it; the bridge test binds only a loopback test port.
+python3 -I "$script_dir/test-dictation-cli-wiring.py"
+python3 -I "$script_dir/test-handy-codex-stt-bridge.py"
 node "$script_dir/test-memory-paging-recovery.mjs"
 python3 "$script_dir/test-backend-window-focus.py"
 python3 "$script_dir/test-os1-source-confinement-wiring.py"
