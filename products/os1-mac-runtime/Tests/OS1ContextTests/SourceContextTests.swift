@@ -50,6 +50,10 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-admission-facts-only") { try runRCCAdmissionFactsFixtures(); return }
         if CommandLine.arguments.contains("--request-profile-only") { try runRequestProfileFixtures(); return }
         if CommandLine.arguments.contains("--local-request-classifier-only") { try runLocalRequestClassifierFixtures(); return }
+        if CommandLine.arguments.contains("--model-price-refresh-only") { try runModelPriceRefreshFixtures(); return }
+        if let flag = CommandLine.arguments.firstIndex(of: "--model-price-refresh-live"), flag + 1 < CommandLine.arguments.count {
+            try runModelPriceRefreshLive(home: URL(fileURLWithPath: CommandLine.arguments[flag + 1])); return
+        }
         if CommandLine.arguments.contains("--rcc-native-attempt-outcome-only") { try runRCCNativeAttemptOutcomeFixtures(); return }
         if CommandLine.arguments.contains("--rcc-configured-input-only") { try runRCCConfiguredInputObservationFixtures(); return }
         if CommandLine.arguments.contains("--rcc-native-preparation-only") { try runRCCNativePreparationFixtures(); return }
@@ -278,6 +282,7 @@ final class SourceContextTests {
                           userInfo: [NSLocalizedDescriptionKey: "Resources/model-price-table.json differs from the compiled table"])
         }
         print("Model price table: compiled = resource, validation, refresh fallback PASS")
+        try runModelPriceRefreshFixtures()
         try runConversationalQuestionFixtures()
         try runWebsiteDeliveryRelevanceFixtures()
         try runReadOnlyLookupFixtures()
