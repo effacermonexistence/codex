@@ -4540,7 +4540,30 @@ func providerSurfaceRoutingSelfTest() throws {
     let greeting = combined("안녕! 좋은 아침이야", LocalRequestClassifier.Answer(taskType: .chat, difficulty: .light, needsTools: .none))
     checks.append(("small talk the local model reads as chat is a read-only answer for the local row",
         greeting.answersLocally && ownerRequestRunsReadOnly("안녕! 좋은 아침이야", attachedSource: false, profile: greeting) &&
-            combined("안녕! 좋은 아침이야", nil).gradable))
+            !combined("안녕! 좋은 아침이야", nil).gradable))
+    // Build 441 review: without a local reading (Ollama down, cold, or a
+    // non-Auto preference) a request the keywords cannot read keeps the
+    // pre-441 host facts: the writer's scope and no tool-free lane.
+    let unreadWork = ["Pay the electricity bill", "Ship it", "택시 불러줘", "아마존에서 에어팟 하나 장바구니에 담아",
+                      "김 대리 앞으로 회의 연기 공지 메일 쏴줘", "Turn on dark mode in the app", "랜딩 페이지 카피 영어로 갈아끼워",
+                      "Yes, go ahead", "그런 식으로 해줘"]
+    checks.append(("unread work keeps the writer scope and no chat lane without a local reading",
+        unreadWork.allSatisfy { text in
+            let value = combined(text, nil)
+            return !ownerRequestRunsReadOnly(text, attachedSource: false, profile: value) &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: value) &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "claude", profile: value)
+        }))
+    // An action or write reading of a request with no keyword answer evidence
+    // never opens the read-only scope or the tool-free lane.
+    let darkMode = combined("다크모드 켜줘", LocalRequestClassifier.Answer(taskType: .action, difficulty: .light, needsTools: .none))
+    let landing = combined("랜딩 페이지 카피 영어로 갈아끼워",
+                           LocalRequestClassifier.Answer(taskType: .write, difficulty: .standard, needsTools: .none))
+    checks.append(("an action or write reading of unread work keeps the writer scope off the chat lane",
+        [("다크모드 켜줘", darkMode), ("랜딩 페이지 카피 영어로 갈아끼워", landing)].allSatisfy { text, value in
+            !ownerRequestRunsReadOnly(text, attachedSource: false, profile: value) &&
+                !rccChatLaneEligible(objective: text, hasSource: false, providerPreference: "auto", profile: value)
+        }))
     checks.append(("a rail stands whatever the local model reads",
         ["빌드해줘", "README.md 설명해줘", "슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", "그럼 실제로 해봐"].allSatisfy { text in
             let value = combined(text, readsAsAnswer)

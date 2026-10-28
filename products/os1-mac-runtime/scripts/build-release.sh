@@ -129,6 +129,9 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-graded-admi
 # Build 441 part 2 (owner order 2026-10-27): local-classifier profile mapping,
 # price-aware graded choice, the local chat row and the deep policy.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-classifier.test.mjs"
+# Build 441 part 3: an Auto local chat ticket gets the conversational prompt;
+# explicit local routes and exact arithmetic keep the exact-result prompt.
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-surface.test.mjs"
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"

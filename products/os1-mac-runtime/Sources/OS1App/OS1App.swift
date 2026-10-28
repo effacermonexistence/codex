@@ -10177,33 +10177,59 @@ private final class SessionStore: ObservableObject {
 
     func acknowledgeFrontierNotice() { frontierNotice = nil }
 
+    /// A Fleet job running on this Mac (its main-agent active or claim file).
+    func fleetJobActive() -> Bool {
+        let fleetRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet")
+        return FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-active.json").path) ||
+            FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-claim.json").path)
+    }
+    /// Build 441 review: the busy predicate of the idle jobs (the price
+    /// refresh, the classifier warm-up), the self-update gate's own: a run
+    /// active or starting, a stop in progress, or a Fleet job on this Mac. Each
+    /// job asks it when it starts and again just before it acts (the table
+    /// write, the Ollama load); an act already under way is not cancelled.
+    func idleJobsBusy() -> Bool {
+        !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping || fleetJobActive()
+    }
+
     /// Build 441: the routed models' list prices are refreshed from the
-    /// providers' own pages at most once a day, only while no run is active
-    /// or starting. It rides the frontier monitor's poll instead of a
-    /// LaunchAgent; the fetch and parse run off the main actor, and a refusal
-    /// keeps the last good table (see ~/.os1/pricing/refresh-receipt.json).
+    /// providers' own pages at most once a day, only while nothing runs
+    /// (`idleJobsBusy`, at the start and again before the write). It rides the
+    /// frontier monitor's poll instead of a LaunchAgent; the fetch and parse
+    /// run off the main actor, and a refusal keeps the last good table (see
+    /// ~/.os1/pricing/refresh-receipt.json). A refresh deferred because work
+    /// started during the fetch writes nothing and is retried on a later idle poll.
     func refreshModelPricesIfDue(now: Date = Date()) async {
         guard customStorageRoot == nil else { return }
-        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty
-        guard ModelPriceRefresh.shouldStartScheduled(now: now, busy: busy,
+        guard ModelPriceRefresh.shouldStartScheduled(now: now, busy: idleJobsBusy(),
                                                      lastAttemptInProcess: modelPriceRefreshAttemptedAt) else { return }
         modelPriceRefreshAttemptedAt = now
-        _ = await Task.detached(priority: .utility) { await ModelPriceRefresh.run(now: now, dryRun: false) }.value
+        let report = await Task.detached(priority: .utility) {
+            await ModelPriceRefresh.run(now: now, dryRun: false, mayWrite: { @MainActor [weak self] in
+                guard let self else { return false }
+                return !self.idleJobsBusy()
+            })
+        }.value
+        if report.receipt.outcome == ModelPriceRefresh.deferredOutcome { modelPriceRefreshAttemptedAt = nil }
     }
 
     /// Build 441 part 3: the local request classifier kept resident while the
     /// owner uses OS-1, on the frontier monitor's poll (no new loop), only
-    /// while no run is active or starting and memory pressure is normal
-    /// (`LocalRequestClassifier.keepWarm`). The Ollama reads and the one
-    /// no-generation load run off the main actor; a load's receipt line goes
-    /// to this process's stderr.
+    /// while nothing runs (`idleJobsBusy`, at the start and again just before
+    /// the load) and memory pressure is normal (`LocalRequestClassifier.keepWarm`).
+    /// The Ollama reads and the one no-generation load run off the main actor;
+    /// a load's receipt line goes to this process's stderr.
     func keepRequestClassifierWarm(now: Date = Date()) async {
         guard customStorageRoot == nil else { return }
-        let idle = activeRuns.isEmpty && inFlightSubmissions.isEmpty
+        let idle = !idleJobsBusy()
         let pressure = memoryPressureSampler()
         let activity = ownerActivityAt
         let receipt = await Task.detached(priority: .utility) {
-            await LocalRequestClassifier.keepWarm(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, now: now)
+            await LocalRequestClassifier.keepWarm(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, now: now,
+                                                  stillIdle: { @MainActor [weak self] in
+                                                      guard let self else { return false }
+                                                      return !self.idleJobsBusy()
+                                                  })
         }.value
         // Only a load or refresh is worth a line; a skip recurs every poll.
         if case .load = receipt.decision {
@@ -13793,9 +13819,7 @@ private final class SessionStore: ObservableObject {
             .first { rccInstallationIntentMayApply($0.intent) }
         // A running fleet job counts as busy: the installer would refuse
         // mid-job anyway, and refusals must not burn the apply budget.
-        let fleetRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/fleet")
-        let fleetBusy = FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-active.json").path) ||
-            FileManager.default.fileExists(atPath: fleetRoot.appendingPathComponent("main-agent-claim.json").path)
+        let fleetBusy = fleetJobActive()
         updateSelfUpdateHold(pending, fleetBusy: fleetBusy, now: now)
         guard let pending else { return }
         let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping || fleetBusy

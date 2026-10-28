@@ -733,8 +733,8 @@ func runRCCAdmissionFactsFixtures() throws {
         ("rail: a placement order", "슈뢰딩거 방정식 설명 정리해서 노션에 올려줘",
          combinedInput("슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
         ("rail: a build", "빌드해줘", combinedInput("빌드해줘", chatLight, shell: true), "codex:gpt-6-astra/ultra", "reference"),
-        ("LLM down: keyword fallback", "안녕! 좋은 아침이야", combinedInput("안녕! 좋은 아침이야", nil),
-         "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("LLM down: an explanation keeps its keyword grade", "슈뢰딩거 방정식 설명해봐",
+         combinedInput("슈뢰딩거 방정식 설명해봐", nil), "codex:gpt-6.1-sol/medium", "graded:standard"),
         ("price: sol over opus at one tier (Claude ranked first)", "쉐딩과 방정식 설명해 봐봐",
          combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard, codexUsed: 90, claudeUsed: 10, sonnet: false),
          "codex:gpt-6.1-sol/medium", "graded:standard"),
@@ -758,7 +758,21 @@ func runRCCAdmissionFactsFixtures() throws {
         ("part 3: a placement stands against an explain reading", "슈뢰딩거 방정식 설명을 노트에 적어줘",
          combinedInput("슈뢰딩거 방정식 설명을 노트에 적어줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
         ("part 3: LLM down, the soft rail stays", "심심한데 아무 얘기나 해줘",
-         combinedInput("심심한데 아무 얘기나 해줘", nil), "codex:gpt-6-astra/ultra", "reference")]
+         combinedInput("심심한데 아무 얘기나 해줘", nil), "codex:gpt-6-astra/ultra", "reference"),
+        // Build 441 review: a keyword unknown stays unknown without a local
+        // reading; an approval, an action reading or a write reading of
+        // unread work keeps the writer's reference.
+        ("review: LLM down, a keyword unknown keeps the reference", "안녕! 좋은 아침이야",
+         combinedInput("안녕! 좋은 아침이야", nil), "codex:gpt-6-astra/ultra", "reference"),
+        ("review: LLM down, unread work keeps the reference", "Pay the electricity bill",
+         combinedInput("Pay the electricity bill", nil), "codex:gpt-6-astra/ultra", "reference"),
+        ("review: an approval read as chat keeps the reference", "그런 식으로 해줘",
+         combinedInput("그런 식으로 해줘", chatLight), "codex:gpt-6-astra/ultra", "reference"),
+        ("review: an action reading is work", "다크모드 켜줘",
+         combinedInput("다크모드 켜줘", LA(taskType: .action, difficulty: .light, needsTools: .none)), "codex:gpt-6-astra/ultra", "reference"),
+        ("review: a write reading of unread work keeps the writer", "랜딩 페이지 카피 영어로 갈아끼워",
+         combinedInput("랜딩 페이지 카피 영어로 갈아끼워", LA(taskType: .write, difficulty: .standard, needsTools: .none)),
+         "codex:gpt-6-astra/ultra", "reference")]
     var part2Cases: [(request: String, catalog: [String: Any], write: Bool)] = []
     for item in part2 {
         let built = try catalog(item.input)

@@ -281,6 +281,16 @@ private func modelPriceRefreshChecks() async throws -> Int {
               "the symlink target is untouched")
 
     // 8. The App's daily gate.
+    // Build 441 review: a host that turned busy during the fetch defers the
+    // write: no table, no receipt, the refresh stays due.
+    let deferredHome = try temporaryHome(); homes.append(deferredHome)
+    let deferred = await ModelPriceRefresh.run(home: deferredHome, now: now, dryRun: false, transport: transport(baseline),
+                                               mayWrite: { false })
+    try check(deferred.receipt.outcome == ModelPriceRefresh.deferredOutcome && deferred.table == nil &&
+              !files.fileExists(atPath: ModelPriceTable.refreshedPath(home: deferredHome).path) &&
+              !files.fileExists(atPath: ModelPriceRefresh.receiptPath(home: deferredHome).path) &&
+              ModelPriceRefresh.isDue(home: deferredHome, now: now),
+              "busy before the write: nothing written, still due")
     let idle = try temporaryHome(); homes.append(idle)
     try check(ModelPriceRefresh.shouldStartScheduled(home: idle, now: now, busy: false, lastAttemptInProcess: nil), "idle and due: start")
     try check(!ModelPriceRefresh.shouldStartScheduled(home: idle, now: now, busy: true, lastAttemptInProcess: nil), "busy: wait")

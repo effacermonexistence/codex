@@ -831,13 +831,24 @@ check("hardWorkRail(keyword) || hardWorkspaceRail(keyword) || keyword.signals.co
       "part 3: only hard rails decide or stand against the local reading; soft ones stay rails in the keyword fallback")
 check("export function localWorkerStyle(ticket)" in PLUGIN and "style: localWorkerStyle(ticket)" in PLUGIN and
       "const LOCAL_CHAT_SYSTEM = " in PLUGIN and "ticket?.host_context?.explicit_routes != null" in PLUGIN and
-      "arithmeticResult(ticket.instruction) !== null" in PLUGIN,
-      "part 3: an Auto local chat ticket is answered conversationally; explicit routes and arithmetic keep the exact prompt")
+      "arithmeticResult(ticket.instruction) !== null" in PLUGIN and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-surface.test.mjs"' in RELEASE and
+      (ROOT / "scripts/fixtures/openclaw-rcc-local-surface.test.mjs").is_file(),
+      "part 3: an Auto local chat ticket is answered conversationally; explicit routes and arithmetic keep the exact prompt (release-gated)")
 check("await self?.keepRequestClassifierWarm()" in APP and APP.count("await self?.keepRequestClassifierWarm()") == 2 and
-      "LocalRequestClassifier.keepWarm(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, now: now)" in APP and
+      "LocalRequestClassifier.keepWarm(idle: idle, memoryPressure: pressure, lastOwnerActivity: activity, now: now," in APP and
       "ownerActivityAt = submitTimestamp" in APP and "public static func ollamaLoad(model: String, keepAlive: String" in
       (ROOT / "Sources/OS1Context/RoutingOrderInterpreter.swift").read_text(),
       "part 3: the frontier monitor's poll keeps the classifier warm (no new loop), through the one Ollama client")
+# Build 441 review: both idle jobs use the self-update gate's busy predicate
+# (runs, starts, a stop, a Fleet job) at the start and again before they act.
+check("func idleJobsBusy() -> Bool {" in APP and
+      "!activeRuns.isEmpty || !inFlightSubmissions.isEmpty || isStopping || fleetJobActive()" in APP and
+      "let fleetBusy = fleetJobActive()" in APP and
+      "guard ModelPriceRefresh.shouldStartScheduled(now: now, busy: idleJobsBusy()," in APP and
+      "let idle = !idleJobsBusy()" in APP and APP.count("return !self.idleJobsBusy()") == 2 and
+      "mayWrite: { @MainActor [weak self] in" in APP and "stillIdle: { @MainActor [weak self] in" in APP,
+      "review: the price refresh and the classifier warm-up re-check the full busy gate before they act")
 
 # Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
 # sign-in looked signed out on every live catalog.

@@ -167,8 +167,16 @@ public enum ModelPriceRefresh {
 
     // MARK: - Refresh
 
+    /// The outcome of a scheduled refresh whose host turned busy during the
+    /// fetch: nothing written, no receipt, so the refresh stays due.
+    public static let deferredOutcome = "deferred_busy"
+
+    /// Build 441 review: `mayWrite` is the host's busy gate asked again just
+    /// before the table is written; a host that turned busy during the fetch
+    /// (a run started) gets `deferredOutcome`: no table, no receipt.
     public static func run(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date(),
-                           dryRun: Bool, transport: Transport? = nil) async -> Report {
+                           dryRun: Bool, transport: Transport? = nil,
+                           mayWrite: @Sendable () async -> Bool = { true }) async -> Report {
         let transport = transport ?? publicTransport
         let fetched = await withTaskGroup(of: (Source, FetchOutcome).self) { group in
             for source in sources { group.addTask { (source, await fetch(source, transport: transport)) } }
@@ -196,6 +204,9 @@ public enum ModelPriceRefresh {
             receipt.tableSHA256 = sha256(bytes)
             if dryRun {
                 receipt.outcome = "dry_run_ok"; accepted = table
+            } else if !(await mayWrite()) {
+                receipt.outcome = deferredOutcome; receipt.tableSHA256 = nil
+                return Report(receipt: receipt, table: nil)
             } else {
                 do {
                     try writePrivate(bytes, to: ModelPriceTable.refreshedPath(home: home))
