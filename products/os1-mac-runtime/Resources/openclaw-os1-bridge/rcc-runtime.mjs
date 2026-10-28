@@ -4536,6 +4536,23 @@ class RCCRuntime {
     } finally { await handle.close(); }
   }
 
+  /** An owner cancellation can settle a native read-only attempt once its
+   * actual adapter receipt proves the exact turn ENDED without workspace
+   * effects. The returned flags alone are insufficient: _validateExecution
+   * already bound this result to the ticket; re-read its private, same-owner
+   * receipt and require the identical record/identity through the existing verifier.
+   * This says nothing about the answer's quality or remote billing. A writer,
+   * an unterminated turn or unavailable/mismatched receipt remains uncertain. */
+  async _settledNativeReadOnlyCancel(result, ticket) {
+    const config = ticket.selected_config;
+    if (config.scope !== 'read_only' || config.permission_profile !== 'read_only' ||
+        !['codex_app_server', 'claude_cli'].includes(config.transport) ||
+        result.dispatch_stage !== 'dispatched' || result.side_effects !== 'none' ||
+        result.native_turn_terminated !== true || result.native_receipt == null) return false;
+    try { await this._verifiedNativeReceiptDigest(result); return true; }
+    catch { return false; }
+  }
+
   _authorizeHandback(snapshot, node, candidate, result) {
     const h = result.handback;
     assert(snapshot.plan.nodes.length === 1 && node.kind === 'agent' &&
@@ -7557,6 +7574,10 @@ class RCCRuntime {
         if (TERMINAL.has(current.state)) { verifierOutcome = interrupted; return; }
         if (current.cancel_requested || this.stopping) {
           verifierOutcome = interrupted;
+          const nativeEnded = await this._settledNativeReadOnlyCancel(result, ticket);
+          // Receipt I/O can cross a service stop or the missing-receipt grace
+          // deadline. Never rewrite an already terminal task from a late read.
+          if (this.closed || TERMINAL.has(this._load(taskID)?.state)) return;
           this._update(taskID, 'cancel_reconciled', snapshot => {
             const child = snapshot.children.find(c => c.id === node.id);
             const notDispatched = result.status === 'failed' && result.dispatch_stage === 'not_dispatched' &&
@@ -7566,7 +7587,7 @@ class RCCRuntime {
             // side effects changed nothing, so its cancel is safe as well.
             const localEnded = localWorkerRow(candidate) && result.side_effects === 'none' &&
               result.native_turn_terminated === true && result.native_receipt !== null;
-            const safe = notDispatched || localEnded;
+            const safe = notDispatched || localEnded || nativeEnded;
             child.state = safe ? 'cancelled' : 'effects_uncertain';
             child.finished_at_ms = Date.now();
             child.attempt_history.at(-1).state = child.state;

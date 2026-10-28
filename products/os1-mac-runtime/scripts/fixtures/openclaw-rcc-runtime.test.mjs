@@ -3292,6 +3292,18 @@ const failedAfterDispatch = (ticket, terminated = true) => execution(ticket, {st
   dispatch_stage: 'dispatched', side_effects: 'none', output: null, execution_verified: false, task_verified: false,
   task_quality: 'failed', usage: null, error: 'native_outcome_uncertain_preserved', native_turn_terminated: terminated});
 
+async function persistedCancelledExecution(stateDir, ticket, overrides = {}) {
+  const directory = join(stateDir, 'native-receipts');
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  await chmod(directory, 0o700);
+  const path = join(directory, randomUUID() + '.json');
+  const record = failedAfterDispatch(ticket);
+  Object.assign(record, {native_receipt: path}, overrides);
+  if (record.native_turn_terminated === undefined) delete record.native_turn_terminated;
+  await writeFile(path, JSON.stringify(record), {flag: 'wx', mode: 0o600});
+  return record;
+}
+
 test('a settled read-only attempt releases its pool even when effects-uncertain; the next task on that pool runs', async t => {
   const dir = await fixture(t);
   const reader = candidate('reader', 'codex', 'openai_codex');
@@ -3451,12 +3463,16 @@ test('a read-only record whose native turn was not attested ended keeps its pool
     assert.equal(done.state, 'effects_uncertain', name); assert.equal(done.error, 'dispatched_failure_no_replay', name);
     assert.deepEqual(leasePools(runtime), pools, name);
   }
-  // A cancel while the turn runs: the Desktop interrupt was best effort
-  // (false) or the owned process was stopped (true).
-  for (const [name, terminated, pools] of [['desktop-cancel', false, ['openai_codex:account-1']], ['writer-cancel', true, []]]) {
+  // A cancel while the turn runs: a best-effort Desktop interrupt (false or
+  // absent) remains uncertain. An exact private receipt for the stopped owned
+  // process (true) settles the read-only cancellation, not its remote billing.
+  for (const [name, terminated, pools] of [['desktop-cancel', false, ['openai_codex:account-1']],
+    ['unattested-cancel', undefined, ['openai_codex:account-1']], ['writer-cancel', true, []]]) {
     const started = gate(), release = gate();
-    const runtime = await createRCCRuntime({stateDir: join(dir, name), ...options, execute: async ticket => {
-      started.resolve(); await release.promise; return failedAfterDispatch(ticket, terminated);
+    const stateDir = join(dir, name);
+    const runtime = await createRCCRuntime({stateDir, ...options, execute: async ticket => {
+      started.resolve(); await release.promise;
+      return persistedCancelledExecution(stateDir, ticket, {native_turn_terminated: terminated});
     }});
     t.after(async () => { await runtime.close(); });
     const request = task(dir, 'Explain another function: ' + name);
@@ -3465,10 +3481,12 @@ test('a read-only record whose native turn was not attested ended keeps its pool
     assert.equal(runtime.cancel({schema: 1, task_id: request.task_id}).state, 'cancelling', name);
     release.resolve();
     const done = await wait(runtime, request);
-    assert.equal(done.state, 'effects_uncertain', name); assert.equal(done.error, 'cancel_effects_uncertain', name);
+    assert.equal(done.state, terminated === true ? 'cancelled' : 'effects_uncertain', name);
+    assert.equal(done.error, terminated === true ? 'cancelled_without_effects' : 'cancel_effects_uncertain', name);
     assert.deepEqual(leasePools(runtime), pools, name);
-    assert.equal(runtime.events({schema: 1, task_id: request.task_id})
-      .some(event => event.kind === 'quota_lease_released_settled_read_only'), pools.length === 0, name);
+    const releaseEvents = runtime.events({schema: 1, task_id: request.task_id}).map(event => event.kind);
+    assert.equal(releaseEvents.includes('cancel_reconciled'), true, name);
+    assert.equal(releaseEvents.includes('quota_lease_released_settled_read_only'), false, name);
   }
   // The strict result contract: the attestation is a boolean when present.
   const strict = await createRCCRuntime({stateDir: join(dir, 'strict'), ...options,
@@ -3479,6 +3497,124 @@ test('a read-only record whose native turn was not attested ended keeps its pool
   const rejected = await wait(strict, invalid);
   assert.equal(rejected.error, 'execution_receipt_invalid');
   assert.deepEqual(leasePools(strict), ['openai_codex:account-1'], 'an invalid record settles nothing');
+});
+
+test('native read-only cancellation requires an exact private ended receipt, not returned flags', async t => {
+  const dir = await fixture(t);
+  const scenarios = [
+    {name: 'Codex read-only ended', surface: 'codex', safe: true},
+    {name: 'Claude read-only ended', surface: 'claude', safe: true, usage: {input_tokens: 4, output_tokens: 2}},
+    {name: 'workspace writer remains held', write: true},
+    {name: 'possible side effects remain held', effects: 'possible'},
+    {name: 'confirmed side effects remain held', effects: 'confirmed'},
+    {name: 'termination false remains held', terminated: false},
+    {name: 'termination missing remains held', terminated: undefined},
+    {name: 'termination malformed rejected', terminated: 'yes', invalid: true},
+    {name: 'missing receipt remains held', missing: true},
+    {name: 'nonexistent receipt remains held', nonexistent: true},
+    {name: 'different receipt attempt remains held', tamper: 'attempt'},
+    {name: 'different receipt scope remains held', tamper: 'scope'},
+    {name: 'different receipt termination remains held', tamper: 'termination'},
+    {name: 'invalid JSON receipt remains held', invalidJSON: true},
+    {name: 'different returned attempt rejected', returned: 'attempt', invalid: true},
+    {name: 'writer cannot claim read-only scope', write: true, returned: 'scope', invalid: true},
+    {name: 'unsafe receipt permissions remain held', unsafeMode: true},
+    {name: 'symlink receipt remains held', symlink: true},
+    {name: 'hardlinked receipt remains held', hardlink: true},
+    {name: 'executor throw remains held', throws: true},
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const started = gate(), release = gate(), stateDir = join(dir, String(index));
+    const surface = scenario.surface ?? 'codex', pool = surface === 'claude' ? 'anthropic_shared' : 'openai_codex';
+    const row = candidate('reader', surface, pool, scenario.write ? {scope: 'workspace_write', allowedPaths: ['**']} : {});
+    let calls = 0;
+    const runtime = await createRCCRuntime({stateDir,
+      catalog: async value => catalog(value, [row]),
+      plan: async ({task: value}) => plan(value, [node('only', 'reader', scenario.write ?
+        {scope: 'workspace_write', ownedPaths: ['**']} : {})]),
+      execute: async ticket => {
+        calls++; started.resolve(); await release.promise;
+        if (scenario.throws) throw Error('synthetic lost executor record');
+        const overrides = {side_effects: scenario.effects ?? 'none', usage: scenario.usage ?? null};
+        if (Object.hasOwn(scenario, 'terminated')) overrides.native_turn_terminated = scenario.terminated;
+        const record = await persistedCancelledExecution(stateDir, ticket, overrides);
+        const path = record.native_receipt;
+        if (scenario.tamper) {
+          const changed = {...record};
+          if (scenario.tamper === 'attempt') changed.attempt_id = randomUUID();
+          if (scenario.tamper === 'scope') changed.selected_config = {...record.selected_config, scope: 'workspace_write'};
+          if (scenario.tamper === 'termination') changed.native_turn_terminated = false;
+          await writeFile(path, JSON.stringify(changed), {mode: 0o600});
+        }
+        if (scenario.returned === 'attempt') record.attempt_id = randomUUID();
+        if (scenario.returned === 'scope') record.selected_config = {...record.selected_config,
+          scope: 'read_only', permission_profile: 'read_only'};
+        if (scenario.unsafeMode) await chmod(path, 0o644);
+        if (scenario.invalidJSON) await writeFile(path, '{invalid JSON', {mode: 0o600});
+        if (scenario.symlink || scenario.hardlink) {
+          const target = join(stateDir, 'preserved-private-receipt.json');
+          await writeFile(target, JSON.stringify(record), {mode: 0o600});
+          await unlink(path);
+          if (scenario.symlink) await symlink(target, path); else await link(target, path);
+        }
+        if (scenario.missing) record.native_receipt = null;
+        if (scenario.nonexistent) await unlink(path);
+        return record;
+      }, verifyTask: taskVerdict});
+    t.after(async () => { release.resolve(); await runtime.close(); });
+    const request = task(dir, 'Synthetic native cancellation settlement: ' + scenario.name, 'auto', {write: scenario.write === true});
+    await runtime.submit(request); await started.promise;
+    assert.equal(runtime.cancel({schema: 1, task_id: request.task_id}).state, 'cancelling', scenario.name);
+    release.resolve();
+    const done = await wait(runtime, request);
+    assert.equal(done.state, scenario.safe ? 'cancelled' : 'effects_uncertain', scenario.name);
+    assert.equal(done.error, scenario.safe ? 'cancelled_without_effects' : scenario.invalid ?
+      'execution_receipt_invalid' : scenario.throws ? 'executor_return_unknown' : 'cancel_effects_uncertain', scenario.name);
+    assert.equal(done.children[0].state, scenario.safe ? 'cancelled' : 'effects_uncertain', scenario.name);
+    assert.equal(calls, 1, scenario.name + ': cancelled work never replays');
+    if (scenario.safe) {
+      const child = runtime._load(request.task_id).children[0], attempt = child.attempt_history.at(-1);
+      assert.equal(attempt.native_turn_terminated, true, scenario.name);
+      assert.equal(attempt.settled_side_effects, 'none', scenario.name);
+      assert.deepEqual(attempt.usage, scenario.usage ?? null, scenario.name + ': measured/unknown usage is preserved');
+      assert.equal(child.output, null, scenario.name + ': no answer-quality upgrade');
+      assert.deepEqual(leasePools(runtime), [], scenario.name);
+    }
+  }
+});
+
+test('late cancellation receipt verification never rewrites a terminal uncertain task', async t => {
+  const stateDir = await fixture(t), started = gate(), release = gate();
+  const verifying = gate(), finishVerification = gate();
+  const row = candidate('reader');
+  let calls = 0;
+  const runtime = await createRCCRuntime({stateDir, cancelGraceMs: 100,
+    catalog: async value => catalog(value, [row]),
+    plan: async ({task: value}) => plan(value, [node('only', 'reader')]),
+    execute: async ticket => {
+      calls++; started.resolve(); await release.promise;
+      return persistedCancelledExecution(stateDir, ticket);
+    }, verifyTask: taskVerdict});
+  const verify = runtime._verifiedNativeReceiptDigest.bind(runtime);
+  runtime._verifiedNativeReceiptDigest = async record => {
+    verifying.resolve(); await finishVerification.promise;
+    return verify(record);
+  };
+  t.after(async () => { release.resolve(); finishVerification.resolve(); await runtime.close(); });
+  const request = task(stateDir, 'Synthetic delayed cancellation receipt verification');
+  await runtime.submit(request); await started.promise;
+  const job = runtime.runningTasks.get(request.task_id);
+  runtime.cancel({schema: 1, task_id: request.task_id}); release.resolve();
+  await verifying.promise;
+  const held = await wait(runtime, request);
+  assert.equal(held.state, 'effects_uncertain');
+  assert.equal(held.error, 'cancel_no_terminal_receipt');
+  finishVerification.resolve(); await job;
+  assert.equal(runtime.status({schema: 1, task_id: request.task_id}).state, held.state);
+  assert.equal(runtime.status({schema: 1, task_id: request.task_id}).error, held.error);
+  assert.equal(runtime.events({schema: 1, task_id: request.task_id})
+    .some(event => event.kind === 'cancel_reconciled'), false, 'a late receipt cannot upgrade old terminal state');
+  assert.equal(calls, 1, 'no cancelled work was replayed');
 });
 
 test('lease acquisition releases a stale foreign lease instead of holding or waiting on it', async t => {
