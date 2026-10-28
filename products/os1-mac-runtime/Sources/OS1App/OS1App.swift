@@ -6970,6 +6970,9 @@ private enum RCCReceiptRouteBasis: Equatable {
     case taskCheckUnavailable
     /// Host-profile graded admission: a predicted route, no answer check.
     case graded
+    /// Build 442: a deep node bound at a capability-table row: official
+    /// benchmarks put it at or above the reference; this answer is unchecked.
+    case capability
     /// The build-440 owner-decision class certificate: a format check only.
     case ownerDecision
     /// Any other class certificate: a measured class, a format check only.
@@ -6987,6 +6990,7 @@ private enum RCCReceiptRouteBasis: Equatable {
     static let taskCheckFailedReason = "core_task_check_ran_not_verified"
     static let taskCheckUnavailableReason = "core_task_check_unavailable"
     static let gradedReason = "core_graded_route_predicted_quality_unverified"
+    static let capabilityReason = "core_capability_route_benchmark_at_or_above_reference_quality_unverified"
     static let ownerDecisionReason = "core_owner_decision_route_format_check_only"
     static let classFormatReason = "core_class_route_format_check_only"
     static let certifiedRouteReason = "core_certified_route_task_unverified"
@@ -7011,8 +7015,9 @@ private enum RCCReceiptRouteBasis: Equatable {
         with: RCCClassOwnerDecision.frozenBytes) as? [String: Any])?["certificate_id"] as? String
 
     /// The weakest claim among the delivered routes: any graded route makes
-    /// the answer predicted; a format check is named only when every
-    /// delivered route had one.
+    /// the answer predicted; else any capability route (build 442) makes it a
+    /// benchmark-qualified stand-in whose answer is unchecked; a format check
+    /// is named only when every delivered route had one.
     init(_ core: RCCRuntimeContract.Snapshot) {
         let check = Self.taskCheck(core.error)
         // A task check that ran and did not verify, or could not run, is
@@ -7022,6 +7027,7 @@ private enum RCCReceiptRouteBasis: Equatable {
         let tokens = delivered.map { Set(($0.routingDecision?.reason ?? "").split(separator: ";").map(String.init)) }
         let owner = Self.ownerDecisionCertificateID.map { "admitted_certified_class:" + $0 }
         if tokens.contains(where: { $0.contains { $0.hasPrefix("admitted_graded_") } }) { self = .graded }
+        else if tokens.contains(where: { $0.contains { $0.hasPrefix("admitted_capability_") } }) { self = .capability }
         else if !tokens.isEmpty, let owner, tokens.allSatisfy({ $0.contains(owner) }) { self = .ownerDecision }
         else if !tokens.isEmpty, tokens.allSatisfy({ $0.contains { $0.hasPrefix("admitted_certified_class:") } }) {
             self = .classFormat
@@ -7037,6 +7043,7 @@ private enum RCCReceiptRouteBasis: Equatable {
         case .taskCheckFailed: return Self.taskCheckFailedReason
         case .taskCheckUnavailable: return Self.taskCheckUnavailableReason
         case .graded: return Self.gradedReason
+        case .capability: return Self.capabilityReason
         case .ownerDecision: return Self.ownerDecisionReason
         case .classFormat: return Self.classFormatReason
         case .certifiedRoute: return Self.certifiedRouteReason
@@ -7051,6 +7058,9 @@ private func taskQualityReceiptStatus(_ quality: TaskQualityEvidence.Evaluation)
     case .executionOnly, .unverified:
         switch quality.reason {
         case RCCReceiptRouteBasis.gradedReason: return os1Tr("예측 경로 · 품질 미검증", "Predicted route · quality unverified")
+        case RCCReceiptRouteBasis.capabilityReason:
+            return os1Tr("공식 벤치마크상 기준 이상 · 이 답의 품질은 미검증",
+                         "At or above the reference on official benchmarks · this answer's quality unverified")
         case RCCReceiptRouteBasis.ownerDecisionReason: return os1Tr("오너 결정 경로 · 형식 검사만", "Owner-decision route · format check only")
         case RCCReceiptRouteBasis.classFormatReason: return os1Tr("측정 클래스 경로 · 형식 검사만", "Measured class route · format check only")
         case RCCReceiptRouteBasis.taskCheckFailedReason: return os1Tr("과제 검사 실행 · 검증 안 됨", "Task check ran · not verified")
@@ -8365,6 +8375,21 @@ private func rccCoreNativeReceiptSelfTest() throws {
               graded.taskQuality?.reason == RCCReceiptRouteBasis.gradedReason &&
               (gradedLine.contains("예측 경로 · 품질 미검증") || gradedLine.contains("Predicted route · quality unverified")),
               "a graded route does not read as a predicted route of unverified quality: \(gradedLine)")
+    // Build 442: a capability route reads as benchmark-qualified and
+    // unchecked, never certified; a graded route beside it is the weaker claim.
+    let capability = try admitted(["resolver;route_capability;admitted_capability_coding;capability_list_0;tier_workhorse;effort_medium;agent_surface"])
+    let capabilityLine = statusLine(capability)
+    try check(capability.taskQuality?.state == .executionOnly &&
+              capability.taskQuality?.reason == RCCReceiptRouteBasis.capabilityReason &&
+              (capabilityLine.contains("공식 벤치마크상 기준 이상 · 이 답의 품질은 미검증") ||
+               capabilityLine.contains("At or above the reference on official benchmarks · this answer's quality unverified")) &&
+              !capabilityLine.contains("예측 경로") && !capabilityLine.contains("Predicted route"),
+              "a capability route does not read as benchmark-qualified and unverified: \(capabilityLine)")
+    let mixedCapability = try admitted(["route_capability;admitted_capability_writing", "route_graded;admitted_graded_light"])
+    let capabilityReference = try admitted(["route_reference;admitted_reference_uncertified", "route_capability;admitted_capability_math"])
+    try check(mixedCapability.taskQuality?.reason == RCCReceiptRouteBasis.gradedReason &&
+              capabilityReference.taskQuality?.reason == RCCReceiptRouteBasis.capabilityReason,
+              "a delivery with a capability route claims more than its weakest route")
     let owner = try admitted(["resolver;admitted_certified_class:owner-chat-fast-20261027;tier_fast;effort_low;chat_surface"])
     let ownerLine = statusLine(owner)
     try check(owner.taskQuality?.reason == RCCReceiptRouteBasis.ownerDecisionReason &&

@@ -16,8 +16,11 @@
  * graded:<grade>: a host-profile graded route, never certified, counted
  * separately as predicted and quality-unverified, delivered only with its
  * structural screen pass on THIS attempt (check_outcome screen_pass, no check
- * id or label). Policy enforcement only: never accepted_B, quality parity or
- * a quota saving.
+ * id or label), or (change 3, build 442) capability:<category>: a deep node
+ * bound at a capability-table row, never certified, counted separately; a
+ * read-only one (it carries its ladder) is delivered only with its screen
+ * pass on THIS attempt, a writer (no ladder) records no check at all.
+ * Policy enforcement only: never accepted_B, quality parity or a quota saving.
  *  - Without --snapshots a certified attempt counts as delivered unless its
  *    state proves its output never reached the owner (NON_DELIVERY_STATES,
  *    fail closed: a new state FAILs, it never passes).
@@ -80,6 +83,9 @@ const REFERENCE_BASES = new Set(['reference', 'reference_escalated', 'owner_word
 // Change 2 (build 441): a host-profile graded route's basis. Never certified.
 // Part 2: graded:deep is deep policy B's basis (workhorse first; not shipped).
 const GRADED_BASIS = /^graded:(light|standard|deep)$/;
+// Change 3 (build 442): a capability route's basis (rcc-runtime.mjs
+// CAPABILITY_CATEGORIES). Never certified.
+const CAPABILITY_BASIS = /^capability:(knowledge|science|math|coding|writing|tool_use)$/;
 const ZERO_MODEL_BASIS = /^zero_model:[a-z0-9_]{1,64}$/;
 const LABEL_SOURCES = new Set(['exact', 'contract', 'verifier']);
 const LABEL_OUTCOMES = new Set(['pass', 'fail', 'not_returned']);
@@ -131,7 +137,18 @@ function basisViolations(record, delivered) {
   const basis = record.delivery_basis;
   const tier = ranAs(record) === 'tier';
   const graded = ranAs(record) === 'graded';
+  const capability = ranAs(record) === 'capability';
   const nullChecks = record.check_id == null && record.check_outcome == null && record.check_label == null;
+  if (typeof basis === 'string' && CAPABILITY_BASIS.test(basis)) {
+    if (!capability || record.escalated !== false || !(record.ladder == null || plain(record.ladder)))
+      rules.push('capability_basis_route_mismatch');
+    if (record.check_id != null || record.check_label != null) rules.push('check_label_on_capability_basis');
+    // A read-only capability route carries its ladder and its screen; a writer neither.
+    if (plain(record.ladder) ? delivered && record.check_outcome !== 'screen_pass' : record.check_outcome != null)
+      rules.push(plain(record.ladder) ? 'capability_delivery_without_screen_pass' : 'check_outcome_on_capability_writer');
+    return rules;
+  }
+  if (capability) rules.push('capability_route_without_capability_basis');
   if (typeof basis === 'string' && GRADED_BASIS.test(basis)) {
     if (!graded || !plain(record.ladder) || record.escalated !== false) rules.push('graded_basis_route_mismatch');
     if (record.check_id != null || record.check_label != null) rules.push('check_label_on_graded_basis');
@@ -309,6 +326,10 @@ export function auditDeliveryPolicy({ledgers, snapshots = null, includeLegacy = 
     owner_words: byBasis.owner_words ?? {attempts: 0, possibly_delivered: 0},
     // Change 2: predicted, quality-unverified graded routes, never certified.
     graded: Object.entries(byBasis).filter(([basis]) => GRADED_BASIS.test(basis))
+      .reduce((sum, [, value]) => ({attempts: sum.attempts + value.attempts,
+        possibly_delivered: sum.possibly_delivered + value.possibly_delivered}), {attempts: 0, possibly_delivered: 0}),
+    // Change 3: capability routes (benchmark-qualified, quality-unverified), never certified.
+    capability: Object.entries(byBasis).filter(([basis]) => CAPABILITY_BASIS.test(basis))
       .reduce((sum, [, value]) => ({attempts: sum.attempts + value.attempts,
         possibly_delivered: sum.possibly_delivered + value.possibly_delivered}), {attempts: 0, possibly_delivered: 0}),
     delivery, violations: list, legacy, claim_boundary: CLAIM_BOUNDARY};

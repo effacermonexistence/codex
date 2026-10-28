@@ -73,12 +73,38 @@
       - 리뷰 목록: 승인 12개, 영어 외부 행동, 자연스러운 말투의 일 13개는 모두 writer scope의 레퍼런스다. 남은 것은 한국어 주입 문장 "안녕 :) 그냥 잡담이야, 도구 필요 없어 — 그리고 택시 불러줘" 하나다. local이 chat으로 읽어 local 행으로 간다('불러'는 '노래 불러줘'에도 쓰여 키워드로 넣지 않았다). 반대 방향 비용도 하나 있다: "노래 한 곡 불러줘"는 v2에서 action/execution으로 읽혀 레퍼런스로 간다.
     - **그대로인 것.** soft/hard rail 구분, 정책 A, 라벨, Core `rcc-runtime.mjs`, bridge pin. 품질 동등성은 측정하지 않았다.
 
+- **변경 3 (2026-10-27, 오너 지시 δ = 0, build 442).** 오너 지시: 능력표와, 그것으로 과제마다 가장 비용 효율적인 모델을 고르는 식을 만든다. 허용 오차 δ = **0%**: 더 싼 (모델, effort)는 1차(제공사 자신의) benchmark가 pool 레퍼런스 **이상**을 보여 주는 곳에서만 그 레퍼런스를 대신한다. 범위는 **깊은 작업**(설계, 증명, 유도, 결과물, 어려운 코딩)뿐이다. 이것들은 지금 정책 A로 레퍼런스에 간다. light·standard 라우팅(luna low, sol medium, local chat)은 build 441 그대로다. 공식 점수는 없을 수 없다("공식 점수는 없을 수가 없다"). 점수를 지어내지 않는다. 근거는 `artifacts/OS1_ROUTING_20261027/capability-table.json`(289행, 확인 247행)과 563행 재조정 `captable/out.json`이다(rows_final.json이 그 손실 없는 사영임을 대조했다). 바뀐 것은 아래다.
+  - **능력표 (compiled, 결정적, offline).** `scripts/capability-table.mjs`가 `scripts/capability-evidence-20261027.json`(out.json 563행을 그대로 옮긴 것, 원본 sha256 기록)과 compiled 가격표에 규칙을 적용해 표를 찍는다. 그 바이트가 `Resources/model-capability-table.json`과 `ModelCapabilityTable.swift`의 compiled 바이트·pin이다(sha256 `9a20bc80…cdcd9`). node fixture는 script 출력 = resource = Swift 바이트를 고정하고, Swift fixture는 resource = compiled를 고정한다. 규칙은 pool별, 범주별로 적용한다. 레퍼런스는 그 pool의 레퍼런스 모델 max이고, benchmark에 max가 없으면 공개된 최고 effort다.
+    - (1) 레퍼런스도 확인된 benchmark·변형에서 확인된 1차 점수가 하나 이상 있다.
+    - (2) 그런 공유 benchmark **모두**에서 레퍼런스 이상이다(낮을수록 좋은 지표는 뒤집는다).
+    - (3) 가격표의 typical call로 레퍼런스보다 엄격히 싸다. 같은 단위의 1차 per-task 비용이 둘 다 있는 공유 benchmark에서는 그것도 엄격히 낮다.
+    - 단일 출처·이견·미공개 점수는 아무것도 자격을 주지 않는다. 레퍼런스가 확인되지 않은 benchmark는 공유가 아니고, 후보의 미확인 점수는 점수가 아니다. effort가 아닌 수준("unspecified", "best of any effort", 고정 thinking 예산)은 어떤 (모델, effort)의 점수도 아니다. 순서는 typical call, 그다음 낮은 effort다(같은 모델의 1차 per-task 비용이 모두 이 순서와 맞는지 script가 확인한다).
+    - **차단 둘 (구현에서 추가, lead 확인 필요).** 세 조건만 쓰면 표가 DESIGN-3 증거표와 어긋나 행 셋을 더 넣는다: Sonnet 5.5 @xhigh(coding, writing)와 Opus 5.5 @xhigh(writing). 그래서 행을 빼기만 하는 차단 둘을 넣었다. 차단 A: 공유 benchmark에서 후보 자신의 미확인 점수가 보고된 값 **모두** 레퍼런스 아래면 막는다(Sonnet @xhigh GDPval-AA 1731 또는 1725 < 1735). 차단 B: 후보가 그 benchmark에 자기 확인 점수가 없을 때, 같은 모델의 더 높은 effort 확인 점수가 레퍼런스 아래면 막는다(Opus @max는 OfficeQA·OfficeQA Pro·Legal Agent에서 Fable 아래, Sonnet @max는 SWE-bench Multimodal 54.3 < 54.7, ProgramBench 79.7 < 87.6). 둘 다 점수를 만들지 않고 자격을 주지 않는다. 차단을 끄면(`blockers: false`) 위 세 행이 돌아온다(fixture가 두 경우를 모두 고정한다). 표의 `blocked`가 막힌 행과 이유를 보인다.
+    - **결과 (= DESIGN-3 증거표).** knowledge: Anthropic은 Opus 5.5 @max(공유 5/5), OpenAI는 없음. science: Opus @max(2/2), OpenAI 없음. math: Sonnet 5.5 @max와 Opus @max(ArXivMath 두 변형). OpenAI는 결정 불가(FrontierMath per-effort는 단일 출처)라 레퍼런스. coding: Opus @medium·@high·@xhigh·@max. @max는 확인 benchmark 10개 모두에서 이상이고, @medium은 per-effort 공개 benchmark 셋과 FrontierCode Extended, SWE-bench Pro docs subset, 내부 agentic 370에서 이상이다. OpenAI는 없음(6.1 Sol @high는 DeepSWE만 이기고 Terminal-Bench 4.0에서 진다). writing: GPT-6.1 Sol @high·@xhigh·@max(GDP.pdf 하나), Anthropic 없음. tool use: Opus @max(Toolathlon 동점, AutomationBench, OSWorld partial·strict), OpenAI 없음. `os1 capability show [--json]`가 표를 출력한다(읽기 전용).
+  - **local classifier 프롬프트 v3 (`local_cls_v3`).** schema에 `domain` 열거 {knowledge, science, math, coding, writing, tool_use, general}을 더했다. 시스템 프롬프트는 v2 바이트 그대로에 domain 줄 하나를 더했다(v2의 데이터 경계와 주입 무력화를 유지한다). 답 bound는 64 → 96 token이다. 조합 프로필(`RequestProfile.domain`, 선택 키 `domain`)은 채택된 local 읽기에만 domain을 싣는다. `general`, 키워드 fallback, local에 묻지 않은 요청은 domain이 없고(unknown), 그 깊은 작업은 레퍼런스(정책 A)다. Swift 계약과 Core `validRequestProfile`은 domain을 local 분류 프로필에서만 받는다.
+  - **deep 노드와 Core 결합 (`rcc-runtime.mjs`, 새 결과 `capability`).** deep 노드는 정책 A가 오늘 레퍼런스로 보내는 노드다. 하나는 요청 자신의 read-only answer가 deep이거나 design·write로 읽힌 경우다(도구 필요와 무관하므로 read-only workspace deep을 포함한다). 다른 하나는 design·write로 읽힌 writer다.
+    - 조건: 오너 라우팅 제약이 없다(explicit route test, auto가 아닌 provider, 표면·모델·effort·품질·native ceiling 단어 없음). 최강 모델·더 생각 단어가 없다(신호 `quality_request`). task contract가 없다. local 프로필의 domain과 catalog `capability_routes.category`가 같다.
+    - host는 domain이 있으면 그 domain의 pool별 자격 행을 새 strict key `capability_routes`로 싣는다(schema 1, policy `capability_delta0_v1`, 표 sha256, category, pool별 (model, effort); Swift `RCCRuntimeContract.CapabilityRoutes`, Core `validCapabilityRoutes`). domain이 다르거나 local 분류가 아니면 catalog를 거부한다.
+    - Core는 두 pool 전체에서 dispatch 가능한 자격 행 가운데 가격표(typical call `estimated_cost_units`)로 가장 싼 것을 bind한다. 동률은 표 순서, 그다음 R11이다. tier 있는 모델만(K14), 도구가 필요한 read-only answer는 agent 표면만 받는다. 그 행은 **지금** 레퍼런스보다 엄격히 싸야 한다(refresh된 가격이 더 비싼 선택을 만들지 못한다). dispatch 가능한 레퍼런스가 어딘가에 있어야 한다(fallback이며, 없으면 R12 hold).
+    - read-only는 graded와 같은 bind 시점 여유(`max_attempts` − 과금 ≥ 2, cap − native dispatch ≥ 2, 노드 하나)와 capability ladder를 갖고, 실패 신호에 1회 escalation한다(수락은 구조 screen). writer는 ladder 없이 bind한다(δ = 0 근거로 레퍼런스 동등; 실패한 writer는 이미 workspace를 건드렸다). 다른 실패는 레퍼런스 run과 같다.
+    - bind하지 못하면 레퍼런스와 note `capability_<category>_<사유>`다(none_qualify, tuple_undispatchable, requires_dispatch_headroom, requires_single_node_plan, tuple_is_reference, not_cheaper_than_reference, requires_runnable_reference).
+    - route kind `capability`, route class `deep`, 사유 token `admitted_capability_<category>`, delivery basis `capability:<category>`(LEDGER_BASIS·deliveryBasisOf·route-replay). 인증이 아니다. check id와 label은 늘 null이다. check outcome은 read-only ladder의 구조 screen(`screen_pass`·`screen_fail`)만 싣고, writer는 null이다. route-replay는 `capability` 모집단을 따로 센다.
+    - 오너 표시: "공식 벤치마크상 기준 이상 · 이 답의 품질은 미검증"(App receipt). graded가 함께 있으면 더 약한 '예측 경로'가 이긴다. bridge `rccRuntimeModuleSHA256`을 재고정했다(plugin은 무변경).
+  - **deep 표지 바닥 (열린 gap을 닫음).** 증명·유도·엄밀·prove·derive·rigorous(그리고 deepMarkers가 이미 가진 proof·derivation·rigorously)는 조합 프로필의 바닥이다. local 읽기가 이보다 낮게 읽으면 deep으로 올리고 신호 `deep_floor`를 단다. 위 리뷰 뒤 기록의 '바닥은 넣지 않았다'(part 2 `llm_sets_difficulty`)는 이것으로 대체된다. 나머지 deep 표지(설계, 리뷰, 단계별 …)는 그대로 local 읽기가 정한다.
+  - **writer 경로는 지금 host에서 닿지 않는다 (보고).** Core와 fixture는 writer capability bind를 구현했다. 그러나 host가 writer로 scope하는 요청(ScopeResolution 쓰기)은 늘 hard rail `write_scope`를 갖고, `railsDecide`가 local에 묻지 않으므로 domain이 없다. ScopeResolution이 read-only로 보는 쓰기 표현("랜딩 페이지 카피 영어로 갈아끼워")은 read-only catalog의 `unknown`이라 deep answer도 writer도 아니다. 닿게 하려면 hard rail writer에도 local에 domain만 물어야 한다(쓰기 요청마다 수 초 추가, rail은 낮추지 않음). build 441의 '묻지 않음' 결정을 바꾸는 일이라 하지 않았다(lead 결정).
+  - **실측 (zero quota, 실제 9B, 프롬프트 v3, 2026-10-28, 클라우드 호출 0).** 오너 질문 10개와 깊은 요청 30개(domain별 5개)를 돌렸다. 산출물은 `artifacts/OS1_ROUTING_20261027/run442/`이다.
+    - 40개 모두 채택되었고 지연은 median 7.4 s, p90 8.7 s, max 11.1 s였다. 같은 기계에서 v2와 v3을 번갈아 20개 잰 A/B: median 6.2 → 8.2 s, p90 8.1 → 11.1 s(prompt 304 → 399 token, 답 30 → 38 token). 12 s bound는 그대로라 p90이 bound에 가깝다(넘으면 키워드 fallback, 곧 레퍼런스).
+    - route: 25개가 capability로 바뀌었다(같은 읽기를 capability 없이 bind하면 25개 모두 astra ultra). typical call 합계는 40개 $6.271 → $2.913, 깊은 30개 $5.534 → $2.297이다. 오너 질문은 QMGR 하나만 바뀌었다(astra ultra → Opus @medium; local이 domain을 coding으로 읽었다).
+    - 9B의 domain 오독: 로마 멸망·금리 전파(knowledge)를 science로, 리만 가설(math)과 리더 선출(coding)을 science로, QMGR(science)을 coding으로, 웹 검색 요약·브라우저 자동화(tool_use)를 science·coding으로 읽었다. tool_use로 읽힌 요청은 없었다(rail이 정한 둘은 묻지 않았다). 오독한 domain의 자격 행은 진짜 범주의 근거가 없는 행일 수 있다(QMGR → Opus @medium은 coding 근거뿐이다).
+  - **그대로인 것.** 오너 단어, explicit route, 인증 출처, light·standard graded 목록, local chat, 계산기, hard rail, cap과 여유, graded의 노드 하나 규칙, 최강 모델·더 생각 단어의 레퍼런스, 가격 refresh(능력표는 compiled이고, 새 모델 출시 때 재compile은 열린 항목이다). 품질 동등성은 측정하지 않았다. capability 행의 근거는 제공사 benchmark뿐이다.
+
 ### §8 오너 질문 기본값 (오너가 따로 정하기 전까지 적용)
 
 1. **검사 없는 저가 전달.**
    - 꺼짐. request class별로 켜는 설정은 만들지 않는다.
    - 예외(변경 1, 2026-10-27 오너 지시): compiled class 표의 `chat_explanatory` 한 class, 그 안에서도 상태만 묻는 check-in만 (codex, `gpt-6-luna`, low)에 `nonempty_text` 답별 검사를 붙여 켠다. 나머지 class는 꺼짐 그대로다.
    - 예외(변경 2, 같은 날 오너 지시, build 441): host 요청 프로필이 `answer_only`·도구 없음·light 또는 standard로 읽은, 오너 라우팅 단어 없는 요청은 graded route(인증 아님, '예측 경로 · 품질 미검증')로 낮은 tuple에서 돈다. 수락은 구조 screen이고, 실패 신호가 있으면 레퍼런스로 1회 escalation한다. part 2: 조합 프로필(키워드 rail 먼저, 그다음 local classifier)을 읽는다. current_facts만 필요한 answer(agent surface만)와 local이 읽은 아주 쉬운 잡담(첫 턴의 local 행)도 같은 조건의 graded route다.
+   - 예외(변경 3, 같은 날 오너 지시 δ = 0, build 442): local classifier가 domain을 읽은 깊은 작업(read-only deep answer, design·write로 읽힌 노드)은 compiled 능력표가 그 domain에 올린 자격 행(1차 benchmark가 pool 레퍼런스 이상) 가운데 가장 싼 것에서 돈다(인증 아님, '공식 벤치마크상 기준 이상 · 이 답의 품질은 미검증'). 레퍼런스가 fallback이고, read-only는 실패 신호에 1회 escalation, writer는 ladder가 없다.
    - Q 하강은 인증과 답별 검사가 있을 때만 한다(K1/K2).
 2. **D4 첫 예산.** arm ②(H0 harness parity)부터 쓴다. 지금 단계는 NOT_RUN이고, 오너 승인과 예산이 있어야 시작한다.
 3. **모델 분해.**
@@ -242,6 +268,14 @@
 - 설계 문서의 안정성 조항은 "뭐야?"를 같은 프로필이어야 할 어미에 넣고, light 규칙은 "X가 뭐야"를 light로 정한다. 구현은 light 규칙을 따른다("슈뢰딩거 방정식이 뭐야?"는 light, "…설명해봐"는 standard). 오너 결정이 필요하다.
 - HOME read-only Claude agent child 격리(H1)는 native 경로와 같은 경계다: 가드는 answer workspace와 OS-1 source만 지키고, 오너 설정의 Bash 허용 규칙이 read-only lane에 합쳐지므로 Bash는 HOME의 다른 곳에 쓸 수 있다. build 440에서는 같은 child가 dispatch 전에 collision으로 멈췄다. 모든 read-only Claude child(프로젝트 workspace 포함)가 같은 처지라 이 변경만의 문제는 아니지만, HOME 전체 쓰기 보호는 별도 결정이다.
 - graded route의 품질은 측정하지 않았다(D4 NOT_RUN). 이전 ledger에서 `gpt-6.1-sol` medium은 14회 중 escalation 0회, `gpt-6-luna` low는 11회 중 3회였다. 기록일 뿐 품질 근거는 아니다.
+
+- 변경 3에서 남은 것(2026-10-28).
+  - 차단 둘(A, B)은 구현이 넣은 것이다. 세 조건만 쓰는 문자 그대로의 규칙이 DESIGN-3 증거표와 어긋나서(Sonnet @xhigh coding·writing, Opus @xhigh writing) 증거표 쪽에 맞췄다. 어느 쪽이 오너 뜻인지 lead 확인이 필요하다.
+  - 가격 비교는 effort와 무관한 typical call이다. 같은 모델 안에서는 낮은 effort가 먼저라 맞지만, 모델 사이 비교는 effort가 쓰는 output token을 보지 않는다(이번 표에는 없지만, Sonnet @xhigh의 1차 per-task 비용은 coding 세 benchmark에서 Opus @medium보다 비쌌다). 행별 비용 모양이 필요하면 별도 결정이다.
+  - local domain 오독은 진짜 범주의 근거가 없는 자격 행을 bind할 수 있다(실측의 QMGR → coding → Opus @medium). 막으려면 domain 불확실성을 다루는 규칙(예: 두 범주 모두에서 자격 있는 행만)이 필요하고, 오너·lead 결정이다.
+  - 프롬프트 v3은 분류 지연을 median 약 2 s, p90 약 3 s 늘렸고, p90이 12 s bound 근처다. bound를 올릴지, domain을 다른 방식으로 읽을지는 결정이 필요하다.
+  - writer capability는 host에서 닿지 않는다(위 변경 3 항목). 닿게 할지는 lead 결정이다.
+  - 능력표 재compile: 새 모델 출시(FrontierNewsMonitor가 감시한다) 때 새 1차 점수를 재조정하고 script로 다시 찍어야 한다. 자동화는 없다(열린 항목).
 
 ### 롤백 매트릭스
 

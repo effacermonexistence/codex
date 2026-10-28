@@ -18811,6 +18811,7 @@ func selfTest() throws {
     try RouteFanout.selfTest()
     try RouteAllIntent.selfTest()
     try RoutingOrderInterpreter.selfTest()
+    try ModelCapabilityTable.selfTest()
     try routeAllRoutingSelfTest()
     try routeFanoutSummarySelfTest()
     try providerSurfaceRoutingSelfTest()
@@ -18917,6 +18918,7 @@ func usage() {
       os1 configure-claude-exo
       os1 audit-codex-usage /path/to/native-record.jsonl TURN_UUID
       os1 pricing refresh [--dry-run]
+      os1 capability show [--json]
       os1 source-register scv-instagram /absolute/runtime-source.tar.gz
       os1 register
       os1 run --workspace /path/to/project --prompt "task"
@@ -19346,6 +19348,19 @@ struct OS1Main {
                 print(String(decoding: try ModelPriceRefresh.encodeReceipt(report.receipt), as: UTF8.self), terminator: "")
                 if report.receipt.outcome == "refused" {
                     throw OS1Error.message("price refresh refused; the last good table is kept (see the refusals above)")
+                }
+            // Build 442 (owner order 2026-10-27, DESIGN-3): the compiled
+            // capability table (delta 0), readable or as its exact bytes.
+            // Read-only: no network, no model, no file written.
+            case "capability":
+                guard arguments.count >= 2, arguments[1] == "show", arguments.count <= 3,
+                      arguments.dropFirst(2).allSatisfy({ $0 == "--json" }) else {
+                    throw OS1Error.message("Expected: os1 capability show [--json]")
+                }
+                if arguments.count == 3 {
+                    FileHandle.standardOutput.write(ModelCapabilityTable.compiledBytes)
+                } else {
+                    print(ModelCapabilityTable.compiled.summary(), terminator: "")
                 }
             case "backend-health":
                 // Read-only usability of both backends with reasons and the
@@ -19976,6 +19991,11 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // Build 441 part 2: list prices, so Core picks the cheapest dispatchable
     // row of a graded route's tier list (a fresh daily refresh, else compiled).
     input.priceTable = ModelPriceTable.current().table
+    // Build 442 (owner order 2026-10-27, DESIGN-3): the compiled capability
+    // table. A profile the local classifier read with a known domain carries
+    // that domain's delta-0 qualifying rows; Core binds the cheapest one in a
+    // deep node's reference place (uncertified, the reference its fallback).
+    input.capabilityTable = ModelCapabilityTable.compiled
     // An explicit route that names the local surface (route-all) gets the
     // one local model row, available only when the live probe finds the
     // pinned model now; build 441 part 2: so does an Auto request the local

@@ -282,6 +282,16 @@ final class SourceContextTests {
                           userInfo: [NSLocalizedDescriptionKey: "Resources/model-price-table.json differs from the compiled table"])
         }
         print("Model price table: compiled = resource, validation, refresh fallback PASS")
+        // Build 442 (DESIGN-3): the capability table's compiled bytes are the
+        // resource's (the script-output identity is the node fixture's).
+        try ModelCapabilityTable.selfTest()
+        let resourceCapabilities = try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/model-capability-table.json"))
+        guard resourceCapabilities == ModelCapabilityTable.compiledBytes else {
+            throw NSError(domain: "ModelCapabilityTable", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Resources/model-capability-table.json differs from the compiled table"])
+        }
+        print("Model capability table: compiled = resource, delta-0 verdicts, typical-call prices PASS")
         try runModelPriceRefreshFixtures()
         try runConversationalQuestionFixtures()
         try runWebsiteDeliveryRelevanceFixtures()

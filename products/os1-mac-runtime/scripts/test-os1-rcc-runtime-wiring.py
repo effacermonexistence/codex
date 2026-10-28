@@ -302,7 +302,7 @@ for version, expected in (("0.9.106", "18/21/0/0/0"), ("0.9.107", "19/22/0/0/0")
                           ("0.9.342", "38/41/0/0/0"), ("0.9.343", "39/42/1/0/0"),
                           ("0.9.349", "39/42/1/0/0"), ("0.9.350", "46/49/1/1/0"),
                           ("0.9.351", "48/51/1/1/1"), ("0.9.355", "48/51/1/1/1"), ("0.9.356", "52/55/1/1/1"), ("0.9.369", "52/55/1/1/1"),
-                          ("0.9.370", "59/62/1/1/1"), ("0.9.371", "70/73/1/1/1"), ("0.9.372", "70/73/1/1/1"), ("0.9.373", "70/73/1/1/1"), ("0.9.374", "70/73/1/1/1"), ("0.9.375", "70/73/1/1/1"),
+                          ("0.9.370", "59/62/1/1/1"), ("0.9.371", "70/73/1/1/1"), ("0.9.372", "70/73/1/1/1"), ("0.9.373", "70/73/1/1/1"), ("0.9.374", "70/73/1/1/1"), ("0.9.375", "70/73/1/1/1"), ("0.9.376", "70/73/1/1/1"),
                           ("0.10.0", "70/73/1/1/1"), ("1.0.0", "70/73/1/1/1")):
     fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
                version_gate + '\nprintf "%s/%s/%s/%s/%s" "$expected_payload_files" '
@@ -775,7 +775,8 @@ check("validRequestProfile(profile)" in graded_admission and "['none', 'current_
       "graded:(?:light|standard|deep)" in RUNTIME and "'screen_pass'" in RUNTIME and
       "kind: 'graded'" in RUNTIME and "routeClass: GRADED_CLASS" in RUNTIME and
       "const kind = intentConstrains(intent) ? 'explicit' : 'reference';" in RUNTIME and
-      "(choice.kind === 'tier' || choice.kind === 'graded')" in RUNTIME and
+      "laddered(choice.kind) && choice.ladder ?" in RUNTIME and
+      "function laddered(kind) { return kind === 'tier' || kind === 'graded' || kind === 'capability'; }" in RUNTIME and
       "'request_profile'" in RUNTIME and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-graded-admission.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-graded-admission.test.mjs").is_file(),
@@ -849,6 +850,51 @@ check("func idleJobsBusy() -> Bool {" in APP and
       "let idle = !idleJobsBusy()" in APP and APP.count("return !self.idleJobsBusy()") == 2 and
       "mayWrite: { @MainActor [weak self] in" in APP and "stillIdle: { @MainActor [weak self] in" in APP,
       "review: the price refresh and the classifier warm-up re-check the full busy gate before they act")
+
+# Build 442 (owner order 2026-10-27, DESIGN-3, change 3): capability-based
+# choice for deep work. The table is compiled offline by a committed script
+# from committed evidence (byte-identical resource and Swift copy); the local
+# classifier's prompt v3 adds a domain; the host carries that domain's rows as
+# capability_routes; Core binds a deep node's cheapest dispatchable row,
+# uncertified, with the reference its fallback (and a read-only escalation);
+# proof/derivation/rigour markers are a floor; the App labels it. Release-gated.
+capability_source = (ROOT / "Sources/OS1Context/ModelCapabilityTable.swift").read_text()
+capability_resource = (ROOT / "Resources/model-capability-table.json").read_bytes()
+check(capability_source.count('public static let compiledBytes = Data((#"' + capability_resource.decode().rstrip("\n") + '"# + "\\n").utf8)') == 1 and
+      'public static let compiledSHA256 = "' + hashlib.sha256(capability_resource).hexdigest() + '"' in capability_source and
+      (ROOT / "scripts/capability-table.mjs").is_file() and (ROOT / "scripts/capability-evidence-20261027.json").is_file() and
+      '"policy":"capability_delta0_v1"' in capability_resource.decode() and '"tolerance":0' in capability_resource.decode(),
+      "change 3: the compiled capability table is the resource's bytes, pinned, from the committed script and evidence")
+capability_admission = section(RUNTIME, "function capabilityCategory(", "/** Build 441 part 2: whether a catalog's profile asks for the local row")
+check("profile.classifier?.startsWith('local_llm:') === true" in capability_admission and
+      "CAPABILITY_CATEGORY_SET.has(profile.domain) && validCapabilityRoutes(routes) && routes.category === profile.domain" in capability_admission and
+      "!profile.signals.includes('quality_request') && !intentConstrains(routingIntent(catalog))" in capability_admission and
+      "catalog.task_contract == null" in capability_admission and
+      "if (node.scope === 'workspace_write') return designOrWrite ? profile.domain : null;" in capability_admission and
+      "return profile.difficulty === 'deep' || designOrWrite ? profile.domain : null;" in capability_admission and
+      "{class: 'capability', source: CAPABILITY_SOURCE, certificate_id: null, category}" in RUNTIME and
+      "capability:(?:knowledge|science|math|coding|writing|tool_use)" in RUNTIME and
+      "'request_profile', 'capability_routes'];" in RUNTIME and "kind: 'capability'" in RUNTIME and
+      "routeClass: CAPABILITY_CLASS" in RUNTIME and "const cheaper = typeof cheapUSD === 'number' && typeof referenceUSD === 'number' && cheapUSD < referenceUSD;" in RUNTIME and
+      "const ladder = writer ? null : {source: 'tier', admitted_by: CAPABILITY_SOURCE, category," in RUNTIME and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-routes.test.mjs"' in RELEASE and
+      (ROOT / "scripts/fixtures/openclaw-rcc-capability-routes.test.mjs").is_file(),
+      "change 3: a deep node with a local domain binds a capability row uncertified, beside a runnable, dearer reference; release-gated")
+check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
+      "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
+      "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
+check('public static let promptVersion = "local_cls_v3"' in classifier_source and
+      '"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}' in classifier_source and
+      "static let deepFloorMarkers = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
+      "input.capabilityTable = ModelCapabilityTable.compiled" in catalog_profile and
+      catalog_profile.index("input.capabilityTable = ModelCapabilityTable.compiled") < catalog_profile.index("input.now = Date()") and
+      "!RequestProfile.asksForStrongest(input.request) else { return nil }" in BUILDER,
+      "change 3: prompt v3 domain, the deep floor, and the host's capability routes (never with strongest-model words)")
+check('case "capability":' in MAIN and "ModelCapabilityTable.compiled.summary()" in MAIN and
+      "os1 capability show [--json]" in MAIN and "try ModelCapabilityTable.selfTest()" in MAIN,
+      "change 3: `os1 capability show` prints the compiled table; os1 self-test checks it")
+check('"공식 벤치마크상 기준 이상 · 이 답의 품질은 미검증"' in APP and '$0.hasPrefix("admitted_capability_")' in APP,
+      "change 3: the App labels a capability route benchmark-qualified and unverified")
 
 # Build 380 regression: gateway-spawned os1 lacked USER, so Claude's Keychain
 # sign-in looked signed out on every live catalog.

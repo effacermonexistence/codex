@@ -52,6 +52,13 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     public enum TaskType: String, Codable, Sendable, CaseIterable {
         case chat, explain, design, write, action, unknown
     }
+    /// Build 442 (owner order 2026-10-27, DESIGN-3): the subject area the
+    /// local classifier (prompt v3) read, as the capability table names it.
+    /// The classifier's `general` and a keyword-only profile carry no domain:
+    /// the domain is unknown and deep work binds the reference (policy A).
+    public enum Domain: String, Codable, Sendable, CaseIterable {
+        case knowledge, science, math, coding, writing, toolUse = "tool_use"
+    }
     public static let currentSchema = 1
     public static let currentPolicy = "host_profile_v1"
     /// Wire bound on the evidence tokens (Core checks the same).
@@ -75,16 +82,21 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// profile without them is the keyword-only build-441 profile.
     public var classifier: String?
     public var taskType: TaskType?
+    /// Build 442: the local classifier's domain reading (prompt v3), only on a
+    /// locally classified profile and never for `general`. Core binds a deep
+    /// node's capability-qualified row only with it.
+    public var domain: Domain?
 
     public init(answerKind: AnswerKind, toolNeed: ToolNeed, difficulty: Difficulty, signals: [String],
                 schema: Int = RequestProfile.currentSchema, policy: String = RequestProfile.currentPolicy,
-                classifier: String? = nil, taskType: TaskType? = nil) {
+                classifier: String? = nil, taskType: TaskType? = nil, domain: Domain? = nil) {
         self.schema = schema; self.policy = policy; self.answerKind = answerKind; self.toolNeed = toolNeed
         self.difficulty = difficulty; self.signals = signals; self.classifier = classifier; self.taskType = taskType
+        self.domain = domain
     }
     enum CodingKeys: String, CodingKey {
         case schema, policy, signals, classifier, answerKind = "answer_kind", toolNeed = "tool_need", difficulty
-        case taskType = "task_type"
+        case taskType = "task_type", domain
     }
 
     /// An answer that needs nothing from this machine or the outside world:
@@ -114,7 +126,9 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             (classifier.map { $0.range(of: RequestProfile.classifierPattern, options: .regularExpression) != nil } ?? true) &&
             // A combined answer is an answer task; the local model always names one of its five types.
             (answerKind != .answerOnly || taskType.map { [.chat, .explain, .design, .write].contains($0) } ?? true) &&
-            (!locallyClassified || taskType != .unknown)
+            (!locallyClassified || taskType != .unknown) &&
+            // Build 442: a domain is the local reading's, never the keywords'.
+            (domain == nil || locallyClassified)
     }
 
     // MARK: Vocabulary
@@ -137,6 +151,11 @@ public struct RequestProfile: Codable, Equatable, Sendable {
                               "design", "architect", "architecture", "debug", "root cause", "optimize", "optimise", "review",
                               "red team", "red-team", "rigorous", "rigorously", "in depth", "in-depth",
                               "step by step", "step-by-step", "one step at a time", "stepwise", "step-wise"]
+    /// Build 442 (owner order 2026-10-27, DESIGN-3 "close the open gap"): the
+    /// proof, derivation and rigour markers are a floor on any combined
+    /// profile: the local reading can never lower such a request below deep.
+    /// The six named markers and the inflections `deepMarkers` already lists.
+    static let deepFloorMarkers = ["증명", "유도", "엄밀", "prove", "proof", "derive", "derivation", "rigorous", "rigorously"]
     /// A quality-bearing deliverable or an exact computation is its own task
     /// shape, whatever its stem ("…왜 중요한지 에세이 써줘", "…full
     /// implementation", "∫ x sin x dx 어떻게 풀어?"): it keeps the reference.
@@ -497,8 +516,17 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// request (the keyword profile reads it on answers only). Owner words:
     /// a combined profile never lowers it.
     public static func asksForStrongest(_ request: String) -> Bool {
+        mentionsAny(qualityRequestTerms, in: request)
+    }
+    /// Build 442: a proof, derivation or rigour marker (`deepFloorMarkers`),
+    /// read on any request: the combined difficulty never falls below deep.
+    public static func deepFloor(_ request: String) -> Bool {
+        mentionsAny(deepFloorMarkers, in: request)
+    }
+    /// ASCII terms as whole words, Korean terms as substrings (the profile's rule).
+    static func mentionsAny(_ terms: [String], in request: String) -> Bool {
         let lower = request.precomposedStringWithCanonicalMapping.lowercased()
-        return qualityRequestTerms.contains { term in
+        return terms.contains { term in
             term.unicodeScalars.allSatisfy(\.isASCII)
                 ? lower.range(of: "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: term) + "(?![A-Za-z0-9])",
                               options: .regularExpression) != nil
@@ -579,12 +607,16 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         if quality { signals.insert("quality_request") }
         let workRail = k.answerKind == .work, workspaceRail = k.toolNeed == .workspace
         let factsRail = k.signals.contains("current_facts"), textOperation = k.signals.contains("text_operation")
+        // Build 442: the local reading's domain (prompt v3; `general` is none),
+        // carried on every adopted reading; a keyword-only profile has none.
+        var domain: Domain? = nil
         func finish(_ kind: AnswerKind, _ tool: ToolNeed, _ difficulty: Difficulty, _ task: TaskType,
                     _ classifier: String, _ extra: [String]) -> RequestProfile {
             // Diagnostic tokens yield to the evidence under the wire bound.
             let all = signals.union(extra).count <= maximumSignals ? signals.union(extra) : signals
             return RequestProfile(answerKind: kind, toolNeed: tool, difficulty: kind == .answerOnly ? difficulty : .unknown,
-                                  signals: Array(all).sorted(), classifier: classifier, taskType: task)
+                                  signals: Array(all).sorted(), classifier: classifier, taskType: task,
+                                  domain: classifier.hasPrefix(localClassifierPrefix) ? domain : nil)
         }
         guard let local, let model, LocalRequestClassifier.validModelName(model),
               !k.signals.contains("classifier_vocabulary") else {
@@ -600,6 +632,7 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             return finish(k.answerKind, factsRail ? .currentFacts : k.toolNeed, .unknown, .unknown, keyword, [])
         }
         let classifier = localClassifierPrefix + model
+        domain = Domain(rawValue: local.domain.rawValue)
         let labelled = TaskType(rawValue: local.taskType.rawValue) ?? .unknown
         // Build 441 part 3: under an adopted local reading only the HARD rails
         // stand; a soft order, generic programming word or adverbial
@@ -630,8 +663,13 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         }
         let task: TaskType = labelled == .action ? .explain : labelled
         let unlabelled = labelled == .action ? ["llm_action_without_execution"] : []
-        let difficulty: Difficulty = quality ? .deep : Difficulty(rawValue: local.difficulty.rawValue) ?? .standard
-        let lowered = k.answerKind == .answerOnly && k.difficulty != difficulty ? ["llm_sets_difficulty"] : []
+        // Build 442: a proof, derivation or rigour marker is a floor the local
+        // reading never lowers (signal `deep_floor` when it raised the reading).
+        let read = Difficulty(rawValue: local.difficulty.rawValue) ?? .standard
+        let floored = deepFloor(request) && read != .deep
+        let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read
+        let lowered = (k.answerKind == .answerOnly && k.difficulty != difficulty ? ["llm_sets_difficulty"] : []) +
+            (floored ? ["deep_floor"] : [])
         if hardWorkspace || local.needsTools == .workspace {
             let kind: AnswerKind = hardWorkspace ? keywordKind : .answerOnly
             return finish(kind, .workspace, difficulty, task, classifier,

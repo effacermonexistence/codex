@@ -806,6 +806,98 @@ func runRCCAdmissionFactsFixtures() throws {
               (part2Routes[2]["reason"] as? String)?.contains(";graded_profile_current_facts;") == true,
               "part 2: the reason names the classifier and the profile list")
 
+    // ---- Build 442 (owner order 2026-10-27, DESIGN-3): capability routes for
+    // deep work, end to end: the local reading's domain (prompt v3), the
+    // compiled capability table on the catalog input, the Swift contract, and
+    // Core binding the cheapest qualifying row of either pool (uncertified).
+    // The host consults the local model only when the rails leave the request
+    // open (`combinedInput` mirrors that): a request the host scopes as a
+    // writer always carries the hard write-scope rail, so no writer ever has
+    // a local domain here (the Core writer path is the node fixture's).
+    func capabilityInput(_ text: String, _ local: LA?) -> B.Input {
+        var value = combinedInput(text, local)
+        value.profiles += [.init(action: "cx_61sol_high", provider: "codex", model: "gpt-6.1-sol", effort: "high"),
+                           .init(action: "cl_opus55_max", provider: "claude", model: "claude-opus-5-5", effort: "max"),
+                           .init(action: "cl_sonnet55_max", provider: "claude", model: "claude-sonnet-5-5", effort: "max")]
+        value.codexModels[1].supportedEfforts = ["low", "medium", "high", "xhigh", "max"]
+        value.claudeModels[1].supportedEfforts = ["medium", "high", "xhigh", "max"]
+        value.claudeModels[2].supportedEfforts = ["medium", "xhigh", "max"]
+        value.capabilityTable = .compiled
+        return value
+    }
+    let capabilityCases: [(label: String, text: String, input: B.Input, model: String, basis: String)] = [
+        ("science design (QMGR)", "QMGR 통합하게 스키마 좀 짜봐",
+         capabilityInput("QMGR 통합하게 스키마 좀 짜봐", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)),
+         "claude-opus-5-5/max", "capability:science"),
+        ("the deep floor: a derivation read as standard", "슈뢰딩거 방정식 유도해줘",
+         capabilityInput("슈뢰딩거 방정식 유도해줘", LA(taskType: .explain, difficulty: .standard, needsTools: .none, domain: .science)),
+         "claude-opus-5-5/max", "capability:science"),
+        ("math proof", "피타고라스 정리 증명해줘",
+         capabilityInput("피타고라스 정리 증명해줘", LA(taskType: .explain, difficulty: .deep, needsTools: .none, domain: .math)),
+         "claude-sonnet-5-5/max", "capability:math"),
+        ("coding design", "웹 서버 캐시 계층 설계해줘",
+         capabilityInput("웹 서버 캐시 계층 설계해줘", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .coding)),
+         "claude-opus-5-5/medium", "capability:coding"),
+        ("writing deliverable", "AI 윤리에 관한 에세이 써줘",
+         capabilityInput("AI 윤리에 관한 에세이 써줘", LA(taskType: .write, difficulty: .deep, needsTools: .none, domain: .writing)),
+         "gpt-6.1-sol/high", "capability:writing"),
+        ("general domain: the reference", "QMGR 통합하게 스키마 좀 짜봐",
+         capabilityInput("QMGR 통합하게 스키마 좀 짜봐", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .general)),
+         "gpt-6-astra/ultra", "reference"),
+        ("LLM down: no domain, the reference", "웹 서버 캐시 계층 설계해줘",
+         capabilityInput("웹 서버 캐시 계층 설계해줘", nil), "gpt-6-astra/ultra", "reference"),
+        ("standard explanation unchanged", "쉐딩과 방정식 설명해 봐봐",
+         capabilityInput("쉐딩과 방정식 설명해 봐봐", LA(taskType: .explain, difficulty: .standard, needsTools: .none, domain: .science)),
+         "gpt-6.1-sol/medium", "graded:standard"),
+        ("strongest-model words: the reference", "제일 똑똑한 모델로 피타고라스 정리 증명해줘",
+         capabilityInput("제일 똑똑한 모델로 피타고라스 정리 증명해줘",
+                         LA(taskType: .explain, difficulty: .deep, needsTools: .none, domain: .math)), "gpt-6-astra/ultra", "reference"),
+        ("a hard-railed writer is never read locally: no domain, the reference", "블로그 소개글 새로 써서 index.html에 넣어줘",
+         capabilityInput("블로그 소개글 새로 써서 index.html에 넣어줘",
+                         LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)), "gpt-6-astra/ultra", "reference"),
+        ("a write reading of unread work stays a read-only unknown: the reference", "랜딩 페이지 카피 영어로 갈아끼워",
+         capabilityInput("랜딩 페이지 카피 영어로 갈아끼워", LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)),
+         "gpt-6-astra/ultra", "reference")]
+    var capabilityRoutesCases: [(request: String, catalog: [String: Any], write: Bool)] = []
+    for item in capabilityCases {
+        let built = try catalog(item.input)
+        var v2Request = try request(item.text, mode: .auto)
+        v2Request.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        let decoded = try C.decodeCatalog(built, request: v2Request)
+        let domain = item.input.requestProfile?.domain
+        try check(decoded.capabilityRoutes == (domain.flatMap { ModelCapabilityTable.compiled.routes(for: $0) }.flatMap {
+                      item.input.requestProfile?.signals.contains("quality_request") == true ? nil : $0 }) &&
+                  decoded.capabilityRoutes.map { $0.valid && $0.category == domain?.rawValue } ?? true,
+                  "442: the catalog carries the domain's capability routes only with a local domain: \(item.label)")
+        capabilityRoutesCases.append((item.text, try object(built), item.input.ownerScope == .workspaceWrite))
+    }
+    let capabilityResolved = try coreRoutes(capabilityRoutesCases, now: now,
+        runtime: root.appendingPathComponent("Resources/openclaw-os1-bridge/rcc-runtime.mjs"))
+    try check(capabilityResolved.count == capabilityCases.count, "442: Core resolved every Swift-built catalog")
+    for (item, route) in zip(capabilityCases, capabilityResolved) {
+        let tuple = "\(route["model"] as? String ?? "")/\(route["effort"] as? String ?? "")"
+        let capability = item.basis.hasPrefix("capability:")
+        try check(tuple == item.model && route["basis"] as? String == item.basis &&
+                  (route["reason"] as? String)?.contains(";admitted_capability_") == capability &&
+                  (!capability || (route["kind"] as? String == "capability" && route["route_class"] as? String == "deep")),
+                  "442: \(item.label): \(tuple) \(route["basis"] ?? "") \(route["reason"] ?? "")")
+    }
+    try check(capabilityResolved[0]["admitted_by"] as? String == "capability_table" &&
+              capabilityResolved[0]["reference_model"] as? String == "claude-fable-5-1" &&
+              capabilityResolved[4]["reference_model"] as? String == "gpt-6-astra",
+              "442: a read-only capability route keeps its one escalation to its pool's reference")
+    try check(capabilityCases[9].input.requestProfile?.classifier == RequestProfile.keywordClassifier &&
+              capabilityRoutesCases[9].catalog["request_class"] as? String == "writer" &&
+              capabilityRoutesCases[10].catalog["request_class"] as? String == "readonly_lookup",
+              "442: the host scopes a write-scope request as a writer with a keyword profile only")
+    var forgedRoutes = try object(catalog(capabilityCases[0].input))
+    forgedRoutes["capability_routes"] = try JSONSerialization.jsonObject(with: C.encode(ModelCapabilityTable.compiled.routes(for: .math)!))
+    try reject("442: capability routes of another domain are refused") {
+        var v2Request = try request(capabilityCases[0].text, mode: .auto)
+        v2Request.routingIntentPolicyVersion = C.RoutingIntentV2.version
+        _ = try C.decodeCatalog(try json(forgedRoutes), request: v2Request)
+    }
+
     // ---- Ticket delegation flag (K13: reserved, refused, always managed) ----
     let host = questionRequest.hostContext!
     let config = C.ExactConfig(surface: .codex, transport: .codexAppServer, accountID: "acct-codex", model: "gpt-6-astra",

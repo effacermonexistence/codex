@@ -107,6 +107,17 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // an answer-only, tool-free, light or standard request with no owner routing
 // words. It runs a lower tuple below a runnable reference only with re-run
 // headroom, labelled as predicted and quality-unverified, never certified.
+// Build 442 (owner order, 2026-10-27, change 3) adds ONE more non-certifying
+// outcome: 'capability' (source capability_table). A DEEP node (work policy A
+// sends to the reference: a deep answer, a design or write reading, a writer
+// with a design or write reading) whose request the local classifier read
+// with a domain binds the cheapest dispatchable row the host's compiled
+// capability table lists for that domain in either pool: first-party
+// benchmarks show it at or above its pool's reference at tolerance 0. The
+// reference stays its fallback; a read-only node keeps one escalation to it,
+// a writer binds with no ladder (reference-equivalent: a failed writer has
+// already touched the workspace). Never certified; labelled "at or above the
+// reference on official benchmarks, this answer's quality unverified".
 // A bounded full-contract writer may descend only with the native host's exact
 // staged-workspace capability: failed candidates never touch the original.
 // No model-authored grade lowers a tuple. A certified read-only node runs the
@@ -176,6 +187,21 @@ export const TIER_FAILURE_PRIORS = Object.freeze({fast: Object.freeze({failures:
   workhorse: Object.freeze({failures: 0, runs: 14})});
 const GRADED_CLASS = 'standard';
 const GRADED_SOURCE = 'host_profile';
+// Build 442 (owner order 2026-10-27, DESIGN-3): capability routes. The
+// categories are the local classifier's domains (prompt v3) the compiled
+// capability table (Swift ModelCapabilityTable) names; 'general' is none.
+// A capability route is deep work at a reference-equivalent tuple: route
+// class 'deep', route kind 'capability', basis 'capability:<category>',
+// reason 'admitted_capability_<category>'. Never certified.
+export const CAPABILITY_CATEGORIES = Object.freeze(['knowledge', 'science', 'math', 'coding', 'writing', 'tool_use']);
+const CAPABILITY_CATEGORY_SET = new Set(CAPABILITY_CATEGORIES);
+const CAPABILITY_POLICY = 'capability_delta0_v1';
+const CAPABILITY_POOLS = Object.freeze(['openai_codex', 'anthropic_shared']);
+const CAPABILITY_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const CAPABILITY_MODEL = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const MAX_CAPABILITY_ROWS = 16;
+const CAPABILITY_SOURCE = 'capability_table';
+const CAPABILITY_CLASS = 'deep';
 // The request profile (catalog request_profile, Swift RequestProfile).
 const REQUEST_PROFILE_POLICY = 'host_profile_v1';
 const PROFILE_ANSWER_KINDS = new Set(['answer_only', 'work', 'unknown']);
@@ -228,7 +254,7 @@ const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted'])
 // its tuple may answer. A certified basis names its admitting source (and the
 // verifier or class certificate); 'certified:unrecorded' is a descent recorded
 // without one (an older build), 'unbound' a row no host resolution chose.
-const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|capability:(?:knowledge|science|math|coding|writing|tool_use)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
 const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
 // The admitting source's verdict on a descent attempt: it accepted the answer,
 // failed it, or the answer was not returned in a form it accepts.
@@ -1011,6 +1037,12 @@ function soundVerifierFor(node, task, catalog, registry) {
  *    (the request itself, read-only agent) as an answer needing no tool or
  *    only current facts, light or standard (part 2: or, under deep policy B,
  *    deep work) (hostProfileGrade);
+ *  - build 442, NOT certifying: {class: 'capability', source:
+ *    'capability_table', category}, only when no source above applies, the
+ *    owner gave no routing constraint, and the node is deep work the local
+ *    classifier read with a domain whose capability routes the catalog
+ *    carries (capabilityCategory): a read-only deep answer, or a writer with
+ *    a design or write reading;
  *  - anything else 'uncertified'. A model-authored grade never certifies. */
 export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRegistry = null, deepPolicy = DEEP_POLICY} = {}) {
   const reference = source => ({class: 'reference', source, certificate_id: null});
@@ -1038,9 +1070,12 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
   if (node?.kind !== 'agent') return reference('uncertified');
   if (node.scope === 'workspace_write') {
     const c = catalog?.task_contract;
-    return node.instruction === task.request && stagedWriterContract(c) && c.bindings_checked === true &&
-      c.objective_sha256 === task.request_sha256 && c.valid_until_ms > now ?
-      {class: 'certified', source: 'contract', certificate_id: null} : reference('uncertified');
+    if (node.instruction === task.request && stagedWriterContract(c) && c.bindings_checked === true &&
+        c.objective_sha256 === task.request_sha256 && c.valid_until_ms > now)
+      return {class: 'certified', source: 'contract', certificate_id: null};
+    // Build 442: a writer with a design or write reading and a domain.
+    const capability = capabilityCategory(node, task, catalog);
+    return capability !== null ? capabilityAdmission(capability) : reference('uncertified');
   }
   if (node.scope !== 'read_only') return reference('uncertified');
   const collection = ownerCollectionObligation(node, task, catalog, now);
@@ -1060,7 +1095,41 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
     return {class: 'certified', source: 'class', certificate_id: certificate.certificate_id};
   const graded = hostProfileGrade(node, task, catalog, {policy: deepPolicy});
   if (graded !== null) return {class: 'graded', source: GRADED_SOURCE, certificate_id: null, ...graded};
+  // Build 442: a read-only deep answer with a domain.
+  const capability = capabilityCategory(node, task, catalog);
+  if (capability !== null) return capabilityAdmission(capability);
   return reference('uncertified');
+}
+function capabilityAdmission(category) {
+  return {class: 'capability', source: CAPABILITY_SOURCE, certificate_id: null, category};
+}
+/** Build 442 (owner order 2026-10-27, DESIGN-3): the capability category a
+ * DEEP node may bind a delta-0 qualified row for, or null. Only for the
+ * request itself (one agent node of an Auto task, no task contract) with no
+ * owner routing constraint (no explicit route test, no provider other than
+ * auto, no surface, model, effort, quality or native-ceiling words, no
+ * strongest-model or think-hard words), whose request profile the local
+ * classifier read with a known domain matching the catalog's capability
+ * routes. Deep work is what policy A sends to the reference today:
+ *  - a read-only answer read as deep, or as a design or write task (any tool
+ *    need, the workspace included: a read-only workspace deep answer);
+ *  - a writer whose reading is a design or write task.
+ * A light or standard chat or explain answer keeps its build-441 route, and
+ * an action reading, a keyword-only profile, a 'general' domain or a missing
+ * domain keeps the reference. Pure; host facts only. */
+function capabilityCategory(node, task, catalog) {
+  const profile = catalog?.request_profile, routes = catalog?.capability_routes;
+  if (!(node?.kind === 'agent' && node.instruction === task?.request && task.mode === 'auto' &&
+      task.objective === task.request && catalog.task_contract == null &&
+      validRequestProfile(profile) && profile.classifier?.startsWith('local_llm:') === true &&
+      CAPABILITY_CATEGORY_SET.has(profile.domain) && validCapabilityRoutes(routes) && routes.category === profile.domain &&
+      !profile.signals.includes('quality_request') && !intentConstrains(routingIntent(catalog)) &&
+      [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto')))
+    return null;
+  const designOrWrite = profile.task_type === 'design' || profile.task_type === 'write';
+  if (node.scope === 'workspace_write') return designOrWrite ? profile.domain : null;
+  if (node.scope !== 'read_only' || profile.answer_kind !== 'answer_only') return null;
+  return profile.difficulty === 'deep' || designOrWrite ? profile.domain : null;
 }
 const ESCALATION_ADMISSION = Object.freeze({class: 'reference', source: 'escalation', certificate_id: null});
 const UNCERTIFIED_ADMISSION = Object.freeze({class: 'reference', source: 'uncertified', certificate_id: null});
@@ -1127,6 +1196,7 @@ function profileAnswersLocally(catalog) {
 function admissionToken(admission) {
   return admission.class === 'reference' ? 'admitted_reference_' + admission.source :
     admission.class === 'graded' ? 'admitted_graded_' + admission.grade :
+    admission.class === 'capability' ? 'admitted_capability_' + admission.category :
     admission.source === 'class' ? 'admitted_certified_class:' + admission.certificate_id :
       'admitted_certified_' + admission.source;
 }
@@ -1139,7 +1209,10 @@ function admissionToken(admission) {
  * provider choice: the 'admitted_reference_owner_words' token) is
  * 'owner_words'; the reference the law bound is 'reference'; a host-profile
  * graded route (build 441, route kind 'graded') is 'graded:' + its grade,
- * never certified; a row no host resolution chose is 'unbound'
+ * never certified; a capability route (build 442, route kind 'capability',
+ * no ladder for a writer, a capability ladder for a read-only node) is
+ * 'capability:' + the category its admission token names, never certified;
+ * a row no host resolution chose is 'unbound'
  * ('owner_words' on an explicit route test); anything else 'unclassified'.
  * Never decided by a model. */
 export function deliveryBasisOf({explicitRoute = false, routeClass = null, routeKind = null, ladder = null,
@@ -1154,6 +1227,13 @@ export function deliveryBasisOf({explicitRoute = false, routeClass = null, route
   } else if (routeKind === 'graded') {
     const grade = plain(ladder) && ladder.escalated !== true && ladder.admitted_by === GRADED_SOURCE ? ladder.grade : null;
     basis = typeof grade === 'string' && GRADES.has(grade) ? 'graded:' + grade : 'unclassified';
+  } else if (routeKind === 'capability') {
+    const token = typeof reason === 'string' ?
+      reason.split(';').find(item => item.startsWith('admitted_capability_')) : undefined;
+    const category = token?.slice('admitted_capability_'.length);
+    const ladderOK = ladder == null || (plain(ladder) && ladder.escalated !== true &&
+      ladder.admitted_by === CAPABILITY_SOURCE && ladder.category === category);
+    basis = CAPABILITY_CATEGORY_SET.has(category) && ladderOK ? 'capability:' + category : 'unclassified';
   } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
   else if (routeKind === 'explicit' ||
       (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
@@ -1256,6 +1336,12 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * (`headroom`: the attempts already charged and native dispatches already
  * made; none for a fresh plan): two attempts and two native dispatches must
  * remain, so its one escalation can run (I1 as amended by change 2).
+ * Build 442 (change 3): 'capability' (a deep node bound at the cheapest
+ * dispatchable row of the catalog's capability routes, route class 'deep',
+ * NOT certified): a read-only node carries a capability ladder (one
+ * escalation, the same headroom rule as a graded route); a writer carries no
+ * ladder. Both bind only beside a reference that can dispatch now (its
+ * fallback) and only when the row is strictly cheaper than it by list price.
  *
  * `descentPolicy` (K10, §2.4): a prepared frozen check-acceptance cost policy
  * (prepareCertifiedDescentPolicy), or null. It only re-ranks F, the fixed
@@ -1436,6 +1522,78 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
       !roomy ? 'requires_dispatch_headroom' :
       !chosen ? 'tuple_undispatchable' : isReference ? 'tuple_is_reference' :
       decision === 'reference_first' ? 'reference_first' : 'requires_runnable_reference'), ...profileTokens, ...costTokens);
+    admission = UNCERTIFIED_ADMISSION;
+  }
+  if (admission.class === 'capability') {
+    // Build 442 (owner order 2026-10-27, DESIGN-3): the cheapest dispatchable
+    // row the catalog's capability routes list for this domain, across EVERY
+    // pool, by the host's list price (estimated_cost_units, one typical call),
+    // ties in the table's own order (price, then lower effort), then R11.
+    // Only a tiered model (K14) on a surface this node may use: a read-only
+    // answer needing tools or the workspace binds an agent surface. The pool
+    // reference stays the fallback (and a read-only node's one escalation,
+    // fixed here like a graded route's, with the same headroom rule); a
+    // writer binds with no ladder. The row must be strictly cheaper than that
+    // reference now: a refreshed price can never make it the dearer choice.
+    const category = admission.category;
+    const writer = node.scope === 'workspace_write';
+    const sole = planNodes === 1;
+    const used = plain(headroom) ? headroom : {attempts: 0, native_dispatches: 0};
+    const cap = task.budget?.max_native_dispatches;
+    const roomy = writer || (sole && (task.budget?.max_attempts ?? 0) - (used.attempts ?? 0) >= 2 &&
+      (cap == null || cap - (used.native_dispatches ?? 0) >= 2));
+    const routes = catalog.capability_routes;
+    const agentOnly = !writer && catalog.request_profile?.tool_need !== 'none';
+    const surfaceAllowed = row => !agentOnly || surfaceKind(row.candidate.surface) === 'agent';
+    const options = [];
+    pools.forEach((pool, position) => (routes.pools[pool.pool] ?? []).forEach((entry, index) => {
+      for (const row of pool.rows)
+        if (row.candidate.model === entry.model && row.candidate.effort === entry.effort &&
+            tierOf(catalog, row.candidate.model) !== null && usable(row) && surfaceAllowed(row))
+          options.push({row, pool, index, position});
+    }));
+    const cost = option => typeof option.row.candidate.estimated_cost_units === 'number' ?
+      option.row.candidate.estimated_cost_units : null;
+    const score = option => quotaScore(catalog, option.row.candidate.model);
+    const ranked = [...options].sort((a, b) =>
+      ((cost(a) === null) - (cost(b) === null)) || (cost(a) !== null && cost(b) !== null ? cost(a) - cost(b) : 0) ||
+      (a.index - b.index) || (r11Keys(a.pool.pool).map((v, i) => v - r11Keys(b.pool.pool)[i]).find(d => d !== 0) ?? 0) ||
+      ((score(a) === null) - (score(b) === null)) || (score(a) !== null && score(b) !== null ? score(b) - score(a) : 0) ||
+      (a.position - b.position) || order(a.row, b.row));
+    const pick = roomy ? ranked[0] ?? null : null;
+    const chosen = pick?.row.candidate ?? null;
+    const home = pick?.pool ?? null;
+    const target = chosen && [home, ...pools.filter(other => other !== home)
+      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
+    const isReference = chosen && referenceOf(home).some(row => row.candidate.id === chosen.id);
+    const cheapUSD = chosen?.estimated_cost_units, referenceUSD = target?.candidate.estimated_cost_units;
+    const cheaper = typeof cheapUSD === 'number' && typeof referenceUSD === 'number' && cheapUSD < referenceUSD;
+    const costTokens = typeof cheapUSD === 'number' && typeof referenceUSD === 'number' ?
+      ['capability_usd_' + cheapUSD.toFixed(6), 'reference_usd_' + referenceUSD.toFixed(6)] : [];
+    if (target && !isReference && cheaper) {
+      const ladder = writer ? null : {source: 'tier', admitted_by: CAPABILITY_SOURCE, category, certificate_id: null,
+        format_check: null, cheap_model: chosen.model, cheap_effort: chosen.effort,
+        reference_model: target.candidate.model, reference_effort: target.candidate.effort,
+        reference_candidate_id: target.candidate.id};
+      const why = ['route_capability', admissionToken(admission), 'capability_list_' + pick.index,
+        'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), 'pool_rank_' + ordinal.get(home.pool), 'price_choice',
+        'capability_options_' + ranked.length, 'effort_' + chosen.effort, ...poolNotes(home.pool, chosen, chosen),
+        writer ? 'writer_reference_equivalent_no_ladder' :
+          'escalation_reference_' + (target.candidate.quota_pool === home.pool ? 'same_pool' : 'other_pool'),
+        surfaceToken(chosen), ...costTokens];
+      if (avoidPool !== null) why.unshift(home.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+      const widened = writer && !coversOwnedPaths(chosen, node.owned_paths);
+      if (widened) why.push('owned_paths_workspace');
+      return {candidate: chosen, why: why.join(';'), widened, kind: 'capability', tier: tierOf(catalog, chosen.model),
+        routeClass: CAPABILITY_CLASS, referenceEffort: target.candidate.effort, ladder};
+    }
+    // Not bound below the reference: the node binds the reference, admitted
+    // as uncertified (its reason never names a capability admission).
+    notes.push('capability_' + category + '_' + (!roomy ? (!sole ? 'requires_single_node_plan' : 'requires_dispatch_headroom') :
+      !options.length ? ((routes.pools.openai_codex.length + routes.pools.anthropic_shared.length) === 0 ?
+        'none_qualify' : 'tuple_undispatchable') :
+      isReference ? 'tuple_is_reference' : !target ? 'requires_runnable_reference' : 'not_cheaper_than_reference'),
+    ...costTokens);
     admission = UNCERTIFIED_ADMISSION;
   }
   if (admission.class === 'certified') {
@@ -2314,7 +2472,8 @@ function validAdmissionFacts(catalog, task) {
   const present = ['owner_scope', 'chat_lane_eligible', 'request_class'].map(key => catalog[key] !== undefined);
   if (!present.some(Boolean))
     return catalog.task_contract === undefined && catalog.class_certificates === undefined &&
-      catalog.class_provider_pins === undefined && catalog.request_profile === undefined;
+      catalog.class_provider_pins === undefined && catalog.request_profile === undefined &&
+      catalog.capability_routes === undefined;
   const cls = catalog.request_class, chat = catalog.chat_lane_eligible;
   if (!present.every(Boolean) || !SCOPES.has(catalog.owner_scope) || typeof chat !== 'boolean' ||
       !REQUEST_CLASSES.has(cls) || (cls === 'explicit_route') !== (task.mode === 'explicit_routing_test')) return false;
@@ -2324,6 +2483,9 @@ function validAdmissionFacts(catalog, task) {
   if (cls === 'readonly_material' && !(Array.isArray(task.material_refs) && task.material_refs.length > 0)) return false;
   return (catalog.task_contract === undefined || validTaskContract(catalog.task_contract, catalog, task)) &&
     (catalog.request_profile === undefined || validRequestProfile(catalog.request_profile)) &&
+    // Build 442: capability routes only beside a profile whose domain they name.
+    (catalog.capability_routes === undefined || (validCapabilityRoutes(catalog.capability_routes) &&
+      validRequestProfile(catalog.request_profile) && catalog.request_profile.domain === catalog.capability_routes.category)) &&
     (catalog.class_certificates === undefined || validClassCertificates(catalog.class_certificates, cls)) &&
     (catalog.class_provider_pins === undefined ||
       (cls !== 'explicit_route' && keys(catalog.class_provider_pins, [cls]) &&
@@ -2459,8 +2621,12 @@ export function ownerCollectionOutput(plan, children) {
 function validRequestProfile(profile) {
   // Part 2: classifier and task_type travel together (an older profile has neither).
   const combined = plain(profile) && Object.hasOwn(profile, 'classifier');
+  // Build 442: the local reading's domain, only on a locally classified profile.
+  const domain = plain(profile) && Object.hasOwn(profile, 'domain');
   return keys(profile, ['schema', 'policy', 'answer_kind', 'tool_need', 'difficulty', 'signals',
-    ...(combined ? ['classifier', 'task_type'] : [])]) &&
+    ...(combined ? ['classifier', 'task_type'] : []), ...(domain ? ['domain'] : [])]) &&
+    (!domain || (combined && typeof profile.classifier === 'string' && profile.classifier.startsWith('local_llm:') &&
+      CAPABILITY_CATEGORY_SET.has(profile.domain))) &&
     (!combined || (typeof profile.classifier === 'string' && PROFILE_CLASSIFIER.test(profile.classifier) &&
       PROFILE_TASK_TYPES.has(profile.task_type) &&
       (profile.answer_kind !== 'answer_only' || PROFILE_ANSWER_TASK_TYPES.has(profile.task_type)) &&
@@ -2472,6 +2638,20 @@ function validRequestProfile(profile) {
     Array.isArray(profile.signals) && profile.signals.length <= MAX_PROFILE_SIGNALS &&
     profile.signals.every((signal, index) => typeof signal === 'string' && PROFILE_SIGNAL.test(signal) &&
       (index === 0 || profile.signals[index - 1] < signal));
+}
+/** Build 442 (DESIGN-3): one domain's capability-qualified rows per pool
+ * (Swift RCCRuntimeContract.CapabilityRoutes, from the compiled
+ * ModelCapabilityTable): schema 1, the delta-0 policy, the table's sha256,
+ * a known category, both pools listed (possibly empty), at most 16 unique
+ * exact (model, effort) rows each. A routing fact, never a certificate. */
+function validCapabilityRoutes(routes) {
+  return keys(routes, ['schema', 'policy', 'table_sha256', 'category', 'pools']) && routes.schema === 1 &&
+    routes.policy === CAPABILITY_POLICY && typeof routes.table_sha256 === 'string' && HASH.test(routes.table_sha256) &&
+    CAPABILITY_CATEGORY_SET.has(routes.category) && keys(routes.pools, CAPABILITY_POOLS) &&
+    CAPABILITY_POOLS.every(pool => Array.isArray(routes.pools[pool]) && routes.pools[pool].length <= MAX_CAPABILITY_ROWS &&
+      new Set(routes.pools[pool].map(row => plain(row) ? row.model + '\n' + row.effort : '')).size === routes.pools[pool].length &&
+      routes.pools[pool].every(row => keys(row, ['model', 'effort']) && typeof row.model === 'string' &&
+        CAPABILITY_MODEL.test(row.model) && CAPABILITY_EFFORTS.has(row.effort)));
 }
 /** The signed class table's certificate for this request's class only (R0(c)). */
 function validClassCertificates(certificates, cls) {
@@ -2488,7 +2668,7 @@ function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
   const optional = ['exclusions', 'routing_intent', 'routing_intent_v2', 'model_tiers', 'explicit_route_intents', 'quota_scores',
     'native_reference_efforts', 'owner_scope', 'chat_lane_eligible', 'request_class', 'task_contract',
-    'class_certificates', 'class_provider_pins', 'request_profile'];
+    'class_certificates', 'class_provider_pins', 'request_profile', 'capability_routes'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
     Object.keys(catalog).every(key => required.includes(key) || optional.includes(key)) &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
@@ -3212,12 +3392,15 @@ function ladderExemptMs(snapshot) {
   if (end !== null) union += end - start;
   return legacy + union;
 }
-/** A certified descent (or, build 441, a host-profile graded route) bound
- * below its reference that still has its one escalation (R9). */
+/** A certified descent (or, build 441, a host-profile graded route; build
+ * 442, a read-only capability route) bound below its reference that still has
+ * its one escalation (R9). A capability writer has no ladder. */
 function pendingEscalation(child) {
-  return (child?.route_kind === 'tier' || child?.route_kind === 'graded') && child.ladder != null &&
-    child.ladder.escalated !== true;
+  return laddered(child?.route_kind) && child.ladder != null && child.ladder.escalated !== true;
 }
+/** The route kinds that may carry a ladder: a certified descent, a graded
+ * route and (build 442) a read-only capability route. */
+function laddered(kind) { return kind === 'tier' || kind === 'graded' || kind === 'capability'; }
 /** Native executor submissions this task already made (K6 cap accounting,
  * shared with _admitNativeDispatch): every non-local attempt, never refunded. */
 function nativeDispatchCount(snapshot) {
@@ -5358,7 +5541,7 @@ class RCCRuntime {
         // keeps its source and takes the escalation target of its new pool;
         // anything else runs the reference.
         target.route_kind = choice.kind;
-        target.ladder = (choice.kind === 'tier' || choice.kind === 'graded') && choice.ladder ?
+        target.ladder = laddered(choice.kind) && choice.ladder ?
           {...choice.ladder, escalated: false} : null;
       }
       target.routing_decision = withInstructionLock(target, routingDecision(
@@ -5442,7 +5625,7 @@ class RCCRuntime {
         // The other pool's route, admitted by the same law (R0): a certified
         // descent takes the escalation target of its new pool.
         target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort;
-        target.ladder = (choice.kind === 'tier' || choice.kind === 'graded') && choice.ladder ?
+        target.ladder = laddered(choice.kind) && choice.ladder ?
           {...choice.ladder, escalated: false} : null;
         target.routing_decision = withInstructionLock(target, routingDecision(choice.routeClass,
           choice.candidate, `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier));
@@ -6677,7 +6860,7 @@ class RCCRuntime {
     // A named route the host resolved keeps the route kind it ran as (tier,
     // reference, explicit); null otherwise (and absent in older records).
     const hostKind = explicitRoute && routeClass !== null && typeof child.route_kind === 'string' ? child.route_kind : null;
-    const ladder = routeClass !== null && (child.route_kind === 'tier' || child.route_kind === 'graded') && child.ladder ?
+    const ladder = routeClass !== null && laddered(child.route_kind) && child.ladder ?
       {cheap_effort: child.ladder.cheap_effort, reference_effort: child.ladder.reference_effort,
         cheap_model: child.ladder.cheap_model, reference_model: child.ladder.reference_model} : null;
     const observedTask = executionTask(snapshot);
@@ -6794,8 +6977,12 @@ class RCCRuntime {
       route.check_id : null;
     // Build 441: a graded attempt records its structural screen (never 'pass',
     // never a check id or label); every other uncertified basis records none.
+    // Build 442: a capability attempt records its structural screen when it
+    // had one (a read-only capability ladder), else nothing; never a check id
+    // or label (the table is not a check of the answer).
     const check_outcome = basis.startsWith('graded:') ?
       (GRADED_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run') :
+      basis.startsWith('capability:') ? (GRADED_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : null) :
       !certified ? null : LEDGER_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run';
     const source = certified ? basis.slice('certified:'.length).split(':')[0] : null;
     const check_label = check_id !== null && SOUND_FULL_CHECK_SOURCES.has(source) &&
@@ -7410,8 +7597,10 @@ class RCCRuntime {
           // Build 441: a host-profile graded route is accepted by the
           // structural screen alone (no failure signal), recorded as a screen
           // result, never as a certified pass; anything else escalates once.
-          const gradedDescent = descent && recorded.route_kind === 'graded' &&
-            recorded.ladder?.admitted_by === GRADED_SOURCE;
+          // Build 442: so is a read-only capability route (its ladder).
+          const gradedDescent = descent && ((recorded.route_kind === 'graded' &&
+            recorded.ladder?.admitted_by === GRADED_SOURCE) || (recorded.route_kind === 'capability' &&
+            recorded.ladder?.admitted_by === CAPABILITY_SOURCE));
           const certifierPresent = verifier?.role === 'certifier' && verifier.id === recorded.ladder?.certificate_id;
           const answered = collectionChecked && result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&

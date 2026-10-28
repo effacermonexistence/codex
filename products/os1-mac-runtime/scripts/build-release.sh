@@ -132,6 +132,10 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-class
 # Build 441 part 3: an Auto local chat ticket gets the conversational prompt;
 # explicit local routes and exact arithmetic keep the exact-result prompt.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-surface.test.mjs"
+# Change 3 (build 442, owner order 2026-10-27): the delta-0 capability table
+# (script output = resource = Swift bytes) and Core's capability binding of
+# deep nodes (uncertified, the reference its fallback and escalation).
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-routes.test.mjs"
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"

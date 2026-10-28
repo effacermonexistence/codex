@@ -407,6 +407,51 @@ public enum RCCRuntimeContract {
     /// Build 407 (R0(c)): one signed class certificate from a frozen offline
     /// measurement. The tuple is the certified (provider, model, effort);
     /// `format_check` names the per-answer check Core runs before adoption.
+    /// Build 442 (owner order 2026-10-27, DESIGN-3): one domain's capability-
+    /// qualified (model, effort) rows per quota pool, copied from the compiled
+    /// `ModelCapabilityTable` in its order (price, then lower effort). A routing
+    /// fact for Core's deep nodes, never a certificate: first-party benchmarks
+    /// show each row at or above its pool's reference at tolerance 0, so Core
+    /// may bind it in that reference's place; the answer stays unverified. It
+    /// travels only beside the admission facts and a request profile whose
+    /// local-classifier `domain` is this `category`.
+    public struct CapabilityRoutes: Codable, Equatable, Sendable {
+        public struct Entry: Codable, Equatable, Sendable {
+            public var model: String
+            public var effort: String
+            public init(model: String, effort: String) { self.model = model; self.effort = effort }
+        }
+        public static let currentSchema = 1
+        public static let currentPolicy = "capability_delta0_v1"
+        public static let pools = ["openai_codex", "anthropic_shared"]
+        public static let efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+        public static let maximumRows = 16
+        public var schema: Int
+        public var policy: String
+        public var tableSHA256: String
+        public var category: String
+        public var pools: [String: [Entry]]
+        public init(schema: Int = CapabilityRoutes.currentSchema, policy: String = CapabilityRoutes.currentPolicy,
+                    tableSHA256: String, category: String, pools: [String: [Entry]]) {
+            self.schema = schema; self.policy = policy; self.tableSHA256 = tableSHA256; self.category = category
+            self.pools = pools
+        }
+        enum CodingKeys: String, CodingKey { case schema, policy, category, pools, tableSHA256 = "table_sha256" }
+        /// An exact provider model name (no alias is ever guessed).
+        public static func validModel(_ model: String) -> Bool {
+            model.range(of: #"^[a-z0-9][a-z0-9._-]{0,127}$"#, options: .regularExpression) != nil
+        }
+        /// The structural rules both sides enforce on the wire.
+        public var valid: Bool {
+            schema == CapabilityRoutes.currentSchema && policy == CapabilityRoutes.currentPolicy && isHash(tableSHA256) &&
+                RequestProfile.Domain(rawValue: category) != nil && Set(pools.keys) == Set(CapabilityRoutes.pools) &&
+                pools.values.allSatisfy { rows in
+                    rows.count <= CapabilityRoutes.maximumRows &&
+                        Set(rows.map { $0.model + "\n" + $0.effort }).count == rows.count &&
+                        rows.allSatisfy { CapabilityRoutes.validModel($0.model) && CapabilityRoutes.efforts.contains($0.effort) }
+                }
+        }
+    }
     public struct ClassCertificate: Codable, Equatable, Sendable {
         public var certificateID: String
         public var provider: String
@@ -550,6 +595,11 @@ public enum RCCRuntimeContract {
         /// need, difficulty). A routing fact for Core's graded admission,
         /// never a certificate. Absent in older catalogs.
         public var requestProfile: RequestProfile?
+        /// Optional (build 442), beside a request profile with a local-
+        /// classifier domain only: that domain's capability-qualified rows
+        /// (`CapabilityRoutes`). A routing fact for Core's deep nodes, never a
+        /// certificate. Absent in older catalogs.
+        public var capabilityRoutes: CapabilityRoutes?
         public init(schema: Int = 1, taskID: String, requestSHA256: String, candidates: [Candidate],
                     exclusions: [Exclusion]? = nil, routingIntent: RoutingIntentConstraint? = nil,
                     modelTiers: [String: String]? = nil, explicitRouteIntents: [RoutingIntentConstraint?]? = nil,
@@ -557,9 +607,9 @@ public enum RCCRuntimeContract {
                     ownerScope: Scope? = nil, chatLaneEligible: Bool? = nil, requestClass: RequestClass? = nil,
                     taskContract: TaskContractFact? = nil, classCertificates: [String: ClassCertificate]? = nil,
                     classProviderPins: [String: String]? = nil, routingIntentV2: RoutingIntentV2? = nil,
-                    requestProfile: RequestProfile? = nil) {
+                    requestProfile: RequestProfile? = nil, capabilityRoutes: CapabilityRoutes? = nil) {
             self.schema = schema; self.taskID = taskID; self.requestSHA256 = requestSHA256; self.candidates = candidates
-            self.requestProfile = requestProfile
+            self.requestProfile = requestProfile; self.capabilityRoutes = capabilityRoutes
             self.routingIntentV2 = routingIntentV2
             self.exclusions = exclusions; self.routingIntent = routingIntent; self.modelTiers = modelTiers
             self.explicitRouteIntents = explicitRouteIntents; self.quotaScores = quotaScores
@@ -576,6 +626,7 @@ public enum RCCRuntimeContract {
             case ownerScope = "owner_scope", chatLaneEligible = "chat_lane_eligible", requestClass = "request_class"
             case taskContract = "task_contract", classCertificates = "class_certificates"
             case classProviderPins = "class_provider_pins", requestProfile = "request_profile"
+            case capabilityRoutes = "capability_routes"
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -600,6 +651,7 @@ public enum RCCRuntimeContract {
             classCertificates = try c.decodeIfPresent([String: ClassCertificate].self, forKey: .classCertificates)
             classProviderPins = try c.decodeIfPresent([String: String].self, forKey: .classProviderPins)
             requestProfile = try c.decodeIfPresent(RequestProfile.self, forKey: .requestProfile)
+            capabilityRoutes = try c.decodeIfPresent(CapabilityRoutes.self, forKey: .capabilityRoutes)
         }
     }
     public struct PlanNode: Codable, Equatable, Sendable {
@@ -1542,7 +1594,7 @@ public enum RCCRuntimeContract {
         guard facts.allSatisfy({ $0 }) || !facts.contains(true) else { throw Rejection.invalidObservation }
         guard let requestClass = value.requestClass, let ownerScope = value.ownerScope, let chat = value.chatLaneEligible else {
             guard value.taskContract == nil, value.classCertificates == nil, value.classProviderPins == nil,
-                  value.requestProfile == nil else {
+                  value.requestProfile == nil, value.capabilityRoutes == nil else {
                 throw Rejection.invalidObservation
             }
             return
@@ -1551,6 +1603,13 @@ public enum RCCRuntimeContract {
         // policy, sorted unique signals, a difficulty exactly for an answer;
         // part 2: its classifier provenance and task type both or neither).
         if let profile = value.requestProfile, !profile.valid { throw Rejection.invalidObservation }
+        // Build 442: capability routes are structurally valid and exist only
+        // beside a profile whose local-classifier domain is their category.
+        if let routes = value.capabilityRoutes {
+            guard routes.valid, let domain = value.requestProfile?.domain, domain.rawValue == routes.category else {
+                throw Rejection.invalidObservation
+            }
+        }
         switch requestClass {
         case .writer: guard ownerScope == .workspaceWrite, !chat else { throw Rejection.invalidObservation }
         case .chatExplanatory, .textOperation: guard chat else { throw Rejection.invalidObservation }
@@ -2128,8 +2187,9 @@ public enum RCCRuntimeContract {
     private static let collectionShape = Shape.object(["schema", "kind", "manifest_sha256", "obligations"], ["obligations": .array(collectionObligationShape)])
     private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256", "owner_collection"], ["owner_collection": collectionShape])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
-    private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals", "classifier", "task_type"])
-    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape])
+    private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals", "classifier", "task_type", "domain"])
+    private static let capabilityRoutesShape = Shape.object(["schema", "policy", "table_sha256", "category", "pools"], ["pools": .map(.array(.object(["model", "effort"])))])
+    private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile", "capability_routes"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape, "capability_routes": capabilityRoutesShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])
     private static let handbackShape = Shape.object(["kind", "native_session_id", "protected_root", "source_head", "protected_source_sha256", "source_fingerprint", "request_sha256", "parent_attempt_id", "exit_code", "cancelled", "adoption"])

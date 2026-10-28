@@ -202,6 +202,12 @@ public enum RCCNativeCatalogBuilder {
         /// relative cost signal for Core's price-aware choice, never a quota
         /// or quality claim.
         public var priceTable: ModelPriceTable? = nil
+        /// Build 442 (owner order 2026-10-27, DESIGN-3): the compiled
+        /// capability table. With a profile whose local-classifier domain is
+        /// known (and no strongest-model words), the catalog carries that
+        /// domain's qualifying rows (`capability_routes`) for Core's deep
+        /// nodes; nil emits none.
+        public var capabilityTable: ModelCapabilityTable? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -262,6 +268,10 @@ public enum RCCNativeCatalogBuilder {
         /// Build 441: the host's request profile, a routing fact for Core's
         /// graded admission (never a certificate); nil emits none.
         public var requestProfile: RequestProfile? = nil
+        /// Build 442: the profile's domain's capability-qualified rows
+        /// (`capabilityRoutes(_:)`), a routing fact for Core's deep nodes,
+        /// never a certificate; nil emits none.
+        public var capabilityRoutes: RCCRuntimeContract.CapabilityRoutes? = nil
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -473,7 +483,19 @@ public enum RCCNativeCatalogBuilder {
         return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,
                          taskContract: input.taskContract, classCertificate: certificate,
                          classProviderPin: input.classTable.providerPin(for: requestClass), classCertificateRejection: rejection,
-                         requestProfile: input.requestProfile)
+                         requestProfile: input.requestProfile, capabilityRoutes: capabilityRoutes(input))
+    }
+
+    /// Build 442 (owner order 2026-10-27, DESIGN-3): the capability-qualified
+    /// rows the catalog carries, only for an Auto request (no explicit route
+    /// test) whose profile the local classifier read with a known domain and
+    /// that does not ask for the strongest model or more thinking (those
+    /// words keep the reference). Core decides whether the node is deep work.
+    public static func capabilityRoutes(_ input: Input) -> RCCRuntimeContract.CapabilityRoutes? {
+        guard input.explicitRouteSurfaces == nil, let table = input.capabilityTable, let profile = input.requestProfile,
+              profile.locallyClassified, let domain = profile.domain, !profile.signals.contains("quality_request"),
+              !RequestProfile.asksForStrongest(input.request) else { return nil }
+        return table.routes(for: domain)
     }
 
     /// Providers worth a native probe under the current preference, capacity,
@@ -860,6 +882,10 @@ public enum RCCNativeCatalogBuilder {
             // facts only (Core's graded admission reads it; never a certificate).
             if let profile = facts.requestProfile {
                 object["request_profile"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(profile))
+                // Build 442, optional, beside the profile only.
+                if let routes = facts.capabilityRoutes {
+                    object["capability_routes"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(routes))
+                }
             }
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
