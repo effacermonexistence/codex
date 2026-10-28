@@ -16,10 +16,16 @@ import Foundation
 ///
 /// The file `~/.os1/local-classifier/asr-hints.json` is strict JSON,
 /// `{"schema":1,"hints":[{"heard":"…","intended":"…"}]}`: at most 200 pairs,
-/// a heard spelling of at most 40 characters and an intended term of at most
-/// 80, no control character, no angle bracket, no duplicate heard spelling,
-/// no other key, at most 32 KiB. Anything invalid is ignored as a whole, with
-/// a receipt line saying why; the compiled hints always apply.
+/// a heard spelling of at most 40 and an intended term of at most 80 Unicode
+/// scalars (NFC; review of DESIGN-4: not grapheme clusters, which hide
+/// combining marks), no control, line or paragraph separator, no angle
+/// bracket or quote character (a value stays inside its quotes in the prompt
+/// line), no duplicate heard spelling, no other key, at most 32 KiB. Anything
+/// invalid is ignored as a whole, with a receipt line saying why; the
+/// compiled hints always apply and a compiled heard spelling (compared
+/// case-insensitively, NFC, as matching is) keeps its compiled correction.
+/// A file that exists but cannot be reached is `unreadable`, never "no owner
+/// file".
 public enum LocalClassifierHints {
     public struct Hint: Codable, Equatable, Sendable {
         public var heard: String
@@ -52,14 +58,24 @@ public enum LocalClassifierHints {
     }
     public static func load(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Loaded {
         let url = filePath(home: home)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        // Review of DESIGN-4: only a path that does not exist is "no owner
+        // file"; a path that cannot be reached (a parent without search
+        // permission) is ignored with a receipt, so the owner is told.
+        var status = stat()
+        if lstat(url.path, &status) != 0 {
+            let error = errno
+            guard error == ENOENT || error == ENOTDIR else {
+                return Loaded(hints: compiled, receipt: "asr hints: compiled \(compiled.count), owner file ignored: \(Rejection.unreadable.rawValue)")
+            }
             return Loaded(hints: compiled, receipt: "asr hints: compiled \(compiled.count), no owner file")
         }
         switch read(url) {
         case .success(let owner):
-            let known = Set(compiled.map(\.heard))
-            let merged = compiled + owner.filter { !known.contains($0.heard) }
-            return Loaded(hints: merged, receipt: "asr hints: compiled \(compiled.count), owner file \(owner.count)")
+            let known = Set(compiled.map { key($0.heard) })
+            let merged = owner.filter { !known.contains(key($0.heard)) }
+            let shadowed = owner.count - merged.count
+            return Loaded(hints: compiled + merged, receipt: "asr hints: compiled \(compiled.count), owner file \(merged.count)" +
+                (shadowed > 0 ? " (\(shadowed) shadowed by compiled)" : ""))
         case .failure(let reason):
             return Loaded(hints: compiled, receipt: "asr hints: compiled \(compiled.count), owner file ignored: \(reason.rawValue)")
         }
@@ -91,16 +107,22 @@ public enum LocalClassifierHints {
                   valid(heard, maximum: maximumHeardCharacters), valid(intended, maximum: maximumIntendedCharacters) else {
                 return .failure(.badPair)
             }
-            let key = heard.precomposedStringWithCanonicalMapping.lowercased()
-            guard seen.insert(key).inserted else { return .failure(.duplicate) }
+            guard seen.insert(key(heard)).inserted else { return .failure(.duplicate) }
             hints.append(Hint(heard: heard.precomposedStringWithCanonicalMapping, intended: intended.precomposedStringWithCanonicalMapping))
         }
         return .success(hints)
     }
+    /// The case-insensitive NFC key matching and duplicates compare.
+    static func key(_ heard: String) -> String { heard.precomposedStringWithCanonicalMapping.lowercased() }
+    /// Characters a hint value never carries: control and format characters,
+    /// line and paragraph separators (Zl, Zp, U+0085), angle brackets and the
+    /// quote characters that could close the value's quotes in `promptLine`.
+    static let forbidden = CharacterSet.controlCharacters.union(.newlines).union(CharacterSet(charactersIn: "<>'\"‘’‚‛“”„‟`"))
     public static func valid(_ text: String, maximum: Int) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
-        return !trimmed.isEmpty && trimmed == text && text.count <= maximum &&
-            !text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0 == "<" || $0 == ">" }
+        return !trimmed.isEmpty && trimmed == text &&
+            text.precomposedStringWithCanonicalMapping.unicodeScalars.count <= maximum &&
+            !text.unicodeScalars.contains { forbidden.contains($0) }
     }
 
     /// The hints whose heard spelling occurs in the request (case-insensitive,

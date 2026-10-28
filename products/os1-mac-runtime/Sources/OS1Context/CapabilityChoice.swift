@@ -16,10 +16,21 @@ import Foundation
 ///   (`markers`, small reviewed lists) or (b) the request is deep coding work
 ///   with a code-material rail (a code block, programming words, material,
 ///   a named path). Otherwise the broad rows.
+/// - CONFLICT (DESIGN-4 review): a marker of ANOTHER non-writing domain in
+///   the request (`conflict`) means the reading may be a misread (a physics
+///   problem read as math because it solves an equation), so the broad rows
+///   bind, never the narrow ones. A marker is evidence for a reading, not of
+///   the request's true category; only the broad rows are safe either way.
 /// - WRITING rows bind only for a write task, or a request whose product is a
-///   document (`documentPattern`), with the writing reading; any other writing
-///   reading takes the broad rows, under the `broad` category (a broad row is
-///   not qualified for writing, so its basis never claims it).
+///   document (`documentPattern` with an ordering `composingPattern`), with
+///   the writing reading; any other writing reading takes the broad rows,
+///   under the `broad` category (a broad row is not qualified for writing, so
+///   its basis never claims it).
+/// - A WRITING DELIVERABLE read under ANOTHER domain (DESIGN-4 review: "광합성
+///   원리를 설명하는 보고서를 작성해줘" read as science) offers no rows: only a
+///   writing-qualified row may stand in for the reference there, and the
+///   reading did not name writing, so the reference binds. A write task
+///   counts whatever it produces (the enum prompt's write includes code).
 /// - An UNKNOWN domain (a keyword profile, a `general` reading, or a model not
 ///   qualified to read the domain, DESIGN-4 §4): an explanation or chat is not
 ///   a writing deliverable, so it takes the broad rows; a design, write or
@@ -66,6 +77,10 @@ public enum CapabilityChoice {
         .science: [
             .init(id: "science_physics", pattern: #"물리|양자|상대성|역학|전자기|열역학|슈뢰딩거|뉴턴|"# +
                 word("physics|quantum|relativity|thermodynamics|schrodinger|schrödinger|newton")),
+            // DESIGN-4 review: a physics object a math reading may solve for
+            // (an equation of motion, a pendulum, a circuit): a conflict only.
+            .init(id: "science_mechanics", pattern: #"운동\s*방정식|진자|진동|용수철|회로|전기장|자기장|중력|가속도|운동량|궤도|파동|(?<![가수출투개])입자|에너지\s*준위|"# +
+                word("pendulum|pendulums|oscillator|oscillators|oscillation|circuit|circuits|gravity|gravitational|acceleration|momentum|orbit|orbits|orbital|electromagnetic|electric field|magnetic field|wave function|wavefunction|equation of motion|equations of motion")),
             .init(id: "science_chemistry", pattern: #"화학|분자|원자|화합물|"# + word("chemistry|molecule|molecules|atom|atoms")),
             .init(id: "science_biology", pattern: #"생물|세포|유전|진화|단백질|"# + word("biology|cell|cells|gene|genes|evolution|protein")),
         ],
@@ -81,12 +96,21 @@ public enum CapabilityChoice {
     ]
     /// A document or deliverable asked for as the product (DESIGN-4 §2
     /// "Writing"): an essay, report, letter, e-mail, article, speech, proposal,
-    /// copy, script and the like, AND a composing verb (write, draft, compose,
-    /// make): "에세이 써줘" asks for one, "에세이 구조를 설명해줘" does not.
+    /// copy, script and the like, AND a composing ORDER (write, draft, compose,
+    /// make it): "에세이 써줘" asks for one, "에세이 구조를 설명해줘" does not.
+    /// DESIGN-4 review: the composing word counts only in an imperative or
+    /// request form ("작성해줘", "작성해서 보내줘", "써 봐", "초안 좀 잡아줘",
+    /// "write an essay"), never as a noun or adverbial ("작성법", "작성 요령",
+    /// "초안 작성할 때", "쓰기 요령", "how to write a cover letter"): those
+    /// explain HOW to write and take the broad rows like any explanation. A
+    /// false order costs only the reference's price, a missed one a writing
+    /// answer on a row no writing benchmark qualifies, so the forms lean wide.
     static let documentPattern = #"에세이|보고서|리포트|레포트|이메일|메일|편지|자소서|자기소개서|논문|칼럼|연설문|제안서|기획서|문서|공지문|보도자료|기사|블로그\s*글|소개글|카피|원고|대본|시나리오|소설|"# +
         word("essay|essays|report|letter|email|e-mail|article|speech|proposal|document|memo|blog post|press release|cover letter|script|copy|story")
-    static let composingPattern = #"써\s*(?:줘|봐|주세요|줄래|라)|쓰(?:고|자|기)|작성|초안|작문|만들어|짜\s*(?:줘|봐)|"# +
-        word("write|draft|compose|create|prepare|produce")
+    static let composingPattern = #"써\s*(?:줘|봐|주|줄|라|달)|써\s*(?:$|[.!~])|쓰자|"# +
+        #"(?:작성|작문)\s*(?:좀\s*)?(?:해|하)\s*(?:줘|봐|주|줄|라|달|자|서)|(?:작성|작문)\s*(?:좀\s*)?해\s*(?:$|[.!~,])|작성\s*(?:좀\s*)?부탁|"# +
+        #"초안\s*(?:좀\s*)?(?:잡아|짜|뽑아)\s*(?:줘|봐|주|줄|라|달)|만들어\s*(?:줘|봐|주|줄|라|달)|짜\s*(?:줘|봐)|"# +
+        #"(?<!how to )(?<!how do i )(?<!how do you )(?<!how should i )(?<!how can i )"# + word("write|draft|compose|create|prepare|produce")
     /// Keyword signals that are code material: (b) for deep coding work.
     static let codeMaterialSignals: Set<String> = ["code_block", "machine_material", "material", "named_path"]
 
@@ -100,6 +124,20 @@ public enum CapabilityChoice {
         let lower = request.precomposedStringWithCanonicalMapping.lowercased()
         return lower.range(of: documentPattern, options: .regularExpression) != nil &&
             lower.range(of: composingPattern, options: .regularExpression) != nil
+    }
+    /// Markers another reading shares as ordinary vocabulary, so they are no
+    /// conflict for it: a math reading's 함수/function is a mathematical function.
+    static let sharedVocabulary: [RequestProfile.Domain: Set<String>] = [.math: ["coding_function"]]
+    /// DESIGN-4 review: the first marker of ANOTHER non-writing domain the
+    /// request carries (a possible misread of `domain`), or nil.
+    public static func conflict(_ domain: RequestProfile.Domain, in request: String) -> String? {
+        let lower = request.precomposedStringWithCanonicalMapping.lowercased(), shared = sharedVocabulary[domain] ?? []
+        let others: [RequestProfile.Domain] = [.math, .coding, .science, .knowledge, .toolUse]
+        for other in others where other != domain {
+            if let hit = markers[other]?.first(where: { !shared.contains($0.id) &&
+                lower.range(of: $0.pattern, options: .regularExpression) != nil }) { return hit.id }
+        }
+        return nil
     }
     /// DESIGN-4 §2: the corroboration of a narrow row's domain, or nil.
     public static func corroboration(_ domain: RequestProfile.Domain, profile: RequestProfile, request: String) -> String? {
@@ -123,21 +161,27 @@ public enum CapabilityChoice {
                                                            references: references, priceBasis: priceBasis)
             return routes.valid ? routes : nil
         }
+        // A writing deliverable (a write task or a requested document) binds
+        // only writing-qualified rows, and only under the writing reading.
+        let deliverable = task == .write || asksForDocument(request)
         guard let domain = profile.domain else {
             // Unknown domain: an explanation or chat takes the broad rows.
-            guard task == .explain || task == .chat else { return nil }
+            guard task == .explain || task == .chat, !deliverable else { return nil }
             guard profile.locallyClassified || profile.difficulty == .standard else { return nil }
             return make(RCCRuntimeContract.CapabilityRoutes.broadCategory, .broad, nil, broad)
         }
         if domain == .writing {
-            if task == .write || asksForDocument(request) { return make(domain.rawValue, .writingDeliverable, nil, table.rows(for: .writing)) }
+            if deliverable { return make(domain.rawValue, .writingDeliverable, nil, table.rows(for: .writing)) }
             // Not a deliverable: the broad rows, under the `broad` category (a
             // broad row is not qualified for writing, so the basis never says so).
             return make(RCCRuntimeContract.CapabilityRoutes.broadCategory, .broad, nil, broad)
         }
+        // DESIGN-4 review: a deliverable read under another domain is a possible
+        // writing misread no broad or narrow row is qualified for: the reference.
+        guard !deliverable else { return nil }
         let rows = table.rows(for: domain)
         let narrow = rows.contains { pool, entries in entries.contains { !(broad[pool] ?? []).contains($0) } }
-        if narrow, let id = corroboration(domain, profile: profile, request: request) {
+        if narrow, conflict(domain, in: request) == nil, let id = corroboration(domain, profile: profile, request: request) {
             return make(domain.rawValue, .narrowCorroborated, id, rows)
         }
         return make(domain.rawValue, .broad, nil, broad)

@@ -537,18 +537,33 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// 모델로", "think very carefully", "your strongest reasoning"): an
     /// intensifier before a thinking verb within a few characters, a thinking
     /// noun before a maximum, or a superlative before a model, reasoning or
-    /// effort noun. Read ONLY where a deep node could leave the reference (the
-    /// catalog's capability routes): it never touches the profile, so light
-    /// and standard routing stay build 441's. A miss costs the δ = 0 promise,
-    /// a false hit only the reference's price, so the forms lean wide.
+    /// effort noun. Read ONLY where a node could leave the reference (the
+    /// catalog's capability routes, DESIGN-4: deep and standard answers): it
+    /// never touches the profile, so light routing stays build 441's. A miss
+    /// costs the δ = 0 promise, a false hit only the reference's price, so the
+    /// forms lean wide (review of DESIGN-4: "think … hard" within five words,
+    /// 심사숙고, 머리를 굴려, 온 힘을 다해, the highest reasoning level).
     static let referenceRequestPatterns = [
-        #"(?:최대한|최대로|최대치로|최고로|최선을\s*다해|신중하게|신중히|깊이|깊게|깊은|깊숙이|곰곰이|곰곰히|오래|충분히|철저하게|철저히|꼼꼼하게|꼼꼼히|치밀하게|심도\s*있게|진지하게|열심히|빡세게)[^.?!\n]{0,10}?(?:생각|고민|추론|숙고|리즈닝|궁리)"#,
+        #"(?:최대한|최대로|최대치로|최고로|최선을\s*다해|신중하게|신중히|깊이|깊게|깊은|깊숙이|곰곰이|곰곰히|오래|충분히|철저하게|철저히|꼼꼼하게|꼼꼼히|치밀하게|심도\s*있게|진지하게|열심히|빡세게|천천히)[^.?!\n]{0,10}?(?:생각|고민|추론|숙고|리즈닝|궁리|따져|따지|따질)"#,
         #"(?:생각|고민|추론|리즈닝|사고력)\s*(?:을|를|은|는|도|이|가)?\s*(?:최대|최고|끝까지|깊이|깊게|많이|오래|충분히|최선|극한)"#,
-        #"(?:추론|리즈닝|생각|사고)\s*(?:강도|레벨|수준|노력|모드|effort|level)\s*(?:을|를|은|는)?\s*(?:최대|최고|최상|max)"#,
+        #"(?:추론|리즈닝|생각|사고)\s*(?:강도|레벨|수준|노력|모드|단계|effort|level)\s*(?:을|를|은|는)?\s*(?:최대|최고|최상|max)"#,
+        // Review of DESIGN-4: 심사숙고 / 숙고 alone, 머리를 (최대한) 굴려,
+        // 온 힘·전력·총력을 다해, and a superlative before a reasoning noun
+        // ("가장 높은 추론 단계로").
+        #"숙고"#,
+        #"머리\s*(?:를|좀)?[^.?!\n]{0,8}?(?:굴려|굴리|굴러|쥐어\s*짜)"#,
+        #"(?:온\s*힘|전력|총력|사력|혼신의\s*힘)\s*(?:을|를)\s*(?:다\s*(?:해|하)|기울)"#,
+        #"(?:가장|제일|최고|최대|최상)\s*(?:높은|강한|깊은|센)?\s*(?:의\s*)?(?:추론|리즈닝)"#,
+        #"(?:가장|제일)\s*(?:높은|깊은|강한)\s*(?:사고|생각)\s*(?:단계|강도|레벨|수준|모드)"#,
         #"(?:최고|최상|최강|최상위)\s*(?:수준|성능|사양|레벨|급|품질)?\s*(?:의)?\s*(?:ai\s*)?(?:모델|엔진|두뇌)"#,
         #"(?:가장|제일)\s*(?:좋은|강한|강력한|똑똑한|뛰어난|센|높은|우수한|유능한|성능\s*좋은|성능이\s*좋은|성능\s*높은)\s*(?:ai\s*)?(?:모델|엔진)"#,
         #"최선을\s*다(?:해|하)"#,
-        #"(?<![a-z0-9])(?:think|thinks|thinking|reason|reasoning)\s+(?:[a-z]+\s+){0,2}?(?:hard|harder|hardest|carefully|deeply|thoroughly|rigorously)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])(?:think|thinks|thinking|reason|reasoning)\s+(?:[a-z]+\s+){0,5}?(?:hard|harder|hardest|carefully|deeply|thoroughly|rigorously)(?![a-z0-9])"#,
+        // Review of DESIGN-4: "think step by step and very hard", "be as
+        // rigorous and careful as humanly possible", "spare no effort".
+        #"(?<![a-z0-9])(?:think|thinks|thinking|reason|reasoning)\s+(?:it\s+)?(?:through\s+)?step[\s-]+by[\s-]+step\s*,?\s+(?:[a-z]+\s+){0,3}?(?:hard|harder|hardest|carefully|deeply|thoroughly|rigorously)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])as\s+(?:rigorous|rigorously|careful|carefully|thorough|thoroughly|deep|deeply|hard|precise|precisely)(?:\s*(?:,|and|&)\s*[a-z]+){0,2}\s+as\s+(?:is\s+)?(?:humanly\s+)?(?:you\s+)?(?:can|possible)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])spare\s+no\s+effort(?![a-z0-9])"#,
         #"(?<![a-z0-9])(?:strongest|best|deepest|maximum|max|maximal|most\s+careful|most\s+rigorous|most\s+thorough|highest|full|most\s+capable|smartest|most\s+advanced|most\s+intelligent|top|hardest)\s+(?:possible\s+|available\s+)?(?:reasoning|thinking|model|effort|brainpower)(?![a-z0-9])"#,
         #"(?<![a-z0-9])(?:carefully|rigorously|thoroughly|deeply|hard)\s+as\s+(?:you\s+)?(?:can|possible)(?![a-z0-9])"#,
         #"(?<![a-z0-9])(?:take\s+your\s+time|ultra-?think|extended\s+thinking)(?![a-z0-9])"#,

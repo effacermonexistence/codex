@@ -66,6 +66,17 @@ python3 "$script_dir/test-release-version-identity.py" --verify-current --expect
 python3 "$script_dir/test-os1-context-helper-dispatch.py" --source-only
 python3 "$script_dir/check-startup-isolation.py"
 python3 "$script_dir/test-composer-viewport.py"
+# The voxel contract (test-voxel-scene.mjs, run by test-simulation-garden.mjs)
+# reads the three package SimulationGarden/package.json pins from
+# SimulationGarden/node_modules, which git ignores and this script never
+# installs: fail with that reason instead of an ENOENT stack, and name where
+# it resolves (it may be a link to another workspace).
+if ! node -e 'const [pkg, dep] = process.argv.slice(1).map(path => require(path)); process.exit(dep.version === pkg.dependencies.three ? 0 : 1)' \
+    "$runtime_root/SimulationGarden/package.json" "$runtime_root/SimulationGarden/node_modules/three/package.json" 2>/dev/null; then
+  echo 'SimulationGarden/node_modules/three is missing or is not the version SimulationGarden/package.json pins: install that three into products/os1-mac-runtime/SimulationGarden/node_modules before build-release.' >&2
+  exit 1
+fi
+echo "voxel contract: three from $(cd "$runtime_root/SimulationGarden/node_modules/three" && pwd -P)" >&2
 node "$script_dir/test-simulation-garden.mjs"
 node "$script_dir/test-terran-motion.mjs"
 node "$script_dir/test-classic-theme.mjs"
