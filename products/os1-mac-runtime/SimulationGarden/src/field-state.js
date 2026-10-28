@@ -1,9 +1,9 @@
 // One stable UUID is one worker. Roster pagination never limits the battlefield.
 // Native review is authoritative; a local selection is not a completion receipt.
 export const isRunning = s => s?.status === 'working';
-export const isAwaitingReview = s => s?.hasResult === true && s?.resultPending === true && s?.reviewed !== true && !isRunning(s) && s.status !== 'queued';
+export const isAwaitingReview = s => s?.hasResult === true && s?.resultPending === true && s?.reviewed !== true && !isRunning(s) && !['stopping','queued'].includes(s.status) && !(s.queueCount > 0);
 export function battlefieldSessions(sessions, deployedIDs = new Set()) {
- return sessions.filter(s => isRunning(s) || s.status === 'queued' || (s.featured === true && s.reviewed !== true) || isAwaitingReview(s) || (s.reviewed !== true && deployedIDs.has(s.id)));
+ return sessions.filter(s => isRunning(s) || s.status === 'queued' || s.status === 'stopping' || s.status === 'paused' || (s.featured === true && s.reviewed !== true) || isAwaitingReview(s) || (s.reviewed !== true && deployedIDs.has(s.id)));
 }
 export function tokenState(pool) {
  const nonnegative = n => Number.isFinite(n) && n >= 0 ? n : null;

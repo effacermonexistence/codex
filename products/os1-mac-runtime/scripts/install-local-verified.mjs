@@ -270,12 +270,99 @@ export const os1ProcessRows = (execute = spawnSync, isGone = pid => {
   return rows.stdout.split('\n').filter(line => line.trim());
 };
 
+const predecessorFormat = 'os1-install-predecessor-v1';
+const predecessorKeys = Object.freeze(['format', 'app', 'cli', 'cliConfig', 'build', 'version',
+  'sourceCommit', 'appExecutableSHA256', 'appInfoSHA256', 'appResourceCLISHA256',
+  'appConfigSHA256', 'cliSHA256', 'cliConfigSHA256']);
+const validatePredecessor = value => {
+  assert(value && typeof value === 'object' && !Array.isArray(value), 'invalid expected predecessor');
+  assert.deepEqual(Object.keys(value).sort(), [...predecessorKeys].sort(), 'unexpected predecessor fields');
+  assert.equal(value.format, predecessorFormat, 'unknown expected predecessor format');
+  for (const key of ['app', 'cli', 'cliConfig']) {
+    assert(typeof value[key] === 'string' && path.isAbsolute(value[key]) &&
+      path.resolve(value[key]) === value[key] && !value[key].includes('\0'), 'invalid predecessor target path');
+  }
+  assert(/^\d+$/.test(value.build) && typeof value.build === 'string', 'invalid predecessor build');
+  assert(typeof value.version === 'string' && /^\d+\.\d+\.\d+$/.test(value.version), 'invalid predecessor version');
+  assert(value.sourceCommit === null || (typeof value.sourceCommit === 'string' && /^[a-f0-9]{40}$/.test(value.sourceCommit)),
+    'invalid predecessor source identity');
+  for (const key of predecessorKeys.filter(key => key.endsWith('SHA256'))) {
+    assert((key === 'cliConfigSHA256' && value[key] === null) ||
+      (typeof value[key] === 'string' && /^[a-f0-9]{64}$/.test(value[key])), 'invalid predecessor fingerprint');
+  }
+  return value;
+};
+
+// A hash-only installation precondition, never a source of configuration,
+// credentials, or authority to bypass idle/preservation/signing checks.
+// Injectable Info reads and temporary paths allow fixtures without HOME access.
+export const captureInstalledPredecessor = ({ app, cli, cliConfig,
+  readInfo = file => JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file],
+    { encoding: 'utf8', timeout: 60000, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'pipe'] })) }) => {
+  for (const target of [app, cli, cliConfig]) {
+    assert(typeof target === 'string' && path.isAbsolute(target) && path.resolve(target) === target,
+      'predecessor capture requires exact absolute paths');
+  }
+  assert.equal(fs.realpathSync(app), app, 'predecessor app may not traverse a symlink');
+  const infoFile = path.join(app, 'Contents/Info.plist');
+  const beforeInfo = fileIntegrity(infoFile).sha256;
+  const info = readInfo(infoFile);
+  const value = {
+    format: predecessorFormat, app, cli, cliConfig,
+    build: String(info.CFBundleVersion), version: String(info.CFBundleShortVersionString),
+    sourceCommit: info.OS1SourceCommit ?? null,
+    appExecutableSHA256: fileIntegrity(path.join(app, 'Contents/MacOS/OS1App')).sha256,
+    appInfoSHA256: beforeInfo,
+    appResourceCLISHA256: fileIntegrity(path.join(app, 'Contents/Resources/os1')).sha256,
+    appConfigSHA256: fileIntegrity(path.join(app, 'Contents/Resources/config.json')).sha256,
+    cliSHA256: fileIntegrity(cli).sha256,
+    cliConfigSHA256: present(cliConfig) ? fileIntegrity(cliConfig).sha256 : null,
+  };
+  assert.equal(fileIntegrity(infoFile).sha256, beforeInfo, 'predecessor metadata changed during capture');
+  return validatePredecessor(value);
+};
+
+// Pure comparison. Errors expose field names only, never configuration bytes.
+export const verifyExpectedPredecessor = (expected, observed) => {
+  validatePredecessor(expected); validatePredecessor(observed);
+  for (const key of predecessorKeys) {
+    assert.deepEqual(observed[key], expected[key], `installed predecessor changed (${key}); leave installation unchanged`);
+  }
+  return { format: predecessorFormat, matched: true, build: observed.build, sourceCommit: observed.sourceCommit };
+};
+
+export const readExpectedPredecessor = file => {
+  assert(typeof file === 'string' && path.isAbsolute(file) && path.resolve(file) === file,
+    'expected predecessor must be an exact absolute path');
+  assert.equal(fs.realpathSync(file), file, 'expected predecessor may not traverse a symlink');
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const before = fs.fstatSync(fd);
+    assert(before.isFile() && before.nlink === 1 && before.uid === process.getuid() &&
+      (before.mode & 0o077) === 0 && before.size > 0 && before.size <= 16384,
+      'expected predecessor must be a private owned regular file');
+    let value;
+    try { value = JSON.parse(fs.readFileSync(fd, 'utf8')); }
+    catch { throw new Error('expected predecessor is not valid JSON'); }
+    const after = fs.fstatSync(fd), named = fs.lstatSync(file);
+    assert(!named.isSymbolicLink() && before.dev === named.dev && before.ino === named.ino &&
+      before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs,
+      'expected predecessor changed during read');
+    return validatePredecessor(value);
+  } finally { fs.closeSync(fd); }
+};
+
 async function install() {
 
 const [sourceArg, recoveryArg, expectedBuild, ...options] = process.argv.slice(2);
 assert(sourceArg && recoveryArg && /^\d+$/.test(expectedBuild), 'staged-app new-private-recovery-dir expected-build');
 assert.equal(new Set(options).size, options.length, 'duplicate install option');
-assert(options.every(option => ['--preserve-queue', '--allow-local-signer-rotation'].includes(option)), 'unknown install option');
+const predecessorOptions = options.filter(option => option.startsWith('--expected-predecessor='));
+assert(predecessorOptions.length <= 1, 'duplicate expected predecessor option');
+assert(options.every(option => ['--preserve-queue', '--allow-local-signer-rotation'].includes(option) ||
+  option.startsWith('--expected-predecessor=')), 'unknown install option');
+const expectedPredecessor = predecessorOptions.length
+  ? readExpectedPredecessor(predecessorOptions[0].slice('--expected-predecessor='.length)) : null;
 const preserveQueue = options.includes('--preserve-queue');
 const allowLocalSignerRotation = options.includes('--allow-local-signer-rotation');
 const source = fs.realpathSync(sourceArg), home = os.homedir();
@@ -373,6 +460,13 @@ const backupApp = path.join(recovery, 'OS-1 CLODEX.app'), backupCLI = path.join(
 const backupConfig = path.join(recovery, 'config.json');
 let paused = false, appMoved = false, cliMoved = false, configMoved = false, configInstalled = false, activated = false;
 let pagingManifest;
+let predecessorGuardFailed = false;
+const checkExpectedPredecessor = () => {
+  try {
+    return verifyExpectedPredecessor(expectedPredecessor,
+      captureInstalledPredecessor({ app, cli, cliConfig }));
+  } catch (error) { predecessorGuardFailed = true; throw error; }
+};
 const receipt = { startedAt: new Date().toISOString(), build: expectedBuild, app, recovery,
   previousAppHash: hash(path.join(app, 'Contents/MacOS/OS1App')), previousCLIHash: hash(cli),
   stagedAppHash: hash(path.join(source, 'Contents/MacOS/OS1App')), stagedCLIHash: hash(resource),
@@ -389,6 +483,10 @@ try {
     fs.unlinkSync(maintenanceLease);
   }
   fs.writeFileSync(maintenanceLease, String(process.pid), { mode: 0o600, flag: 'wx' });
+  if (expectedPredecessor) {
+    receipt.predecessorAfterLease = checkExpectedPredecessor();
+    receipt.checks.push('expected predecessor identity after maintenance lease: PASS');
+  }
   run('/usr/bin/ditto', [source, stageApp]);
   fs.copyFileSync(resource, stageCLI, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageCLI, 0o755);
   fs.copyFileSync(sourceConfig, stageConfig, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageConfig, 0o644);
@@ -424,6 +522,10 @@ try {
   receipt.checks.push('private paging snapshot + SHA-256/byte manifest + read-only staged restore drill: PASS (not live activation)');
   pagingQuiesced();
   assert.deepEqual(JSON.parse(fs.readFileSync(store)), original, 'session store changed during paging backup');
+  if (expectedPredecessor) {
+    receipt.predecessorBeforeSwap = checkExpectedPredecessor();
+    receipt.checks.push('expected predecessor identity immediately before binary replacement: PASS');
+  }
   fs.renameSync(app, backupApp); appMoved = true;
   fs.renameSync(stageApp, app);
   fs.renameSync(cli, backupCLI); cliMoved = true;
@@ -510,14 +612,21 @@ try {
   // process is using the new image, leave both verified binary versions in
   // custody for reconciliation rather than moving a live executable.
   let rollbackQuiesced = false, rollbackCoreQuiesced = false;
-  try {
-    pagingQuiesced(); rollbackQuiesced = true;
-    // A persistent new Gateway can survive the failed GUI. Retire it through
-    // the CURRENT new CLI before moving any new binary back to recovery.
-    receipt.rccRollbackQuiescence = quiesceRCCCoreForBinaryChange({ home, cli, execute: run });
-    rollbackCoreQuiesced = true;
+  if (predecessorGuardFailed) {
+    // Both optional preconditions precede every rename. Never invoke a changed
+    // predecessor CLI to "repair" a rejected precondition or replay snapshots.
+    assert(!appMoved && !cliMoved && !configMoved && !configInstalled);
+    receipt.predecessorRejected = true;
+  } else {
+    try {
+      pagingQuiesced(); rollbackQuiesced = true;
+      // A persistent new Gateway can survive the failed GUI. Retire it through
+      // the CURRENT new CLI before moving any new binary back to recovery.
+      receipt.rccRollbackQuiescence = quiesceRCCCoreForBinaryChange({ home, cli, execute: run });
+      rollbackCoreQuiesced = true;
+    }
+    catch (quiescenceError) { receipt.binaryRollbackBlocked = String(quiescenceError.message || quiescenceError); }
   }
-  catch (quiescenceError) { receipt.binaryRollbackBlocked = String(quiescenceError.message || quiescenceError); }
   if (binaryRollbackPermitted({ appStopped: appPIDs().length === 0, pagingQuiesced: rollbackQuiesced,
     rccQuiesced: rollbackCoreQuiesced,
     anyBinaryMoved: appMoved || cliMoved || configMoved || configInstalled })) {
@@ -534,7 +643,7 @@ try {
   // Recovery errors must not suppress the original failure receipt.
   try {
     if (paused) run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist]);
-    if (receipt.binaryRollback && wasRunning.length) launchApp();
+    if ((receipt.binaryRollback || (predecessorGuardFailed && !appMoved && appPIDs().length === 0)) && wasRunning.length) launchApp();
   } catch (error) { receipt.recoveryError = String(error.stack || error); }
   fs.writeFileSync(path.join(recovery, 'install-receipt.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
   fs.writeFileSync(path.join(recovery, 'RECOVERY.md'),

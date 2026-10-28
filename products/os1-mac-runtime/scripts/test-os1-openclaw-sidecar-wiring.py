@@ -36,7 +36,12 @@ def expect(condition: bool, message: str):
 
 source_poll = APP.split("func resumeRegisteredSourcePreparations(", 1)[1].split("func resumeBackendRecoveries(", 1)[0]
 archive_check = 'root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path'
-cancel_check = 'ExecutionCancellation.url(submissionID: failed.id).path'
+cancel_check = 'cancellationRequested(failed.id)'
+cancel_resolver = APP.split('fileprivate func cancellationURL(', 1)[1].split('static let interruptedRepairResumeWindow', 1)[0]
+expect('customStorageRoot.map' in cancel_resolver and
+       'ExecutionCancellation.url(submissionID: submissionID)' in cancel_resolver and
+       'fileManager.fileExists(atPath: cancellationURL(submissionID).path)' in cancel_resolver,
+       "source recovery consults the same fixture/live-scoped cancellation resolver as Stop")
 expect(source_poll.index(archive_check) < source_poll.index(cancel_check) <
        source_poll.index("PreparationIntent.detect(failed.request)") < source_poll.index("refreshRunAdmissionPressure()"),
        "source polling checks current eligibility/artifact/cancellation before parsing or sampling global admission")

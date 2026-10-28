@@ -19,6 +19,7 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 @main
 final class SourceContextTests {
     static func main() throws {
+        if CommandLine.arguments.contains("--simulation-control-only") { try runSimulationSessionControlFixtures(); return }
         if CommandLine.arguments.contains("--appearance-only") { try runAppearanceFixtures(); return }
         if CommandLine.arguments.contains("--simulation-presentation-only") { try runSimulationPresentationFixtures(); return }
         codexDictationAuthorizationChildIfRequested()

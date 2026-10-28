@@ -39,7 +39,7 @@ function verifyReviewDoesNotSelect(body){
  for(const name of ['inspect','review']){
   const branch=swiftBody(body,`if action == "${name}" {`);
   assert(branch.includes('guard let text'),'malformed inspection must return rather than fall through');
-  assert(/\breturn\s*$/.test(branch.trim()),'presentation action must return before native selection');
+  assert(/\breturn(?:\s+\.init\([\s\S]*\))?\s*$/.test(branch.trim()),'presentation action must return before native selection');
   assert(!/store\.(select|send|createSession|cancelSelectedRun|deploySimulationSession)\(/.test(branch),'inspection/review may not enter native selection/task path');
  }
 }
@@ -75,8 +75,11 @@ check('native UUID/name/run projection retained',()=>{
  assert(app.includes('let running = isSessionRunning(session.id)'));
 });
 check('existing native new/send/stop and draft preservation retained',()=>{
- assert(app.includes('store.composer = text\n            store.send()'));
- assert(app.includes('store.cancelSelectedRun()')&&app.includes('store.createSession()'));
+ const controls=swiftBody(app,'fileprivate func performGardenAction(');
+ assert(controls.includes('composer = text\n        send()'));
+ assert(app.includes('store.performGardenAction(action, sessionID: id, text: text)'));
+ assert(controls.includes('cancelRun(id)')&&controls.includes('createSession()'));
+ assert(controls.indexOf('pauseQueue(id)')<controls.indexOf('cancelRun(id)'), 'pause exact queue before cancellation');
  assert(app.includes('store.composer.trimmingCharacters'));
 });
 check('exact bundled main frame dispatch and nonpersistent credential isolation',()=>{
@@ -86,7 +89,7 @@ check('exact bundled main frame dispatch and nonpersistent credential isolation'
  assert(!view.includes('allowUniversalAccessFromFileURLs')&&!view.includes('allowFileAccessFromFileURLs'));
 });
 check('inspection/review require visible selected exact native result',()=>{
- assert(view.includes('guard snapshot.visible, let id, snapshot.selectedID == id'));
+ assert(view.includes('guard snapshot.visible, let id, snapshot.selectedID.flatMap(UUID.init(uuidString:)) == UUID(uuidString: id)'));
  assert(view.includes('?.resultRevision == text'));
  const start=app.indexOf('private func gardenAction('),action=app.slice(start,app.indexOf('var body: some View {',start));
  const guardPosition=action.indexOf('guard simulationVisible, store.selectedSessionID == id');
@@ -119,7 +122,10 @@ check('presentation retirement has no native storage/task authorization side eff
  assert(presentation.includes('simulation-presentation.json'));
  assert(presentation.includes('O_NOFOLLOW')&&presentation.includes('maximumBytes = 256 * 1_024'));
  assert(!/Process\(|\.send\(|\.cancelSelectedRun\(|\.archive\(/.test(presentation));
- assert(app.includes('store.deploySimulationSession(id, reassign: true)'));
+ const action=swiftBody(app,'private func gardenAction(');
+ assert(action.includes('if outcome.accepted, let target = outcome.sessionID'));
+ assert(action.includes('store.deploySimulationSession(target, reassign: true)'));
+ assert(action.indexOf('if outcome.accepted, let target = outcome.sessionID')<action.indexOf('store.deploySimulationSession(target, reassign: true)'));
 });
 check('no second engine, external fetch, credential store or synthetic native dispatch',()=>{
  assert(!view.includes('Process()')&&!js.includes('fetch(')&&!js.includes('localStorage'));

@@ -10,3 +10,5 @@
 #world canvas.voxel-wireframe { position:absolute; inset:0; width:640px; height:480px; z-index:2; pointer-events:none; image-rendering:pixelated; }
 #world .voxel-minimap-hit { position:absolute; left:7px; top:351px; width:126px; height:124px; z-index:2; pointer-events:auto; cursor:crosshair; }
 #world .voxel-labels { position:absolute; inset:0 auto auto 0; width:640px; height:316px; z-index:2; pointer-events:none; overflow:hidden; }
+
+#control-status{font-size:8px;color:var(--accent);line-height:1.25;margin:2px 0;max-height:22px;overflow:hidden}#resume-session{font-size:8px;white-space:nowrap}.session.stopping i{background:#e6ba64}.session.paused i{background:#999}
