@@ -103,7 +103,7 @@ enum LocalRouterBridge {
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
     static let rccRuntimeModuleSHA256 = "c2de596ee81a6ae85518aa41cd9f7c5a19fa0f97acd033c174580be31f11a794"
-    static let rccRuntimePluginSHA256 = "1ff5e795e20a104e49e8c1de10a2ca6d5b98a3ce9a6d74011451095a9444d2b1"
+    static let rccRuntimePluginSHA256 = "fb985a6187ed135570fd609ee69c44793c1e0bbda0facbc4d3ce0405eb4d6c44"
     static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
     static let rccAdaptivePlanHostSHA256 = "88c1ac38f03cb54109b8f65a57370581238445bc9a6859d264e5b27eb8c101a8"

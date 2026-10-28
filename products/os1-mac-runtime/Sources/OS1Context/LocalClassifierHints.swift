@@ -20,7 +20,10 @@ import Foundation
 /// scalars (NFC; review of DESIGN-4: not grapheme clusters, which hide
 /// combining marks), no control, line or paragraph separator, no angle
 /// bracket or quote character (a value stays inside its quotes in the prompt
-/// line), no duplicate heard spelling, no other key, at most 32 KiB. Anything
+/// line; review of H2: every Unicode quotation mark and the apostrophe,
+/// prime and fullwidth look-alikes count, so '＇' or '」' cannot seem to
+/// close a value either), no duplicate heard spelling, no other key, at most
+/// 32 KiB. Anything
 /// invalid is ignored as a whole, with a receipt line saying why; the
 /// compiled hints always apply and a compiled heard spelling (compared
 /// case-insensitively, NFC, as matching is) keeps its compiled correction.
@@ -116,13 +119,21 @@ public enum LocalClassifierHints {
     static func key(_ heard: String) -> String { heard.precomposedStringWithCanonicalMapping.lowercased() }
     /// Characters a hint value never carries: control and format characters,
     /// line and paragraph separators (Zl, Zp, U+0085), angle brackets and the
-    /// quote characters that could close the value's quotes in `promptLine`.
+    /// quote characters that could close the value's quotes in `promptLine`
+    /// and `answerNote`. Review of H2 (2026-10-28): '＇' (U+FF07) and '「」'
+    /// passed and read as a closed quote followed by an instruction, so every
+    /// scalar with the Unicode Quotation_Mark property is refused as well
+    /// (`valid`), with the apostrophe, prime, accent and fullwidth angle look-
+    /// alikes that property omits. The bridge's local lane mirrors this set
+    /// (`ASR_HINT_FORBIDDEN` in rcc-plugin.mjs).
     static let forbidden = CharacterSet.controlCharacters.union(.newlines).union(CharacterSet(charactersIn: "<>'\"‘’‚‛“”„‟`"))
+        .union(CharacterSet(charactersIn: "\u{00B4}\u{02B9}\u{02BA}\u{02BB}\u{02BC}\u{02BD}\u{02C8}\u{02CA}\u{02CB}" +
+            "\u{2032}\u{2033}\u{2034}\u{2035}\u{2036}\u{2037}\u{2057}\u{FF40}\u{FF1C}\u{FF1E}\u{FE64}\u{FE65}"))
     public static func valid(_ text: String, maximum: Int) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         return !trimmed.isEmpty && trimmed == text &&
             text.precomposedStringWithCanonicalMapping.unicodeScalars.count <= maximum &&
-            !text.unicodeScalars.contains { forbidden.contains($0) }
+            !text.unicodeScalars.contains { forbidden.contains($0) || $0.properties.isQuotationMark }
     }
 
     /// The hints whose heard spelling occurs in the request (case-insensitive,

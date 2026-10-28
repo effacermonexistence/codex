@@ -253,7 +253,24 @@ func runRCCDelegatedEnvelopeFixtures() throws {
                         asrHints: [H.Hint(heard: "2", intended: "two")], taskID: taskID, nodeID: "node_0", attemptID: attemptID).contains("음성 인식 메모") &&
               envelope("1+1", surface: .codex, continuation: resume) == E.prompt(instruction: "1+1", ownerRequest: heard, continuation: resume,
                   answerOnly: false, surface: .codex, scope: .readOnly, asrHints: H.compiled, taskID: taskID, nodeID: "requested-1", attemptID: attemptID),
-              "an exact-answer child and a continuation carry no note")
+              "an exact-answer child and a resumed continuation carry no note")
+    // Review of H2: a quality correction starts a fresh native session and
+    // restates the owner objective; the model has not seen the note, so it
+    // follows the correction's own prompt, once, before the rules.
+    let correction = TaskQualityCorrection.prompt(objective: heard, failedCheckIDs: ["fixture_check"],
+                                                  artifactSHA256: String(repeating: "a", count: 64))
+    func corrective(_ hints: [H.Hint], fresh: Bool) -> String {
+        E.prompt(instruction: heard, ownerRequest: heard, continuation: correction, continuationInFreshSession: fresh,
+                 answerOnly: false, surface: .claude, scope: .workspaceWrite, asrHints: hints,
+                 taskID: taskID, nodeID: "requested-1", attemptID: attemptID)
+    }
+    try check(corrective(H.compiled, fresh: true) == corrective([], fresh: true)
+                  .replacingOccurrences(of: correction + "\n\n", with: correction + "\n\n" + note + "\n\n") &&
+              count(note, in: corrective(H.compiled, fresh: true)) == 1 &&
+              corrective(H.compiled, fresh: true).hasPrefix(correction + "\n\n" + note + "\n\nScope: workspace_write. ") &&
+              corrective(H.compiled, fresh: false) == corrective([], fresh: false) &&
+              corrective([], fresh: true) == corrective([], fresh: false),
+              "a fresh-session quality correction carries the note after its prompt; a resumed one does not")
 
     // ---- The exact-answer presentation contract (developer/system channel) -
     let exactContract = HumanOutputContract.exactAnswerInstructions

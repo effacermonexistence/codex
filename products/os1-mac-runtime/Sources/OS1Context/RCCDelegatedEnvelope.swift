@@ -47,7 +47,11 @@ import Foundation
 /// the owner file) matches the owner's request, ONE note line
 /// (`LocalClassifierHints.answerNote`) follows END BACKGROUND, before the
 /// ids. The request's bytes, the rules and their order are unchanged; no
-/// matching hint, a continuation or an exact-answer child gets no line.
+/// matching hint or an exact-answer child gets no line. Review of H2: a
+/// continuation that starts a fresh native session (the quality correction,
+/// which restates the owner objective) carries the line after its own
+/// prompt; a continuation that resumes the session that already saw it (the
+/// full-access continuation) does not.
 public enum RCCDelegatedEnvelope {
     public static let answerLeadLabel = "Do this and answer directly:"
     public static let taskLeadLabel = "Do this task:"
@@ -102,9 +106,14 @@ public enum RCCDelegatedEnvelope {
 
     /// - instruction: this child's delegated work, verbatim.
     /// - ownerRequest: the owner's original objective, shown as background.
-    /// - continuation: a full-access continuation's own imperative prompt; it
-    ///   leads instead of the delegated work and background (as before), and
-    ///   the answer-only line never applies to it.
+    /// - continuation: a continuation's own imperative prompt (the full-access
+    ///   continuation, or the quality correction); it leads instead of the
+    ///   delegated work and background (as before), and the answer-only line
+    ///   never applies to it.
+    /// - continuationInFreshSession: the continuation runs in a new native
+    ///   session (no resumed session id), so the model has not seen the note:
+    ///   a matching note follows the continuation's prompt. False (the
+    ///   default) for a resumed session, which already received it.
     /// - answerOnly: `answerOnly(instruction:surface:scope:explicitRoutes:)`;
     ///   ignored unless the scope is read-only.
     /// - surface: the selected surface; a chat lane gets the direct lead.
@@ -112,15 +121,17 @@ public enum RCCDelegatedEnvelope {
     /// - asrHints: the owner's speech-to-text hints (`LocalClassifierHints.load`);
     ///   one note line after the background when one matches `ownerRequest`.
     public static func prompt(instruction: String, ownerRequest: String, continuation: String? = nil,
+                              continuationInFreshSession: Bool = false,
                               answerOnly: Bool, surface: RCCRuntimeContract.Surface, scope: RCCRuntimeContract.Scope,
                               sourceCompletion: String = "", asrHints: [LocalClassifierHints.Hint] = [],
                               taskID: String, nodeID: String, attemptID: String) -> String {
         let rules = "Scope: " + scope.rawValue + ". " + guaranteeLine + " " + silentRuleLine + sourceCompletion
         let references = referenceLabel + " RCC task " + taskID + "; child " + nodeID + "; attempt " + attemptID + "."
-        if let continuation { return continuation + "\n\n" + rules + "\n\n" + references }
         let exact = answerOnly && scope == .readOnly
+        let note = exact || (continuation != nil && !continuationInFreshSession) ? nil :
+            LocalClassifierHints.answerNote(ownerRequest, hints: asrHints)
+        if let continuation { return continuation + (note.map { "\n\n" + $0 } ?? "") + "\n\n" + rules + "\n\n" + references }
         let lead = directAnswer(answerOnly: exact, surface: surface, scope: scope) ? answerLeadLabel : taskLeadLabel
-        let note = exact ? nil : LocalClassifierHints.answerNote(ownerRequest, hints: asrHints)
         return lead + "\n" + instruction + (exact ? "\n\n" + answerOnlyLine : "") +
             "\n\n" + rules +
             "\n\n" + backgroundStart + "\n" + backgroundRule + "\n" + ownerRequest + "\n" + backgroundEnd +

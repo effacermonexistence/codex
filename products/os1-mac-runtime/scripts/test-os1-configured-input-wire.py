@@ -28,7 +28,7 @@ assert claude.index('onConfiguredInput?') < claude.index('do { raw = try command
 assert 'instructions: configuredSystemInstructions' in claude
 assert main.index('let configuredSystemInstructions = arguments[systemIndex + 1]') < main.index('if projectlessRead && !sourceOnly && !chatLane { arguments.insert("--safe-mode", at: 1) }')
 adapter=main[main.index('private func rccNativeAdapter('):]
-assert adapter.index('let delegated = RCCDelegatedEnvelope.prompt(') < adapter.index('let nativePrompt = try providerPrompt(') < adapter.index('onConfiguredInput: { prepared in')
+assert adapter.index('let delegated = envelope(rccAnswerHints(') < adapter.index('let nativePrompt = try providerPrompt(') < adapter.index('onConfiguredInput: { prepared in')
 assert 'record.configuredInputObservation = try? prepared.observation(ticket: t, delegated: delegated,' in adapter
 assert 'catalog: configuredInventory, catalogObservedAtMS: configuredInventoryAtMS' in adapter
 assert 'if let configuredInventory {' in adapter

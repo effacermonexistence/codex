@@ -181,13 +181,17 @@ ENVELOPE = (ROOT / "Sources/OS1Context/RCCDelegatedEnvelope.swift").read_text()
 CONTRACT = (ROOT / "Sources/OS1Context/OutputContract.swift").read_text()
 check("let answerOnly = !isFullAccess && RCCDelegatedEnvelope.answerOnly(instruction: t.instruction," in native and
       "surface: t.selectedConfig.surface, scope: t.selectedConfig.scope, explicitRoutes: h.explicitRoutes)" in native and
-      "let delegated = RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective," in native and
+      # H2: one local builder renders the envelope (with or without the
+      # owner's ASR hint note); the child receives the hinted one.
+      "func envelope(_ asrHints: [LocalClassifierHints.Hint]) -> String {" in native and
+      "RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective," in native and
+      "let delegated = envelope(rccAnswerHints(ownerRequest: objective, envelope: envelope))" in native and
       "answerOnly: answerOnly, surface: t.selectedConfig.surface," in native and
       'scope: t.selectedConfig.scope, sourceCompletion: sourceCompletion + (stagedTransaction?.directive ?? ""),' in native and
-      "taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)" in native,
+      "asrHints: asrHints, taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)" in native,
       "every provider's child message comes from the one envelope with scope, surface, source rules and ids")
 check("ORIGINAL OWNER OBJECTIVE" not in native and "DELEGATED WORK ONLY" not in native and
-      native.index("let answerOnly = ") < native.index("let delegated = RCCDelegatedEnvelope.prompt(") <
+      native.index("let answerOnly = ") < native.index("let delegated = envelope(rccAnswerHints(") <
       native.index("providerPrompt(current: delegated,"),
       "the owner-first envelope is gone and the new one is what the provider receives")
 check("objectivePrompt: t.instruction,\n                exactAnswerOnly: answerOnly," in native,
@@ -238,8 +242,9 @@ helper = section(MAIN, "func rccIsolatesReadOnlyClaudeHome(", "\n}\n")
 check("surface == .claude && !resumesNativeSession &&" in helper and
       'ExecutionWorkspace.usesSourceIsolation(provider: "claude", permission: permissionProfile, hasSource: false,' in helper,
       "the HOME rule is the native path's usesSourceIsolation, Claude agent only, never for a resumed session")
-check("workspaceContext: rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard))" in native and
-      native.index("let delegated = RCCDelegatedEnvelope.prompt(") < native.index("workspaceContext: rccStatusCheckInHint(") and
+check("let checkInHint = rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard)" in native and
+      "let nativePrompt = try providerPrompt(current: delegated, context: h.context, r2Evidence: sourceDelivery.payload,\n            workspaceContext: checkInHint)" in native and
+      native.index("let delegated = envelope(rccAnswerHints(") < native.index("let checkInHint = rccStatusCheckInHint(") and
       "StatusCheckIn.answersFromCard(ownerRequest) ? card() : \"\"" in MAIN and
       "try rccExecuteChildRulesSelfTest()" in MAIN,
       "a card check-in's RCC child carries the install-state card the direct path attaches; os1 self-test pins both rules")

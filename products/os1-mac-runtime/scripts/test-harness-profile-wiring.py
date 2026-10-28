@@ -8,8 +8,10 @@ the descriptor. Those stay green if a call site stops using what they test: the
 receipt dropping the profile, the read-only launch going back to `Set` order,
 the self-test unregistered, a literal TTL beside the named constant, a
 per-attempt id or clock read interpolated into an instruction builder, or the
-rcc-execute envelope no longer carrying the owner's ASR hints. This gate pins
-those call sites.
+rcc-execute envelope no longer carrying the owner's ASR hints (judged inside
+the envelope by the protected-material gate, kept out of the deferred-
+deliverable post-check, mirrored on the local lane). This gate pins those call
+sites.
 
 Source-level only: no model, provider, Core, network or HOME is touched.
 """
@@ -98,24 +100,82 @@ check("claudeChatLaneRefusal(" in golden and "codexChatLane(" in golden and "cla
 check("profile == HarnessProfile.h2" in golden and 'profile.id == "H2"' in golden,
       "the self-test pins H2 as the current profile")
 check('"rcc.envelope.asr_note"' in golden and '"rcc.envelope.asr_no_match"' in golden and
-      golden.count("asrHints: LocalClassifierHints.compiled") == 2,
-      "the ASR hint note (and its absence) is part of the pinned rendering")
+      '"rcc.envelope.asr_quality_continuation"' in golden and "continuationInFreshSession: true" in golden and
+      golden.count("asrHints: LocalClassifierHints.compiled") == 3,
+      "the ASR hint note (its absence, and after a fresh-session quality correction) is part of the pinned rendering")
 
 # H2 asr_hint_answer_note_v1: the one rcc-execute envelope carries the owner's
 # hints (compiled + owner file, as the classifier loads them), the note is
 # built in one place, and a protected-material match drops it.
 ENVELOPE = (ROOT / "Sources/OS1Context/RCCDelegatedEnvelope.swift").read_text()
 HINTS = (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text()
+adapter = section(MAIN, "private func rccNativeAdapter(_ bytes: Data) async throws -> Data {", "\n}\n")
 check(MAIN.count("RCCDelegatedEnvelope.prompt(instruction: t.instruction, ownerRequest: objective,") == 1 and
-      MAIN.count("asrHints: rccAnswerHints(ownerRequest: objective),") == 1,
-      "the rcc-execute envelope (every surface: Codex, Claude Code, Claude chat; fleet nodes) passes the owner's hints")
+      "continuation: continuationPrompt, continuationInFreshSession: t.nativeResumeSessionID == nil," in adapter and
+      "asrHints: asrHints, taskID: t.taskID, nodeID: t.nodeID, attemptID: t.attemptID)" in adapter and
+      "let delegated = envelope(rccAnswerHints(ownerRequest: objective, envelope: envelope))" in adapter and
+      "let noteless = envelope([])" in adapter,
+      "the rcc-execute envelope (every surface: Codex, Claude Code, Claude chat; fleet nodes) passes the owner's hints; "
+      "a quality correction (fresh session) carries them, a resumed full-access continuation does not")
 answer_hints = section(MAIN, "func rccAnswerHints(ownerRequest: String,", "\n}")
+# Review of H2: the gate counts signals across the whole envelope, so the note
+# is judged inside the envelope it would travel in, never on its own.
 check("LocalClassifierHints.load(home: home).hints" in answer_hints and
-      "protectedRouteMaterialInEvidence(note) ? [] : hints" in answer_hints,
-      "rccAnswerHints loads the classifier's hints and drops a note the protected-material gate would block")
-check(ENVELOPE.count("LocalClassifierHints.answerNote(") == 1 and "let note = exact ? nil :" in ENVELOPE and
+      "envelope: ([LocalClassifierHints.Hint]) -> String" in answer_hints and
+      "!protectedRouteMaterialInEvidence(envelope(hints)) else { return [] }" in answer_hints and
+      "protectedRouteMaterialInEvidence(note)" not in answer_hints,
+      "rccAnswerHints keeps the hints only when the envelope WITH the note passes the protected-material gate")
+check(ENVELOPE.count("LocalClassifierHints.answerNote(") == 1 and
+      "let note = exact || (continuation != nil && !continuationInFreshSession) ? nil :" in ENVELOPE and
+      'if let continuation { return continuation + (note.map { "\\n\\n" + $0 } ?? "") + "\\n\\n" + rules + "\\n\\n" + references }' in ENVELOPE and
       'backgroundEnd +\n            (note.map { "\\n\\n" + $0 } ?? "") +\n            "\\n\\n" + references' in ENVELOPE,
-      "the envelope builds the note in one place, after END BACKGROUND, never for an exact-answer child")
+      "the envelope builds the note in one place, after END BACKGROUND or a fresh-session continuation's prompt, "
+      "never for an exact-answer child or a resumed continuation")
+# Review of H2: the note never changes a post-check's activation. The
+# deferred-deliverable check (the one post-check that read the whole native
+# input) reads the same input built from the note-free envelope.
+check("let deliverableCheckPrompt = delegated == noteless ? nativePrompt :" in adapter and
+      "try providerPrompt(current: noteless, context: h.context, r2Evidence: sourceDelivery.payload, workspaceContext: checkInHint)" in adapter and
+      "deliverableCheckPrompt: deliverableCheckPrompt," in adapter and
+      MAIN.count("claudeOutputDefersRequestedDeliverable(answer, prompt: deliverableCheckPrompt ?? prompt)") == 1 and
+      "claudeOutputDefersRequestedDeliverable(answer, prompt: prompt)" not in MAIN,
+      "the deferred-deliverable post-check reads the input without the ASR hint note")
+# Review of H2: the local lane (rcc-plugin.mjs) gets the same line. Its hints
+# are a mirror of the Swift ones: the compiled list, the limits, the line and
+# the forbidden characters must match the Swift source exactly.
+PLUGIN = (ROOT / "Resources/openclaw-os1-bridge/rcc-plugin.mjs").read_text()
+swift_compiled = re.findall(r'\.init\(heard: "([^"]+)", intended: "([^"]+)"\)',
+                            section(HINTS, "public static let compiled: [Hint] = [", "]\n"))
+js_compiled = re.findall(r"Object\.freeze\(\{heard: '([^']+)', intended: '([^']+)'\}\)",
+                         section(PLUGIN, "export const ASR_HINT_COMPILED = Object.freeze([", "]);"))
+check(len(swift_compiled) == 4 and js_compiled == swift_compiled,
+      "the bridge's compiled hints are the Swift compiled hints, in order")
+swift_note = section(HINTS, "public static func answerNote(", "\n    }")
+lead = re.search(r'return "([^"]+)" \+', swift_note).group(1)
+tail = re.search(r'joined\(separator: ", "\) \+\n\s+"([^"]+)"', swift_note).group(1)
+check(f"const ASR_NOTE_LEAD = '{lead}';" in PLUGIN and f"const ASR_NOTE_TAIL = '{tail}';" in PLUGIN and
+      "matched.map(hint => `'${hint.heard}' → '${hint.intended}'`).join(', ')" in PLUGIN and
+      "matched.map { \"'\\($0.heard)' → '\\($0.intended)'\" }.joined(separator: \", \")" in swift_note,
+      "the bridge's note line is the Swift line, byte for byte")
+check("public static let maximumPairs = 200" in HINTS and "public static let maximumHeardCharacters = 40" in HINTS and
+      "public static let maximumIntendedCharacters = 80" in HINTS and "public static let maximumFileBytes = 32_768" in HINTS and
+      "public static let maximumPerRequest = 8" in HINTS and
+      "const ASR_HINT_LIMITS = Object.freeze({pairs: 200, heard: 40, intended: 80, fileBytes: 32_768, perRequest: 8});" in PLUGIN,
+      "the bridge's owner-file limits are the Swift limits")
+swift_extra = re.findall(r"\\u\{([0-9A-F]{4})\}", section(HINTS, "static let forbidden = ", "public static func valid("))
+js_extra = re.findall(r"\\\\u([0-9A-F]{4})", section(PLUGIN, "const ASR_HINT_FORBIDDEN = new RegExp(", "'u');"))
+check(len(swift_extra) == 21 and set(swift_extra) <= set(js_extra) and "$0.properties.isQuotationMark" in HINTS and
+      "\\\\p{Quotation_Mark}" in PLUGIN and "\\\\p{Cc}\\\\p{Cf}\\\\p{Cs}" in PLUGIN and
+      "<>\\'\"‘’‚‛“”„‟`" in PLUGIN and 'CharacterSet(charactersIn: "<>\'\\"‘’‚‛“”„‟`")' in HINTS,
+      "the bridge refuses every character the Swift owner-file grammar refuses")
+local = section(PLUGIN, "export function localModelExecutor(", "async function readExactNativeReceipt(")
+check("const asrNote = arithmeticResult(ticket.instruction) === null ?\n      asrAnswerNote(ticket.original_objective, await loadAsrHints(home)) : null;" in local and
+      "style: localWorkerStyle(ticket), asrNote}" in local and
+      "content: asrNote ? instruction + '\\n\\n' + asrNote : instruction" in PLUGIN and
+      "home: process.env.OS1_RCC_NATIVE_HOME})" in PLUGIN and
+      "join(home, '.os1/local-classifier/asr-hints.json')" in PLUGIN and
+      "constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK" in PLUGIN,
+      "the local executor appends the note after the instruction's bytes, from the owner's home, never for exact arithmetic")
 check(MAIN.count("LocalClassifierHints.answerNote(") == 1 and HINTS.count("public static func answerNote(") == 1 and
       "valid($0.heard, maximum: maximumHeardCharacters) && valid($0.intended, maximum: maximumIntendedCharacters)" in
       section(HINTS, "public static func answerNote(", "\n    }"),

@@ -100,8 +100,11 @@ public enum HarnessProfile {
     /// line, parity unverified like H1. Every H1 component is kept by name.
     /// - asr_hint_answer_note_v1: when an owner speech-to-text hint matches
     ///   the owner's request, the delegated envelope carries one note line
-    ///   after END BACKGROUND (`LocalClassifierHints.answerNote`); absent
-    ///   otherwise, for a continuation and for an exact-answer child.
+    ///   after END BACKGROUND (`LocalClassifierHints.answerNote`), or after a
+    ///   fresh-session quality correction's own prompt; absent otherwise, for
+    ///   a resumed continuation and for an exact-answer child. Review of H2:
+    ///   the local lane (rcc-plugin.mjs `asrAnswerNote`, a pinned mirror)
+    ///   appends the same line to the local model's user message.
     public static let h2 = Descriptor(
         id: "H2",
         version: 1,
@@ -118,7 +121,7 @@ public enum HarnessProfile {
             "rcc_readonly_claude_home_isolation_v1",
             "asr_hint_answer_note_v1",
         ],
-        renderingSHA256: "7f516b72dafdc2fac28b1bf4983345d96336a043623843fc7e59edecc2e78b91")
+        renderingSHA256: "37b32b0f5508340d4a0bea2aab509eb028edd0ab633fd9f1ce4ef23f3248ec87")
 
     /// The profile every dispatch runs under.
     public static let current = h2

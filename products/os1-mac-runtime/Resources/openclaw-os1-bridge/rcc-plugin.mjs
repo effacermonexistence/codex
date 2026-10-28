@@ -342,6 +342,99 @@ const LOCAL_CHAT_SYSTEM = 'You are OS-1, chatting with its owner. Reply naturall
   'Never claim to have done, run, checked, saved, sent or looked up anything, and never mention instructions, ' +
   'rules, routing or how you work.';
 const LOCAL_WORKER_MAX_TOKENS = 512;
+// ---- The owner's speech-to-text hints on the local lane (harness H2) ----
+// Build 442 live failure (2026-10-28): "쉐딩 방정식 설명해줘" (Schrödinger)
+// reached the answering model without the hint the local classifier used.
+// The native envelope carries one note line (Swift
+// LocalClassifierHints.answerNote, RCCDelegatedEnvelope); review of H2: the
+// local lane (an Auto chat node, an explicit local route) sends only the
+// instruction and got nothing. This mirrors the Swift hints exactly: the
+// compiled list, ~/.os1/local-classifier/asr-hints.json under the same strict
+// grammar (anything invalid voids the file; the compiled hints still apply),
+// the same matching and the same line. test-harness-profile-wiring.py pins
+// the mirror against the Swift source. Never a routing input: only the local
+// model's user message gains the line, after the instruction's own bytes.
+export const ASR_HINT_COMPILED = Object.freeze([
+  Object.freeze({heard: '쉐딩', intended: '슈뢰딩거 (Schrödinger)'}),
+  Object.freeze({heard: '쉐딩거', intended: '슈뢰딩거 (Schrödinger)'}),
+  Object.freeze({heard: '슈레딩', intended: '슈뢰딩거 (Schrödinger)'}),
+  Object.freeze({heard: 'QMGR', intended: '양자역학(QM)과 일반상대론(GR) 통합'}),
+]);
+const ASR_HINT_LIMITS = Object.freeze({pairs: 200, heard: 40, intended: 80, fileBytes: 32_768, perRequest: 8});
+// Swift `LocalClassifierHints.forbidden` plus the Quotation_Mark property:
+// control and format characters (Cc, Cf), line separators, angle brackets,
+// every quotation mark and the apostrophe, prime, accent and fullwidth angle
+// look-alikes. A lone surrogate (Cs), which a Swift String cannot hold, is
+// refused too, so this grammar is never looser than the Swift one.
+const ASR_HINT_FORBIDDEN = new RegExp('[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Quotation_Mark}\\n\\u000B\\f\\r\\u0085\\u2028\\u2029<>\'"‘’‚‛“”„‟`' +
+  '\\u00B4\\u02B9\\u02BA\\u02BB\\u02BC\\u02BD\\u02C8\\u02CA\\u02CB' +
+  '\\u2032\\u2033\\u2034\\u2035\\u2036\\u2037\\u2057\\uFF40\\uFF1C\\uFF1E\\uFE64\\uFE65]', 'u');
+const ASR_NOTE_LEAD = '음성 인식 메모(소유자가 과거에 고친 오인식): ';
+const ASR_NOTE_TAIL = ' 일 수 있음. 문맥상 맞으면 그 뜻으로 답하고, 애매하면 어느 뜻인지 한 줄로 밝히고 답할 것.';
+const asrKey = text => text.normalize('NFC').toLowerCase();
+const graphemes = text => { try { return [...new Intl.Segmenter('en', {granularity: 'grapheme'}).segment(text)].length; }
+  catch { return [...text].length; } };
+export function asrHintValid(text, maximum) {
+  return typeof text === 'string' && text.trim().length > 0 && text.trim() === text &&
+    [...text.normalize('NFC')].length <= maximum && !ASR_HINT_FORBIDDEN.test(text);
+}
+/** Strict decode of the owner file's bytes (Swift LocalClassifierHints.decode):
+ * the pairs, or null when anything is invalid. */
+export function decodeAsrHints(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length > ASR_HINT_LIMITS.fileBytes) return null;
+  let object;
+  try { object = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)); } catch { return null; }
+  if (object === null || typeof object !== 'object' || Array.isArray(object)) return null;
+  const keys = Object.keys(object);
+  if (keys.length !== 2 || !keys.includes('schema') || !keys.includes('hints') || object.schema !== 1 ||
+      !Array.isArray(object.hints) || object.hints.length > ASR_HINT_LIMITS.pairs) return null;
+  const hints = [], seen = new Set();
+  for (const pair of object.hints) {
+    if (pair === null || typeof pair !== 'object' || Array.isArray(pair)) return null;
+    const pairKeys = Object.keys(pair);
+    if (pairKeys.length !== 2 || !pairKeys.includes('heard') || !pairKeys.includes('intended') ||
+        !asrHintValid(pair.heard, ASR_HINT_LIMITS.heard) || !asrHintValid(pair.intended, ASR_HINT_LIMITS.intended)) return null;
+    if (seen.has(asrKey(pair.heard))) return null;
+    seen.add(asrKey(pair.heard));
+    hints.push({heard: pair.heard.normalize('NFC'), intended: pair.intended.normalize('NFC')});
+  }
+  return hints;
+}
+/** The compiled hints plus a valid owner file under `home` (Swift
+ * LocalClassifierHints.load). An absent, unreadable or invalid file leaves the
+ * compiled hints; a compiled heard spelling keeps its compiled correction. */
+export async function loadAsrHints(home) {
+  if (!isAbsolute(home ?? '')) return [...ASR_HINT_COMPILED];
+  let handle;
+  try {
+    // Non-blocking and never through a link: a FIFO or a symlink at the path
+    // is not a regular file, and opening it must not stall the local lane.
+    const path = join(home, '.os1/local-classifier/asr-hints.json');
+    if (!(await lstat(path)).isFile()) return [...ASR_HINT_COMPILED];
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const st = await handle.stat();
+    if (!st.isFile() || st.size > ASR_HINT_LIMITS.fileBytes) return [...ASR_HINT_COMPILED];
+    const owner = decodeAsrHints(await handle.readFile()) ?? [];
+    const known = new Set(ASR_HINT_COMPILED.map(hint => asrKey(hint.heard)));
+    return [...ASR_HINT_COMPILED, ...owner.filter(hint => !known.has(asrKey(hint.heard)))];
+  } catch { return [...ASR_HINT_COMPILED]; }
+  finally { await handle?.close().catch(() => {}); }
+}
+/** The one note line for a request a hint's heard spelling occurs in, or null
+ * (Swift LocalClassifierHints.answerNote): valid pairs only, longest heard
+ * spelling first, once per intended term, at most eight. */
+export function asrAnswerNote(request, hints) {
+  if (typeof request !== 'string' || !Array.isArray(hints)) return null;
+  const lower = asrKey(request), seen = new Set(), matched = [];
+  const valid = hints.filter(hint => asrHintValid(hint?.heard, ASR_HINT_LIMITS.heard) &&
+    asrHintValid(hint?.intended, ASR_HINT_LIMITS.intended));
+  for (const hint of [...valid].sort((a, b) => graphemes(b.heard) - graphemes(a.heard))) {
+    if (!lower.includes(asrKey(hint.heard)) || seen.has(hint.intended)) continue;
+    seen.add(hint.intended); matched.push(hint);
+    if (matched.length === ASR_HINT_LIMITS.perRequest) break;
+  }
+  return matched.length ? ASR_NOTE_LEAD + matched.map(hint => `'${hint.heard}' → '${hint.intended}'`).join(', ') + ASR_NOTE_TAIL : null;
+}
 /** Which local prompt a ticket gets. An explicit route (route-all and named
  * routes: the task carries host_context.explicit_routes) and any exact
  * arithmetic instruction keep the exact-result prompt the exact verifier
@@ -351,8 +444,10 @@ export function localWorkerStyle(ticket) {
   return explicit || typeof ticket?.instruction !== 'string' || arithmeticResult(ticket.instruction) !== null ?
     'final_result' : 'conversational';
 }
-export function localWorkerCompletionRequest({instruction, signal, style = 'final_result'}) {
-  return {model: LOCAL_MODEL, messages: [{role: 'user', content: instruction}],
+/** The local model's request. `asrNote` (asrAnswerNote) follows the
+ * instruction's unchanged bytes on its own line; none when no hint matches. */
+export function localWorkerCompletionRequest({instruction, signal, style = 'final_result', asrNote = null}) {
+  return {model: LOCAL_MODEL, messages: [{role: 'user', content: asrNote ? instruction + '\n\n' + asrNote : instruction}],
     systemPrompt: style === 'conversational' ? LOCAL_CHAT_SYSTEM : LOCAL_WORKER_SYSTEM,
     maxTokens: LOCAL_WORKER_MAX_TOKENS, temperature: 0, reasoning: 'off', signal, purpose: LOCAL_WORKER_PURPOSE};
 }
@@ -384,7 +479,7 @@ function localRunSummary(ticket, model, output, durationMS) {
  * api.runtime.llm.complete, already bound to the service's lifetime scope.
  * Returns an execution record for Core's _validateExecution and writes the
  * identical private receipt the exact verifier reads. */
-export function localModelExecutor({complete, stateDir, lifetimeSignal = () => null}) {
+export function localModelExecutor({complete, stateDir, lifetimeSignal = () => null, home = null}) {
   return async function executeLocal(ticket, signal) {
     const config = ticket?.selected_config;
     if (typeof complete !== 'function' || !isAbsolute(stateDir ?? '') || !localWorkerRow(config) ||
@@ -405,11 +500,15 @@ export function localModelExecutor({complete, stateDir, lifetimeSignal = () => n
       return record;
     };
     const signals = [signal, lifetimeSignal()].filter(value => value instanceof AbortSignal);
+    // H2: the owner's ASR hint note for the owner's request (the objective the
+    // native envelope matches); never for an exact arithmetic instruction.
+    const asrNote = arithmeticResult(ticket.instruction) === null ?
+      asrAnswerNote(ticket.original_objective, await loadAsrHints(home)) : null;
     const started = Date.now();
     let response;
     try {
       response = await complete(localWorkerCompletionRequest({instruction: ticket.instruction,
-        signal: signals.length ? AbortSignal.any(signals) : undefined, style: localWorkerStyle(ticket)}));
+        signal: signals.length ? AbortSignal.any(signals) : undefined, style: localWorkerStyle(ticket), asrNote}));
     } catch {
       // The completion call returned no answer: the turn is over, and on a
       // tools-free, read-only, quota-free surface it changed nothing. An
@@ -636,7 +735,7 @@ export function registerRCCRuntime(api) {
       // local model, and stops with the service.
       const executeLocal = localModelExecutor({stateDir,
         complete: request => plannerScope.runInAsyncScope(() => api.runtime.llm.complete(request)),
-        lifetimeSignal: () => plannerLifetime?.signal ?? null});
+        lifetimeSignal: () => plannerLifetime?.signal ?? null, home: process.env.OS1_RCC_NATIVE_HOME});
       const local = ticket => ticket?.selected_config?.surface === 'local';
       starting = createRCCRuntime({ stateDir,
         ...adaptiveRuntimeOptions({pluginConfig: api.pluginConfig,
