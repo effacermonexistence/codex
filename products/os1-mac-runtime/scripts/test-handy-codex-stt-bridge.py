@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Handy -> os1 Codex dictation bridge: HTTP contract, token, recording rules,
-language mapping and 503 fallbacks against a fake os1. No network beyond the
+language mapping, the transcript envelope and 503 fallbacks against a fake os1. No network beyond the
 loopback test server, no Handy files, no credentials, no Codex/model call.
 """
 import http.client
@@ -16,6 +16,11 @@ import unittest
 
 BRIDGE = Path(__file__).resolve().parent / "handy-codex-stt-bridge.py"
 TOKEN = "fixture-bridge-value-only"
+TRANSCRIPT = "슈뢰딩거 방정식 설명해줘"
+
+
+def envelope(text, **extra):
+    return json.dumps(dict({"schema": "os1.dictation.transcript.v1", "text": text}, **extra), ensure_ascii=False) + "\n"
 FAKE_OS1 = r'''#!/usr/bin/python3 -I
 import json, os, sys, time
 control = json.load(open(%(control)r))
@@ -53,7 +58,7 @@ class BridgeTests(unittest.TestCase):
         self.os1.write_text(FAKE_OS1 % {"control": str(self.control), "calls": str(self.calls)})
         self.os1.chmod(0o700)
         self.write_settings()
-        self.set_fake(stdout="슈뢰딩거 방정식 설명해줘\n")
+        self.set_fake(stdout=envelope(TRANSCRIPT))
         self.bridge.SETTINGS_PATH = self.settings_path
         self.bridge.RECORDINGS_DIR = self.recordings
         self.bridge.OS1_BIN = self.os1
@@ -140,13 +145,14 @@ class BridgeTests(unittest.TestCase):
         status, payload = self.request()
         self.assertEqual(status, 200)
         self.assertEqual(payload["object"], "chat.completion")
-        self.assertEqual(payload["choices"][0]["message"], {"role": "assistant", "content": "슈뢰딩거 방정식 설명해줘"})
+        self.assertEqual(payload["choices"][0]["message"], {"role": "assistant", "content": TRANSCRIPT})
         self.assertEqual(payload["choices"][0]["finish_reason"], "stop")
         self.assertEqual(payload["model"], "gpt-4o-transcribe")
         self.assertEqual(payload["usage"], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         [call] = self.calls_made()
+        # Handy "auto" (the owner's setting) sends no language: Codex's own request.
         self.assertEqual(call["argv"][1:], ["dictation", "transcribe", "--wav", str(newer),
-                                            "--language", "ko", "--timeout-seconds", "30"])
+                                            "--timeout-seconds", "30", "--output", "json"])
         self.assertNotIn("OPENAI_API_KEY", call["env"])
         self.assertFalse([key for key in call["env"] if "KEY" in key or "TOKEN" in key or "OPENAI" in key], call["env"])
         given = self.bridge.child_environment()
@@ -161,17 +167,19 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.request()[0], 200)
         [call] = self.calls_made()
         self.assertEqual(call["argv"][4], str(long))
-        self.assertEqual(call["argv"][-2:], ["--timeout-seconds", "95"])
+        self.assertEqual(call["argv"][-4:], ["--timeout-seconds", "95", "--output", "json"])
 
     def test_language_mapping(self):
-        cases = [("auto", "ko", ["--language", "ko"]), ("", "ko-KR", ["--language", "ko"]),
-                 ("auto", "en", []), ("en", "ko", ["--language", "en"]), ("ko", "en", ["--language", "ko"]),
+        # Auto never becomes a forced language (Codex's dictation sends none);
+        # only an explicit Handy choice is forwarded.
+        cases = [("auto", "ko", []), ("", "ko-KR", []), ("auto", "en", []), (None, "ko", []),
+                 ("en", "ko", ["--language", "en"]), ("ko", "en", ["--language", "ko"]),
                  ("ko\r\nInjected", "ko", [])]
         for selected, app, expected in cases:
             self.write_settings(selected=selected, app=app)
             self.assertEqual(self.request()[0], 200, (selected, app))
             argv = self.calls_made()[-1]["argv"]
-            middle = argv[5:-2]
+            middle = argv[5:-4]
             self.assertEqual(middle, expected, (selected, app))
 
     def test_latest_recording_rules(self):
@@ -199,11 +207,25 @@ class BridgeTests(unittest.TestCase):
             self.assertIn("exit=%d" % exit_code, logs.output[-1])
             if reason:
                 self.assertIn("reason=symbolic_link", logs.output[-1])
-        for stdout in ["", "  \n  "]:
+        for stdout in ["", "  \n  ", envelope(""), envelope(" \n "), TRANSCRIPT + "\n",
+                       json.dumps({"text": TRANSCRIPT}), envelope(TRANSCRIPT, extra="x"),
+                       json.dumps({"schema": "other", "text": TRANSCRIPT}), envelope(TRANSCRIPT).replace('"text"', '"Text"'),
+                       json.dumps({"schema": "os1.dictation.transcript.v1", "text": 7}), json.dumps([TRANSCRIPT]),
+                       "\xff\xfe"]:
             self.set_fake(stdout=stdout, exit=0)
-            self.assertEqual(self.request()[0], 503)
-        self.set_fake(stdout="x" * (1024 * 1024 + 1), exit=0)
+            self.assertEqual(self.request()[0], 503, stdout)
+        self.set_fake(stdout=envelope("x" * (1024 * 1024 + 1)), exit=0)
         self.assertEqual(self.request()[0], 503)
+
+    def test_os1_without_the_dictation_command_is_503(self):
+        # OS-1 <= build 444 (or any build lacking `dictation`) prints its usage
+        # text on stdout and exits 0 for an unknown command; never paste it.
+        usage = "OS-1 local runtime\n\n  os1 doctor\n  os1 version\n  os1 rcc-warmup\n"
+        self.set_fake(stdout=usage, exit=0)
+        with self.assertLogs("handy-codex-stt", level="WARNING") as logs:
+            self.assertEqual(self.request(), (503, {"error": "remote_transcription_unavailable"}))
+        self.assertNotIn("os1 doctor", "\n".join(logs.output))
+        self.assertEqual(len(self.calls_made()), 1)
 
     def test_process_deadline_is_503(self):
         self.bridge.PROCESS_GRACE_SECONDS = -29.5  # 30 s CLI deadline -> 0.5 s process limit

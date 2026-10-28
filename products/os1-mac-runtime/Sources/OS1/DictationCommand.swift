@@ -1,7 +1,7 @@
 import Foundation
 import OS1Context
 
-/// `os1 dictation transcribe --wav PATH [--language CODE] [--timeout-seconds N]`.
+/// `os1 dictation transcribe --wav PATH [--language CODE] [--timeout-seconds N] [--output text|json]`.
 ///
 /// Same lane and credential source as OS1App's voice controller: the App's
 /// defaults are `CodexDictationAuthorization.credential()` (the selected Codex
@@ -9,7 +9,8 @@ import OS1Context
 /// `CodexDictationURLSessionTransport()`, and its batch call is
 /// `CodexNativeDictation.transcribe(wav:)`. No new sign-in flow, API key,
 /// stored token or App IPC; the token never reaches stdout, stderr or disk.
-/// Stdout carries only the transcript; failures use the exit statuses in
+/// Stdout carries only the transcript (or, with `--output json`, its one-line
+/// schema envelope); failures use the exit statuses in
 /// `CodexDictationFileTranscription.ExitStatus`.
 enum DictationCommand {
     static func run(_ arguments: [String]) async -> Int32 {

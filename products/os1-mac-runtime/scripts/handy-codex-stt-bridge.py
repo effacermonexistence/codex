@@ -7,12 +7,17 @@ Handy calls it as an OpenAI-compatible chat-completion "post-process" provider
 ignores the local transcript and re-transcribes the WAV Handy just saved, but
 instead of the OpenAI API (an API key) it runs
 
-    ~/.local/bin/os1 dictation transcribe --wav PATH [--language L] --timeout-seconds N
+    ~/.local/bin/os1 dictation transcribe --wav PATH [--language L] --timeout-seconds N --output json
 
 which uses the exact Codex-native batch lane and ChatGPT/Codex sign-in that the
-OS-1 app's voice button uses. No API key, no payment, no stored credential:
-this file never reads a key, token or credential file, and never logs one.
-Any failure returns 503 so Handy keeps (pastes) its own local transcript.
+OS-1 app's voice button uses. Handy's "auto" language sends no language field,
+exactly as Codex's own dictation; only an explicit Handy language is forwarded.
+No API key, no payment, no stored credential: this file never reads a key,
+token or credential file, and never logs one. Only os1's one-line
+{"schema": "os1.dictation.transcript.v1", "text": ...} envelope counts as a
+transcript, so an os1 without the command (build <= 444 prints its usage text
+with exit 0) can never be pasted. Any failure returns 503 so Handy keeps
+(pastes) its own local transcript.
 
 Install (after OS-1 build 445+ is installed, i.e. `~/.local/bin/os1 version`
 reports 0.9.379 or later): copy this file next to the old bridge in
@@ -48,6 +53,7 @@ PROCESS_GRACE_SECONDS = 15
 LANGUAGE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MODEL_PATTERN = re.compile(r"^[\x21-\x7e]{1,128}$")
 DEFAULT_MODEL = "codex-native-dictation"
+TRANSCRIPT_SCHEMA = "os1.dictation.transcript.v1"
 # Never forwarded: API keys or other credential-bearing environment values.
 CHILD_ENVIRONMENT_KEYS = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR")
 CHILD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -96,14 +102,10 @@ def latest_recording():
 
 
 def dictation_language(settings):
-    """Handy's selected language; 'auto' becomes ko when Handy's UI is Korean."""
+    """Handy's explicit language choice. 'auto' (or none) sends no language
+    field, byte-identical to Codex's own dictation request, which auto-detects."""
     language = settings.get("selected_language") or ""
-    if not isinstance(language, str):
-        language = ""
-    if language in ("", "auto"):
-        app_language = settings.get("app_language") or ""
-        if isinstance(app_language, str) and app_language.lower().split("-")[0].split("_")[0] == "ko":
-            return "ko"
+    if not isinstance(language, str) or language in ("", "auto"):
         return None
     return language if LANGUAGE_PATTERN.match(language) else None
 
@@ -119,8 +121,21 @@ def os1_command(wav_path, language, timeout_seconds):
     command = [str(OS1_BIN), "dictation", "transcribe", "--wav", str(wav_path)]
     if language:
         command += ["--language", language]
-    command += ["--timeout-seconds", str(int(timeout_seconds))]
+    command += ["--timeout-seconds", str(int(timeout_seconds)), "--output", "json"]
     return command
+
+
+def transcript_from_envelope(stdout_bytes):
+    """The transcript inside os1's exact {schema, text} line; anything else
+    (an older os1's usage text, plain text, other JSON) is not a transcript."""
+    try:
+        payload = json.loads(stdout_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise BridgeUnavailable("os1 did not return a dictation transcript (OS-1 build 445+ required)") from error
+    if (not isinstance(payload, dict) or set(payload) != {"schema", "text"}
+            or payload["schema"] != TRANSCRIPT_SCHEMA or not isinstance(payload["text"], str)):
+        raise BridgeUnavailable("os1 did not return a dictation transcript (OS-1 build 445+ required)")
+    return payload["text"]
 
 
 def status_summary(returncode, stderr_bytes):
@@ -157,7 +172,7 @@ def send_transcription_request():
         raise BridgeUnavailable("os1 dictation failed (%s)" % status_summary(result.returncode, result.stderr))
     if len(result.stdout) > MAX_TRANSCRIPT_BYTES:
         raise BridgeUnavailable("os1 dictation output is too large")
-    text = result.stdout.decode("utf-8", "replace").strip()
+    text = transcript_from_envelope(result.stdout).strip()
     if not text:
         raise BridgeUnavailable("os1 dictation returned an empty transcription")
     LOG.info(

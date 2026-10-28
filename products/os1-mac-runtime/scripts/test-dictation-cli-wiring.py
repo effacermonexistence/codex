@@ -51,7 +51,7 @@ check(command.count("FileHandle.standardOutput.write(Data((text + \"\\n\").utf8)
 main = code(MAIN)
 check(main.count('case "dictation": exit(await DictationCommand.run(arguments))') == 1,
       "os1 dispatches `dictation` to the command and exits with its status")
-check(MAIN.count("os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300]") == 1,
+check(MAIN.count("os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300] [--output text|json]") == 1,
       "usage names the command")
 
 core = code(CORE)
@@ -78,6 +78,11 @@ check('"dictation", "transcribe", "--wav"' in BRIDGE and 'OS1_BIN = Path.home() 
       "the Handy bridge runs the installed os1 dictation command")
 check('self.send_json(503, {"error": "remote_transcription_unavailable"})' in BRIDGE,
       "every bridge failure leaves Handy its local transcript")
+check(core.count('public static let transcriptSchema = "os1.dictation.transcript.v1"') == 1 and
+      'TRANSCRIPT_SCHEMA = "os1.dictation.transcript.v1"' in BRIDGE and '"--output", "json"' in BRIDGE and
+      "text = transcript_from_envelope(result.stdout).strip()" in BRIDGE,
+      "the bridge accepts only os1's transcript envelope, never an older os1's usage text")
+check("app_language" not in BRIDGE, "Handy 'auto' is never forced to a language (Codex's request sends none)")
 
 print(f"os1 dictation CLI wiring: {checks} source checks PASS (App credential/transport/batch call; no auth flow, key or token output)")
 sys.exit(0)

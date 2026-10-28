@@ -19086,7 +19086,7 @@ func usage() {
               [--codex-session-id UUID] [--claude-session-id UUID]
               [--codex-capacity 0...100] [--claude-capacity 0...100]
               [--desktop-reveal never|background|always]
-      os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300]
+      os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300] [--output text|json]
       os1 version
       os1 rcc-warmup
     """)

@@ -24,7 +24,11 @@ public enum CodexDictationFileTranscription {
     /// release its own child (the Codex CLI authorization process) before exit.
     public static let cancellationGraceSeconds: TimeInterval = 2
     public static let usageText =
-        "Expected: os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300]"
+        "Expected: os1 dictation transcribe --wav /path/recording.wav [--language ko|auto] [--timeout-seconds 1...300] [--output text|json]"
+    /// `--output json` prints exactly `{"schema":transcriptSchema,"text":...}`, so
+    /// a caller (the Handy bridge) can tell a transcript from an older os1's
+    /// usage text, which an unknown command prints on stdout with exit 0.
+    public static let transcriptSchema = "os1.dictation.transcript.v1"
 
     /// Distinct, documented process exit statuses. Stdout carries only the
     /// transcript on `transcribed`; every other status writes nothing to stdout.
@@ -61,23 +65,26 @@ public enum CodexDictationFileTranscription {
         case overUploadLimit = "over_upload_limit"
     }
 
+    public enum OutputFormat: String, Equatable, Sendable { case text, json }
+
     public struct Options: Equatable, Sendable {
         public let path: String
         public let language: String?
         public let timeoutSeconds: TimeInterval
-        public init(path: String, language: String?, timeoutSeconds: TimeInterval) {
-            self.path = path; self.language = language; self.timeoutSeconds = timeoutSeconds
+        public let output: OutputFormat
+        public init(path: String, language: String?, timeoutSeconds: TimeInterval, output: OutputFormat = .text) {
+            self.path = path; self.language = language; self.timeoutSeconds = timeoutSeconds; self.output = output
         }
     }
 
     public struct UsageError: Error, Equatable, Sendable {}
 
     /// Accepts the full argument vector without the executable name:
-    /// `dictation transcribe --wav PATH [--language CODE] [--timeout-seconds N]`.
+    /// `dictation transcribe --wav PATH [--language CODE] [--timeout-seconds N] [--output text|json]`.
     public static func parse(_ arguments: [String]) throws -> Options {
-        guard arguments.count >= 4, arguments.count <= 8, arguments[0] == "dictation", arguments[1] == "transcribe",
+        guard arguments.count >= 4, arguments.count <= 10, arguments[0] == "dictation", arguments[1] == "transcribe",
               arguments.count % 2 == 0 else { throw UsageError() }
-        var path: String?, language: String?, languageSeen = false, timeout: TimeInterval?
+        var path: String?, language: String?, languageSeen = false, timeout: TimeInterval?, output: OutputFormat?
         var index = 2
         while index < arguments.count {
             let name = arguments[index], value = arguments[index + 1]
@@ -93,12 +100,16 @@ public enum CodexDictationFileTranscription {
                 guard timeout == nil, let seconds = TimeInterval(value), seconds.isFinite,
                       timeoutSecondsRange.contains(seconds) else { throw UsageError() }
                 timeout = seconds
+            case "--output":
+                guard output == nil, let format = OutputFormat(rawValue: value) else { throw UsageError() }
+                output = format
             default: throw UsageError()
             }
             index += 2
         }
         guard let path else { throw UsageError() }
-        return Options(path: path, language: language, timeoutSeconds: timeout ?? defaultTimeoutSeconds)
+        return Options(path: path, language: language, timeoutSeconds: timeout ?? defaultTimeoutSeconds,
+                       output: output ?? .text)
     }
 
     /// Reads one WAV the current user owns. The final path component is never
@@ -154,6 +165,13 @@ public enum CodexDictationFileTranscription {
             throw FileRejection.notWAVContent
         }
         return data
+    }
+
+    /// The `--output json` line: exactly the keys `schema` and `text`.
+    public static func transcriptEnvelope(_ text: String) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return String(decoding: try encoder.encode(["schema": transcriptSchema, "text": text]), as: UTF8.self)
     }
 
     public static func exitStatus(for error: CodexDictationError) -> ExitStatus {
@@ -216,10 +234,25 @@ public enum CodexDictationFileTranscription {
         do { wav = try readOwnedWAV(at: options.path, owner: owner) }
         catch { return failed(.audioRejected, reason: error as? FileRejection ?? .unreadable) }
         guard wav.count <= maximumUploadBytes else { return failed(.audioRejected, reason: .overUploadLimit) }
+        // Every failure while obtaining the sign-in (the Codex CLI child's own
+        // malformed reply, buffer limit, 10 s timer or pipe failure) is the
+        // credential stage, exit 4. Cancellation keeps its own status, and the
+        // command's outer deadline still ends as exit 6.
+        let signIn: CodexNativeDictation.Credential = {
+            do { return try await credential() }
+            catch let error as CodexDictationError where error == .cancelled || error == .invalidCredential { throw error }
+            catch is CancellationError { throw CodexDictationError.cancelled }
+            catch { throw CodexDictationError.credentialUnavailable }
+        }
         do {
             let text = try await transcribe(wav: wav, language: options.language, timeoutSeconds: options.timeoutSeconds,
-                                            credential: credential, transport: transport)
-            standardOutput(text)
+                                            credential: signIn, transport: transport)
+            switch options.output {
+            case .text: standardOutput(text)
+            case .json:
+                guard let line = try? transcriptEnvelope(text) else { return failed(.invalidResponse) }
+                standardOutput(line)
+            }
             return ExitStatus.transcribed.rawValue
         } catch let error as CodexDictationError {
             return failed(exitStatus(for: error))

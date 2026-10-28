@@ -164,6 +164,33 @@ private func codexDictationFileTranscriptionChecks() async throws {
     try check(options == .init(path: "/x.wav", language: "ko-KR", timeoutSeconds: 45), "parsed options keep path, language and timeout")
     try check(try CodexDictationFileTranscription.parse(["dictation", "transcribe", "--wav", "/x.wav"]).timeoutSeconds == 90,
               "the default deadline is 90 seconds")
+    try check(options.output == .text, "the default output is the bare transcript")
+    try check(try CodexDictationFileTranscription.parse(["dictation", "transcribe", "--wav", "/x.wav", "--language", "ko",
+                                                         "--timeout-seconds", "30", "--output", "json"]) ==
+              .init(path: "/x.wav", language: "ko", timeoutSeconds: 30, output: .json), "--output json parses with every option")
+
+    // 2b. --output json: one line, exactly {schema, text}, so a caller can tell a
+    // transcript from an older os1's usage text (stdout, exit 0). Same request.
+    for (format, expectJSON) in [("json", true), ("text", false)] {
+        let transport = FileDictationFixtureTransport()
+        let (status, output) = await run(["dictation", "transcribe", "--wav", good.path, "--output", format], transport: transport)
+        let posts = await transport.postRequests()
+        try check(status == 0 && output.standardError.isEmpty && output.standardOutput.count == 1, "--output \(format) succeeds")
+        try check(posts.count == 1 && !String(decoding: posts[0].httpBody ?? Data(), as: UTF8.self).contains("name=\"language\""),
+                  "--output \(format) sends the App's no-language request")
+        guard expectJSON else {
+            try check(output.standardOutput == [appText], "--output text is the bare transcript"); continue
+        }
+        let line = output.standardOutput[0]
+        try check(!line.contains("\n"), "the envelope is one line")
+        let decoded = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: String]
+        try check(decoded == ["schema": CodexDictationFileTranscription.transcriptSchema, "text": appText],
+                  "the envelope holds exactly the schema and the service transcript")
+        try check(CodexDictationFileTranscription.transcriptSchema == "os1.dictation.transcript.v1", "the envelope schema is pinned")
+    }
+    let quoted = try CodexDictationFileTranscription.transcriptEnvelope("a \"q\" \\ /\n슈")
+    try check((try JSONSerialization.jsonObject(with: Data(quoted.utf8)) as? [String: String])?["text"] == "a \"q\" \\ /\n슈" &&
+              !quoted.contains("\n"), "quotes, backslashes and newlines round-trip inside one line")
 
     // 3. Distinct exit statuses; failures never reach stdout or print the token.
     let statuses = Status.allCases.map(\.rawValue)
@@ -196,6 +223,18 @@ private func codexDictationFileTranscriptionChecks() async throws {
                       expected: .noCredential, posts: 0)
     try await failure("malformed token", credential: .init(.success("bad token\r\nInjected: yes")), transport: .init(),
                       expected: .noCredential, posts: 0)
+    // The Codex CLI credential child's own failures are the credential stage.
+    for error in [CodexDictationError.invalidResponse, .messageTooLarge, .timedOut, .transportFailed, .serverRejected] {
+        try await failure("credential stage \(error)", credential: .init(.failure(error)), transport: .init(),
+                          expected: .noCredential, posts: 0)
+    }
+    try await failure("credential cancelled", credential: .init(.failure(.cancelled)), transport: .init(),
+                      expected: .transportFailed, posts: 0)
+    let jsonMissing = FileDictationFixtureTransport()
+    let (jsonMissingStatus, jsonMissingOutput) = await run(["dictation", "transcribe", "--wav", good.path, "--output", "json"],
+        credential: .init(.failure(.credentialUnavailable)), transport: jsonMissing)
+    try check(jsonMissingStatus == Status.noCredential.rawValue && jsonMissingOutput.standardOutput.isEmpty,
+              "--output json failures print nothing to stdout")
     try await failure("transport", transport: .init(response: nil), expected: .transportFailed, posts: 1)
     for code in [401, 403, 429, 500] {
         try await failure("HTTP \(code)", transport: .init(response: .init(data: Data("raw fixture body".utf8), statusCode: code)),
@@ -232,7 +271,12 @@ private func codexDictationFileTranscriptionChecks() async throws {
                       ["dictation", "transcribe", "--wav", good.path, "--timeout-seconds", "nan"],
                       ["dictation", "transcribe", "--wav", good.path, "--model", "gpt-4o-transcribe"],
                       ["dictation", "transcribe", "--language", "ko", "--timeout-seconds", "5"],
-                      ["dictation", "transcribe", "--wav", "--language"]] {
+                      ["dictation", "transcribe", "--wav", "--language"],
+                      ["dictation", "transcribe", "--wav", good.path, "--output", "xml"],
+                      ["dictation", "transcribe", "--wav", good.path, "--output", "json", "--output", "json"],
+                      ["dictation", "transcribe", "--wav", good.path, "--output"],
+                      ["dictation", "transcribe", "--wav", good.path, "--language", "ko", "--timeout-seconds", "5",
+                       "--output", "json", "--model", "x"]] {
         let (status, output) = await run(arguments, credential: untouched, transport: unusedTransport)
         try check(status == Status.usage.rawValue && output.standardOutput.isEmpty, "usage error: \(arguments)")
     }
