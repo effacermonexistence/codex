@@ -14,7 +14,23 @@ function pixelTexture(){const canvas=document.createElement('canvas');canvas.wid
 function box(parent,mat,p,s=[1,1,1],rotation=0){const m=new THREE.Mesh(BOX,mat);m.position.set(...p);m.scale.set(...s);m.rotation.y=rotation;m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;}
 function cylinder(parent,mat,p,top,bottom,height,segments=8,rotation=0){const g=new THREE.CylinderGeometry(top,bottom,height,segments);const m=new THREE.Mesh(g,mat);m.position.set(...p);m.rotation.y=rotation;m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;}
 function batch(parent,geometry,material,items){const mesh=new THREE.InstancedMesh(geometry,material,Math.max(1,items.length));mesh.count=items.length;mesh.castShadow=true;mesh.receiveShadow=true;for(let i=0;i<items.length;i++){const a=items[i];DUMMY.position.set(...a.p);DUMMY.rotation.set(0,a.r||0,0);DUMMY.scale.set(...(a.s||[1,1,1]));DUMMY.updateMatrix();mesh.setMatrixAt(i,DUMMY.matrix);}mesh.instanceMatrix.needsUpdate=true;parent.add(mesh);return mesh;}
-export function textBillboard(text,color='#d7e4df',width=6){const canvas=document.createElement('canvas');canvas.width=512;canvas.height=80;const c=canvas.getContext('2d'),texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;texture.minFilter=texture.magFilter=THREE.LinearFilter;const material=new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false});const sprite=new THREE.Sprite(material);sprite.scale.set(width,width/6.4,1);sprite.renderOrder=12;const update=(value,tint=color)=>{if(sprite.userData.text===value&&sprite.userData.tint===tint)return;sprite.userData.text=value;sprite.userData.tint=tint;c.clearRect(0,0,512,80);c.fillStyle='rgba(8,17,13,.75)';c.fillRect(1,5,510,68);c.fillStyle=tint;c.font='600 25px -apple-system,system-ui,sans-serif';c.textAlign='center';c.textBaseline='middle';c.fillText(String(value),256,40,488);texture.needsUpdate=true;};update(text);return{sprite,update,dispose(){texture.dispose();material.dispose();}};}
+export function textBillboard(text,color='#d7e4df',width=6){
+ const canvas=document.createElement('canvas');canvas.width=256;canvas.height=40;
+ const c=canvas.getContext('2d'),texture=new THREE.CanvasTexture(canvas);
+ texture.colorSpace=THREE.SRGBColorSpace;texture.minFilter=texture.magFilter=THREE.NearestFilter;
+ texture.generateMipmaps=false;
+ const material=new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false});
+ const sprite=new THREE.Sprite(material);sprite.scale.set(width,width/6.4,1);sprite.renderOrder=12;
+ const update=(value,tint=color)=>{
+  if(sprite.userData.text===value&&sprite.userData.tint===tint)return;
+  sprite.userData.text=value;sprite.userData.tint=tint;c.imageSmoothingEnabled=false;c.clearRect(0,0,256,40);
+  // UI texture only: fixed footprint/positions and every world object stay unchanged.
+  for(const[ink,x,y,w,h]of[['#111510',0,4,256,32],['#111510',4,0,248,40],['#929b87',4,4,248,3],['#929b87',4,7,3,26],['#30382b',7,7,242,26],['#080b07',7,31,245,5],['#080b07',249,7,3,28]]){c.fillStyle=ink;c.fillRect(x,y,w,h);}
+  c.fillStyle=tint;c.fillRect(8,9,3,20);c.font='700 17px ui-monospace,monospace';c.textAlign='center';c.textBaseline='middle';
+  c.fillStyle='#080b07';c.fillText(String(value),131,22,224);c.fillStyle=tint;c.fillText(String(value),130,21,224);texture.needsUpdate=true;
+ };
+ update(text);return{sprite,update,dispose(){texture.dispose();material.dispose();}};
+}
 const spec=(p,s,c,r)=>({p,s,c,r});
 function coloredGeometry(specs){const p=[],n=[],color=[];for(const s of specs){const g=new THREE.BoxGeometry(...s.s).toNonIndexed();if(s.r)g.applyMatrix4(new THREE.Matrix4().makeRotationZ(s.r));g.translate(...s.p);const positions=g.getAttribute('position'),normals=g.getAttribute('normal'),c=new THREE.Color(s.c);for(let i=0;i<positions.count;i++){p.push(positions.getX(i),positions.getY(i),positions.getZ(i));n.push(normals.getX(i),normals.getY(i),normals.getZ(i));color.push(c.r,c.g,c.b);}g.dispose();}const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(p,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(n,3));g.setAttribute('color',new THREE.Float32BufferAttribute(color,3));return g;}
 function crystalGeometry(){const shapes=[];const blue=[0x216eae,0x3b94cc,0x7bc5ef,0xb6e5ff];for(let i=0;i<5;i++){const y=.3+i*.48,size=.68-i*.105;shapes.push(spec([i*.045,y,0],[size,.55,size*.85],blue[Math.min(i,3)]));}return coloredGeometry(shapes);}

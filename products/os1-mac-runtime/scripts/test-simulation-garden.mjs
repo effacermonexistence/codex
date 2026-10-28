@@ -131,13 +131,13 @@ check('actual worker field is independent from roster page/search',()=>{
  assert(js.includes('scene?.sync(workers,currentID(),data.visible'));
  assert(!/sync\(visibleRoster\(/.test(js));assert(field.includes("s.status === 'queued'"));
 });
-check('style-only renderer preserves Terran objects, original HUD authority and source viewport',()=>{
+check('accepted Terran field remains locked while the complete HUD becomes procedural blocks',()=>{
  assert(/import\s*\{\s*VoxelScene\s*\}\s*from\s*['"]\.\/voxel-scene\.js['"]/.test(js));
  assert(!/from\s*['"]\.\/(?:terran-scene|scene)\.js['"]/.test(js));
  assert(/export\s+class\s+VoxelScene/.test(scene));
  assert(scene.includes('advanceColony')&&scene.includes('visibilityState'));
- assert(scene.includes("loadImage('./classic-reference.png')"),'original HUD source is required, not arbitrary replacement art');
- assert(scene.includes('drawImage(this.hudImage,0,316,640,164,0,316,640,164)'),'draw only the original bottom HUD band, never source screenshot terrain');
+ assert(scene.includes("from './voxel-hud.js'")&&scene.includes('new VoxelHUD(this.hudCanvas)'),'active lower HUD must use the procedural draw module');
+ assert(!/classic-reference\.png|\bnew\s+Image\b|\bhudImage\b|wireframeCanvas/.test(scene),'no active classic bitmap or wireframe/pilot-image layer');
  assert(!/classic-terrain\.png|scv-body\.png|probe-body\.png|new\s+(?:THREE\.)?(?:TextureLoader|ImageLoader)|\bfetch\s*\(/.test(scene));
 });
 check('token telemetry preserves usage versus account quota scope',()=>{
@@ -166,7 +166,7 @@ check('exact resource manifest and required gameplay assets',()=>{
  const actual=[];function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){assert(!e.isSymbolicLink());const file=path.join(dir,e.name);if(e.isDirectory())walk(file);else if(path.relative(dest,file)!=='manifest.json')actual.push(path.relative(dest,file));}}
  walk(dest);assert.deepEqual(actual.sort(),[...declared].sort(),'undeclared/stale bundled file');
 });
-check('original HUD and unloaded historical sprite assets retain frozen identity',()=>{
+check('all historical HUD/sprite assets retain frozen provenance without active loading',()=>{
  for(const file of required.filter(f=>f!=='index.html'))assert.deepEqual(fs.readFileSync(path.join(root,'SimulationGarden/public',file)),fs.readFileSync(path.join(dest,file)),'stale bundled source asset '+file);
  const reference=JSON.parse(fs.readFileSync(path.join(dest,'reference.json'),'utf8'));
  assert.equal(createHash('sha256').update(fs.readFileSync(path.join(dest,'classic-reference.png'))).digest('hex'),reference.assetSHA256);
@@ -192,7 +192,7 @@ check('strict local CSP and local self-contained voxel executable scripts',()=>{
  const html=fs.readFileSync(path.join(dest,'index.html'),'utf8');assert(!html.includes('type="module"'));
  assert(html.includes("connect-src 'none'")&&html.includes("frame-src 'none'"));assert(!/https?:\/\//.test(html));
  for(const[,file]of html.matchAll(/(?:src|href)="\.\/([^"?#]+)"/g))assert(declared.has(file),'missing entry resource '+file);
- for(const file of[...declared].filter(f=>f.endsWith('.js'))){const code=fs.readFileSync(path.join(dest,file),'utf8');new vm.Script(code,{filename:file});assert(code.includes('classic-reference.png'),'bundled entry lost the original source HUD');assert(!/classic-terrain\.png|scv-body\.png|probe-body\.png/.test(code),'bundled field must use mechanical geometry, not sprite/terrain fallback');}
+ for(const file of[...declared].filter(f=>f.endsWith('.js'))){const code=fs.readFileSync(path.join(dest,file),'utf8');new vm.Script(code,{filename:file});assert(!/classic-reference\.png|classic-terrain\.png|scv-body\.png|probe-body\.png/.test(code),'active bundle must not contain a classic bitmap loader');}
 });
 const behavior=JSON.parse(execFileSync(process.execPath,[path.join(root,'scripts/test-gameplay-contract.mjs')],{encoding:'utf8',maxBuffer:1_000_000}));
 assert.equal(behavior.status,'PASS');
