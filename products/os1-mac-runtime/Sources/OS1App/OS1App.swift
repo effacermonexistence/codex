@@ -2011,7 +2011,10 @@ private func parallelInteractionSelfTest() async throws {
     while !cancelledStore.activeRuns.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
     try check(cancelledCalls == 1 && cancelledStore.selectedSession!.lastFailure?.recoveryAttempted != true,
         "cancellation raced into automatic recovery")
-    try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: cancelledSubmission))
+    try check(FileManager.default.fileExists(atPath: cancelledStore.cancellationURL(cancelledSubmission).path) &&
+        !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: cancelledSubmission).path),
+        "private Stop marker was lost or leaked to the live home")
+    try? FileManager.default.removeItem(at: cancelledStore.cancellationURL(cancelledSubmission))
     // The preparation boundary precedes model dispatch, but must still return
     // its observation and unfinished objective to this same manager.
     let sourceRoot = root.appendingPathComponent("source-pending"), registrationRoot = root.appendingPathComponent("registry")
@@ -4047,7 +4050,7 @@ private func composerInteractionSelfTest() async throws {
     let parent = store.selectedSessionID!, instant = Date()
     store.composer = "FIRST"; store.performPrimaryAction(now: instant)
     let submission = store.activeRuns[parent]!.submissionID
-    let marker = ExecutionCancellation.url(submissionID: submission)
+    let marker = store.cancellationURL(submission)
     defer { try? FileManager.default.removeItem(at: marker) }
     try check(store.primaryAction == .stop && store.composer.isEmpty, "send did not become stop")
     store.performPrimaryAction(now: instant.addingTimeInterval(0.02))
@@ -4071,17 +4074,20 @@ private func composerInteractionSelfTest() async throws {
     try check(store.isStopping && before == after, "repeated stop rewrote cancellation")
     try check(store.composer == "saved draft" && store.queuedSubmissions.map(\.request) == ["FOLLOW UP"] &&
         store.activeRuns[other]?.cancellationRequested == false &&
-        !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: otherSubmission).path),
+        !FileManager.default.fileExists(atPath: store.cancellationURL(otherSubmission).path),
         "stop damaged draft, queue or another session")
     store.performPrimaryAction(now: instant.addingTimeInterval(2))
     try check(store.queuedSubmissions.map(\.request) == ["FOLLOW UP", "saved draft"] && store.primaryAction == .stopping,
         "stopping lost follow-up input or allowed duplicate stop")
     store.select(other)
-    let otherMarker = ExecutionCancellation.url(submissionID: otherSubmission)
+    let otherMarker = store.cancellationURL(otherSubmission)
     defer { try? FileManager.default.removeItem(at: otherMarker) }
     try check(store.primaryAction == .stop, "independent running session should offer Stop")
     store.performPrimaryAction(now: instant.addingTimeInterval(3 + NSEvent.doubleClickInterval))
     try check(store.isStopping && FileManager.default.fileExists(atPath: otherMarker.path), "normal primary Stop did not execute")
+    try check(!FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission).path) &&
+        !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: otherSubmission).path),
+        "composer cancellation fixtures must never leave live markers")
     store.performPrimaryAction(now: instant.addingTimeInterval(4 + NSEvent.doubleClickInterval))
     try check(store.primaryAction == .stopping && store.queuedSubmissions.count == 2, "repeated primary Stop changed queue")
     store.select(parent)
@@ -12085,7 +12091,7 @@ private final class SessionStore: ObservableObject {
             save()
         }
         // Only an admitted attempt owns this exact cancellation marker.
-        try? FileManager.default.removeItem(at: ExecutionCancellation.url(submissionID: submission.id))
+        try? FileManager.default.removeItem(at: cancellationURL(submission.id))
         let existingUserMessage = sessions[index].messages.contains { $0.id == submission.userMessageID }
         let checkpoint = sessions[index].lastFailure == nil ? ConversationForkCheckpoint(
                 throughMessageID: sessions[index].messages.prefix(while: { $0.id != submission.userMessageID }).last?.id,
@@ -12944,7 +12950,7 @@ private final class SessionStore: ObservableObject {
                     alreadyAttempted: sessions[target].lastFailure?.recoveryAttempted == true,
                     internalReview: submission.recoveryParentID != nil,
                     providerPreference: submission.provider.rawValue,
-                    cancellationRequested: FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path)) {
+                    cancellationRequested: cancellationRequested(submission.id)) {
                 beginReconciliation(conversationID: submission.sessionID)
             }
             // The run OS-1 just dispatched wrote its own tool narration, hook
@@ -12957,8 +12963,8 @@ private final class SessionStore: ObservableObject {
                sessions[target].lastFailure?.id == original.id,
                !isSessionRunning(submission.sessionID),
                canStartAdditionalRun,
-               !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: original.id).path),
-               !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: submission.id).path) {
+               !cancellationRequested(original.id),
+               !cancellationRequested(submission.id) {
                 let queuedFollowUp = queuedSubmissions.firstIndex {
                     $0.sessionID == submission.sessionID &&
                     $0.id != original.id &&
@@ -13539,7 +13545,7 @@ private final class SessionStore: ObservableObject {
                   let failed = session.lastFailure, failed.preflightOnly == true,
                   failed.sourceRetryIdentity != pending.manifestSHA256,
                   FileManager.default.fileExists(atPath: root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path),
-                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path) else { continue }
+                  !cancellationRequested(failed.id) else { continue }
             guard
                   let intent = PreparationIntent.detect(failed.request), !intent.modifies,
                   intent.kind != .explainFromContext,
@@ -13558,7 +13564,7 @@ private final class SessionStore: ObservableObject {
                   sessions[index].lastFailure?.request == failed.request,
                   sessions[index].lastFailure?.preflightOnly == true,
                   sessions[index].lastFailure?.sourceRetryIdentity != pending.manifestSHA256,
-                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
+                  !cancellationRequested(failed.id),
                   FileManager.default.fileExists(atPath: root.appendingPathComponent(pending.manifestSHA256).appendingPathComponent("source.tar.gz").path) else { continue }
             var retry = failed
             retry.sourceRetryIdentity = pending.manifestSHA256
@@ -13617,7 +13623,7 @@ private final class SessionStore: ObservableObject {
             let admission = runAdmission
             guard admission.admitted,
                   let failed = session.lastFailure, failed.backendRecoveryIdentity != identity,
-                  !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path),
+                  !cancellationRequested(failed.id),
                   let index = sessions.firstIndex(where: { $0.id == session.id }) else { continue }
             var retry = failed
             retry.backendRecoveryIdentity = identity
@@ -13635,11 +13641,15 @@ private final class SessionStore: ObservableObject {
         customStorageRoot.map { PendingOS1RepairStore(root: $0.appendingPathComponent("pending-os1-repairs", isDirectory: true)) }
             ?? PendingOS1RepairStore()
     }
-    private func cancellationRequested(_ submissionID: UUID) -> Bool {
-        let marker = customStorageRoot.map {
+    /// One custody root for marker writes, reads and cleanup. A fixture must
+    /// never write into the live home or consult it when deciding recovery.
+    fileprivate func cancellationURL(_ submissionID: UUID) -> URL {
+        customStorageRoot.map {
             $0.appendingPathComponent("run-journals", isDirectory: true).appendingPathComponent(submissionID.uuidString + ".cancel")
         } ?? ExecutionCancellation.url(submissionID: submissionID)
-        return fileManager.fileExists(atPath: marker.path)
+    }
+    private func cancellationRequested(_ submissionID: UUID) -> Bool {
+        fileManager.fileExists(atPath: cancellationURL(submissionID).path)
     }
     /// A repair interrupted by a restart this recent is resumed by itself.
     static let interruptedRepairResumeWindow: TimeInterval = 6 * 3_600
@@ -14073,7 +14083,7 @@ private final class SessionStore: ObservableObject {
         guard let root = customStorageRoot else { try ExecutionCancellation.request(submissionID: submissionID); return }
         let folder = root.appendingPathComponent("run-journals", isDirectory: true)
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let marker = folder.appendingPathComponent(submissionID.uuidString + ".cancel")
+        let marker = cancellationURL(submissionID)
         try Data("cancel\n".utf8).write(to: marker, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marker.path)
     }
@@ -14224,7 +14234,7 @@ private final class SessionStore: ObservableObject {
         guard session.lastBackendFailure?.requiresReadback == true,
               let failed = session.lastFailure, failed.recoveryParentID == nil else { return false }
         guard !originalParallelParentIsBusy(failed) else { return false }
-        return !FileManager.default.fileExists(atPath: ExecutionCancellation.url(submissionID: failed.id).path)
+        return !cancellationRequested(failed.id)
     }
     /// A conversation stuck behind an uncertain-effect failure gets its
     /// read-only readback even when the failure predates this build (or the
