@@ -10064,6 +10064,9 @@ private final class SessionStore: ObservableObject {
     @Published private(set) var frontierNotice: FrontierNewsItem?
     private var frontierMonitorTask: Task<Void, Never>?
     private var frontierMonitor: FrontierNewsMonitor?
+    /// In-process guard for the daily list-price refresh: one attempt a day
+    /// even when its receipt could not be written.
+    private var modelPriceRefreshAttemptedAt: Date?
 
     let voiceDictation: VoiceDictationController
 
@@ -10115,10 +10118,12 @@ private final class SessionStore: ObservableObject {
             frontierMonitor = monitor
             frontierMonitorTask = Task { [weak self] in
                 await self?.refreshFrontierSignals()
+                await self?.refreshModelPricesIfDue()
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(FrontierNewsMonitor.defaultPollInterval))
                     guard !Task.isCancelled, self != nil else { return }
                     await self?.refreshFrontierSignals()
+                    await self?.refreshModelPricesIfDue()
                 }
             }
         }
@@ -10164,6 +10169,20 @@ private final class SessionStore: ObservableObject {
     }
 
     func acknowledgeFrontierNotice() { frontierNotice = nil }
+
+    /// Build 441: the routed models' list prices are refreshed from the
+    /// providers' own pages at most once a day, only while no run is active
+    /// or starting. It rides the frontier monitor's poll instead of a
+    /// LaunchAgent; the fetch and parse run off the main actor, and a refusal
+    /// keeps the last good table (see ~/.os1/pricing/refresh-receipt.json).
+    func refreshModelPricesIfDue(now: Date = Date()) async {
+        guard customStorageRoot == nil else { return }
+        let busy = !activeRuns.isEmpty || !inFlightSubmissions.isEmpty
+        guard ModelPriceRefresh.shouldStartScheduled(now: now, busy: busy,
+                                                     lastAttemptInProcess: modelPriceRefreshAttemptedAt) else { return }
+        modelPriceRefreshAttemptedAt = now
+        _ = await Task.detached(priority: .utility) { await ModelPriceRefresh.run(now: now, dryRun: false) }.value
+    }
 
     var frontierLatestActionableItem: FrontierNewsItem? {
         frontierItems.first { $0.kind == .tokenReset || $0.kind == .usageLimit }

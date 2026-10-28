@@ -18833,6 +18833,7 @@ func usage() {
       os1 configure-codex-exo
       os1 configure-claude-exo
       os1 audit-codex-usage /path/to/native-record.jsonl TURN_UUID
+      os1 pricing refresh [--dry-run]
       os1 source-register scv-instagram /absolute/runtime-source.tar.gz
       os1 register
       os1 run --workspace /path/to/project --prompt "task"
@@ -19249,6 +19250,20 @@ struct OS1Main {
                 let claude = (try? ModelAvailability.claudeCatalog(workspace: workspace, config: config)) ?? []
                 struct Inventory: Encodable { let codex: [CodexModelCapability]; let claude: [ClaudeModelCapability] }
                 print(String(decoding: try JSONEncoder().encode(Inventory(codex: codex, claude: claude)), as: UTF8.self))
+            // Daily list-price refresh for route costing (build 441). Reads
+            // the providers' own pricing pages; writes ~/.os1/pricing only
+            // when every routed model reads identically twice and stays
+            // within x0.2-x5 of the table in use. --dry-run writes nothing.
+            case "pricing":
+                guard arguments.count >= 2, arguments[1] == "refresh",
+                      arguments.dropFirst(2).allSatisfy({ $0 == "--dry-run" }), arguments.count <= 3 else {
+                    throw OS1Error.message("Expected: os1 pricing refresh [--dry-run]")
+                }
+                let report = await ModelPriceRefresh.run(dryRun: arguments.count == 3)
+                print(String(decoding: try ModelPriceRefresh.encodeReceipt(report.receipt), as: UTF8.self), terminator: "")
+                if report.receipt.outcome == "refused" {
+                    throw OS1Error.message("price refresh refused; the last good table is kept (see the refusals above)")
+                }
             case "backend-health":
                 // Read-only usability of both backends with reasons and the
                 // earliest recovery time; cached one minute unless --refresh.
