@@ -53,6 +53,22 @@
  * two qualifying efforts of that model both publish a per-task cost, the
  * lower effort costs no more (compileTable throws otherwise).
  *
+ * DESIGN-4 §7 (lead decision after the 442 review, 2026-10-28): the BAR on a
+ * shared benchmark is the reference model's BEST confirmed score at ANY
+ * effort (any reported level of that model on that benchmark row), not only
+ * its max (or top) row: GDP.pdf gives gpt-6-astra @xhigh 32.2, above its @max
+ * 31.0 and above every GPT-6.1 Sol score, so Sol no longer stands for astra on
+ * writing. Which benchmarks are SHARED is unchanged (the max or top reference
+ * row must be confirmed), so the bar only ever rises: it removes rows, never
+ * adds one. Condition 3 (per-task cost) is unchanged: against the reference's
+ * max (or top) row, the configuration the pool actually runs.
+ *
+ * DESIGN-4 §2: the BROAD set of a pool, the rows that qualify in EVERY
+ * non-writing category (knowledge, science, math, coding, tool_use), in price
+ * order. A broad row is safe under any non-writing misread of the domain;
+ * a row that qualifies in fewer categories is NARROW and binds only when the
+ * host corroborates the domain (RCCNativeCatalogBuilder).
+ *
  * Never a quality claim about one answer: the table says only what the
  * providers' own benchmarks say. Core labels a capability route "quality
  * unverified". */
@@ -60,7 +76,11 @@ import {createHash} from 'node:crypto';
 import {closeSync, constants, openSync, readFileSync, writeSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
-export const POLICY = 'capability_delta0_v1';
+export const POLICY = 'capability_delta0_v2';
+/** DESIGN-4 §7: the reference's best confirmed score at any effort is the bar. */
+export const REFERENCE_BAR = 'best_confirmed_any_effort';
+/** DESIGN-4 §2: the categories a broad row covers (every one but writing). */
+export const BROAD_CATEGORIES = Object.freeze(['knowledge', 'science', 'math', 'coding', 'tool_use']);
 export const TOLERANCE = 0;
 /** Dispatchable efforts a benchmark row can be attributed to, in order. */
 export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -132,6 +152,24 @@ export function referenceRow(rows, reference) {
   return {row: null, reason: 'reference_unpublished'};
 }
 
+/** DESIGN-4 §7: the bar on one (provider, benchmark) whose reference row
+ * `top` is shared: the reference model's best CONFIRMED score at any reported
+ * level (the top row included; a lower-is-better metric takes the lowest),
+ * with the row that holds it (on a tie, the top row, else the lowest effort).
+ * Never below the top row's score, so it only ever raises the bar. */
+export function referenceBar(rows, reference, top) {
+  const lowerBetter = top.row.lower_better === true;
+  const confirmed = rows.filter(row => row.model === reference && row.status === 'confirmed');
+  const better = (a, b) => lowerBetter ? a < b - EPSILON : a > b + EPSILON;
+  let best = top.row;
+  for (const row of confirmed) if (better(row.score, best.score)) best = row;
+  const ties = confirmed.filter(row => Math.abs(row.score - best.score) <= EPSILON);
+  const holder = ties.includes(top.row) ? top.row : ties.sort((a, b) =>
+    (EFFORTS.indexOf(effortOf(a.reasoning_level) ?? 'zz') - EFFORTS.indexOf(effortOf(b.reasoning_level) ?? 'zz')))[0] ?? best;
+  return {row: holder, score: holder.score, effort: holder === top.row ? (top.effort ?? top.row.reasoning_level) :
+    (effortOf(holder.reasoning_level) ?? holder.reasoning_level)};
+}
+
 /** The rule for one pool and one evidence category. `rows`: the evidence rows
  * of that provider; `reference`: the pool's reference model; `prices`: a
  * ModelPriceTable JSON object; `blockers` (default true): blockers A and B.
@@ -141,8 +179,9 @@ export function qualifyCategory(rows, {category, reference, prices, blockers = t
   const benchmarks = [...new Set(inCategory.map(row => row.benchmark))];
   const references = new Map();
   for (const benchmark of benchmarks) {
-    const found = referenceRow(inCategory.filter(row => row.benchmark === benchmark), reference);
-    if (found.row) references.set(benchmark, found);
+    const benchmarkRows = inCategory.filter(row => row.benchmark === benchmark);
+    const found = referenceRow(benchmarkRows, reference);
+    if (found.row) references.set(benchmark, {...found, bar: referenceBar(benchmarkRows, reference, found)});
   }
   const referenceUSD = typicalCallUSD(prices, reference);
   // Every (model, effort) the evidence attributes a score to.
@@ -160,7 +199,9 @@ export function qualifyCategory(rows, {category, reference, prices, blockers = t
     for (const [benchmark, ref] of references) {
       if (model === reference && effort === ref.effort) continue; // the reference row itself
       const lowerBetter = ref.row.lower_better === true;
-      const atOrAbove = score => (lowerBetter ? ref.row.score - score : score - ref.row.score) >= -EPSILON;
+      // DESIGN-4 §7: at or above the reference's best confirmed score at any effort.
+      const bar = ref.bar;
+      const atOrAbove = score => (lowerBetter ? bar.score - score : score - bar.score) >= -EPSILON;
       const mine = inCategory.filter(row => row.benchmark === benchmark && row.model === model);
       const own = mine.filter(row => effortOf(row.reasoning_level) === effort && row.status === 'confirmed');
       if (blockers && blocked === null) {
@@ -176,12 +217,14 @@ export function qualifyCategory(rows, {category, reference, prices, blockers = t
       // Two confirmed values for one tuple: the worse one stands (never in the 2026-10-27 evidence).
       const score = lowerBetter ? Math.max(...own.map(row => row.score)) : Math.min(...own.map(row => row.score));
       const row = own.find(item => item.score === score);
-      const delta = lowerBetter ? ref.row.score - score : score - ref.row.score;
-      const entry = {benchmark, category, score, reference_score: ref.row.score,
-        reference_effort: ref.effort ?? ref.row.reasoning_level, delta: round6(delta), lower_is_better: lowerBetter,
+      const delta = lowerBetter ? bar.score - score : score - bar.score;
+      // The score bar is the best confirmed score (§7); the per-task cost
+      // condition (3) is unchanged: against the reference's max (or top) row.
+      const entry = {benchmark, category, score, reference_score: bar.score,
+        reference_effort: bar.effort, delta: round6(delta), lower_is_better: lowerBetter,
         unit: row.unit, cost: row.cost ?? null, reference_cost: ref.row.cost ?? null,
         cost_comparable: row.cost != null && ref.row.cost != null && costUnit(row) === costUnit(ref.row),
-        sources: [...new Set([...row.sources, ...ref.row.sources])].sort()};
+        sources: [...new Set([...row.sources, ...ref.row.sources, ...bar.row.sources])].sort()};
       shared.push(entry);
       if (delta < -EPSILON && below === null) below = entry;
     }
@@ -246,10 +289,18 @@ export function compileTable(evidenceBytes, pricesBytes, {blockers = true} = {})
     }
     categories[domain] = {evidence_category: category, pools};
   }
-  return {schema: 1, policy: POLICY, tolerance: TOLERANCE, compiled_on: evidence.retrieved_on,
+  // DESIGN-4 §2: per pool, the rows qualifying in every non-writing category.
+  const broad = {categories: [...BROAD_CATEGORIES], pools: {}};
+  for (const pool of Object.values(POOLS)) {
+    const lists = BROAD_CATEGORIES.map(domain => categories[domain].pools[pool].qualifying);
+    broad.pools[pool] = lists[0].filter(row => lists.every(list =>
+      list.some(other => other.model === row.model && other.effort === row.effort)))
+      .map(({model, effort, typical_call_usd}) => ({model, effort, typical_call_usd}));
+  }
+  return {schema: 1, policy: POLICY, tolerance: TOLERANCE, reference_bar: REFERENCE_BAR, compiled_on: evidence.retrieved_on,
     blockers: blockers ? ['unconfirmed_below_reference', 'below_reference_at_higher_effort'] : [],
     evidence_sha256: sha256(evidenceBytes), price_table_sha256: sha256(pricesBytes), typical_call: TYPICAL_CALL,
-    basis: 'first_party_benchmarks_delta0_not_an_answer_check', categories};
+    basis: 'first_party_benchmarks_delta0_not_an_answer_check', categories, broad};
 }
 
 function argumentsOf(argv) {

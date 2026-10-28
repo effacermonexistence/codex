@@ -96,8 +96,10 @@ function readLivePlanCapability({stateDir, policy, registration, now_ms = Date.n
     const stats = parents.map(privateDirectory);
     need(readdirSync(root).length === 1 && readdirSync(root)[0] === 'manifest.json', 'live_manifest_closed_inventory');
     const here = fileURLToPath(new URL('.', import.meta.url));
+    // Build 442 (DESIGN-4): the runtime outgrew 512 KiB (531 KB); the read
+    // bound is a size sanity limit, 1 MiB keeps it bounded.
     need(hash(privateRead(join(here, 'adaptive-plan-host.mjs'), 131072, false)) === registration.loader_sha256 &&
-      hash(privateRead(join(here, 'rcc-runtime.mjs'), 524288, false)) === registration.runtime_sha256,
+      hash(privateRead(join(here, 'rcc-runtime.mjs'), 1048576, false)) === registration.runtime_sha256,
     'live_runtime_code_mismatch');
     const bytes = privateRead(join(root, 'manifest.json'), LIVE_BYTES, true);
     need(bytes.length === registration.manifest_bytes && hash(bytes) === registration.manifest_sha256,

@@ -4,7 +4,11 @@
 // below a runnable reference, labelled predicted and quality-unverified, never
 // certified; any failure signal escalates exactly once to the reference fixed
 // at bind. Deep, unknown, tool-needing, current-fact, workspace and owner-
-// constrained work keeps the reference or the owner's tuple. Pure resolver
+// constrained work keeps the reference or the owner's tuple. DESIGN-4
+// (owner decision 2026-10-28): only a LIGHT answer is graded now; a standard
+// one binds a capability row (openclaw-rcc-capability-routes.test.mjs) or its
+// reference, never the workhorse at medium, so the graded mechanics below run
+// on a light answer. Pure resolver
 // calls and a real durable Core with temp SQLite and a fake executor: no
 // provider, model, network, real HOME or installed app.
 import test from 'node:test';
@@ -20,7 +24,7 @@ import {auditDeliveryPolicy} from '../route-replay.mjs';
 const sha = text => createHash('sha256').update(text).digest('hex');
 const VERSION = 'r10_joint_selection_v2';
 const policyText = 'Graded admission fixture policy.';
-const REQUEST = '슈뢰딩거 방정식 설명해봐';
+const REQUEST = '슈뢰딩거 방정식이 뭐야?';
 
 function task({request = REQUEST, preference = 'auto', budget = {}, v2 = true, materials = []} = {}) {
   const host = {workspace: '/private/graded-fixture', context: null, provider_preference: preference,
@@ -36,8 +40,8 @@ function intent(extra = {}) {
   return {version: VERSION, allowed_surfaces: [], exact_model: null, model_family: null, effort: null,
     require_native_ceiling: false, quality_target: null, state: 'resolved', ...extra};
 }
-function profile(answer_kind = 'answer_only', tool_need = 'none', difficulty = 'standard',
-                 signals = ['answer_stem', 'explanation_stem']) {
+function profile(answer_kind = 'answer_only', tool_need = 'none', difficulty = 'light',
+                 signals = ['answer_stem', 'definitional_stem', 'short_definition']) {
   return {schema: 1, policy: 'host_profile_v1', answer_kind, tool_need, difficulty, signals};
 }
 // Both pools, as the Swift builder emits them: Codex agent rows; Claude agent
@@ -63,13 +67,16 @@ function catalog(q, {request_profile = profile(), v2 = intent(), rows = null, ch
     row('fable-max', 'claude-fable-5-1', 'max', 'claude'), row('fable-max-chat', 'claude-fable-5-1', 'max', 'claude', {surface: 'claude-chat'}),
     row('opus-medium', 'claude-opus-5-5', 'medium', 'claude'),
     row('opus-medium-chat', 'claude-opus-5-5', 'medium', 'claude', {surface: 'claude-chat'}),
-    row('haiku-chat', 'claude-haiku-4-5-20251001', 'none', 'claude', {surface: 'claude-chat'})];
+    row('haiku-chat', 'claude-haiku-4-5-20251001', 'none', 'claude', {surface: 'claude-chat'}),
+    row('sonnet-low-chat', 'claude-sonnet-5-5', 'low', 'claude', {surface: 'claude-chat'})];
   // null omits the field (a default parameter would replace undefined).
   return {schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, candidates,
     model_tiers: {'gpt-6-astra': 'frontier', 'gpt-6.1-sol': 'workhorse', 'gpt-6-luna': 'fast',
-      'claude-fable-5-1': 'frontier', 'claude-opus-5-5': 'workhorse', 'claude-haiku-4-5-20251001': 'fast'},
+      'claude-fable-5-1': 'frontier', 'claude-opus-5-5': 'workhorse', 'claude-sonnet-5-5': 'efficient',
+      'claude-haiku-4-5-20251001': 'fast'},
     native_reference_efforts: {codex: {'gpt-6-astra': 'ultra', 'gpt-6.1-sol': 'high', 'gpt-6-luna': 'medium'},
-      claude: {'claude-fable-5-1': 'max', 'claude-opus-5-5': 'medium', 'claude-haiku-4-5-20251001': 'none'}},
+      claude: {'claude-fable-5-1': 'max', 'claude-opus-5-5': 'medium', 'claude-sonnet-5-5': 'low',
+        'claude-haiku-4-5-20251001': 'none'}},
     owner_scope: ownerScope, chat_lane_eligible: chat, request_class: requestClass,
     ...(v2 === null ? {} : {routing_intent_v2: v2}),
     ...(request_profile === null ? {} : {request_profile}), ...patch};
@@ -84,9 +91,9 @@ function bind(q, c, options = {}) {
 
 test('the graded lists are the locked design and never reach the frontier or max', () => {
   // Build 441 part 2 (DESIGN-2 "Core mapping"): keyed by what the profile reads.
+  // DESIGN-4 (2026-10-28): no standard list; current facts serves light lookups.
   assert.deepEqual(GRADED_LISTS, {chat_light: [['local', 'none'], ['fast', 'low']],
     explain_light: [['fast', 'low'], ['efficient', 'low']],
-    explain_standard: [['workhorse', 'medium'], ['efficient', 'medium']],
     current_facts: [['workhorse', 'medium']], deep_workhorse: [['workhorse', 'xhigh']]});
   for (const [list, entries] of Object.entries(GRADED_LISTS))
     for (const [tier, effort] of entries)
@@ -94,35 +101,43 @@ test('the graded lists are the locked design and never reach the frontier or max
   assert(ROUTE_CLASSES.includes('standard'));
 });
 
-test('a standard answer binds the graded workhorse at medium, uncertified, with the reference fixed as its escalation', () => {
+test('a light answer binds the graded fast tier at low, uncertified, with the reference fixed as its escalation', () => {
   const q = task(), c = catalog(q);
   const admission = admittedRoute(hostPlan(q, c).nodes[0], q, c);
-  assert.deepEqual(admission, {class: 'graded', source: 'host_profile', certificate_id: null, grade: 'standard',
-    list: 'explain_standard', classifier: 'keyword'});
+  assert.deepEqual(admission, {class: 'graded', source: 'host_profile', certificate_id: null, grade: 'light',
+    list: 'explain_light', classifier: 'keyword'});
   const {decision, route, tuple, basis} = bind(q, c);
-  assert.equal(tuple, 'gpt-6.1-sol/medium');
+  assert.equal(tuple, 'gpt-6-luna/low');
   assert.equal(decision.route_class, 'standard');
   assert.equal(route.kind, 'graded');
-  assert.match(decision.reason, /^resolver;route_graded;admitted_graded_standard;graded_list_0;tier_workhorse;/);
+  assert.match(decision.reason, /^resolver;route_graded;admitted_graded_light;graded_list_0;tier_fast;/);
   assert(!/certified/.test(decision.reason), decision.reason);
-  assert.equal(basis, 'graded:standard');
+  assert.equal(basis, 'graded:light');
   assert.deepEqual({admitted_by: route.ladder.admitted_by, grade: route.ladder.grade, certificate_id: route.ladder.certificate_id,
     format_check: route.ladder.format_check, reference: `${route.ladder.reference_model}/${route.ladder.reference_effort}`,
     reference_candidate_id: route.ladder.reference_candidate_id},
-  {admitted_by: 'host_profile', grade: 'standard', certificate_id: null, format_check: null,
+  {admitted_by: 'host_profile', grade: 'light', certificate_id: null, format_check: null,
     reference: 'gpt-6-astra/ultra', reference_candidate_id: 'astra-ultra'});
-  assert.deepEqual(decision.ladder, {cheap_effort: 'medium', reference_effort: 'ultra', cheap_model: 'gpt-6.1-sol',
+  assert.deepEqual(decision.ladder, {cheap_effort: 'low', reference_effort: 'ultra', cheap_model: 'gpt-6-luna',
     reference_model: 'gpt-6-astra'});
-  // Claude first (another pool order): the chat row of its workhorse at medium.
-  const claude = catalog(q, {rows: catalog(q).candidates.slice(7).concat(catalog(q).candidates.slice(0, 7))});
-  const other = bind(q, claude);
-  assert.equal(other.decision.surface, 'claude-chat');
-  assert.equal(other.tuple, 'claude-opus-5-5/medium');
-  assert.equal(other.route.ladder.reference_model, 'claude-fable-5-1');
+});
+
+test('DESIGN-4: a standard answer is never graded; with no capability routes it binds its reference', () => {
+  for (const [name, request_profile] of [['keyword', profile('answer_only', 'none', 'standard', ['answer_stem', 'explanation_stem'])],
+    ['current facts', profile('answer_only', 'current_facts', 'standard', ['answer_stem', 'current_facts', 'explanation_stem'])]]) {
+    const q = task({request: '슈뢰딩거 방정식 설명해봐'}), c = catalog(q, {request_profile});
+    assert.deepEqual(admittedRoute(hostPlan(q, c).nodes[0], q, c),
+      {class: 'reference', source: 'uncertified', certificate_id: null}, name);
+    const bound = bind(q, c);
+    assert.equal(bound.tuple, 'gpt-6-astra/ultra', name);
+    assert.equal(bound.basis, 'reference', name);
+    assert.match(bound.decision.reason, /;admitted_reference_uncertified;standard_policy_reference;classifier_keyword/, name);
+    assert(!/gpt-6\.1-sol\/medium|admitted_graded/.test(bound.decision.reason), name);
+  }
 });
 
 test('a light definitional answer binds the fast tier at low; deep and unknown keep the reference', () => {
-  const q = task({request: '슈뢰딩거 방정식이 뭐야?'});
+  const q = task();
   const light = bind(q, catalog(q, {request_profile: profile('answer_only', 'none', 'light',
     ['answer_stem', 'definitional_stem', 'short_definition'])}));
   assert.equal(light.tuple, 'gpt-6-luna/low');
@@ -198,10 +213,10 @@ test('bind-time headroom: two attempts and two native dispatches must remain, el
     const q = task({budget}), bound = bind(q, catalog(q));
     assert.equal(bound.tuple, 'gpt-6-astra/ultra', JSON.stringify(budget));
     assert.equal(bound.basis, 'reference');
-    assert.match(bound.decision.reason, /;admitted_reference_uncertified;graded_standard_requires_dispatch_headroom;/);
+    assert.match(bound.decision.reason, /;admitted_reference_uncertified;graded_light_requires_dispatch_headroom;/);
   }
   const unlimited = task({budget: {max_native_dispatches: null}});
-  assert.equal(bind(unlimited, catalog(unlimited)).tuple, 'gpt-6.1-sol/medium', 'no cap: only the attempts bound');
+  assert.equal(bind(unlimited, catalog(unlimited)).tuple, 'gpt-6-luna/low', 'no cap: only the attempts bound');
 });
 
 test('the headroom is the task\'s: only a one-node plan binds graded (an injected two-node plan keeps the reference)', () => {
@@ -216,11 +231,11 @@ test('the headroom is the task\'s: only a one-node plan binds graded (an injecte
   for (const id of ['a', 'b']) {
     assert.equal(`${two.decisions[id].model}/${two.decisions[id].effort}`, 'gpt-6-astra/ultra', id);
     assert.equal(two.routes[id].kind, 'reference', id);
-    assert.match(two.decisions[id].reason, /;admitted_reference_uncertified;graded_standard_requires_single_node_plan;/);
+    assert.match(two.decisions[id].reason, /;admitted_reference_uncertified;graded_light_requires_single_node_plan;/);
   }
   const one = resolveRoutePlan({schema: 1, task_id: q.task_id, request_sha256: q.request_sha256, final_node_id: 'a',
     nodes: [nodes[0]]}, q, c, Date.now());
-  assert.equal(`${one.decisions.a.model}/${one.decisions.a.effort}`, 'gpt-6.1-sol/medium');
+  assert.equal(`${one.decisions.a.model}/${one.decisions.a.effort}`, 'gpt-6-luna/low');
   assert.equal(one.routes.a.kind, 'graded');
 });
 
@@ -229,7 +244,7 @@ test('K2: a graded tuple binds only beside a runnable reference; none holds, typ
   // This pool's reference cannot dispatch: the other pool's reference is the escalation.
   const otherRef = catalog(q, {rows: catalog(q).candidates.map(r => r.model === 'gpt-6-astra' ? {...r, availability: 'unavailable'} : r)});
   const other = bind(q, otherRef);
-  assert.equal(other.tuple, 'gpt-6.1-sol/medium');
+  assert.equal(other.tuple, 'gpt-6-luna/low');
   assert.equal(other.route.ladder.reference_model, 'claude-fable-5-1');
   assert.match(other.decision.reason, /;escalation_reference_other_pool;/);
   // No reference anywhere: never a cheap stand-in; the bind is a typed hold.
@@ -240,14 +255,13 @@ test('K2: a graded tuple binds only beside a runnable reference; none holds, typ
 
 test('a stale quota row is excluded: the next graded entry or pool binds', () => {
   const q = task();
-  const staleMedium = catalog(q, {rows: catalog(q).candidates.map(r => r.id === 'sol-medium' ? {...r,
+  const staleLow = catalog(q, {rows: catalog(q).candidates.map(r => r.id === 'luna-low' ? {...r,
     quota_observed_at_ms: Date.now() - 600000, quota_valid_until_ms: Date.now() - 1000} : r)});
-  const bound = bind(q, staleMedium);
-  assert.notEqual(bound.decision.resolved_candidate_id, 'sol-medium');
-  // Codex has no efficient tier, so its next entry is the workhorse at high;
-  // the Claude pool's first entry (its workhorse at medium) may outrank it.
-  assert(['gpt-6.1-sol/high', 'claude-opus-5-5/medium'].includes(bound.tuple), bound.tuple);
-  assert.equal(bound.basis, 'graded:standard');
+  const bound = bind(q, staleLow);
+  assert.notEqual(bound.decision.resolved_candidate_id, 'luna-low');
+  // Codex has no other light row; the Claude pool's fast tier (Haiku 4.5, no effort setting) binds.
+  assert.equal(bound.tuple, 'claude-haiku-4-5-20251001/none');
+  assert.equal(bound.basis, 'graded:light');
 });
 
 test('not always luna, not always low, not always max', () => {
@@ -257,8 +271,10 @@ test('not always luna, not always low, not always max', () => {
     const {decision} = bind(q, c);
     tuples.add(decision.model); efforts.add(decision.effort);
   }
-  assert.deepEqual([...tuples].sort(), ['gpt-6-astra', 'gpt-6-luna', 'gpt-6.1-sol']);
-  assert.deepEqual([...efforts].sort(), ['low', 'medium', 'ultra']);
+  // DESIGN-4: a standard answer with no capability routes binds its reference
+  // (with routes, a capability row: openclaw-rcc-capability-routes.test.mjs).
+  assert.deepEqual([...tuples].sort(), ['gpt-6-astra', 'gpt-6-luna']);
+  assert.deepEqual([...efforts].sort(), ['low', 'ultra']);
 });
 
 test('the catalog contract: a malformed request profile is a binding error', async t => {
@@ -315,23 +331,23 @@ const tuple = ticket => `${ticket.selected_config.model}/${ticket.selected_confi
 
 test('a graded answer is delivered on its structural screen, labelled predicted and unverified', async t => {
   const {done, tickets, saved, ledger, text} = await harness(t, ticket => completed(ticket));
-  assert.deepEqual(tickets.map(tuple), ['gpt-6.1-sol/medium']);
+  assert.deepEqual(tickets.map(tuple), ['gpt-6-luna/low']);
   assert.equal(tickets[0].native_resume_session_id, null, 'a graded attempt never resumes the owner thread');
   assert.equal(done.state, 'returned_unverified', JSON.stringify(done));
   assert.equal(done.result.output, 'fixture answer');
   assert.equal(done.result.task_quality, 'execution_only');
   assert.equal(done.result.parity_state, 'unverified');
   assert.equal(saved.children[0].route_kind, 'graded');
-  assert.match(saved.children[0].routing_decision.reason, /;admitted_graded_standard;/);
+  assert.match(saved.children[0].routing_decision.reason, /;admitted_graded_light;/);
   assert.equal(ledger.length, 1);
   const [record] = ledger;
   assert.deepEqual({route_class: record.route_class, route_kind: record.route_kind, delivery_basis: record.delivery_basis,
     check_id: record.check_id, check_outcome: record.check_outcome, check_label: record.check_label,
     escalated: record.escalated, task_quality: record.task_quality, family: record.family},
-  {route_class: 'standard', route_kind: 'graded', delivery_basis: 'graded:standard', check_id: null,
+  {route_class: 'standard', route_kind: 'graded', delivery_basis: 'graded:light', check_id: null,
     check_outcome: 'screen_pass', check_label: null, escalated: false, task_quality: 'execution_only',
     family: 'standard:read_only:agent'});
-  assert.deepEqual(record.ladder, {cheap_effort: 'medium', reference_effort: 'ultra', cheap_model: 'gpt-6.1-sol',
+  assert.deepEqual(record.ladder, {cheap_effort: 'low', reference_effort: 'ultra', cheap_model: 'gpt-6-luna',
     reference_model: 'gpt-6-astra'});
   const report = auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]});
   assert.equal(report.verdict, 'PASS', JSON.stringify(report.violations));
@@ -345,14 +361,14 @@ test('any failure signal on the graded attempt escalates exactly once to the bou
   for (const [name, patch] of Object.entries(failures)) {
     const {done, tickets, saved, ledger, text} = await harness(t, (ticket, n) => n === 1 ? completed(ticket, patch) :
       completed(ticket, {output: 'reference answer'}));
-    assert.deepEqual(tickets.map(tuple), ['gpt-6.1-sol/medium', 'gpt-6-astra/ultra'], name);
+    assert.deepEqual(tickets.map(tuple), ['gpt-6-luna/low', 'gpt-6-astra/ultra'], name);
     assert.equal(tickets[1].candidate_id, 'astra-ultra', name);
     assert.equal(done.result.output, 'reference answer', name);
     assert.equal(saved.children[0].route_kind, 'reference', name);
     assert.equal(saved.children[0].ladder.escalated, true, name);
     assert.match(saved.children[0].routing_decision.reason, /^tier_escalated_after_failure_signal;route_reference;admitted_reference_escalation;/);
     assert.equal(ledger.length, 2, name);
-    assert.equal(ledger[0].delivery_basis, 'graded:standard', name);
+    assert.equal(ledger[0].delivery_basis, 'graded:light', name);
     assert.equal(ledger[0].escalation_outcome, 'escalated', name);
     assert(['screen_fail', 'not_returned'].includes(ledger[0].check_outcome), `${name}: ${ledger[0].check_outcome}`);
     assert.equal(ledger[1].delivery_basis, 'reference_escalated', name);
@@ -361,7 +377,7 @@ test('any failure signal on the graded attempt escalates exactly once to the bou
   }
   // The escalated reference is the last attempt: its own failure is never retried.
   const {tickets, done} = await harness(t, (ticket) => completed(ticket, {output: ''}));
-  assert.deepEqual(tickets.map(tuple), ['gpt-6.1-sol/medium', 'gpt-6-astra/ultra']);
+  assert.deepEqual(tickets.map(tuple), ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
   assert.notEqual(done.state, 'running');
 });
 
@@ -371,9 +387,9 @@ test('a failure-signal verifier failing a graded answer escalates once; it never
     verify: async input => ({passed: input.output === 'reference answer'})}]]));
   const {tickets, ledger, done} = await harness(t, (ticket, n) => completed(ticket, {output: n === 1 ? 'graded answer' :
     'reference answer'}), {verifierRegistry});
-  assert.deepEqual(tickets.map(tuple), ['gpt-6.1-sol/medium', 'gpt-6-astra/ultra']);
+  assert.deepEqual(tickets.map(tuple), ['gpt-6-luna/low', 'gpt-6-astra/ultra']);
   assert.equal(done.result.output, 'reference answer');
-  assert.equal(ledger[0].delivery_basis, 'graded:standard');
+  assert.equal(ledger[0].delivery_basis, 'graded:light');
   assert.equal(ledger[0].check_label, null);
 });
 

@@ -119,6 +119,14 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // a writer binds with no ladder (reference-equivalent: a failed writer has
 // already touched the workspace). Never certified; labelled "at or above the
 // reference on official benchmarks, this answer's quality unverified".
+// DESIGN-4 (owner decision 2026-10-28, "나로 가자"): a STANDARD answer 441
+// graded (chat or explain, no tool or current facts) binds a capability row
+// too, never the workhorse at medium; with none, its pool reference. The host
+// offers misread-robust rows (broad, a corroborated narrow list, the writing
+// list for a deliverable; an unknown domain's explanation the broad rows) and
+// Core binds a pool's row only beside that pool's live reference, the one the
+// table compared it with, on a table priced on the active or compiled price
+// table (else 'capability_table_stale').
 // A bounded full-contract writer may descend only with the native host's exact
 // staged-workspace capability: failed candidates never touch the original.
 // No model-authored grade lowers a tuple. A certified read-only node runs the
@@ -164,10 +172,12 @@ export const TIER_ROUTES = Object.freeze({
 // tuples. 'local' is the local model's row (Auto very easy chat only, first
 // turn, never certified); a current-facts list binds agent surfaces only
 // (tools and web), never a tool-free chat row.
+// DESIGN-4 (2026-10-28): a standard answer is no longer graded (it binds a
+// capability row or its reference), so 'explain_standard' is gone and the
+// current-facts list serves light lookups only.
 export const GRADED_LISTS = Object.freeze({
   chat_light: Object.freeze([['local', 'none'], ['fast', 'low']]),
   explain_light: Object.freeze([['fast', 'low'], ['efficient', 'low']]),
-  explain_standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium']]),
   current_facts: Object.freeze([['workhorse', 'medium']]),
   deep_workhorse: Object.freeze([['workhorse', 'xhigh']]),
 });
@@ -196,7 +206,15 @@ const GRADED_SOURCE = 'host_profile';
 // reason 'admitted_capability_<category>'. Never certified.
 export const CAPABILITY_CATEGORIES = Object.freeze(['knowledge', 'science', 'math', 'coding', 'writing', 'tool_use']);
 const CAPABILITY_CATEGORY_SET = new Set(CAPABILITY_CATEGORIES);
-const CAPABILITY_POLICY = 'capability_delta0_v1';
+// DESIGN-4: the catalog category of an unknown domain's broad rows (a keyword
+// profile, a 'general' reading, a model not qualified to read the domain).
+export const CAPABILITY_BROAD = 'broad';
+const CAPABILITY_ROUTE_CATEGORY_SET = new Set([...CAPABILITY_CATEGORIES, CAPABILITY_BROAD]);
+export const CAPABILITY_CHOICES = Object.freeze(['broad', 'narrow_corroborated', 'writing_deliverable']);
+const CAPABILITY_CHOICE_SET = new Set(CAPABILITY_CHOICES);
+const CAPABILITY_MARKER = /^[a-z][a-z0-9_]{0,63}$/;
+const CAPABILITY_SCHEMA = 2;
+const CAPABILITY_POLICY = 'capability_delta0_v2';
 const CAPABILITY_POOLS = Object.freeze(['openai_codex', 'anthropic_shared']);
 const CAPABILITY_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const CAPABILITY_MODEL = /^[a-z0-9][a-z0-9._-]{0,127}$/;
@@ -255,7 +273,7 @@ const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted'])
 // its tuple may answer. A certified basis names its admitting source (and the
 // verifier or class certificate); 'certified:unrecorded' is a descent recorded
 // without one (an older build), 'unbound' a row no host resolution chose.
-const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|capability:(?:knowledge|science|math|coding|writing|tool_use)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|capability:(?:knowledge|science|math|coding|writing|tool_use|broad)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
 const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
 // The admitting source's verdict on a descent attempt: it accepted the answer,
 // failed it, or the answer was not returned in a form it accepts.
@@ -1043,7 +1061,8 @@ function soundVerifierFor(node, task, catalog, registry) {
  *    owner gave no routing constraint, and the node is deep work the local
  *    classifier read with a domain whose capability routes the catalog
  *    carries (capabilityCategory): a read-only deep answer, or a writer with
- *    a design or write reading;
+ *    a design or write reading; DESIGN-4: or a standard answer 441 graded
+ *    (category 'broad' for an unknown domain's explanation);
  *  - anything else 'uncertified'. A model-authored grade never certifies. */
 export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRegistry = null, deepPolicy = DEEP_POLICY} = {}) {
   const reference = source => ({class: 'reference', source, certificate_id: null});
@@ -1109,28 +1128,50 @@ function capabilityAdmission(category) {
  * request itself (one agent node of an Auto task, no task contract) with no
  * owner routing constraint (no explicit route test, no provider other than
  * auto, no surface, model, effort, quality or native-ceiling words, no
- * strongest-model or think-hard words), whose request profile the local
- * classifier read with a known domain matching the catalog's capability
- * routes. Deep work is what policy A sends to the reference today:
+ * strongest-model or think-hard words), whose request profile carries the
+ * catalog's capability routes' category. Deep work is what policy A sends to
+ * the reference today:
  *  - a read-only answer read as deep, or as a design or write task (any tool
  *    need, the workspace included: a read-only workspace deep answer);
  *  - a writer whose reading is a design or write task.
- * A light or standard chat or explain answer keeps its build-441 route, and
- * an action reading, a keyword-only profile, a 'general' domain or a missing
- * domain keeps the reference. Pure; host facts only. */
+ * DESIGN-4 (owner decision 2026-10-28): and a STANDARD chat or explain answer
+ * that 441 graded (gradableNode: the request alone, read-only, no tool or
+ * current facts only). The category is the local reading's domain, or
+ * 'broad' when no domain was read (a keyword profile's standard answer, a
+ * 'general' reading or a model not qualified to read one: an explanation or
+ * chat only). A light answer keeps its build-441 route; an action reading or a
+ * missing category keeps the reference. Pure; host facts only. */
 function capabilityCategory(node, task, catalog) {
   const profile = catalog?.request_profile, routes = catalog?.capability_routes;
   if (!(node?.kind === 'agent' && node.instruction === task?.request && task.mode === 'auto' &&
       task.objective === task.request && catalog.task_contract == null &&
-      validRequestProfile(profile) && profile.classifier?.startsWith('local_llm:') === true &&
-      CAPABILITY_CATEGORY_SET.has(profile.domain) && validCapabilityRoutes(routes) && routes.category === profile.domain &&
+      validRequestProfile(profile) && typeof profile.classifier === 'string' &&
+      validCapabilityRoutes(routes) && capabilityCategoryMatches(routes, profile) &&
       !profile.signals.includes('quality_request') && !intentConstrains(routingIntent(catalog)) &&
       [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto')))
     return null;
+  const local = profile.classifier.startsWith('local_llm:');
   const designOrWrite = profile.task_type === 'design' || profile.task_type === 'write';
-  if (node.scope === 'workspace_write') return designOrWrite ? profile.domain : null;
+  // An unknown domain offers its broad rows to an explanation or chat only (a
+  // writing reading that asks for no deliverable takes them for any answer).
+  if (routes.category === CAPABILITY_BROAD && profile.domain !== 'writing' && !['chat', 'explain'].includes(profile.task_type))
+    return null;
+  // A writer binds only a row qualified in its own domain (never the broad
+  // rows, which no writing benchmark qualifies), reference-equivalent.
+  if (node.scope === 'workspace_write') return local && designOrWrite && routes.category !== CAPABILITY_BROAD ? routes.category : null;
   if (node.scope !== 'read_only' || profile.answer_kind !== 'answer_only') return null;
-  return profile.difficulty === 'deep' || designOrWrite ? profile.domain : null;
+  // DESIGN-4: a standard answer 441 graded.
+  if (profile.difficulty === 'standard' && ['chat', 'explain'].includes(profile.task_type) && gradableNode(node, task, catalog))
+    return routes.category;
+  if (!local) return null;
+  return profile.difficulty === 'deep' || designOrWrite ? routes.category : null;
+}
+/** DESIGN-4: the catalog's capability category names the profile's domain,
+ * or 'broad' for no domain read or a writing reading that asks for no
+ * deliverable (a broad row is not qualified for writing). Pure. */
+function capabilityCategoryMatches(routes, profile) {
+  return routes.category === (profile.domain ?? CAPABILITY_BROAD) ||
+    (routes.category === CAPABILITY_BROAD && profile.domain === 'writing');
 }
 const ESCALATION_ADMISSION = Object.freeze({class: 'reference', source: 'escalation', certificate_id: null});
 const UNCERTIFIED_ADMISSION = Object.freeze({class: 'reference', source: 'uncertified', certificate_id: null});
@@ -1153,10 +1194,12 @@ function intentConstrains(intent) {
  * native-ceiling words), and only for an answer the profile reads as needing
  * no tool or only current facts. Then, by task type, difficulty and tool:
  *  - chat, light, no tool: chat_light (the local row first, else fast/low);
- *  - explain (or chat) light, no tool: explain_light;
- *  - explain (or chat) standard, no tool: explain_standard;
- *  - explain (or chat) light or standard, current facts: current_facts
- *    (agent surfaces only, the workhorse at medium);
+ *  - explain light, no tool: explain_light;
+ *  - explain (or chat) light, current facts: current_facts (agent surfaces
+ *    only, the workhorse at medium);
+ *  - DESIGN-4 (2026-10-28): explain or chat STANDARD is not graded: it binds
+ *    a capability row (capabilityCategory), else its reference, never the
+ *    workhorse at medium;
  *  - design, write or any deep answer: policy A (DEEP_POLICY
  *    'reference_first') keeps the reference; policy B ('workhorse_first',
  *    not shipped) binds deep_workhorse below it.
@@ -1164,26 +1207,37 @@ function intentConstrains(intent) {
  * overrides DEEP_POLICY for fixtures only. Pure; host facts only. */
 function hostProfileGrade(node, task, catalog, {policy = DEEP_POLICY} = {}) {
   const profile = catalog?.request_profile;
-  if (!(node?.kind === 'agent' && node.scope === 'read_only' && node.instruction === task?.request &&
-      task.mode === 'auto' && task.objective === task.request &&
-      (node.context_refs ?? []).length === 0 && (task.material_refs ?? []).length === 0 &&
-      catalog.owner_scope === 'read_only' && !intentConstrains(routingIntent(catalog)) &&
-      [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto') &&
-      validRequestProfile(profile) && profile.answer_kind === 'answer_only' &&
-      ['none', 'current_facts'].includes(profile.tool_need)))
-    return null;
+  if (!gradableNode(node, task, catalog)) return null;
   const type = profile.task_type ?? 'explain';
   const classifier = profile.classifier?.startsWith('local_llm:') ? 'local_llm' : 'keyword';
   const answer = type === 'chat' || type === 'explain';
-  if (answer && ['light', 'standard'].includes(profile.difficulty)) {
+  // DESIGN-4 (2026-10-28): only a light answer is graded; a standard one
+  // binds a capability row (capabilityCategory) or its reference.
+  if (answer && profile.difficulty === 'light') {
     const list = profile.tool_need === 'current_facts' ? 'current_facts' :
-      type === 'chat' && profile.difficulty === 'light' ? 'chat_light' : 'explain_' + profile.difficulty;
+      type === 'chat' ? 'chat_light' : 'explain_light';
     return {grade: profile.difficulty, list, classifier};
   }
+  if (answer && profile.difficulty === 'standard') return null;
   // Deep work: a design, a deliverable, any deep answer (the tool need is
   // none or current facts here; a workspace writer never reaches this).
   return policy === 'workhorse_first' && GRADES.has(profile.difficulty) ?
     {grade: 'deep', list: 'deep_workhorse', classifier} : null;
+}
+/** Build 441: the node a host profile may grade (DESIGN-4: or, standard,
+ * bind a capability row for): the request itself on a read-only agent node
+ * (no materials) of an Auto task the host runs read-only, with no owner
+ * routing constraint, whose profile reads an answer needing no tool or only
+ * current facts. Pure. */
+function gradableNode(node, task, catalog) {
+  const profile = catalog?.request_profile;
+  return node?.kind === 'agent' && node.scope === 'read_only' && node.instruction === task?.request &&
+    task.mode === 'auto' && task.objective === task.request &&
+    (node.context_refs ?? []).length === 0 && (task.material_refs ?? []).length === 0 &&
+    catalog.owner_scope === 'read_only' && !intentConstrains(routingIntent(catalog)) &&
+    [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto') &&
+    validRequestProfile(profile) && profile.answer_kind === 'answer_only' &&
+    ['none', 'current_facts'].includes(profile.tool_need);
 }
 /** Build 441 part 2: whether a catalog's profile asks for the local row (Auto
  * very easy chat, read by the local classifier; the host offers the row only
@@ -1234,7 +1288,7 @@ export function deliveryBasisOf({explicitRoute = false, routeClass = null, route
     const category = token?.slice('admitted_capability_'.length);
     const ladderOK = ladder == null || (plain(ladder) && ladder.escalated !== true &&
       ladder.admitted_by === CAPABILITY_SOURCE && ladder.category === category);
-    basis = CAPABILITY_CATEGORY_SET.has(category) && ladderOK ? 'capability:' + category : 'unclassified';
+    basis = CAPABILITY_ROUTE_CATEGORY_SET.has(category) && ladderOK ? 'capability:' + category : 'unclassified';
   } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
   else if (routeKind === 'explicit' ||
       (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
@@ -1417,6 +1471,13 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     const deep = hostProfileGrade(node, task, catalog, {policy: 'workhorse_first'});
     if (deep?.list === 'deep_workhorse' && deepPolicy === 'reference_first')
       notes.push('deep_policy_reference_first', 'classifier_' + deep.classifier);
+    // DESIGN-4: a standard answer with no capability route binds its
+    // reference, never the workhorse at medium; say so.
+    const profile = catalog.request_profile;
+    if (gradableNode(node, task, catalog) && profile.difficulty === 'standard' &&
+        ['chat', 'explain'].includes(profile.task_type ?? 'explain'))
+      notes.push('standard_policy_reference', 'classifier_' +
+        (profile.classifier?.startsWith('local_llm:') ? 'local_llm' : 'keyword'));
   }
   if (admission.class === 'graded') {
     // Build 441 (owner order, 2026-10-27): a graded tuple below a reference
@@ -1554,6 +1615,15 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     const agentOnly = !writer && catalog.request_profile?.tool_need !== 'none';
     const surfaceAllowed = row => !agentOnly || surfaceKind(row.candidate.surface) === 'agent';
     const homeReference = new Map(pools.map(pool => [pool, best(referenceOf(pool))]));
+    // DESIGN-4 §8: a pool's rows stand for the reference the table compared
+    // them with. A live reference of another model (a new frontier model in
+    // ModelTiers before the table is recompiled), or a table priced on
+    // neither the active nor the compiled price table, disables that pool's
+    // capability rows: the pool falls back to its reference.
+    const priceBasisOK = routes.price_basis.table === routes.price_basis.compiled ||
+      (routes.price_basis.active !== null && routes.price_basis.table === routes.price_basis.active);
+    const liveReference = pool => referenceOf(pool)[0]?.candidate.model ?? null;
+    const stalePool = pool => !priceBasisOK || (liveReference(pool) !== null && liveReference(pool) !== routes.references[pool.pool]);
     const listed = [];
     pools.forEach((pool, position) => (routes.pools[pool.pool] ?? []).forEach((entry, index) => {
       for (const row of pool.rows)
@@ -1561,7 +1631,9 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
             tierOf(catalog, row.candidate.model) !== null && usable(row) && surfaceAllowed(row))
           listed.push({row, pool, index, position});
     }));
-    const options = listed.filter(option => homeReference.get(option.pool) !== null);
+    const fresh = listed.filter(option => !stalePool(option.pool));
+    const staleTokens = listed.length > fresh.length ? ['capability_table_stale'] : [];
+    const options = fresh.filter(option => homeReference.get(option.pool) !== null);
     const cost = option => typeof option.row.candidate.estimated_cost_units === 'number' ?
       option.row.candidate.estimated_cost_units : null;
     const score = option => quotaScore(catalog, option.row.candidate.model);
@@ -1584,11 +1656,17 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
         format_check: null, cheap_model: chosen.model, cheap_effort: chosen.effort,
         reference_model: target.candidate.model, reference_effort: target.candidate.effort,
         reference_candidate_id: target.candidate.id};
-      const why = ['route_capability', admissionToken(admission), 'capability_list_' + pick.index,
+      // DESIGN-4 §2: why this row could bind (the host's choice; a broad row
+      // is safe under any non-writing misread of the domain).
+      const inBroad = (routes.broad[home.pool] ?? []).some(entry => entry.model === chosen.model && entry.effort === chosen.effort);
+      const choiceToken = routes.choice === 'writing_deliverable' ? 'capability_writing_deliverable' :
+        routes.choice === 'narrow_corroborated' && !inBroad ? 'capability_narrow_corroborated:' + routes.marker :
+          'capability_broad';
+      const why = ['route_capability', admissionToken(admission), choiceToken, 'capability_list_' + pick.index,
         'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), 'pool_rank_' + ordinal.get(home.pool), 'price_choice',
         'capability_options_' + ranked.length, 'effort_' + chosen.effort, ...poolNotes(home.pool, chosen, chosen),
         writer ? 'writer_reference_equivalent_no_ladder' : 'escalation_reference_same_pool',
-        surfaceToken(chosen), ...costTokens];
+        surfaceToken(chosen), ...staleTokens, ...costTokens];
       if (avoidPool !== null) why.unshift(home.pool === avoidPool ? 'same_pool_only' : 'other_pool');
       const widened = writer && !coversOwnedPaths(chosen, node.owned_paths);
       if (widened) why.push('owned_paths_workspace');
@@ -1599,9 +1677,9 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     // as uncertified (its reason never names a capability admission).
     notes.push('capability_' + category + '_' + (!roomy ? (!sole ? 'requires_single_node_plan' : 'requires_dispatch_headroom') :
       !listed.length ? ((routes.pools.openai_codex.length + routes.pools.anthropic_shared.length) === 0 ?
-        'none_qualify' : 'tuple_undispatchable') : !options.length ? 'requires_runnable_reference' :
+        'none_qualify' : 'tuple_undispatchable') : !fresh.length ? 'table_stale' : !options.length ? 'requires_runnable_reference' :
       isReference ? 'tuple_is_reference' : !target ? 'requires_runnable_reference' : 'not_cheaper_than_reference'),
-    ...costTokens);
+    'capability_choice_' + routes.choice, ...staleTokens, ...costTokens);
     admission = UNCERTIFIED_ADMISSION;
   }
   if (admission.class === 'certified') {
@@ -2491,9 +2569,11 @@ function validAdmissionFacts(catalog, task) {
   if (cls === 'readonly_material' && !(Array.isArray(task.material_refs) && task.material_refs.length > 0)) return false;
   return (catalog.task_contract === undefined || validTaskContract(catalog.task_contract, catalog, task)) &&
     (catalog.request_profile === undefined || validRequestProfile(catalog.request_profile)) &&
-    // Build 442: capability routes only beside a profile whose domain they name.
+    // Build 442: capability routes only beside a profile whose domain they name
+    // (DESIGN-4: or, with no domain read, the 'broad' category).
     (catalog.capability_routes === undefined || (validCapabilityRoutes(catalog.capability_routes) &&
-      validRequestProfile(catalog.request_profile) && catalog.request_profile.domain === catalog.capability_routes.category)) &&
+      validRequestProfile(catalog.request_profile) && typeof catalog.request_profile.classifier === 'string' &&
+      capabilityCategoryMatches(catalog.capability_routes, catalog.request_profile))) &&
     (catalog.class_certificates === undefined || validClassCertificates(catalog.class_certificates, cls)) &&
     (catalog.class_provider_pins === undefined ||
       (cls !== 'explicit_route' && keys(catalog.class_provider_pins, [cls]) &&
@@ -2649,17 +2729,43 @@ function validRequestProfile(profile) {
 }
 /** Build 442 (DESIGN-3): one domain's capability-qualified rows per pool
  * (Swift RCCRuntimeContract.CapabilityRoutes, from the compiled
- * ModelCapabilityTable): schema 1, the delta-0 policy, the table's sha256,
- * a known category, both pools listed (possibly empty), at most 16 unique
- * exact (model, effort) rows each. A routing fact, never a certificate. */
-function validCapabilityRoutes(routes) {
-  return keys(routes, ['schema', 'policy', 'table_sha256', 'category', 'pools']) && routes.schema === 1 &&
-    routes.policy === CAPABILITY_POLICY && typeof routes.table_sha256 === 'string' && HASH.test(routes.table_sha256) &&
-    CAPABILITY_CATEGORY_SET.has(routes.category) && keys(routes.pools, CAPABILITY_POOLS) &&
-    CAPABILITY_POOLS.every(pool => Array.isArray(routes.pools[pool]) && routes.pools[pool].length <= MAX_CAPABILITY_ROWS &&
-      new Set(routes.pools[pool].map(row => plain(row) ? row.model + '\n' + row.effort : '')).size === routes.pools[pool].length &&
-      routes.pools[pool].every(row => keys(row, ['model', 'effort']) && typeof row.model === 'string' &&
+ * ModelCapabilityTable): the delta-0 policy, the table's sha256, a known
+ * category, both pools listed (possibly empty), at most 16 unique exact
+ * (model, effort) rows each. A routing fact, never a certificate.
+ * Schema 2 (DESIGN-4): `pools` the rows the host's choice allows, `broad` the
+ * table's every-non-writing-category rows, `choice` broad (pools are the
+ * broad rows), narrow_corroborated (a domain other than writing, with the
+ * marker that corroborated it) or writing_deliverable (the writing
+ * category); `category` a domain, or 'broad' (choice broad); `references`
+ * the table's reference model per pool and `price_basis` its price table
+ * with the active and compiled ones (§8). */
+function validCapabilityRows(lists) {
+  return keys(lists, CAPABILITY_POOLS) &&
+    CAPABILITY_POOLS.every(pool => Array.isArray(lists[pool]) && lists[pool].length <= MAX_CAPABILITY_ROWS &&
+      new Set(lists[pool].map(row => plain(row) ? row.model + '\n' + row.effort : '')).size === lists[pool].length &&
+      lists[pool].every(row => keys(row, ['model', 'effort']) && typeof row.model === 'string' &&
         CAPABILITY_MODEL.test(row.model) && CAPABILITY_EFFORTS.has(row.effort)));
+}
+const sameRows = (a, b) => CAPABILITY_POOLS.every(pool => a[pool].length === b[pool].length &&
+  a[pool].every((row, index) => row.model === b[pool][index].model && row.effort === b[pool][index].effort));
+function validCapabilityRoutes(routes) {
+  if (!(keys(routes, ['schema', 'policy', 'table_sha256', 'category', 'choice', 'marker', 'pools', 'broad', 'references',
+    'price_basis']) && routes.schema === CAPABILITY_SCHEMA && routes.policy === CAPABILITY_POLICY &&
+    typeof routes.table_sha256 === 'string' && HASH.test(routes.table_sha256) &&
+    CAPABILITY_ROUTE_CATEGORY_SET.has(routes.category) && CAPABILITY_CHOICE_SET.has(routes.choice) &&
+    validCapabilityRows(routes.pools) && validCapabilityRows(routes.broad) &&
+    keys(routes.references, CAPABILITY_POOLS) &&
+    CAPABILITY_POOLS.every(pool => typeof routes.references[pool] === 'string' && CAPABILITY_MODEL.test(routes.references[pool])) &&
+    keys(routes.price_basis, ['table', 'active', 'compiled']) &&
+    ['table', 'compiled'].every(key => typeof routes.price_basis[key] === 'string' && HASH.test(routes.price_basis[key])) &&
+    (routes.price_basis.active === null || (typeof routes.price_basis.active === 'string' && HASH.test(routes.price_basis.active)))))
+    return false;
+  if (routes.choice === 'broad')
+    return routes.marker === null && sameRows(routes.pools, routes.broad);
+  if (routes.choice === 'narrow_corroborated')
+    return typeof routes.marker === 'string' && CAPABILITY_MARKER.test(routes.marker) &&
+      CAPABILITY_CATEGORY_SET.has(routes.category) && routes.category !== 'writing';
+  return routes.marker === null && routes.category === 'writing';
 }
 /** The signed class table's certificate for this request's class only (R0(c)). */
 function validClassCertificates(certificates, cls) {

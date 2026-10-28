@@ -208,6 +208,10 @@ public enum RCCNativeCatalogBuilder {
         /// domain's qualifying rows (`capability_routes`) for Core's deep
         /// nodes; nil emits none.
         public var capabilityTable: ModelCapabilityTable? = nil
+        /// DESIGN-4 §8: the SHA-256 of the active price table's bytes
+        /// (`ModelPriceTable.currentWithDigest`), or nil when unknown. The
+        /// capability routes carry it beside the table's own price basis.
+        public var priceTableSHA256: String? = nil
         public init(taskID: String, requestSHA256: String, request: String, providerPreference: String,
                     requireReadOnly: Bool, hasMaterialRefs: Bool, capacityPlan: RCCRuntimeContract.CapacityPlan?,
                     executorContractSHA256: String, now: Date, showCodex: Bool, chatLaneEligible: Bool,
@@ -488,16 +492,20 @@ public enum RCCNativeCatalogBuilder {
 
     /// Build 442 (owner order 2026-10-27, DESIGN-3): the capability-qualified
     /// rows the catalog carries, only for an Auto request (no explicit route
-    /// test) whose profile the local classifier read with a known domain and
-    /// that does not ask for the strongest model or more thinking (those
-    /// words keep the reference; review of 442: in any of their common word
-    /// orders and inflections, `asksForReference`). Core decides whether the
-    /// node is deep work.
+    /// test) with a combined profile that does not ask for the strongest model
+    /// or more thinking (those words keep the reference; review of 442: in any
+    /// of their common word orders and inflections, `asksForReference`).
+    /// DESIGN-4: `CapabilityChoice` picks the misread-robust rows (broad, a
+    /// corroborated narrow list, or the writing list for a deliverable) and an
+    /// unknown domain's explanation takes the broad rows. Core decides whether
+    /// the node is standard or deep capability work.
     public static func capabilityRoutes(_ input: Input) -> RCCRuntimeContract.CapabilityRoutes? {
         guard input.explicitRouteSurfaces == nil, let table = input.capabilityTable, let profile = input.requestProfile,
-              profile.locallyClassified, let domain = profile.domain, !profile.signals.contains("quality_request"),
+              profile.classifier != nil, !profile.signals.contains("quality_request"),
               !RequestProfile.asksForReference(input.request) else { return nil }
-        return table.routes(for: domain)
+        let basis = RCCRuntimeContract.CapabilityRoutes.PriceBasis(table: table.priceTableSHA256, active: input.priceTableSHA256,
+                                                                   compiled: ModelPriceTable.compiledSHA256)
+        return CapabilityChoice.routes(profile: profile, request: input.request, table: table, priceBasis: basis)
     }
 
     /// Providers worth a native probe under the current preference, capacity,

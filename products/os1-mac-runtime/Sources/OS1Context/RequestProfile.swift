@@ -676,7 +676,10 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             return finish(k.answerKind, factsRail ? .currentFacts : k.toolNeed, .unknown, .unknown, keyword, [])
         }
         let classifier = localClassifierPrefix + model
-        domain = Domain(rawValue: local.domain.rawValue)
+        // DESIGN-4 §4: only a model qualified to read the domain names one;
+        // the 4B model's domain is ignored (signal `llm_domain_unqualified`).
+        let domainRead = LocalRequestClassifier.readsDomain(model: model)
+        domain = domainRead ? Domain(rawValue: local.domain.rawValue) : nil
         let labelled = TaskType(rawValue: local.taskType.rawValue) ?? .unknown
         // Build 441 part 3: under an adopted local reading only the HARD rails
         // stand; a soft order, generic programming word or adverbial
@@ -687,7 +690,8 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         let keywordKind: AnswerKind = k.answerKind == .work && !hardWork ? .unknown : k.answerKind
         let keywordTool: ToolNeed = k.toolNeed == .workspace && !hardWorkspace ? .none : k.toolNeed
         let reading = ["llm_task_" + local.taskType.rawValue, "llm_difficulty_" + local.difficulty.rawValue,
-                       "llm_tools_" + local.needsTools.rawValue] + (softYield ? ["llm_overrules_soft_rail"] : [])
+                       "llm_tools_" + local.needsTools.rawValue] + (softYield ? ["llm_overrules_soft_rail"] : []) +
+            (domainRead ? [] : ["llm_domain_unqualified"])
         let workTask: TaskType = [.action, .write, .design].contains(labelled) ? labelled : textOperation ? .write : .action
         if hardWork {
             return finish(.work, k.toolNeed, .unknown, workTask, classifier, reading + (workTask != labelled ? ["rail_overrules_llm"] : []))

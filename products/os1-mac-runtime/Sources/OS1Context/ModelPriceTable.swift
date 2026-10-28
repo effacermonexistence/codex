@@ -81,13 +81,21 @@ public struct ModelPriceTable: Codable, Equatable, Sendable {
     /// than `maximumAge` (by its file date), else the compiled one.
     public static func current(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                now: Date = Date()) -> (table: ModelPriceTable, refreshed: Bool) {
+        let value = currentWithDigest(home: home, now: now)
+        return (value.table, value.refreshed)
+    }
+    /// DESIGN-4 §8 (build 442): the table `current` returns and the SHA-256 of
+    /// the bytes it came from (the compiled pin when no refresh is used): the
+    /// active price basis a capability route is checked against.
+    public static func currentWithDigest(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                         now: Date = Date()) -> (table: ModelPriceTable, refreshed: Bool, sha256: String) {
         let url = refreshedPath(home: home)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               (attributes[.type] as? FileAttributeType) == .typeRegular,
               let modified = attributes[.modificationDate] as? Date, now.timeIntervalSince(modified) <= maximumAge,
               now.timeIntervalSince(modified) >= -300,
-              let data = try? Data(contentsOf: url), let table = try? decode(data) else { return (compiled, false) }
-        return (table, true)
+              let data = try? Data(contentsOf: url), let table = try? decode(data) else { return (compiled, false, compiledSHA256) }
+        return (table, true, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
     }
 
     /// The price of an exact model name. A native context-window suffix

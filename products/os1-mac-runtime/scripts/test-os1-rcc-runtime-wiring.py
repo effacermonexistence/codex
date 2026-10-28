@@ -794,7 +794,8 @@ check("!RequestProfile.railsDecide(keywordProfile, request: request.request)" in
       "RequestProfile.combine(keyword: keywordProfile, request: request.request,\n                                                local: reading.adopted?.answer, model: reading.adopted?.model)" in catalog_profile and
       "input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)" in catalog_profile and
       "if request.mode != .explicitRoutingTest && !contractBackedWrite {" in catalog_profile and
-      "input.priceTable = ModelPriceTable.current().table" in catalog_profile and
+      "let activePrices = ModelPriceTable.currentWithDigest()" in catalog_profile and
+      "input.priceTable = activePrices.table" in catalog_profile and
       "RCCNativeCatalogBuilder.autoLocalRowEligible(input)" in catalog_profile and
       "func rccLocalClassification(taskID: String, requestSHA256: String, request: String," in MAIN and
       "LocalRequestClassifier.cachedReceipt(key: key, directory: directory)" in MAIN and
@@ -812,7 +813,9 @@ tier_route = section(RUNTIME, "function tierRouteCandidate(", "/** Null when som
 check("export const DEEP_POLICY = 'reference_first';" in RUNTIME and
       "export const GRADED_LISTS = Object.freeze({" in RUNTIME and
       "chat_light: Object.freeze([['local', 'none'], ['fast', 'low']])," in RUNTIME and
-      "explain_standard: Object.freeze([['workhorse', 'medium'], ['efficient', 'medium']])," in RUNTIME and
+      # DESIGN-4 (2026-10-28): a standard answer is never graded (no explain_standard list).
+      "explain_standard" not in section(RUNTIME, "export const GRADED_LISTS = Object.freeze({", "const GRADES = new Set(") and
+      "if (answer && profile.difficulty === 'standard') return null;" in RUNTIME and
       "const agentOnly = catalog.request_profile?.tool_need === 'current_facts';" in tier_route and
       "profileAnswersLocally(catalog) && withoutConversation(task)" in tier_route and
       "decision = expected < reference ? 'cheap_first' : 'reference_first';" in tier_route and
@@ -863,17 +866,21 @@ capability_resource = (ROOT / "Resources/model-capability-table.json").read_byte
 check(capability_source.count('public static let compiledBytes = Data((#"' + capability_resource.decode().rstrip("\n") + '"# + "\\n").utf8)') == 1 and
       'public static let compiledSHA256 = "' + hashlib.sha256(capability_resource).hexdigest() + '"' in capability_source and
       (ROOT / "scripts/capability-table.mjs").is_file() and (ROOT / "scripts/capability-evidence-20261027.json").is_file() and
-      '"policy":"capability_delta0_v1"' in capability_resource.decode() and '"tolerance":0' in capability_resource.decode(),
+      '"policy":"capability_delta0_v2"' in capability_resource.decode() and '"tolerance":0' in capability_resource.decode() and
+      # DESIGN-4 §7: the bar is the reference's best confirmed score at any effort; §2: the broad rows.
+      '"reference_bar":"best_confirmed_any_effort"' in capability_resource.decode() and '"broad":{' in capability_resource.decode(),
       "change 3: the compiled capability table is the resource's bytes, pinned, from the committed script and evidence")
 capability_admission = section(RUNTIME, "function capabilityCategory(", "/** Build 441 part 2: whether a catalog's profile asks for the local row")
-check("profile.classifier?.startsWith('local_llm:') === true" in capability_admission and
-      "CAPABILITY_CATEGORY_SET.has(profile.domain) && validCapabilityRoutes(routes) && routes.category === profile.domain" in capability_admission and
+check("const local = profile.classifier.startsWith('local_llm:');" in capability_admission and
+      "validCapabilityRoutes(routes) && capabilityCategoryMatches(routes, profile)" in capability_admission and
       "!profile.signals.includes('quality_request') && !intentConstrains(routingIntent(catalog))" in capability_admission and
       "catalog.task_contract == null" in capability_admission and
-      "if (node.scope === 'workspace_write') return designOrWrite ? profile.domain : null;" in capability_admission and
-      "return profile.difficulty === 'deep' || designOrWrite ? profile.domain : null;" in capability_admission and
+      "if (node.scope === 'workspace_write') return local && designOrWrite && routes.category !== CAPABILITY_BROAD ? routes.category : null;" in capability_admission and
+      # DESIGN-4 §1: a standard answer 441 graded binds a capability row too.
+      "if (profile.difficulty === 'standard' && ['chat', 'explain'].includes(profile.task_type) && gradableNode(node, task, catalog))" in capability_admission and
+      "return profile.difficulty === 'deep' || designOrWrite ? routes.category : null;" in capability_admission and
       "{class: 'capability', source: CAPABILITY_SOURCE, certificate_id: null, category}" in RUNTIME and
-      "capability:(?:knowledge|science|math|coding|writing|tool_use)" in RUNTIME and
+      "capability:(?:knowledge|science|math|coding|writing|tool_use|broad)" in RUNTIME and
       "'request_profile', 'capability_routes'];" in RUNTIME and "kind: 'capability'" in RUNTIME and
       "routeClass: CAPABILITY_CLASS" in RUNTIME and "const cheaper = typeof cheapUSD === 'number' && typeof referenceUSD === 'number' && cheapUSD < referenceUSD;" in RUNTIME and
       "const ladder = writer ? null : {source: 'tier', admitted_by: CAPABILITY_SOURCE, category," in RUNTIME and
@@ -883,8 +890,13 @@ check("profile.classifier?.startsWith('local_llm:') === true" in capability_admi
 check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
-check('public static let promptVersion = "local_cls_v3"' in classifier_source and
-      '"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}' in classifier_source and
+check('public static let promptVersion = "local_cls_v2_dom1"' in classifier_source and
+      # DESIGN-4 §9: the enum call is build 441's v2 schema; the domain is its own call (with the owner's ASR hints, §3).
+      'public static let schemaJSON = #"{"type":"object","properties":{"task_type":{"type":"string","enum":["explain","design","write","action","chat"]},"difficulty":{"type":"string","enum":["light","standard","deep"]},"needs_tools":{"type":"string","enum":["none","current_facts","workspace","execution"]}},"required":["task_type","difficulty","needs_tools"]}"#' in classifier_source and
+      'public static let domainSchemaJSON = #"{"type":"object","properties":{"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}},"required":["domain"]}"#' in classifier_source and
+      "guard needsDomain(answer, request: text) else {" in classifier_source and
+      "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints)" in MAIN and
+      'home.appendingPathComponent(".os1/local-classifier/asr-hints.json")' in (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text() and
       "static let deepFloorPatterns = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
       # Review of 442: the floor reads a proof, derivation or rigour asked for, never 증명사진 or 전자기 유도.
       '#"증명\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:해|하|할|합|과정)"#' in profile_source and
@@ -897,10 +909,27 @@ check('public static let promptVersion = "local_cls_v3"' in classifier_source an
       "change 3: prompt v3 domain, the deep floor, and the host's capability routes (never with strongest-model words)")
 # Review of 442: a capability row binds only beside its OWN pool's runnable reference.
 check("const homeReference = new Map(pools.map(pool => [pool, best(referenceOf(pool))]));" in RUNTIME and
-      "const options = listed.filter(option => homeReference.get(option.pool) !== null);" in RUNTIME and
+      "const options = fresh.filter(option => homeReference.get(option.pool) !== null);" in RUNTIME and
       "const target = chosen ? homeReference.get(home) : null;" in RUNTIME and
       "!options.length ? 'requires_runnable_reference' :" in RUNTIME,
       "change 3 review: a capability row binds only beside its own pool's runnable reference (never another pool's)")
+# DESIGN-4 (lead decision 2026-10-28): misread-robust choice, the live
+# reference check, standard answers, the 4B domain exclusion and ASR hints.
+choice_source = (ROOT / "Sources/OS1Context/CapabilityChoice.swift").read_text()
+check("public static func routes(profile: RequestProfile, request: String, table: ModelCapabilityTable," in choice_source and
+      "return make(domain.rawValue, .narrowCorroborated, id, rows)" in choice_source and
+      "return make(domain.rawValue, .writingDeliverable, nil, table.rows(for: .writing))" in choice_source and
+      'if domain == .coding && deep && !codeMaterialSignals.isDisjoint(with: profile.signals) { return "coding_code_material" }' in choice_source and
+      "return CapabilityChoice.routes(profile: profile, request: input.request, table: table, priceBasis: basis)" in BUILDER and
+      "routes.choice === 'narrow_corroborated' && !inBroad ? 'capability_narrow_corroborated:' + routes.marker :" in RUNTIME and
+      "const staleTokens = listed.length > fresh.length ? ['capability_table_stale'] : [];" in RUNTIME and
+      "liveReference(pool) !== routes.references[pool.pool]" in RUNTIME and
+      "input.priceTableSHA256 = activePrices.sha256" in MAIN,
+      "DESIGN-4: broad/narrow/writing choice in the host, choice tokens and the live-reference/price-basis check in Core")
+check("public static func readsDomain(model: String) -> Bool {" in classifier_source and
+      "domain = domainRead ? Domain(rawValue: local.domain.rawValue) : nil" in profile_source and
+      '(domainRead ? [] : ["llm_domain_unqualified"])' in profile_source,
+      "DESIGN-4 §4: only a model qualified to read the domain names one (the 4B domain is ignored, recorded)")
 check('case "capability":' in MAIN and "ModelCapabilityTable.compiled.summary()" in MAIN and
       "os1 capability show [--json]" in MAIN and "try ModelCapabilityTable.selfTest()" in MAIN,
       "change 3: `os1 capability show` prints the compiled table; os1 self-test checks it")

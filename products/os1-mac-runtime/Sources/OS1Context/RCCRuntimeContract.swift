@@ -415,14 +415,48 @@ public enum RCCRuntimeContract {
     /// may bind it in that reference's place; the answer stays unverified. It
     /// travels only beside the admission facts and a request profile whose
     /// local-classifier `domain` is this `category`.
+    ///
+    /// Schema 2 (DESIGN-4, 2026-10-28): the host's misread-robust choice.
+    /// `pools` lists only the rows the choice allows; `broad` the table's rows
+    /// that qualify in every non-writing category (safe under any non-writing
+    /// misread); `choice` is `broad` (only those), `narrow_corroborated` (the
+    /// domain's full list: the deterministic markers or a coding rail agree
+    /// with the reading, `marker` names which) or `writing_deliverable` (the
+    /// writing list, for a write task or a requested document). `category` is
+    /// the profile's domain, or `broad` when the domain is unknown (a keyword
+    /// profile, a `general` reading, or a model not qualified to read one) or
+    /// a writing reading asks for no deliverable (the broad rows are not
+    /// qualified for writing).
+    /// `references` (§8) is the table's reference model per pool and
+    /// `price_basis` its price table with the active and compiled ones: Core
+    /// binds a pool's row only beside that pool's live reference and only on a
+    /// table whose price basis is the active or the compiled price table.
     public struct CapabilityRoutes: Codable, Equatable, Sendable {
         public struct Entry: Codable, Equatable, Sendable {
             public var model: String
             public var effort: String
             public init(model: String, effort: String) { self.model = model; self.effort = effort }
         }
-        public static let currentSchema = 1
-        public static let currentPolicy = "capability_delta0_v1"
+        public enum Choice: String, Codable, Sendable, CaseIterable {
+            case broad, narrowCorroborated = "narrow_corroborated", writingDeliverable = "writing_deliverable"
+        }
+        public struct PriceBasis: Codable, Equatable, Sendable {
+            public var table: String
+            public var active: String?
+            public var compiled: String
+            public init(table: String, active: String?, compiled: String) {
+                self.table = table; self.active = active; self.compiled = compiled
+            }
+            /// Explicit null for an unknown active table (Core reads every key).
+            public func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(table, forKey: .table); try c.encode(active, forKey: .active); try c.encode(compiled, forKey: .compiled)
+            }
+            enum CodingKeys: String, CodingKey { case table, active, compiled }
+        }
+        public static let currentSchema = 2
+        public static let currentPolicy = "capability_delta0_v2"
+        public static let broadCategory = "broad"
         public static let pools = ["openai_codex", "anthropic_shared"]
         public static let efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
         public static let maximumRows = 16
@@ -430,26 +464,58 @@ public enum RCCRuntimeContract {
         public var policy: String
         public var tableSHA256: String
         public var category: String
+        public var choice: Choice
+        public var marker: String?
         public var pools: [String: [Entry]]
+        public var broad: [String: [Entry]]
+        public var references: [String: String]
+        public var priceBasis: PriceBasis
         public init(schema: Int = CapabilityRoutes.currentSchema, policy: String = CapabilityRoutes.currentPolicy,
-                    tableSHA256: String, category: String, pools: [String: [Entry]]) {
+                    tableSHA256: String, category: String, choice: Choice, marker: String? = nil,
+                    pools: [String: [Entry]], broad: [String: [Entry]], references: [String: String], priceBasis: PriceBasis) {
             self.schema = schema; self.policy = policy; self.tableSHA256 = tableSHA256; self.category = category
-            self.pools = pools
+            self.choice = choice; self.marker = marker; self.pools = pools; self.broad = broad; self.references = references
+            self.priceBasis = priceBasis
         }
-        enum CodingKeys: String, CodingKey { case schema, policy, category, pools, tableSHA256 = "table_sha256" }
+        enum CodingKeys: String, CodingKey {
+            case schema, policy, category, choice, marker, pools, broad, references
+            case tableSHA256 = "table_sha256", priceBasis = "price_basis"
+        }
+        /// Explicit null for no marker (Core reads every key).
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(schema, forKey: .schema); try c.encode(policy, forKey: .policy)
+            try c.encode(tableSHA256, forKey: .tableSHA256); try c.encode(category, forKey: .category)
+            try c.encode(choice, forKey: .choice); try c.encode(marker, forKey: .marker)
+            try c.encode(pools, forKey: .pools); try c.encode(broad, forKey: .broad)
+            try c.encode(references, forKey: .references); try c.encode(priceBasis, forKey: .priceBasis)
+        }
         /// An exact provider model name (no alias is ever guessed).
         public static func validModel(_ model: String) -> Bool {
             model.range(of: #"^[a-z0-9][a-z0-9._-]{0,127}$"#, options: .regularExpression) != nil
         }
+        static func validRows(_ lists: [String: [Entry]]) -> Bool {
+            Set(lists.keys) == Set(CapabilityRoutes.pools) && lists.values.allSatisfy { rows in
+                rows.count <= CapabilityRoutes.maximumRows &&
+                    Set(rows.map { $0.model + "\n" + $0.effort }).count == rows.count &&
+                    rows.allSatisfy { CapabilityRoutes.validModel($0.model) && CapabilityRoutes.efforts.contains($0.effort) }
+            }
+        }
         /// The structural rules both sides enforce on the wire.
         public var valid: Bool {
-            schema == CapabilityRoutes.currentSchema && policy == CapabilityRoutes.currentPolicy && isHash(tableSHA256) &&
-                RequestProfile.Domain(rawValue: category) != nil && Set(pools.keys) == Set(CapabilityRoutes.pools) &&
-                pools.values.allSatisfy { rows in
-                    rows.count <= CapabilityRoutes.maximumRows &&
-                        Set(rows.map { $0.model + "\n" + $0.effort }).count == rows.count &&
-                        rows.allSatisfy { CapabilityRoutes.validModel($0.model) && CapabilityRoutes.efforts.contains($0.effort) }
-                }
+            let domain = RequestProfile.Domain(rawValue: category)
+            let rowsOK = CapabilityRoutes.validRows(pools) && CapabilityRoutes.validRows(broad)
+            let markerOK = marker.map { $0.range(of: #"^[a-z][a-z0-9_]{0,63}$"#, options: .regularExpression) != nil } ?? true
+            let choiceOK: Bool
+            switch choice {
+            case .broad: choiceOK = marker == nil && pools == broad && (domain != nil || category == CapabilityRoutes.broadCategory)
+            case .narrowCorroborated: choiceOK = marker != nil && domain != nil && domain != .writing
+            case .writingDeliverable: choiceOK = marker == nil && domain == .writing
+            }
+            return schema == CapabilityRoutes.currentSchema && policy == CapabilityRoutes.currentPolicy && isHash(tableSHA256) &&
+                rowsOK && markerOK && choiceOK && Set(references.keys) == Set(CapabilityRoutes.pools) &&
+                references.values.allSatisfy(CapabilityRoutes.validModel) &&
+                isHash(priceBasis.table) && isHash(priceBasis.compiled) && (priceBasis.active.map(isHash) ?? true)
         }
     }
     public struct ClassCertificate: Codable, Equatable, Sendable {
@@ -1605,8 +1671,13 @@ public enum RCCRuntimeContract {
         if let profile = value.requestProfile, !profile.valid { throw Rejection.invalidObservation }
         // Build 442: capability routes are structurally valid and exist only
         // beside a profile whose local-classifier domain is their category.
+        // DESIGN-4: or the `broad` category, with no domain read (a keyword
+        // profile, a `general` reading, a model not qualified to read one) or
+        // a writing reading that asks for no deliverable.
         if let routes = value.capabilityRoutes {
-            guard routes.valid, let domain = value.requestProfile?.domain, domain.rawValue == routes.category else {
+            guard routes.valid, let profile = value.requestProfile, profile.classifier != nil,
+                  routes.category == (profile.domain?.rawValue ?? CapabilityRoutes.broadCategory) ||
+                    (routes.category == CapabilityRoutes.broadCategory && profile.domain == .writing) else {
                 throw Rejection.invalidObservation
             }
         }
@@ -2188,7 +2259,7 @@ public enum RCCRuntimeContract {
     private static let taskContractShape = Shape.object(["coverage", "scope", "objective_sha256", "contract_sha256", "context_sha256", "source_sha256", "start_tree_sha256", "reference_policy_sha256", "valid_until_ms", "bindings_checked", "execution_isolation", "execution_isolation_sha256", "staged_writer_envelope_sha256", "staged_writer_base_sha256", "owner_collection"], ["owner_collection": collectionShape])
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
     private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals", "classifier", "task_type", "domain"])
-    private static let capabilityRoutesShape = Shape.object(["schema", "policy", "table_sha256", "category", "pools"], ["pools": .map(.array(.object(["model", "effort"])))])
+    private static let capabilityRoutesShape = Shape.object(["schema", "policy", "table_sha256", "category", "choice", "marker", "pools", "broad", "references", "price_basis"], ["pools": .map(.array(.object(["model", "effort"]))), "broad": .map(.array(.object(["model", "effort"]))), "references": .map(.leaf), "price_basis": .object(["table", "active", "compiled"])])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile", "capability_routes"], ["candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape, "capability_routes": capabilityRoutesShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])

@@ -19990,7 +19990,10 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     }
     // Build 441 part 2: list prices, so Core picks the cheapest dispatchable
     // row of a graded route's tier list (a fresh daily refresh, else compiled).
-    input.priceTable = ModelPriceTable.current().table
+    let activePrices = ModelPriceTable.currentWithDigest()
+    input.priceTable = activePrices.table
+    // DESIGN-4 §8: the active price basis a capability route is checked against.
+    input.priceTableSHA256 = activePrices.sha256
     // Build 442 (owner order 2026-10-27, DESIGN-3): the compiled capability
     // table. A profile the local classifier read with a known domain carries
     // that domain's delta-0 qualifying rows; Core binds the cheapest one in a
@@ -20046,7 +20049,12 @@ func rccLocalClassification(taskID: String, requestSHA256: String, request: Stri
     let directory = LocalRequestClassifier.cacheDirectory(home: home)
     let key = LocalRequestClassifier.cacheKey(taskID: taskID, requestSHA256: requestSHA256)
     if let cached = LocalRequestClassifier.cachedReceipt(key: key, directory: directory) { return cached }
-    let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() })
+    // DESIGN-4 §3: the owner's ASR hints (compiled, plus ~/.os1/local-classifier/asr-hints.json
+    // when it is valid; an invalid file is ignored with this receipt line).
+    let hints = LocalClassifierHints.load(home: home)
+    FileHandle.standardError.write(Data(("os1 rcc-catalog: " + hints.receipt + "\n").utf8))
+    let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() },
+                                                        hints: hints.hints)
     LocalRequestClassifier.store(receipt, key: key, directory: directory)
     return receipt
 }

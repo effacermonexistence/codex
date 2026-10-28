@@ -642,15 +642,16 @@ func runRCCAdmissionFactsFixtures() throws {
     var models = Set<String>(), efforts = Set<String>()
     for (index, text) in explanations.enumerated() {
         let route = gradedRoutes[index]
-        try check(route["model"] as? String == "gpt-6.1-sol" && route["effort"] as? String == "medium" &&
-                  route["surface"] as? String == "codex" && route["kind"] as? String == "graded" &&
-                  route["route_class"] as? String == "standard" && route["admitted_by"] as? String == "host_profile" &&
-                  route["grade"] as? String == "standard" && route["certificate_id"] is NSNull &&
-                  route["reference_model"] as? String == "gpt-6-astra" && route["reference_effort"] as? String == "ultra" &&
-                  route["basis"] as? String == "graded:standard" &&
-                  (route["reason"] as? String)?.hasPrefix("resolver;route_graded;admitted_graded_standard;graded_list_0;") == true &&
-                  (route["reason"] as? String)?.contains("certified") == false,
-                  "441: Core binds the standard grade (sol medium, astra ultra its escalation), never certified: \(text): \(route)")
+        // DESIGN-4 (owner decision 2026-10-28): a standard explanation is never
+        // the workhorse at medium. These catalogs carry a keyword-only profile
+        // and no capability table, so it binds its reference, named so.
+        try check(route["model"] as? String == "gpt-6-astra" && route["effort"] as? String == "ultra" &&
+                  route["surface"] as? String == "codex" && route["kind"] as? String == "reference" &&
+                  route["basis"] as? String == "reference" && route["admitted_by"] is NSNull &&
+                  (route["reason"] as? String)?.hasPrefix(
+                    "resolver;route_reference;admitted_reference_uncertified;standard_policy_reference;classifier_keyword;") == true &&
+                  (route["reason"] as? String)?.contains("admitted_certified") == false,
+                  "DESIGN-4: a standard explanation without capability routes binds its reference, never sol medium: \(text): \(route)")
         models.insert(route["model"] as? String ?? ""); efforts.insert(route["effort"] as? String ?? "")
     }
     try check(Set(gradedRoutes.prefix(explanations.count).map { "\($0["model"] ?? "")/\($0["effort"] ?? "")" }).count == 1,
@@ -676,8 +677,8 @@ func runRCCAdmissionFactsFixtures() throws {
               lightRoute["kind"] as? String == "graded" && lightRoute["basis"] as? String == "graded:light",
               "441: a short definitional question binds the light grade: \(lightRoute)")
     models.insert(lightRoute["model"] as? String ?? ""); efforts.insert(lightRoute["effort"] as? String ?? "")
-    try check(models.count == 3 && efforts.count == 3 && efforts.contains("low") && efforts.contains("medium") &&
-              efforts.contains("ultra"), "441: not always luna, not always low, not always the ceiling: \(models) \(efforts)")
+    try check(models == ["gpt-6-astra", "gpt-6-luna"] && efforts == ["low", "ultra"],
+              "DESIGN-4: not always luna, not always low; never sol medium: \(models) \(efforts)")
 
     // ---- Build 441 part 2 (owner order, 2026-10-27): the local classifier's
     // reading combined under the keyword rails, list prices on every row, and
@@ -688,11 +689,11 @@ func runRCCAdmissionFactsFixtures() throws {
     // compute them for these texts (`os1 self-test` pins those functions).
     typealias LA = LocalRequestClassifier.Answer
     func combinedInput(_ text: String, _ local: LA?, shell: Bool = false, codexUsed: Double = 40, claudeUsed: Double = 40,
-                       sonnet: Bool = true, codexExhausted: Bool = false) -> B.Input {
+                       sonnet: Bool = true, codexExhausted: Bool = false, model: String = "qwen3.5:9b") -> B.Input {
         let keyword = RequestProfile.classify(text, shellNeed: shell, hasMaterial: false)
         let consulted = RequestProfile.railsDecide(keyword, request: text) ? nil : local
         let combined = RequestProfile.combine(keyword: keyword, request: text, local: consulted,
-                                              model: consulted == nil ? nil : "qwen3.5:9b")
+                                              model: consulted == nil ? nil : model)
         let readOnly = !shell && (combined.answersReadOnly || ClaudeChatLane.conversationalQuestion(text))
         let chat = readOnly && combined.answersWithoutTools && ClaudeChatLane.answerNeedsNoLookup(text)
         var value = live(text, owner: readOnly ? .readOnly : .workspaceWrite, chat: chat)
@@ -722,27 +723,30 @@ func runRCCAdmissionFactsFixtures() throws {
     let chatLight = LA(taskType: .chat, difficulty: .light, needsTools: .none)
     let explainLight = LA(taskType: .explain, difficulty: .light, needsTools: .none)
     let part2: [(label: String, text: String, input: B.Input, expect: String, basis: String)] = [
+        // DESIGN-4 (owner decision 2026-10-28): a standard answer is never the
+        // workhorse at medium; with no capability routes (none here: no
+        // table on these inputs) it binds its reference.
         ("the owner's ASR explanation", "쉐딩과 방정식 설명해 봐봐", combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard),
-         "codex:gpt-6.1-sol/medium", "graded:standard"),
+         "codex:gpt-6-astra/ultra", "reference"),
         ("very easy chat: the local model", "안녕! 좋은 아침이야", combinedInput("안녕! 좋은 아침이야", chatLight),
          "local:qwen3.5:4b/none", "graded:light"),
-        ("current facts: an agent surface", "오늘 원달러 환율 설명해줘", combinedInput("오늘 원달러 환율 설명해줘", explainStandard),
-         "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("current facts standard: the reference with tools", "오늘 원달러 환율 설명해줘",
+         combinedInput("오늘 원달러 환율 설명해줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
         ("rail: a named file", "README.md 설명해줘", combinedInput("README.md 설명해줘", explainStandard),
          "codex:gpt-6-astra/ultra", "reference"),
         ("rail: a placement order", "슈뢰딩거 방정식 설명 정리해서 노션에 올려줘",
          combinedInput("슈뢰딩거 방정식 설명 정리해서 노션에 올려줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
         ("rail: a build", "빌드해줘", combinedInput("빌드해줘", chatLight, shell: true), "codex:gpt-6-astra/ultra", "reference"),
-        ("LLM down: an explanation keeps its keyword grade", "슈뢰딩거 방정식 설명해봐",
-         combinedInput("슈뢰딩거 방정식 설명해봐", nil), "codex:gpt-6.1-sol/medium", "graded:standard"),
-        ("price: sol over opus at one tier (Claude ranked first)", "쉐딩과 방정식 설명해 봐봐",
+        ("LLM down: a keyword standard explanation, no routes: the reference", "슈뢰딩거 방정식 설명해봐",
+         combinedInput("슈뢰딩거 방정식 설명해봐", nil), "codex:gpt-6-astra/ultra", "reference"),
+        ("never sol medium, whatever the quota (Claude ranked first)", "쉐딩과 방정식 설명해 봐봐",
          combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard, codexUsed: 90, claudeUsed: 10, sonnet: false),
-         "codex:gpt-6.1-sol/medium", "graded:standard"),
+         "claude-chat:claude-fable-5-1/max", "reference"),
         ("price: luna over haiku 4.5 (Claude ranked first)", "엔트로피가 뭐야?",
          combinedInput("엔트로피가 뭐야?", explainLight, codexUsed: 90, claudeUsed: 10), "codex:gpt-6-luna/low", "graded:light"),
-        ("price: Codex quota exhausted binds sonnet, not opus", "쉐딩과 방정식 설명해 봐봐",
+        ("never sonnet medium with Codex exhausted: the reference", "쉐딩과 방정식 설명해 봐봐",
          combinedInput("쉐딩과 방정식 설명해 봐봐", explainStandard, codexExhausted: true),
-         "claude-chat:claude-sonnet-5-5/medium", "graded:standard"),
+         "codex:gpt-6-astra/ultra", "reference"),
         // Build 441 part 3 (lead decision 2026-10-27): soft rails yield to the
         // local reading; hard rails stand against any reading; the keyword
         // fallback keeps every rail.
@@ -751,8 +755,8 @@ func runRCCAdmissionFactsFixtures() throws {
         ("part 3: write scope stays hard (만들어)", "예시 하나 만들어봐",
          combinedInput("예시 하나 만들어봐", LA(taskType: .write, difficulty: .standard, needsTools: .none)),
          "codex:gpt-6-astra/ultra", "reference"),
-        ("part 3: a programming word in a general question", "파이썬 함수랑 메서드 차이 설명해줘",
-         combinedInput("파이썬 함수랑 메서드 차이 설명해줘", explainStandard), "codex:gpt-6.1-sol/medium", "graded:standard"),
+        ("part 3: a programming word in a general question (standard: the reference here)", "파이썬 함수랑 메서드 차이 설명해줘",
+         combinedInput("파이썬 함수랑 메서드 차이 설명해줘", explainStandard), "codex:gpt-6-astra/ultra", "reference"),
         ("part 3: a prior-turn reference stands against a chat reading", "아까 그거 다시 해봐",
          combinedInput("아까 그거 다시 해봐", chatLight), "codex:gpt-6-astra/ultra", "reference"),
         ("part 3: a placement stands against an explain reading", "슈뢰딩거 방정식 설명을 노트에 적어줘",
@@ -800,11 +804,11 @@ func runRCCAdmissionFactsFixtures() throws {
                   (item.basis == "reference" || (route["reason"] as? String)?.contains(";cheap_first;") == true),
                   "part 2: \(item.label): \(tuple) \(route["basis"] ?? "") \(route["reason"] ?? "")")
     }
-    try check((part2Routes[0]["reason"] as? String)?.contains(";classifier_local_llm;") == true &&
-              (part2Routes[6]["reason"] as? String)?.contains(";classifier_keyword;") == true &&
+    try check((part2Routes[0]["reason"] as? String)?.contains(";standard_policy_reference;classifier_local_llm") == true &&
+              (part2Routes[6]["reason"] as? String)?.contains(";standard_policy_reference;classifier_keyword") == true &&
               (part2Routes[1]["reason"] as? String)?.contains(";graded_profile_chat_light;") == true &&
-              (part2Routes[2]["reason"] as? String)?.contains(";graded_profile_current_facts;") == true,
-              "part 2: the reason names the classifier and the profile list")
+              (part2Routes[2]["reason"] as? String)?.contains(";standard_policy_reference;") == true,
+              "part 2: the reason names the classifier and the profile list (DESIGN-4: a standard answer's reference)")
 
     // ---- Build 442 (owner order 2026-10-27, DESIGN-3): capability routes for
     // deep work, end to end: the local reading's domain (prompt v3), the
@@ -814,8 +818,8 @@ func runRCCAdmissionFactsFixtures() throws {
     // open (`combinedInput` mirrors that): a request the host scopes as a
     // writer always carries the hard write-scope rail, so no writer ever has
     // a local domain here (the Core writer path is the node fixture's).
-    func capabilityInput(_ text: String, _ local: LA?) -> B.Input {
-        var value = combinedInput(text, local)
+    func capabilityInput(_ text: String, _ local: LA?, model: String = "qwen3.5:9b") -> B.Input {
+        var value = combinedInput(text, local, model: model)
         value.profiles += [.init(action: "cx_61sol_high", provider: "codex", model: "gpt-6.1-sol", effort: "high"),
                            .init(action: "cl_opus55_max", provider: "claude", model: "claude-opus-5-5", effort: "max"),
                            .init(action: "cl_sonnet55_max", provider: "claude", model: "claude-sonnet-5-5", effort: "max")]
@@ -823,64 +827,106 @@ func runRCCAdmissionFactsFixtures() throws {
         value.claudeModels[1].supportedEfforts = ["medium", "high", "xhigh", "max"]
         value.claudeModels[2].supportedEfforts = ["medium", "xhigh", "max"]
         value.capabilityTable = .compiled
+        value.priceTableSHA256 = ModelPriceTable.compiledSHA256
         return value
     }
-    let capabilityCases: [(label: String, text: String, input: B.Input, model: String, basis: String)] = [
+    // DESIGN-4 (2026-10-28): `routes` is the catalog's "category/choice" (nil:
+    // none); `token` a reason token the bound route carries. The compiled
+    // table (DESIGN-4 §7) has Opus 5.5 @max as its one broad row, Sonnet 5.5
+    // @max narrow for math, Opus 5.5 @medium/@high narrow for coding, and no
+    // writing row in either pool.
+    let explainStd = { (domain: LocalRequestClassifier.Domain) in LA(taskType: .explain, difficulty: .standard, needsTools: .none, domain: domain) }
+    let capabilityCases: [(label: String, text: String, input: B.Input, model: String, basis: String, routes: String?, token: String?)] = [
         ("science design (QMGR)", "QMGR 통합하게 스키마 좀 짜봐",
          capabilityInput("QMGR 통합하게 스키마 좀 짜봐", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)),
-         "claude-opus-5-5/max", "capability:science"),
+         "claude-opus-5-5/max", "capability:science", "science/broad", "capability_broad"),
         ("the deep floor: a derivation read as standard", "슈뢰딩거 방정식 유도해줘",
-         capabilityInput("슈뢰딩거 방정식 유도해줘", LA(taskType: .explain, difficulty: .standard, needsTools: .none, domain: .science)),
-         "claude-opus-5-5/max", "capability:science"),
-        ("math proof", "피타고라스 정리 증명해줘",
+         capabilityInput("슈뢰딩거 방정식 유도해줘", explainStd(.science)),
+         "claude-opus-5-5/max", "capability:science", "science/broad", "capability_broad"),
+        ("math proof, corroborated by its marker: the narrow row", "피타고라스 정리 증명해줘",
          capabilityInput("피타고라스 정리 증명해줘", LA(taskType: .explain, difficulty: .deep, needsTools: .none, domain: .math)),
-         "claude-sonnet-5-5/max", "capability:math"),
-        ("coding design", "웹 서버 캐시 계층 설계해줘",
+         "claude-sonnet-5-5/max", "capability:math", "math/narrow_corroborated", "capability_narrow_corroborated:math_proof"),
+        ("coding design with a code-material rail (b): the narrow row", "웹 서버 캐시 계층 설계해줘",
          capabilityInput("웹 서버 캐시 계층 설계해줘", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .coding)),
-         "claude-opus-5-5/medium", "capability:coding"),
-        ("writing deliverable", "AI 윤리에 관한 에세이 써줘",
+         "claude-opus-5-5/medium", "capability:coding", "coding/narrow_corroborated",
+         "capability_narrow_corroborated:coding_code_material"),
+        ("writing deliverable: no writing row qualifies (§7), the reference", "AI 윤리에 관한 에세이 써줘",
          capabilityInput("AI 윤리에 관한 에세이 써줘", LA(taskType: .write, difficulty: .deep, needsTools: .none, domain: .writing)),
-         "gpt-6.1-sol/high", "capability:writing"),
-        ("general domain: the reference", "QMGR 통합하게 스키마 좀 짜봐",
+         "gpt-6-astra/ultra", "reference", "writing/writing_deliverable", "capability_writing_none_qualify"),
+        ("general domain, a design: the reference", "QMGR 통합하게 스키마 좀 짜봐",
          capabilityInput("QMGR 통합하게 스키마 좀 짜봐", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .general)),
-         "gpt-6-astra/ultra", "reference"),
+         "gpt-6-astra/ultra", "reference", nil, nil),
         ("LLM down: no domain, the reference", "웹 서버 캐시 계층 설계해줘",
-         capabilityInput("웹 서버 캐시 계층 설계해줘", nil), "gpt-6-astra/ultra", "reference"),
-        ("standard explanation unchanged", "쉐딩과 방정식 설명해 봐봐",
-         capabilityInput("쉐딩과 방정식 설명해 봐봐", LA(taskType: .explain, difficulty: .standard, needsTools: .none, domain: .science)),
-         "gpt-6.1-sol/medium", "graded:standard"),
+         capabilityInput("웹 서버 캐시 계층 설계해줘", nil), "gpt-6-astra/ultra", "reference", nil, nil),
+        ("a standard explanation binds the capability row, never sol medium", "쉐딩과 방정식 설명해 봐봐",
+         capabilityInput("쉐딩과 방정식 설명해 봐봐", explainStd(.science)),
+         "claude-opus-5-5/max", "capability:science", "science/broad", "capability_broad"),
         ("strongest-model words: the reference", "제일 똑똑한 모델로 피타고라스 정리 증명해줘",
          capabilityInput("제일 똑똑한 모델로 피타고라스 정리 증명해줘",
-                         LA(taskType: .explain, difficulty: .deep, needsTools: .none, domain: .math)), "gpt-6-astra/ultra", "reference"),
+                         LA(taskType: .explain, difficulty: .deep, needsTools: .none, domain: .math)), "gpt-6-astra/ultra", "reference", nil, nil),
         ("a hard-railed writer is never read locally: no domain, the reference", "블로그 소개글 새로 써서 index.html에 넣어줘",
          capabilityInput("블로그 소개글 새로 써서 index.html에 넣어줘",
-                         LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)), "gpt-6-astra/ultra", "reference"),
+                         LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)), "gpt-6-astra/ultra", "reference", nil, nil),
         ("a write reading of unread work stays a read-only unknown: the reference", "랜딩 페이지 카피 영어로 갈아끼워",
          capabilityInput("랜딩 페이지 카피 영어로 갈아끼워", LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)),
-         "gpt-6-astra/ultra", "reference"),
+         "gpt-6-astra/ultra", "reference", "writing/writing_deliverable", nil),
         // Review of 442: think-hard and strongest-model wording the fixed
         // phrases miss still keeps the reference for deep work.
         ("think-hard word order: the reference", "추론을 최대로 해서 LRU 캐시를 O(1)로 구현하는 방법을 설계해줘",
          capabilityInput("추론을 최대로 해서 LRU 캐시를 O(1)로 구현하는 방법을 설계해줘",
-                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .coding)), "gpt-6-astra/ultra", "reference"),
+                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .coding)), "gpt-6-astra/ultra", "reference", nil, nil),
         ("strongest-model inflection: the reference", "최고 수준의 모델로 양자역학과 일반상대성이론을 통합하는 이론을 설계해줘",
          capabilityInput("최고 수준의 모델로 양자역학과 일반상대성이론을 통합하는 이론을 설계해줘",
-                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)), "gpt-6-astra/ultra", "reference"),
+                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)), "gpt-6-astra/ultra", "reference", nil, nil),
         ("think very carefully: the reference", "think very carefully and derive the Navier-Stokes equations",
          capabilityInput("think very carefully and derive the Navier-Stokes equations",
-                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)), "gpt-6-astra/ultra", "reference")]
+                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)), "gpt-6-astra/ultra", "reference", nil, nil),
+        // DESIGN-4 §1/§2/§4.
+        ("the owner's standard explanation (쉐딩 방정식) binds the capability route", "쉐딩 방정식 설명해줘",
+         capabilityInput("쉐딩 방정식 설명해줘", explainStd(.science)),
+         "claude-opus-5-5/max", "capability:science", "science/broad", "capability_broad"),
+        ("a science request misread as math, no math marker: the broad row", "슈뢰딩거 방정식 설명해줘",
+         capabilityInput("슈뢰딩거 방정식 설명해줘", explainStd(.math)),
+         "claude-opus-5-5/max", "capability:math", "math/broad", "capability_broad"),
+        ("math with a marker: the narrow row", "적분이 왜 넓이를 구하는지 설명해줘",
+         capabilityInput("적분이 왜 넓이를 구하는지 설명해줘", explainStd(.math)),
+         "claude-sonnet-5-5/max", "capability:math", "math/narrow_corroborated", "capability_narrow_corroborated:math_calculus"),
+        ("math without a marker: the broad row", "확률과 통계의 차이를 설명해줘",
+         capabilityInput("확률과 통계의 차이를 설명해줘", explainStd(.math)),
+         "claude-opus-5-5/max", "capability:math", "math/broad", "capability_broad"),
+        ("writing without a deliverable: the broad row, never claimed for writing", "좋은 문장을 쓰는 요령 설명해줘",
+         capabilityInput("좋은 문장을 쓰는 요령 설명해줘", explainStd(.writing)),
+         "claude-opus-5-5/max", "capability:broad", "broad/broad", "capability_broad"),
+        ("a 4B-only machine: the domain is ignored, an explanation takes the broad row", "쉐딩 방정식 설명해줘",
+         capabilityInput("쉐딩 방정식 설명해줘", explainStd(.science), model: "qwen3.5:4b"),
+         "claude-opus-5-5/max", "capability:broad", "broad/broad", "capability_broad"),
+        ("a 4B-only machine: a design keeps the reference", "QMGR 통합하게 스키마 좀 짜봐",
+         capabilityInput("QMGR 통합하게 스키마 좀 짜봐", LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science),
+                         model: "qwen3.5:4b"), "gpt-6-astra/ultra", "reference", nil, nil),
+        ("LLM down: a keyword standard explanation takes the broad row", "슈뢰딩거 방정식 설명해봐",
+         capabilityInput("슈뢰딩거 방정식 설명해봐", nil),
+         "claude-opus-5-5/max", "capability:broad", "broad/broad", "capability_broad"),
+        ("current facts standard: an agent surface only", "오늘 원달러 환율이 왜 오르는지 설명해줘",
+         capabilityInput("오늘 원달러 환율이 왜 오르는지 설명해줘",
+                         LA(taskType: .explain, difficulty: .standard, needsTools: .currentFacts, domain: .knowledge)),
+         "claude-opus-5-5/max", "capability:knowledge", "knowledge/broad", "capability_broad"),
+        ("a light explanation keeps fast/low", "엔트로피가 뭐야?",
+         capabilityInput("엔트로피가 뭐야?", LA(taskType: .explain, difficulty: .light, needsTools: .none, domain: .science)),
+         "gpt-6-luna/low", "graded:light", "science/broad", nil)]
     var capabilityRoutesCases: [(request: String, catalog: [String: Any], write: Bool)] = []
     for item in capabilityCases {
         let built = try catalog(item.input)
         var v2Request = try request(item.text, mode: .auto)
         v2Request.routingIntentPolicyVersion = C.RoutingIntentV2.version
         let decoded = try C.decodeCatalog(built, request: v2Request)
-        let domain = item.input.requestProfile?.domain
-        try check(decoded.capabilityRoutes == (domain.flatMap { ModelCapabilityTable.compiled.routes(for: $0) }.flatMap {
-                      item.input.requestProfile?.signals.contains("quality_request") == true ||
-                          RequestProfile.asksForReference(item.text) ? nil : $0 }) &&
-                  decoded.capabilityRoutes.map { $0.valid && $0.category == domain?.rawValue } ?? true,
-                  "442: the catalog carries the domain's capability routes only with a local domain: \(item.label)")
+        let routes = decoded.capabilityRoutes
+        try check(routes.map { "\($0.category)/\($0.choice.rawValue)" } == item.routes &&
+                  routes.map { $0.valid && $0.tableSHA256 == ModelCapabilityTable.compiledSHA256 &&
+                      $0.broad == ModelCapabilityTable.compiled.broadRows &&
+                      $0.references == ["openai_codex": "gpt-6-astra", "anthropic_shared": "claude-fable-5-1"] &&
+                      $0.priceBasis == .init(table: ModelPriceTable.compiledSHA256, active: ModelPriceTable.compiledSHA256,
+                                             compiled: ModelPriceTable.compiledSHA256) } ?? true,
+                  "DESIGN-4: the catalog's capability routes: \(item.label): \(routes.map { "\($0.category)/\($0.choice.rawValue)" } ?? "none")")
         capabilityRoutesCases.append((item.text, try object(built), item.input.ownerScope == .workspaceWrite))
     }
     let capabilityResolved = try coreRoutes(capabilityRoutesCases, now: now,
@@ -889,21 +935,34 @@ func runRCCAdmissionFactsFixtures() throws {
     for (item, route) in zip(capabilityCases, capabilityResolved) {
         let tuple = "\(route["model"] as? String ?? "")/\(route["effort"] as? String ?? "")"
         let capability = item.basis.hasPrefix("capability:")
+        let reason = route["reason"] as? String ?? ""
         try check(tuple == item.model && route["basis"] as? String == item.basis &&
-                  (route["reason"] as? String)?.contains(";admitted_capability_") == capability &&
-                  (!capability || (route["kind"] as? String == "capability" && route["route_class"] as? String == "deep")),
-                  "442: \(item.label): \(tuple) \(route["basis"] ?? "") \(route["reason"] ?? "")")
+                  reason.contains(";admitted_capability_") == capability &&
+                  (item.token.map { reason.split(separator: ";").contains(Substring($0)) } ?? true) &&
+                  (!capability || (route["kind"] as? String == "capability" && route["route_class"] as? String == "deep")) &&
+                  !(tuple == "gpt-6.1-sol/medium" || tuple == "claude-sonnet-5-5/medium"),
+                  "DESIGN-4: \(item.label): \(tuple) \(route["basis"] ?? "") \(reason)")
     }
     try check(capabilityResolved[0]["admitted_by"] as? String == "capability_table" &&
               capabilityResolved[0]["reference_model"] as? String == "claude-fable-5-1" &&
-              capabilityResolved[4]["reference_model"] as? String == "gpt-6-astra",
+              capabilityResolved[7]["reference_model"] as? String == "claude-fable-5-1",
               "442: a read-only capability route keeps its one escalation to its pool's reference")
     try check(capabilityCases[9].input.requestProfile?.classifier == RequestProfile.keywordClassifier &&
               capabilityRoutesCases[9].catalog["request_class"] as? String == "writer" &&
               capabilityRoutesCases[10].catalog["request_class"] as? String == "readonly_lookup",
               "442: the host scopes a write-scope request as a writer with a keyword profile only")
+    try check(capabilityCases[19].input.requestProfile?.classifier == "local_llm:qwen3.5:4b" &&
+              capabilityCases[19].input.requestProfile?.domain == nil &&
+              capabilityCases[19].input.requestProfile?.signals.contains("llm_domain_unqualified") == true &&
+              capabilityCases[14].input.requestProfile?.domain == .science,
+              "DESIGN-4 §4: the 4B reading names no domain (recorded), the 9B reading does")
+    try check((capabilityResolved[22]["surface"] as? String) == "claude",
+              "DESIGN-4 §1: a current-facts standard answer binds an agent surface only")
     var forgedRoutes = try object(catalog(capabilityCases[0].input))
-    forgedRoutes["capability_routes"] = try JSONSerialization.jsonObject(with: C.encode(ModelCapabilityTable.compiled.routes(for: .math)!))
+    let mathProfile = capabilityCases[2].input.requestProfile!
+    forgedRoutes["capability_routes"] = try JSONSerialization.jsonObject(with: C.encode(CapabilityChoice.routes(
+        profile: mathProfile, request: capabilityCases[2].text, table: .compiled,
+        priceBasis: .init(table: ModelPriceTable.compiledSHA256, active: nil, compiled: ModelPriceTable.compiledSHA256))!))
     try reject("442: capability routes of another domain are refused") {
         var v2Request = try request(capabilityCases[0].text, mode: .auto)
         v2Request.routingIntentPolicyVersion = C.RoutingIntentV2.version

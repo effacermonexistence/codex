@@ -1,5 +1,7 @@
 // Build 442 (owner order 2026-10-27, DESIGN-3): capability-based choice for
-// deep work. The offline qualification rule at tolerance 0 and its compiled
+// deep work; DESIGN-4 (2026-10-28): standard answers too, the misread-robust
+// broad/narrow/writing choice, the best-score bar (§7) and the live-reference
+// check (§8). The offline qualification rule at tolerance 0 and its compiled
 // table (scripts/capability-table.mjs, Resources/model-capability-table.json,
 // Swift ModelCapabilityTable), and Core binding a deep node at the cheapest
 // dispatchable capability-qualified row across both pools, the pool reference
@@ -136,6 +138,31 @@ test('rule: within one price, the lower effort first, as every first-party cost 
   assert.throws(() => qualify(contradicted), /capability_effort_order_contradicted/);
 });
 
+test('rule (DESIGN-4 §7): the bar is the reference\'s best confirmed score at any effort; it only removes rows', () => {
+  // The reference's xhigh beats its max: a candidate between the two fails.
+  const rows = [ev(REF, 'B', 'max', 31.0), ev(REF, 'B', 'xhigh', 32.2), ev(REF, 'B', 'high', 31.0),
+    ev('claude-opus-5-5', 'B', 'high', 32.0), ev('claude-sonnet-5-5', 'B', 'max', 32.2)];
+  const result = qualify(rows);
+  assert.deepEqual(names(result), ['claude-sonnet-5-5@max']);
+  assert.equal(reasonOf(result, 'claude-opus-5-5', 'high'), 'below_reference:B');
+  assert.deepEqual([result.qualifying[0].benchmarks[0].reference_score, result.qualifying[0].benchmarks[0].reference_effort],
+    [32.2, 'xhigh']);
+  // A lower-is-better metric: the lowest confirmed score at any effort.
+  const lb = qualify([ev(REF, 'E', 'max', 3.91, {lb: true}), ev(REF, 'E', 'high', 3.9, {lb: true}),
+    ev('claude-opus-5-5', 'E', 'max', 3.905, {lb: true})]);
+  assert.deepEqual(names(lb), []);
+  // An unconfirmed better reference score is not the bar.
+  assert.deepEqual(names(qualify([ev(REF, 'B', 'max', 31), ev(REF, 'B', 'xhigh', 40, {status: 'single_source'}),
+    ev('claude-opus-5-5', 'B', 'max', 32)])), ['claude-opus-5-5@max']);
+  // Sharing is unchanged: a confirmed lower-effort reference row never makes
+  // a benchmark whose max row is disputed shared (it would only add a row).
+  assert.deepEqual(names(qualify([ev(REF, 'B', 'max', 65, {status: 'disputed'}), ev(REF, 'B', 'low', 60),
+    ev('claude-opus-5-5', 'B', 'max', 61)])), []);
+  // The per-task cost condition still compares with the max (or top) row.
+  assert.deepEqual(names(qualify([ev(REF, 'B', 'max', 50, {cost: 10}), ev(REF, 'B', 'low', 52, {cost: 1}),
+    ev('claude-opus-5-5', 'B', 'max', 53, {cost: 5})])), ['claude-opus-5-5@max']);
+});
+
 // ---- The compiled table. ----------------------------------------------------
 test('the compiled table is exactly the script output, in the resource and in the Swift source', () => {
   const compiled = canonical(compileTable(EVIDENCE, PRICES));
@@ -151,18 +178,27 @@ test('the compiled table is exactly the script output, in the resource and in th
   assert.deepEqual(Object.keys(DOMAINS).sort(), [...CAPABILITY_CATEGORIES].sort());
 });
 
-test('the compiled verdicts equal DESIGN-3 evidence table; the literal three conditions would add three rows', () => {
+test('the compiled verdicts: DESIGN-3 evidence table under the DESIGN-4 §7 bar; the literal three conditions would add two rows', () => {
   const rows = (table, domain, pool) => table.categories[domain].pools[pool].qualifying.map(row => row.model + '@' + row.effort);
+  // DESIGN-4 §7 dropped Opus 5.5 @xhigh from coding (FrontierCode v1.1 Main
+  // 51.42 < Fable @low 52.8) and every GPT-6.1 Sol writing row (GDP.pdf
+  // 32.0 / 31.8 / 31.0 < astra @xhigh 32.2): writing binds the reference.
   const expected = {knowledge: [[], ['claude-opus-5-5@max']], science: [[], ['claude-opus-5-5@max']],
     math: [[], ['claude-sonnet-5-5@max', 'claude-opus-5-5@max']],
-    coding: [[], ['claude-opus-5-5@medium', 'claude-opus-5-5@high', 'claude-opus-5-5@xhigh', 'claude-opus-5-5@max']],
-    writing: [['gpt-6.1-sol@high', 'gpt-6.1-sol@xhigh', 'gpt-6.1-sol@max'], []], tool_use: [[], ['claude-opus-5-5@max']]};
+    coding: [[], ['claude-opus-5-5@medium', 'claude-opus-5-5@high', 'claude-opus-5-5@max']],
+    writing: [[], []], tool_use: [[], ['claude-opus-5-5@max']]};
   for (const [domain, [openai, anthropic]] of Object.entries(expected)) {
     assert.deepEqual(rows(TABLE, domain, 'openai_codex'), openai, domain);
     assert.deepEqual(rows(TABLE, domain, 'anthropic_shared'), anthropic, domain);
   }
+  assert.equal(TABLE.reference_bar, 'best_confirmed_any_effort');
+  assert.deepEqual(TABLE.broad, {categories: ['knowledge', 'science', 'math', 'coding', 'tool_use'],
+    pools: {anthropic_shared: [{effort: 'max', model: 'claude-opus-5-5', typical_call_usd: 0.074}], openai_codex: []}});
+  const bar = row => row.benchmarks.find(b => b.benchmark === 'FrontierCode v1.1 Main');
+  const opusMedium = TABLE.categories.coding.pools.anthropic_shared.qualifying.find(r => r.effort === 'medium');
+  assert.deepEqual([bar(opusMedium).reference_score, bar(opusMedium).reference_effort], [52.8, 'low']);
   const literal = compileTable(EVIDENCE, PRICES, {blockers: false});
-  assert.deepEqual(rows(literal, 'coding', 'anthropic_shared'), ['claude-sonnet-5-5@xhigh', ...expected.coding[1]]);
+  assert.deepEqual(rows(literal, 'coding', 'anthropic_shared'), expected.coding[1]);
   assert.deepEqual(rows(literal, 'writing', 'anthropic_shared'), ['claude-sonnet-5-5@xhigh', 'claude-opus-5-5@xhigh']);
   assert.deepEqual(TABLE.categories.writing.pools.anthropic_shared.blocked.map(row => row.model + '@' + row.effort + ' ' + row.reason),
     ['claude-opus-5-5@xhigh below_reference_at_higher_effort:OfficeQA@max',
@@ -202,12 +238,29 @@ function profile({task_type = 'design', difficulty = 'deep', tool_need = 'none',
     signals: [...new Set(['llm_task_' + task_type, ...signals])].sort(), classifier, task_type};
   return domain === null ? value : {...value, domain};
 }
-function routesFor(domain) {
-  const pools = {};
-  for (const pool of ['openai_codex', 'anthropic_shared'])
-    pools[pool] = TABLE.categories[domain].pools[pool].qualifying.map(({model, effort}) => ({model, effort}));
-  return {schema: 1, policy: 'capability_delta0_v1', table_sha256: sha(TABLE_BYTES), category: domain, pools};
+const POOLS = ['openai_codex', 'anthropic_shared'];
+const BROAD = Object.fromEntries(POOLS.map(pool => [pool, TABLE.broad.pools[pool].map(({model, effort}) => ({model, effort}))]));
+const PRICE = sha(PRICES);
+/** Schema-2 capability routes (Swift CapabilityChoice): `choice` 'narrow'
+ * (the domain's full list, corroborated by `marker`), 'broad' (the broad rows;
+ * category 'broad' for an unknown domain or a non-deliverable writing reading),
+ * 'writing' (the writing list); `pools` overrides the rows (a hand-built row). */
+function routesFor(domain, {choice = domain === null ? 'broad' : domain === 'writing' ? 'writing' : 'narrow',
+                            marker = 'fixture_marker', pools = null, references = null, price = null} = {}) {
+  const list = domain === null ? BROAD : Object.fromEntries(POOLS.map(pool =>
+    [pool, TABLE.categories[domain].pools[pool].qualifying.map(({model, effort}) => ({model, effort}))]));
+  const base = {schema: 2, policy: 'capability_delta0_v2', table_sha256: sha(TABLE_BYTES), broad: BROAD,
+    references: references ?? {openai_codex: 'gpt-6-astra', anthropic_shared: 'claude-fable-5-1'},
+    price_basis: price ?? {table: PRICE, active: PRICE, compiled: PRICE}};
+  if (choice === 'broad')
+    return {...base, category: domain === null || domain === 'writing' ? 'broad' : domain, choice: 'broad', marker: null,
+      pools: pools ?? BROAD};
+  if (choice === 'writing') return {...base, category: 'writing', choice: 'writing_deliverable', marker: null, pools: pools ?? list};
+  return {...base, category: domain, choice: 'narrow_corroborated', marker, pools: pools ?? list};
 }
+/** A hand-built writing row (the compiled table has none since DESIGN-4 §7):
+ * Core's writer and pool-boundary paths stay covered. */
+const SOL_WRITING = {openai_codex: [{model: 'gpt-6.1-sol', effort: 'high'}], anthropic_shared: []};
 function row(id, model, effort, provider, {surface = provider, scope = 'read_only', quota = 0.6, unavailable = false,
                                            usd = USD[model]} = {}) {
   const now = Date.now();
@@ -258,10 +311,20 @@ function bind(q, c, options = {}) {
 }
 
 test('Core binds each domain at the cheapest qualifying row of either pool, uncertified, the reference its escalation', () => {
-  const expected = {knowledge: ['claude-opus-5-5/max', 'claude-fable-5-1'], science: ['claude-opus-5-5/max', 'claude-fable-5-1'],
-    math: ['claude-sonnet-5-5/max', 'claude-fable-5-1'], coding: ['claude-opus-5-5/medium', 'claude-fable-5-1'],
-    writing: ['gpt-6.1-sol/high', 'gpt-6-astra'], tool_use: ['claude-opus-5-5/max', 'claude-fable-5-1']};
-  for (const [domain, [tuple, reference]] of Object.entries(expected)) {
+  const expected = {knowledge: ['claude-opus-5-5/max', 'claude-fable-5-1', 'capability_broad'],
+    science: ['claude-opus-5-5/max', 'claude-fable-5-1', 'capability_broad'],
+    math: ['claude-sonnet-5-5/max', 'claude-fable-5-1', 'capability_narrow_corroborated:fixture_marker'],
+    coding: ['claude-opus-5-5/medium', 'claude-fable-5-1', 'capability_narrow_corroborated:fixture_marker'],
+    tool_use: ['claude-opus-5-5/max', 'claude-fable-5-1', 'capability_broad']};
+  // DESIGN-4 §7: no writing row qualifies in either pool: the reference, with the note.
+  {
+    const q = task(), bound = bind(q, catalog(q, {request_profile: profile({domain: 'writing', task_type: 'write'})}));
+    assert.equal(bound.tuple, 'gpt-6-astra/ultra');
+    assert.equal(bound.basis, 'reference');
+    assert(bound.tokens.includes('capability_writing_none_qualify') &&
+      bound.tokens.includes('capability_choice_writing_deliverable'), bound.decision.reason);
+  }
+  for (const [domain, [tuple, reference, choice]] of Object.entries(expected)) {
     const q = task(), c = catalog(q, {request_profile: profile({domain})});
     assert.deepEqual(admittedRoute(hostPlan(q, c).nodes[0], q, c), {class: 'capability', source: 'capability_table',
       certificate_id: null, category: domain}, domain);
@@ -273,7 +336,7 @@ test('Core binds each domain at the cheapest qualifying row of either pool, unce
     assert.equal(bound.route.ladder.reference_model, reference, domain);
     assert.equal(bound.route.ladder.admitted_by, 'capability_table', domain);
     assert.equal(bound.route.ladder.category, domain, domain);
-    for (const token of ['route_capability', 'admitted_capability_' + domain, 'price_choice', 'escalation_reference_same_pool'])
+    for (const token of ['route_capability', 'admitted_capability_' + domain, choice, 'price_choice', 'escalation_reference_same_pool'])
       assert(bound.tokens.includes(token), `${domain}: ${token} in ${bound.decision.reason}`);
     assert(!/certified/.test(bound.decision.reason), bound.decision.reason);
     assert(bound.tokens.some(token => token.startsWith('capability_usd_')) &&
@@ -294,7 +357,8 @@ test('a pool that cannot run: the other pool, else the reference, never an unlis
   bound = bind(q, catalog(q, {request_profile: profile({domain: 'coding'}), candidates: rows({codexQuota: 0})}));
   assert.equal(bound.tuple, 'claude-opus-5-5/medium');
   q = task();
-  bound = bind(q, catalog(q, {request_profile: profile({domain: 'writing'}), candidates: rows({codexQuota: 0})}));
+  bound = bind(q, catalog(q, {request_profile: profile({domain: 'writing', task_type: 'write'}), candidates: rows({codexQuota: 0}),
+    routes: routesFor('writing', {pools: SOL_WRITING})}));
   assert.equal(bound.tuple, 'claude-fable-5-1/max');
   assert.equal(bound.basis, 'reference');
   // A stale quota row is out; the next listed row of the domain binds.
@@ -322,7 +386,8 @@ test('a pool that cannot run: the other pool, else the reference, never an unlis
     ['quota_zero', 'writing', 'astra-ultra', 'claude-fable-5-1/max']]) {
     const provider = held === 'fable-max' ? 'claude' : 'codex';
     q = task();
-    bound = bind(q, catalog(q, {request_profile: profile({domain}), candidates: rows({drop: [held]}),
+    bound = bind(q, catalog(q, {request_profile: profile({domain, task_type: domain === 'writing' ? 'write' : 'design'}),
+      candidates: rows({drop: [held]}), routes: domain === 'writing' ? routesFor('writing', {pools: SOL_WRITING}) : undefined,
       patch: {exclusions: [{provider, reason, count: 1}, {provider, reason: 'reference_unavailable', count: 1}]}}));
     assert.equal(bound.tuple, tuple, `${reason} ${domain}`);
     assert.equal(bound.basis, 'reference', `${reason} ${domain}`);
@@ -333,6 +398,7 @@ test('a pool that cannot run: the other pool, else the reference, never an unlis
   q = task({request: '랜딩 페이지 카피 영어로 갈아끼워', write: true});
   bound = bind(q, catalog(q, {writer: true, candidates: rows({scope: 'workspace_write', drop: ['astra-ultra-w']}),
     request_profile: profile({answer_kind: 'unknown', task_type: 'write', domain: 'writing'}),
+    routes: routesFor('writing', {pools: SOL_WRITING}),
     patch: {exclusions: [{provider: 'codex', reason: 'quota_zero', count: 1},
       {provider: 'codex', reason: 'reference_unavailable', count: 1}]}}));
   assert.equal(bound.tuple, 'claude-fable-5-1/max');
@@ -343,6 +409,31 @@ test('a pool that cannot run: the other pool, else the reference, never an unlis
   assert.throws(() => bind(q, catalog(q, {request_profile: profile({domain: 'coding'}),
     candidates: rows({patch: {'fable-max': {availability: 'unavailable'}, 'astra-ultra': {availability: 'unavailable'}}})})),
   /no_dispatchable_candidate:read_only:/);
+});
+
+test('DESIGN-4: an unknown domain\'s explanation takes the broad row; a design, a deep keyword profile keep the reference', () => {
+  // A keyword (LLM down) standard explanation, a local 'general' or 4B reading of an explanation: the broad row.
+  for (const [name, request_profile] of [
+    ['keyword standard explanation', profile({domain: null, classifier: 'keyword_v1', task_type: 'explain', difficulty: 'standard'})],
+    ['local general standard explanation', profile({domain: null, task_type: 'explain', difficulty: 'standard'})],
+    ['4B deep explanation', profile({domain: null, classifier: 'local_llm:qwen3.5:4b', task_type: 'explain', difficulty: 'deep',
+      signals: ['llm_domain_unqualified']})],
+    ['writing reading, no deliverable', profile({domain: 'writing', task_type: 'explain', difficulty: 'standard'})]]) {
+    const q = task({request: '이 개념을 설명해줘'});
+    const c = catalog(q, {request_profile, routes: routesFor(request_profile.domain ?? null, {choice: 'broad'})});
+    const bound = bind(q, c);
+    assert.equal(bound.tuple, 'claude-opus-5-5/max', name);
+    assert.equal(bound.basis, 'capability:broad', name);
+    assert(bound.tokens.includes('capability_broad') && bound.tokens.includes('admitted_capability_broad'), name);
+  }
+  // A broad category never serves an unknown domain's design, nor a keyword profile's deep answer.
+  for (const [name, request_profile] of [
+    ['local general design', profile({domain: null, task_type: 'design', difficulty: 'deep'})],
+    ['keyword deep explanation', profile({domain: null, classifier: 'keyword_v1', task_type: 'explain', difficulty: 'deep'})]]) {
+    const q = task(), bound = bind(q, catalog(q, {request_profile, routes: routesFor(null)}));
+    assert.equal(bound.tuple, 'gpt-6-astra/ultra', name);
+    assert.equal(bound.basis, 'reference', name);
+  }
 });
 
 test('domain unknown, general or keyword-only, strongest-model words, an owner provider: the reference', () => {
@@ -368,12 +459,57 @@ test('domain unknown, general or keyword-only, strongest-model words, an owner p
   assert.equal(bound.basis, 'reference');
 });
 
-test('light and standard routing is unchanged; an action reading is not deep work', () => {
-  for (const [difficulty, tuple] of [['light', 'gpt-6-luna/low'], ['standard', 'gpt-6.1-sol/medium']]) {
+test('DESIGN-4: light stays graded; a standard answer binds a capability row, never the workhorse at medium', () => {
+  {
     const q = task({request: '슈뢰딩거 방정식 설명해줘'});
-    const bound = bind(q, catalog(q, {request_profile: profile({task_type: 'explain', difficulty, domain: 'science'})}));
-    assert.equal(bound.tuple, tuple, difficulty);
-    assert.equal(bound.basis, 'graded:' + difficulty, difficulty);
+    const bound = bind(q, catalog(q, {request_profile: profile({task_type: 'explain', difficulty: 'light', domain: 'science'})}));
+    assert.equal(bound.tuple, 'gpt-6-luna/low');
+    assert.equal(bound.basis, 'graded:light');
+  }
+  for (const type of ['explain', 'chat']) {
+    const q = task({request: '슈뢰딩거 방정식 설명해줘'});
+    const c = catalog(q, {request_profile: profile({task_type: type, difficulty: 'standard', domain: 'science'}),
+      routes: routesFor('science', {choice: 'broad'})});
+    assert.deepEqual(admittedRoute(hostPlan(q, c).nodes[0], q, c), {class: 'capability', source: 'capability_table',
+      certificate_id: null, category: 'science'}, type);
+    const bound = bind(q, c);
+    assert.equal(bound.tuple, 'claude-opus-5-5/max', type);
+    assert.equal(bound.basis, 'capability:science', type);
+    assert.equal(bound.route.ladder.reference_model, 'claude-fable-5-1', type);
+    // With no capability routes: the reference, never sol medium.
+    const none = bind(q, catalog(q, {request_profile: profile({task_type: type, difficulty: 'standard', domain: 'science'}),
+      routes: null}));
+    assert.equal(none.tuple, 'gpt-6-astra/ultra', type);
+    assert(none.tokens.includes('standard_policy_reference'), none.decision.reason);
+  }
+  // A standard current-facts answer: a qualifying row on an agent surface
+  // only (a chat row is never offered); none, the reference with tools.
+  {
+    const q = task({request: '오늘 환율이 왜 오르는지 설명해줘'});
+    const chat = row('opus-max-chat', 'claude-opus-5-5', 'max', 'claude', {surface: 'claude-chat'});
+    let bound = bind(q, catalog(q, {candidates: [chat, ...rows()],
+      request_profile: profile({task_type: 'explain', difficulty: 'standard', tool_need: 'current_facts', domain: 'knowledge'}),
+      routes: routesFor('knowledge', {choice: 'broad'})}));
+    assert.equal(bound.tuple, 'claude-opus-5-5/max');
+    assert.equal(bound.decision.surface, 'claude');
+    bound = bind(q, catalog(q, {candidates: [chat, ...rows({drop: ['opus-max']})],
+      request_profile: profile({task_type: 'explain', difficulty: 'standard', tool_need: 'current_facts', domain: 'knowledge'}),
+      routes: routesFor('knowledge', {choice: 'broad'})}));
+    // The reference with tools (this catalog lists the Claude pool first: Fable).
+    assert.equal(bound.tuple, 'claude-fable-5-1/max');
+    assert.equal(bound.decision.surface, 'claude');
+    assert.equal(bound.basis, 'reference');
+    assert(bound.tokens.includes('capability_knowledge_tuple_undispatchable'), bound.decision.reason);
+  }
+  // A narrow choice whose narrow row cannot run binds the broad row, named so.
+  {
+    const q = task({request: '적분이 뭔지 설명해줘'});
+    const bound = bind(q, catalog(q, {candidates: rows({drop: ['sonnet-max']}),
+      request_profile: profile({task_type: 'explain', difficulty: 'standard', domain: 'math'}),
+      routes: routesFor('math', {marker: 'math_calculus'})}));
+    assert.equal(bound.tuple, 'claude-opus-5-5/max');
+    assert(bound.tokens.includes('capability_broad') && !bound.tokens.some(token => token.startsWith('capability_narrow')),
+      bound.decision.reason);
   }
   // A deep explain answer is deep work; a design or write reading at any difficulty too.
   for (const [type, difficulty] of [['explain', 'deep'], ['chat', 'deep'], ['design', 'standard'], ['write', 'light']]) {
@@ -396,7 +532,8 @@ test('light and standard routing is unchanged; an action reading is not deep wor
 test('a writer binds the capability row reference-equivalent: no ladder, no headroom rule', () => {
   const q = task({request: '랜딩 페이지 카피 영어로 갈아끼워', write: true, budget: {max_native_dispatches: 1}});
   const c = catalog(q, {writer: true, candidates: rows({scope: 'workspace_write'}),
-    request_profile: profile({answer_kind: 'unknown', task_type: 'write', domain: 'writing'})});
+    request_profile: profile({answer_kind: 'unknown', task_type: 'write', domain: 'writing'}),
+    routes: routesFor('writing', {pools: SOL_WRITING})});
   const bound = bind(q, c);
   assert.equal(bound.tuple, 'gpt-6.1-sol/high');
   assert.equal(bound.decision.scope ?? 'workspace_write', 'workspace_write');
@@ -405,6 +542,12 @@ test('a writer binds the capability row reference-equivalent: no ladder, no head
   assert.equal(bound.decision.ladder, undefined);
   assert.equal(bound.basis, 'capability:writing');
   assert(bound.tokens.includes('writer_reference_equivalent_no_ladder'), bound.decision.reason);
+  // DESIGN-4: a writer never binds the broad rows (no writing benchmark qualifies them).
+  const broadWriter = catalog(q, {writer: true, candidates: rows({scope: 'workspace_write'}),
+    request_profile: profile({answer_kind: 'unknown', task_type: 'design', domain: 'writing'}),
+    routes: routesFor('writing', {choice: 'broad'})});
+  assert.notEqual(admittedRoute(hostPlan(q, broadWriter).nodes[0], q, broadWriter).class, 'capability');
+  assert.equal(bind(q, broadWriter).basis, 'reference');
 });
 
 test('price guard: a row no cheaper than the reference now binds the reference', () => {
@@ -418,16 +561,55 @@ test('price guard: a row no cheaper than the reference now binds the reference',
   assert(bound.tokens.includes('capability_coding_not_cheaper_than_reference'), bound.decision.reason);
 });
 
+test('DESIGN-4 §8: a row binds only beside the live reference its table compared it with, on its price basis', () => {
+  // A new frontier model live in a pool before the table is recompiled: that pool's rows are off, its reference binds.
+  let q = task();
+  let bound = bind(q, catalog(q, {request_profile: profile({domain: 'coding'}),
+    routes: routesFor('coding', {references: {openai_codex: 'gpt-6-astra', anthropic_shared: 'claude-fable-5-0'}})}));
+  assert.equal(bound.tuple, 'gpt-6-astra/ultra');
+  assert.equal(bound.basis, 'reference');
+  assert(bound.tokens.includes('capability_table_stale') && bound.tokens.includes('capability_coding_table_stale'),
+    bound.decision.reason);
+  // Only the stale pool is off: the other pool's rows still bind.
+  q = task();
+  bound = bind(q, catalog(q, {request_profile: profile({domain: 'writing', task_type: 'write'}),
+    routes: routesFor('writing', {pools: SOL_WRITING, references: {openai_codex: 'gpt-6-astra', anthropic_shared: 'claude-fable-5-0'}})}));
+  assert.equal(bound.tuple, 'gpt-6.1-sol/high');
+  // A table priced on neither the active nor the compiled price table: every pool off.
+  q = task();
+  const other = sha('another price table');
+  bound = bind(q, catalog(q, {request_profile: profile({domain: 'coding'}),
+    routes: routesFor('coding', {price: {table: other, active: PRICE, compiled: PRICE}})}));
+  assert.equal(bound.basis, 'reference');
+  assert(bound.tokens.includes('capability_table_stale'), bound.decision.reason);
+  // A refreshed (active) price table the table was compiled on is its basis too.
+  q = task();
+  bound = bind(q, catalog(q, {request_profile: profile({domain: 'coding'}),
+    routes: routesFor('coding', {price: {table: other, active: other, compiled: PRICE}})}));
+  assert.equal(bound.tuple, 'claude-opus-5-5/medium');
+});
+
 test('the catalog contract: capability routes travel only beside a locally read profile of their domain', async t => {
   const bad = [
     {request_profile: profile({domain: 'coding'}), routes: routesFor('math')},
     {request_profile: profile({domain: null}), routes: routesFor('math')},
     {request_profile: {...profile({domain: null, classifier: 'keyword_v1', task_type: 'explain'}), domain: 'math'}, routes: null},
     {request_profile: profile({domain: 'cooking'}), routes: null},
-    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), policy: 'capability_delta1_v1'}},
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), policy: 'capability_delta0_v1'}},
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), schema: 1}},
     {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), pools: {anthropic_shared: []}}},
     {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'),
       pools: {openai_codex: [{model: 'gpt-6.1-sol', effort: 'none'}], anthropic_shared: []}}},
+    // DESIGN-4: the choice's own rules.
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding', {choice: 'broad'}),
+      pools: routesFor('coding').pools}},
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), marker: null}},
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), marker: 'Not A Marker'}},
+    {request_profile: profile({domain: 'math'}), routes: {...routesFor('math'), choice: 'writing_deliverable', marker: null}},
+    {request_profile: profile({domain: 'science'}), routes: routesFor(null)},
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), references: {openai_codex: 'gpt-6-astra'}}},
+    {request_profile: profile({domain: 'coding'}), routes: {...routesFor('coding'), price_basis: {table: PRICE, compiled: PRICE}}},
+    {request_profile: {...profile({domain: null}), classifier: undefined, task_type: undefined}, routes: routesFor(null)},
   ];
   for (const options of bad) {
     const dir = await mkdtemp(join(tmpdir(), 'os1-capability-bad-')); await chmod(dir, 0o700);
@@ -510,7 +692,8 @@ test('a writer runs once at its capability row and is never replayed on failure'
   t.after(async () => { await rm(workspace, {recursive: true, force: true}); });
   const writerTask = () => task({request: '랜딩 페이지 카피 영어로 갈아끼워', write: true, workspace});
   const writerCatalog = q => catalog(q, {writer: true, candidates: rows({scope: 'workspace_write'}),
-    request_profile: profile({answer_kind: 'unknown', task_type: 'write', domain: 'writing'})});
+    request_profile: profile({answer_kind: 'unknown', task_type: 'write', domain: 'writing'}),
+    routes: routesFor('writing', {pools: SOL_WRITING})});
   let q = writerTask();
   let run = await harness(t, ticket => completed(ticket), {q, c: writerCatalog(q)});
   assert.deepEqual(run.tickets.map(tuple), ['gpt-6.1-sol/high']);

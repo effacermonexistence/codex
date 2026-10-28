@@ -3,7 +3,10 @@
 // Core mapping by task type, difficulty and tool need, the price-aware choice
 // inside a graded tier list (list prices from the host's ModelPriceTable), the
 // recorded cheap-first decision, the local row for very easy chat, and the
-// deep policy (A shipped, B implemented). Pure resolver calls and a real
+// deep policy (A shipped, B implemented). DESIGN-4 (2026-10-28): a standard
+// answer is no longer graded (a capability row, else its reference; never the
+// workhorse at medium), so the price-aware mechanics run on light lists here.
+// Pure resolver calls and a real
 // durable Core with temp SQLite and a fake executor: no provider, model,
 // network, real HOME or installed app.
 import test from 'node:test';
@@ -140,7 +143,7 @@ test('chat light without a usable local row: fast/low by price; a later turn nev
   assert.equal(bind(q, catalog(q, {request_profile: keyword})).tuple, 'codex:gpt-6-luna/low');
 });
 
-test('explain light binds fast/low (luna over haiku 4.5, either pool order); explain standard binds sol over opus', () => {
+test('explain light binds fast/low (luna over haiku 4.5, either pool order); explain standard is never sol medium', () => {
   const noSonnet = codexFirst => rows({codexFirst}).filter(r => r.model !== 'claude-sonnet-5-5');
   for (const codexFirst of [true, false]) {
     const q = task({request: '엔트로피가 뭐야?'});
@@ -149,28 +152,26 @@ test('explain light binds fast/low (luna over haiku 4.5, either pool order); exp
     assert.equal(light.basis, 'graded:light');
     // p_fail(fast) = (3+1)/(11+2): 0.00195 + 0.3077 x 0.195 < 0.195
     assert(light.tokens.includes('cheap_first') && light.tokens.includes('p_fail_0.3077'), light.decision.reason);
-    // The same workhorse tier: gpt-6.1-sol ($0.037) over claude-opus-5-5 ($0.074), whatever the pool order.
-    const standard = bind(q, catalog(q, {request_profile: profile(), candidates: noSonnet(codexFirst)}));
-    assert.equal(standard.tuple, 'codex:gpt-6.1-sol/medium', `standard codexFirst=${codexFirst}`);
-    assert.equal(standard.basis, 'graded:standard');
-    assert(standard.tokens.includes('graded_profile_explain_standard') && standard.tokens.includes('p_fail_0.0625'),
-      standard.decision.reason);
   }
-  // An exact price tie (sol and sonnet are both $0.037) falls back to the R11
-  // order: here the catalog's pool order.
-  for (const [codexFirst, expected] of [[true, 'codex:gpt-6.1-sol/medium'], [false, 'claude-chat:claude-sonnet-5-5/medium']]) {
+  // DESIGN-4: a standard explanation with no capability routes binds its
+  // reference (R11: the catalog's pool order), never a workhorse or efficient
+  // tier at medium, whatever the pool order or price tie.
+  for (const [codexFirst, expected] of [[true, 'codex:gpt-6-astra/ultra'], [false, 'claude-chat:claude-fable-5-1/max']]) {
     const q = task({request: '슈뢰딩거 방정식 설명해봐'});
-    assert.equal(bind(q, catalog(q, {request_profile: profile(), candidates: rows({codexFirst})})).tuple, expected);
+    const standard = bind(q, catalog(q, {request_profile: profile(), candidates: rows({codexFirst})}));
+    assert.equal(standard.tuple, expected, `standard codexFirst=${codexFirst}`);
+    assert.equal(standard.basis, 'reference');
+    assert(standard.tokens.includes('standard_policy_reference') && standard.tokens.includes('classifier_local_llm'),
+      standard.decision.reason);
   }
 });
 
-test('Codex quota exhausted: the explain-standard list binds claude-sonnet (efficient, cheaper than opus)', () => {
+test('Codex quota exhausted: a standard explanation binds the Claude reference, never sonnet or opus at medium', () => {
   const q = task({request: '슈뢰딩거 방정식 설명해봐'});
   const exhausted = rows({codexQuota: 0});
   const bound = bind(q, catalog(q, {request_profile: profile(), candidates: exhausted}));
-  assert.equal(bound.tuple, 'claude-chat:claude-sonnet-5-5/medium');
-  assert.equal(bound.decision.ladder.reference_model, 'claude-fable-5-1');
-  assert(bound.tokens.includes('graded_list_1') && bound.tokens.includes('escalation_reference_same_pool'));
+  assert.equal(bound.tuple, 'claude-chat:claude-fable-5-1/max');
+  assert.equal(bound.basis, 'reference');
 });
 
 test('current facts: agent surfaces only at workhorse/medium, never a tool-free chat row', () => {
@@ -218,22 +219,22 @@ test('design, write and any deep answer keep the reference under policy A; B run
 });
 
 test('reference first: a cheap row whose expected cost reaches the reference binds the reference, recorded', () => {
-  const q = task({request: '슈뢰딩거 방정식 설명해봐'});
-  // sol at $0.19 vs astra at $0.195: 0.19 + 1/16 x 0.195 >= 0.195.
-  const pricey = rows().map(r => r.model === 'gpt-6.1-sol' ? {...r, estimated_cost_units: 0.19} :
-    r.model === 'claude-opus-5-5' || r.model === 'claude-sonnet-5-5' ? {...r, availability: 'unavailable'} : r);
-  const bound = bind(q, catalog(q, {request_profile: profile(), candidates: pricey}));
+  const q = task({request: '엔트로피가 뭐야?'});
+  // luna at $0.19 vs astra at $0.195: 0.19 + 4/13 x 0.195 >= 0.195 (no other light row runs).
+  const pricey = rows().map(r => r.model === 'gpt-6-luna' ? {...r, estimated_cost_units: 0.19} :
+    ['claude-haiku-4-5-20251001', 'claude-sonnet-5-5'].includes(r.model) ? {...r, availability: 'unavailable'} : r);
+  const bound = bind(q, catalog(q, {request_profile: profile({difficulty: 'light'}), candidates: pricey}));
   assert.equal(bound.tuple, 'codex:gpt-6-astra/ultra');
   assert.equal(bound.basis, 'reference');
   assert.match(bound.decision.reason,
-    /;admitted_reference_uncertified;graded_standard_reference_first;graded_profile_explain_standard;classifier_local_llm;expected_usd_0\.20218[78];reference_usd_0\.195000;p_fail_0\.0625;/);
+    /;admitted_reference_uncertified;graded_light_reference_first;graded_profile_explain_light;classifier_local_llm;expected_usd_0\.25000[0-9];reference_usd_0\.195000;p_fail_0\.3077;/);
 });
 
 test('an unpriced catalog records cost_unpriced and keeps the part-1 order', () => {
-  const q = task({request: '슈뢰딩거 방정식 설명해봐'});
-  const bound = bind(q, catalog(q, {request_profile: profile(), candidates: rows({priced: false, codexFirst: false})}));
-  // Claude first in catalog order: its workhorse (opus) at medium, the chat row first.
-  assert.equal(bound.tuple, 'claude-chat:claude-opus-5-5/medium');
+  const q = task({request: '엔트로피가 뭐야?'});
+  const bound = bind(q, catalog(q, {request_profile: profile({difficulty: 'light'}), candidates: rows({priced: false, codexFirst: false})}));
+  // Claude first in catalog order: its fast tier (Haiku 4.5, no effort setting), the chat row.
+  assert.equal(bound.tuple, 'claude-chat:claude-haiku-4-5-20251001/none');
   assert(bound.tokens.includes('cost_unpriced') && !bound.tokens.includes('price_choice'), bound.decision.reason);
 });
 
@@ -335,12 +336,12 @@ test('a failed local answer escalates exactly once to the bound reference', asyn
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
 });
 
-test('a priced standard explanation runs sol medium and records its estimated cost', async t => {
-  const q = task({request: '슈뢰딩거 방정식 설명해봐'});
+test('a priced light explanation runs luna low and records its estimated cost', async t => {
+  const q = task({request: '엔트로피가 뭐야?'});
   const {done, tickets, saved} = await harness(t, ticket => completed(ticket),
-    {q, c: catalog(q, {request_profile: profile(),
+    {q, c: catalog(q, {request_profile: profile({difficulty: 'light'}),
       candidates: rows({codexFirst: false}).filter(r => r.model !== 'claude-sonnet-5-5')})});
-  assert.deepEqual(tickets.map(tuple), ['codex:gpt-6.1-sol/medium'], JSON.stringify(done));
+  assert.deepEqual(tickets.map(tuple), ['codex:gpt-6-luna/low'], JSON.stringify(done));
   assert.equal(done.state, 'returned_unverified');
-  assert.equal(saved.spent_cost_units, 0.037);
+  assert.equal(saved.spent_cost_units, 0.00195);
 });
