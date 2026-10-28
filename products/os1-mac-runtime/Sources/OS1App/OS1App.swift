@@ -4356,7 +4356,7 @@ private final class VoiceDictationController: ObservableObject {
         suppliedBrowserMicrophone = browserMicrophone
         let fixtureFlags: Set<String> = ["--self-test", "--self-test-composer", "--self-test-profile", "--self-test-parallel",
             "--self-test-queue-fork", "--self-test-sidebar-queue", "--self-test-steering", "--self-test-shell",
-            "--self-test-bound-native", "--self-test-native-progress", "--self-test-fixture-store-probe"]
+            "--self-test-bound-native", "--self-test-native-progress", "--self-test-fixture-store-probe", "--self-test-simulation-control"]
         browserCaptureEnabled = browserMicrophone != nil || fixtureFlags.isDisjoint(with: CommandLine.arguments)
     }
     var browserCaptureView: WKWebView? { loadedBrowserMicrophone?.webView }
@@ -4970,6 +4970,11 @@ private extension SessionStore {
             failure: { [weak self] message in self?.cancelDictationSendIntent(); self?.alertMessage = message }, samples: samples)
     }
     var voiceStoreFixtureSendPending: Bool { dictationSendLatch.pending != nil }
+    func installGardenPendingVoiceFixture() throws {
+        guard CommandLine.arguments.contains("--self-test-simulation-control"), customStorageRoot != nil,
+              let id = selectedSessionID else { throw RunnerError.message("Private SCV fixture context required") }
+        _ = dictationSendLatch.request(sessionID: id)
+    }
     func installBrowserStoreFixture(onFailureObserved: (() -> Void)? = nil) async throws {
         cancelDictationSendIntent()
         try await voiceDictation.installBrowserControllerFixture(initialText: composer,
@@ -10838,29 +10843,123 @@ private final class SessionStore: ObservableObject {
     fileprivate var simulationGardenRows: [OS1GardenSession] {
         orderedSessions.filter { $0.archived != true }.map { session in
             let running = isSessionRunning(session.id)
-            let queued = queuedSubmissions.contains { $0.sessionID == session.id }
+            let queuedCount = queuedSubmissions.filter { $0.sessionID == session.id }.count
+            let queued = queuedCount > 0
+            let original = activeRuns[session.id]?.submissionID ?? externallyOwnedParallelSubmissions[session.id]?.id
+            let unresolved = session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true
+            let retainedStop = session.lastFailure.map { cancellationRequested($0.id) } == true
+            let stopping = activeRuns[session.id]?.cancellationRequested == true || original.map(cancellationRequested) == true ||
+                (original == nil && session.queuePaused == true && unresolved && retainedStop)
+            let paused = session.queuePaused == true || queuedSubmissions.contains {
+                $0.sessionID == session.id && pausedQueueIDs.contains($0.id)
+            }
+            let effectiveActive = running || (stopping && unresolved)
             let outcome = simulationOutcome(session)
             let latestOwnerAt = session.visibleMessages.last(where: { $0.role == .user })?.timestamp
             let currentCompleted = session.lastCompletedAt.map { completed in
                 latestOwnerAt.map { $0 <= completed } ?? false
             } ?? false
-            let status = running ? "working" : queued ? "queued" : session.lastFailure != nil ? "failed" :
-                currentCompleted && outcome.hasResult ? "completed" : outcome.hasResult ? "returned" : "idle"
+            var status = SimulationSessionControl.status(active: effectiveActive, cancellationRequested: stopping,
+                queuePaused: paused, queuedCount: queuedCount, failed: session.lastFailure != nil,
+                completed: currentCompleted && outcome.hasResult).rawValue
+            if status == "idle" && outcome.hasResult { status = "returned" }
             let reviewed = simulationPresentation.hasReviewed(sessionID: session.id.uuidString, revision: outcome.revision)
             let featured = simulationPresentation.isFeatured(id: session.id.uuidString, revision: outcome.revision,
-                hasResult: outcome.hasResult, resultAt: outcome.timestamp, isRunning: running, isQueued: queued,
+                hasResult: outcome.hasResult, resultAt: outcome.timestamp, isRunning: effectiveActive, isQueued: queued,
                 isNewEmpty: session.messages.isEmpty && session.updatedAt >= simulationPresentation.baselineAt,
                 isSelected: selectedSessionID == session.id)
             let usage = session.simulationUsage.flatMap { receipt in
                 session.messages.last(where: { $0.role == .user })?.id == receipt.userMessageID ? receipt.pool : nil
             }
             let engine = running ? (activeRuns[session.id]?.provider?.title ?? "라우팅 중") : (session.lastProvider ?? session.provider.title)
+            let activity = status == "stopping" ? "중지 요청 접수 · 실제 실행 종료를 확인 중입니다." :
+                running ? (publicRunProgress(session.id) ?? "OS1 작업 실행 중") : paused ? (unresolved ? "대기열 일시정지 · 원래 실행의 종료·변경 결과는 아직 확인되지 않았습니다." : "대기열 일시정지 · 기록과 명령은 보존됩니다.") :
+                queued ? "대기 중 · 아직 토큰 사용으로 표시하지 않습니다." : "실행 완료 후 결과를 확인하면 일꾼만 퇴장합니다."
             return OS1GardenSession(id: session.id.uuidString, name: session.title, engine: engine, status: status,
-                activity: running ? (publicRunProgress(session.id) ?? "OS1 작업 실행 중") : queued ? "대기 중 · 아직 토큰 사용으로 표시하지 않습니다." : "실행 완료 후 결과를 확인하면 일꾼만 퇴장합니다.",
-                tokensUsed: usage?.used, usageLabel: usage?.label, resultRevision: outcome.revision,
-                reviewed: reviewed, hasResult: outcome.hasResult && !running && !queued,
-                featured: featured, resultPending: outcome.hasResult && !reviewed && !running && !queued && featured)
+                activity: activity, tokensUsed: usage?.used, usageLabel: usage?.label, resultRevision: outcome.revision,
+                reviewed: reviewed, hasResult: outcome.hasResult && !effectiveActive && !queued,
+                featured: featured, resultPending: outcome.hasResult && !reviewed && !effectiveActive && !queued && featured,
+                queueCount: queuedCount, queuePaused: paused,
+                canStop: !stopping && (running || (queued && !paused)),
+                canResume: !running && paused && queued && canGardenResume(session.id))
         }
+    }
+
+    private func canGardenResume(_ id: UUID) -> Bool {
+        guard !isSessionRunning(id), let session = sessions.first(where: { $0.id == id }),
+              session.lastBackendFailure?.requiresReadback != true, session.lastFailure?.savedResultNeedsReview != true,
+              session.taskContext?.sourcePreparation == nil,
+              let head = queuedSubmissions.first(where: { $0.sessionID == id }) else { return false }
+        return canResumeQueue(id) || canAdvanceQueued(head)
+    }
+
+    /// These are UI controls over the existing owner, never a second runner.
+    fileprivate func performGardenAction(_ action: String, sessionID id: UUID?, text: String?) -> SimulationSessionControl.ControlOutcome {
+        func result(_ accepted: Bool, _ message: String, submissionID: UUID? = nil, sessionID: UUID? = nil) -> SimulationSessionControl.ControlOutcome {
+            .init(accepted: accepted, sessionID: sessionID ?? id, submissionID: submissionID, message: message)
+        }
+        // Before select/createSession: those existing methods intentionally
+        // stop dictation. A game command must not silently consume it first.
+        if ["new", "order"].contains(action),
+           !composerAttachments.isEmpty || voiceDictation.isActive || dictationSendLatch.pending != nil {
+            return result(false, "기존 첨부·음성 입력이 있습니다. 채팅에서 확인하세요. 원문과 첨부는 보존했습니다.")
+        }
+        if action == "new" {
+            createSession()
+            return result(true, "새 SCV를 실제 OS1 세션으로 만들었습니다.", sessionID: selectedSessionID)
+        }
+        guard let id, sessions.contains(where: { $0.id == id && $0.archived != true }) else {
+            return result(false, "세션을 확인할 수 없어 실행하지 않았습니다.")
+        }
+        if action == "stop" {
+            // Pause this queue first, so a sibling request cannot start in the
+            // small interval between native completion and its UI readback.
+            pauseQueue(id)
+            let original = activeRuns[id]?.submissionID ?? externallyOwnedParallelSubmissions[id]?.id
+            cancelRun(id)
+            if let original, !cancellationRequested(original) {
+                return result(false, "대기열은 보존·정지했지만 실제 중지 요청 저장은 확인되지 않았습니다.", submissionID: original)
+            }
+            return result(true, original == nil ? "이 SCV의 대기열을 정지했습니다. 기존 명령은 보존됩니다." : "중지 요청을 원래 실행기에 전달했습니다. 실제 종료 확인 중입니다.", submissionID: original)
+        }
+        if action == "resume" {
+            guard canGardenResume(id) else {
+                return result(false, "종료 확인 또는 기존 실행 조건이 해결된 뒤 재개할 수 있습니다.")
+            }
+            if canResumeQueue(id) { resumeQueue(id) }
+            else if let head = queuedSubmissions.first(where: { $0.sessionID == id }) { advanceQueued(head.id) }
+            save()
+            return result(true, "이 SCV의 보존된 명령을 같은 세션에서 재개합니다.")
+        }
+        guard action == "order", let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.utf8.count <= SimulationSessionControl.maximumTextBytes else {
+            return result(false, "유효한 작업 명령이 아닙니다.")
+        }
+        guard !isSessionRunning(id) else { return result(false, "실행 중인 SCV입니다. 중지 완료 후 다시 보내세요.") }
+        if let session = sessions.first(where: { $0.id == id }),
+           session.lastBackendFailure?.requiresReadback == true || session.lastFailure?.savedResultNeedsReview == true {
+            return result(false, "원래 실행의 종료·변경 결과 확인이 필요합니다. 채팅에서 원래 상태를 확인하세요. 새 명령은 전송하지 않았습니다.")
+        }
+        select(id)
+        guard composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return result(false, "이 세션에 기존 채팅 초안이 있습니다. 원래 초안은 덮어쓰지 않았습니다.")
+        }
+        let previous = Set(queuedSubmissions.map(\.id) + inFlightSubmissions.values.map(\.id))
+        let previousMessages = Set(selectedSession?.messages.map(\.id) ?? [])
+        let emptyPausedQueue = selectedSession?.queuePaused == true && !queuedSubmissions.contains { $0.sessionID == id }
+        composer = text
+        send()
+        let accepted = (queuedSubmissions + Array(inFlightSubmissions.values)).first { $0.sessionID == id && !previous.contains($0.id) }
+        let acceptedLocal = selectedSession?.messages.contains { $0.role == .user && !previousMessages.contains($0.id) } == true
+        guard accepted != nil || acceptedLocal else { return result(false, alertMessage ?? "명령 접수가 확인되지 않았습니다. 원문은 보존했습니다.") }
+        // A fresh explicit command can release this session's empty pause. An
+        // existing queued command is never reordered or replayed implicitly.
+        if emptyPausedQueue, canGardenResume(id) {
+            if canResumeQueue(id) { resumeQueue(id) }
+            else if let accepted { advanceQueued(accepted.id) }
+            save()
+        }
+        return result(true, selectedSession?.queuePaused == true ? "명령 접수 · 대기열은 정지 상태입니다. 재개를 누르세요." : "같은 OS1 세션에 명령을 접수했습니다.", submissionID: accepted?.id)
     }
 
     var filteredSessions: [ConversationSession] {
@@ -13956,7 +14055,7 @@ private final class SessionStore: ObservableObject {
         // keep custody and the queue held until its real owner releases them.
         if let original = externallyOwnedParallelSubmissions[id] {
             do {
-                try ExecutionCancellation.request(submissionID: original.id)
+                try requestGardenSafeCancellation(submissionID: original.id)
                 sessionStatuses[id] = os1Tr("원래 병렬 작업 중지 중 · 기록과 변경은 보존합니다", "Stopping the original parallel task · records and changes are kept")
                 if selectedSessionID == id { statusText = sessionStatuses[id]! }
             } catch { alertMessage = os1Tr("원래 병렬 작업의 중지 요청을 저장하지 못했습니다.", "Couldn't save the original parallel task's stop request.") }
@@ -13964,12 +14063,21 @@ private final class SessionStore: ObservableObject {
         }
         guard let active = activeRuns[id], !active.cancellationRequested else { return }
         do {
-            try ExecutionCancellation.request(submissionID: active.submissionID)
+            try requestGardenSafeCancellation(submissionID: active.submissionID)
             activeRuns[id]?.cancellationRequested = true
             sessionStatuses[id] = os1Tr("작업 중지 중 · 실행된 변경은 보존합니다", "Stopping the task · changes already made are kept")
             if selectedSessionID == id { statusText = sessionStatuses[id]! }
         } catch { alertMessage = os1Tr("작업 중지 요청을 저장하지 못했습니다.", "Couldn't save the stop request.") }
     }
+    private func requestGardenSafeCancellation(submissionID: UUID) throws {
+        guard let root = customStorageRoot else { try ExecutionCancellation.request(submissionID: submissionID); return }
+        let folder = root.appendingPathComponent("run-journals", isDirectory: true)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let marker = folder.appendingPathComponent(submissionID.uuidString + ".cancel")
+        try Data("cancel\n".utf8).write(to: marker, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: marker.path)
+    }
+
     func reconcileSelectedFailure() {
         if let hold = selfUpdateHold {
             statusText = os1Tr("OS-1 업데이트(build \(hold.build)) 설치를 기다리는 중입니다 · 설치 후 다시 확인하세요",
@@ -15920,6 +16028,14 @@ private struct OS1DesktopApp: App {
                 exit(EXIT_SUCCESS)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
         }
+        if CommandLine.arguments.contains("--self-test-simulation-control") {
+            Task { @MainActor in
+                do { try await simulationSessionControlSelfTest(); exit(EXIT_SUCCESS) }
+                catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
+            }
+            NSApplication.shared.run()
+            exit(EXIT_FAILURE)
+        }
         if CommandLine.arguments.contains("--self-test-native-association") {
             do { try nativeSessionAssociationSelfTest(); exit(EXIT_SUCCESS) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(EXIT_FAILURE) }
@@ -17317,6 +17433,106 @@ private func restartResumeSelfTest() async throws {
 }
 
 @MainActor
+private func simulationSessionControlSelfTest() async throws {
+    var checks = 0
+    func check(_ condition: Bool, _ label: String) throws {
+        guard condition else { throw RunnerError.message("SCV control: " + label) }
+        checks += 1
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-scv-controls-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var starts: [UUID] = [], stopped: [UUID] = [], processes: [UUID: Process] = [:]
+    let store = SessionStore(storageRoot: root, runOperation: { submission, _, _, _, _ in
+        starts.append(submission.id)
+        if submission.request.hasPrefix("LONG") {
+            // Real owned OS process, no inference or provider. The production
+            // SessionStore writes its exact cancellation marker, which this
+            // fixture backend observes before terminating only its own process.
+            let child = Process(); child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["4"]
+            try child.run(); processes[submission.id] = child
+            let marker = root.appendingPathComponent("run-journals/" + submission.id.uuidString + ".cancel")
+            while child.isRunning {
+                if FileManager.default.fileExists(atPath: marker.path) {
+                    child.terminate()
+                    while child.isRunning { try await Task.sleep(for: .milliseconds(10)) }
+                    stopped.append(submission.id)
+                    throw RunnerError.message("Owned fixture process interrupted; not completed")
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        return AppRunSummary(status: "complete", steps: [AppRunStep(sequence: 1, provider: "local", action: "fixture",
+            model: nil, effort: "none", revasDisposition: "adopted", sessionID: UUID().uuidString,
+            permissionProfile: "read_only", exitCode: 0, output: "fixture " + submission.request,
+            stderr: "", durationMS: 0, nativeRecord: nil)])
+    })
+    defer { for p in processes.values where p.isRunning { p.terminate() } }
+    store.updateSettings { $0.parallelRunLimit = 2 }
+    let a = store.selectedSessionID!
+    store.sessions[0].workspace = root.path
+    let first = store.performGardenAction("order", sessionID: a, text: "LONG A")
+    try check(first.accepted && first.submissionID != nil, "host acknowledges actual submission rather than waiting for animation")
+    let aSubmission = first.submissionID!
+    store.composer = "FOLLOW A"; store.send()
+    let queuedA = store.queuedSubmissions.filter { $0.sessionID == a }.map(\.id)
+    _ = store.performGardenAction("new", sessionID: nil, text: nil)
+    let b = store.selectedSessionID!
+    if let i = store.sessions.firstIndex(where: { $0.id == b }) { store.sessions[i].workspace = root.path }
+    let second = store.performGardenAction("order", sessionID: b, text: "LONG B")
+    try check(second.accepted && second.submissionID != nil, "second independent session accepted")
+    let deadline = Date().addingTimeInterval(6)
+    while starts.count < 2 && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(starts.count == 2 && processes.count == 2, "two actual owned fixture processes started")
+    let beforeB = store.activeRuns[b]?.submissionID
+    let stop = store.performGardenAction("stop", sessionID: a, text: nil)
+    try check(stop.accepted && stop.submissionID == aSubmission, "Stop targets exact A submission")
+    try check(store.selectedSessionID == b, "Stop A cannot silently retarget or select B")
+    try check(store.simulationGardenRows.first(where: { $0.id == a.uuidString })?.status == "stopping", "request is stopping, not stopped/completed")
+    try check(store.activeRuns[b]?.submissionID == beforeB && store.activeRuns[b]?.cancellationRequested == false, "B unaffected")
+    try check(store.queuedSubmissions.filter { $0.sessionID == a }.map(\.id) == queuedA, "A queued commands preserved unchanged")
+    while store.isSessionRunning(a) && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(!store.isSessionRunning(a) && stopped.contains(aSubmission) && processes[aSubmission]?.isRunning == false, "A actual OS process terminated before terminal projection")
+    try check(store.isSessionRunning(b) && processes[second.submissionID!]?.isRunning == true, "B actual process remains alive after A stop")
+    try check(store.simulationGardenRows.first(where: { $0.id == a.uuidString })?.status == "paused", "only after active owner releases show paused")
+    try check(store.sessions.first(where: { $0.id == a })?.queuePaused == true && store.queuedSubmissions.filter { $0.sessionID == a }.map(\.id) == queuedA, "queue paused persistently, no implicit next task")
+    let aRows = store.sessions.first(where: { $0.id == a })!.messages.map(\.id)
+    let resumed = store.performGardenAction("resume", sessionID: a, text: nil)
+    try check(resumed.accepted, "explicit resume uses existing safe next-request path")
+    while !starts.contains(queuedA[0]) && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try check(starts.filter { $0 == aSubmission }.count == 1 && starts.filter { $0 == queuedA[0] }.count == 1, "resume runs queued follow-up once; never replays cancelled task")
+    try check(store.sessions.first(where: { $0.id == a })!.messages.map(\.id).starts(with: aRows), "original conversation messages retained")
+    _ = store.performGardenAction("stop", sessionID: b, text: nil)
+    while store.isSessionRunning(b) && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    store.createSession(); let c = store.selectedSessionID!
+    if let i = store.sessions.firstIndex(where: { $0.id == c }) { store.sessions[i].workspace = root.path }
+    store.pauseQueue(c)
+    store.composer = "QUEUED C"; store.send()
+    let cQueue = store.queuedSubmissions.filter { $0.sessionID == c }.map(\.id)
+    let queuedStop = store.performGardenAction("stop", sessionID: c, text: nil)
+    try check(queuedStop.accepted && !store.isSessionRunning(c) && store.queuedSubmissions.filter { $0.sessionID == c }.map(\.id) == cQueue, "Stop queued SCV preserves command and starts nothing")
+    store.composer = "existing native draft"
+    let rejected = store.performGardenAction("order", sessionID: c, text: "do not overwrite")
+    try check(!rejected.accepted && store.composer == "existing native draft", "existing native draft is not overwritten")
+    store.composer = ""
+    let attachment = ComposerAttachment(url: root.appendingPathComponent("private-fixture.txt"))
+    store.composerAttachments = [attachment]
+    let withAttachment = store.performGardenAction("order", sessionID: c, text: "must not consume attachment")
+    try check(!withAttachment.accepted && store.composerAttachments.map(\.id) == [attachment.id] && store.composer.isEmpty,
+        "empty native composer with attachment is rejected and preserved")
+    store.composerAttachments = []
+    try store.installGardenPendingVoiceFixture()
+    try check(store.voiceStoreFixtureSendPending, "pending native voice intent installed only inside private fixture")
+    let voiceRejected = store.performGardenAction("order", sessionID: c, text: "must not stop dictation")
+    try check(!voiceRejected.accepted && store.voiceStoreFixtureSendPending, "guard runs before selection can cancel pending dictation")
+    let createRejected = store.performGardenAction("new", sessionID: nil, text: nil)
+    try check(!createRejected.accepted && store.voiceStoreFixtureSendPending && store.selectedSessionID == c, "new SCV also preserves existing pending dictation")
+    let bad = store.performGardenAction("stop", sessionID: UUID(), text: nil)
+    try check(!bad.accepted, "foreign session rejected")
+    print("SCV control: \(checks) checks PASS; real isolated SessionStore + owned OS processes, provider/model calls 0; live sessions/queues untouched")
+}
+
+@MainActor
 private func sidebarQueueSelfTest() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("os1-sidebar-queue-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -17567,53 +17783,56 @@ private struct RootView: View {
             selectedResultRevision: outcome?.revision, tokenPool: pool, tokenPools: store.currentSimulationQuotaPools)
     }
 
-    private func gardenAction(_ action: String, _ rawID: String?, _ text: String?) {
+    private func gardenAction(_ action: String, _ rawID: String?, _ text: String?) -> SimulationSessionControl.ControlOutcome {
         simulationNotice = ""
-        if action == "settings" { profileNavigation.sheet = .settings; return }
-        if action == "close" { simulationVisible = false; return }
-        if action == "new" {
-            store.createSession()
-            if let id = store.selectedSessionID { store.deploySimulationSession(id) }
-            return
+        if action == "settings" { profileNavigation.sheet = .settings; return .init(accepted: true, message: "") }
+        if action == "close" { simulationVisible = false; return .init(accepted: true, message: "") }
+        let id = rawID.flatMap(UUID.init(uuidString:))
+        if ["new", "order", "stop", "resume"].contains(action) {
+            let outcome = store.performGardenAction(action, sessionID: id, text: text)
+            if outcome.accepted, let target = outcome.sessionID {
+                if action == "new" { store.deploySimulationSession(target) }
+                if action == "order" {
+                    store.deploySimulationSession(target, reassign: true)
+                    simulationInspected.removeValue(forKey: target)
+                }
+            }
+            simulationNotice = outcome.message
+            return outcome
         }
-        guard let rawID, let id = UUID(uuidString: rawID),
-              store.sessions.contains(where: { $0.id == id && $0.archived != true }) else { return }
+        guard let id, store.sessions.contains(where: { $0.id == id && $0.archived != true }) else {
+            return .init(accepted: false, message: "세션을 확인할 수 없습니다.")
+        }
         if ["inspect", "review"].contains(action) {
-            guard simulationVisible, store.selectedSessionID == id else { return }
+            guard simulationVisible, store.selectedSessionID == id else {
+                return .init(accepted: false, sessionID: id, message: "선택된 결과가 아닙니다.")
+            }
         }
         if action == "inspect" {
             guard let text, let session = store.selectedSession, !store.isSessionRunning(id),
-                  !store.queuedSubmissions.contains(where: { $0.sessionID == id }) else { return }
+                  !store.queuedSubmissions.contains(where: { $0.sessionID == id }) else {
+                return .init(accepted: false, sessionID: id, message: "실행·대기 중인 결과는 확인 처리하지 않습니다.")
+            }
             let outcome = simulationOutcome(session)
-            if outcome.hasResult && outcome.revision == text { simulationInspected[id] = text }
-            return
+            let accepted = outcome.hasResult && outcome.revision == text
+            if accepted { simulationInspected[id] = text }
+            return .init(accepted: accepted, sessionID: id, message: "")
         }
         if action == "review" {
-            guard let text else { return }
-            if store.reviewSimulationSession(id, revision: text, inspected: simulationInspected[id]) {
+            guard let text else { return .init(accepted: false, sessionID: id, message: "결과 버전이 없습니다.") }
+            let accepted = store.reviewSimulationSession(id, revision: text, inspected: simulationInspected[id])
+            if accepted {
                 simulationInspected.removeValue(forKey: id)
                 simulationNotice = "결과 확인됨 · 일꾼만 퇴장했습니다. 대화와 재작업 기능은 그대로입니다."
             } else { simulationNotice = "현재 세션의 결과를 먼저 열어 확인해 주세요. 실행·대기 중인 일꾼은 퇴장하지 않습니다." }
-            return
+            return .init(accepted: accepted, sessionID: id, message: simulationNotice)
         }
-        // Inspection/acknowledgement above are presentation-only. Selecting
-        // here can persist drafts and ingest records, so never do it for them.
+        // Presentation review never selects or sends. Stop/resume above never
+        // change the selected conversation to determine their cancellation target.
         store.select(id)
         if action == "select" { store.deploySimulationSession(id) }
         if action == "open" { store.showClodexHome(); simulationVisible = false }
-        else if action == "stop" { store.cancelSelectedRun() }
-        else if action == "order", let text {
-            guard !store.isSessionRunning(id) else { simulationNotice = "이미 실행 중인 SCV입니다. 새 작업은 종료 후 보내 주세요."; return }
-            guard store.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                simulationNotice = "이 세션에 기존 채팅 초안이 있습니다. 채팅에서 확인해 주세요. 초안은 덮어쓰지 않았습니다."; return
-            }
-            // The exact existing send path retains provider routing, approvals,
-            // queues, recovery holds and native thread continuity.
-            store.deploySimulationSession(id, reassign: true)
-            simulationInspected.removeValue(forKey: id)
-            store.composer = text
-            store.send()
-        }
+        return .init(accepted: true, sessionID: id, message: "")
     }
 
     var body: some View {

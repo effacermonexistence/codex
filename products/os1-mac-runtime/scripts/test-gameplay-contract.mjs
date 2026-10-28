@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {createHash} from 'node:crypto';
+import {createHash,webcrypto} from 'node:crypto';
+import {SessionControls,sessionPresentation} from '../SimulationGarden/src/control-state.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const nodes=new Map(),raf=[],bridge=[],checks=[],cohortTrace=[];let clock=performance.now();
 class Element{
@@ -35,7 +36,7 @@ const window={webkit:{messageHandlers:{os1Simulation:{postMessage:body=>bridge.p
 const sourcePath=path.join(root,'SimulationGarden/src/main.js'),raw=fs.readFileSync(sourcePath,'utf8');
 assert(/import\s*\{\s*VoxelScene\s*\}\s*from\s*['"]\.\/voxel-scene\.js['"]/.test(raw),'actual entry must select VoxelScene');
 const source=raw.replace(/^import .*;$/gm,'');
-const context=vm.createContext({window,document,VoxelScene:RendererContractDouble,applyAccent,...fields,requestAnimationFrame:globalThis.requestAnimationFrame,ResizeObserver:class{constructor(fn){this.fn=fn;}observe(){this.fn();}},Map,Set,Number,String,Array,JSON,Math,setTimeout,console});
+const context=vm.createContext({window,document,VoxelScene:RendererContractDouble,applyAccent,...fields,SessionControls,sessionPresentation,crypto:webcrypto,requestAnimationFrame:globalThis.requestAnimationFrame,ResizeObserver:class{constructor(fn){this.fn=fn;}observe(){this.fn();}},Map,Set,Number,String,Array,JSON,Math,setTimeout,console});
 vm.runInContext(source,context,{filename:'actual-main.js'});await new Promise(setImmediate);
 function frames(n=1){for(let i=0;i<n;i++){clock+=50;for(const fn of raf.splice(0))fn(clock);}}
 const diagnostics=()=>window.os1SimulationDiagnostics();function check(name,fn){fn();checks.push(name);}const id=i=>`00000000-0000-4000-8000-${String(i+1).padStart(12,'0')}`;
@@ -75,6 +76,6 @@ check('resuming after hidden time cannot produce a shared-motion teleport',()=>{
 check('pending selection never shows another UUID result or enables its acknowledgement',()=>{node('units').onclick({target:{closest:()=>({dataset:{id:id(1)}})}});assert.equal(diagnostics().selectedID,id(1));assert(!node('result').textContent.includes('RESULT FOR NATIVE0'));assert.equal(node('review-result').disabled,true);});
 check('preview is a separate12-worker facade cohort and blocks every native bridge dispatch',()=>{const at=bridge.length;cohortTrace.length=0;node('preview-enter').click();assert(cohortTrace.every(u=>u.id.startsWith('preview-')));frames(10);assert.equal(diagnostics().mode,'preview');assert.equal(diagnostics().workers.length,12);assert(diagnostics().workers.every(u=>u.id.startsWith('preview-')));assert.equal(diagnostics().nativeSessionCount,312);node('new').click();node('appearance').click();node('open-chat').click();node('stop').click();node('preview-finish').click();frames(3);node('review-result').click();assert.equal(bridge.length,at);});
 check('preview exit restores native state without merging synthetic session IDs',()=>{cohortTrace.length=0;node('preview-exit').click();assert(cohortTrace.every(u=>!u.id.startsWith('preview-')));frames();assert.equal(diagnostics().mode,'native');assert.equal(diagnostics().nativeSessionCount,312);assert(diagnostics().workers.every(u=>!u.id.startsWith('preview-')));});
-const files=['main.js','field-state.js','mining-state.js','voxel-scene.js','theme.js'];
+const files=['main.js','control-state.js','field-state.js','mining-state.js','voxel-scene.js','theme.js'];
 const output={status:'PASS',checks:checks.length,providerCalls:0,realNativeActions:0,timestampUTC:new Date().toISOString(),sourceSHA256:Object.fromEntries(files.map(file=>[file,createHash('sha256').update(fs.readFileSync(path.join(root,'SimulationGarden/src',file))).digest('hex')])),scope:'Actual main/field/motion control flow with an EXPLICIT VoxelScene renderer test double. Not actual VoxelScene/WebGL/pixel/browser/native-provider proof; separate voxel tests cover renderer source/CPU contracts.',checksPassed:checks};
 const outputArg=process.argv.indexOf('--output');if(outputArg>=0){assert(process.argv[outputArg+1],'--output requires receipt path');const out=path.resolve(process.argv[outputArg+1]);fs.mkdirSync(path.dirname(out),{recursive:true});fs.writeFileSync(out,JSON.stringify(output,null,2)+'\n');}console.log(JSON.stringify(output,null,2));

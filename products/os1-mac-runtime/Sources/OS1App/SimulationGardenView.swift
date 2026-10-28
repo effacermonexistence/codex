@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import WebKit
+import OS1Context
 
 /// Presentation only. UUID and title are copied from the existing OS1 store;
 /// this surface does not own a second session database or provider process.
@@ -18,6 +19,10 @@ struct OS1GardenSession: Codable, Equatable {
     var hasResult: Bool = false
     var featured: Bool = false
     var resultPending: Bool = false
+    var queueCount: Int = 0
+    var queuePaused: Bool = false
+    var canStop: Bool = false
+    var canResume: Bool = false
 }
 
 struct OS1GardenSnapshot: Codable, Equatable {
@@ -35,7 +40,7 @@ struct OS1GardenSnapshot: Codable, Equatable {
 
 struct OS1SimulationGarden: NSViewRepresentable {
     let snapshot: OS1GardenSnapshot
-    let onAction: @MainActor (String, String?, String?) -> Void
+    let onAction: @MainActor (String, String?, String?) -> SimulationSessionControl.ControlOutcome
 
     func makeCoordinator() -> Coordinator { Coordinator(snapshot: snapshot, onAction: onAction) }
 
@@ -71,10 +76,11 @@ struct OS1SimulationGarden: NSViewRepresentable {
         var entry: URL?
         var ready = false
         var snapshot: OS1GardenSnapshot
-        var onAction: @MainActor (String, String?, String?) -> Void
+        var onAction: @MainActor (String, String?, String?) -> SimulationSessionControl.ControlOutcome
         private var lastJSON = ""
+        private var commands = SimulationSessionControl.Deduplicator()
 
-        init(snapshot: OS1GardenSnapshot, onAction: @escaping @MainActor (String, String?, String?) -> Void) {
+        init(snapshot: OS1GardenSnapshot, onAction: @escaping @MainActor (String, String?, String?) -> SimulationSessionControl.ControlOutcome) {
             self.snapshot = snapshot; self.onAction = onAction
         }
 
@@ -91,19 +97,38 @@ struct OS1SimulationGarden: NSViewRepresentable {
             guard message.name == "os1Simulation", message.frameInfo.isMainFrame,
                   let entry, webView?.url?.standardizedFileURL == entry,
                   let body = message.body as? [String: Any], let action = body["action"] as? String,
-                  ["ready", "select", "open", "new", "close", "order", "stop", "settings", "inspect", "review"].contains(action) else { return }
+                  ["ready", "select", "open", "new", "close", "order", "stop", "resume", "settings", "inspect", "review"].contains(action) else { return }
             if action == "ready" { ready = true; lastJSON = ""; publish(); return }
             let id = body["id"] as? String
-            if ["select", "open", "order", "stop", "inspect", "review"].contains(action) {
-                guard let id, UUID(uuidString: id) != nil, snapshot.sessions.contains(where: { $0.id == id }) else { return }
+            if ["select", "open", "order", "stop", "resume", "inspect", "review"].contains(action) {
+                guard let id, UUID(uuidString: id) != nil, snapshot.sessions.contains(where: { UUID(uuidString: $0.id) == UUID(uuidString: id) }) else { return }
             }
             let text = body["text"] as? String
             if action == "order" { guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf8.count <= 128_000 else { return } }
             if ["inspect", "review"].contains(action) {
-                guard snapshot.visible, let id, snapshot.selectedID == id, let text, text.utf8.count <= 512,
-                      snapshot.sessions.first(where: { $0.id == id })?.resultRevision == text else { return }
+                guard snapshot.visible, let id, snapshot.selectedID.flatMap(UUID.init(uuidString:)) == UUID(uuidString: id), let text, text.utf8.count <= 512,
+                      snapshot.sessions.first(where: { UUID(uuidString: $0.id) == UUID(uuidString: id) })?.resultRevision == text else { return }
             }
-            onAction(action, id, text)
+            if ["order", "stop", "resume", "new"].contains(action) {
+                guard Set(body.keys).isSubset(of: ["action", "id", "text", "commandID"]),
+                      let commandID = body["commandID"] as? String,
+                      let command = SimulationSessionControl.Command.parse(commandID: commandID,
+                        action: action, sessionID: id, text: text) else { return }
+                switch commands.begin(command) {
+                case .execute:
+                    let outcome = onAction(action, id, text)
+                    deliver(commands.record(command, outcome: outcome))
+                case .replay(let receipt), .reject(let receipt): deliver(receipt)
+                }
+            } else { _ = onAction(action, id, text) }
+        }
+
+        private func deliver(_ receipt: SimulationSessionControl.CommandReceipt) {
+            guard let bytes = try? JSONEncoder().encode(receipt),
+                  let json = String(data: bytes, encoding: .utf8) else { return }
+            // Echo host acceptance, not inferred phase. A lost UI callback does
+            // not replay a prompt; an identical command reuses its receipt.
+            webView?.evaluateJavaScript("window.os1SimulationReceipt && window.os1SimulationReceipt(\(json));")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
