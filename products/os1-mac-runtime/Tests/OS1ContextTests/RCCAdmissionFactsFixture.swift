@@ -857,7 +857,18 @@ func runRCCAdmissionFactsFixtures() throws {
                          LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)), "gpt-6-astra/ultra", "reference"),
         ("a write reading of unread work stays a read-only unknown: the reference", "랜딩 페이지 카피 영어로 갈아끼워",
          capabilityInput("랜딩 페이지 카피 영어로 갈아끼워", LA(taskType: .write, difficulty: .standard, needsTools: .none, domain: .writing)),
-         "gpt-6-astra/ultra", "reference")]
+         "gpt-6-astra/ultra", "reference"),
+        // Review of 442: think-hard and strongest-model wording the fixed
+        // phrases miss still keeps the reference for deep work.
+        ("think-hard word order: the reference", "추론을 최대로 해서 LRU 캐시를 O(1)로 구현하는 방법을 설계해줘",
+         capabilityInput("추론을 최대로 해서 LRU 캐시를 O(1)로 구현하는 방법을 설계해줘",
+                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .coding)), "gpt-6-astra/ultra", "reference"),
+        ("strongest-model inflection: the reference", "최고 수준의 모델로 양자역학과 일반상대성이론을 통합하는 이론을 설계해줘",
+         capabilityInput("최고 수준의 모델로 양자역학과 일반상대성이론을 통합하는 이론을 설계해줘",
+                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)), "gpt-6-astra/ultra", "reference"),
+        ("think very carefully: the reference", "think very carefully and derive the Navier-Stokes equations",
+         capabilityInput("think very carefully and derive the Navier-Stokes equations",
+                         LA(taskType: .design, difficulty: .deep, needsTools: .none, domain: .science)), "gpt-6-astra/ultra", "reference")]
     var capabilityRoutesCases: [(request: String, catalog: [String: Any], write: Bool)] = []
     for item in capabilityCases {
         let built = try catalog(item.input)
@@ -866,7 +877,8 @@ func runRCCAdmissionFactsFixtures() throws {
         let decoded = try C.decodeCatalog(built, request: v2Request)
         let domain = item.input.requestProfile?.domain
         try check(decoded.capabilityRoutes == (domain.flatMap { ModelCapabilityTable.compiled.routes(for: $0) }.flatMap {
-                      item.input.requestProfile?.signals.contains("quality_request") == true ? nil : $0 }) &&
+                      item.input.requestProfile?.signals.contains("quality_request") == true ||
+                          RequestProfile.asksForReference(item.text) ? nil : $0 }) &&
                   decoded.capabilityRoutes.map { $0.valid && $0.category == domain?.rawValue } ?? true,
                   "442: the catalog carries the domain's capability routes only with a local domain: \(item.label)")
         capabilityRoutesCases.append((item.text, try object(built), item.input.ownerScope == .workspaceWrite))

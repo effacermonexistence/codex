@@ -885,11 +885,22 @@ check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
 check('public static let promptVersion = "local_cls_v3"' in classifier_source and
       '"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}' in classifier_source and
-      "static let deepFloorMarkers = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
+      "static let deepFloorPatterns = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
+      # Review of 442: the floor reads a proof, derivation or rigour asked for, never 증명사진 or 전자기 유도.
+      '#"증명\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:해|하|할|합|과정)"#' in profile_source and
       "input.capabilityTable = ModelCapabilityTable.compiled" in catalog_profile and
       catalog_profile.index("input.capabilityTable = ModelCapabilityTable.compiled") < catalog_profile.index("input.now = Date()") and
-      "!RequestProfile.asksForStrongest(input.request) else { return nil }" in BUILDER,
+      "!RequestProfile.asksForReference(input.request) else { return nil }" in BUILDER and
+      # Review of 442: think-hard and strongest-model wording in any common word order keeps the reference.
+      "public static func asksForReference(_ request: String) -> Bool {" in profile_source and
+      "if asksForStrongest(request) { return true }" in profile_source,
       "change 3: prompt v3 domain, the deep floor, and the host's capability routes (never with strongest-model words)")
+# Review of 442: a capability row binds only beside its OWN pool's runnable reference.
+check("const homeReference = new Map(pools.map(pool => [pool, best(referenceOf(pool))]));" in RUNTIME and
+      "const options = listed.filter(option => homeReference.get(option.pool) !== null);" in RUNTIME and
+      "const target = chosen ? homeReference.get(home) : null;" in RUNTIME and
+      "!options.length ? 'requires_runnable_reference' :" in RUNTIME,
+      "change 3 review: a capability row binds only beside its own pool's runnable reference (never another pool's)")
 check('case "capability":' in MAIN and "ModelCapabilityTable.compiled.summary()" in MAIN and
       "os1 capability show [--json]" in MAIN and "try ModelCapabilityTable.selfTest()" in MAIN,
       "change 3: `os1 capability show` prints the compiled table; os1 self-test checks it")

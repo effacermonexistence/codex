@@ -113,8 +113,9 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 // with a design or write reading) whose request the local classifier read
 // with a domain binds the cheapest dispatchable row the host's compiled
 // capability table lists for that domain in either pool: first-party
-// benchmarks show it at or above its pool's reference at tolerance 0. The
-// reference stays its fallback; a read-only node keeps one escalation to it,
+// benchmarks show it at or above its pool's reference at tolerance 0. That
+// pool's reference, runnable now, stays its fallback (a pool whose reference
+// cannot run offers none); a read-only node keeps one escalation to it,
 // a writer binds with no ladder (reference-equivalent: a failed writer has
 // already touched the workspace). Never certified; labelled "at or above the
 // reference on official benchmarks, this answer's quality unverified".
@@ -1340,8 +1341,9 @@ function localRouteCandidate(node, task, catalog, now, {avoidIDs = []} = {}) {
  * dispatchable row of the catalog's capability routes, route class 'deep',
  * NOT certified): a read-only node carries a capability ladder (one
  * escalation, the same headroom rule as a graded route); a writer carries no
- * ladder. Both bind only beside a reference that can dispatch now (its
- * fallback) and only when the row is strictly cheaper than it by list price.
+ * ladder. Both bind only beside their OWN pool's reference, dispatchable now
+ * (the fallback; never another pool's), and only when the row is strictly
+ * cheaper than it by list price.
  *
  * `descentPolicy` (K10, §2.4): a prepared frozen check-acceptance cost policy
  * (prepareCertifiedDescentPolicy), or null. It only re-ranks F, the fixed
@@ -1535,6 +1537,12 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     // fixed here like a graded route's, with the same headroom rule); a
     // writer binds with no ladder. The row must be strictly cheaper than that
     // reference now: a refreshed price can never make it the dearer choice.
+    // Review of 442: a row qualified against ITS OWN pool's reference only,
+    // so it binds only beside that reference, dispatchable now, which is also
+    // its fallback and escalation target. A pool whose reference cannot run
+    // (the builder's reference_unavailable: quota_zero, quota_backoff, absent
+    // or undispatchable frontier) offers no capability row; another pool's
+    // reference was never compared with it (nothing lower stands in).
     const category = admission.category;
     const writer = node.scope === 'workspace_write';
     const sole = planNodes === 1;
@@ -1545,13 +1553,15 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     const routes = catalog.capability_routes;
     const agentOnly = !writer && catalog.request_profile?.tool_need !== 'none';
     const surfaceAllowed = row => !agentOnly || surfaceKind(row.candidate.surface) === 'agent';
-    const options = [];
+    const homeReference = new Map(pools.map(pool => [pool, best(referenceOf(pool))]));
+    const listed = [];
     pools.forEach((pool, position) => (routes.pools[pool.pool] ?? []).forEach((entry, index) => {
       for (const row of pool.rows)
         if (row.candidate.model === entry.model && row.candidate.effort === entry.effort &&
             tierOf(catalog, row.candidate.model) !== null && usable(row) && surfaceAllowed(row))
-          options.push({row, pool, index, position});
+          listed.push({row, pool, index, position});
     }));
+    const options = listed.filter(option => homeReference.get(option.pool) !== null);
     const cost = option => typeof option.row.candidate.estimated_cost_units === 'number' ?
       option.row.candidate.estimated_cost_units : null;
     const score = option => quotaScore(catalog, option.row.candidate.model);
@@ -1563,8 +1573,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     const pick = roomy ? ranked[0] ?? null : null;
     const chosen = pick?.row.candidate ?? null;
     const home = pick?.pool ?? null;
-    const target = chosen && [home, ...pools.filter(other => other !== home)
-      .sort((a, b) => ordinal.get(a.pool) - ordinal.get(b.pool))].map(other => best(referenceOf(other))).find(Boolean);
+    const target = chosen ? homeReference.get(home) : null;
     const isReference = chosen && referenceOf(home).some(row => row.candidate.id === chosen.id);
     const cheapUSD = chosen?.estimated_cost_units, referenceUSD = target?.candidate.estimated_cost_units;
     const cheaper = typeof cheapUSD === 'number' && typeof referenceUSD === 'number' && cheapUSD < referenceUSD;
@@ -1578,8 +1587,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
       const why = ['route_capability', admissionToken(admission), 'capability_list_' + pick.index,
         'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), 'pool_rank_' + ordinal.get(home.pool), 'price_choice',
         'capability_options_' + ranked.length, 'effort_' + chosen.effort, ...poolNotes(home.pool, chosen, chosen),
-        writer ? 'writer_reference_equivalent_no_ladder' :
-          'escalation_reference_' + (target.candidate.quota_pool === home.pool ? 'same_pool' : 'other_pool'),
+        writer ? 'writer_reference_equivalent_no_ladder' : 'escalation_reference_same_pool',
         surfaceToken(chosen), ...costTokens];
       if (avoidPool !== null) why.unshift(home.pool === avoidPool ? 'same_pool_only' : 'other_pool');
       const widened = writer && !coversOwnedPaths(chosen, node.owned_paths);
@@ -1590,8 +1598,8 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     // Not bound below the reference: the node binds the reference, admitted
     // as uncertified (its reason never names a capability admission).
     notes.push('capability_' + category + '_' + (!roomy ? (!sole ? 'requires_single_node_plan' : 'requires_dispatch_headroom') :
-      !options.length ? ((routes.pools.openai_codex.length + routes.pools.anthropic_shared.length) === 0 ?
-        'none_qualify' : 'tuple_undispatchable') :
+      !listed.length ? ((routes.pools.openai_codex.length + routes.pools.anthropic_shared.length) === 0 ?
+        'none_qualify' : 'tuple_undispatchable') : !options.length ? 'requires_runnable_reference' :
       isReference ? 'tuple_is_reference' : !target ? 'requires_runnable_reference' : 'not_cheaper_than_reference'),
     ...costTokens);
     admission = UNCERTIFIED_ADMISSION;

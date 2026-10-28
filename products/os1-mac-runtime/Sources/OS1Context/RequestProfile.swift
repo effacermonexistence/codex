@@ -155,7 +155,19 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// proof, derivation and rigour markers are a floor on any combined
     /// profile: the local reading can never lower such a request below deep.
     /// The six named markers and the inflections `deepMarkers` already lists.
-    static let deepFloorMarkers = ["증명", "유도", "엄밀", "prove", "proof", "derive", "derivation", "rigorous", "rigorously"]
+    /// Review of 442: as a proof, derivation or rigour ASKED FOR, never the
+    /// same letters in another word, so light and standard routing stay build
+    /// 441's: 증명해/증명하/증명 과정 but not 증명서 or 증명사진 (or "증명이
+    /// 뭐야"); 유도해/유도하/유도 과정 but not 전자기 유도 or 유도 (judo) as a
+    /// noun; 엄밀하게/엄밀한/엄밀히 but not 엄밀히 말하면; English whole words, a
+    /// proof but not a proof of concept, stake, work, address and the like.
+    static let deepFloorPatterns = [
+        #"증명\s*(?:을|를)?\s*(?:좀\s*)?(?:해|하|할|합|과정)"#,
+        #"유도\s*(?:를|을)?\s*(?:좀\s*)?(?:해|하|할|합|과정)"#,
+        #"엄밀(?:하|한)|엄밀히(?!\s*(?:말|따지|따져|보|얘기|이야기))"#,
+        #"(?<![a-z0-9])(?:prove|proves|proving|derive|derives|deriving|derivation|derivations|rigorous|rigorously)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])proofs?(?![a-z0-9])(?!\s+of\s+(?:concept|stake|work|address|purchase|delivery|identity|age|income|residence|payment|insurance|authority|ownership))"#,
+    ]
     /// A quality-bearing deliverable or an exact computation is its own task
     /// shape, whatever its stem ("…왜 중요한지 에세이 써줘", "…full
     /// implementation", "∫ x sin x dx 어떻게 풀어?"): it keeps the reference.
@@ -518,10 +530,42 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     public static func asksForStrongest(_ request: String) -> Bool {
         mentionsAny(qualityRequestTerms, in: request)
     }
-    /// Build 442: a proof, derivation or rigour marker (`deepFloorMarkers`),
+    /// Review of 442 (DESIGN-3 "strongest-model or think-hard wording still
+    /// forces the reference"): the same owner words in the word orders and
+    /// inflections the fixed phrases miss ("추론을 최대로", "아주 깊이 있게
+    /// 생각해서", "최선을 다해서 깊이 고민", "최대한 신중히 생각", "최고 수준의
+    /// 모델로", "think very carefully", "your strongest reasoning"): an
+    /// intensifier before a thinking verb within a few characters, a thinking
+    /// noun before a maximum, or a superlative before a model, reasoning or
+    /// effort noun. Read ONLY where a deep node could leave the reference (the
+    /// catalog's capability routes): it never touches the profile, so light
+    /// and standard routing stay build 441's. A miss costs the δ = 0 promise,
+    /// a false hit only the reference's price, so the forms lean wide.
+    static let referenceRequestPatterns = [
+        #"(?:최대한|최대로|최대치로|최고로|최선을\s*다해|신중하게|신중히|깊이|깊게|깊은|깊숙이|곰곰이|곰곰히|오래|충분히|철저하게|철저히|꼼꼼하게|꼼꼼히|치밀하게|심도\s*있게|진지하게|열심히|빡세게)[^.?!\n]{0,10}?(?:생각|고민|추론|숙고|리즈닝|궁리)"#,
+        #"(?:생각|고민|추론|리즈닝|사고력)\s*(?:을|를|은|는|도|이|가)?\s*(?:최대|최고|끝까지|깊이|깊게|많이|오래|충분히|최선|극한)"#,
+        #"(?:추론|리즈닝|생각|사고)\s*(?:강도|레벨|수준|노력|모드|effort|level)\s*(?:을|를|은|는)?\s*(?:최대|최고|최상|max)"#,
+        #"(?:최고|최상|최강|최상위)\s*(?:수준|성능|사양|레벨|급|품질)?\s*(?:의)?\s*(?:ai\s*)?(?:모델|엔진|두뇌)"#,
+        #"(?:가장|제일)\s*(?:좋은|강한|강력한|똑똑한|뛰어난|센|높은|우수한|유능한|성능\s*좋은|성능이\s*좋은|성능\s*높은)\s*(?:ai\s*)?(?:모델|엔진)"#,
+        #"최선을\s*다(?:해|하)"#,
+        #"(?<![a-z0-9])(?:think|thinks|thinking|reason|reasoning)\s+(?:[a-z]+\s+){0,2}?(?:hard|harder|hardest|carefully|deeply|thoroughly|rigorously)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])(?:strongest|best|deepest|maximum|max|maximal|most\s+careful|most\s+rigorous|most\s+thorough|highest|full|most\s+capable|smartest|most\s+advanced|most\s+intelligent|top|hardest)\s+(?:possible\s+|available\s+)?(?:reasoning|thinking|model|effort|brainpower)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])(?:carefully|rigorously|thoroughly|deeply|hard)\s+as\s+(?:you\s+)?(?:can|possible)(?![a-z0-9])"#,
+        #"(?<![a-z0-9])(?:take\s+your\s+time|ultra-?think|extended\s+thinking)(?![a-z0-9])"#,
+    ]
+    /// The owner asking for the strongest model or more thinking, in fixed
+    /// phrases (`asksForStrongest`) or the forms above. The catalog builder
+    /// reads it before it lets a deep node bind a capability row.
+    public static func asksForReference(_ request: String) -> Bool {
+        if asksForStrongest(request) { return true }
+        let lower = request.precomposedStringWithCanonicalMapping.lowercased()
+        return referenceRequestPatterns.contains { lower.range(of: $0, options: .regularExpression) != nil }
+    }
+    /// Build 442: a proof, derivation or rigour marker (`deepFloorPatterns`),
     /// read on any request: the combined difficulty never falls below deep.
     public static func deepFloor(_ request: String) -> Bool {
-        mentionsAny(deepFloorMarkers, in: request)
+        let lower = request.precomposedStringWithCanonicalMapping.lowercased()
+        return deepFloorPatterns.contains { lower.range(of: $0, options: .regularExpression) != nil }
     }
     /// ASCII terms as whole words, Korean terms as substrings (the profile's rule).
     static func mentionsAny(_ terms: [String], in request: String) -> Bool {

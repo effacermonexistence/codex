@@ -302,13 +302,42 @@ test('a pool that cannot run: the other pool, else the reference, never an unlis
   const stale = {quota_observed_at_ms: Date.now() - 600000, quota_valid_until_ms: Date.now() - 1000};
   bound = bind(q, catalog(q, {request_profile: profile({domain: 'coding'}), candidates: rows({patch: {'opus-medium': stale}})}));
   assert.equal(bound.tuple, 'claude-opus-5-5/high');
-  // The table's own reference unavailable: the capability row binds beside the other pool's reference.
+  // Review of 442: the table's own reference unavailable. Its rows qualified
+  // against that reference only, so none stands in beside the other pool's
+  // reference (never compared): policy A's reference binds, with the note.
   q = task();
   bound = bind(q, catalog(q, {request_profile: profile({domain: 'coding'}),
     candidates: rows({patch: {'fable-max': {availability: 'unavailable'}}})}));
-  assert.equal(bound.tuple, 'claude-opus-5-5/medium');
-  assert.equal(bound.route.ladder.reference_model, 'gpt-6-astra');
-  assert(bound.tokens.includes('escalation_reference_other_pool'), bound.decision.reason);
+  assert.equal(bound.tuple, 'gpt-6-astra/ultra');
+  assert.equal(bound.basis, 'reference');
+  assert(bound.tokens.includes('capability_coding_requires_runnable_reference'), bound.decision.reason);
+  assert(!bound.tokens.some(token => token.startsWith('admitted_capability_')), bound.decision.reason);
+  // The builder's own boundary (a quota-exhausted or cooled-down frontier:
+  // its rows gone, quota_zero or quota_backoff plus reference_unavailable),
+  // per domain and per pool: the other pool's reference, never a lower row
+  // of the held pool and never a cross-pool ladder.
+  for (const [reason, domain, held, tuple] of [
+    ['quota_zero', 'coding', 'fable-max', 'gpt-6-astra/ultra'], ['quota_zero', 'math', 'fable-max', 'gpt-6-astra/ultra'],
+    ['quota_backoff', 'science', 'fable-max', 'gpt-6-astra/ultra'],
+    ['quota_zero', 'writing', 'astra-ultra', 'claude-fable-5-1/max']]) {
+    const provider = held === 'fable-max' ? 'claude' : 'codex';
+    q = task();
+    bound = bind(q, catalog(q, {request_profile: profile({domain}), candidates: rows({drop: [held]}),
+      patch: {exclusions: [{provider, reason, count: 1}, {provider, reason: 'reference_unavailable', count: 1}]}}));
+    assert.equal(bound.tuple, tuple, `${reason} ${domain}`);
+    assert.equal(bound.basis, 'reference', `${reason} ${domain}`);
+    assert.equal(bound.route.ladder ?? null, null, `${reason} ${domain}`);
+    assert(bound.tokens.includes(`capability_${domain}_requires_runnable_reference`), bound.decision.reason);
+  }
+  // A writer is held the same way: no reference-equivalent row without its reference.
+  q = task({request: '랜딩 페이지 카피 영어로 갈아끼워', write: true});
+  bound = bind(q, catalog(q, {writer: true, candidates: rows({scope: 'workspace_write', drop: ['astra-ultra-w']}),
+    request_profile: profile({answer_kind: 'unknown', task_type: 'write', domain: 'writing'}),
+    patch: {exclusions: [{provider: 'codex', reason: 'quota_zero', count: 1},
+      {provider: 'codex', reason: 'reference_unavailable', count: 1}]}}));
+  assert.equal(bound.tuple, 'claude-fable-5-1/max');
+  assert.equal(bound.basis, 'reference');
+  assert(bound.tokens.includes('capability_writing_requires_runnable_reference'), bound.decision.reason);
   // No reference anywhere: a typed hold, never the capability row alone.
   q = task();
   assert.throws(() => bind(q, catalog(q, {request_profile: profile({domain: 'coding'}),

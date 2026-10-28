@@ -490,11 +490,13 @@ public enum RCCNativeCatalogBuilder {
     /// rows the catalog carries, only for an Auto request (no explicit route
     /// test) whose profile the local classifier read with a known domain and
     /// that does not ask for the strongest model or more thinking (those
-    /// words keep the reference). Core decides whether the node is deep work.
+    /// words keep the reference; review of 442: in any of their common word
+    /// orders and inflections, `asksForReference`). Core decides whether the
+    /// node is deep work.
     public static func capabilityRoutes(_ input: Input) -> RCCRuntimeContract.CapabilityRoutes? {
         guard input.explicitRouteSurfaces == nil, let table = input.capabilityTable, let profile = input.requestProfile,
               profile.locallyClassified, let domain = profile.domain, !profile.signals.contains("quality_request"),
-              !RequestProfile.asksForStrongest(input.request) else { return nil }
+              !RequestProfile.asksForReference(input.request) else { return nil }
         return table.routes(for: domain)
     }
 

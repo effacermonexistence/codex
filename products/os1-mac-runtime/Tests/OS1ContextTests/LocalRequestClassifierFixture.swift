@@ -510,5 +510,41 @@ func runLocalRequestClassifierFixtures() throws {
               "the floor names itself only when it raised the reading")
     try check(P.deepFloor("proofreading tips") == false && P.deepFloor("a proof sketch") == true,
               "ASCII markers are whole words")
+    // Review of 442: the floor is a proof, derivation or rigour ASKED FOR. The
+    // same letters in another word keep the build-441 light/standard reading
+    // (the 319-request regression items #71, #73, #74 replayed under 442 moved
+    // to astra ultra / Opus max): the local reading decides them, no deep_floor.
+    for (text, difficulty) in [("전자기 유도 설명해줘", L.Difficulty.standard), ("유도가 뭐야?", .light),
+                               ("증명사진이 뭐야?", .light), ("증명서 발급하는 법 알려줘", .standard),
+                               ("엄밀히 말하면 이게 맞아?", .light), ("what is a proof of concept", .light),
+                               ("Explain proof of stake", .standard)] {
+        let kept = combined(text, read(.explain, difficulty, .none, .knowledge))
+        try check(!P.deepFloor(text) && kept.difficulty != .deep && !kept.signals.contains("deep_floor") &&
+                  (kept.answerKind != .answerOnly || kept.difficulty.rawValue == difficulty.rawValue),
+                  "no deep floor outside a proof request: \(text) \(kept)")
+    }
+    for text in ["증명 과정 보여줘", "소수가 무한히 많다는 것을 증명할 수 있어?", "블랙숄즈 모형 유도 과정 단계별로 보여줘",
+                 "리만 가설이 왜 어려운지 엄밀하게 설명해줘", "엄밀히 증명해", "Give me a proof that there are infinitely many primes"] {
+        try check(P.deepFloor(text), "the deep floor reads a proof, derivation or rigour request: \(text)")
+    }
+    // Review of 442: strongest-model and think-hard wording in its common word
+    // orders and inflections (the fixed phrases miss these) keeps the
+    // reference for deep work; it never enters the profile (light and
+    // standard stay build 441's), and ordinary deep requests are not read so.
+    for text in ["추론을 최대로 해서 LRU 캐시를 O(1)로 구현하는 방법을 설계해줘", "아주 깊이 있게 생각해서 분산 트랜잭션 아키텍처를 설계해줘",
+                 "최선을 다해서 깊이 고민하고 웹 서버 캐시 계층 설계해줘", "think very carefully and derive the Navier-Stokes equations",
+                 "Use your strongest reasoning to prove that sqrt(2) is irrational", "최대한 신중히 생각해서 소수가 무한히 많다는 것을 증명해줘",
+                 "최고 수준의 모델로 양자역학과 일반상대성이론을 통합하는 이론을 설계해줘", "제일 똑똑한 모델로 피타고라스 정리 증명해줘",
+                 "추론 레벨 최대로 해서 설계해줘", "가장 뛰어난 모델로 증명해줘", "reason as carefully as you can about this design"] {
+        try check(P.asksForReference(text), "strongest or think-hard wording: \(text)")
+    }
+    for text in ["LRU 캐시를 O(1)로 구현하는 방법을 설계해줘", "최대 공약수를 구하는 알고리즘을 설계해줘", "분산 트랜잭션 아키텍처를 깊이 있게 설계해줘",
+                 "트리의 깊이를 계산하는 알고리즘을 생각해서 설계해줘", "Prove that sqrt(2) is irrational", "I think hash maps are faster, design one",
+                 "Design the best caching strategy for a CDN", "교통사고 원인을 깊게 분석하는 시스템 설계해줘"] {
+        try check(!P.asksForReference(text), "ordinary deep work is not a strongest request: \(text)")
+    }
+    let thinkHard = combined("추론을 최대로 해서 LRU 캐시를 O(1)로 구현하는 방법을 설계해줘", read(.design, .deep, .none, .coding))
+    try check(!thinkHard.signals.contains("quality_request") && !P.asksForStrongest("추론을 최대로 해서 설계해줘"),
+              "the wider reading never enters the profile (graded routing unchanged)")
     print("Local request classifier fixtures: \(checks) checks OK; model calls 0")
 }
