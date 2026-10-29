@@ -382,14 +382,20 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         return mentionsAny(terms, in: lower) || lower.range(of: hardCurrentFactPattern, options: .regularExpression) != nil
     }
 
-    /// Korean machine-material words that are also everyday words (클로드 모네,
-    /// 지구가 돌아가는, 튜링 테스트, 드레스 코드, 소스, 블로그·카탈로그 …): clearable.
-    /// Paths, file names, the OS-1 and owner-project vocabulary, the ASCII terms,
+    /// Korean machine-material words that are also everyday words (지구가
+    /// 돌아가는, 튜링 테스트, 드레스 코드, 소스, 블로그·카탈로그 …): clearable.
+    /// Paths, file names, the OS-1 and owner-project vocabulary in both scripts
+    /// (클로드, 코덱스, 인스타, 플릿 are a backend and registered projects, as
+    /// codex/instagram/fleet are: review of 446), the ASCII terms,
     /// 파일·폴더·저장소·레포·커밋·빌드 and a possessive technical word stay floors.
     static let clearableMachineTerms: Set<String> = [
-        "클로드", "코덱스", "인스타", "플릿", "코드", "소스", "로그", "브랜치", "테스트", "설정", "터미널", "명령", "프로젝트",
+        "코드", "소스", "로그", "브랜치", "테스트", "설정", "터미널", "명령", "프로젝트",
         "앱", "화면", "버전", "패치", "실행", "설치", "배포", "확인해", "돌려", "돌아가", "여기", "이거", "그거", "아까", "방금"]
+    /// 클로드 as a person's name, never the backend: these bigrams only are
+    /// set aside before the floor test ("클로드 모네 그림 특징이 뭐야?").
+    static let clearableProjectNamePattern = #"클로드\s*(?:모네|드뷔시|섀넌|샤넌|레비\s*-?\s*스트로스)"#
     static func hardMachineMaterial(_ lower: String) -> Bool {
+        let lower = lower.replacingOccurrences(of: clearableProjectNamePattern, with: " ", options: .regularExpression)
         func kept(_ terms: [String]) -> [String] { terms.filter { !clearableMachineTerms.contains($0) } }
         return mentionsAny(kept(ClaudeChatLane.projectTerms) + kept(ClaudeChatLane.workspaceTerms) +
                            kept(ClaudeChatLane.localWorkTerms) + os1TechnicalTerms + workspaceStateTerms + ownerProjectTerms,
@@ -424,18 +430,65 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// The responder named in a status question: the question is about it.
     static let responderPattern = #"(?:^|[\s,.!?~])(?:너|넌|네가|니가|너가|너는|너도|당신)(?=[\s,.!?~]|$)|\b(?:are you|did you|have you|you did|you done)\b"#
     static let clearableActionOrderForm = #"(?:계속|시작|기록|진행|마저)\s*(?:을|를)?\s*(?:좀\s*)?(?:해|하|할|합|시켜)"#
+    /// Review of 446: 계속/시작/기록/진행/마저 in ORDER position stay floors, as
+    /// build 445 kept them: ending the request ("계속", "계속!", "그래 시작", "…
+    /// 매수 진행") or with fewer than two other words once assent and filler
+    /// words are set aside ("응 계속", "좋아 계속 진행", "이어서 계속", "계속 가").
+    /// BackendRecovery tells the owner to send "계속" to continue work.
+    static let continuationTerms = ["계속", "시작", "기록", "진행", "마저"]
+    static let continuationAtEnd = #"(?:계속|시작|기록|진행|마저)[\s.!~ㄱ고]*$"#
+    static func continuationOrder(_ lower: String) -> Bool {
+        guard continuationTerms.contains(where: lower.contains) else { return false }
+        if lower.range(of: continuationAtEnd, options: .regularExpression) != nil { return true }
+        var rest = lower
+        for term in continuationTerms {
+            rest = rest.replacingOccurrences(of: term + "[가-힣]*", with: " ", options: .regularExpression)
+        }
+        return rest.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !approvalWords.contains($0) }.count < 2
+    }
+    /// Review of 446: the owner speaking of himself ("나는 좀 피곤했어"): every
+    /// past status ending has an explicit first-person topic earlier in its own
+    /// clause. It asks after nobody's work: no status rail, so its clearance
+    /// never waits on the subject call.
+    static let firstPersonTopicPattern = #"(?:^|\s)(?:나는|난|저는|나도|저도)\s"#
+    public static func firstPersonStatus(_ lower: String) -> Bool {
+        var heard = false
+        for clause in lower.components(separatedBy: CharacterSet(charactersIn: ".?!\n,;~？！")) {
+            let endings = statusActionTerms.compactMap { clause.range(of: $0)?.lowerBound }
+            guard let first = endings.min() else { continue }
+            heard = true
+            guard let topic = clause.range(of: firstPersonTopicPattern, options: .regularExpression),
+                  topic.upperBound <= first else { return false }
+        }
+        return heard
+    }
+    /// Review of 446: a status shape naming the owner's projects, backends or
+    /// workspace ("인스타 DM 다 보냈어?", "플릿 잡 다 끝났어?", "브랜치 머지 됐어?",
+    /// "설치 다 됐어?") is about OS-1's own work by its own words: a floor, never
+    /// asked. So is a bare check-in ("되냐?", "이제 돼?", "잘 돼?": fewer than two
+    /// words beside the check-in verb once assent and fillers are set aside).
+    static func statusNamesWork(_ lower: String) -> Bool {
+        mentionsAny(ClaudeChatLane.projectTerms + ClaudeChatLane.workspaceTerms + ClaudeChatLane.localWorkTerms +
+                    ClaudeChatLane.externalSystems + ownerProjectTerms + workspaceStateTerms + os1TechnicalTerms, in: lower)
+    }
+    static func bareCheckIn(_ lower: String) -> Bool {
+        lower.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !approvalWords.contains($0) }.count < 3
+    }
 
     /// "어떻게 만들어?", "…만들어져?": a how-is-it-made question, not a write
     /// order; the only write-scope evidence the local reading may clear.
     static let madeQuestionPattern = #"어떻게\s+[^.?!\n]{0,12}?만들어(?=\s*(?:[?？]|요|져|지|진|졌|$))|만들어\s*(?:[?？]|$)|만들어\s*(?:져|지는|진|졌)"#
 
-    /// The owner's own thinking ("오래 생각해봤는데 이직할까") and 최고 성능 /
-    /// 최고 품질 about a thing ("최고 성능 GPU"): clearable strongest-model words.
-    /// The phrasings fixed in 442 ("오래 생각해서 답해", "최고 성능 모델로", "think
-    /// hard") stay reference floors.
+    /// The owner's own past thinking ("오래 생각해봤는데 이직할까") and 최고 성능 /
+    /// 최고 품질 before a named product or part ("최고 성능 GPU"): clearable
+    /// strongest-model words. Review of 446: only those; every other use stays
+    /// a reference floor, as fixed in 442 ("최고 성능 모델로", "최고 성능 모드로",
+    /// "최고 성능 발휘해서", "오래 생각해서 답해", "깊이 생각해도 되니까", "think hard").
     static let clearableStrongestSpans = [
-        #"최고\s*(?:성능|품질)(?!\s*(?:의\s*)?(?:ai\s*)?(?:모델|model|엔진|두뇌|추론|리즈닝|답|답변|대답|결과|수준|으로|로))"#,
-        #"(?:오래|깊이|깊게|곰곰이|곰곰히|신중하게|신중히|충분히|진지하게|열심히|많이)\s*(?:생각|고민)\s*(?:을|를|도|은|는)?\s*(?:좀\s*)?(?:해\s*봤|해봤|했|해\s*왔|해왔|하고\s*있|하는\s*중|해도|해\s*봐도|해봐도)"#,
+        #"최고\s*(?:성능|품질|사양)\s*(?:의\s*)?(?:(?:gpu|cpu|npu|ssd|pc|tv)(?![a-z0-9])|그래픽\s*카드|칩셋|칩|프로세서|카메라|렌즈|노트북|랩탑|컴퓨터|데스크탑|데스크톱|맥북|아이폰|스마트폰|휴대폰|핸드폰|태블릿|아이패드|모니터|티비|이어폰|헤드폰|스피커|자동차|전기차|배터리|공유기|타이어|원두)"#,
+        #"(?:오래|깊이|깊게|곰곰이|곰곰히|신중하게|신중히|충분히|진지하게|열심히|많이)\s*(?:생각|고민)\s*(?:을|를|도|은|는)?\s*(?:좀\s*)?(?:해\s*봤|해봤|했|해\s*왔|해왔|하고\s*있|하는\s*중)"#,
     ]
     static func withoutClearableStrongest(_ request: String) -> String {
         var lower = request.precomposedStringWithCanonicalMapping.lowercased()
@@ -554,23 +607,31 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             // Build 446: a hard order resting only on clearable action terms in
             // a non-order form (계속 궁금했는데, 우주의 시작, 피곤했어) is clearable.
             // A past ending asked of this responder ("너 숙제 했어?"), or with
-            // at most one other word ("했냐고", "빌드 했어?"), stays a floor:
-            // it asks after the work under discussion.
-            else if !otherHardOrder && !matches(clearableActionOrderForm, residual) &&
+            // at most one other word ("했냐고", "빌드 했어?"), or naming OS-1's
+            // own work ("브랜치 머지 됐어?", review of 446), stays a floor: it
+            // asks after the work under discussion. So does a continuation in
+            // order position ("계속", "좋아 계속 진행", review of 446).
+            else if !otherHardOrder && !matches(clearableActionOrderForm, residual) && !continuationOrder(lower) &&
                         !ClaudeChatLane.actionTerms.contains(where: { !softActionTerms.contains($0) &&
                             !clearableActionTerms.contains($0) && residual.contains($0) }) &&
                         !(statusActionTerms.contains(where: residual.contains) &&
-                            (matches(responderPattern, lower) || contentWords(lower, without: statusActionTerms) < 2)) {
+                            (matches(responderPattern, lower) || contentWords(lower, without: statusActionTerms) < 2 ||
+                                statusNamesWork(lower))) {
                 signals.insert("soft_work")
-                if !statusAboutOther && statusActionTerms.contains(where: residual.contains) { signals.insert("soft_status") }
+                // "나는 좀 피곤했어": the owner speaking of himself is no status question.
+                if !statusAboutOther && statusActionTerms.contains(where: residual.contains) && !firstPersonStatus(lower) {
+                    signals.insert("soft_status")
+                }
             }
         }
         // Build 446 (DESIGN-5 §A): the other clearable matches.
         if signals.contains("current_facts") && !hardCurrentFacts(lower) { signals.insert("soft_facts") }
         // A check-in that names this responder ("너 되냐?", "네가 얼마나 잘 되는지
-        // 보자") is about it by its own words: a floor, never asked.
+        // 보자"), OS-1's own work ("인스타 DM 다 보냈어?") or nothing at all ("되냐?",
+        // "이제 돼?") is about it by its own words: a floor, never asked (review of 446).
         if (signals.contains("status_check_in") || signals.contains("status_question")) && !StatusCheckIn.responsePathOnly(value) &&
-            !StatusCheckIn.standaloneTestInvitation(lower) && !matches(responderPattern, lower) {
+            !StatusCheckIn.standaloneTestInvitation(lower) && !matches(responderPattern, lower) &&
+            !statusNamesWork(lower) && !bareCheckIn(lower) {
             signals.insert("soft_status")
         }
         if signals.contains("machine_material") && !signals.contains("soft_material") && !hardMachineMaterial(lower) {
@@ -951,7 +1012,23 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         // its 445 rails were clearable keeps build 445's keyword profile
         // exactly (those rails stand). A request whose floors decide is
         // combined as in build 445 (the host does not ask about it).
-        if railsDecide445(k, request: request) && !railsDecide(k, request: request) { return keywordOnly(["soft_kept"]) }
+        if railsDecide445(k, request: request) && !railsDecide(k, request: request) {
+            // Review of 446: a status shape the subject call read as about
+            // something else, read as a current-facts lookup ("우크라이나 전쟁 아직
+            // 진행 중이야?"), keeps that reading's caution: a read-only lookup
+            // with tools, as the jet-engine question gets. Its status rails are
+            // gone, so build 445's keyword profile is no longer the one to keep.
+            if !statusOther.isEmpty, local.taskType == .chat || local.taskType == .explain, local.needsTools == .currentFacts {
+                let read = Difficulty(rawValue: local.difficulty.rawValue) ?? .standard
+                let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read
+                return finish(.answerOnly, .currentFacts, difficulty, labelled, classifier,
+                              ["llm_task_" + local.taskType.rawValue, "llm_difficulty_" + local.difficulty.rawValue,
+                               "llm_tools_" + local.needsTools.rawValue, "llm_overrules_soft_rail", "llm_raised_tools"] +
+                                (domainRead ? [] : ["llm_domain_unqualified"]) +
+                                (deepFloor(request) && read != .deep ? ["deep_floor"] : []))
+            }
+            return keywordOnly(["soft_kept"])
+        }
         // Build 441 part 3: under an adopted local reading only the HARD rails
         // stand; a soft order, generic programming word or adverbial
         // demonstrative is the local reading's to decide.

@@ -1087,11 +1087,13 @@ public enum RoutingOrderInterpreter {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
     /// The installed model names (`/api/tags`), nil when Ollama does not
-    /// answer (a refused connection returns at once).
+    /// answer (a refused connection returns at once). A pinned local
+    /// candidate is listed only at its pinned digest (review of 446,
+    /// `LocalModelSelection.pinnedInventoryNames`).
     public static func ollamaInstalledModels(endpoint: URL = endpoint, timeout: TimeInterval = 1.5) async -> [String]? {
         guard let object = await ollamaJSON(apiURL(endpoint, "tags"), body: nil, timeout: timeout),
               let models = object["models"] as? [[String: Any]] else { return nil }
-        return models.compactMap { $0["name"] as? String }
+        return LocalModelSelection.pinnedInventoryNames(models)
     }
     /// The models Ollama holds in memory now (`/api/ps`) with their expiry; nil when Ollama does not answer.
     public static func ollamaLoadedModels(endpoint: URL = endpoint, timeout: TimeInterval = 1.5) async -> [LoadedModel]? {

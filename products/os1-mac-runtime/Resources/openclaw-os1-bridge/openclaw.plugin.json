@@ -342,6 +342,11 @@
       "bounded_auto": {
         "type": "boolean",
         "description": "Host-enabled bounded execution-only local planning. Does not certify task quality or grant additional permissions."
+      },
+      "local_model": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,47}:[a-z0-9][a-z0-9._-]{0,15}$",
+        "description": "The host's one local Ollama model name for the local surface and planner. Names a model only; grants nothing."
       }
     }
   }

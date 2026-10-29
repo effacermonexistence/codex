@@ -816,8 +816,10 @@ check("!RequestProfile.railsDecide(keywordProfile, request: request.request)" in
 classifier_source = (ROOT / "Sources/OS1Context/LocalRequestClassifier.swift").read_text()
 check("RoutingOrderInterpreter.ollamaAsk(endpoint: endpoint, model: model, timeout: timeout, schema: schemaJSON," in classifier_source and
       # Build 446 (DESIGN-5 §B): the machine's one local model, by RAM and
-      # the installed set, from the one selection table.
-      "LocalModelSelection.choose(physicalMemory: physicalMemory, installedNames: installed)?.name" in classifier_source and
+      # the installed set, from the one selection table (review of 446: the
+      # selection itself, never a second choice from the inventory's names).
+      "installed.contains(active.name) ? active.name : nil" in classifier_source and
+      "active: LocalModelSelection.Candidate = LocalModelSelection.active" in classifier_source and
       "public static let timeout: TimeInterval = 12" in classifier_source and
       'public static let keepAlive = "30m"' in classifier_source and
       "URLSession" not in classifier_source and "public static let chatEndpoint = RoutingOrderInterpreter.endpoint" in classifier_source and
@@ -904,7 +906,7 @@ check("const local = profile.classifier.startsWith('local_llm:');" in capability
 check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
-check('public static let promptVersion = "local_cls_v2_dom1_sub1"' in classifier_source and
+check('public static let promptVersion = "local_cls_v2_dom1_sub2"' in classifier_source and
       # DESIGN-4 §9: the enum call is build 441's v2 schema; the domain is its own call (with the owner's ASR hints, §3).
       'public static let schemaJSON = #"{"type":"object","properties":{"task_type":{"type":"string","enum":["explain","design","write","action","chat"]},"difficulty":{"type":"string","enum":["light","standard","deep"]},"needs_tools":{"type":"string","enum":["none","current_facts","workspace","execution"]}},"required":["task_type","difficulty","needs_tools"]}"#' in classifier_source and
       'public static let domainSchemaJSON = #"{"type":"object","properties":{"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}},"required":["domain"]}"#' in classifier_source and
@@ -1191,5 +1193,19 @@ check("run('/usr/bin/ditto', ['--clone', source, stageApp]);" in INSTALLER and
       'guard let copied = try? commandOutput(copier, ["-c", "-R", template.path, destination.path], timeout: 600), copied.0 == 0,' in FLEET and
       'case "storage":' in MAIN and "StorageReport.make()" in MAIN,
       "446 C: new recovery and Fleet copies are APFS clones with a byte-copy fallback; os1 storage report is read-only")
+# Review of build 446.
+check("canClone: (URL, URL) -> Bool = fleetVolumeClones) -> Bool {" in FLEET and
+      "guard canClone(templates, destination.deletingLastPathComponent()) else { return false }" in FLEET and
+      ".volumeSupportsFileCloningKey" in FLEET,
+      "446 review: a Fleet job takes a template copy only on one cloning volume; otherwise the hard-linked mirror clone")
+check("var workspace = surface.forcesChatLane ? try sourceAnswerWorkspace()" in MAIN,
+      "446 review: a cleared request's tool-free chat lane runs in the answer workspace, never the conversation workspace")
+check('"local_model": {' in (PLUGIN_ROOT / "openclaw.plugin.json").read_text() and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-plugin-config-validates.test.mjs"' in RELEASE,
+      "446 review: the plugin manifest declares local_model; the pinned OpenClaw validates the gateway config (release-gated)")
+check("installed.contains(active.name) ? active.name : nil" in (ROOT / "Sources/OS1Context/LocalRequestClassifier.swift").read_text() and
+      "loopbackInventory(timeout: timeout).map(LocalModelSelection.pinnedInventoryNames)"
+          in (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text(),
+      "446 review: the classifier and the warm-keeper ask the machine's one selected model at its pinned digest")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

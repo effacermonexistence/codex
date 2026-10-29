@@ -90,21 +90,30 @@ func runLocalClearanceFixtures() throws {
     // ---- The two owner sentences.
     let tired = "오늘 하루 어땠어? 나는 좀 피곤했어"
     let tiredKeyword = keyword(tired)
+    // Review of 446: "나는 … 피곤했어" is the owner speaking of himself, no
+    // status question, so its clearance never waits on the subject call (which
+    // timed out under a busy local model and sent it to the reference).
     try check(P.railsDecide445(tiredKeyword, request: tired) && !P.railsDecide(tiredKeyword, request: tired) &&
-              tiredKeyword.signals.contains("soft_status") && tiredKeyword.signals.contains("soft_work") &&
+              !tiredKeyword.signals.contains("soft_status") && tiredKeyword.signals.contains("soft_work") &&
               tiredKeyword.signals.contains("soft_facts"),
-              "build 445 never asked the local model; 446 does: \(show(tiredKeyword))")
-    let small = combined(tired, read(.chat, .light, .none, subject: .other))
-    try check(small.answersLocally && small.answersWithoutTools && small.difficulty == .light && small.taskType == .chat &&
-              small.cleared("status") && small.cleared("work") && small.cleared("facts"),
-              "owner: small talk answers on the local model, never the reference: \(show(small))")
-    // No subject reading (failed), or the local model saying it is about the
-    // assistant's own state: the rails stand (build 445's profile).
-    for subject in [nil, L.Subject.assistantState] {
-        let kept = combined(tired, read(.chat, .light, .none, subject: subject))
-        try check(!cleared(kept) && kept.answerKind == .work && kept.classifier == P.keywordClassifier &&
-                  kept.signals.contains("soft_kept"), "status kept without an `other` subject: \(show(kept))")
+              "build 445 never asked the local model; 446 does, with no status rail: \(show(tiredKeyword))")
+    for subject in [L.Subject.other, nil, .assistantState] {
+        let small = combined(tired, read(.chat, .light, .none, subject: subject))
+        try check(small.answersLocally && small.answersWithoutTools && small.difficulty == .light && small.taskType == .chat &&
+                  small.cleared("work") && small.cleared("facts"),
+                  "owner: small talk answers on the local model, never the reference, subject \(subject?.rawValue ?? "unread"): \(show(small))")
     }
+    // A real status question with no subject reading (failed), or the local
+    // model saying it is about the assistant's own state: the rails stand.
+    let status = "세종대왕이 한글 만든 이유가 뭐야?"
+    for subject in [nil, L.Subject.assistantState] {
+        let kept = combined(status, read(.chat, .light, .none, subject: subject))
+        try check(!cleared(kept) && kept.classifier == P.keywordClassifier && kept.signals.contains("soft_kept") &&
+                  kept.signals.contains("status_question"), "status kept without an `other` subject: \(show(kept))")
+    }
+    try check(!P.firstPersonStatus("나는 좀 피곤했어. 빌드 했어?") && !P.firstPersonStatus("빌드 다 했어?") &&
+              P.firstPersonStatus("난 오늘 운동했어") && !P.firstPersonStatus("오늘 하루 어땠어?"),
+              "every past ending needs its own first-person topic")
 
     // ---- §A floors: every hard floor still wins over the same reading.
     let floors: [(String, Bool, Bool?)] = [
@@ -123,6 +132,48 @@ func runLocalClearanceFixtures() throws {
         let profile = combined(text, reading, shell: shell, shellFloor: shellFloor)
         try check(!cleared(profile) && P.clearance(keyword(text, shell: shell, shellFloor: shellFloor), request: text,
                                                    local: reading) == nil, "floor wins: \(text) \(show(profile))")
+    }
+    // ---- Review of 446: floors the first clearance read past. Each one stays
+    // build 445's rail (the local model is not even asked), whatever it reads.
+    let reviewFloors = [
+        // A continuation or approval in order position (the 9B read each as chat/light/none).
+        "계속", "응 계속", "ㅇㅋ 계속", "좋아 계속 진행", "계속 진행", "시작", "그래 시작", "계속 가", "계속!", "이어서 계속",
+        "잡담인데 비트코인 매수 진행", "계속 진행해 주세요", "계속 해", "마저 진행", "진행",
+        // OS-1's backends and registered projects in Korean spelling, and status questions about its work.
+        "인스타 봇 잘 돌아가고 있어", "인스타 DM 봇 지금 돌아가?", "코덱스 지금 돼?", "클로드 지금 되냐",
+        "인스타 DM 다 보냈어?", "인스타 자동답장 다 만들었어?", "플릿 잡 다 끝났어?", "브랜치 머지 됐어?", "설치 다 됐어?",
+        // A bare check-in carries the install card.
+        "되냐?", "이제 돼?", "돼?", "잘 돼?",
+        // The 442 strongest-model and think-hard phrasings.
+        "최고 성능 모드로 양자역학 설명해줘", "최고 성능 발휘해서 블랙홀 설명해줘", "깊이 생각해도 되니까 블랙홀 설명해줘",
+        "오래 생각해도 돼, 이 증명 봐줘",
+    ]
+    for text in reviewFloors {
+        let k = keyword(text)
+        for reading in [read(.chat, .light, .none, subject: .other), read(.explain, .light, .none, subject: .other)] {
+            let profile = P.combine(keyword: k, request: text, local: reading, model: "qwen3.5:9b")
+            try check(P.railsDecide(k, request: text) && P.railsDecide445(k, request: text) && !cleared(profile) &&
+                      P.clearance(k, request: text, local: reading) == nil, "review floor: \(text) \(show(k)) -> \(show(profile))")
+        }
+    }
+    // The continuation floor is build 445's hard order: work, never read-only, whatever the reading.
+    for text in ["계속", "좋아 계속 진행", "이어서 계속"] {
+        for profile in [combined(text, nil), combined(text, read(.chat, .light, .none))] {
+            try check(profile.answerKind == .work && !profile.answersReadOnly && !profile.answersLocally &&
+                      !keyword(text).signals.contains("soft_work"), "a continuation orders the work: \(show(profile))")
+        }
+    }
+    // The bare check-in keeps its status rail, so the install card attaches.
+    for text in ["되냐?", "이제 돼?", "돼?", "잘 돼?"] {
+        let k = keyword(text)
+        try check(k.signals.contains("status_check_in") && !k.signals.contains("soft_status") &&
+                  !combined(text, read(.chat, .light, .none, subject: .other)).cleared("status"), "check-in card: \(show(k))")
+    }
+    // The everyday uses beside them still clear.
+    for text in ["계속 궁금했는데 중력은 왜 생겨?", "우주의 시작은 어땠어?", "세계 기록이 뭐야?", "클로드 모네 그림 특징이 뭐야?",
+                 "최고 성능 GPU 뭐 있어?", "최고 성능 노트북 추천해줘", "오래 생각해봤는데 이직할까?", "깊이 고민했는데 이사 갈까?"] {
+        let profile = combined(text, read(.explain, .light, .none, subject: .other))
+        try check(cleared(profile) && profile.answersWithoutTools, "still cleared: \(text) \(show(profile))")
     }
     // The local reading never clears unless it reads a tool-free chat or
     // explain answer; it may still raise caution.
@@ -149,6 +200,11 @@ func runLocalClearanceFixtures() throws {
     let warProfile = combined(war, read(.explain, .light, .currentFacts, subject: .other))
     try check(warProfile.cleared("status") && !warProfile.signals.contains("status_check_in") &&
               !warProfile.signals.contains("soft_status"), "the war question is not a status check-in: \(show(warProfile))")
+    // Review of 446: and it keeps the reading's caution, a read-only lookup
+    // with tools, never build 445's status-stripped work profile (the reference).
+    try check(warProfile.toolNeed == .currentFacts && warProfile.answerKind == .answerOnly && warProfile.answersReadOnly &&
+              !warProfile.answersWithoutTools && warProfile.classifier == "local_llm:qwen3.5:9b",
+              "the war question is a current-facts lookup: \(show(warProfile))")
     let warAssistant = combined(war, read(.explain, .light, .currentFacts, subject: .assistantState))
     try check(!warAssistant.cleared("status") && warAssistant.signals.contains("status_check_in"),
               "the subject `assistant_state` keeps the check-in: \(show(warAssistant))")
@@ -177,16 +233,16 @@ func runLocalClearanceFixtures() throws {
         return system == L.subjectSystemPrompt && message.hasPrefix("<request>") ? #"{"subject":"other"}"# : "bad"
     } }
     let receipt = run { await L.classify(tired, inventory: { ["qwen3.5:9b"] }, ask: enumAsk, statusHeard: true,
-                                         askSubject: subjectAsk, physicalMemory: 16 * LocalModelSelection.gibibyte) }
+                                         askSubject: subjectAsk, active: LocalModelSelection.candidates[0]) }
     try check(receipt.adopted?.answer.subject == .other && receipt.subjectOutcome == "adopted" && calls.subjects == 1 &&
               receipt.model == "qwen3.5:9b", "the subject is read once: \(receipt.publicLine)")
     let unheard = run { await L.classify(tired, inventory: { ["qwen3.5:9b"] }, ask: enumAsk, statusHeard: false,
-                                         askSubject: subjectAsk, physicalMemory: 16 * LocalModelSelection.gibibyte) }
+                                         askSubject: subjectAsk, active: LocalModelSelection.candidates[0]) }
     try check(unheard.adopted?.answer.subject == nil && unheard.subjectOutcome == nil && calls.subjects == 1,
               "no status heard, no subject call")
     let failing: L.AskFor = { _ in { _, _ in "{}" } }
     let failed = run { await L.classify(tired, inventory: { ["qwen3.5:9b"] }, ask: enumAsk, statusHeard: true,
-                                        askSubject: failing, physicalMemory: 16 * LocalModelSelection.gibibyte) }
+                                        askSubject: failing, active: LocalModelSelection.candidates[0]) }
     try check(failed.adopted?.answer.subject == nil && failed.subjectOutcome == "schema_mismatch",
               "a failed subject call leaves the status rail standing")
 

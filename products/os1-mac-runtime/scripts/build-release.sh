@@ -155,6 +155,9 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-model-one-name.test.mjs"
+# Review of 446: the pinned OpenClaw accepts the RCC gateway's plugin config
+# (bounded_auto plus the one local model) for every candidate model.
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-plugin-config-validates.test.mjs"
 # K4: node verifier registry soundness, and the tier-routing and runtime fixtures that
 # hold most verifier/ladder coverage; a per-test timeout turns a hang into a failure.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-verifier-registry.test.mjs"

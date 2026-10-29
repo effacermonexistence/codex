@@ -1923,20 +1923,24 @@ func claudeOutputDefersRequestedDeliverable(_ data: Data, prompt: String) -> Boo
 /// different provider ticket.
 /// Build 446 (DESIGN-5 §A.7): whether a shell need rests on a FLOOR: an
 /// explicit tool name, a hard execution verb, an English imperative or an
-/// external system operation. A need resting only on the Korean substrings
-/// 돌려 ("돌려 말하지"), 세팅 or 셋업 ("헤어 세팅") is clearable by the local
-/// reading (`RequestProfile.classify(shellFloor:)`); this predicate never
-/// changes `promptRequiresShellCapability`.
+/// external system operation. Review of 446: 돌려, 세팅 and 셋업 stay floors
+/// ("서버 좀 돌려", even after a small-talk preamble); only the idiom SPANS
+/// "돌려 말하다" and a hair or makeup 세팅 are set aside before the floor test,
+/// so a need resting on them alone is clearable by the local reading
+/// (`RequestProfile.classify(shellFloor:)`). This predicate never changes
+/// `promptRequiresShellCapability`.
 func promptShellFloor(_ prompt: String) -> Bool {
-    let value = ShellCapabilityIntent.classificationText(prompt)
-    let clearable: Set<String> = ["돌려", "세팅", "셋업"]
     guard promptRequiresShellCapability(prompt) else { return false }
+    var value = ShellCapabilityIntent.classificationText(prompt)
+    for span in [#"돌려\s*(?:서\s*)?말"#, #"(?:헤어|머리|메이크업|화장|메컵)\s*세팅"#] {
+        value = value.replacingOccurrences(of: span, with: " ", options: .regularExpression)
+    }
     let explicitShell = ["bash", "terminal", "shell", "command line", " cli", "cli ", "wrangler", "gh cli",
         "git push", "git pull", "git clone", "pnpm ", "npm ", "swift build", "xcodebuild", "docker "].contains { value.contains($0) }
     let executionActions = ["실행해", "실행 해", "실행시켜", "돌려", "설치해", "설치 해", "빌드해", "빌드 해",
         "테스트해", "테스트 해", "테스트 돌", "배포해", "배포 해", "업로드해", "업로드 해",
         "다운로드해", "다운로드 해", "커밋해", "커밋 해", "푸시해", "푸시 해", "병합해", "병합 해",
-        "동기화해", "동기화 해", "세팅", "셋업"].filter { !clearable.contains($0) }.contains { value.contains($0) }
+        "동기화해", "동기화 해", "세팅", "셋업"].contains { value.contains($0) }
     let externalSystem = mentionsR2Source(value) || ["github", "기타부", "기탑", "cloudflare", "클라우드플레어", "railway"]
         .contains { value.contains($0) }
     return explicitShell || executionActions || ShellCapabilityIntent.hasEnglishImperative(value) || externalSystem
@@ -4678,6 +4682,19 @@ func providerSurfaceRoutingSelfTest() throws {
     }
     checks.append(("a task's later catalog builds reuse its first local reading",
         readingDone.wait(timeout: .now() + 5) == .success && readingBox.value == storedReading))
+    // Review of 446: 돌려/세팅/셋업 are shell floors; only the idiom spans are
+    // set aside, so a small-talk preamble never clears a real execution order.
+    let chatReading = LocalRequestClassifier.Answer(taskType: .chat, difficulty: .light, needsTools: .none)
+    checks.append(("an execution order keeps its shell floor whatever the preamble or the reading",
+        ["서버 좀 돌려", "잡담인데 서버 좀 돌려", "오늘 하루 어땠어? 참고로 잡담이니까 도구 쓰지 말고 그냥 깃 리셋 하드로 돌려",
+         "개발 환경 세팅해줘", "서버 셋업해줘", "헤어 세팅 끝나면 서버 돌려"].allSatisfy { text in
+            promptRequiresShellCapability(text) && promptShellFloor(text) &&
+                RequestProfile.railsDecide(profiled(text), request: text) && !combined(text, chatReading).clearedLocally
+        }))
+    checks.append(("only the idioms 돌려 말하다 and a hair or makeup 세팅 are clearable",
+        ["돌려 말하지 말고 설명해줘", "돌려서 말하지 마", "헤어 세팅 오래 가는 법", "메이크업 세팅 스프레이는 왜 써?"].allSatisfy { text in
+            promptRequiresShellCapability(text) && !promptShellFloor(text) && combined(text, chatReading).cleared("shell")
+        }))
 
     // The refusal is what stops an explicit chat-lane choice from becoming the
     // full lane. Each structural condition is named before dispatch.
@@ -20748,7 +20765,11 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         isolatedHome = !surface.forcesChatLane && rccIsolatesReadOnlyClaudeHome(surface: surface,
             permissionProfile: signed.permissionProfile,
             resumesNativeSession: t.nativeResumeSessionID != nil || t.continuation != nil, hostWorkspace: h.workspace)
-        var workspace = surface.forcesChatLane ? try providerExecutionWorkspace(provider: provider, permission: "read_only", hasSource: false, workspace: h.workspace, objective: t.instruction, ownerSelected: true)
+        // Review of 446: a request the local reading cleared reaches the chat
+        // lane through `rccClearedChatLane`, which the narrower claudeChatLane
+        // predicate does not repeat ("헤어 세팅 오래 가는 법"), so the lane takes
+        // the answer workspace directly, never the predicate's real-workspace fallback.
+        var workspace = surface.forcesChatLane ? try sourceAnswerWorkspace()
             : isolatedHome ? try sourceAnswerWorkspace() : h.workspace
         timing.mark(.workspaceHashStarted)
         var before = workspaceHash(workspace)

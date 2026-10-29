@@ -3035,15 +3035,22 @@ function closedDecimal({n, d}) {
  * value ("1-1은 뭐냐?" = 0; plainIntegerDifference), except a year span.
  * Value: exact rationals; division by zero, a non-terminating result
  * ("1/3=") or more than 40 output digits abstain; never rounded. */
-export function exactArithmeticQuestion(request) {
-  if (typeof request !== 'string') return null;
+/** Whether a compatibility character other than a fullwidth form or U+3000
+ * folds under NFKC into a digit or an operator ("2²" would read as "22"), in
+ * the request before its trailing question marks. Both closed grammars
+ * abstain on it (review of 446: "1부터 10²까지" read as 1..102). */
+function compatibilityFoldsIntoArithmetic(request) {
   const chars = [...request];
   let marks = chars.length;
   while (marks > 0 && /^[?!.\u3002\uFF1F\uFF01\s]+$/u.test(chars[marks - 1].normalize('NFKC'))) marks--;
   for (const ch of chars.slice(0, marks)) {
     const folded = ch.normalize('NFKC');
-    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*/=().,-]/.test(folded)) return null;
+    if (folded !== ch && !/^[\uFF00-\uFFEF\u3000]$/u.test(ch) && /[0-9+*/=().,-]/.test(folded)) return true;
   }
+  return false;
+}
+export function exactArithmeticQuestion(request) {
+  if (typeof request !== 'string' || compatibilityFoldsIntoArithmetic(request)) return null;
   let text = request.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
   if (text.length > CLOSED_ARITHMETIC_LIMITS.input_chars || /\d!/.test(text)) return null;
   const end = /[?!.。？！]+$/u.exec(text);
@@ -3102,8 +3109,9 @@ function plainIntegerDifference(tokens) {
  *  English (what is|what's|what’s)? the sum of (the)? (integers|numbers|whole
  *          numbers)? (from)? A (to|through|..) N, or sum of A..N.
  * A and N: plain non-negative integers, 1-15 digits, no leading zero, A <= N.
- * Text: NFKC, collapsed whitespace, lower case, at most 160 characters, one
- * trailing run of ?!.。？！ removed. Anything else (another operation, a
+ * Text: NFKC (a compatibility character folding into a digit, such as a
+ * superscript, abstains as in exactArithmeticQuestion), collapsed whitespace,
+ * lower case, at most 160 characters, one trailing run of ?!.。？！ removed. Anything else (another operation, a
  * filter such as 홀수만, a second clause, a decimal, a sign, a number word)
  * abstains: the request then routes as before. The value is exact (BigInt):
  * (N(N+1) - (A-1)A) / 2, at most 30 digits for 15-digit bounds. */
@@ -3114,7 +3122,7 @@ const RANGE_SUM_KOREAN = new RegExp('^' + RANGE_SUM_INTEGER + ' ?(?:부터|에�
 const RANGE_SUM_ENGLISH = new RegExp('^(?:(?:what is|what\'s|what’s) )?(?:the )?sum of (?:the )?(?:(?:integers|numbers|whole numbers) )?' +
   '(?:from )?' + RANGE_SUM_INTEGER + ' ?(?:to|through|\\.\\.) ?' + RANGE_SUM_INTEGER + '$', 'u');
 export function integerRangeSum(request) {
-  if (typeof request !== 'string') return null;
+  if (typeof request !== 'string' || compatibilityFoldsIntoArithmetic(request)) return null;
   let text = request.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
   if (text.length > CLOSED_ARITHMETIC_LIMITS.input_chars) return null;
   text = text.replace(/[?!.。？！]+$/u, '').trim();

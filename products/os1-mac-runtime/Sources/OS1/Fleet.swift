@@ -584,8 +584,9 @@ func fleetMirrorClone(repository: String, revision: String, into destination: UR
 /// up", never by deleting): a job's checkout as an APFS CLONE of a clean
 /// per-repository template checkout, so the 400+ job checkouts share their
 /// unchanged blocks instead of each writing a full working tree (28 GB on
-/// this Air). `cp -c` clones with clonefile(2) and falls back to a byte copy
-/// on a volume that cannot clone. The template is OS-1's own clean checkout
+/// this Air). `cp -c` clones with clonefile(2); where the template and the
+/// job do not share one cloning volume (`fleetVolumeClones`) no template is
+/// used and the job keeps the mirror clone. The template is OS-1's own clean checkout
 /// (~/.os1/fleet/checkout-templates/<owner>/<name>), moved to the revision
 /// under an exclusive lock and used only when git reports it clean at
 /// exactly that revision; the clone must then hold the same revision, clean,
@@ -598,11 +599,17 @@ func fleetTemplateClone(repository: String, revision: String, into destination: 
                             .appendingPathComponent(".os1/fleet/checkout-templates", isDirectory: true),
                         mirrors: URL = FileManager.default.homeDirectoryForCurrentUser
                             .appendingPathComponent(".os1/fleet/mirrors", isDirectory: true),
-                        remote: String? = nil, copier: String = "/bin/cp") -> Bool {
+                        remote: String? = nil, copier: String = "/bin/cp",
+                        canClone: (URL, URL) -> Bool = fleetVolumeClones) -> Bool {
     let parts = repository.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
     guard parts.count == 2, parts.allSatisfy({ $0.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._-]{0,99}/) != nil }),
           revision.wholeMatch(of: /[0-9a-f]{40}/) != nil, !FileManager.default.fileExists(atPath: destination.path),
           let git = try? findExecutable("git") else { return false }
+    // Review of 446: `cp -c` byte-copies where it cannot clone (cp(1)), and a
+    // byte copy of the template duplicates its whole object store, where the
+    // mirror clone hard-links it. Off one cloning volume, no template is made
+    // or copied: the job keeps the mirror clone.
+    guard canClone(templates, destination.deletingLastPathComponent()) else { return false }
     let origin = remote ?? "https://github.com/\(repository).git"
     let owner = templates.appendingPathComponent(parts[0], isDirectory: true)
     let template = owner.appendingPathComponent(parts[1], isDirectory: true)
@@ -644,6 +651,24 @@ func fleetTemplateClone(repository: String, revision: String, into destination: 
         return false
     }
     return true
+}
+
+/// Whether `a` and `b` (each read at its nearest existing ancestor) lie on ONE
+/// volume that supports clonefile(2), so `cp -c` really clones between them.
+func fleetVolumeClones(_ a: URL, _ b: URL) -> Bool {
+    func volume(_ url: URL) -> (id: NSObject, clones: Bool)? {
+        var current = url.standardizedFileURL
+        while !FileManager.default.fileExists(atPath: current.path) {
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { return nil }
+            current = parent
+        }
+        guard let values = try? current.resourceValues(forKeys: [.volumeIdentifierKey, .volumeSupportsFileCloningKey]),
+              let id = values.volumeIdentifier as? NSObject else { return nil }
+        return (id, values.volumeSupportsFileCloning == true)
+    }
+    guard let first = volume(a), let second = volume(b) else { return false }
+    return first.clones && second.clones && first.id.isEqual(second.id)
 }
 
 /// The self-test's existing first mirror-cloned job (a destination that exists).
@@ -1652,7 +1677,7 @@ func fleetSelfTest() throws {
     for (index, revision) in [revisions[1], revisions[0], revisions[1]].enumerated() {
         let job = directory.appendingPathComponent("template-job\(index)", isDirectory: true)
         try check(fleetTemplateClone(repository: "owner/repo", revision: revision, into: job, templates: templates,
-                                     mirrors: mirrors, remote: source.path, copier: copier.path),
+                                     mirrors: mirrors, remote: source.path, copier: copier.path, canClone: { _, _ in true }),
                   "template clone failed for revision \(index)")
         try check(try String(contentsOf: job.appendingPathComponent("file.txt"), encoding: .utf8) == (revision == revisions[0] ? "one" : "two")
                   && (try gitOK(["-C", job.path, "rev-parse", "HEAD"])) == revision
@@ -1667,6 +1692,18 @@ func fleetSelfTest() throws {
                                   mirrors: mirrors, remote: source.path, copier: "/usr/bin/false")
               && !FileManager.default.fileExists(atPath: refusedClone.path),
               "a failed copy leaves no destination; the job falls back to the mirror clone")
+    // Review of 446: off a cloning volume `cp -c` would byte-copy the whole
+    // template; nothing is copied and the job keeps the mirror clone.
+    let noCloneLog = directory.appendingPathComponent("copier.log").path
+    let copiesBefore = (try? String(contentsOfFile: noCloneLog, encoding: .utf8))?.split(separator: "\n").count ?? 0
+    let unclonable = directory.appendingPathComponent("template-unclonable", isDirectory: true)
+    try check(!fleetTemplateClone(repository: "owner/repo", revision: revisions[0], into: unclonable, templates: templates,
+                                  mirrors: mirrors, remote: source.path, copier: copier.path, canClone: { _, _ in false })
+              && !FileManager.default.fileExists(atPath: unclonable.path) &&
+              ((try? String(contentsOfFile: noCloneLog, encoding: .utf8))?.split(separator: "\n").count ?? 0) == copiesBefore,
+              "a volume that cannot clone gets no template copy; the job keeps the mirror clone")
+    try check(fleetVolumeClones(templates, directory) == fleetVolumeClones(directory, templates),
+              "the clone probe is symmetric")
     try check(!fleetTemplateClone(repository: "owner/repo", revision: revisions[0], into: job0Existing(directory),
                                   templates: templates, mirrors: mirrors, remote: source.path, copier: copier.path),
               "an existing checkout is never replaced")

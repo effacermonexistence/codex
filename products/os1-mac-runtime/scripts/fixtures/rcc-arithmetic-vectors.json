@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "grammar": "os1-closed-arithmetic-v1",
- "about": "Shared vectors for Core's zero-model arithmetic (rcc-runtime.mjs zeroModelArithmetic = pureArithmetic, abstaining on a leading-zero number, ?? exactArithmeticQuestion). expected is the exact canonical output, or null when Core must abstain and route to the models. Read by openclaw-rcc-exact-arithmetic.test.mjs and OS1ContextTests RCCExactArithmeticVectorsFixture.",
+ "about": "Shared vectors for Core's zero-model arithmetic (rcc-runtime.mjs zeroModelArithmetic = pureArithmetic, abstaining on a leading-zero number, ?? exactArithmeticQuestion ?? integerRangeSum). expected is the exact canonical output, or null when Core must abstain and route to the models. Read by openclaw-rcc-exact-arithmetic.test.mjs and OS1ContextTests RCCExactArithmeticVectorsFixture.",
  "limits": {
   "input_chars": 160,
   "int_digits": 15,
@@ -927,6 +927,26 @@
    "input": "1900-2000은 뭐야?",
    "expected": null,
    "why": "two four-digit operands: a year span, still held"
+  },
+  {
+   "input": "1부터 10²까지 더하면 얼마야?",
+   "expected": null,
+   "why": "review of 446: a superscript folds into a digit under NFKC (10² would read as 102); the range-sum grammar abstains as exactArithmeticQuestion does"
+  },
+  {
+   "input": "1부터 10³까지 더하면 얼마야?",
+   "expected": null,
+   "why": "review of 446: a superscript folds into a digit under NFKC (10² would read as 102); the range-sum grammar abstains as exactArithmeticQuestion does"
+  },
+  {
+   "input": "2²부터 5²까지 더하면",
+   "expected": null,
+   "why": "review of 446: a superscript folds into a digit under NFKC (10² would read as 102); the range-sum grammar abstains as exactArithmeticQuestion does"
+  },
+  {
+   "input": "1⁰부터 10까지 더하면",
+   "expected": null,
+   "why": "review of 446: a superscript folds into a digit under NFKC (10² would read as 102); the range-sum grammar abstains as exactArithmeticQuestion does"
   }
  ]
 }

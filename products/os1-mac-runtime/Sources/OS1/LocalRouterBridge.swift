@@ -104,7 +104,7 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "a80c82845819920291f5beca8e2dbaee0ce93076d45e62e1adcf1adfeaa90f8a"
+    static let rccRuntimeModuleSHA256 = "a10152de5eedb28eafc1d7ca96014e5d06177648698c0ec54a8ddbc3b172c432"
     static let rccRuntimePluginSHA256 = "da55a774de2ef2bf6c7d018b47fe818b366d51ec0c355aadd9c3537d4db07eb9"
     static let rccResourceUsageSHA256 = "745a78cbf657aa3c0d4850e59842f2059a1b1056c08ff6d3b7aaf76f0729e1bc"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
@@ -145,7 +145,7 @@ enum LocalRouterBridge {
     static let privateEntry = privatePrefix.appendingPathComponent("node_modules/openclaw/openclaw.mjs")
     private static let pinnedEntrySHA256 = "aa8606ca0d62ff133ef5b7bd2323ec8ff3f8eb384404399cd5e742918d63b0a1"
     private static let pinnedPluginIndexSHA256 = "0c1a8eb96a252e2610e4964069f069dfc344dcb2d4bf76fb77b2585222bba0a5"
-    private static let pinnedPluginManifestSHA256 = "e6268cac45f2fdd885d50ebca7f410fbe7274fb9c21fe80652ecfb62d15a4cd7"
+    private static let pinnedPluginManifestSHA256 = "15f6085b8566f12428b540ea72ef73dcea78035604ef6a7ebea15fd2c4999deb"
     private static let pinnedPluginPackageSHA256 = "583bd79e8bc75e98df186b7bd50f6d1ec580298e930e2dbd5674ce1e6296dbe4"
     #if arch(arm64)
     private static let pinnedArchitecture = "arm64"
@@ -398,8 +398,10 @@ enum LocalRouterBridge {
     /// classifier (`LocalRequestClassifier.classify`'s inventory), from the
     /// same loopback inventory read; nil when Ollama does not answer
     /// (a refused connection returns at once: fail fast).
+    /// Review of 446: a candidate's name only at its pinned digest
+    /// (`LocalModelSelection.pinnedInventoryNames`).
     static func installedModelNames(timeout: TimeInterval = LocalRequestClassifier.inventoryTimeout) -> [String]? {
-        loopbackInventory(timeout: timeout)?.compactMap { $0["name"] as? String }
+        loopbackInventory(timeout: timeout).map(LocalModelSelection.pinnedInventoryNames)
     }
     /// The loopback Ollama inventory (`/api/tags` rows), bounded by `timeout`; nil on any failure.
     private static func loopbackInventory(timeout: TimeInterval) -> [[String: Any]]? {

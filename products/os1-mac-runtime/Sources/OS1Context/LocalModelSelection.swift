@@ -72,6 +72,17 @@ public enum LocalModelSelection {
         choose(physicalMemory: physicalMemory, installed: Dictionary(installedNames.map { ($0, String?.none) },
                                                                       uniquingKeysWith: { first, _ in first }))
     }
+    /// The loopback inventory's model names (`/api/tags` rows) as the
+    /// classifier and the warm-keeper read them: a candidate's name only at
+    /// its pinned digest (review of 446: a re-pulled tag is not the selected
+    /// model), every other name as listed.
+    public static func pinnedInventoryNames(_ rows: [[String: Any]]) -> [String] {
+        rows.compactMap { row in
+            guard let name = row["name"] as? String else { return nil }
+            guard let candidate = candidate(named: name) else { return name }
+            return row["digest"] as? String == candidate.digest ? name : nil
+        }
+    }
     /// A NEW machine's one model to pull: by memory alone (DESIGN-5 §B "pull
     /// only the chosen one").
     public static func toProvision(physicalMemory: UInt64) -> Candidate {
