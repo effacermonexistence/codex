@@ -154,12 +154,10 @@ public enum LocalRequestClassifier {
               Set(object.keys) == ["subject"] else { return nil }
         return (object["subject"] as? String).flatMap(Subject.init(rawValue:))
     }
-    /// Build 446: whether the subject is read: the host heard a status
-    /// question (`soft_status`) and the enum reading would clear it (a chat
-    /// or explain answer that needs no tool).
-    public static func needsSubject(_ answer: Answer, statusHeard: Bool) -> Bool {
-        statusHeard && (answer.taskType == .chat || answer.taskType == .explain) && answer.needsTools == .none
-    }
+    /// Build 446: whether the subject is read: the host heard a status shape
+    /// (`soft_status`), whatever the enum reading: the install card attaches
+    /// only when the local model says it is about this assistant (DESIGN-5 §A.5).
+    public static func needsSubject(_ answer: Answer, statusHeard: Bool) -> Bool { statusHeard }
     /// DESIGN-4 §9: whether this reading would bind a capability route, so
     /// its domain is read: an answer task (chat, explain, design or write)
     /// that is standard or deep (or carries the proof/derivation floor) and
@@ -303,9 +301,8 @@ public enum LocalRequestClassifier {
     /// `general` (unknown) and the receipt says why.
     /// Build 446 (DESIGN-5 §A.5): `statusHeard` (the keyword profile's
     /// `soft_status`) adds the subject call (`askSubject`) after the others,
-    /// within the same bound, when the reading would clear it
-    /// (`needsSubject`). A subject failure leaves `subject` nil: the status
-    /// rail then stands, as in build 445.
+    /// within the same bound (`needsSubject`). A subject failure leaves
+    /// `subject` nil: the status rail then stands, as in build 445.
     public static func classify(_ request: String, timeout: TimeInterval = timeout,
                                 inventory: @escaping Inventory,
                                 ask: @escaping AskFor = ollamaAsk(),

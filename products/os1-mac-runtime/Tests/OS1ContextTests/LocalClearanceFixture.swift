@@ -139,10 +139,22 @@ func runLocalClearanceFixtures() throws {
     let proof = combined("이진 검색 트리 정확성 증명해줘", read(.explain, .light))
     try check(proof.difficulty == .deep, "a cleared request keeps the proof floor: \(show(proof))")
 
-    // ---- §A.5 the subject call: only for a status shape the reading would clear.
+    // ---- §A.5 the subject call: for every status shape the keyword profile heard.
     try check(L.needsSubject(read(.explain), statusHeard: true) && !L.needsSubject(read(.explain), statusHeard: false) &&
-              !L.needsSubject(read(.chat, .light, .workspace), statusHeard: true) &&
-              !L.needsSubject(read(.action, .light, .execution), statusHeard: true), "the subject call's gate")
+              L.needsSubject(read(.explain, .light, .currentFacts), statusHeard: true), "the subject call's gate: any status shape")
+    // A status shape about something else loses its status rails whatever the
+    // reading (DESIGN-5 §A.5: the card needs the subject `assistant_state`);
+    // its other rails stand unless cleared.
+    let war = "우크라이나 전쟁 아직 진행 중이야?"
+    let warProfile = combined(war, read(.explain, .light, .currentFacts, subject: .other))
+    try check(warProfile.cleared("status") && !warProfile.signals.contains("status_check_in") &&
+              !warProfile.signals.contains("soft_status"), "the war question is not a status check-in: \(show(warProfile))")
+    let warAssistant = combined(war, read(.explain, .light, .currentFacts, subject: .assistantState))
+    try check(!warAssistant.cleared("status") && warAssistant.signals.contains("status_check_in"),
+              "the subject `assistant_state` keeps the check-in: \(show(warAssistant))")
+    let engineFacts = combined("제트엔진은 어떻게 작동하냐?", read(.explain, .standard, .currentFacts, subject: .other))
+    try check(engineFacts.cleared("status") && engineFacts.toolNeed == .currentFacts && engineFacts.answerKind == .answerOnly,
+              "a raised reading keeps its caution after the status rail goes: \(show(engineFacts))")
     try check(L.decodeSubject(#"{"subject":"other"}"#) == .other && L.decodeSubject(#"{"subject":"assistant_state"}"#) == .assistantState &&
               L.decodeSubject(#"{"subject":"other","x":1}"#) == nil && L.decodeSubject(#"{"subject":"os1"}"#) == nil,
               "the subject answer is exactly its schema")

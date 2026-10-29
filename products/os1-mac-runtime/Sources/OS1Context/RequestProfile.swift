@@ -475,7 +475,7 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// rests on an explicit tool name or a hard execution verb (nil: unknown,
     /// a floor). Only `false` lets the local reading clear the shell rail.
     public static func classify(_ request: String, shellNeed: Bool, hasMaterial: Bool,
-                                shellFloor: Bool? = nil) -> RequestProfile {
+                                shellFloor: Bool? = nil, statusAboutOther: Bool = false) -> RequestProfile {
         let value = request.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = value.lowercased()
         func mentions(_ terms: [String]) -> Bool {
@@ -518,8 +518,10 @@ public struct RequestProfile: Codable, Equatable, Sendable {
             lower.range(of: #"(?:^|[\s,.!?~])(?:이|그|저)\s+[가-힣A-Za-z]"#, options: .regularExpression) != nil {
             signals.insert("deictic")
         }
-        if StatusCheckIn.answersFromCard(value) { signals.insert("status_check_in") }
-        if ClaudeChatLane.statusQuestions.contains(where: lower.contains) { signals.insert("status_question") }
+        // Build 446 (DESIGN-5 §A.5): `statusAboutOther` is the local subject
+        // reading that a status shape is about something else: no status rail.
+        if !statusAboutOther && StatusCheckIn.answersFromCard(value) { signals.insert("status_check_in") }
+        if !statusAboutOther && ClaudeChatLane.statusQuestions.contains(where: lower.contains) { signals.insert("status_question") }
         if ClaudeChatLane.failureComplaints.contains(where: lower.contains) { signals.insert("failure_complaint") }
         if mentions(currentFactTerms) || mentions(ClaudeChatLane.lookupTerms) || matches(currentFactPattern, lower) {
             signals.insert("current_facts")
@@ -560,7 +562,7 @@ public struct RequestProfile: Codable, Equatable, Sendable {
                         !(statusActionTerms.contains(where: residual.contains) &&
                             (matches(responderPattern, lower) || contentWords(lower, without: statusActionTerms) < 2)) {
                 signals.insert("soft_work")
-                if statusActionTerms.contains(where: residual.contains) { signals.insert("soft_status") }
+                if !statusAboutOther && statusActionTerms.contains(where: residual.contains) { signals.insert("soft_status") }
             }
         }
         // Build 446 (DESIGN-5 §A): the other clearable matches.
@@ -873,9 +875,22 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     ///   default gave unread work ("Pay the electricity bill", "랜딩 페이지 카피
     ///   영어로 갈아끼워") the read-only scope and the tool-free chat lane whenever
     ///   the local model was down, cold or not asked (any non-Auto preference).
-    public static func combine(keyword k: RequestProfile, request: String,
+    public static func combine(keyword original: RequestProfile, request: String,
                                local: LocalRequestClassifier.Answer?, model: String?) -> RequestProfile {
-        var signals = Set(k.signals)
+        // Build 446 (DESIGN-5 §A.5): "the local reading must say the question
+        // is about OS-1 or this responder before the install card attaches". A
+        // status shape the subject call read as about something else
+        // ("우크라이나 전쟁 아직 진행 중이야?") loses its status rails, whatever
+        // else the reading says; every other rail is re-read the same way.
+        var k = original
+        var statusOther: [String] = []
+        if original.signals.contains("soft_status"), local?.subject == .other, let model, LocalRequestClassifier.validModelName(model) {
+            let s = Set(original.signals)
+            k = classify(request, shellNeed: s.contains("shell"), hasMaterial: s.contains("material"),
+                         shellFloor: s.contains("shell") ? !s.contains("soft_shell") : nil, statusAboutOther: true)
+            statusOther = [clearedPrefix + "status", "llm_subject_other"]
+        }
+        var signals = Set(k.signals).union(statusOther)
         var quality = asksForStrongest(request)
         let workRail = k.answerKind == .work, workspaceRail = k.toolNeed == .workspace
         let factsRail = k.signals.contains("current_facts"), textOperation = k.signals.contains("text_operation")
