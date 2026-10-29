@@ -1,6 +1,7 @@
 // K7: Core's zero-model closed arithmetic (os1-closed-arithmetic-v1) against
 // the shared vector file, end to end through Core with fake callbacks that
 // count and throw. No catalog, planner, provider, network or model call.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

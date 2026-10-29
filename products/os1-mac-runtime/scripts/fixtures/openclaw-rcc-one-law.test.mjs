@@ -7,6 +7,7 @@
 // its fixed reference escalation. No second binding function exists, so no
 // 'execution_only' (unchecked, uncertified) row can be bound again, on the
 // bounded planner path, a re-resolution or a pool spread.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

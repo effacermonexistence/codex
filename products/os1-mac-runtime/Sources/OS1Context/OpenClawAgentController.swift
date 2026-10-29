@@ -7,8 +7,9 @@ import Foundation
 /// must be verified and the caller must explicitly enable it before dispatch.
 public enum OpenClawAgentController {
     public static let version = "2026.9.9"
-    public static let model = "qwen3.5:4b"
-    public static let modelDigest = "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04"
+    /// Build 446: the machine's one local model (`LocalModelSelection.active`).
+    public static var model: String { LocalModelSelection.active.name }
+    public static var modelDigest: String { LocalModelSelection.active.digest }
     public static let maximumContractBytes = 65_536
     public static let maximumEnvelopeBytes = 65_536
     // OwnerPolicySnapshot permits a <=24 KB task projection. Keep that

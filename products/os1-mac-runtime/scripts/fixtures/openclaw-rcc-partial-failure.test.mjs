@@ -1,6 +1,7 @@
 // Partial native outcomes survive a terminal sibling failure without claiming
 // parent quality, inventing failed answers, or retrying authentication errors.
 // Actual SQLite runtime; synthetic adapters only. No provider/model calls.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';

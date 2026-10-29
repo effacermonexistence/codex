@@ -1,4 +1,5 @@
 // Real single SQLite Core + fake callbacks only. No native/local SDK generation.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';

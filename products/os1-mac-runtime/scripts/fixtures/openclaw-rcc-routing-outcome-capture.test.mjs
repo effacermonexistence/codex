@@ -1,5 +1,6 @@
 // Actual PRIVATE synthetic files, never a provider/native invocation. Capture
 // does not read the fake provider JSONL pointer or execute a checker.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, realpathSync, symlinkSync, linkSync} from 'node:fs';

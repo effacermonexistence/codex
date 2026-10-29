@@ -1,4 +1,5 @@
 // Independent integration audit proposal only. Fake executor; no provider/network/model calls.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';

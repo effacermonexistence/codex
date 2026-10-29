@@ -1,5 +1,6 @@
 // Same-parent, one-ready-wave catalog admission. Actual SQLite and barriers;
 // fake catalog/native callbacks only. No HOME, account, provider or model calls.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';

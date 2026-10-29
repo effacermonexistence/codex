@@ -1,5 +1,6 @@
 // SYNTHETIC fake-backend recovery regressions only. Zero provider/SDK/model
 // calls; not public proof, actual contract authority, or quality comparison.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

@@ -1,4 +1,5 @@
 // Derived synthetic regression only: no actual DEV answers, gold, providers or models.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp, chmod, rm, readFile} from 'node:fs/promises';

@@ -16,7 +16,9 @@ import {createCalibratedRoutePredictor} from './calibrated-route-predictor.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
-const LOCAL_MODEL = 'ollama/qwen3.5:4b';
+// Build 446 (DESIGN-5 §B): the host's one local model, configured from this
+// plugin's config (`local_model`) at registration; resource-usage.mjs holds it.
+import {LOCAL_MODEL as LOCAL_MODEL_NAME, configureLocalModel, localModelID} from './resource-usage.mjs';
 
 async function verifyNative() {
   const file = process.env.OS1_RCC_NATIVE_PATH;
@@ -194,11 +196,11 @@ const stableJSON = value => Array.isArray(value) ? `[${value.map(stableJSON).joi
  * resolution and the local execution surface, each with its own typed code. */
 export function assertLocalModelCompletion(result, code) {
   if (result?.provider !== 'ollama' ||
-      !['qwen3.5:4b', LOCAL_MODEL].includes(result?.model) ||
+      LOCAL_MODEL_NAME === null || ![LOCAL_MODEL_NAME, localModelID()].includes(result?.model) ||
       result?.execution?.mode !== 'direct-provider' ||
       result?.execution?.owner?.kind !== 'provider' ||
       result?.execution?.owner?.id !== 'ollama' ||
-      (result.responseModel != null && !['qwen3.5:4b', LOCAL_MODEL].includes(result.responseModel)) ||
+      (result.responseModel != null && ![LOCAL_MODEL_NAME, localModelID()].includes(result.responseModel)) ||
       (result.stopReason != null && result.stopReason !== 'stop') ||
       typeof result?.text !== 'string')
     throw new RCCRuntimeError(code);
@@ -222,7 +224,7 @@ export function routingIntentResolver({complete, native = nativeOperation,
       // Only metadata, never the prompt, answer, credentials or model thinking.
       // Core owns persistence; a broken optional observer cannot alter routing.
       try { observeResourceUsage?.({id: operationID, stage: 'routing_intent', state,
-        provider: 'ollama', model: LOCAL_MODEL, usage,
+        provider: 'ollama', model: localModelID(), usage,
         elapsed_ms: elapsedMS, observed_at_ms: Date.now(),
         usage_basis: 'openclaw_input_excludes_cache', reason}); } catch {}
     };
@@ -276,7 +278,7 @@ export function routingIntentResolver({complete, native = nativeOperation,
     observe('started', null, null);
     let response;
     try {
-      response = await complete({model: LOCAL_MODEL,
+      response = await complete({model: localModelID(),
         messages: [{role: 'user', content: probe.model_input}], systemPrompt: instructions,
         responseFormat, maxTokens: 192, temperature: 0, reasoning: 'off',
         signal: combined, purpose: 'os1.rcc.internal-routing-intent'});
@@ -303,7 +305,7 @@ export function routingIntentResolver({complete, native = nativeOperation,
       await writeFile(join(stateDir, `intent-output-${randomUUID()}.json`), JSON.stringify({
         schema: 1, task_id: task.task_id, request_sha256: task.request_sha256,
         source_fingerprint: task.source_fingerprint, policy_sha256: task.policy_sha256,
-        model_requested: LOCAL_MODEL, provider_observed: response.provider,
+        model_requested: localModelID(), provider_observed: response.provider,
         model_observed: response.model, response_model_observed: response.responseModel ?? null,
         execution_mode_observed: response.execution.mode, stop_reason_observed: response.stopReason ?? null,
         usage_observed: response.usage ?? null, elapsed_ms: Date.now() - started,
@@ -447,7 +449,7 @@ export function localWorkerStyle(ticket) {
 /** The local model's request. `asrNote` (asrAnswerNote) follows the
  * instruction's unchanged bytes on its own line; none when no hint matches. */
 export function localWorkerCompletionRequest({instruction, signal, style = 'final_result', asrNote = null}) {
-  return {model: LOCAL_MODEL, messages: [{role: 'user', content: asrNote ? instruction + '\n\n' + asrNote : instruction}],
+  return {model: localModelID(), messages: [{role: 'user', content: asrNote ? instruction + '\n\n' + asrNote : instruction}],
     systemPrompt: style === 'conversational' ? LOCAL_CHAT_SYSTEM : LOCAL_WORKER_SYSTEM,
     maxTokens: LOCAL_WORKER_MAX_TOKENS, temperature: 0, reasoning: 'off', signal, purpose: LOCAL_WORKER_PURPOSE};
 }
@@ -671,7 +673,7 @@ export function calibratedRuntimeOptions({stateDir, now_ms = Date.now()} = {}) {
 export function adaptiveRuntimeOptions({pluginConfig, complete, lifetimeSignal, stateDir}) {
   if (pluginConfig != null && (typeof pluginConfig !== 'object' || Array.isArray(pluginConfig) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(pluginConfig)) ||
-      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts', 'live_plan_capability', 'bounded_auto'].includes(k)) ||
+      Reflect.ownKeys(pluginConfig).some(k => !['adaptive_routing', 'frozen_route_artifacts', 'live_plan_capability', 'bounded_auto', 'local_model'].includes(k)) ||
       Object.values(Object.getOwnPropertyDescriptors(pluginConfig)).some(d => !Object.hasOwn(d, 'value'))))
     throw new RCCRuntimeError('adaptive_plugin_config_invalid');
   const policy = decodeAdaptiveRoutingPolicy(pluginConfig?.adaptive_routing);
@@ -724,7 +726,10 @@ export function registerRCCRuntime(api) {
   let plannerScope, plannerLifetime;
   // This Gateway is OS-1's local task core, never a hosted-model planner: its
   // one local model is pinned for intent resolution and the local route only.
-  api.on('before_model_resolve', () => ({ providerOverride: 'ollama', modelOverride: 'qwen3.5:4b' }), { priority: 1000 });
+  // Build 446 (DESIGN-5 §B): the host's one local model, from this plugin's config.
+  if (api.pluginConfig?.local_model !== undefined) configureLocalModel(api.pluginConfig.local_model);
+  api.on('before_model_resolve', () => LOCAL_MODEL_NAME === null ? {} :
+    ({ providerOverride: 'ollama', modelOverride: LOCAL_MODEL_NAME }), { priority: 1000 });
   api.on('before_tool_call', () => ({ block: true, blockReason: 'rcc_planner_tool_free' }), { priority: 1000 });
   api.registerService({
     id: 'os1-rcc-runtime',

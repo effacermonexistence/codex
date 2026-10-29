@@ -5,6 +5,7 @@
 // its answer escalates once to the reference (R9). No model grade lowers a
 // tuple. Pure resolver checks plus real durable-runtime fixtures with a fake
 // executor: no provider, model, network or HOME state.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

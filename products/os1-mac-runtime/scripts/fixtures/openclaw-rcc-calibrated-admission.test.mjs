@@ -1,5 +1,6 @@
 // Actual same durable Core, real protected-loader/projector, explicit SYNTHETIC
 // P7/P8/resource premises and fake executor only. Never production authority.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';

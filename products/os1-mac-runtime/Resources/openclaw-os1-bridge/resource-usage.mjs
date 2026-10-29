@@ -18,11 +18,32 @@ function localUsage(x) {
       known.length === 4 && sum(known) !== x.totalTokens)) throw Error('local_usage_total_mismatch');
   return x;
 }
+// Build 446 (DESIGN-5 §B, owner order 2026-10-29): ONE local model per
+// machine. The Swift host decides it (LocalModelSelection: the larger model
+// with >= 16 GiB of RAM when installed, else the smaller) and passes the name in the
+// OS-1 bridge plugin's config (`local_model`); the plugin configures it here
+// once. Core, the plugin and the planner read only this binding: no module
+// writes a model name of its own. Unconfigured, there is no local model (every
+// local row, completion and planner call fails closed). A persisted event
+// from any earlier local model still validates by shape.
+const LOCAL_MODEL_NAME = /^[a-z0-9][a-z0-9._-]{0,47}:[a-z0-9][a-z0-9._-]{0,15}$/;
+export let LOCAL_MODEL = null;
+export function configureLocalModel(name) {
+  if (typeof name !== 'string' || !LOCAL_MODEL_NAME.test(name)) throw Error('local_model_config_invalid');
+  LOCAL_MODEL = name;
+  return name;
+}
+/** The configured model's provider id ("ollama/<name>"), or null. */
+export function localModelID() { return LOCAL_MODEL === null ? null : 'ollama/' + LOCAL_MODEL; }
+/** A local model id of any OS-1 local model (the persisted event shape). */
+export function isLocalModelID(value) {
+  return typeof value === 'string' && value.startsWith('ollama/') && LOCAL_MODEL_NAME.test(value.slice('ollama/'.length));
+}
 export function validateLocalUsageEvent(event) {
   const keys = ['id', 'stage', 'state', 'provider', 'model', 'usage', 'elapsed_ms', 'observed_at_ms', 'usage_basis', 'reason'];
   if (!plain(event) || Object.keys(event).length !== keys.length || keys.some(k => !Object.hasOwn(event, k)) ||
       typeof event.id !== 'string' || !UUID.test(event.id) || !['routing_intent', 'plan_proposal'].includes(event.stage) || !STATES.has(event.state) ||
-      event.provider !== 'ollama' || event.model !== 'ollama/qwen3.5:4b' ||
+      event.provider !== 'ollama' || !isLocalModelID(event.model) ||
       event.usage_basis !== 'openclaw_input_excludes_cache' || !count(event.observed_at_ms) ||
       event.elapsed_ms !== null && !count(event.elapsed_ms) ||
       event.reason !== null && (typeof event.reason !== 'string' || event.reason.length > 1024 || event.reason.includes('\0')) ||

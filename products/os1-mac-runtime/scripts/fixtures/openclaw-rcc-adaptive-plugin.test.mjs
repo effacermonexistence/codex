@@ -1,5 +1,6 @@
 // Factory boundary tests. Only canned complete callbacks, never registration,
 // Core startup, native/provider/model calls, configuration writes or discovery.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -7,7 +8,7 @@ import {readFileSync, existsSync, realpathSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {adaptiveRuntimeOptions} from '../../Resources/openclaw-os1-bridge/rcc-plugin.mjs';
-import {LOCAL_PLAN_LIMITS, LOCAL_PLAN_MODEL} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
+import {LOCAL_PLAN_LIMITS, localPlanModel} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
 
 const sha = s => createHash('sha256').update(s).digest('hex');
 const policyText = 'Preserve the original task and typed source state. Proposals are not authority.';
@@ -98,7 +99,7 @@ test('malformed policy remains fail-closed before callback construction', () => 
 test('one SAME decoded shadow policy supplies actual request token/node/parallel/revision limits', async () => {
   const f = setup(), result = await f.run(input()), request = f.requests[0], data = JSON.parse(request.messages[0].content);
   assert.equal(result.status, 'proposal'); assert.equal(f.requests.length, 1);
-  assert.equal(request.model, LOCAL_PLAN_MODEL); assert.equal(request.maxTokens, 512);
+  assert.equal(request.model, localPlanModel()); assert.equal(request.maxTokens, 512);
   assert.deepEqual(data.budget, {max_nodes: 2, max_parallel_workers: 1, max_plan_revisions: 1, max_output_tokens: 512});
   assert.equal(request.systemPrompt.includes(policyText), true); assert.equal(data.original_request, input().hostProjection.request);
   assert.equal(result.execution_authorized, false); assert.equal(result.quality_parity_verified, false);

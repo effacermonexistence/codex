@@ -1,3 +1,4 @@
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition} from '../../Resources/openclaw-os1-bridge/adaptive-routing-policy.mjs';

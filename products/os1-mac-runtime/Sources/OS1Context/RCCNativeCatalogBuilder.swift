@@ -72,8 +72,9 @@ public enum RCCNativeCatalogBuilder {
     public static let maximumCandidates = 256
     public static let effortOrder = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
     /// The local model OpenClaw runs (`LocalRouterBridge.model`, the planner's
-    /// model) and the one local execution row's fixed identity.
-    public static let localWorkerModel = "qwen3.5:4b"
+    /// model) and the one local execution row's fixed identity. Build 446:
+    /// the machine's one local model (`LocalModelSelection.active`).
+    public static var localWorkerModel: String { LocalModelSelection.active.name }
     public static let localWorkerAccount = "os1-local"
 
     /// The host's live readiness probe of the local model (the pinned model
@@ -471,8 +472,10 @@ public enum RCCNativeCatalogBuilder {
             // The owner decision's own scope inside its class (build 440 lead
             // narrowing): a request that is not a state-only check-in drops
             // the certificate and binds the reference.
+            // Build 446 (DESIGN-5 §A.5): nor one the local reading said is
+            // about something else (`soft_cleared_status`).
             if signed.measurementSHA256 == RCCClassOwnerDecision.pinnedSHA256,
-               !RCCClassOwnerDecision.admits(request: input.request) {
+               !RCCClassOwnerDecision.admits(request: input.request) || input.requestProfile?.cleared("status") == true {
                 rejection = .scopeMismatch
             } else {
                 switch RCCClassMeasurement.verified(signed, requestClass: requestClass,
@@ -502,7 +505,12 @@ public enum RCCNativeCatalogBuilder {
     public static func capabilityRoutes(_ input: Input) -> RCCRuntimeContract.CapabilityRoutes? {
         guard input.explicitRouteSurfaces == nil, let table = input.capabilityTable, let profile = input.requestProfile,
               profile.classifier != nil, !profile.signals.contains("quality_request"),
-              !RequestProfile.asksForReference(input.request) else { return nil }
+              // Build 446: unless the local reading cleared them as the owner's
+              // own thinking or a thing's 최고 성능 (`soft_cleared_quality`;
+              // the 442 phrasings stay floors, `asksForReferenceFloor`).
+              !(RequestProfile.asksForReference(input.request) &&
+                    (!(input.requestProfile?.cleared("quality") ?? false) ||
+                        RequestProfile.asksForReferenceFloor(input.request))) else { return nil }
         let basis = RCCRuntimeContract.CapabilityRoutes.PriceBasis(table: table.priceTableSHA256, active: input.priceTableSHA256,
                                                                    compiled: ModelPriceTable.compiledSHA256)
         return CapabilityChoice.routes(profile: profile, request: input.request, table: table, priceBasis: basis)

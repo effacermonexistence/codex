@@ -8,6 +8,7 @@
 // (or holds). A 'partial' or legacy family entry is a failure signal only.
 // Real durable Core with temp SQLite and a fake executor: no provider, model,
 // network, real HOME or installed app is touched.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';

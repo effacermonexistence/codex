@@ -64,7 +64,7 @@ import {createHash} from 'node:crypto';
 import {closeSync, constants, existsSync, fstatSync, openSync, readSync, realpathSync, writeSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {summarizeTaskResources} from '../Resources/openclaw-os1-bridge/resource-usage.mjs';
+import {summarizeTaskResources, isLocalModelID, LOCAL_MODEL} from '../Resources/openclaw-os1-bridge/resource-usage.mjs';
 
 export const EXIT = Object.freeze({pass: 0, fail: 1, no_evidence: 2, usage: 64});
 const MAX_INPUT_BYTES = 268_435_456;
@@ -182,7 +182,9 @@ function legacyUnprovable(record, delivered) {
 }
 // rcc-runtime.mjs LOCAL_WORKER_MODEL: the local model execution row, never a
 // host-computed exact row (the route-replay fixture pins the two equal).
-export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';
+// Build 446: the host's one local model (a live binding); a ledger may hold
+// rows of any earlier local model, so the exact-row test reads the shape.
+export { LOCAL_MODEL as LOCAL_WORKER_MODEL };
 /** K12: a completed deterministic DAG node, the one attemptless child the
  * runtime's partial contract types as delivered (attempt_id null): its plan
  * node is kind 'deterministic' and it ran on a host-computed local exact row
@@ -194,7 +196,7 @@ function deterministicNode(snapshot, child) {
   const config = child.selected_config;
   return child.state === 'completed' && node?.kind === 'deterministic' && plain(config) &&
     config.surface === 'local' && config.transport === 'local' && config.quota_pool === 'none' &&
-    Array.isArray(config.tools) && config.tools.length === 0 && config.model !== LOCAL_WORKER_MODEL;
+    Array.isArray(config.tools) && config.tools.length === 0 && !isLocalModelID('ollama/' + config.model);
 }
 
 /** K9: audit `delivery_policy_valid` over routing-ledger generations

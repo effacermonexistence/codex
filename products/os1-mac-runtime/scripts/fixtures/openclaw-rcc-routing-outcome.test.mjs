@@ -1,5 +1,6 @@
 // Synthetic strict-contract fixtures only. origin=actual_execution simulates a
 // host wrapper; it does not represent actual provider use or training data.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

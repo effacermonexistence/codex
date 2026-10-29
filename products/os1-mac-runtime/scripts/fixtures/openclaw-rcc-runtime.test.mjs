@@ -1,3 +1,4 @@
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile, readFile, symlink, link } from 'node:fs/promises';

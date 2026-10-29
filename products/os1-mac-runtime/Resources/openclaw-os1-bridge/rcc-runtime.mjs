@@ -6,7 +6,7 @@ import { closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, open
   realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
-import { validateLocalUsageEvent, summarizeTaskResources } from './resource-usage.mjs';
+import { validateLocalUsageEvent, summarizeTaskResources, localModelID } from './resource-usage.mjs';
 import { decodeAdaptiveRoutingPolicy, adaptivePolicyDisposition } from './adaptive-routing-policy.mjs';
 import { createPlannerHostProjection, compileFreshPlannerProposal, isLivePlanCapability } from './adaptive-plan-host.mjs';
 import { selectJointRoute, exactConfigFingerprint, prepareCertifiedDescentPolicy, isPreparedCertifiedDescentPolicy,
@@ -56,7 +56,10 @@ const DROPPED_ROUTE_SURFACES = new Set(['chatgpt', 'gpt-chat']);
 // 2026-10-14): read-only, tools-free, quota-free, transport local. It is
 // bound only for an explicit route that names the local surface; Auto never
 // routes ordinary work to it, and it is never the deterministic exact row.
-export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';
+// Build 446 (DESIGN-5 §B): the host's one local model (a live binding,
+// resource-usage.mjs configureLocalModel); null until configured.
+export { LOCAL_MODEL as LOCAL_WORKER_MODEL, configureLocalModel } from './resource-usage.mjs';
+import { LOCAL_MODEL as LOCAL_WORKER_MODEL } from './resource-usage.mjs';
 const EXCLUSION_PROVIDERS = new Set(['codex', 'claude']);
 const EXCLUSION_REASONS = new Set(['signed_out', 'non_subscription', 'model_unavailable', 'quota_zero',
   'capacity_zero', 'codex_hidden', 'effort_requires_explicit_request', 'explicit_constraint_unavailable',
@@ -3089,11 +3092,43 @@ function plainIntegerDifference(tokens) {
     tokens[0].frac === '' && tokens[2].frac === '' &&
     !(tokens[0].int.length === 4 && tokens[2].int.length === 4);
 }
+/** Build 446 (DESIGN-5 §A, owner order 2026-10-29): "1부터 10까지 더하면
+ * 얼마야?" is the calculator's, never a model's and never a model-made
+ * expression. A strict, closed grammar for the sum of the consecutive
+ * integers A..N, read by code alone (os1-closed-range-sum-v1):
+ *  Korean  A(부터|에서) N까지 + one closed predicate: (다|모두|전부)? 더하면
+ *          | (다|모두|전부)? 더한 (값|합|수)(은|는|이|가)? | (의)? (합|합계|총합)(은|는|이|가)?,
+ *          then an optional closed question word (얼마야 … 뭐야 … 몇이야 …).
+ *  English (what is|what's|what’s)? the sum of (the)? (integers|numbers|whole
+ *          numbers)? (from)? A (to|through|..) N, or sum of A..N.
+ * A and N: plain non-negative integers, 1-15 digits, no leading zero, A <= N.
+ * Text: NFKC, collapsed whitespace, lower case, at most 160 characters, one
+ * trailing run of ?!.。？！ removed. Anything else (another operation, a
+ * filter such as 홀수만, a second clause, a decimal, a sign, a number word)
+ * abstains: the request then routes as before. The value is exact (BigInt):
+ * (N(N+1) - (A-1)A) / 2, at most 30 digits for 15-digit bounds. */
+const RANGE_SUM_INTEGER = '(0|[1-9][0-9]{0,14})';
+const RANGE_SUM_KOREAN = new RegExp('^' + RANGE_SUM_INTEGER + ' ?(?:부터|에서) ?' + RANGE_SUM_INTEGER + ' ?까지 ?' +
+  '(?:(?:(?:다|모두|전부) ?)?더하면|(?:(?:다|모두|전부) ?)?더한 ?(?:값|합|수) ?(?:은|는|이|가)?|(?:의 ?)?(?:합|합계|총합) ?(?:은|는|이|가)?)' +
+  ' ?(?:얼마야|얼마냐|얼마지|얼마죠|얼마예요|얼마에요|얼마인가요|얼마|뭐야|뭐냐|뭐니|뭐지|뭐죠|뭐예요|뭐에요|몇이야|몇이냐|몇이지|몇이에요|몇)?$', 'u');
+const RANGE_SUM_ENGLISH = new RegExp('^(?:(?:what is|what\'s|what’s) )?(?:the )?sum of (?:the )?(?:(?:integers|numbers|whole numbers) )?' +
+  '(?:from )?' + RANGE_SUM_INTEGER + ' ?(?:to|through|\\.\\.) ?' + RANGE_SUM_INTEGER + '$', 'u');
+export function integerRangeSum(request) {
+  if (typeof request !== 'string') return null;
+  let text = request.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
+  if (text.length > CLOSED_ARITHMETIC_LIMITS.input_chars) return null;
+  text = text.replace(/[?!.。？！]+$/u, '').trim();
+  const match = RANGE_SUM_KOREAN.exec(text) ?? RANGE_SUM_ENGLISH.exec(text);
+  if (match === null) return null;
+  const a = BigInt(match[1]), n = BigInt(match[2]);
+  if (a > n) return null;
+  return ((n * (n + 1n) - (a - 1n) * a) / 2n).toString();
+}
 /** Core's zero-model arithmetic answer for a whole Auto request. */
 export function zeroModelArithmetic(request) {
   const bare = pureArithmetic(request);
   if (bare !== null) return legacyLeadingZero(request) ? null : bare;
-  return exactArithmeticQuestion(request);
+  return exactArithmeticQuestion(request) ?? integerRangeSum(request);
 }
 
 /** Whether a task carries no earlier conversation that could give its words
@@ -4998,7 +5033,7 @@ class RCCRuntime {
       max_nodes: hostScope(task, catalog) === 'workspace_write' ? 3 : 4, max_parallel: Math.min(4, task.budget.max_parallel), max_plan_revisions: 0, max_planner_calls: 1} : this.adaptivePolicy;
     if (ownerCollectionFor(task, catalog)) {
       this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
-        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        provider: 'ollama', model: localModelID(), usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
         usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_supplied_independent_partition'});
       return true; // Actual host partition, not inferred zero-cost history.
     }
@@ -5007,7 +5042,7 @@ class RCCRuntime {
     // covered_live). The skip is an observed zero (plan_model_calls 0).
     if (this.hostAutoPlan && ownerExplicitParallelFor(task, catalog)) {
       this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
-        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        provider: 'ollama', model: localModelID(), usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
         usage_basis: 'openclaw_input_excludes_cache', reason: 'owner_explicit_parallel_partition'});
       return true;
     }
@@ -5058,7 +5093,7 @@ class RCCRuntime {
       // A skipped bounded proposal is an observed zero, not unobserved plan
       // accounting (plan_model_calls 0, as the owner-collection branch above).
       if (bounded) this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'plan_proposal', state: 'not_needed',
-        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
+        provider: 'ollama', model: localModelID(), usage: null, elapsed_ms: 0, observed_at_ms: Date.now(),
         usage_basis: 'openclaw_input_excludes_cache', reason: disposition.reason});
       this._update(taskID, 'adaptive_plan_skipped', snapshot => {
         snapshot.adaptive_routing = {schema: 1, mode: policy.mode,
@@ -5226,7 +5261,7 @@ class RCCRuntime {
     const original = state.task;
     if (original.mode !== 'auto') {
       this._recordResourceUsage(taskID, {id: randomUUID(), stage: 'routing_intent', state: 'not_needed',
-        provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0,
+        provider: 'ollama', model: localModelID(), usage: null, elapsed_ms: 0,
         observed_at_ms: Date.now(), usage_basis: 'openclaw_input_excludes_cache', reason: 'explicit_routes_bypass_intent'});
       return original;
     }
@@ -5557,7 +5592,7 @@ class RCCRuntime {
       snapshot.plan_provenance = 'deterministic_no_model';
       if (!Array.isArray(snapshot.resource_events) || snapshot.resource_events.length === 0)
         snapshot.resource_events = [{id: randomUUID(), stage: 'routing_intent', state: 'not_needed',
-          provider: 'ollama', model: 'ollama/qwen3.5:4b', usage: null, elapsed_ms: 0,
+          provider: 'ollama', model: localModelID(), usage: null, elapsed_ms: 0,
           observed_at_ms: now, usage_basis: 'openclaw_input_excludes_cache', reason: 'deterministic_no_model'}];
       const config = {surface: 'local', transport: 'local', account_id: 'os1-core',
         model: 'none', effort: 'none', tools: [], scope: 'read_only',

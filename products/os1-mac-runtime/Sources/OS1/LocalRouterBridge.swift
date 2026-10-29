@@ -89,7 +89,9 @@ enum LocalRouterBridge {
         var plugins = config["plugins"] as! [String: Any]
         var pluginEntries = plugins["entries"] as! [String: Any]
         var bridgeEntry = pluginEntries["os1-bridge"] as! [String: Any]
-        bridgeEntry["config"] = ["bounded_auto": true]
+        // Build 446 (DESIGN-5 §B): the host's one local model, the only name
+        // the plugin and Core use for the local surface and the planner.
+        bridgeEntry["config"] = ["bounded_auto": true, LocalModelSelection.pluginConfigKey: OpenClawAgentController.model]
         pluginEntries["os1-bridge"] = bridgeEntry; plugins["entries"] = pluginEntries
         config["plugins"] = plugins
 
@@ -102,14 +104,14 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "edf7e96783fbf8a05f604781ede12367ba4e58bbb557f864750e45decca13e52"
-    static let rccRuntimePluginSHA256 = "fb985a6187ed135570fd609ee69c44793c1e0bbda0facbc4d3ce0405eb4d6c44"
-    static let rccResourceUsageSHA256 = "ecd76d4ac35b322048707104036490cfed347068450024f5f47f36c9fdfd0f3b"
+    static let rccRuntimeModuleSHA256 = "a80c82845819920291f5beca8e2dbaee0ce93076d45e62e1adcf1adfeaa90f8a"
+    static let rccRuntimePluginSHA256 = "da55a774de2ef2bf6c7d018b47fe818b366d51ec0c355aadd9c3537d4db07eb9"
+    static let rccResourceUsageSHA256 = "745a78cbf657aa3c0d4850e59842f2059a1b1056c08ff6d3b7aaf76f0729e1bc"
     // Exact reviewed companion bytes; any resource change requires a new source pin.
     static let rccAdaptivePlanHostSHA256 = "88c1ac38f03cb54109b8f65a57370581238445bc9a6859d264e5b27eb8c101a8"
     static let rccAdaptiveRoutingPolicySHA256 = "6325511ddeae2cff899d07688e178fff026551e54a28cab8edc26fe2751c3efa"
     static let rccJointRouteSelectorSHA256 = "a1b3b58f73169b41b4722cebfb35b392de92433acd08afa12ba35767d52011ce"
-    static let rccLocalPlanPlannerSHA256 = "acc2da4dbf228d835fa694338bf557b81bd7d437c344e380ad11514f70241b67"
+    static let rccLocalPlanPlannerSHA256 = "7f9203eddab2d3eb3b450ee8c87b0087add3cd83d21c94e81dda621641c759f6"
     static let rccLocalPlanProposalSHA256 = "5d80a4bdf78d56bee82881dd2e0f9e9bb403e2f3605240a038d4ec3324e16f19"
     static let rccRoutingOutcomeSHA256 = "c2ff271ef5d71204f8787232451c10733961c36b79e987c88fabdbe7edc03ec1"
     static let rccRoutingOutcomeCaptureSHA256 = "6beb1dbdd0914c3f3d695912b949143f52b2b6c7089184bf5d90b2907f26c5aa"
@@ -121,8 +123,18 @@ enum LocalRouterBridge {
     static let rccCalibratedRoutePredictorSHA256 = "70ee6c773ac55306f2d650ce6576a8ae7e7b8432381c853711f9e6b17b2adeb2"
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/local-router")
     static let version = "2026.9.9"
-    static let model = "qwen3.5:4b"
-    static let modelDigest = "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04"
+    /// Build 446 (DESIGN-5 §B): the machine's one local model and its pinned
+    /// digest (`LocalModelSelection.active`), for the gateway, the local
+    /// surface and every readiness probe. The provisioned installation keeps
+    /// its own identity (`provisionedIdentity`): a model OS-1 no longer uses
+    /// stays installed and is never deleted.
+    static var model: String { LocalModelSelection.active.name }
+    static var modelDigest: String { LocalModelSelection.active.digest }
+    /// The provisioning manifest names a pinned candidate at its pinned digest.
+    static func provisionedIdentity(_ manifest: [String: Any]) -> Bool {
+        guard let name = manifest["model"] as? String, let candidate = LocalModelSelection.candidate(named: name) else { return false }
+        return manifest["model_digest"] as? String == candidate.digest
+    }
     // Provisioning v1 is driven by the *signed OS-1 bundle's* pinned
     // provisioner. It stages the exact binaries under OS-1's private tools
     // root, not into the app's executable payload. A v1 miss must never fall
@@ -232,7 +244,7 @@ enum LocalRouterBridge {
         let manifestData = try boundedFile(root.appendingPathComponent("manifest.json"), limit: 16_384)
         guard let m = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
               m["enabled"] as? Bool == true, m["openclaw_version"] as? String == version,
-              m["model"] as? String == model, m["model_digest"] as? String == modelDigest,
+              provisionedIdentity(m),
               m["config_sha256"] as? String == sha256Hex(try boundedFile(root.appendingPathComponent("config.json"), limit: 32_000)) else {
             throw OS1Error.message("Local router installation/configuration identity is unavailable or changed")
         }
@@ -346,7 +358,8 @@ enum LocalRouterBridge {
               let sourceController = sources["controller"] as? [String: Any],
               sourceController["version"] as? String == version,
               let sourceModel = sources["model"] as? [String: Any],
-              sourceModel["digest"] as? String == modelDigest,
+              let sourceName = sourceModel["name"] as? String,
+              sourceModel["digest"] as? String == LocalModelSelection.candidate(named: sourceName)?.digest,
               manifest["entry_sha256"] as? String == pinnedEntrySHA256,
               try fileSHA256(runtime.node) == pinnedNodeSHA256,
               try fileSHA256(runtime.entry) == pinnedEntrySHA256 else {
@@ -376,8 +389,7 @@ enum LocalRouterBridge {
     static func localModelReady(timeout: TimeInterval = 2) -> Bool {
         guard let manifest = try? boundedFile(root.appendingPathComponent("manifest.json"), limit: 16_384),
               let m = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
-              m["enabled"] as? Bool == true, m["model"] as? String == model,
-              m["model_digest"] as? String == modelDigest else { return false }
+              m["enabled"] as? Bool == true, provisionedIdentity(m) else { return false }
         return (loopbackInventory(timeout: timeout) ?? []).contains {
             $0["name"] as? String == model && $0["digest"] as? String == modelDigest
         }
@@ -548,17 +560,24 @@ enum LocalRouterBridge {
               var providers = models["providers"] as? [String: Any],
               var ollama = providers["ollama"] as? [String: Any],
               var rows = ollama["models"] as? [[String: Any]], rows.count == 1,
-              rows[0]["id"] as? String == model else {
+              let provisioned = rows[0]["id"] as? String, LocalModelSelection.candidate(named: provisioned) != nil else {
             throw OS1Error.message("Local router model configuration is not the pinned singleton")
         }
+        // Build 446: the provisioned singleton runs the machine's one model.
+        rows[0]["id"] = model
         var params = rows[0]["params"] as? [String: Any] ?? [:]
         params["format"] = schema; rows[0]["params"] = params
         ollama["models"] = rows; providers["ollama"] = ollama; models["providers"] = providers; effective["models"] = models
-        if var agents = effective["agents"] as? [String: Any], var defaults = agents["defaults"] as? [String: Any],
-           var configuredModels = defaults["models"] as? [String: Any], var configured = configuredModels["ollama/" + model] as? [String: Any] {
-            var configuredParams = configured["params"] as? [String: Any] ?? [:]
-            configuredParams["format"] = schema; configured["params"] = configuredParams
-            configuredModels["ollama/" + model] = configured; defaults["models"] = configuredModels
+        if var agents = effective["agents"] as? [String: Any], var defaults = agents["defaults"] as? [String: Any] {
+            if var primary = defaults["model"] as? [String: Any], primary["primary"] as? String == "ollama/" + provisioned {
+                primary["primary"] = "ollama/" + model; defaults["model"] = primary
+            }
+            if var configuredModels = defaults["models"] as? [String: Any],
+               var configured = configuredModels.removeValue(forKey: "ollama/" + provisioned) as? [String: Any] {
+                var configuredParams = configured["params"] as? [String: Any] ?? [:]
+                configuredParams["format"] = schema; configured["params"] = configuredParams
+                configuredModels["ollama/" + model] = configured; defaults["models"] = configuredModels
+            }
             agents["defaults"] = defaults; effective["agents"] = agents
         }
         let configURL = root.appendingPathComponent("inflight/\(UUID().uuidString).json")

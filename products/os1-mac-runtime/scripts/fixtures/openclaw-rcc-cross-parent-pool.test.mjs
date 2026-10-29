@@ -1,4 +1,5 @@
 // Actual SQLite + fake native barriers only. No account, model, network or HOME IO.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {mkdtemp, mkdir, chmod, realpath, symlink, rm} from 'node:fs/promises';

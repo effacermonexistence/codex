@@ -1754,8 +1754,23 @@ func rccIsolatesReadOnlyClaudeHome(surface: ProviderSurface, permissionProfile: 
 /// attached the card since 279743a8 (2026-10-07); the rcc-execute path attached none, so
 /// since build 440 "설치됐어?" reached gpt-6-luna low with no install state
 /// to answer from. `card` is read only when the card applies.
-func rccStatusCheckInHint(ownerRequest: String, card: () -> String) -> String {
-    StatusCheckIn.answersFromCard(ownerRequest) ? card() : ""
+func rccStatusCheckInHint(ownerRequest: String, card: () -> String, clearedByLocalReading: Bool = false) -> String {
+    !clearedByLocalReading && StatusCheckIn.answersFromCard(ownerRequest) ? card() : ""
+}
+
+/// Build 446 (DESIGN-5 §A.5): whether this task's own local reading (the
+/// per-task receipt its catalog stored, `rccLocalClassification`) cleared its
+/// status question: the subject reading said `other`, so the install card
+/// does not attach ("제트엔진은 어떻게 작동하냐?"). Read-only; no model call.
+/// Without a stored adopted reading the card attaches exactly as in build 445.
+func rccStatusClearedByLocalReading(taskID: String, request: String, hasMaterial: Bool,
+                                    home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+    let key = LocalRequestClassifier.cacheKey(taskID: taskID, requestSHA256: RCCRuntimeContract.digest(Data(request.utf8)))
+    guard let adopted = LocalRequestClassifier.cachedReceipt(key: key, directory: LocalRequestClassifier.cacheDirectory(home: home))?
+        .adopted else { return false }
+    let keyword = RequestProfile.classify(request, shellNeed: promptRequiresShellCapability(request), hasMaterial: hasMaterial,
+                                          shellFloor: promptShellFloor(request))
+    return RequestProfile.combine(keyword: keyword, request: request, local: adopted.answer, model: adopted.model).cleared("status")
 }
 
 /// The owner's ASR hints an RCC delegated child's envelope carries (harness
@@ -1906,6 +1921,27 @@ func claudeOutputDefersRequestedDeliverable(_ data: Data, prompt: String) -> Boo
 /// read-only lane because that lane has no Bash/Wrangler. Reject the lane
 /// before spending a model turn; the signed route service can then issue a
 /// different provider ticket.
+/// Build 446 (DESIGN-5 §A.7): whether a shell need rests on a FLOOR: an
+/// explicit tool name, a hard execution verb, an English imperative or an
+/// external system operation. A need resting only on the Korean substrings
+/// 돌려 ("돌려 말하지"), 세팅 or 셋업 ("헤어 세팅") is clearable by the local
+/// reading (`RequestProfile.classify(shellFloor:)`); this predicate never
+/// changes `promptRequiresShellCapability`.
+func promptShellFloor(_ prompt: String) -> Bool {
+    let value = ShellCapabilityIntent.classificationText(prompt)
+    let clearable: Set<String> = ["돌려", "세팅", "셋업"]
+    guard promptRequiresShellCapability(prompt) else { return false }
+    let explicitShell = ["bash", "terminal", "shell", "command line", " cli", "cli ", "wrangler", "gh cli",
+        "git push", "git pull", "git clone", "pnpm ", "npm ", "swift build", "xcodebuild", "docker "].contains { value.contains($0) }
+    let executionActions = ["실행해", "실행 해", "실행시켜", "돌려", "설치해", "설치 해", "빌드해", "빌드 해",
+        "테스트해", "테스트 해", "테스트 돌", "배포해", "배포 해", "업로드해", "업로드 해",
+        "다운로드해", "다운로드 해", "커밋해", "커밋 해", "푸시해", "푸시 해", "병합해", "병합 해",
+        "동기화해", "동기화 해", "세팅", "셋업"].filter { !clearable.contains($0) }.contains { value.contains($0) }
+    let externalSystem = mentionsR2Source(value) || ["github", "기타부", "기탑", "cloudflare", "클라우드플레어", "railway"]
+        .contains { value.contains($0) }
+    return explicitShell || executionActions || ShellCapabilityIntent.hasEnglishImperative(value) || externalSystem
+}
+
 func promptRequiresShellCapability(_ prompt: String) -> Bool {
     let value = ShellCapabilityIntent.classificationText(prompt)
     let explicitShell = [
@@ -4233,7 +4269,22 @@ func rccChatLaneEligible(objective: String, hasSource: Bool, providerPreference:
                    ownerSelected: RCCNativeCatalogBuilder.normalizedPreference(providerPreference) == "claude-chat") ||
         (profile.answersWithoutTools && ClaudeChatLane.answerNeedsNoLookup(objective) &&
             claudeChatLane(provider: "claude", permission: "read_only", hasSource: hasSource, objective: objective,
-                           ownerSelected: true))
+                           ownerSelected: true)) ||
+        rccClearedChatLane(objective: objective, hasSource: hasSource, profile: profile)
+}
+
+/// Build 446 (DESIGN-5 §A): a request the local reading CLEARED (a chat or
+/// explain answer that needs no tool, no floor firing; `soft_cleared_<rule>`)
+/// is the chat lane's too, without the keyword guards the clearance read
+/// past (lookup words, machine-material substrings, a missing "?"). The
+/// structural floors still hold: no source, path, image or fan-out child,
+/// and no shell need unless the clearance named it (`soft_cleared_shell`).
+func rccClearedChatLane(objective: String, hasSource: Bool, profile: RequestProfile) -> Bool {
+    if ConcurrentRouteFanoutRuntime.child,
+       let expected = ConcurrentRouteFanoutRuntime.expectedSurface, !expected.forcesChatLane { return false }
+    return profile.clearedLocally && profile.answersWithoutTools && !hasSource &&
+        (!promptRequiresShellCapability(objective) || profile.cleared("shell")) &&
+        RequestNamedPaths.extract(objective).isEmpty && ImageInput.encodeAll(in: objective).isEmpty
 }
 
 /// OpenAI's side of the same lane: a Codex ticket that would qualify for the
@@ -4482,7 +4533,8 @@ func providerSurfaceRoutingSelfTest() throws {
                         "뉴턴 운동법칙 쉽게 설명해 주세요", "뉴턴 운동법칙 쉽게 설명해줄래?", "뉴턴 운동법칙 쉽게 설명해",
                         "파이썬 list와 tuple 차이 설명해봐"]
     func profiled(_ text: String, source: Bool = false) -> RequestProfile {
-        RequestProfile.classify(text, shellNeed: promptRequiresShellCapability(text), hasMaterial: source)
+        RequestProfile.classify(text, shellNeed: promptRequiresShellCapability(text), hasMaterial: source,
+                                shellFloor: promptShellFloor(text))
     }
     checks.append(("an explanation in any ending is read-only, needs no shell and is the RCC chat-lane fact",
         explanations.allSatisfy { text in
@@ -4603,8 +4655,14 @@ func providerSurfaceRoutingSelfTest() throws {
             rccChatLaneEligible(objective: "심심한데 아무 얘기나 해줘", hasSource: false, providerPreference: "auto", profile: bored) &&
             !ownerRequestRunsReadOnly("심심한데 아무 얘기나 해줘", attachedSource: false) &&
             methods.gradable && ownerRequestRunsReadOnly("파이썬 함수랑 메서드 차이 설명해줘", attachedSource: false, profile: methods) &&
+            // Build 446 (DESIGN-5 §A.1): a generic programming word the local
+            // reading cleared (explain, needs_tools none) no longer closes the
+            // tool-free chat lane; without a reading it still does.
+            methods.cleared("material") &&
+            rccChatLaneEligible(objective: "파이썬 함수랑 메서드 차이 설명해줘", hasSource: false, providerPreference: "auto",
+                                profile: methods) &&
             !rccChatLaneEligible(objective: "파이썬 함수랑 메서드 차이 설명해줘", hasSource: false, providerPreference: "auto",
-                                 profile: methods)))
+                                 profile: combined("파이썬 함수랑 메서드 차이 설명해줘", nil))))
     // One reading per task: a stored receipt is reused without asking Ollama.
     let classificationHome = FileManager.default.temporaryDirectory.appendingPathComponent("os1-cls-selftest-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: classificationHome) }
@@ -19076,6 +19134,7 @@ func usage() {
       os1 audit-codex-usage /path/to/native-record.jsonl TURN_UUID
       os1 pricing refresh [--dry-run]
       os1 capability show [--json]
+      os1 storage report [--json]
       os1 source-register scv-instagram /absolute/runtime-source.tar.gz
       os1 register
       os1 run --workspace /path/to/project --prompt "task"
@@ -19412,6 +19471,9 @@ struct OS1Main {
             case "self-test":
                 // A fixture, never part of a live run it was started in.
                 LiveRunEnvironment.detachCurrentProcess()
+                // Build 446 (DESIGN-5 §B): model-free fixtures run on the
+                // baseline local model whatever this machine selects.
+                LocalModelSelection.activate(LocalModelSelection.baseline)
                 try selfTest()
                 try await routingOrderInterpreterHostSelfTest()
                 try await consumerChatGPTDispatchSelfTest()
@@ -19523,6 +19585,21 @@ struct OS1Main {
                     FileHandle.standardOutput.write(ModelCapabilityTable.compiledBytes)
                 } else {
                     print(ModelCapabilityTable.compiled.summary(), terminator: "")
+                }
+            // Build 446 (DESIGN-5 §C, owner order 2026-10-29): the sizes of
+            // OS-1's storage areas. Read-only: it never deletes, moves or
+            // converts anything (StorageReport).
+            case "storage":
+                guard arguments.count >= 2, arguments[1] == "report", arguments.count <= 3,
+                      arguments.dropFirst(2).allSatisfy({ $0 == "--json" }) else {
+                    throw OS1Error.message("Expected: os1 storage report [--json]")
+                }
+                let report = StorageReport.make()
+                if arguments.count == 3 {
+                    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    print(String(decoding: try encoder.encode(report), as: UTF8.self))
+                } else {
+                    print(StorageReport.text(report), terminator: "")
                 }
             case "backend-health":
                 // Read-only usability of both backends with reasons and the
@@ -19984,7 +20061,7 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // profile, from the owner's text and host facts only (R0): answer kind,
     // tool need and difficulty. Core's graded admission reads it.
     let keywordProfile = RequestProfile.classify(request.request, shellNeed: promptRequiresShellCapability(request.request),
-                                                 hasMaterial: hasMaterial)
+                                                 hasMaterial: hasMaterial, shellFloor: promptShellFloor(request.request))
     // Build 441 part 2 (owner order, 2026-10-27): the LOCAL model reads the
     // request too (free, no quota), started here, before every other step,
     // and running beside the provider probes below; it is awaited only once
@@ -19996,8 +20073,12 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "auto" &&
         !RequestProfile.railsDecide(keywordProfile, request: request.request)
     let (readingTaskID, readingSHA256, readingText) = (request.taskID, request.requestSHA256, request.request)
+    // Build 446 (DESIGN-5 §A.5): a status question the reading may clear
+    // also asks the local model what it is about.
+    let statusHeard = keywordProfile.signals.contains("soft_status")
     let localReading = consultLocal ? Task.detached {
-        await rccLocalClassification(taskID: readingTaskID, requestSHA256: readingSHA256, request: readingText)
+        await rccLocalClassification(taskID: readingTaskID, requestSHA256: readingSHA256, request: readingText,
+                                     statusHeard: statusHeard)
     } : nil
     let config = try RuntimeConfig.load()
     let now = Date()
@@ -20206,7 +20287,7 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
 /// offers, never change between its bind and its dispatch. A failed or
 /// timed-out first reading is kept as well: the whole task then routes on the
 /// keyword profile.
-func rccLocalClassification(taskID: String, requestSHA256: String, request: String,
+func rccLocalClassification(taskID: String, requestSHA256: String, request: String, statusHeard: Bool = false,
                             home: URL = FileManager.default.homeDirectoryForCurrentUser) async -> LocalRequestClassifier.Receipt {
     let directory = LocalRequestClassifier.cacheDirectory(home: home)
     let key = LocalRequestClassifier.cacheKey(taskID: taskID, requestSHA256: requestSHA256)
@@ -20216,7 +20297,7 @@ func rccLocalClassification(taskID: String, requestSHA256: String, request: Stri
     let hints = LocalClassifierHints.load(home: home)
     FileHandle.standardError.write(Data(("os1 rcc-catalog: " + hints.receipt + "\n").utf8))
     let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() },
-                                                        hints: hints.hints)
+                                                        hints: hints.hints, statusHeard: statusHeard)
     LocalRequestClassifier.store(receipt, key: key, directory: directory)
     return receipt
 }
@@ -20739,7 +20820,11 @@ private func rccNativeAdapter(_ bytes: Data) async throws -> Data {
         let noteless = envelope([])
         // A check-in the install-state card answers is answered from it, as on
         // the direct path, not from a cold model (rccStatusCheckInHint).
-        let checkInHint = rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard)
+        // Build 446: not when this task's local reading cleared the status
+        // question as being about something else (DESIGN-5 §A.5).
+        let checkInHint = rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard,
+            clearedByLocalReading: rccStatusClearedByLocalReading(taskID: t.taskID, request: original,
+                                                                   hasMaterial: !ownerAllowedSources.isEmpty))
         let nativePrompt = try providerPrompt(current: delegated, context: h.context, r2Evidence: sourceDelivery.payload,
             workspaceContext: checkInHint)
         // Review of H2: the note never changes a post-check's activation; the

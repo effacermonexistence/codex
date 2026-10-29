@@ -1,4 +1,5 @@
 // All data/labels below are SYNTHETIC software fixtures, not measured training.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -1,8 +1,9 @@
 // Canned complete callbacks only. No local/provider/API/native call or Core task.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {createLocalPlanPlanner, LOCAL_PLAN_MODEL, LOCAL_PLAN_PURPOSE, LOCAL_PLAN_KERNEL,
+import {createLocalPlanPlanner, localPlanModel, LOCAL_PLAN_PURPOSE, LOCAL_PLAN_KERNEL,
   LOCAL_PLAN_KERNEL_SHA256, LOCAL_PLAN_RESPONSE_FORMAT, LOCAL_PLAN_LIMITS,
   LOCAL_PLAN_COMPACT_BUDGET, LOCAL_PLAN_COMPACT_PROMPT_SHA256}
   from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
@@ -45,7 +46,7 @@ test('one canned local proposal preserves exact objective and returns only untru
   assert.equal(r.completion_outcome_unknown, false);
   assert.equal(r.execution_authorized, false); assert.equal(r.quality_parity_verified, false); assert.equal(r.semantic_coverage_verified, false);
   assert.equal(Object.hasOwn(r, 'plan'), false); assert.equal(Object.hasOwn(r, 'candidate_id'), false);
-  assert.equal(call.model, LOCAL_PLAN_MODEL); assert.equal(call.purpose, LOCAL_PLAN_PURPOSE);
+  assert.equal(call.model, localPlanModel()); assert.equal(call.purpose, LOCAL_PLAN_PURPOSE);
   assert.equal(call.maxTokens, 1536); assert.equal(call.temperature, 0); assert.equal(call.reasoning, 'off');
   const expectedSchema = structuredClone(LOCAL_PLAN_RESPONSE_FORMAT), fields = expectedSchema.properties.nodes.items.properties;
   fields.requirement_refs = {type: 'array', uniqueItems: true, minItems: 1, maxItems: 1, items: {enum: ['r1']}};

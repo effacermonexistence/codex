@@ -808,7 +808,8 @@ enum RCCRuntimeGatewayClient {
               let load = plugins["load"] as? [String: Any], load["paths"] as? [String] == [installed.pluginDirectory],
               let browser = config["browser"] as? [String: Any], browser["enabled"] as? Bool == false,
               let agents = config["agents"] as? [String: Any], let defaults = agents["defaults"] as? [String: Any],
-              let model = defaults["model"] as? [String: Any], model["primary"] as? String == "ollama/qwen3.5:4b",
+              // Build 446 (DESIGN-5 §B): the machine's one local model.
+              let model = defaults["model"] as? [String: Any], model["primary"] as? String == "ollama/" + OpenClawAgentController.model,
               model["fallbacks"] as? [String] == [],
               let tools = config["tools"] as? [String: Any], tools["deny"] as? [String] == ["*"] else {
             throw Failure.invalidConfiguration
@@ -819,10 +820,11 @@ enum RCCRuntimeGatewayClient {
         var scopedPlugins = plugins
         var entries = scopedPlugins["entries"] as? [String: Any] ?? [:]
         var entry = entries["os1-bridge"] as? [String: Any] ?? ["enabled": true]
-        entry["subagent"] = ["allowModelOverride": true, "allowedModels": ["ollama/qwen3.5:4b"]]
+        let local = "ollama/" + OpenClawAgentController.model
+        entry["subagent"] = ["allowModelOverride": true, "allowedModels": [local]]
         entry["llm"] = ["allowModelOverride": true,
-            "allowedModels": ["ollama/qwen3.5:4b"],
-            "allowedCompletionModels": ["ollama/qwen3.5:4b"]]
+            "allowedModels": [local],
+            "allowedCompletionModels": [local]]
         entries["os1-bridge"] = entry; scopedPlugins["entries"] = entries
         config["plugins"] = scopedPlugins
         config.removeValue(forKey: "gateway")

@@ -7,6 +7,7 @@
 // held-with-retained-output task stays returned_unverified with no `partial`.
 // Actual SQLite runtime; synthetic adapters and a registered fixture verifier
 // only. No provider, model, network or HOME state.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';

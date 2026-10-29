@@ -19,6 +19,9 @@ private func XCTAssertThrowsError<T>(_ value: @autoclosure () throws -> T) {
 @main
 final class SourceContextTests {
     static func main() throws {
+        // Build 446 (DESIGN-5 §B): fixtures run on the baseline local model on
+        // every machine (the selection itself is tested in LocalClearanceFixture).
+        LocalModelSelection.activate(LocalModelSelection.baseline)
         if CommandLine.arguments.contains("--simulation-control-only") { try runSimulationSessionControlFixtures(); return }
         if CommandLine.arguments.contains("--appearance-only") { try runAppearanceFixtures(); return }
         if CommandLine.arguments.contains("--simulation-presentation-only") { try runSimulationPresentationFixtures(); return }
@@ -51,6 +54,7 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--rcc-admission-facts-only") { try runRCCAdmissionFactsFixtures(); return }
         if CommandLine.arguments.contains("--request-profile-only") { try runRequestProfileFixtures(); return }
         if CommandLine.arguments.contains("--local-request-classifier-only") { try runLocalRequestClassifierFixtures(); return }
+        if CommandLine.arguments.contains("--local-clearance-only") { try runLocalClearanceFixtures(); return }
         if CommandLine.arguments.contains("--model-price-refresh-only") { try runModelPriceRefreshFixtures(); return }
         if let flag = CommandLine.arguments.firstIndex(of: "--model-price-refresh-live"), flag + 1 < CommandLine.arguments.count {
             try runModelPriceRefreshLive(home: URL(fileURLWithPath: CommandLine.arguments[flag + 1])); return
@@ -94,6 +98,7 @@ final class SourceContextTests {
         try runRCCRoutingIntentIngressFixtures()
         try runRequestProfileFixtures()
         try runLocalRequestClassifierFixtures()
+        try runLocalClearanceFixtures()
         try runRCCAdmissionFactsFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
         try runRCCNativePreparationFixtures()

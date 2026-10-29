@@ -530,16 +530,12 @@ private func fleetJobDirectory(_ jobID: String) throws -> URL {
     return directory
 }
 
-/// A per-repository bare mirror makes each job's checkout a local, hard-linked
-/// clone (≈1 s) instead of a fresh network clone (≈8 s for this repository,
-/// 2026-09-24). Any mirror failure falls back to the network clone.
-func fleetMirrorClone(repository: String, revision: String, into destination: URL,
-                      mirrors: URL = FileManager.default.homeDirectoryForCurrentUser
-                          .appendingPathComponent(".os1/fleet/mirrors", isDirectory: true),
-                      remote: String? = nil) -> Bool {
+/// The repository's bare mirror holding `revision` (created or fetched as
+/// needed), or nil. Shared by the mirror clone and the template clone.
+func fleetMirror(repository: String, revision: String, mirrors: URL, remote: String?) -> URL? {
     let parts = repository.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
     guard parts.count == 2, parts.allSatisfy({ $0.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._-]{0,99}/) != nil }),
-          revision.wholeMatch(of: /[0-9a-f]{40}/) != nil, let git = try? findExecutable("git") else { return false }
+          revision.wholeMatch(of: /[0-9a-f]{40}/) != nil, let git = try? findExecutable("git") else { return nil }
     let origin = remote ?? "https://github.com/\(repository).git"
     let mirror = mirrors.appendingPathComponent(parts[0], isDirectory: true)
         .appendingPathComponent(parts[1] + ".git", isDirectory: true)
@@ -549,17 +545,33 @@ func fleetMirrorClone(repository: String, revision: String, into destination: UR
     do {
         try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-    } catch { return false }
+    } catch { return nil }
     if !FileManager.default.fileExists(atPath: mirror.appendingPathComponent("HEAD").path) {
         try? FileManager.default.removeItem(at: mirror)
         guard run(["clone", "--bare", "--no-tags", "--quiet", origin, mirror.path], timeout: 900) else {
             try? FileManager.default.removeItem(at: mirror)
-            return false
+            return nil
         }
     }
     guard run(["-C", mirror.path, "fetch", "--no-tags", "--quiet", origin, revision], timeout: 600),
-          run(["-C", mirror.path, "cat-file", "-e", revision + "^{commit}"], timeout: 20),
-          run(["clone", "--local", "--no-checkout", "--quiet", mirror.path, destination.path], timeout: 300),
+          run(["-C", mirror.path, "cat-file", "-e", revision + "^{commit}"], timeout: 20) else { return nil }
+    return mirror
+}
+
+/// A per-repository bare mirror makes each job's checkout a local, hard-linked
+/// clone (≈1 s) instead of a fresh network clone (≈8 s for this repository,
+/// 2026-09-24). Any mirror failure falls back to the network clone.
+func fleetMirrorClone(repository: String, revision: String, into destination: URL,
+                      mirrors: URL = FileManager.default.homeDirectoryForCurrentUser
+                          .appendingPathComponent(".os1/fleet/mirrors", isDirectory: true),
+                      remote: String? = nil) -> Bool {
+    guard let mirror = fleetMirror(repository: repository, revision: revision, mirrors: mirrors, remote: remote),
+          let git = try? findExecutable("git") else { return false }
+    let origin = remote ?? "https://github.com/\(repository).git"
+    func run(_ arguments: [String], timeout: Int) -> Bool {
+        (try? commandOutput(git, arguments, timeout: timeout))?.0 == 0
+    }
+    guard run(["clone", "--local", "--no-checkout", "--quiet", mirror.path, destination.path], timeout: 300),
           run(["-C", destination.path, "remote", "set-url", "origin", origin], timeout: 20),
           run(["-C", destination.path, "cat-file", "-e", revision + "^{commit}"], timeout: 20) else {
         try? FileManager.default.removeItem(at: destination)
@@ -568,11 +580,84 @@ func fleetMirrorClone(repository: String, revision: String, into destination: UR
     return true
 }
 
+/// Build 446 (DESIGN-5 §C, owner order 2026-10-29: "storage must stop piling
+/// up", never by deleting): a job's checkout as an APFS CLONE of a clean
+/// per-repository template checkout, so the 400+ job checkouts share their
+/// unchanged blocks instead of each writing a full working tree (28 GB on
+/// this Air). `cp -c` clones with clonefile(2) and falls back to a byte copy
+/// on a volume that cannot clone. The template is OS-1's own clean checkout
+/// (~/.os1/fleet/checkout-templates/<owner>/<name>), moved to the revision
+/// under an exclusive lock and used only when git reports it clean at
+/// exactly that revision; the clone must then hold the same revision, clean,
+/// pushing to the real origin. Any miss returns false before or after the
+/// copy (only this call's own partial destination is removed, as the mirror
+/// clone does) and the job takes the existing mirror-clone path. No
+/// existing checkout is touched, converted or deleted.
+func fleetTemplateClone(repository: String, revision: String, into destination: URL,
+                        templates: URL = FileManager.default.homeDirectoryForCurrentUser
+                            .appendingPathComponent(".os1/fleet/checkout-templates", isDirectory: true),
+                        mirrors: URL = FileManager.default.homeDirectoryForCurrentUser
+                            .appendingPathComponent(".os1/fleet/mirrors", isDirectory: true),
+                        remote: String? = nil, copier: String = "/bin/cp") -> Bool {
+    let parts = repository.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+    guard parts.count == 2, parts.allSatisfy({ $0.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._-]{0,99}/) != nil }),
+          revision.wholeMatch(of: /[0-9a-f]{40}/) != nil, !FileManager.default.fileExists(atPath: destination.path),
+          let git = try? findExecutable("git") else { return false }
+    let origin = remote ?? "https://github.com/\(repository).git"
+    let owner = templates.appendingPathComponent(parts[0], isDirectory: true)
+    let template = owner.appendingPathComponent(parts[1], isDirectory: true)
+    func output(_ arguments: [String], timeout: Int = 60) -> String? {
+        guard let result = try? commandOutput(git, arguments, timeout: timeout), result.0 == 0 else { return nil }
+        return String(decoding: result.1, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    func cleanAt(_ root: URL) -> Bool {
+        output(["-C", root.path, "rev-parse", "HEAD"]) == revision &&
+            output(["-C", root.path, "status", "--porcelain", "--ignored", "--untracked-files=all"]) == ""
+    }
+    guard (try? FileManager.default.createDirectory(at: owner, withIntermediateDirectories: true,
+                                                     attributes: [.posixPermissions: 0o700])) != nil else { return false }
+    // One job at a time moves a template and copies it.
+    let lockPath = owner.appendingPathComponent(parts[1] + ".lock").path
+    let lock = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard lock >= 0 else { return false }
+    defer { close(lock) }
+    guard flock(lock, LOCK_EX) == 0 else { return false }
+    defer { flock(lock, LOCK_UN) }
+    if !FileManager.default.fileExists(atPath: template.appendingPathComponent(".git").path) {
+        // A missing template is created by the mirror clone; a partial one
+        // (no .git) is never reused.
+        guard !FileManager.default.fileExists(atPath: template.path),
+              fleetMirrorClone(repository: repository, revision: revision, into: template, mirrors: mirrors, remote: remote)
+        else { return false }
+    } else if output(["-C", template.path, "cat-file", "-e", revision + "^{commit}"], timeout: 20) == nil {
+        // The template fetches the revision from the mirror (which fetches
+        // it from the origin once), never the network directly.
+        guard let mirror = fleetMirror(repository: repository, revision: revision, mirrors: mirrors, remote: remote),
+              output(["-C", template.path, "fetch", "--no-tags", "--quiet", mirror.path, revision], timeout: 600) != nil
+        else { return false }
+    }
+    guard output(["-C", template.path, "checkout", "--quiet", "--detach", revision]) != nil, cleanAt(template) else { return false }
+    guard let copied = try? commandOutput(copier, ["-c", "-R", template.path, destination.path], timeout: 600), copied.0 == 0,
+          output(["-C", destination.path, "remote", "set-url", "origin", origin], timeout: 20) != nil,
+          cleanAt(destination) else {
+        try? FileManager.default.removeItem(at: destination)
+        return false
+    }
+    return true
+}
+
+/// The self-test's existing first mirror-cloned job (a destination that exists).
+private func job0Existing(_ directory: URL) -> URL { directory.appendingPathComponent("job0", isDirectory: true) }
+
 private func fleetCheckout(_ assignment: FleetAssignment) throws -> String {
     let directory = try fleetJobDirectory(assignment.jobID)
     let repository = directory.appendingPathComponent("repository", isDirectory: true)
     let git = try findExecutable("git")
     if !FileManager.default.fileExists(atPath: repository.appendingPathComponent(".git").path),
+       !FileManager.default.fileExists(atPath: repository.path),
+       fleetTemplateClone(repository: assignment.workspaceRepository, revision: assignment.workspaceRevision, into: repository) {
+        // Build 446: the clone already holds the revision, clean.
+    } else if !FileManager.default.fileExists(atPath: repository.appendingPathComponent(".git").path),
        !fleetMirrorClone(repository: assignment.workspaceRepository, revision: assignment.workspaceRevision, into: repository) {
         let gh = try findExecutable("gh")
         let cloned = try commandOutput(gh, ["repo", "clone", assignment.workspaceRepository, repository.path, "--", "--filter=blob:none"], timeout: 600)
@@ -1556,6 +1641,35 @@ func fleetSelfTest() throws {
               "an unknown revision must fall back without leaving a partial checkout")
     try check(!fleetMirrorClone(repository: "../escape", revision: revisions[0], into: missing, mirrors: mirrors, remote: source.path),
               "a repository name outside owner/name is refused")
+    // Build 446 (DESIGN-5 §C): a job checkout as an APFS clone of a clean
+    // per-repository template (`cp -c`, which byte-copies where it cannot
+    // clone); any miss leaves no destination and falls back to the mirror clone.
+    let templates = directory.appendingPathComponent("checkout-templates", isDirectory: true)
+    let copierLog = directory.appendingPathComponent("copier.log")
+    let copier = directory.appendingPathComponent("copier.sh")
+    try Data("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '\(copierLog.path)'\nexec /bin/cp \"$@\"\n".utf8).write(to: copier)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: copier.path)
+    for (index, revision) in [revisions[1], revisions[0], revisions[1]].enumerated() {
+        let job = directory.appendingPathComponent("template-job\(index)", isDirectory: true)
+        try check(fleetTemplateClone(repository: "owner/repo", revision: revision, into: job, templates: templates,
+                                     mirrors: mirrors, remote: source.path, copier: copier.path),
+                  "template clone failed for revision \(index)")
+        try check(try String(contentsOf: job.appendingPathComponent("file.txt"), encoding: .utf8) == (revision == revisions[0] ? "one" : "two")
+                  && (try gitOK(["-C", job.path, "rev-parse", "HEAD"])) == revision
+                  && (try gitOK(["-C", job.path, "remote", "get-url", "origin"])) == source.path
+                  && (try gitOK(["-C", job.path, "status", "--porcelain"])).isEmpty,
+                  "a template clone holds the exact revision, clean, pushing to the real origin")
+    }
+    let copies = (try? String(contentsOf: copierLog, encoding: .utf8))?.split(separator: "\n") ?? []
+    try check(copies.count == 3 && copies.allSatisfy { $0.hasPrefix("-c -R ") }, "every template copy is a clone request (cp -c)")
+    let refusedClone = directory.appendingPathComponent("template-refused", isDirectory: true)
+    try check(!fleetTemplateClone(repository: "owner/repo", revision: revisions[0], into: refusedClone, templates: templates,
+                                  mirrors: mirrors, remote: source.path, copier: "/usr/bin/false")
+              && !FileManager.default.fileExists(atPath: refusedClone.path),
+              "a failed copy leaves no destination; the job falls back to the mirror clone")
+    try check(!fleetTemplateClone(repository: "owner/repo", revision: revisions[0], into: job0Existing(directory),
+                                  templates: templates, mirrors: mirrors, remote: source.path, copier: copier.path),
+              "an existing checkout is never replaced")
     // A result commit carries the work, never the build products left beside it.
     let job0 = directory.appendingPathComponent("job0", isDirectory: true)
     let job1 = directory.appendingPathComponent("job1", isDirectory: true)

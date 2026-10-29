@@ -1,5 +1,6 @@
 // Source-only, synthetic host capability and canned Core/native replies.
 // No local planner, provider, network, installed App or live account call.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

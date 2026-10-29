@@ -1,12 +1,13 @@
 // Synthetic prompt/view contracts through actual helpers. No native, provider,
 // local-model or source-loader calls; private owner engine is never read.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {createPlannerHostProjection} from '../../Resources/openclaw-os1-bridge/adaptive-plan-host.mjs';
 import {createLocalPlanPlanner, LOCAL_PLAN_KERNEL, LOCAL_PLAN_KERNEL_VERSION, LOCAL_PLAN_KERNEL_SHA256,
-  LOCAL_PLAN_MODEL, LOCAL_PLAN_PURPOSE} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
+  localPlanModel, LOCAL_PLAN_PURPOSE} from '../../Resources/openclaw-os1-bridge/local-plan-planner.mjs';
 import {createRCCRuntime, hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {mkdtemp, chmod, rm, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -89,7 +90,7 @@ test('public local kernel identity is separate from owner original/projection id
 });
 test('tool-free structured plan request asks for no hidden chain of thought or task answer', async () => {
   const q = task(), {requests, result} = await run(prepared(q), q), request = requests[0];
-  assert.equal(request.model, LOCAL_PLAN_MODEL); assert.equal(request.purpose, LOCAL_PLAN_PURPOSE);
+  assert.equal(request.model, localPlanModel()); assert.equal(request.purpose, LOCAL_PLAN_PURPOSE);
   assert.equal(request.reasoning, 'off'); assert.equal(request.responseFormat.additionalProperties, false);
   assert.equal(Object.hasOwn(request, 'tools'), false); assert.equal(Object.hasOwn(request, 'tool_choice'), false);
   assert.match(request.systemPrompt, /NOT a chain of thought/); assert.match(request.systemPrompt, /Do not execute tools, answer the task/);

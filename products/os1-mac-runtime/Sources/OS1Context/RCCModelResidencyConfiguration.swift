@@ -4,7 +4,8 @@ import Foundation
 /// neither global Ollama defaults nor model selection, tools or permissions.
 public enum RCCModelResidencyConfiguration {
     public enum Failure: Error { case malformedConfiguration, routerModelMissingOrAmbiguous }
-    public static let modelID = "qwen3.5:4b"
+    /// Build 446: the machine's one local model (`LocalModelSelection.active`).
+    public static var modelID: String { LocalModelSelection.active.name }
     public static let keepAlive = "30m"
 
     public static func applying(to config: [String: Any]) throws -> [String: Any] {

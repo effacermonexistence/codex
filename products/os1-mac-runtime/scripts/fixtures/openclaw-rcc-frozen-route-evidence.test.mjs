@@ -1,5 +1,6 @@
 // Synthetic source-contract tests only. None is a provider call, calibration,
 // raw receipt review, held-out proof, or permission to enable covered_live.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {digest} from '../../Resources/openclaw-os1-bridge/joint-route-selector.mjs';

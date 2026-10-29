@@ -1,5 +1,6 @@
 // P7 integration only: real private SQLite Core, SYNTHETIC development tables,
 // canned planner/native callbacks. No provider, HTTP, native agent or model calls.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

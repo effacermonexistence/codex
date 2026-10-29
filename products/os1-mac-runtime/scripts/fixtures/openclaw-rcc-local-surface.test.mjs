@@ -5,6 +5,7 @@
 // available surface, the local model OpenClaw already runs included. These
 // fixtures run the real Core, plugin executor and exact verifier with a fake
 // completion and fake native records: no provider, model, network or HOME.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';

@@ -1,5 +1,6 @@
 // Actual SQLite owner + bounded injected planner/native fixtures. No provider,
 // model, network, real HOME or installed app is touched by these regressions.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

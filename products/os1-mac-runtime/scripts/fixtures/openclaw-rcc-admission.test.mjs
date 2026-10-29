@@ -7,6 +7,7 @@
 // answer that source must accept or the node escalates once (R9); pools rank
 // by pin, conversation affinity and then quota (R11). Real durable runtime
 // with a fake executor: no provider, model, network or HOME state.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';

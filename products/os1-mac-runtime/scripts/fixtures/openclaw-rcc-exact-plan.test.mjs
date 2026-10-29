@@ -1,6 +1,7 @@
 // Exact explicit diagnostics keep real requested worker executions; the host
 // builds one node per named route (build 407) and no model re-plans them.
 // Real Core/plugin/SQLite + fake native/LLM receipts only; no provider/network.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {chmod, mkdtemp, mkdir, writeFile, readFile, readdir, rm} from 'node:fs/promises';

@@ -1,5 +1,6 @@
 // Core-owned routing interpretation: real SQLite lifecycle + injected pure
 // compiler/executor fixtures. No model, provider, network, real HOME or UI.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';

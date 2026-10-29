@@ -1,12 +1,14 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {compileLocalPlanProposal, decodeLocalPlanProposal} from './local-plan-proposal.mjs';
 import {stableJSON, exactConfigFingerprint} from './joint-route-selector.mjs';
+import {LOCAL_MODEL, localModelID} from './resource-usage.mjs';
 
 // Helper only. The SAME Core owns durable attempts, cancellation, scheduling,
 // admission and fallback. No HTTP/native process/tool, provider discovery,
 // hosted fallback or state store is created here. The supplied complete must
 // run in the existing tool-free OpenClaw service/lifetime scope.
-export const LOCAL_PLAN_MODEL = 'ollama/qwen3.5:4b';
+// Build 446 (DESIGN-5 §B): the host's one local model (resource-usage.mjs).
+export function localPlanModel() { return localModelID(); }
 export const LOCAL_PLAN_PURPOSE = 'os1.rcc.local-plan-proposal';
 export const LOCAL_PLAN_KERNEL_VERSION = 'rcc-local-plan-kernel-v4';
 export const LOCAL_PLAN_KERNEL = `You propose bounded execution plans for the SINGLE OS-1 OpenClaw RCC task.
@@ -131,7 +133,7 @@ function responseMetadata(response, uncertainZero = false) {
     ...normalizeUsage(response?.usage, uncertainZero)};
 }
 function localOrigin(response) {
-  const model = x => [LOCAL_PLAN_MODEL, 'qwen3.5:4b'].includes(x);
+  const model = x => LOCAL_MODEL !== null && [localModelID(), LOCAL_MODEL].includes(x);
   return response?.provider === 'ollama' && model(response.model) &&
     (response.responseModel == null || model(response.responseModel)) &&
     response?.execution?.mode === 'direct-provider' && response?.execution?.owner?.kind === 'provider' &&
@@ -571,7 +573,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       // Same exact local-resource event shape; plan_proposal is an explicit
       // new stage. Foreign receipt telemetry cannot inherit Ollama's token basis.
       const value = freeze({id: operationID, stage: 'plan_proposal', state: kind,
-        provider: 'ollama', model: LOCAL_PLAN_MODEL,
+        provider: 'ollama', model: localModelID(),
         usage: localOrigin(response) ? normalizeUsage(response.usage, uncertainZero).usage : null,
         observed_at_ms: count(clock) ? clock : null, elapsed_ms: started === null || !count(clock - started) ? null : clock - started,
         reason, usage_basis: 'openclaw_input_excludes_cache'});
@@ -622,7 +624,7 @@ export function createLocalPlanPlanner({complete, lifetimeSignal = () => null, l
       if (combined.aborted) { entry.settled = true; event('not_needed', 'planner_cancelled_before_call'); return fallback('planner_cancelled_before_call'); }
       const callTime = now(); requireValue(count(callTime), 'planner_clock_invalid');
       started = callTime; completionUnknown = true; event('started', null);
-      const request = {model: LOCAL_PLAN_MODEL, messages: [{role: 'user', content: input.userInput}],
+      const request = {model: localModelID(), messages: [{role: 'user', content: input.userInput}],
         systemPrompt: input.systemPrompt, responseFormat: input.responseFormat,
         maxTokens: limits.max_tokens, temperature: 0, reasoning: 'off', signal: combined, purpose: LOCAL_PLAN_PURPOSE};
       // Do NOT race the real completion against a timeout promise. Core tracks

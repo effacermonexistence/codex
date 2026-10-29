@@ -347,6 +347,117 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     static let ownerMaterialPattern = #"(?:^|[\s,.!?~])(?:내|우리|제|저희)\s*(?:데스크탑|데스크톱|바탕화면|다운로드|폴더|파일|문서|보고서|자료|사진|메모|드라이브|맥북|컴퓨터|노트북)|\b(?:my|our)\s+(?:desktop|downloads|folders?|files?|documents?|reports?|notes|photos?|drive|computer|mac|macbook|laptop)\b"#
     static let hardEnglishDemonstrative = #"\b(?:this|these|those)\b(?!\s+(?:week|weekend|year|month|morning|afternoon|evening|night|quarter|season|semester|time|spring|summer|fall|autumn|winter)\b)"#
 
+    // MARK: Local clearance (build 446, DESIGN-5 §A, owner order 2026-10-29)
+    //
+    // "The local LLM, which is free, should read the owner's intent wherever
+    // keyword rules misunderstand him." Some keyword matches are only the same
+    // letters in another word: 오늘 in small talk, 검색 in 이진 검색 트리, 클로드
+    // in 클로드 모네, 작동하냐 about a jet engine, 그 유명한 …, 돌려 말하지,
+    // 최고 성능 GPU. They are CLEARABLE: the local reading may clear them, and
+    // only when it reads a chat or explain answer that needs no tool
+    // (`clearance`). Every other match stays a FLOOR the local reading never
+    // lowers: write or edit verbs, explicit tool names, paths, attachments,
+    // approvals, money and external actions, the injection defence, real
+    // current-facts words (rates, weather, news), status questions the local
+    // model does not say are about something else, and the strongest-model
+    // and think-hard phrasings. Without a clearing reading a clearable match
+    // is the rail it was in build 445. The keyword profile marks a clearable
+    // match with `soft_facts`, `soft_status`, `soft_machine`, `soft_reference`,
+    // `soft_work`, `soft_shell`, `soft_write` or `soft_quality`.
+
+    /// Current-facts words that are only time or person words ("오늘 하루
+    /// 어땠어", "소크라테스는 누구야?") and the noun 검색/search ("이진 검색
+    /// 트리"): clearable. Every other current-facts word stays a floor.
+    static let clearableCurrentFactTerms: Set<String> = [
+        "오늘", "현재", "지금", "최근", "요즘", "요새", "어제", "내일", "올해", "작년", "이번", "이번 주", "검색",
+        "누군지", "누구야", "누구지", "누구인지", "누구예요", "누구에요",
+        "today", "recent", "current", "now", "yesterday", "tomorrow", "right now", "this year", "this week", "this month",
+        "new", "who is", "who's", "who are", "search", "얼마"]
+    /// The floors among them by form: a search ORDER ("검색해줘"), a price
+    /// question (얼마 but not 얼마나 "how"), a versioned name ("GPT-6.1").
+    static let hardCurrentFactPattern = #"검색\s*(?:을|를)?\s*(?:좀\s*)?(?:해|하|할|합)|얼마(?!나)|\bsearch\s+(?:for|the|it|this|that|on|online|google)\b|[a-z][a-z0-9]+[ \-][0-9]+(?:\.[0-9]+)*(?![0-9])"#
+    /// Whether current-facts evidence is a floor (anything but the clearable words and a year).
+    static func hardCurrentFacts(_ lower: String) -> Bool {
+        let terms = (currentFactTerms + ClaudeChatLane.lookupTerms).filter { !clearableCurrentFactTerms.contains($0) }
+        return mentionsAny(terms, in: lower) || lower.range(of: hardCurrentFactPattern, options: .regularExpression) != nil
+    }
+
+    /// Korean machine-material words that are also everyday words (클로드 모네,
+    /// 지구가 돌아가는, 튜링 테스트, 드레스 코드, 소스, 블로그·카탈로그 …): clearable.
+    /// Paths, file names, the OS-1 and owner-project vocabulary, the ASCII terms,
+    /// 파일·폴더·저장소·레포·커밋·빌드 and a possessive technical word stay floors.
+    static let clearableMachineTerms: Set<String> = [
+        "클로드", "코덱스", "인스타", "플릿", "코드", "소스", "로그", "브랜치", "테스트", "설정", "터미널", "명령", "프로젝트",
+        "앱", "화면", "버전", "패치", "실행", "설치", "배포", "확인해", "돌려", "돌아가", "여기", "이거", "그거", "아까", "방금"]
+    static func hardMachineMaterial(_ lower: String) -> Bool {
+        func kept(_ terms: [String]) -> [String] { terms.filter { !clearableMachineTerms.contains($0) } }
+        return mentionsAny(kept(ClaudeChatLane.projectTerms) + kept(ClaudeChatLane.workspaceTerms) +
+                           kept(ClaudeChatLane.localWorkTerms) + os1TechnicalTerms + workspaceStateTerms + ownerProjectTerms,
+                           in: lower) ||
+            lower.range(of: ClaudeChatLane.machinePathPattern, options: .regularExpression) != nil ||
+            lower.range(of: #"[A-Za-z0-9_\-]\.[A-Za-z]{1,6}(?![A-Za-z])"#, options: .regularExpression) != nil ||
+            lower.range(of: specificTechnicalPattern, options: .regularExpression) != nil
+    }
+
+    /// A reference that is the speaker's generic "we" ("우리가 흔히 말하는"),
+    /// an era ("빅뱅 이전에는") or a well-known thing ("그 유명한 …") is
+    /// clearable; a reference to this conversation or its artifacts stays a
+    /// floor: 이거/그거/아까/방금, "네가 말한", "전에 말한", "위에 쓴", "that
+    /// above", and a demonstrative before a work noun ("그 함수", "그 결과").
+    static let strictPriorTurnPattern = #"(?<![가-힣])(?:(?:네|너|니)가|우리가(?!\s*(?:흔히|보통|일반적으로|자주|늘|종종|평소|일상|알고|아는)))\s*(?:[가-힣A-Za-z]+\s+){0,3}?[가-힣]*(?:말|답|얘기|이야기|설명|한|했)|전에\s*(?:말|한|했|얘기|설명)|마지막(?:에)?\s*(?:한|말|답)|(?:지난|이전|직전|앞선)\s*(?:답|말|대답|설명)"#
+    static let hardDemonstrativeNounPattern = #"(?:^|[\s,.!?~])(?:이|그|저)\s+(?:함수|변수|클래스|메서드|코드|파일|폴더|에러|오류|버그|결과|답|대답|답변|내용|부분|문제|글|문서|사진|이미지|링크|표|목록|리스트|방법|버전|빌드|테스트|작업|프로젝트|앱|화면|설정|명령|거|것|이유|원인|뜻|의미|말|얘기|이야기|질문|사람|분|문장|단어|표현|개념|방식|과정|단계|숫자|값|결론|주장|예시|예|부분)"#
+    static func hardReference(_ lower: String) -> Bool {
+        hardDeicticTerms.contains { $0 != "이전에" && lower.contains($0) } || mentionsAny(hardDeicticWords, in: lower) ||
+            lower.range(of: hardEnglishDemonstrative, options: .regularExpression) != nil ||
+            lower.range(of: strictPriorTurnPattern, options: .regularExpression) != nil ||
+            lower.range(of: aboveBelowReferentPattern, options: .regularExpression) != nil ||
+            lower.range(of: hardDemonstrativeNounPattern, options: .regularExpression) != nil
+    }
+
+    /// `ClaudeChatLane.actionTerms` that are also everyday words when not in
+    /// an order form: 계속 (계속 궁금했는데), 시작 (우주의 시작), 기록 (세계 기록),
+    /// 진행 (아직 진행 중), 마저, and the past endings 했어/했냐/했지/됐어/됐냐
+    /// (나는 좀 피곤했어). The edit verbs (수정, 고쳐, 바꿔, 지워, 삭제, 저장) stay
+    /// floors, as does the order form itself (계속 해, 시작해, 기록해줘).
+    static let clearableActionTerms: Set<String> = ["계속", "시작", "기록", "진행", "마저", "했냐", "했어", "했지", "됐냐", "됐어"]
+    static let statusActionTerms: Set<String> = ["했냐", "했어", "했지", "됐냐", "됐어"]
+    /// The responder named in a status question: the question is about it.
+    static let responderPattern = #"(?:^|[\s,.!?~])(?:너|넌|네가|니가|너가|너는|너도|당신)(?=[\s,.!?~]|$)|\b(?:are you|did you|have you|you did|you done)\b"#
+    static let clearableActionOrderForm = #"(?:계속|시작|기록|진행|마저)\s*(?:을|를)?\s*(?:좀\s*)?(?:해|하|할|합|시켜)"#
+
+    /// "어떻게 만들어?", "…만들어져?": a how-is-it-made question, not a write
+    /// order; the only write-scope evidence the local reading may clear.
+    static let madeQuestionPattern = #"어떻게\s+[^.?!\n]{0,12}?만들어(?=\s*(?:[?？]|요|져|지|진|졌|$))|만들어\s*(?:[?？]|$)|만들어\s*(?:져|지는|진|졌)"#
+
+    /// The owner's own thinking ("오래 생각해봤는데 이직할까") and 최고 성능 /
+    /// 최고 품질 about a thing ("최고 성능 GPU"): clearable strongest-model words.
+    /// The phrasings fixed in 442 ("오래 생각해서 답해", "최고 성능 모델로", "think
+    /// hard") stay reference floors.
+    static let clearableStrongestSpans = [
+        #"최고\s*(?:성능|품질)(?!\s*(?:의\s*)?(?:ai\s*)?(?:모델|model|엔진|두뇌|추론|리즈닝|답|답변|대답|결과|수준|으로|로))"#,
+        #"(?:오래|깊이|깊게|곰곰이|곰곰히|신중하게|신중히|충분히|진지하게|열심히|많이)\s*(?:생각|고민)\s*(?:을|를|도|은|는)?\s*(?:좀\s*)?(?:해\s*봤|해봤|했|해\s*왔|해왔|하고\s*있|하는\s*중|해도|해\s*봐도|해봐도)"#,
+    ]
+    static func withoutClearableStrongest(_ request: String) -> String {
+        var lower = request.precomposedStringWithCanonicalMapping.lowercased()
+        for pattern in clearableStrongestSpans {
+            lower = lower.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        return lower
+    }
+    /// The strongest-model and think-hard floors once the clearable spans are set aside.
+    public static func asksForStrongestFloor(_ request: String) -> Bool { asksForStrongest(withoutClearableStrongest(request)) }
+    public static func asksForReferenceFloor(_ request: String) -> Bool { asksForReference(withoutClearableStrongest(request)) }
+
+    /// The words of `lower` other than fillers, once every `terms` occurrence
+    /// (and the rest of its word) is removed.
+    static func contentWords(_ lower: String, without terms: Set<String>) -> Int {
+        var rest = lower
+        for term in terms { rest = rest.replacingOccurrences(of: NSRegularExpression.escapedPattern(for: term) + "[가-힣]*",
+                                                             with: " ", options: .regularExpression) }
+        return rest.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !proVerbFillers.contains($0) }.count
+    }
+
     /// Whether `lower` (normalized, lower-cased) orders only the work under
     /// discussion: a soft ending with nothing left but fillers.
     static func bareProVerb(_ lower: String) -> Bool {
@@ -360,7 +471,11 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// The profile of `request` with the host's own facts: whether it needs a
     /// shell (`promptRequiresShellCapability`) and whether material is
     /// attached. Named paths and images are read from the text here.
-    public static func classify(_ request: String, shellNeed: Bool, hasMaterial: Bool) -> RequestProfile {
+    /// Build 446: `shellFloor` is the host's statement that its shell need
+    /// rests on an explicit tool name or a hard execution verb (nil: unknown,
+    /// a floor). Only `false` lets the local reading clear the shell rail.
+    public static func classify(_ request: String, shellNeed: Bool, hasMaterial: Bool,
+                                shellFloor: Bool? = nil) -> RequestProfile {
         let value = request.precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = value.lowercased()
         func mentions(_ terms: [String]) -> Bool {
@@ -427,13 +542,48 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         // Build 441 part 3: an order resting only on soft endings is a soft rail.
         if order {
             let residual = lower.replacingOccurrences(of: ClaudeChatLane.answerImperative, with: " ", options: .regularExpression)
-            let hardOrder = approval || ClaudeChatLane.actionTerms.contains { !softActionTerms.contains($0) && residual.contains($0) } ||
+            let otherHardOrder = approval ||
                 matches(englishOrderPattern(englishOrderVerbs.filter { !softEnglishOrderVerbs.contains($0) }), lower) ||
                 ClaudeChatLane.orderTerms.contains { !softOrderTerms.contains($0) && lower.contains($0) } ||
                 placementOrders.contains { !softPlacementOrders.contains($0) && lower.contains($0) } ||
                 matches(locativePlacement, lower) || matches(definitionOrder, lower) || bareProVerb(lower)
+            let hardOrder = otherHardOrder || ClaudeChatLane.actionTerms.contains { !softActionTerms.contains($0) && residual.contains($0) }
             if !hardOrder { signals.insert("soft_order") }
+            // Build 446: a hard order resting only on clearable action terms in
+            // a non-order form (계속 궁금했는데, 우주의 시작, 피곤했어) is clearable.
+            // A past ending asked of this responder ("너 숙제 했어?"), or with
+            // at most one other word ("했냐고", "빌드 했어?"), stays a floor:
+            // it asks after the work under discussion.
+            else if !otherHardOrder && !matches(clearableActionOrderForm, residual) &&
+                        !ClaudeChatLane.actionTerms.contains(where: { !softActionTerms.contains($0) &&
+                            !clearableActionTerms.contains($0) && residual.contains($0) }) &&
+                        !(statusActionTerms.contains(where: residual.contains) &&
+                            (matches(responderPattern, lower) || contentWords(lower, without: statusActionTerms) < 2)) {
+                signals.insert("soft_work")
+                if statusActionTerms.contains(where: residual.contains) { signals.insert("soft_status") }
+            }
         }
+        // Build 446 (DESIGN-5 §A): the other clearable matches.
+        if signals.contains("current_facts") && !hardCurrentFacts(lower) { signals.insert("soft_facts") }
+        // A check-in that names this responder ("너 되냐?", "네가 얼마나 잘 되는지
+        // 보자") is about it by its own words: a floor, never asked.
+        if (signals.contains("status_check_in") || signals.contains("status_question")) && !StatusCheckIn.responsePathOnly(value) &&
+            !StatusCheckIn.standaloneTestInvitation(lower) && !matches(responderPattern, lower) {
+            signals.insert("soft_status")
+        }
+        if signals.contains("machine_material") && !signals.contains("soft_material") && !hardMachineMaterial(lower) {
+            signals.insert("soft_machine")
+        }
+        if signals.contains("deictic") && !signals.contains("soft_deictic") && !hardReference(lower) { signals.insert("soft_reference") }
+        if write, ScopeResolution.resolve(value.replacingOccurrences(of: madeQuestionPattern, with: " ",
+                                                                     options: .regularExpression)).scope != .workspaceWrite {
+            signals.insert("soft_write")
+        }
+        // The host says whether its shell need rests on a floor (an explicit
+        // tool name or a hard execution verb); a Korean substring alone
+        // ("돌려 말하지", "헤어 세팅") is clearable. No host statement: a floor.
+        if shellNeed, shellFloor == false { signals.insert("soft_shell") }
+        if asksForReference(value) && !asksForReferenceFloor(value) { signals.insert("soft_quality") }
         // Machine material resting only on generic programming words in a general question.
         if signals.contains("machine_material") {
             let hardMaterial = mentions(ClaudeChatLane.projectTerms) || mentions(ClaudeChatLane.workspaceTerms) ||
@@ -602,10 +752,74 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// stays `keyword_v1`. A rail resting on soft evidence only (build 441
     /// part 3) does not decide: the local reading does. Nor is it asked when
     /// the request speaks the classifier's own vocabulary (build 441 review).
+    /// Build 446 (DESIGN-5 §A): the rails decide only on their FLOORS: a
+    /// request whose every rail is clearable is read by the local model,
+    /// which may clear them (`clearance`) or leave them standing (build 445's
+    /// keyword profile, `railsDecide445`).
     public static func railsDecide(_ keyword: RequestProfile, request: String) -> Bool {
+        floorWorkRail(keyword) || floorWorkspaceRail(keyword) || keyword.signals.contains("text_operation") ||
+            keyword.signals.contains("classifier_vocabulary") || asksForStrongestFloor(request)
+    }
+    /// Build 445's `railsDecide`: the rails that fixed the route before any
+    /// clearance. A request it decides keeps that profile unless cleared.
+    public static func railsDecide445(_ keyword: RequestProfile, request: String) -> Bool {
         hardWorkRail(keyword) || hardWorkspaceRail(keyword) || keyword.signals.contains("text_operation") ||
             keyword.signals.contains("classifier_vocabulary") || asksForStrongest(request)
     }
+    /// The work rail's floors: write scope, shell need, an external action or
+    /// a hard order, each unless it rests only on clearable evidence.
+    public static func floorWorkRail(_ keyword: RequestProfile) -> Bool {
+        let s = Set(keyword.signals)
+        return keyword.answerKind == .work && ((s.contains("write_scope") && !s.contains("soft_write")) ||
+            (s.contains("shell") && !s.contains("soft_shell")) || s.contains("external_action") ||
+            (s.contains("work_order") && !s.contains("soft_order") && !s.contains("soft_work")))
+    }
+    /// The workspace evidence that is a floor wherever it appears.
+    static func workspaceFloor(_ s: Set<String>) -> Bool {
+        !s.isDisjoint(with: ["material", "named_path", "image", "external_system", "owner_material", "failure_complaint",
+                             "external_action", "approval"]) ||
+            ((s.contains("status_check_in") || s.contains("status_question")) && !s.contains("soft_status")) ||
+            (s.contains("machine_material") && !s.contains("soft_material") && !s.contains("soft_machine")) ||
+            (s.contains("deictic") && !s.contains("soft_deictic") && !s.contains("soft_reference"))
+    }
+    public static func floorWorkspaceRail(_ keyword: RequestProfile) -> Bool {
+        keyword.toolNeed == .workspace && workspaceFloor(Set(keyword.signals))
+    }
+
+    /// Build 446 (DESIGN-5 §A): the clearable evidence and its rule name
+    /// (`soft_cleared_<rule>`). The build-441 soft rails are listed too: a
+    /// cleared request names everything the local reading set aside.
+    static let clearableRules: [(signal: String, rule: String)] = [
+        ("soft_facts", "facts"), ("soft_status", "status"), ("soft_machine", "machine"), ("soft_reference", "reference"),
+        ("soft_work", "work"), ("soft_shell", "shell"), ("soft_write", "write"), ("soft_quality", "quality"),
+        ("soft_order", "order"), ("soft_material", "material"), ("soft_deictic", "deictic")]
+    static let clearedPrefix = "soft_cleared_"
+    /// The rules the local reading clears for this request, or nil when it
+    /// clears nothing. Only when BOTH hold: the adopted reading is a chat or
+    /// explain answer with needs_tools none, and no floor fires (`railsDecide`'s
+    /// floors, a text operation, the injection defence, a hard current-facts
+    /// word, the strongest-model phrasings). A status question (`soft_status`)
+    /// also needs the local subject reading `other`: the install card attaches
+    /// unless the local model said the question is about something else. The
+    /// local reading never grants write, shell, money or external action: a
+    /// clearance only lowers (write to read-only, tools to none).
+    public static func clearance(_ keyword: RequestProfile, request: String,
+                                 local: LocalRequestClassifier.Answer) -> [String]? {
+        let s = Set(keyword.signals)
+        guard local.taskType == .chat || local.taskType == .explain, local.needsTools == .none,
+              !floorWorkRail(keyword), !workspaceFloor(s), !s.contains("text_operation"), !s.contains("classifier_vocabulary"),
+              !(s.contains("current_facts") && !s.contains("soft_facts")),
+              !asksForStrongestFloor(request), !asksForReferenceFloor(request),
+              !s.contains("soft_status") || local.subject == .other else { return nil }
+        var rules = clearableRules.filter { s.contains($0.signal) }.map(\.rule)
+        // DESIGN-5 §A.1: a question the keywords did not hear as one (no "?",
+        // which dictation drops, and no answer stem).
+        if keyword.answerKind == .unknown { rules.append("question") }
+        return rules.isEmpty ? nil : rules
+    }
+    /// Whether the local reading cleared a keyword match on this profile.
+    public var clearedLocally: Bool { locallyClassified && signals.contains { $0.hasPrefix(RequestProfile.clearedPrefix) } }
+    public func cleared(_ rule: String) -> Bool { signals.contains(RequestProfile.clearedPrefix + rule) }
 
     /// Build 441 part 3: the keyword profile is work for a reason the local
     /// reading may never lower (write scope, shell need, an external action or
@@ -662,8 +876,7 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     public static func combine(keyword k: RequestProfile, request: String,
                                local: LocalRequestClassifier.Answer?, model: String?) -> RequestProfile {
         var signals = Set(k.signals)
-        let quality = asksForStrongest(request)
-        if quality { signals.insert("quality_request") }
+        var quality = asksForStrongest(request)
         let workRail = k.answerKind == .work, workspaceRail = k.toolNeed == .workspace
         let factsRail = k.signals.contains("current_facts"), textOperation = k.signals.contains("text_operation")
         // Build 442: the local reading's domain (prompt v3; `general` is none),
@@ -671,31 +884,59 @@ public struct RequestProfile: Codable, Equatable, Sendable {
         var domain: Domain? = nil
         func finish(_ kind: AnswerKind, _ tool: ToolNeed, _ difficulty: Difficulty, _ task: TaskType,
                     _ classifier: String, _ extra: [String]) -> RequestProfile {
+            if quality { signals.insert("quality_request") }
             // Diagnostic tokens yield to the evidence under the wire bound.
             let all = signals.union(extra).count <= maximumSignals ? signals.union(extra) : signals
             return RequestProfile(answerKind: kind, toolNeed: tool, difficulty: kind == .answerOnly ? difficulty : .unknown,
                                   signals: Array(all).sorted(), classifier: classifier, taskType: task,
                                   domain: classifier.hasPrefix(localClassifierPrefix) ? domain : nil)
         }
-        guard let local, let model, LocalRequestClassifier.validModelName(model),
-              !k.signals.contains("classifier_vocabulary") else {
+        // The keyword profile as it is (no local reading, or one that does not
+        // clear rails build 445 decided on).
+        func keywordOnly(_ extra: [String]) -> RequestProfile {
             let keyword = keywordClassifier
-            if workRail { return finish(.work, k.toolNeed, .unknown, textOperation ? .write : .action, keyword, []) }
+            if workRail { return finish(.work, k.toolNeed, .unknown, textOperation ? .write : .action, keyword, extra) }
             if workspaceRail {
-                return finish(k.answerKind, .workspace, k.difficulty, k.answerKind == .answerOnly ? .explain : .unknown, keyword, [])
+                return finish(k.answerKind, .workspace, k.difficulty, k.answerKind == .answerOnly ? .explain : .unknown, keyword, extra)
             }
-            if textOperation { return finish(k.answerKind, k.toolNeed, .unknown, .write, keyword, []) }
+            if textOperation { return finish(k.answerKind, k.toolNeed, .unknown, .write, keyword, extra) }
             if k.answerKind == .answerOnly {
-                return finish(.answerOnly, k.toolNeed, quality ? .deep : k.difficulty, .explain, keyword, [])
+                return finish(.answerOnly, k.toolNeed, quality ? .deep : k.difficulty, .explain, keyword, extra)
             }
-            return finish(k.answerKind, factsRail ? .currentFacts : k.toolNeed, .unknown, .unknown, keyword, [])
+            return finish(k.answerKind, factsRail ? .currentFacts : k.toolNeed, .unknown, .unknown, keyword, extra)
         }
+        guard let local, let model, LocalRequestClassifier.validModelName(model),
+              !k.signals.contains("classifier_vocabulary") else { return keywordOnly([]) }
         let classifier = localClassifierPrefix + model
         // DESIGN-4 §4: only a model qualified to read the domain names one;
         // the 4B model's domain is ignored (signal `llm_domain_unqualified`).
         let domainRead = LocalRequestClassifier.readsDomain(model: model)
         domain = domainRead ? Domain(rawValue: local.domain.rawValue) : nil
         let labelled = TaskType(rawValue: local.taskType.rawValue) ?? .unknown
+        // Build 446 (DESIGN-5 §A): the clearance. A chat or explain reading
+        // that needs no tool clears every clearable match when no floor
+        // fires: a tool-free answer, at the local reading's difficulty (the
+        // proof/derivation floor still raises it), each rule recorded.
+        if let rules = clearance(k, request: request, local: local) {
+            quality = false
+            signals.subtract(["quality_request"])
+            let read = Difficulty(rawValue: local.difficulty.rawValue) ?? .standard
+            let difficulty: Difficulty = deepFloor(request) ? .deep : read
+            // The same diagnostic tokens as the uncleared path (a build-441 soft
+            // rail set aside, the reading setting the difficulty, the floor).
+            let softYield = !k.signals.allSatisfy { !["soft_order", "soft_material", "soft_deictic"].contains($0) }
+            let reading = ["llm_task_" + local.taskType.rawValue, "llm_difficulty_" + local.difficulty.rawValue,
+                           "llm_tools_" + local.needsTools.rawValue] + (softYield ? ["llm_overrules_soft_rail"] : []) +
+                (domainRead ? [] : ["llm_domain_unqualified"]) +
+                (local.subject.map { ["llm_subject_" + $0.rawValue] } ?? []) + (deepFloor(request) && read != .deep ? ["deep_floor"] : []) +
+                (k.answerKind == .answerOnly && k.difficulty != difficulty ? ["llm_sets_difficulty"] : [])
+            return finish(.answerOnly, .none, difficulty, labelled, classifier, reading + rules.map { clearedPrefix + $0 })
+        }
+        // Not cleared: a request the local model was asked about ONLY because
+        // its 445 rails were clearable keeps build 445's keyword profile
+        // exactly (those rails stand). A request whose floors decide is
+        // combined as in build 445 (the host does not ask about it).
+        if railsDecide445(k, request: request) && !railsDecide(k, request: request) { return keywordOnly(["soft_kept"]) }
         // Build 441 part 3: under an adopted local reading only the HARD rails
         // stand; a soft order, generic programming word or adverbial
         // demonstrative is the local reading's to decide.

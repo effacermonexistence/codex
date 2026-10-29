@@ -1103,8 +1103,10 @@ private func coreRoutes(_ cases: [(request: String, catalog: [String: Any], writ
     import {readFileSync} from 'node:fs';
     import {createHash} from 'node:crypto';
     import {pathToFileURL} from 'node:url';
-    const {hostPlan, resolveRoutePlan, deliveryBasisOf, hostContextFingerprint} =
+    const {hostPlan, resolveRoutePlan, deliveryBasisOf, hostContextFingerprint, configureLocalModel} =
       await import(pathToFileURL(process.argv[1]).href);
+    // Build 446: the host's one local model, as the gateway plugin configures it.
+    configureLocalModel(process.argv[2]);
     const sha = text => createHash('sha256').update(text).digest('hex');
     const {now, cases} = JSON.parse(readFileSync(0, 'utf8'));
     const policyText = 'owner-decision fixture policy';
@@ -1133,7 +1135,7 @@ private func coreRoutes(_ cases: [(request: String, catalog: [String: Any], writ
     else if FileManager.default.isExecutableFile(atPath: pinnedNode.path) { process.executableURL = pinnedNode }
     else { process.executableURL = URL(fileURLWithPath: "/usr/bin/env") }
     process.arguments = (process.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
-        ["--input-type=module", "-e", script, runtime.path]
+        ["--input-type=module", "-e", script, runtime.path, RCCNativeCatalogBuilder.localWorkerModel]
     process.standardInput = input; process.standardOutput = output; process.standardError = errors
     try process.run()
     let payload: [String: Any] = ["now": Int64(now.timeIntervalSince1970 * 1000),

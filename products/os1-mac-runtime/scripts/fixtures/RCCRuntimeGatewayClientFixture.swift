@@ -326,7 +326,7 @@ struct RCCRuntimeGatewayClientFixture {
             nativeOS1Path: native, nativeOS1SHA256: hash(try Data(contentsOf: URL(fileURLWithPath: native))))
         let base: [String: Any] = ["models": ["mode": "replace", "providers": ["ollama": ["baseUrl": "http://127.0.0.1:11434"]]],
             "plugins": ["enabled": true, "allow": ["os1-bridge"], "load": ["paths": [plugin.path]]],
-            "browser": ["enabled": false], "agents": ["defaults": ["model": ["primary": "ollama/qwen3.5:4b", "fallbacks": []]]], "tools": ["deny": ["*"]]]
+            "browser": ["enabled": false], "agents": ["defaults": ["model": ["primary": "ollama/" + OpenClawAgentController.model, "fallbacks": []]]], "tools": ["deny": ["*"]]]
         let configuration = RCCRuntimeGatewayClient.Configuration(identity: identity,
             baseConfig: try JSONSerialization.data(withJSONObject: base, options: [.sortedKeys]),
             bridgeEnvironment: ["OS1_RCC_FIXTURE_READY_DELAY_SECONDS": "21.1"])
@@ -751,7 +751,7 @@ struct RCCRuntimeGatewayClientFixture {
         let scopedEntry = scopedEntries["os1-bridge"] as! [String: Any]
         let subagent = scopedEntry["subagent"] as! [String: Any]
         try require(subagent["allowModelOverride"] as? Bool == true &&
-            subagent["allowedModels"] as? [String] == ["ollama/qwen3.5:4b"], "background planner authority was not exact local-only")
+            subagent["allowedModels"] as? [String] == ["ollama/" + OpenClawAgentController.model], "background planner authority was not exact local-only")
         let configAttributes = try fm.attributesOfItem(atPath: ownerDirectory.appendingPathComponent("config.json").path)
         try require((configAttributes[.posixPermissions] as! NSNumber).intValue & 0o077 == 0, "token config not private")
         _ = try RCCRuntimeGatewayClient.warmForOfflineFixture(configuration: configuration,

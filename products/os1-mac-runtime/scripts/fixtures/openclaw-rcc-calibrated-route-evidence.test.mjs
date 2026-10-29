@@ -1,3 +1,4 @@
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,realpathSync,rmSync,writeFileSync,readFileSync,chmodSync,unlinkSync,symlinkSync,linkSync,mkdirSync} from 'node:fs';

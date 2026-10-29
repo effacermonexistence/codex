@@ -1,6 +1,7 @@
 // Cross-language integration. Build os1 and OS1ContextTests first, then run:
 // OS1_INTENT_NATIVE_TEST=1 node --test scripts/fixtures/openclaw-rcc-intent-native.test.mjs
 // Real compiler/decoder and SQLite Core; injected completions/executors only.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

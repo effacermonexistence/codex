@@ -126,7 +126,11 @@ SOURCES = json.loads((ROOT / "Resources/local-controller-sources.json").read_tex
 for arch in ("arm64", "x86_64"):
     digest = SOURCES["node"][arch]["binary_sha256"]
     expect(digest in BRIDGE and len(digest) == 64, f"v0/v1 Node identity is pinned for {arch}")
-expect(SOURCES["model"]["digest"] in BRIDGE and
+# Build 446 (DESIGN-5 §B): the pinned local models live in the one selection
+# table; the signed sources' model must be one of them at its pinned digest.
+SELECTION = (ROOT / "Sources/OS1Context/LocalModelSelection.swift").read_text()
+expect(SOURCES["model"]["digest"] in SELECTION and f'name: "{SOURCES["model"]["name"]}", digest: "{SOURCES["model"]["digest"]}"' in SELECTION and
+       'sourceModel["digest"] as? String == LocalModelSelection.candidate(named: sourceName)?.digest' in BRIDGE and
        'manifest["entry_sha256"] as? String == pinnedEntrySHA256' in BRIDGE,
        "pinned local model and OpenClaw entry are checked beyond mutable activation metadata")
 expect('app_sealed_public_executor_contract' in BRIDGE and

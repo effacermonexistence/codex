@@ -1,5 +1,6 @@
 // Pure untrusted-proposal boundary. No provider, local model, Core submission,
 // native process, authority registry, workspace mutation or filesystem probe.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';

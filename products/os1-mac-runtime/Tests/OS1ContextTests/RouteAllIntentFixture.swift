@@ -131,6 +131,7 @@ private func routeAllNodeRun(_ input: Data) throws -> Data {
     import {join} from 'node:path';
     import {createHash, randomUUID} from 'node:crypto';
     const {createRCCRuntime, hostContextFingerprint} = await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const {localModelExecutor, verifyExactExplicitArithmetic} = await import(pathToFileURL(process.argv[2]).href);
     const input = JSON.parse(readFileSync(0, 'utf8'));
     const root = await realpath(await mkdtemp(join(tmpdir(), 'rcc-swift-route-all-')));

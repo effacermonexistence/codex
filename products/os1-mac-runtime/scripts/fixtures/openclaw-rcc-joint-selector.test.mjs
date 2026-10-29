@@ -1,6 +1,7 @@
 // All inputs below are synthetic contract fixtures. Mock probabilities and
 // attestation hashes are NOT measured model performance or real host receipts.
 // No native/model/provider calls, task execution, training or reservation.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

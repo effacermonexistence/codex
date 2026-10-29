@@ -154,6 +154,7 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-model-one-name.test.mjs"
 # K4: node verifier registry soundness, and the tier-routing and runtime fixtures that
 # hold most verifier/ladder coverage; a per-test timeout turns a hang into a failure.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-verifier-registry.test.mjs"

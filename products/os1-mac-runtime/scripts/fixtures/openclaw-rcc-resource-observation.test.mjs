@@ -1,4 +1,5 @@
 // Real Core SQLite + production intent resolver, synthetic completions only.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

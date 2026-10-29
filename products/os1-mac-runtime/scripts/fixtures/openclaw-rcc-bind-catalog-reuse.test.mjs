@@ -6,6 +6,7 @@
 // admissionCurrent, _recheckCalibratedRoute and _candidate still run.
 // Real durable runtime with fake catalog/executor callbacks: no provider,
 // model, network or HOME state, and no paid call.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';

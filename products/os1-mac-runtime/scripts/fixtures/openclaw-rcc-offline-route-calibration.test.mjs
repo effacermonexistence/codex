@@ -1,5 +1,6 @@
 // All positive fitting records below are labelled SYNTHETIC source-contract
 // regressions, never real model performance, actual calibration or live proof.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';

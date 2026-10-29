@@ -1853,6 +1853,7 @@ private func javascriptRoute(_ catalog: Data, admission: String = "reference", n
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {resolveRoutePlan,registerNodeVerifiers}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const catalog=JSON.parse(readFileSync(0,'utf8'));
     const write=process.argv[4]==='workspace_write';
     const explicit=JSON.parse(process.argv[5]), ordinal=Number(process.argv[6]);
@@ -1887,6 +1888,7 @@ private func javascriptHostRoute(_ catalog: Data, request: String, now: Date, wr
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {hostPlan,resolveRoutePlan}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const catalog=JSON.parse(readFileSync(0,'utf8'));
     const [now,request,write,material,explicit]=[Number(process.argv[2]),process.argv[3],process.argv[4]==='1',
       process.argv[5]==='1',JSON.parse(process.argv[6])];
@@ -1933,6 +1935,7 @@ private func javascriptHostFingerprint(_ bytes: Data) throws -> String {
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {hostContextFingerprint}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     process.stdout.write(hostContextFingerprint(JSON.parse(readFileSync(0,'utf8'))));
     """, input: bytes)
 }

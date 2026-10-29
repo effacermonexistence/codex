@@ -8,6 +8,7 @@
 // instead: one rerun at its reference, whose own result is then the floor.
 // Real durable runtime with host-built plans and a fake executor that writes
 // its native receipts: no provider, model, network or HOME state.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

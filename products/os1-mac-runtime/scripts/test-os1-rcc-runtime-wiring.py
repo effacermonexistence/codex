@@ -242,10 +242,11 @@ helper = section(MAIN, "func rccIsolatesReadOnlyClaudeHome(", "\n}\n")
 check("surface == .claude && !resumesNativeSession &&" in helper and
       'ExecutionWorkspace.usesSourceIsolation(provider: "claude", permission: permissionProfile, hasSource: false,' in helper,
       "the HOME rule is the native path's usesSourceIsolation, Claude agent only, never for a resumed session")
-check("let checkInHint = rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard)" in native and
+check("let checkInHint = rccStatusCheckInHint(ownerRequest: original, card: statusCheckInCard,\n" in native and
+      "clearedByLocalReading: rccStatusClearedByLocalReading(taskID: t.taskID, request: original," in native and
       "let nativePrompt = try providerPrompt(current: delegated, context: h.context, r2Evidence: sourceDelivery.payload,\n            workspaceContext: checkInHint)" in native and
       native.index("let delegated = envelope(rccAnswerHints(") < native.index("let checkInHint = rccStatusCheckInHint(") and
-      "StatusCheckIn.answersFromCard(ownerRequest) ? card() : \"\"" in MAIN and
+      "!clearedByLocalReading && StatusCheckIn.answersFromCard(ownerRequest) ? card() : \"\"" in MAIN and
       "try rccExecuteChildRulesSelfTest()" in MAIN,
       "a card check-in's RCC child carries the install-state card the direct path attaches; os1 self-test pins both rules")
 check("const parts = /^\\s*(-?\\d{1,9})\\s*([+*\\-])\\s*(-?\\d{1,9})\\s*$/u.exec(instruction);" in PLUGIN and
@@ -309,6 +310,7 @@ for version, expected in (("0.9.106", "18/21/0/0/0"), ("0.9.107", "19/22/0/0/0")
                           ("0.9.351", "48/51/1/1/1"), ("0.9.355", "48/51/1/1/1"), ("0.9.356", "52/55/1/1/1"), ("0.9.369", "52/55/1/1/1"),
                           ("0.9.370", "59/62/1/1/1"), ("0.9.371", "70/73/1/1/1"), ("0.9.372", "70/73/1/1/1"), ("0.9.373", "70/73/1/1/1"), ("0.9.374", "70/73/1/1/1"), ("0.9.375", "70/73/1/1/1"), ("0.9.376", "70/73/1/1/1"),
                           ("0.9.377", "70/73/1/1/1"), ("0.9.378", "70/73/1/1/1"), ("0.9.379", "70/73/1/1/1"),
+                          ("0.9.380", "70/73/1/1/1"),
                           ("0.10.0", "70/73/1/1/1"), ("1.0.0", "70/73/1/1/1")):
     fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
                version_gate + '\nprintf "%s/%s/%s/%s/%s" "$expected_payload_files" '
@@ -678,7 +680,11 @@ CONTEXT_TESTS = (ROOT / "Tests/OS1ContextTests/SourceContextTests.swift").read_t
 check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exec(request);" in RUNTIME and
       "export function zeroModelArithmetic(request) {\n  const bare = pureArithmetic(request);\n"
       "  if (bare !== null) return legacyLeadingZero(request) ? null : bare;\n"
-      "  return exactArithmeticQuestion(request);" in RUNTIME and
+      # Build 446 (DESIGN-5 §A): then the closed range-sum grammar
+      # ("1부터 10까지 더하면 얼마야?"), code alone, never a model.
+      "  return exactArithmeticQuestion(request) ?? integerRangeSum(request);" in RUNTIME and
+      "export function integerRangeSum(request) {" in RUNTIME and
+      "return ((n * (n + 1n) - (a - 1n) * a) / 2n).toString();" in RUNTIME and
       # A bare one-operator leading-zero number ('02-123') abstains like
       # every other strength; pureArithmetic itself is unchanged.
       "if (bare !== null) return legacyLeadingZero(text) ? null : bare;" in RUNTIME and
@@ -809,12 +815,14 @@ check("!RequestProfile.railsDecide(keywordProfile, request: request.request)" in
       "part 2: the local reading starts first, runs beside the probes, once per task, combined under the rails")
 classifier_source = (ROOT / "Sources/OS1Context/LocalRequestClassifier.swift").read_text()
 check("RoutingOrderInterpreter.ollamaAsk(endpoint: endpoint, model: model, timeout: timeout, schema: schemaJSON," in classifier_source and
-      'public static let preferredModels = ["qwen3.5:9b", "qwen3.5:4b"]' in classifier_source and
+      # Build 446 (DESIGN-5 §B): the machine's one local model, by RAM and
+      # the installed set, from the one selection table.
+      "LocalModelSelection.choose(physicalMemory: physicalMemory, installedNames: installed)?.name" in classifier_source and
       "public static let timeout: TimeInterval = 12" in classifier_source and
       'public static let keepAlive = "30m"' in classifier_source and
       "URLSession" not in classifier_source and "public static let chatEndpoint = RoutingOrderInterpreter.endpoint" in classifier_source and
       "inventory: { LocalRouterBridge.installedModelNames() }" in MAIN,
-      "part 2: one Ollama client (the interpreter's), 9B else 4B, a 12 s bound, resident 30 minutes")
+      "part 2: one Ollama client (the interpreter's), the machine's one model, a 12 s bound, resident 30 minutes")
 tier_route = section(RUNTIME, "function tierRouteCandidate(", "/** Null when something in an allowed scope can run;")
 check("export const DEEP_POLICY = 'reference_first';" in RUNTIME and
       "export const GRADED_LISTS = Object.freeze({" in RUNTIME and
@@ -896,19 +904,22 @@ check("const local = profile.classifier.startsWith('local_llm:');" in capability
 check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
-check('public static let promptVersion = "local_cls_v2_dom1"' in classifier_source and
+check('public static let promptVersion = "local_cls_v2_dom1_sub1"' in classifier_source and
       # DESIGN-4 §9: the enum call is build 441's v2 schema; the domain is its own call (with the owner's ASR hints, §3).
       'public static let schemaJSON = #"{"type":"object","properties":{"task_type":{"type":"string","enum":["explain","design","write","action","chat"]},"difficulty":{"type":"string","enum":["light","standard","deep"]},"needs_tools":{"type":"string","enum":["none","current_facts","workspace","execution"]}},"required":["task_type","difficulty","needs_tools"]}"#' in classifier_source and
       'public static let domainSchemaJSON = #"{"type":"object","properties":{"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}},"required":["domain"]}"#' in classifier_source and
-      "guard needsDomain(answer, request: text) else {" in classifier_source and
-      "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints)" in MAIN and
+      "if !needsDomain(answer, request: text) {" in classifier_source and
+      "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints, statusHeard: statusHeard)" in MAIN and
       'home.appendingPathComponent(".os1/local-classifier/asr-hints.json")' in (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text() and
       "static let deepFloorPatterns = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
       # Review of 442: the floor reads a proof, derivation or rigour asked for, never 증명사진 or 전자기 유도.
       '#"증명\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:해|하|할|합|과정)"#' in profile_source and
       "input.capabilityTable = ModelCapabilityTable.compiled" in catalog_profile and
       catalog_profile.index("input.capabilityTable = ModelCapabilityTable.compiled") < catalog_profile.index("input.now = Date()") and
-      "!RequestProfile.asksForReference(input.request) else { return nil }" in BUILDER and
+      # Build 446 (DESIGN-5 §A.8): unless the local reading cleared a thing's
+      # 최고 성능 or the owner's own thinking; the 442 phrasings stay floors.
+      "!(RequestProfile.asksForReference(input.request) &&" in BUILDER and
+      "RequestProfile.asksForReferenceFloor(input.request))) else { return nil }" in BUILDER and
       # Review of 442: think-hard and strongest-model wording in any common word order keeps the reference.
       "public static func asksForReference(_ request: String) -> Bool {" in profile_source and
       "if asksForStrongest(request) { return true }" in profile_source,
@@ -976,7 +987,11 @@ check("execute: (ticket, signal) => local(ticket) ? executeLocal(ticket, signal)
       "purpose: LOCAL_WORKER_PURPOSE" in PLUGIN,
       "a local route runs on the planner's model in the service scope; every other route keeps the native adapter")
 check("if (explicitRoute?.surface === 'local')" in RUNTIME and "'local_agent_node_not_explicit'" in RUNTIME and
-      "export const LOCAL_WORKER_MODEL = 'qwen3.5:4b';" in RUNTIME,
+      # Build 446 (DESIGN-5 §B): the host's one local model, a live binding
+      # the plugin configures from its config; Core writes no model name.
+      "export { LOCAL_MODEL as LOCAL_WORKER_MODEL, configureLocalModel } from './resource-usage.mjs';" in RUNTIME and
+      "'qwen" not in RUNTIME and "'qwen" not in PLUGIN and
+      "if (api.pluginConfig?.local_model !== undefined) configureLocalModel(api.pluginConfig.local_model);" in PLUGIN,
       "Core binds the local model only for an explicit local route")
 # Existing interpreter semantics remain a deterministic candidate gate. The
 # production local completion now belongs to Core, not the legacy test helper.
@@ -1145,5 +1160,36 @@ check("routingNotices.append(review)" in review and "RuntimeActivity.emit(.routi
       "export function referenceReviewReason(" in RUNTIME and "const review = referenceReviewRequired(snapshot.catalog);" in RUNTIME and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"' in RELEASE,
       "every model-backed delivery while an unclassified model is offered carries the reference review notice (K14)")
+
+# Build 446 (DESIGN-5, owner order 2026-10-29).
+SELECTION = (ROOT / "Sources/OS1Context/LocalModelSelection.swift").read_text()
+INSTALLER = (ROOT / "scripts/install-local-verified.mjs").read_text()
+FLEET = (ROOT / "Sources/OS1/Fleet.swift").read_text()
+USAGE = (PLUGIN_ROOT / "resource-usage.mjs").read_text()
+check("public static func clearance(_ keyword: RequestProfile, request: String," in profile_source and
+      "if let rules = clearance(k, request: request, local: local) {" in profile_source and
+      "!s.contains(\"soft_status\") || local.subject == .other else { return nil }" in profile_source and
+      "floorWorkRail(keyword) || floorWorkspaceRail(keyword) ||" in profile_source and
+      "rccClearedChatLane(objective: objective, hasSource: hasSource, profile: profile)" in MAIN and
+      "shellFloor: promptShellFloor(request.request))" in MAIN and
+      "input.requestProfile?.cleared(\"status\") == true" in BUILDER,
+      "446 A: one clearance in RequestProfile.combine; floors stand; the chat lane, the card and the owner decision read it")
+check('.init(name: "qwen3.5:9b", digest: "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",' in SELECTION and
+      "bytes: 6_550_825_550, minimumMemoryBytes: 16 * gibibyte)," in SELECTION and
+      "public static let contextTokens = 32_768" in SELECTION and
+      "public static var localWorkerModel: String { LocalModelSelection.active.name }" in BUILDER and
+      'bridgeEntry["config"] = ["bounded_auto": true, LocalModelSelection.pluginConfigKey: OpenClawAgentController.model]'
+          in (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text() and
+      "export let LOCAL_MODEL = null;" in USAGE and "export function configureLocalModel(name) {" in USAGE and
+      "'qwen" not in (PLUGIN_ROOT / "local-plan-planner.mjs").read_text() and "'qwen" not in USAGE and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-model-one-name.test.mjs"' in RELEASE,
+      "446 B: one local model per machine; the host's name flows to the catalog, the gateway, the plugin, Core and the planner")
+check("run('/usr/bin/ditto', ['--clone', source, stageApp]);" in INSTALLER and
+      "spawnSync(cp, ['-c', '-n', ...sources, directory + '/']," in INSTALLER and
+      "if (cloning) cloning = cloner(chunk.map(file => file.sourceFile), directory);" in INSTALLER and
+      "else streamPagingFile(file.sourceFile, file.destination);" in INSTALLER and
+      'guard let copied = try? commandOutput(copier, ["-c", "-R", template.path, destination.path], timeout: 600), copied.0 == 0,' in FLEET and
+      'case "storage":' in MAIN and "StorageReport.make()" in MAIN,
+      "446 C: new recovery and Fleet copies are APFS clones with a byte-copy fallback; os1 storage report is read-only")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

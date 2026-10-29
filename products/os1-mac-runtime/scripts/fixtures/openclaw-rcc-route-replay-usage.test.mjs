@@ -6,6 +6,7 @@
 // zero, an undelivered task's tokens count. Synthetic records, temp files and
 // a real durable Core with temp SQLite and a fake executor: no provider,
 // model, network, real HOME or installed app.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';

@@ -1,4 +1,5 @@
 // R10 v2 migration fixtures: fake catalog/executor only. No native/model calls.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

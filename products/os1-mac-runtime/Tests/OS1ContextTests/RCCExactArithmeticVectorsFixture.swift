@@ -65,6 +65,7 @@ private func coreZeroModelArithmetic(_ inputs: [String], runtime: URL) throws ->
     import {readFileSync} from 'node:fs';
     import {pathToFileURL} from 'node:url';
     const {zeroModelArithmetic} = await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     process.stdout.write(JSON.stringify(JSON.parse(readFileSync(0, 'utf8')).map(text => zeroModelArithmetic(text))));
     """#
     let pinnedNode = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/node-v24.20.0/bin/node")

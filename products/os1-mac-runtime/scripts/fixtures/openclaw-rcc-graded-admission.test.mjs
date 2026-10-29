@@ -11,6 +11,7 @@
 // on a light answer. Pure resolver
 // calls and a real durable Core with temp SQLite and a fake executor: no
 // provider, model, network, real HOME or installed app.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

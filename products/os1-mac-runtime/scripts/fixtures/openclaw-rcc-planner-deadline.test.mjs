@@ -1,5 +1,6 @@
 // Exact Core + temp SQLite, deterministic virtual Date/setTimeout only.
 // No real wait, provider/model/native/SDK/RPC call or real HOME mutation.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';

@@ -1,5 +1,6 @@
 // SYNTHETIC SOURCE/FAKE-BACKEND REGRESSIONS. No provider/model/network call,
 // no live contracts, quality comparison, training or public proof.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';

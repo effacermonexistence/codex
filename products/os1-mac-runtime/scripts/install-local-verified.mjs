@@ -104,37 +104,93 @@ export const verifyPagingRecoveryTree = (root, manifest, { allowAdditional = fal
     preservedBytes: manifest.entries.reduce((sum, entry) => sum + entry.bytes, 0),
     additionalEntries: current.entries.length - manifest.entries.length };
 };
-const copyPagingTree = (from, to, manifest) => {
+// The byte copy (every build before 446, and the fallback): an exclusive
+// 0600 file streamed from the O_NOFOLLOW source, fsynced.
+const streamPagingFile = (sourceFile, destination) => {
+  const input = fs.openSync(sourceFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  let output;
+  try {
+    const sourceStat = fs.fstatSync(input);
+    assert(sourceStat.isFile() && sourceStat.nlink === 1, 'paging copy source is not an unaliased file');
+    output = fs.openSync(destination, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    const buffer = Buffer.alloc(64 * 1024); let count;
+    while ((count = fs.readSync(input, buffer, 0, buffer.length, null)) > 0) {
+      let offset = 0;
+      while (offset < count) {
+        const written = fs.writeSync(output, buffer, offset, count - offset, null);
+        assert(written > 0, 'paging recovery write made no progress'); offset += written;
+      }
+    }
+    fs.fsyncSync(output);
+    const named = fs.lstatSync(sourceFile);
+    assert(!named.isSymbolicLink() && named.dev === sourceStat.dev && named.ino === sourceStat.ino,
+      'paging source identity changed during copy');
+  } finally { fs.closeSync(input); if (output !== undefined) fs.closeSync(output); }
+};
+// Build 446 (DESIGN-5 §C, owner order 2026-10-29: "storage must stop piling
+// up", never by deleting): new recovery copies are APFS CLONES. `cp -c`
+// clones with clonefile(2), sharing every unchanged block, and itself falls
+// back to a byte copy on a volume that cannot clone; `-n` never overwrites.
+// Node's own copyFile cannot clone on macOS (COPYFILE_FICLONE_FORCE is
+// ENOSYS there, measured 2026-10-29). One process per directory batch (the
+// 445 snapshot held 22,017 files in 398 directories). Returns false only when
+// the cloner cannot run at all (the caller then byte-copies, as before).
+export const cloneIntoDirectory = (sources, directory, { cp = '/bin/cp' } = {}) => {
+  const result = spawnSync(cp, ['-c', '-n', ...sources, directory + '/'],
+    { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', timeout: 600000 });
+  if (result.error?.code === 'ENOENT' || result.error?.code === 'EACCES') return false;
+  assert.equal(result.status, 0, 'recovery clone failed: ' + String(result.stderr ?? result.error ?? '').slice(0, 200));
+  return true;
+};
+// A single new file, cloned where the volume can (`cp -c -n`), else the
+// exclusive copy it always was. Every caller verifies the bytes after.
+export const cloneFileExclusive = (source, destination, { cp = '/bin/cp' } = {}) => {
+  assert(!present(destination), 'clone destination already exists');
+  const result = spawnSync(cp, ['-c', '-n', source, destination], { stdio: 'ignore', timeout: 600000 });
+  if (result.status === 0 && present(destination)) return 'clone';
+  assert(!present(destination), 'partial clone destination left behind');
+  fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  return 'copy';
+};
+// Exported for the synthetic paging fixture only (temporary trees).
+export const copyPagingTree = (from, to, manifest, { cloner = cloneIntoDirectory } = {}) => {
   safeRoot(from); safeRoot(path.dirname(to));
   assert(!present(to), 'paging recovery destination already exists');
   fs.mkdirSync(to, { mode: 0o700 });
+  const batches = new Map();
   for (const entry of manifest.entries) {
     const destination = pagingPath(to, entry.path);
-    if (entry.kind === 'directory') fs.mkdirSync(destination, { mode: 0o700 });
-    else {
-      assert.equal(fs.realpathSync(path.dirname(destination)), path.dirname(destination), 'paging destination parent changed');
-      const sourceFile = pagingPath(from, entry.path);
-      assert.deepEqual(fileIntegrity(sourceFile), { bytes: entry.bytes, sha256: entry.sha256 }, 'paging source changed before copy');
-      const input = fs.openSync(sourceFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-      let output;
-      try {
-        const sourceStat = fs.fstatSync(input);
-        assert(sourceStat.isFile() && sourceStat.nlink === 1, 'paging copy source is not an unaliased file');
-        output = fs.openSync(destination, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-        const buffer = Buffer.alloc(64 * 1024); let count;
-        while ((count = fs.readSync(input, buffer, 0, buffer.length, null)) > 0) {
-          let offset = 0;
-          while (offset < count) {
-            const written = fs.writeSync(output, buffer, offset, count - offset, null);
-            assert(written > 0, 'paging recovery write made no progress'); offset += written;
-          }
-        }
-        fs.fsyncSync(output);
-        const named = fs.lstatSync(sourceFile);
-        assert(!named.isSymbolicLink() && named.dev === sourceStat.dev && named.ino === sourceStat.ino,
-          'paging source identity changed during copy');
-      } finally { fs.closeSync(input); if (output !== undefined) fs.closeSync(output); }
-      assert.deepEqual(fileIntegrity(destination), { bytes: entry.bytes, sha256: entry.sha256 }, 'paging copy digest/byte mismatch');
+    if (entry.kind === 'directory') { fs.mkdirSync(destination, { mode: 0o700 }); continue; }
+    assert.equal(fs.realpathSync(path.dirname(destination)), path.dirname(destination), 'paging destination parent changed');
+    const sourceFile = pagingPath(from, entry.path);
+    // The same source checks as the byte copy, before anything is copied.
+    assert.deepEqual(fileIntegrity(sourceFile), { bytes: entry.bytes, sha256: entry.sha256 }, 'paging source changed before copy');
+    const sourceStat = fs.lstatSync(sourceFile);
+    assert(sourceStat.isFile() && !sourceStat.isSymbolicLink() && sourceStat.nlink === 1, 'paging copy source is not an unaliased file');
+    const directory = path.dirname(destination);
+    if (!batches.has(directory)) batches.set(directory, []);
+    batches.get(directory).push({ entry, sourceFile, destination, dev: sourceStat.dev, ino: sourceStat.ino });
+  }
+  let cloning = true;
+  for (const [directory, files] of batches) {
+    for (let start = 0; start < files.length; start += 512) {
+      const chunk = files.slice(start, start + 512);
+      if (cloning) cloning = cloner(chunk.map(file => file.sourceFile), directory);
+      for (const file of chunk) {
+        if (cloning) {
+          // A clone keeps the source's mode: the private copy is 0600, synced.
+          const named = fs.lstatSync(file.sourceFile), cloned = fs.lstatSync(file.destination);
+          assert(!named.isSymbolicLink() && named.dev === file.dev && named.ino === file.ino,
+            'paging source identity changed during copy');
+          assert(cloned.isFile() && !cloned.isSymbolicLink() && cloned.nlink === 1 && cloned.ino !== file.ino,
+            'paging clone is not a private regular file');
+          fs.chmodSync(file.destination, 0o600);
+          const fd = fs.openSync(file.destination, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+          try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        } else streamPagingFile(file.sourceFile, file.destination);
+        assert.deepEqual(fileIntegrity(file.destination), { bytes: file.entry.bytes, sha256: file.entry.sha256 },
+          'paging copy digest/byte mismatch');
+      }
     }
   }
   verifyPagingRecoveryTree(to, manifest, { privateCopy: true });
@@ -487,9 +543,12 @@ try {
     receipt.predecessorAfterLease = checkExpectedPredecessor();
     receipt.checks.push('expected predecessor identity after maintenance lease: PASS');
   }
-  run('/usr/bin/ditto', [source, stageApp]);
-  fs.copyFileSync(resource, stageCLI, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageCLI, 0o755);
-  fs.copyFileSync(sourceConfig, stageConfig, fs.constants.COPYFILE_EXCL); fs.chmodSync(stageConfig, 0o644);
+  // Build 446 (DESIGN-5 §C): staged copies are APFS clones where possible
+  // (`ditto --clone`, `cp -c`); the hash, signature and drill checks below
+  // are unchanged, and a clone is byte-identical.
+  run('/usr/bin/ditto', ['--clone', source, stageApp]);
+  cloneFileExclusive(resource, stageCLI); fs.chmodSync(stageCLI, 0o755);
+  cloneFileExclusive(sourceConfig, stageConfig); fs.chmodSync(stageConfig, 0o644);
   assert.equal(hash(stageConfig), receipt.stagedCLIConfigHash);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', stageApp]);
   assert.equal(hash(stageCLI), receipt.stagedCLIHash);

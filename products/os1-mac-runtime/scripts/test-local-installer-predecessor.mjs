@@ -93,7 +93,7 @@ try {
     const source = fs.readFileSync(fileURLToPath(new URL('./install-local-verified.mjs', import.meta.url)), 'utf8');
     const lease = source.indexOf("fs.writeFileSync(maintenanceLease, String(process.pid)");
     const afterLease = source.indexOf('receipt.predecessorAfterLease = checkExpectedPredecessor()');
-    const stage = source.indexOf("run('/usr/bin/ditto', [source, stageApp])");
+    const stage = source.indexOf("run('/usr/bin/ditto', ['--clone', source, stageApp])");
     const beforeSwap = source.indexOf('receipt.predecessorBeforeSwap = checkExpectedPredecessor()');
     const swap = source.indexOf('fs.renameSync(app, backupApp)');
     assert(lease > 0 && lease < afterLease && afterLease < stage && stage < beforeSwap && beforeSwap < swap);

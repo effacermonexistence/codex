@@ -52,6 +52,7 @@ func runRCCRuntimeContractFixture() throws {
     import {pathToFileURL} from 'node:url';
     import {readFileSync} from 'node:fs';
     const {hostContextFingerprint}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     process.stdout.write(hostContextFingerprint(JSON.parse(readFileSync(0,'utf8'))));
     """
     process.arguments = (process.executableURL?.path == "/usr/bin/env" ? ["node"] : []) +
@@ -289,6 +290,7 @@ func runRCCRuntimeContractFixture() throws {
     let vectorScript = """
     import{pathToFileURL}from'node:url';import{readFileSync}from'node:fs';
     const{assertFinalOutputOwnership,hostPlan}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const x=JSON.parse(readFileSync(0,'utf8')),a=x.node,b={...a,id:'js-second',dependencies:[]};
     const base={schema:1,task_id:x.task_id,request_sha256:x.request_sha256};
     const task={...base,mode:'explicit_routing_test',material_refs:[],host_context:{require_read_only:true,
@@ -323,6 +325,7 @@ func runRCCRuntimeContractFixture() throws {
     let reverseScript = """
     import{pathToFileURL}from'node:url';import{readFileSync}from'node:fs';import assert from'node:assert/strict';
     const{assertFinalOutputOwnership}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const x=JSON.parse(readFileSync(0,'utf8'));assert.equal(x.rows.length,x.original.length);
     for(let i=0;i<x.rows.length;i++){const r=x.rows[i];assert.deepEqual(r,x.original[i]);
       assertFinalOutputOwnership(r.plan,{mode:r.mode},{collectionMayBeOrdered:r.name==='host-ordered'});}
@@ -832,6 +835,7 @@ func runRCCRuntimeContractFixture() throws {
     import {tmpdir} from 'node:os';
     import {join} from 'node:path';
     const {createRCCRuntime,hostContextFingerprint}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-wire-'));
     const sha=s=>createHash('sha256').update(s).digest('hex');
     const emittedTickets=[];
@@ -1001,6 +1005,7 @@ func runRCCRuntimeContractFixture() throws {
     import {tmpdir} from 'node:os';
     import {join} from 'node:path';
     const {createRCCRuntime}=await import(pathToFileURL(process.argv[1]).href);
+    (await import(pathToFileURL(process.argv[1]).href)).configureLocalModel('qwen3.5:4b');
     const root=await mkdtemp(join(tmpdir(),'rcc-swift-node-partial-'));
     const sha=s=>createHash('sha256').update(s).digest('hex');
     const swiftV2=JSON.parse(readFileSync(0,'utf8'));

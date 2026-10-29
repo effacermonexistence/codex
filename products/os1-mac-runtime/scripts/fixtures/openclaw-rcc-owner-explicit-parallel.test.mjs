@@ -1,5 +1,6 @@
 // Real Core/tempSQLite and canned planner/native receipts only. No provider,
 // installed App, real HOME state, network, native SDK or model is executed.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';

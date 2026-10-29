@@ -1,4 +1,5 @@
 // Real durable Core, synthetic host receipts/executor. Zero provider calls.
+import './local-model-fixture.mjs';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,mkdtemp,rm,writeFile,symlink,rename} from 'node:fs/promises';

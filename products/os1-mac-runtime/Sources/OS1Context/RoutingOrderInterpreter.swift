@@ -37,7 +37,8 @@ public enum RoutingOrderInterpreter {
     public typealias Surface = RCCRuntimeContract.Surface
 
     /// The local model OpenClaw already runs; the interpreter adds no model.
-    public static let model = RCCNativeCatalogBuilder.localWorkerModel
+    /// Build 446: the machine's one local model (`LocalModelSelection.active`).
+    public static var model: String { RCCNativeCatalogBuilder.localWorkerModel }
     /// Measured 2026-10-15 on this Mac under load (load average 7-11): a
     /// compact route-all answer 7-9 s, a named one 11-13 s; up to 20.9 s
     /// before answers were compact and with concurrent calls on the one-slot
@@ -1009,9 +1010,13 @@ public enum RoutingOrderInterpreter {
     /// (`LocalRequestClassifier`) passes its own schema, answer bound and
     /// residency (`keep_alive`); the defaults are this interpreter's call,
     /// byte for byte.
+    /// Build 446 (DESIGN-5 §B): every call sends the one shared context
+    /// (`LocalModelSelection.contextTokens`): Ollama reloads a resident model
+    /// whose context differs, and the classifier, the interpreter and the
+    /// gateway now share one model.
     public static func ollamaAsk(endpoint: URL = endpoint, model: String = model, timeout: TimeInterval = timeout,
                                  schema: String = schemaJSON, maximumTokens: Int = maximumAnswerTokens,
-                                 keepAlive: String? = nil) -> Ask {
+                                 keepAlive: String? = nil, contextTokens: Int = LocalModelSelection.contextTokens) -> Ask {
         { system, request in
             // The schema goes out byte for byte: its property order is the
             // order the model fills the answer in, and a dictionary would
@@ -1023,7 +1028,7 @@ public enum RoutingOrderInterpreter {
             }
             let residency = try keepAlive.map { #","keep_alive":"# + (try quoted($0)) } ?? ""
             let body = #"{"model":"# + (try quoted(model)) + #","stream":false,"think":false"# + residency + #","format":"# + schema +
-                #","options":{"temperature":0,"seed":7,"num_predict":\#(maximumTokens)},"messages":[{"role":"system","content":"# + (try quoted(system)) +
+                #","options":{"temperature":0,"seed":7,"num_predict":\#(maximumTokens),"num_ctx":\#(contextTokens)},"messages":[{"role":"system","content":"# + (try quoted(system)) +
                 #"},{"role":"user","content":"# + (try quoted(request)) + "}]}"
             guard (try? JSONSerialization.jsonObject(with: Data(body.utf8))) != nil else { throw Failure.transport("request_shape") }
             let configuration = URLSessionConfiguration.ephemeral
@@ -1105,12 +1110,15 @@ public enum RoutingOrderInterpreter {
     }
     /// Load `model` (or extend its residency) without generating anything:
     /// the chat endpoint with no messages, `keep_alive` set. The same runner
-    /// options as the classifier's own call (none), so the classifier finds
-    /// the runner this loads. True when Ollama answered `done`.
+    /// options as the classifier's own call (build 446: the one shared
+    /// context), so the classifier finds the runner this loads. True when
+    /// Ollama answered `done`.
     public static func ollamaLoad(model: String, keepAlive: String, endpoint: URL = endpoint,
                                   timeout: TimeInterval = 60) async -> Bool {
         guard let body = try? JSONSerialization.data(withJSONObject: ["model": model, "messages": [Any](),
-                                                                      "keep_alive": keepAlive], options: [.sortedKeys]),
+                                                                      "keep_alive": keepAlive,
+                                                                      "options": ["num_ctx": LocalModelSelection.contextTokens]],
+                                                     options: [.sortedKeys]),
               let object = await ollamaJSON(endpoint, body: body, timeout: timeout) else { return false }
         return object["done"] as? Bool == true
     }

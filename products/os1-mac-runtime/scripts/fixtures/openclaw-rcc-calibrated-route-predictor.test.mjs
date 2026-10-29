@@ -1,5 +1,6 @@
 // SYNTHETIC SOFTWARE CONTRACTS ONLY. No provider/model execution, real training
 // result, production promotion, quota saving or externally certified quality.
+import './local-model-fixture.mjs';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
