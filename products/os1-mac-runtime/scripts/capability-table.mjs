@@ -12,6 +12,15 @@
  *
  *   node scripts/capability-table.mjs compile --evidence <file> --prices <file> [--out <new file>]
  *   node scripts/capability-table.mjs check --evidence <file> --prices <file> --table <file>
+ *   node scripts/capability-table.mjs estimate --evidence <file> --prices <file> --ledger-snapshot <file> [--out <new file>]
+ *   node scripts/capability-table.mjs estimate-check --evidence <file> --prices <file> --ledger-snapshot <file> --table <file>
+ *
+ * `estimate` / `estimate-check` (DESIGN-6 O1, owner decision 2026-10-29) run
+ * scripts/effort-curve-estimator.mjs: the same delta-0 bar and blockers, with a
+ * missing (model, effort) score estimated from effort->score curves minus a
+ * leave-one-out back-tested margin, and an effort-aware cost. They write a
+ * CANDIDATE (Resources/model-capability-table.estimate-candidate.json); the
+ * shipped table, its Swift copy and its pin are only ever `compile` output.
  *
  * The rule (DESIGN-3 "Qualification rule"). Per pool (provider) and category,
  * against that pool's reference model at its max effort, or at its top
@@ -331,6 +340,12 @@ export function main(argv = process.argv.slice(2)) {
   } else process.stdout.write(bytes);
   return 0;
 }
+const ESTIMATE_COMMANDS = Object.freeze({estimate: 'compile', 'estimate-check': 'check'});
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  try { process.exitCode = main(); } catch (error) { process.stderr.write(String(error.message ?? error) + '\n'); process.exitCode = 64; }
+  const fail = error => { process.stderr.write(String(error.message ?? error) + '\n'); process.exitCode = 64; };
+  const [command, ...rest] = process.argv.slice(2);
+  if (Object.hasOwn(ESTIMATE_COMMANDS, command))
+    import('./effort-curve-estimator.mjs').then(estimator => { process.exitCode = estimator.main([ESTIMATE_COMMANDS[command], ...rest]); })
+      .catch(fail);
+  else try { process.exitCode = main(); } catch (error) { fail(error); }
 }
