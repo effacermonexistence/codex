@@ -505,6 +505,10 @@ public enum RCCNativeCatalogBuilder {
                              var law = law
                              law.referenceRequest = RequestProfile.ownerAsksForReference(input.request,
                                                                                         profile: input.requestProfile)
+                             // Lead correction 2: the pools' rate-limit state for
+                             // Core's derived exchange.
+                             law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota,
+                                                               accountIDs: input.accountIDs, now: input.now)
                              return law
                          } : nil)
     }

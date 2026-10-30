@@ -156,6 +156,10 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-
 # (admissibility, tau, E[Q], argmin, headroom, rollback, the owner questions).
 node "$script_dir/routing-law-table.mjs" check
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law.test.mjs"
+# Lead correction 3 (2026-10-29): value of information per (cell, family) and
+# the REVAS paired-audit harness (frozen local checklists, local grading, the
+# weekly cap, paid runs refused without explicit confirmation); zero quota.
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law-audit.test.mjs"
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"

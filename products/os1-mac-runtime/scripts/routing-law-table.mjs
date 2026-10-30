@@ -24,7 +24,14 @@
  *  - p_fail per (model, effort, law family): the routing ledger's JUDGED
  *    laddered attempts of law routes (a verifier or check verdict, an observed
  *    non-return or escalation; an undispatched or unjudged attempt is no
- *    evidence), with the Laplace prior; a cell with no judged run is the prior.
+ *    evidence), with the Laplace prior; Core gives a row with evidence its
+ *    reference's p_fail until its own runs move it (lead correction 1);
+ *  - the passed REVAS paired audits (evidence form c) per (model@effort, law
+ *    family): the committed verdicts of scripts/routing-law-audit.mjs grade
+ *    (lead correction 3; none yet);
+ *  - the pool exchange is not a table constant: Core derives it per request
+ *    from the host's rate-limit observations (lead correction 2); the table
+ *    carries only its declared formula.
  *
  *   node scripts/routing-law-table.mjs snapshot --tiers <tiers.json> --quota <quota dir> --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs compile [--out <new file>]
@@ -48,6 +55,7 @@ export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261029.json',
   ledger: 'scripts/routing-law-ledger-20261029.json',
+  audits: 'scripts/routing-law-audits-20261029.json',
   policy: 'scripts/routing-law-policy.json',
   prices: 'Resources/model-price-table.json',
   profiles: 'Config/production.json',
@@ -463,14 +471,31 @@ export function compileFamilies(evidence, policy) {
   return out;
 }
 
+/** Evidence form (c): the committed paired-audit verdicts, keyed
+ * model@effort|law family (pooled over surfaces, as p_fail). Only a verdict of
+ * the pre-registered rule with its answers' digest is carried. */
+export function compileAudits(audits) {
+  if (audits.schema !== 1 || audits.cells === null || typeof audits.cells !== 'object') throw new Error('audits snapshot schema 1 required');
+  const out = {};
+  for (const [key, cell] of Object.entries(audits.cells)) {
+    if (!/^[a-z0-9][a-z0-9._-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(key) || !['pass', 'fail', 'inconclusive'].includes(cell?.verdict) ||
+        !/^[a-f0-9]{64}$/.test(cell?.answers_sha256 ?? '') || !Number.isSafeInteger(cell?.n) || cell.n < 1)
+      throw new Error('bad audit verdict ' + key);
+    out[key] = {verdict: cell.verdict, id: 'audit-' + cell.answers_sha256.slice(0, 12), n: cell.n, discordant: cell.discordant ?? null};
+  }
+  return {basis: 'REVAS paired audits (scripts/routing-law-audit.mjs grade): ' + audits.rule, cells: out};
+}
+
 export function compileTable(bytes) {
   const json = name => JSON.parse(bytes[name].toString('utf8'));
   const evidence = json('evidence'), quota = json('quota'), ledger = json('ledger'), policy = json('policy');
-  const prices = json('prices'), profiles = json('profiles');
+  const prices = json('prices'), profiles = json('profiles'), audits = json('audits');
   const tau = compileTau(evidence);
   return {schema: 1, policy: 'routing_law_447', objective: policy.objective,
     inputs: Object.fromEntries(Object.entries(bytes).map(([name, value]) => [name, sha(value)])),
-    references: policy.references, pool_units: policy.pool_units, headroom_threshold: policy.headroom_threshold,
+    references: policy.references, pool_units: policy.pool_units, exchange: policy.exchange,
+    p_fail_inheritance: policy.p_fail_inheritance, value_of_information: policy.value_of_information,
+    audits: compileAudits(audits),
     local_admission: policy.local_admission, ask_back: policy.ask_back,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {

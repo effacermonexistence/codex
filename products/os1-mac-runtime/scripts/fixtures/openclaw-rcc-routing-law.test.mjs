@@ -1,7 +1,8 @@
 // Build 447 (DESIGN-8, owner-approved direction 2026-10-29): the routing law.
 // The compiled table (tau from data, matched-tier admission, real quota per
 // cost shape, p_fail with a Laplace prior), the engine (admissible set,
-// E[Q] = Q + p_fail x Q(escalation) + scarcity, argmin) and its receipts, the
+// E[Q] = Q·price + p_fail x Q(repair)·price at each pool's derived exchange,
+// with p_fail inherited from the reference (lead corrections 1-2), argmin) and its receipts, the
 // rollback switch, local-first, the ask-back, grant invariance, and the
 // durable Core (ladder, screen, ledger receipt). Pure resolver calls and a
 // real durable Core with temp SQLite and a fake executor: no provider, model,
@@ -15,9 +16,9 @@ import {readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {lawCatalog, routeOf, OWNER_QUESTIONS} from '../routing-law-replay.mjs';
+import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS} from '../routing-law-replay.mjs';
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
-  lawScarcity, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
+  lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger}
   from '../routing-law-table.mjs';
@@ -90,13 +91,17 @@ test('admission (b): within tau of the reference best at any effort, on every pu
   // W2 (four published): sonnet@xhigh is within tau on Briefcase alone: not admitted.
   assert.equal(TABLE.admission.W2.anthropic_shared.cells['claude-sonnet-5-5@xhigh'].pass, false);
   assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form, 'none');
+  // A coverage shortfall within tau is a gap of evidence ('short'), never evidence against.
+  assert.deepEqual(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').tiers, [['W2', 'short']]);
+  assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').gap, true);
+  assert.equal(lawEvidence(TABLE, 'F4', 'openai_codex', 'gpt-6.1-sol', 'max').gap, false); // T1F fails tau
   assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-opus-5-5', 'xhigh').form, 'b');
   // No evidence is never evidence: a family whose tiers the pool never publishes.
   assert.equal(lawEvidence(TABLE, 'F5a', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'none');
   assert.equal(lawEvidence(TABLE, 'F1', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'none');
 });
 
-test('E[Q]: real quota per cost shape, p_fail(c, family) with the Laplace prior, the scarcity price', () => {
+test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail inherited from the reference (corrections 1, 2)', () => {
   const row = (surface, model, effort) => ({surface, model, effort});
   const opus = lawQuota(TABLE, row('claude-chat', 'claude-opus-5-5', 'max'), 'answer');
   assert.equal(opus.basis, 'measured_os1');
@@ -108,23 +113,47 @@ test('E[Q]: real quota per cost shape, p_fail(c, family) with the Laplace prior,
     lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'answer').q);
   assert.deepEqual(lawQuota(TABLE, row('local', 'qwen3.5:9b', 'none'), 'answer'), {q: 0, basis: 'local'});
   assert.equal(lawQuota(TABLE, row('codex', 'gpt-5.5', 'high'), 'answer'), null); // not on the price table
-  // p_fail(c, family): judged runs of that model@effort in that law family; no
-  // judged run is the prior 1/2. The committed ledger has none attributed to a
-  // law family (every judged run predates the law): all prior, never pooled.
+  // p_fail(c, family): judged runs of that model@effort in that law family; the
+  // committed ledger has none attributed to a law family (every judged run
+  // predates the law): every estimate is the Laplace prior 1/2, never pooled.
   assert.deepEqual(TABLE.p_fail.cells, {});
   assert.ok(TABLE.p_fail.excluded.undispatched > 0 && TABLE.p_fail.excluded.unjudged > 0);
-  assert.equal(lawPFail(TABLE, row('codex', 'gpt-6.1-sol', 'medium'), 'F5a'), 0.5);
+  const astra = row('codex', 'gpt-6-astra', 'ultra'), sol = row('codex', 'gpt-6.1-sol', 'medium');
+  assert.equal(lawPFail(TABLE, sol, 'F5a'), 0.5);
+  assert.equal(lawPFail(TABLE, sol, 'F5a', astra), 0.5); // inherited: the reference's own (the prior)
+  // Correction 1: a row with evidence has its reference's p_fail until its own
+  // judged runs move it, at the prior's weight (2).
   const keyed = {...TABLE, p_fail: compilePFail({schema: 2, excluded: {}, cells: [
+    {model: 'gpt-6-astra', effort: 'ultra', family: 'F5a', runs: 18, failures: 1},
     {model: 'gpt-6.1-sol', effort: 'medium', family: 'F5a', runs: 8, failures: 1}]}, {laplace: {failures: 1, runs: 2}})};
-  assert.equal(lawPFail(keyed, row('codex', 'gpt-6.1-sol', 'medium'), 'F5a'), 0.2);
-  assert.equal(lawPFail(keyed, row('codex', 'gpt-6.1-sol', 'medium'), 'F6-code'), 0.5); // another family: the prior
+  assert.equal(lawPFail(keyed, astra, 'F5a'), 0.1); // the reference: (1 + 1) / (18 + 2)
+  assert.equal(lawPFail(keyed, row('codex', 'gpt-6-luna', 'low'), 'F5a', astra), 0.1); // no own runs: the reference's
+  assert.ok(Math.abs(lawPFail(keyed, sol, 'F5a', astra) - (1 + 2 * 0.1) / (8 + 2)) < 1e-12);
+  assert.equal(lawPFail(keyed, sol, 'F5a'), 0.2); // its own Laplace estimate (no evidence: the local row's rule)
+  assert.equal(lawPFail(keyed, sol, 'F6-code', astra), 0.5); // another family: the reference's prior there
   assert.equal(lawPFail(keyed, row('claude', 'claude-opus-5-5', 'max'), 'F4'), lawPFail(keyed, row('claude-chat', 'claude-opus-5-5', 'max'), 'F4'));
-  assert.equal(lawExpectedQuota({q: 0.01, pFail: 0.25, escalationQ: 0.04, scarcity: 0.002}), 0.022);
-  // Scarcity is proportional to the draw on the scarce pool (review of 447).
-  assert.equal(lawScarcity(0.04, 0.6, 0.15), 0);
-  assert.ok(Math.abs(lawScarcity(0.04, 0.05, 0.15) - 0.04 * 0.1 / 0.15) < 1e-12);
-  assert.ok(Math.abs(lawScarcity(0.004, 0.05, 0.15) - 0.004 * 0.1 / 0.15) < 1e-12);
-  assert.equal(lawScarcity(0.04, null, 0.15), 0);
+  // E[Q] = Q·price + p_fail·Q(repair)·price(repair pool).
+  assert.equal(lawExpectedQuota({q: 0.01, price: 2, pFail: 0.25, escalationQ: 0.04, escalationPrice: 0.5}), 0.025);
+  // The pool exchange (correction 2): max over open windows of ttr / remaining.
+  const now = 1_800_000_000_000, week = 10080, h = 3_600_000;
+  const at = (windows, ageMS = 0, validMS = 600_000) => ({routing_law: {pools: {anthropic_shared:
+    {observed_at_ms: now - ageMS, valid_until_ms: now - ageMS + validMS, windows}}}});
+  const w = (used, hoursLeft, minutes = week) => ({used_percent: used, resets_at_ms: now + hoursLeft * h, window_minutes: minutes});
+  assert.equal(lawPoolPrice(at([w(50, 84)]), 'anthropic_shared', now).price, 1); // on pace
+  assert.ok(Math.abs(lawPoolPrice(at([w(89, 0.8 * 168)]), 'anthropic_shared', now).price - 0.8 / 0.11) < 1e-9); // scarce: 7.27
+  assert.ok(Math.abs(lawPoolPrice(at([w(40, 0.1 * 168)]), 'anthropic_shared', now).price - 0.1 / 0.6) < 1e-9); // plentiful
+  const binding = lawPoolPrice(at([w(10, 1, 300), w(95, 67)]), 'anthropic_shared', now);
+  assert.equal(binding.window_minutes, week); // the weekly binds (67/168 / 0.05) over the session (0.2 / 0.9)
+  assert.equal(lawPoolPrice(at([w(100, 50)]), 'anthropic_shared', now).price, Infinity); // exhausted: cannot be drawn
+  // Stale, reset-crossed or missing data: the row's remaining share, the whole window ahead.
+  assert.deepEqual([lawPoolPrice(at([w(50, 84)], 700_000), 'anthropic_shared', now, 0.4).price,
+    lawPoolPrice(at([w(50, 84)], 700_000), 'anthropic_shared', now, 0.4).basis], [2.5, 'remaining_whole_window_ahead']);
+  assert.equal(lawPoolPrice(at([w(50, -1)]), 'anthropic_shared', now, 0.5).price, 2);
+  assert.equal(lawPoolPrice({}, 'openai_codex', now, 0.6).price, 1 / 0.6);
+  assert.deepEqual([lawPoolPrice({}, 'openai_codex', now).price, lawPoolPrice({}, 'openai_codex', now).basis], [1, 'no_quota_evidence_pace']);
+  // The table declares the formula; it carries no 1:1 or threshold constant.
+  assert.equal(TABLE.headroom_threshold, undefined);
+  assert.match(TABLE.exchange.formula, /ttr_w \/ remaining_w/);
 });
 
 test('p_fail evidence: only judged runs of a law family count; undispatched and unjudged attempts are no evidence', () => {
@@ -209,9 +238,13 @@ test('every owner fixed question routes to the law\'s recorded output, with a re
     assert.equal(receipt.eq, Math.min(...admissible.map(([, , , eq]) => eq)), `#${q.n}`);
     for (const [key, form, quota, eq, excluded] of receipt.candidates) {
       assert.match(key, /^[a-z-]+:[a-z0-9.:-]+@[a-z]+$/);
-      assert.match(form, /^(?:reference|owner_order|b:.+|x:.*)$/);
-      assert.ok(excluded === null ? Number.isFinite(eq) && eq >= quota : eq === null, `#${q.n} ${key}`);
+      assert.match(form, /^(?:reference|owner_order|b:.+|c:audit-[a-f0-9]{12}|x:.*)$/);
+      assert.ok(excluded === null ? Number.isFinite(eq) && eq >= quota * receipt.rates[key.startsWith('codex') ? 'openai_codex' :
+        'anthropic_shared']?.rate - 1e-9 || key.startsWith('local') : eq === null, `#${q.n} ${key}`);
     }
+    // The derived exchange of each pool is in every receipt (correction 2).
+    for (const rate of Object.values(receipt.rates)) assert.ok(rate.rate === 'exhausted' || rate.rate > 0);
+    assert.match(routed.reason, /;law_rate_(?:Cw|Px)_/);
     assert.match(routed.reason, /;law_policy_447;/);
     assert.match(routed.reason, new RegExp(`;law_family_${q.expected_family};`));
     assert.ok(routed.reason.length <= 1024, `#${q.n} reason ${routed.reason.length} chars`);
@@ -251,28 +284,64 @@ test('rollback: without routing_law (routing_policy=law_446) every owner questio
   }
 });
 
-test('headroom: a scarce pool is priced up in proportion to each row\'s draw, never switched off', () => {
+test('the derived exchange: a scarce pool is priced up by its own windows, never switched off; an exhausted one cannot be drawn', () => {
   const q = question(6); // a writer build: Claude's opus@medium below its reference
-  const at = remaining => lawOf(q, c => ({...c, candidates: c.candidates.map(row => row.quota_pool === 'anthropic_shared' ?
-    {...row, quota_remaining_fraction: remaining} : row)}));
-  const plain = routeOf(q.request, at(0.6)), scarce = routeOf(q.request, at(0.05));
-  const k = (0.15 - 0.05) / 0.15;
+  const at = c => clockOf(c);
+  const pooled = (claude, codex) => lawOf(q, c => ({...c, routing_law: {...c.routing_law, pools: {
+    anthropic_shared: {observed_at_ms: at(c) - 1000, valid_until_ms: at(c) + 600_000,
+      windows: [{used_percent: claude, resets_at_ms: at(c) + 0.4 * 7 * 86_400_000, window_minutes: 10080}]},
+    openai_codex: {observed_at_ms: at(c) - 1000, valid_until_ms: at(c) + 600_000,
+      windows: [{used_percent: codex, resets_at_ms: at(c) + 0.7 * 7 * 86_400_000, window_minutes: 10080}]}}}}));
+  const plain = routeOf(q.request, lawOf(q)), scarce = routeOf(q.request, pooled(95, 40));
+  assert.deepEqual([scarce.law.rates.anthropic_shared.basis, scarce.law.rates.anthropic_shared.ttr], ['observed_window', 0.4]);
+  const claudeRate = scarce.law.rates.anthropic_shared.rate, plainRate = plain.law.rates.anthropic_shared.rate;
+  assert.ok(Math.abs(claudeRate - 0.4 / 0.05) < 1e-6 && Math.abs(plainRate - 1 / 0.6) < 1e-6);
   const eqOf = (routed, key) => routed.law.candidates.find(([row]) => row === key);
-  for (const [key, , quota, eq, excluded] of scarce.law.candidates.filter(([key]) => key.startsWith('claude'))) {
+  for (const [key, , , eq, excluded] of scarce.law.candidates.filter(([key]) => key.startsWith('claude'))) {
     if (excluded !== null) continue;
-    // Every term of a Claude row's E[Q] is a Claude draw, so each is scaled by (1 + k).
-    assert.ok(Math.abs(eq - eqOf(plain, key)[3] * (1 + k)) < 1e-5, `${key} ${eq} vs ${eqOf(plain, key)[3]}`);
-    assert.ok(eq > quota, key);
+    // Every term of a Claude row's E[Q] is a Claude draw: each scales with the rate.
+    assert.ok(Math.abs(eq - eqOf(plain, key)[3] * claudeRate / plainRate) < 1e-5, `${key} ${eq} vs ${eqOf(plain, key)[3]}`);
   }
-  // Within the scarce pool the cheap row still beats its own reference: scarcity
+  // Within the scarce pool the cheap row still beats its own reference: a rate
   // never favours the largest draw (review of 447).
   assert.equal(scarce.route, 'claude:claude-opus-5-5@medium');
-  const reference = eqOf(scarce, 'claude:claude-fable-5-1@max');
-  assert.ok(eqOf(scarce, scarce.route)[3] < reference[3]);
-  const q0 = lawQuota(TABLE, {surface: 'claude', model: 'claude-fable-5-1', effort: 'max'}, 'agentic').q;
-  assert.ok(Math.abs(reference[3] - q0 * (1 + k)) < 1e-5);
+  assert.ok(eqOf(scarce, scarce.route)[3] < eqOf(scarce, 'claude:claude-fable-5-1@max')[3]);
   assert.equal(scarce.law.argmin, scarce.route);
-  assert.match(scarce.reason, /;law_scarcity_/);
+  assert.match(scarce.reason, /;law_rate_Cw_8\.0000;/);
+  assert.match(scarce.reason, /;law_rate_Px_1\.1667;/); // 0.7 of the week to run, 60% left
+  // An exhausted pool prices nothing: its rows are excluded, never chosen.
+  const spent = routeOf(question(3).request, lawOf(question(3), c => ({...c, routing_law: {...c.routing_law, pools: {
+    openai_codex: {observed_at_ms: clockOf(c) - 1000, valid_until_ms: clockOf(c) + 600_000,
+      windows: [{used_percent: 100, resets_at_ms: clockOf(c) + 86_400_000, window_minutes: 10080}]}}}})));
+  assert.equal(spent.law.rates.openai_codex.rate, 'exhausted');
+  assert.ok(spent.law.candidates.filter(([key]) => key.startsWith('codex')).every(([, , , , excluded]) =>
+    excluded === 'pool_exhausted' || excluded === 'no_evidence'));
+  assert.ok(!spent.route.startsWith('codex'));
+});
+
+test('correction 1: an admissible row pays only the reference\'s own failure rate; the reference prices its own repair', () => {
+  // F4 (owner question 3): opus@max has evidence (T1, T2P); at equal rates its
+  // E[Q] beats both references, which pay for their own verifier failures.
+  const routed = routeOf(question(3).request, lawOf(question(3)));
+  assert.equal(routed.route, 'claude-chat:claude-opus-5-5@max');
+  const [, , qOpus, eqOpus] = routed.law.candidates.find(([key]) => key === routed.route);
+  const [, , qAstra, eqAstra] = routed.law.candidates.find(([key]) => key === 'codex:gpt-6-astra@ultra');
+  const [, , qFable] = routed.law.candidates.find(([key]) => key === 'claude-chat:claude-fable-5-1@max');
+  const rate = routed.law.rates.anthropic_shared.rate;
+  assert.ok(Math.abs(eqAstra - qAstra * routed.law.rates.openai_codex.rate * 1.5) < 1e-5, 'a reference: Q(1 + p_fail) at its rate');
+  assert.ok(Math.abs(eqOpus - (qOpus + 0.5 * qFable) * rate) < 1e-5, 'opus: Q + p_ref x Q(fable)');
+  assert.ok(eqOpus < eqAstra);
+});
+
+test('the owner\'s reference words (P) admit the references only, priced on the work the reading does', () => {
+  // A build read as action (F7, agentic) with reference words: the references
+  // compete on the agentic shape (fable@max agentic, not astra on the answer shape).
+  const q = question(6);
+  const routed = routeOf(q.request, lawOf(q, c => ({...c, routing_law: {...c.routing_law, reference_request: true}})));
+  assert.equal(routed.law.family, 'P');
+  assert.equal(routed.law.shape, 'agentic');
+  assert.equal(routed.route, 'claude:claude-fable-5-1@max');
+  assert.ok(routed.law.candidates.every(([, form, , , excluded]) => form === 'reference' || excluded !== null));
 });
 
 test('a writer that does work is priced on the agentic shape; the same reading answering is priced as an answer', () => {
@@ -457,7 +526,14 @@ test('the catalog contract: routing_law travels only well-formed and beside the 
   const bad = [{...good, policy: 'law_446'}, {...good, schema: 2}, {...good, table_sha256: 'x'},
     {...good, reader: 'none'}, {...good, reading: {...good.reading, task_type: 'dance'}},
     {...good, reading: {...good.reading, extra: 1}}, {...good, reader: 'local_llm:qwen3.5:9b', reading: null},
-    (({reading, ...rest}) => rest)(good), (({reference_request, ...rest}) => rest)(good), {...good, reference_request: 'yes'}];
+    (({reading, ...rest}) => rest)(good), (({reference_request, ...rest}) => rest)(good), {...good, reference_request: 'yes'},
+    // Lead correction 2: the pools' windows are well-formed or the catalog is.
+    {...good, pools: {elsewhere: null}}, {...good, pools: []},
+    {...good, pools: {openai_codex: {observed_at_ms: 1, valid_until_ms: 2, windows: []}}},
+    {...good, pools: {openai_codex: {observed_at_ms: 1, valid_until_ms: 2, windows: [{used_percent: 101, resets_at_ms: 3, window_minutes: 60}]}}},
+    {...good, pools: {openai_codex: {observed_at_ms: 1, valid_until_ms: 2, windows: [{used_percent: 1, resets_at_ms: 3, window_minutes: 0}]}}},
+    {...good, pools: {openai_codex: {observed_at_ms: 1, valid_until_ms: 2, account_id: 'x',
+      windows: [{used_percent: 1, resets_at_ms: 3, window_minutes: 60}]}}}];
   return Promise.all(bad.map(async routingLaw => {
     const dir = await mkdtemp(join(tmpdir(), 'os1-law-bad-')); await chmod(dir, 0o700);
     const catalog = {...lawOf(q), routing_law: routingLaw};

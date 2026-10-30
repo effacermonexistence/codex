@@ -7,21 +7,26 @@ import Foundation
 /// model at its highest reasoning, with less quota. Core (rcc-runtime.mjs,
 /// routing law) turns the local model's reading into a family, keeps the
 /// candidates with evidence that they give the reference's result on that
-/// family's benchmark tiers, prices each in real quota (E[Q] = Q + p_fail x
-/// Q(escalation) + scarcity) and binds the argmin. Its inputs are one compiled
+/// family's benchmark tiers (or a passed paired audit), prices each in real
+/// quota at each pool's derived exchange (E[Q] = Q·price + p_fail x
+/// Q(repair)·price; lead corrections 2026-10-29: a row with evidence inherits
+/// its reference's p_fail, and a pool's price is the share of its remaining
+/// allowance until its reset, from the `pools` the host sends) and binds the
+/// argmin. Its inputs are one compiled
 /// table (`scripts/routing-law-table.mjs`; `Resources/routing-law-table.json`
 /// is the reviewable copy, Core embeds the same bytes): `tableSHA256` is the
 /// pin both sides check.
 ///
 /// The host only (a) decides the switch, (b) reads the request with the local
 /// model for every Auto request (the keyword rails no longer decide the tier:
-/// they set the permission scope only) and (c) carries the raw reading and
-/// the owner's own reference words (`reference_request`, build 446's
-/// capability guard) in the catalog's `routing_law`. The rollback is `routing_policy=law_446`: the
+/// they set the permission scope only) and (c) carries the raw reading, the
+/// owner's own reference words (`reference_request`, build 446's capability
+/// guard) and the pools' rate-limit windows (`pools`, `poolStates`) in the
+/// catalog's `routing_law`. The rollback is `routing_policy=law_446`: the
 /// catalog then carries no `routing_law` and Core keeps build 446's routes.
 public enum RoutingLaw {
     /// SHA-256 of `Resources/routing-law-table.json` (the compiled table).
-    public static let tableSHA256 = "78c5fb182df056753b227866464ae6bf581bf677494108aa6d9877f2a3500815"
+    public static let tableSHA256 = "f19c996c46e42ed59c34261017fa5561355dda24ff4ad8c754b3d2fec461e53f"
 
     public enum Policy: String, Codable, Sendable, CaseIterable {
         case law446 = "law_446", law447 = "law_447"
@@ -57,6 +62,47 @@ public enum RoutingLaw {
             return Selection(policy: defaultPolicy, source: "default_invalid_file")
         }
         return Selection(policy: value, source: "file")
+    }
+
+    /// Lead correction 2 (DESIGN-8, 2026-10-29): each quota pool's rate-limit
+    /// state for Core's derived exchange (lawPoolPrice: the scarcest open
+    /// window's share still to run over its share left). From the host's own
+    /// quota observations of the dispatching account only while retainable
+    /// (same account, no reset crossed, at most ten minutes old), valid until
+    /// ten minutes after observation or the first reset. Only the general
+    /// windows (no model or surface scope) whose length is known: the
+    /// provider's reported length (Codex), else the provider's named window
+    /// (Claude `session` = 5 hours, `weekly_*` = 7 days). A pool with no such
+    /// window is absent: Core then prices it conservatively from its rows'
+    /// remaining share with the whole window ahead.
+    public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?,
+                                  accountIDs: [String: String], now: Date) -> [String: RCCRuntimeContract.RoutingLaw.PoolState]? {
+        var out: [String: RCCRuntimeContract.RoutingLaw.PoolState] = [:]
+        for (pool, provider, snapshot) in [("openai_codex", "codex", codex), ("anthropic_shared", "claude", claude)] {
+            guard let snapshot, let account = accountIDs[provider],
+                  snapshot.isRetainable(accountID: account, now: now) else { continue }
+            let windows = snapshot.windows.compactMap { window -> RCCRuntimeContract.RoutingLaw.PoolWindow? in
+                guard window.model == nil, window.surface == nil, let reset = window.resetsAt, reset > now,
+                      let minutes = window.windowMinutes ?? claudeWindowMinutes(window.bucket, source: snapshot.source) else { return nil }
+                return .init(usedPercent: window.usedPercent, resetsAtMS: Int64(reset.timeIntervalSince1970 * 1000), windowMinutes: minutes)
+            }.prefix(8)
+            guard !windows.isEmpty else { continue }
+            let observed = Int64(snapshot.observedAt.timeIntervalSince1970 * 1000)
+            let retained = Int64(snapshot.observedAt.addingTimeInterval(BackendHealth.QuotaSnapshot.retainedMaximumAge)
+                .timeIntervalSince1970 * 1000)
+            let state = RCCRuntimeContract.RoutingLaw.PoolState(observedAtMS: observed,
+                validUntilMS: ([retained] + windows.map(\.resetsAtMS)).min()!, windows: Array(windows))
+            if state.valid { out[pool] = state }
+        }
+        return out.isEmpty ? nil : out
+    }
+    /// Claude's named windows (`get_usage` kinds): the session window is five
+    /// hours, a weekly window seven days; anything else is unknown.
+    static func claudeWindowMinutes(_ bucket: String, source: BackendHealth.QuotaSnapshot.Source) -> Double? {
+        guard source == .claudeNative else { return nil }
+        if bucket == "session" { return 300 }
+        if bucket.hasPrefix("weekly") { return 10_080 }
+        return nil
     }
 
     /// The catalog's `routing_law` for one request under `policy`: nil under

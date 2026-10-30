@@ -464,6 +464,40 @@ public enum RCCRuntimeContract {
                     (intent.map { Self.intents.contains($0) } ?? true)
             }
         }
+        /// Lead correction 2 (2026-10-29): one quota pool's latest rate-limit
+        /// observation of the account OS-1 dispatches through: its general
+        /// windows (used share, reset, length). Core derives the pool's price
+        /// from it (lawPoolPrice); usage only, never an account id.
+        public struct PoolWindow: Codable, Equatable, Sendable {
+            public var usedPercent: Double
+            public var resetsAtMS: Int64
+            public var windowMinutes: Double
+            public init(usedPercent: Double, resetsAtMS: Int64, windowMinutes: Double) {
+                self.usedPercent = usedPercent; self.resetsAtMS = resetsAtMS; self.windowMinutes = windowMinutes
+            }
+            enum CodingKeys: String, CodingKey {
+                case usedPercent = "used_percent", resetsAtMS = "resets_at_ms", windowMinutes = "window_minutes"
+            }
+            public var valid: Bool {
+                usedPercent.isFinite && (0...100).contains(usedPercent) && resetsAtMS > 0 &&
+                    windowMinutes.isFinite && windowMinutes > 0 && windowMinutes <= 44_640
+            }
+        }
+        public struct PoolState: Codable, Equatable, Sendable {
+            public var observedAtMS: Int64
+            public var validUntilMS: Int64
+            public var windows: [PoolWindow]
+            public init(observedAtMS: Int64, validUntilMS: Int64, windows: [PoolWindow]) {
+                self.observedAtMS = observedAtMS; self.validUntilMS = validUntilMS; self.windows = windows
+            }
+            enum CodingKeys: String, CodingKey {
+                case windows, observedAtMS = "observed_at_ms", validUntilMS = "valid_until_ms"
+            }
+            public var valid: Bool {
+                observedAtMS > 0 && validUntilMS >= observedAtMS && (1...8).contains(windows.count) && windows.allSatisfy(\.valid)
+            }
+        }
+        public static let pools: Set<String> = ["anthropic_shared", "openai_codex"]
         public static let currentPolicy = "law_447"
         public var schema: Int
         public var policy: String
@@ -475,13 +509,16 @@ public enum RCCRuntimeContract {
         /// (`RequestProfile.ownerAsksForReference`, build 446's capability
         /// guard): Core leaves the pool references only (family P).
         public var referenceRequest: Bool
+        /// Each pool's rate-limit observation (`RoutingLaw.poolStates`); a pool
+        /// with none is absent (Core then falls back conservatively).
+        public var pools: [String: PoolState]?
         public init(schema: Int = 1, policy: String = RoutingLaw.currentPolicy, tableSHA256: String, reader: String,
-                    reading: Reading?, referenceRequest: Bool = false) {
+                    reading: Reading?, referenceRequest: Bool = false, pools: [String: PoolState]? = nil) {
             self.schema = schema; self.policy = policy; self.tableSHA256 = tableSHA256; self.reader = reader
-            self.reading = reading; self.referenceRequest = referenceRequest
+            self.reading = reading; self.referenceRequest = referenceRequest; self.pools = pools
         }
         enum CodingKeys: String, CodingKey {
-            case schema, policy, reader, reading, tableSHA256 = "table_sha256", referenceRequest = "reference_request"
+            case schema, policy, reader, reading, pools, tableSHA256 = "table_sha256", referenceRequest = "reference_request"
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
@@ -490,11 +527,13 @@ public enum RCCRuntimeContract {
             // Explicit null: Core reads a missing reading as malformed.
             try c.encode(reading, forKey: .reading)
             try c.encode(referenceRequest, forKey: .referenceRequest)
+            try c.encodeIfPresent(pools, forKey: .pools)
         }
         public var valid: Bool {
             guard schema == 1, policy == Self.currentPolicy,
                   tableSHA256.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
-                  reader.range(of: #"^(?:none|local_llm:[a-z0-9][a-z0-9._:-]{0,63})$"#, options: .regularExpression) != nil
+                  reader.range(of: #"^(?:none|local_llm:[a-z0-9][a-z0-9._:-]{0,63})$"#, options: .regularExpression) != nil,
+                  pools.map({ $0.keys.allSatisfy(Self.pools.contains) && $0.values.allSatisfy(\.valid) }) ?? true
             else { return false }
             if let reading { return reader != "none" && reading.valid }
             return reader == "none"
@@ -2336,7 +2375,8 @@ public enum RCCRuntimeContract {
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
     private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals", "classifier", "task_type", "domain"])
     private static let capabilityRoutesShape = Shape.object(["schema", "policy", "table_sha256", "category", "choice", "marker", "pools", "broad", "references", "price_basis"], ["pools": .map(.array(.object(["model", "effort"]))), "broad": .map(.array(.object(["model", "effort"]))), "references": .map(.leaf), "price_basis": .object(["table", "active", "compiled"])])
-    private static let routingLawShape = Shape.object(["schema", "policy", "table_sha256", "reader", "reading", "reference_request"], ["reading": .object(["task_type", "difficulty", "needs_tools", "domain", "intent"])])
+    private static let routingLawPoolShape = Shape.object(["observed_at_ms", "valid_until_ms", "windows"], ["windows": .array(.object(["used_percent", "resets_at_ms", "window_minutes"]))])
+    private static let routingLawShape = Shape.object(["schema", "policy", "table_sha256", "reader", "reading", "reference_request", "pools"], ["reading": .object(["task_type", "difficulty", "needs_tools", "domain", "intent"]), "pools": .map(routingLawPoolShape)])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile", "capability_routes", "routing_law"], ["routing_law": routingLawShape, "candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape, "capability_routes": capabilityRoutesShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])

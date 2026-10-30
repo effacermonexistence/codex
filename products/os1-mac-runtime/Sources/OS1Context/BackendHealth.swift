@@ -21,10 +21,15 @@ public struct BackendHealth: Codable, Equatable, Sendable {
             public var surface: String? = nil
             public var severity: String? = nil
             public var isActive: Bool? = nil
+            /// Build 447 (DESIGN-8 lead correction 2): the window's length as
+            /// the provider reports it (Codex `windowDurationMins`), nil when
+            /// not reported; optional on the record, so older caches decode.
+            public var windowMinutes: Double? = nil
             public init(bucket: String, usedPercent: Double, resetsAt: Date?, model: String? = nil,
-                        surface: String? = nil, severity: String? = nil, isActive: Bool? = nil) {
+                        surface: String? = nil, severity: String? = nil, isActive: Bool? = nil, windowMinutes: Double? = nil) {
                 self.bucket = bucket; self.usedPercent = usedPercent; self.resetsAt = resetsAt
                 self.model = model; self.surface = surface; self.severity = severity; self.isActive = isActive
+                self.windowMinutes = windowMinutes
             }
         }
         public let accountID: String
@@ -256,8 +261,12 @@ public struct BackendHealth: Codable, Equatable, Sendable {
                         reset = Date(timeIntervalSince1970: number.doubleValue)
                         if reset! <= observedAt { continue }
                     }
+                    // The window's length, when the provider reports it
+                    // (DESIGN-8 correction 2's time-to-reset weighting).
+                    let length = ["windowDurationMins", "windowMinutes"].lazy.compactMap { row[$0] as? NSNumber }
+                        .first { CFGetTypeID($0) != CFBooleanGetTypeID() && $0.doubleValue.isFinite && $0.doubleValue > 0 }
                     windows.append(Window(bucket: bucket.key + "." + key, usedPercent: used.doubleValue,
-                                          resetsAt: reset, model: bucket.model))
+                                          resetsAt: reset, model: bucket.model, windowMinutes: length?.doubleValue))
                 }
             }
             guard !windows.isEmpty, windows.count <= 64 else { return nil }

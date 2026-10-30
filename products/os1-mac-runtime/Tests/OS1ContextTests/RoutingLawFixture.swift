@@ -107,6 +107,52 @@ func runRoutingLawFixtures() throws {
               wire?["reference_request"] as? Bool == false, "routing_law on the wire, reference_request false")
     let decoded = try C.decodeCatalog(lawData, request: nil)
     try check(decoded.routingLaw == law, "the contract decodes routing_law")
+    try check(wire?["pools"] == nil, "no quota observation: no pools (Core prices conservatively)")
+
+    // ---- Lead correction 2: each pool's rate-limit windows travel as routing_law.pools.
+    var withQuota = input
+    withQuota.codexQuota = .init(accountID: "acct-codex", observedAt: now.addingTimeInterval(-30), source: .codexNative,
+        windows: [.init(bucket: "codex.primary", usedPercent: 40, resetsAt: now.addingTimeInterval(3 * 86_400), windowMinutes: 10_080)])
+    withQuota.claudeQuota = .init(accountID: "acct-claude", observedAt: now.addingTimeInterval(-60), source: .claudeNative,
+        windows: [.init(bucket: "session", usedPercent: 10, resetsAt: now.addingTimeInterval(3_600)),
+                  .init(bucket: "weekly_all", usedPercent: 89, resetsAt: now.addingTimeInterval(2 * 86_400)),
+                  .init(bucket: "weekly_scoped", usedPercent: 16, resetsAt: now.addingTimeInterval(2 * 86_400), model: "Fable")])
+    let pooledData = try B.catalogData(try B.build(withQuota), taskID: input.taskID, requestSHA256: input.requestSHA256)
+    let pooled = (try JSONSerialization.jsonObject(with: pooledData) as? [String: Any])?["routing_law"] as? [String: Any]
+    let pools = pooled?["pools"] as? [String: [String: Any]]
+    let nowMS = Int64(now.timeIntervalSince1970 * 1000)
+    let codexWindows = pools?["openai_codex"]?["windows"] as? [[String: Any]]
+    try check(codexWindows?.count == 1 && codexWindows?[0]["used_percent"] as? Double == 40 &&
+              codexWindows?[0]["window_minutes"] as? Double == 10_080 &&
+              (pools?["openai_codex"]?["valid_until_ms"] as? NSNumber)?.int64Value == nowMS - 30_000 + 600_000,
+              "Codex: its window with the provider's length, valid ten minutes from observation")
+    let claudeWindows = pools?["anthropic_shared"]?["windows"] as? [[String: Any]]
+    try check(claudeWindows?.map { $0["window_minutes"] as? Double } == [300, 10_080] &&
+              claudeWindows?.map { $0["used_percent"] as? Double } == [10, 89],
+              "Claude: the session (5 h) and weekly (7 d) windows; a model-scoped window never prices the pool")
+    let decodedPools = try C.decodeCatalog(pooledData, request: nil).routingLaw?.pools
+    try check(decodedPools?["openai_codex"]?.windows.first?.windowMinutes == 10_080 && decodedPools?.count == 2 &&
+              decodedPools?.values.allSatisfy(\.valid) == true, "the contract decodes the pools")
+    try check(RoutingLaw.poolStates(codex: withQuota.codexQuota, claude: withQuota.claudeQuota,
+                                    accountIDs: ["codex": "another", "claude": "acct-claude"], now: now)?.keys.sorted() ==
+              ["anthropic_shared"], "another account's observation never prices the pool")
+    try check(RoutingLaw.poolStates(codex: withQuota.codexQuota, claude: nil, accountIDs: input.accountIDs,
+                                    now: now.addingTimeInterval(700)) == nil, "an observation past retention is no pool state")
+    let unknownLength = BackendHealth.QuotaSnapshot(accountID: "acct-codex", observedAt: now, source: .codexNative,
+        windows: [.init(bucket: "codex.primary", usedPercent: 40, resetsAt: now.addingTimeInterval(86_400))])
+    try check(RoutingLaw.poolStates(codex: unknownLength, claude: nil, accountIDs: input.accountIDs, now: now) == nil,
+              "a window of unreported length is not guessed")
+    let parsed = BackendHealth.QuotaSnapshot.codexRateLimits(["rateLimitsByLimitId": ["codex": ["primary":
+        ["usedPercent": 25, "resetsAt": now.addingTimeInterval(86_400).timeIntervalSince1970, "windowDurationMins": 10_080]]]],
+        accountID: "acct-codex", models: [], observedAt: now)
+    try check(parsed?.windows.first?.windowMinutes == 10_080, "the Codex probe keeps the reported window length")
+    var badPools = law
+    badPools.pools = ["openai_codex": .init(observedAtMS: nowMS, validUntilMS: nowMS + 1,
+                                            windows: [.init(usedPercent: 101, resetsAtMS: nowMS + 1, windowMinutes: 60)])]
+    try check(!badPools.valid, "a pool window used beyond 100% is invalid")
+    badPools.pools = ["elsewhere": .init(observedAtMS: nowMS, validUntilMS: nowMS + 1,
+                                         windows: [.init(usedPercent: 1, resetsAtMS: nowMS + 1, windowMinutes: 60)])]
+    try check(!badPools.valid, "an unknown pool is invalid")
     // Review of 447: the owner's reference words in build 446's wider forms
     // (the capability guard's predicate) travel as reference_request.
     for (words, expected) in [("최대한 신중히 생각해서 슈뢰딩거 방정식 설명해줘", true),

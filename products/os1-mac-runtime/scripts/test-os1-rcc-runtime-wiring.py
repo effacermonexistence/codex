@@ -1231,15 +1231,22 @@ check(f'public static let tableSHA256 = "{law_sha}"' in law_swift and
       f"export const ROUTING_LAW_TABLE_SHA256 = '{law_sha}';" in RUNTIME and
       json.loads(law_literal.rstrip().rstrip(";")) == law_resource.decode().rstrip("\n") and
       (ROOT / "scripts/routing-law-table.mjs").is_file() and (ROOT / "scripts/routing-law-policy.json").is_file() and
-      all((ROOT / f"scripts/routing-law-{name}-20261029.json").is_file() for name in ("evidence", "quota", "ledger")) and
+      all((ROOT / f"scripts/routing-law-{name}-20261029.json").is_file() for name in ("evidence", "quota", "ledger", "audits")) and
       'node "$script_dir/routing-law-table.mjs" check' in RELEASE,
       "447: the routing-law table is the compiler's bytes from committed inputs, pinned in Resources, Core and Swift; release-checked")
 check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" in RUNTIME and
-      "function lawAdmission(node, task, catalog) {" in RUNTIME and "export function lawExpectedQuota({q, pFail = 0, escalationQ = 0, scarcity = 0}) {" in RUNTIME and
-      "export function lawScarcity(q, remaining, threshold) {" in RUNTIME and
-      "return q == null ? null : q + lawScarcity(q, candidate.quota_remaining_fraction, threshold);" in RUNTIME and
+      "function lawAdmission(node, task, catalog) {" in RUNTIME and
+      "export function lawExpectedQuota({q, price = 1, pFail = 0, escalationQ = 0, escalationPrice = 1}) {" in RUNTIME and
+      "export function lawPoolPrice(catalog, pool, now, rowRemaining = null) {" in RUNTIME and
+      "rates.set(pool, lawPoolPrice(catalog, pool, now, shares.length ? Math.min(...shares) : null));" in RUNTIME and
+      "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
       "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
-      "export function lawPFail(table, candidate, family) {" in RUNTIME and
+      "export function lawPFail(table, candidate, family, reference = null) {" in RUNTIME and
+      "const pFail = lawPFail(table, candidate, family, inherits);" in RUNTIME and
+      "const repair = option.reference ? option.row :" in RUNTIME and
+      "if (gap && audit?.verdict === 'pass') return {form: 'c', tiers: rows, gap: false, audit: audit.id};" in RUNTIME and
+      "family === 'P' ? null : family);" in RUNTIME and
+      "headroom_threshold" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
       "|| lawAnswersLocally(node, task, catalog)), 'local_agent_node_not_explicit');" in RUNTIME and
       "law.reference_request === true;" in RUNTIME and
       "snapshot.plan_provenance = askBack ? 'local_reading_ask_back' : 'deterministic_no_model';" in RUNTIME and
@@ -1251,7 +1258,18 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-routing-law.test.mjs").is_file() and
       (ROOT / "scripts/fixtures/routing-law-owner-questions.json").is_file(),
-      "447: Core prices each admissible candidate (E[Q]) and binds the argmin with a receipt; the ask-back is local; release-gated")
+      "447: Core prices each admissible candidate (E[Q] at the derived exchange, p_fail inherited) and binds the argmin with a receipt; the ask-back is local; release-gated")
+check("public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?," in law_swift and
+      "law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota," in BUILDER and
+      '"pools": .map(routingLawPoolShape)' in (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text() and
+      'let length = ["windowDurationMins", "windowMinutes"]' in (ROOT / "Sources/OS1Context/BackendHealth.swift").read_text() and
+      "function validLawPools(value) {" in RUNTIME,
+      "447 lead correction 2: the host carries each pool's rate-limit windows (routing_law.pools); Core validates and prices them")
+check((ROOT / "scripts/routing-law-audit.mjs").is_file() and (ROOT / "scripts/routing-law-pools.mjs").is_file() and
+      (ROOT / "scripts/routing-law-audit-dispatch.mjs").is_file() and
+      "if (dispatcher.paid !== false && !confirmPaid) throw new Error(" in (ROOT / "scripts/routing-law-audit.mjs").read_text() and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law-audit.test.mjs"' in RELEASE,
+      "447 lead correction 3: value of information and the paired-audit harness (paid runs need explicit confirmation); release-gated")
 check('public static let environmentKey = "OS1_ROUTING_POLICY"' in law_swift and
       'home.appendingPathComponent(".os1/routing-policy.json")' in law_swift and
       "guard policy == .law447 else { return nil }" in law_swift and
