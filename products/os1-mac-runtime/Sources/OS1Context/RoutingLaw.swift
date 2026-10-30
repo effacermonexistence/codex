@@ -15,12 +15,13 @@ import Foundation
 ///
 /// The host only (a) decides the switch, (b) reads the request with the local
 /// model for every Auto request (the keyword rails no longer decide the tier:
-/// they set the permission scope only) and (c) carries the raw reading in the
-/// catalog's `routing_law`. The rollback is `routing_policy=law_446`: the
+/// they set the permission scope only) and (c) carries the raw reading and
+/// the owner's own reference words (`reference_request`, build 446's
+/// capability guard) in the catalog's `routing_law`. The rollback is `routing_policy=law_446`: the
 /// catalog then carries no `routing_law` and Core keeps build 446's routes.
 public enum RoutingLaw {
     /// SHA-256 of `Resources/routing-law-table.json` (the compiled table).
-    public static let tableSHA256 = "236ce83339a899813f70820c5a87492db4325300c8698e9b7b4540ddc5d13d74"
+    public static let tableSHA256 = "78c5fb182df056753b227866464ae6bf581bf677494108aa6d9877f2a3500815"
 
     public enum Policy: String, Codable, Sendable, CaseIterable {
         case law446 = "law_446", law447 = "law_447"

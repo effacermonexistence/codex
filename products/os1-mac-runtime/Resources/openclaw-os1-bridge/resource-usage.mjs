@@ -167,7 +167,7 @@ export function summarizeTaskResources(snapshot) {
     localCounters = nativeCounters = {};
   }
   const observedPlanner = stageCounts.plan_proposal.operations > 0;
-  const legacyNoPlanner = ['host_exact_request', 'deterministic_no_model'].includes(snapshot?.plan_provenance);
+  const legacyNoPlanner = ['host_exact_request', 'deterministic_no_model', 'local_reading_ask_back'].includes(snapshot?.plan_provenance);
   const planKnown = !planConflict && (observedPlanner || legacyNoPlanner);
   const planModelCalls = planKnown ? stageCounts.plan_proposal.calls_started : null;
   if (!planKnown) fail('plan_model_calls_unobserved');

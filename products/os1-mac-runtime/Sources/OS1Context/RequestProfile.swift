@@ -500,6 +500,14 @@ public struct RequestProfile: Codable, Equatable, Sendable {
     /// The strongest-model and think-hard floors once the clearable spans are set aside.
     public static func asksForStrongestFloor(_ request: String) -> Bool { asksForStrongest(withoutClearableStrongest(request)) }
     public static func asksForReferenceFloor(_ request: String) -> Bool { asksForReference(withoutClearableStrongest(request)) }
+    /// The owner's own words ask for the strongest model or more thinking
+    /// (`asksForReference`), unless the local reading cleared them as the
+    /// owner's own thinking or a thing's 최고 성능 (`soft_cleared_quality`),
+    /// never past a floor (`asksForReferenceFloor`): build 446's capability
+    /// guard, and build 447's routing law's `reference_request`.
+    public static func ownerAsksForReference(_ request: String, profile: RequestProfile?) -> Bool {
+        asksForReference(request) && (!(profile?.cleared("quality") ?? false) || asksForReferenceFloor(request))
+    }
 
     /// The words of `lower` other than fillers, once every `terms` occurrence
     /// (and the rest of its word) is removed.

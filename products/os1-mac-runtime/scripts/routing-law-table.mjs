@@ -21,8 +21,10 @@
  *    the cell's output scaled by the effort multiplier: the larger of the
  *    first-party per-task cost ratio and the vendor's in-app label, O4) times
  *    the measured pool % per API dollar;
- *  - p_fail per (surface kind, model, effort): the routing ledger's laddered
- *    attempts and their escalations with a Laplace prior.
+ *  - p_fail per (model, effort, law family): the routing ledger's JUDGED
+ *    laddered attempts of law routes (a verifier or check verdict, an observed
+ *    non-return or escalation; an undispatched or unjudged attempt is no
+ *    evidence), with the Laplace prior; a cell with no judged run is the prior.
  *
  *   node scripts/routing-law-table.mjs snapshot --tiers <tiers.json> --quota <quota dir> --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs compile [--out <new file>]
@@ -123,8 +125,10 @@ export function snapshotEvidence(tiersBytes) {
   out.elo_discrepancies = tiers.publication_discrepancies.filter(x => x.unit === 'Elo').map(x => ({tier: x.tier, abs_diff: x.abs_diff}));
   out.first_party_ratios = tiers.corpus_first_party_cost_ratios.cells
     .filter(c => DISPATCHABLE.has(c.effort)).map(c => ({provider: c.provider, model: c.model, effort: c.effort, n: c.n, median: c.median}));
-  out.families = tiers.families.map(f => ({id: f.id, required: f.required, conditional: f.conditional.map(c => c.tier),
-    upper_bound: f.upper_bound}));
+  // Each conditional tier keeps its condition: the policy maps it to a
+  // reading predicate (or 'always' when no reading can tell); none is dropped.
+  out.families = tiers.families.map(f => ({id: f.id, required: f.required,
+    conditional: f.conditional.map(c => ({tier: c.tier, when: c.when})), upper_bound: f.upper_bound}));
   return out;
 }
 
@@ -133,18 +137,19 @@ export function snapshotQuota(quotaDir) {
   const codexBytes = readFileSync(join(quotaDir, 'codex_turns.csv'));
   const calibrationBytes = readFileSync(join(quotaDir, 'calibration.json'));
   const calibration = JSON.parse(calibrationBytes.toString('utf8'));
-  // DESIGN-7 §2b: an answer-shaped turn (two calls or fewer) is short or
-  // answer-length (>= 900 output tokens, reasoning included); a build-sized
-  // turn has more than 15 calls. Turns in between price nothing here.
-  const shapeOf = (calls, output) => calls <= 2 ? ((output ?? 0) >= 900 ? 'long_answer' : 'answer') :
-    calls >= 16 ? 'agentic' : 'mid';
+  // DESIGN-7 §2b: an answer-shaped turn has two calls or fewer, a
+  // build-sized turn more than 15. A route is priced BEFORE it runs, so the
+  // answer shape is every <= 2-call turn of the cell, whatever its realized
+  // output (review of 447: a split by realized output priced high-effort cells
+  // on their short turns only). Turns in between price nothing here.
+  const shapeOf = calls => calls <= 2 ? 'answer' : calls >= 16 ? 'agentic' : 'mid';
   const groups = new Map(), contexts = new Map();
   const add = (map, key, value) => { if (!map.has(key)) map.set(key, []); map.get(key).push(value); };
   for (const r of csvRows(claudeBytes.toString('utf8'))) {
     const source = r.ent === 'sdk-cli' ? 'os1' : r.ent === 'claude-desktop' ? 'owner' : null;
     const calls = number(r.calls_total), pct = number(r.weekly_pct);
     if (!source || calls === null || pct === null) continue;
-    const shape = shapeOf(calls, number(r.output)), effort = r.effort === '' ? 'none' : r.effort;
+    const shape = shapeOf(calls), effort = r.effort === '' ? 'none' : r.effort;
     const row = {pct, out: number(r.output), cost: number(r.cost_total),
       uncached: (number(r.input) ?? 0) + (number(r.cache_write) ?? 0), cached: number(r.cache_read) ?? 0};
     add(groups, JSON.stringify([source, 'anthropic', r.model, effort, shape]), row);
@@ -155,7 +160,7 @@ export function snapshotQuota(quotaDir) {
     const source = r.cls === 'os1_automation' ? 'os1' : ['owner_manual', 'owner_subagent'].includes(r.cls) ? 'owner' : null;
     const calls = number(r.calls), pct = number(r.pro_weekly_pct);
     if (!source || calls === null || pct === null) continue;
-    const shape = shapeOf(calls, number(r.output));
+    const shape = shapeOf(calls);
     const row = {pct, out: number(r.output), cost: number(r.cost), uncached: number(r.uncached) ?? 0, cached: number(r.cached) ?? 0};
     add(groups, JSON.stringify([source, 'openai', r.model, r.effort, shape]), row);
     add(contexts, JSON.stringify([source, 'openai', shape]), row);
@@ -180,24 +185,41 @@ export function snapshotQuota(quotaDir) {
 
 const LADDERED = new Set(['tier', 'graded', 'capability', 'law']);
 const LADDER_FAILURES = new Set(['ladder_verifier_failed', 'ladder_not_returned']);
+const CHECK_PASSES = new Set(['pass', 'screen_pass']);
+const CHECK_FAILURES = new Set(['fail', 'not_returned', 'screen_fail']);
+/** p_fail evidence (DESIGN-8 step 3: p_fail(c, family)). Only a JUDGED
+ * laddered attempt counts: a verifier or check verdict, or an observed
+ * failure (it did not return, or it escalated). An attempt never dispatched,
+ * or one that completed with no verdict (no verifier registered, a control
+ * left unverified) says nothing about whether it gave the reference's result.
+ * The family is the law's own (the record's law receipt); an attempt routed
+ * before the law has none and is counted as unattributed, never pooled into a
+ * family (review of 447). */
 export function snapshotLedger(ledgerBytes) {
-  const counts = new Map();
+  const counts = new Map(), excluded = {undispatched: 0, unjudged: 0, no_law_family: 0};
   for (const line of ledgerBytes.toString('utf8').split('\n')) {
     if (!line.trim()) continue;
     let record;
     try { record = JSON.parse(line); } catch { continue; }
     if (record?.schema !== 1 || !LADDERED.has(record.route_kind) || record.escalated === true) continue;
-    const key = JSON.stringify([record.surface_kind, record.model, record.effort]);
+    if (record.attempt_state === 'verified_not_dispatched') { excluded.undispatched++; continue; }
     const failed = typeof record.escalation_outcome === 'string' || LADDER_FAILURES.has(record.attempt_state) ||
-      ['fail', 'not_returned'].includes(record.verifier_outcome);
+      ['fail', 'not_returned'].includes(record.verifier_outcome) || CHECK_FAILURES.has(record.check_outcome);
+    const passed = !failed && (record.verifier_outcome === 'pass' || CHECK_PASSES.has(record.check_outcome));
+    if (!failed && !passed) { excluded.unjudged++; continue; }
+    const family = typeof record.law?.family === 'string' && /^[A-Za-z0-9-]{1,16}$/.test(record.law.family) ? record.law.family : null;
+    if (family === null) { excluded.no_law_family++; continue; }
+    const key = JSON.stringify([record.model, record.effort, family]);
     const value = counts.get(key) ?? {runs: 0, failures: 0};
     value.runs++; if (failed) value.failures++;
     counts.set(key, value);
   }
-  return {schema: 1, source: {sha256: sha(ledgerBytes), basis: 'laddered descents (route kinds tier, graded, capability, law), not escalated; failure = escalated, ladder failed or verifier fail'},
+  return {schema: 2, source: {sha256: sha(ledgerBytes), basis: 'judged laddered descents (route kinds tier, graded, ' +
+      'capability, law), not escalated, keyed by the law family of their receipt; failure = escalated, not returned, ' +
+      'verifier or check fail; success = verifier or check pass'}, excluded,
     cells: [...counts].map(([key, value]) => {
-      const [surface_kind, model, effort] = JSON.parse(key);
-      return {surface_kind, model, effort, ...value};
+      const [model, effort, family] = JSON.parse(key);
+      return {model, effort, family, ...value};
     }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)};
 }
 
@@ -230,7 +252,9 @@ export function compileTau(evidence) {
 const poolOf = (policy, provider) => policy.pools[provider];
 /** Evidence form (b): per tier and pool, each dispatchable (model, effort)'s
  * confirmed scores against the pool reference's best confirmed score at any
- * effort; within tau on every benchmark it is scored on, with at least one. */
+ * effort; within tau on every benchmark it is scored on, and scored on at
+ * least min(2, benchmarks the pool publishes on the tier) (DESIGN-7 §1.2's
+ * coverage rule: one benchmark of several is not the tier). */
 export function compileAdmission(evidence, tau, policy) {
   const out = {};
   for (const [id, tier] of Object.entries(evidence.tiers)) {
@@ -256,7 +280,9 @@ export function compileAdmission(evidence, tau, policy) {
           rows.push([b.alias, cell.scores[b.alias], best[b.alias], round(deficit, 4), deficit <= t + 1e-9]);
         }
         if (!rows.length) continue;
-        cells[cell.model + '@' + cell.effort] = {pass: rows.every(row => row[4]), benchmarks: rows};
+        const coverage = [rows.length, Math.min(2, benchmarks.length)];
+        cells[cell.model + '@' + cell.effort] = {pass: rows.every(row => row[4]) && coverage[0] >= coverage[1],
+          coverage, benchmarks: rows};
       }
       out[id][poolName] = {reference, published: benchmarks.map(b => b.alias), cells};
     }
@@ -270,12 +296,14 @@ const conversionOf = (quota, pool, model) => pool === 'anthropic_shared' ? quota
   model === 'gpt-6-astra' ? quota.conversions.openai_codex['gpt-6-astra'] :
   /sol/.test(model) ? quota.conversions.openai_codex.sol_family : quota.conversions.openai_codex.luna_terra;
 /** The effort multiplier of one step `from` -> `to` (adjacent efforts) of a
- * model: the larger of the first-party per-task cost ratio and the vendor's
- * in-app label (O4), never below 1 for a higher effort. */
-function stepMultiplier(evidence, policy, pool, provider, model, from, to) {
+ * model: the first-party per-task cost ratio, never below 1 for a higher
+ * effort; deriving the HIGHER effort (`upward`), the larger of that and the
+ * vendor's in-app label (O4: the label only ever raises cost, so it never
+ * prices a lower effort down from a measured higher one). */
+function stepMultiplier(evidence, policy, pool, provider, model, from, to, upward) {
   const ratio = effort => evidence.first_party_ratios.find(r => r.provider === provider && r.model === model && r.effort === effort)?.median;
   const fp = ratio(from) && ratio(to) ? ratio(to) / ratio(from) : null;
-  const label = (policy.effort_labels[pool] ?? {})[to] ?? null;
+  const label = upward ? (policy.effort_labels[pool] ?? {})[to] ?? null : null;
   return Math.max(fp ?? 1, label ?? 1, 1);
 }
 function effortMultiplier(evidence, policy, pool, provider, model, from, to) {
@@ -283,8 +311,8 @@ function effortMultiplier(evidence, policy, pool, provider, model, from, to) {
   let a = order.indexOf(from), b = order.indexOf(to);
   if (a < 0 || b < 0 || a === b) return 1;
   let product = 1;
-  if (a < b) for (let i = a; i < b; i++) product *= stepMultiplier(evidence, policy, pool, provider, model, order[i], order[i + 1]);
-  else for (let i = b; i < a; i++) product /= stepMultiplier(evidence, policy, pool, provider, model, order[i], order[i + 1]);
+  if (a < b) for (let i = a; i < b; i++) product *= stepMultiplier(evidence, policy, pool, provider, model, order[i], order[i + 1], true);
+  else for (let i = b; i < a; i++) product /= stepMultiplier(evidence, policy, pool, provider, model, order[i], order[i + 1], false);
   return product;
 }
 /** Real quota per (surface, model, effort, shape) in pool units. An OS-1
@@ -303,7 +331,7 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
   const out = {};
   const providers = {anthropic: 'anthropic_shared', openai: 'openai_codex'};
   const surfacesOf = {anthropic: ['claude', 'claude-chat'], openai: ['codex']};
-  const SHAPES = ['answer', 'long_answer', 'agentic'];
+  const SHAPES = ['answer', 'agentic'];
   function tokenModel(provider, pool, model, effort, shape) {
     const price = prices.models[model];
     const ctx = quota.context.find(c => c.source === 'os1' && c.provider === provider && c.shape === shape) ??
@@ -373,30 +401,63 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
   return {cells: out, calibration};
 }
 
-/** p_fail evidence per model@effort, pooled over surfaces (a grant that
- * moves a row to another surface must not change the model through it). */
+/** p_fail evidence per (model@effort, law family), DESIGN-8 step 3, pooled
+ * over surfaces only (a grant that moves a row to another surface must not
+ * change the model through it). The judged runs the ledger could not
+ * attribute to a law family are reported, never used. */
 export function compilePFail(ledger, policy) {
+  if (ledger.schema !== 2) throw new Error('ledger snapshot schema 2 (judged, law-family keyed) required');
   const out = {};
   for (const cell of ledger.cells) {
-    const key = cell.model + '@' + cell.effort;
+    const key = cell.model + '@' + cell.effort + '|' + cell.family;
     out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures};
   }
-  return {prior: policy.laplace, cells: out, key: 'model@effort, pooled over surfaces'};
+  return {prior: policy.laplace, cells: out, excluded: ledger.excluded,
+    key: 'model@effort|law family (judged runs only), pooled over surfaces; no judged run: the prior'};
 }
 
+const PREDICATE_KEYS = Object.freeze({task_type: ['chat', 'explain', 'design', 'write', 'action'],
+  difficulty: ['light', 'standard', 'deep'], needs_tools: ['none', 'current_facts', 'workspace', 'execution'],
+  domain: ['knowledge', 'science', 'math', 'coding', 'writing', 'tool_use', 'general']});
+/** A conditional tier's predicate: 'always' (no reading can tell, so the
+ * floor applies) or clauses (any matches) of reading values and `writer`
+ * (the node runs as a workspace writer). Throws on anything else. */
+function validPredicate(when, label) {
+  if (when === 'always') return when;
+  if (!Array.isArray(when) || !when.length) throw new Error('bad condition predicate ' + label);
+  for (const clause of when) {
+    if (clause === null || typeof clause !== 'object' || !Object.keys(clause).length) throw new Error('bad clause ' + label);
+    for (const [key, value] of Object.entries(clause)) {
+      if (key === 'writer') { if (value !== true) throw new Error('bad writer clause ' + label); continue; }
+      if (!PREDICATE_KEYS[key] || !Array.isArray(value) || !value.length || !value.every(v => PREDICATE_KEYS[key].includes(v)))
+        throw new Error('bad clause key ' + key + ' ' + label);
+    }
+  }
+  return when;
+}
 /** The families' tier needs: the policy's explicit list, else the evidence's
- * required tiers, else (an easier family with no own tier) its upper bounds. */
+ * required tiers, else (an easier family with no own tier) its upper bounds;
+ * plus every conditional tier of the evidence with the reading predicate the
+ * policy maps its condition to (review of 447: a conditional tier is never
+ * dropped; a condition no reading can tell applies always, the floor). */
 export function compileFamilies(evidence, policy) {
   const out = {};
   for (const [id, family] of Object.entries(policy.families)) {
-    let tiers = family.tiers, basis = 'policy';
+    let tiers = family.tiers, basis = 'policy', conditional = [];
     if (tiers === 'evidence') {
       const row = evidence.families.find(f => f.id === id);
       if (!row) throw new Error('family without evidence row: ' + id);
       tiers = row.required.length ? row.required : row.upper_bound;
       basis = row.required.length ? 'evidence_required' : 'evidence_upper_bound';
+      const mapped = policy.conditions[id] ?? {};
+      for (const tier of Object.keys(mapped))
+        if (!row.conditional.some(c => c.tier === tier)) throw new Error('condition without evidence: ' + id + ' ' + tier);
+      conditional = row.conditional.filter(c => !tiers.includes(c.tier)).map(c => {
+        if (!Object.hasOwn(mapped, c.tier)) throw new Error('unmapped conditional tier: ' + id + ' ' + c.tier);
+        return {tier: c.tier, when: validPredicate(mapped[c.tier], id + ' ' + c.tier), condition: c.when};
+      });
     }
-    out[id] = {tiers: [...tiers], tier_basis: basis, shape: family.shape, tools: family.tools,
+    out[id] = {tiers: [...tiers], tier_basis: basis, conditional, shape: family.shape, tools: family.tools,
       local: policy.local_admission.families.includes(id)};
   }
   return out;

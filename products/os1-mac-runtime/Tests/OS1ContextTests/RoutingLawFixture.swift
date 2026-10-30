@@ -103,9 +103,28 @@ func runRoutingLawFixtures() throws {
     try check(lawCatalog?["capability_routes"] == nil, "the law replaces capability routes")
     let wire = lawCatalog?["routing_law"] as? [String: Any]
     try check(wire?["policy"] as? String == "law_447" && wire?["table_sha256"] as? String == RoutingLaw.tableSHA256 &&
-              (wire?["reading"] as? [String: Any])?["domain"] as? String == "science", "routing_law on the wire")
+              (wire?["reading"] as? [String: Any])?["domain"] as? String == "science" &&
+              wire?["reference_request"] as? Bool == false, "routing_law on the wire, reference_request false")
     let decoded = try C.decodeCatalog(lawData, request: nil)
     try check(decoded.routingLaw == law, "the contract decodes routing_law")
+    // Review of 447: the owner's reference words in build 446's wider forms
+    // (the capability guard's predicate) travel as reference_request.
+    for (words, expected) in [("최대한 신중히 생각해서 슈뢰딩거 방정식 설명해줘", true),
+                              ("think very carefully: explain the Schrodinger equation", true),
+                              ("제일 똑똑한 모델로 슈뢰딩거 방정식 설명해줘", true),
+                              ("슈뢰딩거 방정식 설명해줘", false)] {
+        var worded = input
+        worded.request = words; worded.requestSHA256 = C.digest(Data(words.utf8))
+        worded.requestProfile = RequestProfile.combine(keyword: RequestProfile.classify(words, shellNeed: false, hasMaterial: false),
+                                                       request: words, local: answer, model: "qwen3.5:9b")
+        let built = try B.catalogData(try B.build(worded), taskID: worded.taskID, requestSHA256: worded.requestSHA256)
+        let object = try JSONSerialization.jsonObject(with: built) as? [String: Any]
+        try check((object?["routing_law"] as? [String: Any])?["reference_request"] as? Bool == expected,
+                  "reference_request \(expected) for \(words)")
+        try check(RequestProfile.ownerAsksForReference(words, profile: worded.requestProfile) == expected &&
+                  (B.capabilityRoutes(worded) == nil) == expected,
+                  "one predicate for the law and build 446's capability guard: \(words)")
+    }
     // Light tool-free reading: the builder offers the local row (Core decides).
     var light = input
     light.routingLaw = C.RoutingLaw(tableSHA256: RoutingLaw.tableSHA256, reader: "local_llm:qwen3.5:9b",
@@ -115,9 +134,12 @@ func runRoutingLawFixtures() throws {
     var heavy = light
     heavy.routingLaw?.reading?.difficulty = "standard"
     try check(!B.autoLocalRowEligible(heavy), "a standard reading is not offered the local row")
+    // Review of 447: the owner's grant never decides the local row (a write
+    // grant on a read-only node sent it to the reference); Core decides by the
+    // node's own scope (a writer node is never offered it).
     var writer = light
     writer.ownerScope = .workspaceWrite
-    try check(!B.autoLocalRowEligible(writer), "a writer grant never gets the local row")
+    try check(B.autoLocalRowEligible(writer), "a write grant alone does not remove the local row")
 
     // ---- The intent call: only under the law, only for light tool-free chat/explain; strict schema.
     try check(L.needsIntent(.init(taskType: .chat, difficulty: .light, needsTools: .none), readsIntent: true) &&

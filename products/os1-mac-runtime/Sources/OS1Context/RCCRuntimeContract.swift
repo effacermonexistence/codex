@@ -471,18 +471,25 @@ public enum RCCRuntimeContract {
         /// `local_llm:<model>` for a reading, `none` when the local model gave none.
         public var reader: String
         public var reading: Reading?
+        /// The owner's own words ask for the strongest model or more thinking
+        /// (`RequestProfile.ownerAsksForReference`, build 446's capability
+        /// guard): Core leaves the pool references only (family P).
+        public var referenceRequest: Bool
         public init(schema: Int = 1, policy: String = RoutingLaw.currentPolicy, tableSHA256: String, reader: String,
-                    reading: Reading?) {
+                    reading: Reading?, referenceRequest: Bool = false) {
             self.schema = schema; self.policy = policy; self.tableSHA256 = tableSHA256; self.reader = reader
-            self.reading = reading
+            self.reading = reading; self.referenceRequest = referenceRequest
         }
-        enum CodingKeys: String, CodingKey { case schema, policy, reader, reading, tableSHA256 = "table_sha256" }
+        enum CodingKeys: String, CodingKey {
+            case schema, policy, reader, reading, tableSHA256 = "table_sha256", referenceRequest = "reference_request"
+        }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(schema, forKey: .schema); try c.encode(policy, forKey: .policy)
             try c.encode(tableSHA256, forKey: .tableSHA256); try c.encode(reader, forKey: .reader)
             // Explicit null: Core reads a missing reading as malformed.
             try c.encode(reading, forKey: .reading)
+            try c.encode(referenceRequest, forKey: .referenceRequest)
         }
         public var valid: Bool {
             guard schema == 1, policy == Self.currentPolicy,
@@ -2329,7 +2336,7 @@ public enum RCCRuntimeContract {
     private static let classCertificateShape = Shape.object(["certificate_id", "provider", "model", "effort", "format_check", "measurement_sha256"])
     private static let requestProfileShape = Shape.object(["schema", "policy", "answer_kind", "tool_need", "difficulty", "signals", "classifier", "task_type", "domain"])
     private static let capabilityRoutesShape = Shape.object(["schema", "policy", "table_sha256", "category", "choice", "marker", "pools", "broad", "references", "price_basis"], ["pools": .map(.array(.object(["model", "effort"]))), "broad": .map(.array(.object(["model", "effort"]))), "references": .map(.leaf), "price_basis": .object(["table", "active", "compiled"])])
-    private static let routingLawShape = Shape.object(["schema", "policy", "table_sha256", "reader", "reading"], ["reading": .object(["task_type", "difficulty", "needs_tools", "domain", "intent"])])
+    private static let routingLawShape = Shape.object(["schema", "policy", "table_sha256", "reader", "reading", "reference_request"], ["reading": .object(["task_type", "difficulty", "needs_tools", "domain", "intent"])])
     private static let catalogShape = Shape.object(["schema", "task_id", "request_sha256", "candidates", "exclusions", "routing_intent", "routing_intent_v2", "model_tiers", "explicit_route_intents", "quota_scores", "native_reference_efforts", "owner_scope", "chat_lane_eligible", "request_class", "task_contract", "class_certificates", "class_provider_pins", "request_profile", "capability_routes", "routing_law"], ["routing_law": routingLawShape, "candidates": .array(candidateShape), "exclusions": .array(exclusionShape), "routing_intent": routingIntentShape, "routing_intent_v2": routingIntentV2Shape, "explicit_route_intents": .array(routingIntentShape), "task_contract": taskContractShape, "class_certificates": .map(classCertificateShape), "request_profile": requestProfileShape, "capability_routes": capabilityRoutesShape])
     private static let nodeShape = Shape.object(["id", "instruction", "dependencies", "kind", "candidate_id", "scope", "owned_paths", "context_refs"])
     private static let planShape = Shape.object(["schema", "task_id", "request_sha256", "nodes", "final_node_id"], ["nodes": .array(nodeShape)])

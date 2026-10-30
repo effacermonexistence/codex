@@ -17,9 +17,10 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {lawCatalog, routeOf, OWNER_QUESTIONS} from '../routing-law-replay.mjs';
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
-  lawScarcity, lawExpectedQuota, lawAskBack, lawKey, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
+  lawScarcity, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import {canonical, compileAdmission, compileTable, compileTau, readInputs} from '../routing-law-table.mjs';
+import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger}
+  from '../routing-law-table.mjs';
 import {auditDeliveryPolicy} from '../route-replay.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -70,37 +71,74 @@ test('admission (b): within tau of the reference best at any effort, on every pu
   // Best: x 82 (max), err 5 (low; lower is better).
   assert.deepEqual(admission.cells['m@high'].benchmarks.map(row => row.slice(0, 4)), [['x', 80.8, 82, 1.2], ['err', 5.9, 5, 0.9]]);
   assert.equal(admission.cells['m@high'].pass, true);
-  assert.equal(admission.cells['m@low'].pass, false); // 1.3 > tau
+  assert.equal(admission.cells['m@low'].pass, false); // 1.3 > tau, and scored on one of two (coverage)
+  assert.deepEqual(admission.cells['m@low'].coverage, [1, 2]);
   assert.equal(admission.cells['m@unspecified'], undefined); // not a dispatchable effort
+  // Coverage (DESIGN-7 §1.2, review of 447): within tau on the ONE benchmark it
+  // is scored on is not the tier when the pool publishes two.
+  const one = compileAdmission({tiers: {T: {pools: {anthropic: {...evidence.tiers.T.pools.anthropic,
+    cells: [...evidence.tiers.T.pools.anthropic.cells, {model: 'n', effort: 'high', scores: {x: 81.9}}]}}}}},
+  {T: {pct: {tau: 1.2}}}, policy).T.anthropic_shared;
+  assert.deepEqual([one.cells['n@high'].pass, one.cells['n@high'].coverage], [false, [1, 2]]);
   // On the compiled table: F4 = T1 + T1F.
   assert.equal(lawEvidence(TABLE, 'F4', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'b');
   assert.deepEqual(lawEvidence(TABLE, 'F4', 'anthropic_shared', 'claude-opus-5-5', 'max').tiers,
     [['T1', 'pass'], ['T1F', 'unpublished']]);
   assert.equal(lawEvidence(TABLE, 'F4', 'openai_codex', 'gpt-6.1-sol', 'max').form, 'none'); // T1F fails tau
   assert.equal(lawEvidence(TABLE, 'F4', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form, 'none'); // unscored
-  assert.equal(lawEvidence(TABLE, 'F7', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form, 'b');
+  assert.equal(lawEvidence(TABLE, 'F7', 'anthropic_shared', 'claude-opus-5-5', 'medium').form, 'b');
+  // W2 (four published): sonnet@xhigh is within tau on Briefcase alone: not admitted.
+  assert.equal(TABLE.admission.W2.anthropic_shared.cells['claude-sonnet-5-5@xhigh'].pass, false);
+  assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form, 'none');
+  assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-opus-5-5', 'xhigh').form, 'b');
   // No evidence is never evidence: a family whose tiers the pool never publishes.
   assert.equal(lawEvidence(TABLE, 'F5a', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'none');
   assert.equal(lawEvidence(TABLE, 'F1', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'none');
 });
 
-test('E[Q]: real quota per cost shape, p_fail with the Laplace prior, the scarcity price', () => {
+test('E[Q]: real quota per cost shape, p_fail(c, family) with the Laplace prior, the scarcity price', () => {
   const row = (surface, model, effort) => ({surface, model, effort});
-  const opus = lawQuota(TABLE, row('claude-chat', 'claude-opus-5-5', 'max'), 'long_answer');
+  const opus = lawQuota(TABLE, row('claude-chat', 'claude-opus-5-5', 'max'), 'answer');
   assert.equal(opus.basis, 'measured_os1');
+  // The answer shape is every <= 2-call turn of the cell, whatever its realized
+  // output (review of 447): one answer shape, and the agentic shape.
+  assert.deepEqual(Object.keys(TABLE.quota['claude-chat:claude-opus-5-5@max']).filter(k => !['pool', 'model', 'effort'].includes(k)).sort(),
+    ['agentic', 'answer']);
   assert.ok(lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'agentic').q >
     lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'answer').q);
   assert.deepEqual(lawQuota(TABLE, row('local', 'qwen3.5:9b', 'none'), 'answer'), {q: 0, basis: 'local'});
   assert.equal(lawQuota(TABLE, row('codex', 'gpt-5.5', 'high'), 'answer'), null); // not on the price table
-  // Laplace: (f + 1) / (n + 2); pooled over surfaces.
-  const luna = TABLE.p_fail.cells['gpt-6-luna@low'];
-  assert.equal(lawPFail(TABLE, row('codex', 'gpt-6-luna', 'low')), (luna.failures + 1) / (luna.runs + 2));
-  assert.equal(lawPFail(TABLE, row('claude', 'claude-sonnet-5-5', 'low')), 0.5);
-  assert.equal(lawPFail(TABLE, row('claude', 'claude-opus-5-5', 'max')), lawPFail(TABLE, row('claude-chat', 'claude-opus-5-5', 'max')));
+  // p_fail(c, family): judged runs of that model@effort in that law family; no
+  // judged run is the prior 1/2. The committed ledger has none attributed to a
+  // law family (every judged run predates the law): all prior, never pooled.
+  assert.deepEqual(TABLE.p_fail.cells, {});
+  assert.ok(TABLE.p_fail.excluded.undispatched > 0 && TABLE.p_fail.excluded.unjudged > 0);
+  assert.equal(lawPFail(TABLE, row('codex', 'gpt-6.1-sol', 'medium'), 'F5a'), 0.5);
+  const keyed = {...TABLE, p_fail: compilePFail({schema: 2, excluded: {}, cells: [
+    {model: 'gpt-6.1-sol', effort: 'medium', family: 'F5a', runs: 8, failures: 1}]}, {laplace: {failures: 1, runs: 2}})};
+  assert.equal(lawPFail(keyed, row('codex', 'gpt-6.1-sol', 'medium'), 'F5a'), 0.2);
+  assert.equal(lawPFail(keyed, row('codex', 'gpt-6.1-sol', 'medium'), 'F6-code'), 0.5); // another family: the prior
+  assert.equal(lawPFail(keyed, row('claude', 'claude-opus-5-5', 'max'), 'F4'), lawPFail(keyed, row('claude-chat', 'claude-opus-5-5', 'max'), 'F4'));
   assert.equal(lawExpectedQuota({q: 0.01, pFail: 0.25, escalationQ: 0.04, scarcity: 0.002}), 0.022);
+  // Scarcity is proportional to the draw on the scarce pool (review of 447).
   assert.equal(lawScarcity(0.04, 0.6, 0.15), 0);
   assert.ok(Math.abs(lawScarcity(0.04, 0.05, 0.15) - 0.04 * 0.1 / 0.15) < 1e-12);
+  assert.ok(Math.abs(lawScarcity(0.004, 0.05, 0.15) - 0.004 * 0.1 / 0.15) < 1e-12);
   assert.equal(lawScarcity(0.04, null, 0.15), 0);
+});
+
+test('p_fail evidence: only judged runs of a law family count; undispatched and unjudged attempts are no evidence', () => {
+  const line = record => JSON.stringify({schema: 1, route_kind: 'law', escalated: false, model: 'm', effort: 'high',
+    verifier_outcome: 'not_registered', ...record});
+  const ledger = snapshotLedger(Buffer.from([
+    line({law: {family: 'F4'}, check_outcome: 'screen_pass'}), line({law: {family: 'F4'}, check_outcome: 'screen_fail',
+      escalation_outcome: 'escalated'}), line({law: {family: 'F4'}, attempt_state: 'completed'}),
+    line({law: {family: 'F4'}, attempt_state: 'verified_not_dispatched'}), line({route_kind: 'tier', check_outcome: 'pass'}),
+    line({law: {family: 'F2'}, attempt_state: 'ladder_not_returned'}), line({escalated: true, law: {family: 'F4'}, check_outcome: 'pass'})
+  ].join('\n')));
+  assert.deepEqual(ledger.excluded, {undispatched: 1, unjudged: 1, no_law_family: 1});
+  assert.deepEqual(ledger.cells, [{model: 'm', effort: 'high', family: 'F2', runs: 1, failures: 1},
+    {model: 'm', effort: 'high', family: 'F4', runs: 2, failures: 1}]);
 });
 
 test('step 1: the family is the reading through the table\'s first-match rules', () => {
@@ -117,6 +155,38 @@ test('step 1: the family is the reading through the table\'s first-match rules',
   assert.equal(lawFamily(r('action', 'standard', 'execution', 'coding')), 'F7');
   assert.equal(lawFamily(r('design', 'deep', 'workspace', 'coding')), 'F6-code');
   assert.equal(lawFamily(r('write', 'standard', 'none', 'writing')), 'F13');
+  // Review of 447: the tool-use and document tiers have families.
+  assert.equal(lawFamily(r('action', 'standard', 'execution', 'tool_use')), 'F8');
+  assert.equal(lawFamily(r('explain', 'standard', 'workspace', 'writing')), 'F3x');
+  assert.deepEqual(TABLE.families.F8.tiers, ['U1']);
+  assert.deepEqual(TABLE.families.F3x.tiers, ['W1']);
+});
+
+test('step 2: the matched tiers include every conditional tier whose condition the reading or a writer meets', () => {
+  const r = (task_type, difficulty, needs_tools, domain = 'general') => ({task_type, difficulty, needs_tools, domain});
+  // Every conditional tier of the evidence is compiled; none is dropped.
+  const evidence = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-evidence-20261029.json'), 'utf8'));
+  for (const [id, family] of Object.entries(TABLE.families)) {
+    const row = evidence.families.find(f => f.id === id);
+    if (!row || family.tier_basis === 'policy') continue;
+    for (const c of row.conditional) if (!family.tiers.includes(c.tier))
+      assert.ok(family.conditional.some(x => x.tier === c.tier && x.condition === c.when), `${id} ${c.tier}`);
+  }
+  assert.throws(() => compileFamilies({families: [{id: 'X', required: ['T1'], conditional: [{tier: 'T2', when: 'x'}], upper_bound: []}]},
+    {families: {X: {tiers: 'evidence'}}, conditions: {}, local_admission: {families: []}}), /unmapped conditional tier/);
+  // F7 / F6-code: C3 for a deep reading or a writer; C2 alone otherwise.
+  assert.deepEqual(lawTiers(TABLE, 'F7', r('action', 'standard', 'execution', 'coding'), false), ['C2']);
+  assert.deepEqual(lawTiers(TABLE, 'F7', r('action', 'deep', 'execution', 'coding'), false), ['C2', 'C3']);
+  assert.deepEqual(lawTiers(TABLE, 'F7', r('action', 'standard', 'execution', 'coding'), true), ['C2', 'C3']);
+  assert.deepEqual(lawTiers(TABLE, 'F6-code', r('design', 'standard', 'none', 'coding'), false), ['C2']);
+  assert.deepEqual(lawTiers(TABLE, 'F6-code', r('design', 'standard', 'workspace', 'coding'), true), ['C2', 'C3']);
+  // A condition no reading tells applies always (the floor); an unread request meets every clause.
+  assert.deepEqual(lawTiers(TABLE, 'F4', r('explain', 'standard', 'none', 'science'), false), ['T1', 'T1F', 'T2P']);
+  assert.deepEqual(lawTiers(TABLE, 'F4', r('chat', 'standard', 'none', 'science'), false), ['T1', 'T1F', 'T2', 'T2P']);
+  assert.deepEqual(lawTiers(TABLE, 'F7', null, false), ['C2', 'C3']);
+  // sol@medium: scored on one of Codex's two C2 benchmarks (coverage) and outside tau on C3: never admitted.
+  assert.equal(lawEvidence(TABLE, ['C2', 'C3'], 'openai_codex', 'gpt-6.1-sol', 'medium').form, 'none');
+  assert.equal(lawEvidence(TABLE, ['C2', 'C3'], 'anthropic_shared', 'claude-opus-5-5', 'medium').form, 'b');
 });
 
 // ---- The engine on the owner's own catalogs. -------------------------------
@@ -181,21 +251,88 @@ test('rollback: without routing_law (routing_policy=law_446) every owner questio
   }
 });
 
-test('headroom: a pool under the threshold is priced up, never switched off', () => {
-  const q = question(2);
-  const plain = routeOf(q.request, lawOf(q));
-  assert.match(plain.route, /^claude-chat:/);
-  const scarce = lawOf(q, c => ({...c, candidates: c.candidates.map(row => row.quota_pool === 'anthropic_shared' ?
-    {...row, quota_remaining_fraction: 0.01} : row)}));
-  const routed = routeOf(q.request, scarce);
-  const claude = routed.law.candidates.filter(([key]) => key.startsWith('claude'));
-  // Claude rows are still evaluated (priced, not excluded) and dearer by the scarcity price.
-  for (const [key, , quota, eq, excluded] of claude) if (excluded === null) assert.ok(eq > quota, key);
-  const reference = claude.find(([key]) => key === 'claude-chat:claude-fable-5-1@max');
-  const q0 = lawQuota(TABLE, {surface: 'claude-chat', model: 'claude-fable-5-1', effort: 'max'}, 'long_answer').q;
-  assert.ok(Math.abs(reference[3] - (q0 + q0 * (0.15 - 0.01) / 0.15)) < 1e-6);
-  assert.match(routed.reason, /law_argmin|route_law/);
-  assert.equal(routed.law.argmin, routed.route);
+test('headroom: a scarce pool is priced up in proportion to each row\'s draw, never switched off', () => {
+  const q = question(6); // a writer build: Claude's opus@medium below its reference
+  const at = remaining => lawOf(q, c => ({...c, candidates: c.candidates.map(row => row.quota_pool === 'anthropic_shared' ?
+    {...row, quota_remaining_fraction: remaining} : row)}));
+  const plain = routeOf(q.request, at(0.6)), scarce = routeOf(q.request, at(0.05));
+  const k = (0.15 - 0.05) / 0.15;
+  const eqOf = (routed, key) => routed.law.candidates.find(([row]) => row === key);
+  for (const [key, , quota, eq, excluded] of scarce.law.candidates.filter(([key]) => key.startsWith('claude'))) {
+    if (excluded !== null) continue;
+    // Every term of a Claude row's E[Q] is a Claude draw, so each is scaled by (1 + k).
+    assert.ok(Math.abs(eq - eqOf(plain, key)[3] * (1 + k)) < 1e-5, `${key} ${eq} vs ${eqOf(plain, key)[3]}`);
+    assert.ok(eq > quota, key);
+  }
+  // Within the scarce pool the cheap row still beats its own reference: scarcity
+  // never favours the largest draw (review of 447).
+  assert.equal(scarce.route, 'claude:claude-opus-5-5@medium');
+  const reference = eqOf(scarce, 'claude:claude-fable-5-1@max');
+  assert.ok(eqOf(scarce, scarce.route)[3] < reference[3]);
+  const q0 = lawQuota(TABLE, {surface: 'claude', model: 'claude-fable-5-1', effort: 'max'}, 'agentic').q;
+  assert.ok(Math.abs(reference[3] - q0 * (1 + k)) < 1e-5);
+  assert.equal(scarce.law.argmin, scarce.route);
+  assert.match(scarce.reason, /;law_scarcity_/);
+});
+
+test('a writer that does work is priced on the agentic shape; the same reading answering is priced as an answer', () => {
+  const q = question(6);
+  const routed = routeOf(q.request, lawOf(q));
+  assert.equal(routed.scope, 'workspace_write');
+  assert.equal(routed.law.shape, 'agentic');
+  assert.deepEqual(routed.law.tiers, ['C2', 'C3']); // a writer meets 'multi-step agentic work on a repository'
+  const opus = lawQuota(TABLE, {surface: 'claude', model: 'claude-opus-5-5', effort: 'medium'}, 'agentic').q;
+  assert.equal(routed.law.candidates.find(([key]) => key === routed.route)[2], Math.round(opus * 1e6) / 1e6);
+  // The same request answered by a read-only node (no write rows): its family's answer shape.
+  const readOnly = lawOf(q, c => ({...c, owner_scope: 'read_only', candidates: c.candidates.filter(row => row.scope === 'read_only')}));
+  const answered = routeOf(q.request, readOnly);
+  assert.equal(answered.scope, 'read_only');
+  assert.equal(answered.law.shape, 'answer');
+  // A writer whose reading is a plain explanation does no work: its family's shape.
+  const explain = lawOf(q, c => ({...c, routing_law: {...c.routing_law,
+    reading: {task_type: 'explain', difficulty: 'standard', needs_tools: 'none', domain: 'general'}}}));
+  assert.equal(routeOf(q.request, explain).law.shape, 'answer');
+});
+
+test('a pool reference is admissible on the tiers its pool publishes; current facts bind the Codex reference', () => {
+  const q = question(7); // F5a: T1F, published by Codex only
+  const routed = routeOf(q.request, lawOf(q));
+  assert.equal(routed.law.family, 'F5a');
+  const fable = routed.law.candidates.find(([key]) => key.endsWith('claude-fable-5-1@max'));
+  assert.deepEqual([fable[1], fable[4]], ['x:T1F=unpublished', 'reference_tier_unpublished']);
+  const astra = routed.law.candidates.find(([key]) => key === 'codex:gpt-6-astra@ultra');
+  assert.deepEqual([astra[1], astra[4]], ['reference', null]);
+  assert.equal(routed.route, 'codex:gpt-6-astra@ultra');
+  // A family no pool publishes a tier for (small talk on a later turn, F1):
+  // every pool reference stays admissible (DESIGN-8: the reference is always admissible).
+  const chat = lawOf(question(12), c => ({...c, candidates: c.candidates.filter(row => row.surface !== 'local')}));
+  const talked = routeOf(question(12).request, chat);
+  assert.equal(talked.law.family, 'F1');
+  assert.ok(talked.law.candidates.filter(([, form]) => form === 'reference').length >= 2);
+  // With no Codex pool in the catalog, nothing is admissible: the reference fallback binds.
+  const claudeOnly = lawOf(q, c => ({...c, candidates: c.candidates.filter(row => row.quota_pool !== 'openai_codex')}));
+  const fallback = routeOf(q.request, claudeOnly);
+  assert.match(fallback.route, /claude-fable-5-1@max$/);
+  assert.match(fallback.reason, /law_F5a_no_admissible_priced_row/);
+});
+
+test('a row whose own pool reference cannot run escalates to the other pool\'s reference; a writer needs none', () => {
+  const q = question(6);
+  const noFable = c => ({...c, candidates: c.candidates.map(row => row.model === 'claude-fable-5-1' ?
+    {...row, availability: 'unavailable'} : row)});
+  const wrote = routeOf(q.request, lawOf(q, noFable));
+  assert.equal(wrote.route, 'claude:claude-opus-5-5@medium'); // a writer binds no ladder: no runnable reference needed
+  assert.equal(wrote.ladder, null);
+  // A read-only law row below its reference: its ladder's escalation is the Codex reference.
+  const q11 = question(11);
+  const local = lawOf(q11, c => noFable({...c, candidates: c.candidates}));
+  const routed = routeOf(q11.request, local);
+  assert.equal(routed.route, 'local:qwen3.5:9b@none');
+  const reference = local.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
+  assert.equal(reference.model, 'gpt-6-astra');
+  const opus = lawOf(question(3), c => noFable({...c, candidates: c.candidates}));
+  const ex = routeOf(question(3).request, opus).law.candidates.find(([key]) => key === 'claude-chat:claude-opus-5-5@max');
+  assert.notEqual(ex[4], 'requires_runnable_reference', 'priced to the other pool\'s reference, not excluded');
 });
 
 test('local first: a light tool-free reading binds the local row on the first turn only; a writer never', () => {
@@ -219,8 +356,29 @@ test('local first: a light tool-free reading binds the local row on the first tu
   assert.ok(!routes[plan.nodes[0].id].law.candidates.some(([key]) => key.startsWith('local:')));
 });
 
-test('the grant never picks the model: the same reading under a read-only and a writer grant binds the same model@effort', () => {
-  for (const n of [2, 3, 4, 5, 6, 7, 10]) {
+test('the grant never picks the model: an owner write grant on a read-only node changes nothing', () => {
+  // Review of 447: the owner's scope alone (the node still runs read-only)
+  // never removes the local row or moves a request to the reference.
+  for (const q of OWNER.questions) {
+    if (q.pending || q.expected_route.startsWith('calculator')) continue;
+    // A read-only request class (the corpus's grant-only rows): the node runs read-only either way.
+    const readOnly = lawOf(q, c => ({...c, owner_scope: 'read_only', request_class: c.request_class === 'writer' ? 'readonly_lookup' :
+      c.request_class, candidates: c.candidates.filter(row => row.scope === 'read_only')}));
+    const granted = {...readOnly, owner_scope: 'workspace_write'};
+    const a = routeOf(q.request, readOnly), b = routeOf(q.request, granted);
+    assert.equal(b.route, a.route, `#${q.n} ${q.request}`);
+    if (a.kind === 'ask_back') continue;
+    assert.equal(a.scope, 'read_only', `#${q.n}`);
+    assert.equal(b.route, a.route, `#${q.n} ${q.request}`);
+  }
+  // The local row travels by the reading alone (Swift lawMayAnswerLocally).
+  const q10 = question(10);
+  assert.equal(q10.catalog.owner_scope, 'workspace_write');
+  assert.ok(lawOf(q10).candidates.some(row => row.surface === 'local'));
+});
+
+test('the grant never picks the model: the same reading under a read-only and a writer node binds the same model@effort', () => {
+  for (const n of [2, 3, 4, 5, 6, 7, 10, 11, 12]) {
     const q = question(n);
     const agentRows = lawOf(q).candidates.filter(row => row.surface !== 'local' && row.scope === 'read_only');
     const readOnly = lawOf(q, c => ({...c, owner_scope: 'read_only', request_class: 'readonly_lookup',
@@ -234,13 +392,21 @@ test('the grant never picks the model: the same reading under a read-only and a 
     const read = routeOf(q.request, readOnly), wrote = routeOf(q.request, writer);
     assert.equal(read.scope, 'read_only', `#${n}`);
     assert.equal(wrote.scope, 'workspace_write', `#${n}`);
+    assert.equal(wrote.ladder, null, `#${n} a writer binds no ladder`);
+    if (q.expected_route.startsWith('local:') || read.law.shape !== wrote.law.shape) {
+      // The local model has no tools: a writer moves to the family's tooled
+      // argmin (DESIGN-6 §5), the cheapest admissible writer row by the law.
+      assert.equal(wrote.law.argmin, wrote.route, `#${n}`);
+      const admissible = wrote.law.candidates.filter(([, , , eq, excluded]) => excluded === null);
+      assert.equal(wrote.law.eq, Math.min(...admissible.map(([, , , eq]) => eq)), `#${n}`);
+      continue;
+    }
     const modelEffort = route => route.split(':').slice(1).join(':');
     assert.equal(modelEffort(wrote.route), modelEffort(read.route), `#${n} ${read.route} vs ${wrote.route}`);
-    assert.equal(wrote.ladder, null, `#${n} a writer binds no ladder`);
   }
 });
 
-test('owner words for the strongest model leave only the pool references', () => {
+test('owner words for the strongest model or more thinking leave only the pool references', () => {
   const q = question(2);
   const law = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
     signals: [...c.request_profile.signals, 'quality_request'].sort()}}));
@@ -248,6 +414,27 @@ test('owner words for the strongest model leave only the pool references', () =>
   assert.equal(routed.law.family, 'P');
   assert.ok(routed.law.candidates.every(([, form, , , excluded]) => form === 'reference' || excluded !== null));
   assert.match(routed.route, /claude-fable-5-1@max|gpt-6-astra@ultra/);
+  // Review of 447: the host's wider forms (build 446's capability guard) travel
+  // as routing_law.reference_request; the fixed-phrase signal is not needed.
+  for (const [request, reading] of [
+    ['최대한 신중히 생각해서 퀵소트 최악 시간복잡도가 왜 나오는지 설명해줘', {task_type: 'explain', difficulty: 'deep', needs_tools: 'none', domain: 'coding'}],
+    ['think very carefully: why is the harmonic series divergent?', {task_type: 'explain', difficulty: 'standard', needs_tools: 'none', domain: 'math'}],
+    ['머리를 최대한 굴려서 이 함수 설명해봐', {task_type: 'explain', difficulty: 'light', needs_tools: 'none', domain: 'coding'}]]) {
+    const row = {request, catalog: {...structuredClone(question(3).catalog), request_sha256: sha(request)},
+      receipt: {outcome: 'adopted', model: 'qwen3.5:9b', answer: reading}};
+    const catalog = lawCatalog(row, null);
+    assert.equal(catalog.request_profile.signals.includes('quality_request'), false);
+    assert.equal(catalog.routing_law.reference_request, true, request);
+    const words = routeOf(request, catalog);
+    assert.equal(words.law.family, 'P', request);
+    assert.match(words.route, /claude-fable-5-1@max|gpt-6-astra@ultra/, request);
+    const without = routeOf(request, {...catalog, routing_law: {...catalog.routing_law, reference_request: false}});
+    assert.notEqual(without.law.family, 'P', request);
+  }
+  // A self-test with reference words is not asked back.
+  const q8 = question(8);
+  assert.equal(lawAskBack({mode: 'auto', request: q8.request},
+    lawOf(q8, c => ({...c, routing_law: {...c.routing_law, reference_request: true}}))), null);
 });
 
 test('ask-back: a first-turn self-test with no task asks one free question in the owner\'s language', () => {
@@ -270,7 +457,7 @@ test('the catalog contract: routing_law travels only well-formed and beside the 
   const bad = [{...good, policy: 'law_446'}, {...good, schema: 2}, {...good, table_sha256: 'x'},
     {...good, reader: 'none'}, {...good, reading: {...good.reading, task_type: 'dance'}},
     {...good, reading: {...good.reading, extra: 1}}, {...good, reader: 'local_llm:qwen3.5:9b', reading: null},
-    (({reading, ...rest}) => rest)(good)];
+    (({reading, ...rest}) => rest)(good), (({reference_request, ...rest}) => rest)(good), {...good, reference_request: 'yes'}];
   return Promise.all(bad.map(async routingLaw => {
     const dir = await mkdtemp(join(tmpdir(), 'os1-law-bad-')); await chmod(dir, 0o700);
     const catalog = {...lawOf(q), routing_law: routingLaw};
@@ -341,15 +528,32 @@ test('Core: the law\'s route runs, its screen delivers it, and the ledger record
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
 });
 
+test('Core: the law\'s local route dispatches locally with no hold (light explanation and light writing)', async t => {
+  // Review of 447 (blocker): the plan validator admits a law-bound local node
+  // under the predicate the law bound it under, not only a chat profile.
+  for (const [q, label] of [[question(11), 'F2'], [{...question(11), request: '이 문장 영어로 번역해줘: 나는 학교에 갔다',
+    receipt: {outcome: 'adopted', model: 'qwen3.5:9b', answer: {task_type: 'write', difficulty: 'light', needs_tools: 'none', domain: 'writing'}},
+    intent: 'other'}, 'F12']]) {
+    const catalog = lawCatalog({...q, catalog: {...structuredClone(q.catalog), request_sha256: sha(q.request)}}, q.intent);
+    assert.equal(catalog.request_profile.task_type === 'chat', false, label + ': not a chat profile');
+    const routed = routeOf(q.request, catalog);
+    assert.equal(routed.route, 'local:qwen3.5:9b@none', label);
+    assert.equal(routed.law.family, label);
+    const {done, tickets} = await harness(t, q, catalog, ticket => completed(ticket, {output: 'a local answer, long enough to pass'}));
+    assert.notEqual(done.state, 'held', label + ' ' + done.error);
+    assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none'], label);
+  }
+});
+
 test('Core: a failed screen on a read-only law route escalates exactly once to the reference fixed at bind', async t => {
-  const q = question(10); // README.md 설명해줘: a law route on the agent surface, below its reference
+  const q = question(11); // a light explanation: the local law route, below its reference
   const law = lawOf(q);
   const routed = routeOf(q.request, law);
   assert.equal(routed.kind, 'law');
   const reference = law.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
   const {tickets, ledger, text, done} = await harness(t, q, law, (ticket, n) => n === 1 ? completed(ticket, {output: ' '}) :
     completed(ticket, {output: 'reference answer'}));
-  assert.deepEqual(tickets.map(tuple), [routed.route, lawKey(reference)]);
+  assert.deepEqual(tickets.map(tuple), [routed.route.replace(/@none$/, '@none'), lawKey(reference)]);
   assert.equal(done.result.output, 'reference answer');
   assert.equal(ledger[0].delivery_basis, 'law:F2');
   assert.equal(ledger[0].check_outcome, 'screen_fail');
@@ -359,14 +563,20 @@ test('Core: a failed screen on a read-only law route escalates exactly once to t
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
 });
 
-test('Core: the ask-back completes locally with no dispatch and keeps its receipt', async t => {
+test('Core: the ask-back returns locally with no dispatch, unverified, and records the local reading that decided it', async t => {
   const q = question(8);
   const {done, tickets, saved} = await harness(t, q, lawOf(q), () => { throw new Error('never dispatched'); });
   assert.equal(tickets.length, 0);
-  assert.equal(done.state, 'completed');
+  // Review of 447: a question back is no verified answer, and the local
+  // model's reading (not an exact parser) decided it.
+  assert.equal(done.state, 'returned_unverified');
   assert.equal(done.result.output, TABLE.ask_back.ko);
+  assert.equal(done.result.task_verified, false);
+  assert.equal(done.result.task_quality, 'execution_only');
   assert.equal(saved.law_receipt.family, 'F10');
-  assert.equal(saved.plan_provenance, 'deterministic_no_model');
+  assert.equal(saved.plan_provenance, 'local_reading_ask_back');
+  assert.equal(saved.resource_events[0].reason, 'host_local_reading_ask_back:' + lawOf(q).routing_law.reader);
+  assert.equal(saved.resource_events[0].model, 'ollama/qwen3.5:9b');
 });
 
 test('the owner table covers DESIGN-7 §5\'s 16 questions', () => {

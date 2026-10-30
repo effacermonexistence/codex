@@ -930,8 +930,8 @@ check('public static let promptVersion = "local_cls_v2_dom1_sub2_int1"' in class
       catalog_profile.index("input.capabilityTable = ModelCapabilityTable.compiled") < catalog_profile.index("input.now = Date()") and
       # Build 446 (DESIGN-5 §A.8): unless the local reading cleared a thing's
       # 최고 성능 or the owner's own thinking; the 442 phrasings stay floors.
-      "!(RequestProfile.asksForReference(input.request) &&" in BUILDER and
-      "RequestProfile.asksForReferenceFloor(input.request))) else { return nil }" in BUILDER and
+      "!RequestProfile.ownerAsksForReference(input.request, profile: input.requestProfile) else { return nil }" in BUILDER and
+      "asksForReference(request) && (!(profile?.cleared(\"quality\") ?? false) || asksForReferenceFloor(request))" in profile_source and
       # Review of 442: think-hard and strongest-model wording in any common word order keeps the reference.
       "public static func asksForReference(_ request: String) -> Bool {" in profile_source and
       "if asksForStrongest(request) { return true }" in profile_source,
@@ -1236,7 +1236,13 @@ check(f'public static let tableSHA256 = "{law_sha}"' in law_swift and
       "447: the routing-law table is the compiler's bytes from committed inputs, pinned in Resources, Core and Swift; release-checked")
 check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" in RUNTIME and
       "function lawAdmission(node, task, catalog) {" in RUNTIME and "export function lawExpectedQuota({q, pFail = 0, escalationQ = 0, scarcity = 0}) {" in RUNTIME and
-      "export function lawScarcity(referenceQ, remaining, threshold) {" in RUNTIME and
+      "export function lawScarcity(q, remaining, threshold) {" in RUNTIME and
+      "return q == null ? null : q + lawScarcity(q, candidate.quota_remaining_fraction, threshold);" in RUNTIME and
+      "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
+      "export function lawPFail(table, candidate, family) {" in RUNTIME and
+      "|| lawAnswersLocally(node, task, catalog)), 'local_agent_node_not_explicit');" in RUNTIME and
+      "law.reference_request === true;" in RUNTIME and
+      "snapshot.plan_provenance = askBack ? 'local_reading_ask_back' : 'deterministic_no_model';" in RUNTIME and
       "const ranked = [...admissible].sort((a, b) => (a.eq - b.eq) ||" in RUNTIME and
       "'law_argmin_reference'" in RUNTIME and "law:[A-Za-z0-9-]{1,16}" in RUNTIME and
       "...(routeClass !== null && plain(child.law_receipt) ? {law: child.law_receipt} : {})};" in RUNTIME and
@@ -1253,7 +1259,14 @@ check('public static let environmentKey = "OS1_ROUTING_POLICY"' in law_swift and
       "let consultLocal = profileConsults || lawReads" in MAIN and
       "if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }" in MAIN and
       "capabilityRoutes: input.routingLaw == nil ? capabilityRoutes(input) : nil" in BUILDER and
+      "law.referenceRequest = RequestProfile.ownerAsksForReference(input.request," in BUILDER and
+      'return reading.needsTools == "none" && reading.difficulty == "light"\n' in BUILDER and
       "LAW_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text(),
-      "447: the host reads every Auto request locally under law_447, carries the raw reading, and law_446 rolls back")
+      "447: the host reads every Auto request locally under law_447, carries the raw reading and the owner's reference words, and law_446 rolls back")
+plugin_text = (ROOT / "Resources/openclaw-os1-bridge/rcc-plugin.mjs").read_text()
+check("if (operation === 'rcc-catalog' && ['law_446', 'law_447'].includes(process.env.OS1_ROUTING_POLICY))" in plugin_text and
+      "env.OS1_ROUTING_POLICY = process.env.OS1_ROUTING_POLICY;" in plugin_text and
+      "['PATH', 'USER', 'LOGNAME', 'TMPDIR', 'LANG'].includes(key) || key.startsWith('LC_')" in plugin_text,
+      "447 review: the OS1_ROUTING_POLICY override reaches the catalog builder (its two exact values only)")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

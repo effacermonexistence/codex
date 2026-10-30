@@ -58,6 +58,11 @@ export async function nativeOperation(operation, payload, signal,
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     ['PATH', 'USER', 'LOGNAME', 'TMPDIR', 'LANG'].includes(key) || key.startsWith('LC_')));
   env.HOME = home; env.OS1_RCC_ADAPTER_CHILD = '1';
+  // Build 447 (review): the routing-law switch's one-shot override reaches
+  // the catalog builder that reads it (RoutingLaw.policy), and only its two
+  // exact values; the persistent switch is ~/.os1/routing-policy.json.
+  if (operation === 'rcc-catalog' && ['law_446', 'law_447'].includes(process.env.OS1_ROUTING_POLICY))
+    env.OS1_ROUTING_POLICY = process.env.OS1_ROUTING_POLICY;
   // ExecutionCancellation in the native CLI already polls this exact marker.
   // It must reach that CLI but never another unrelated provider/session.
   const cancellable = operation === 'rcc-adapter' || operation === 'rcc-stage';

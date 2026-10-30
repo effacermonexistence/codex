@@ -5,22 +5,31 @@
  * provider, model or network; Core's own route computation only.
  *
  *   node scripts/routing-law-replay.mjs --catalogs <sw446c.json> --routes446 <r446c.json> [--intents <intents.json>] [--rows <out.json>]
+ *     [--remaining anthropic_shared=0.11,openai_codex=0.6]
  *   node scripts/routing-law-replay.mjs --catalogs <sw446c.json> --routes446 <r446c.json> --intents <intents.json> --extras <extras.json> --owner-fixture <out.json>
  *
  * `catalogs`: the build 446 harness rows (Swift-built catalogs, each with the
  * local model's recorded reading). Under the law each catalog carries what
  * the build 447 host sends instead: no capability routes, `routing_law` with
  * the recorded raw reading (plus the intent reading from `intents`, an
- * {index: "self_test"|"other"} map of live local intent calls), and the
- * local row whenever the law may answer locally (the same rule as Swift
- * RCCNativeCatalogBuilder.lawMayAnswerLocally). Permissions (owner scope,
- * chat lane, profile) are unchanged: they are build 446's.
+ * {index: "self_test"|"other"} map of live local intent calls) and the
+ * owner's reference words (`reference_request`: Swift
+ * RequestProfile.ownerAsksForReference, mirrored here from the Swift source's
+ * own term and pattern lists), and the local row whenever the law may answer
+ * locally (the same rule as Swift RCCNativeCatalogBuilder.lawMayAnswerLocally:
+ * the reading alone; Core decides by the node's scope). Permissions (owner
+ * scope, chat lane, profile) are unchanged: they are build 446's.
  *
  * Each route is priced with the compiled law table: Q of its row for the
- * request's cost shape (answer or agentic, from the law's family), and
- * E[Q] = Q + p_fail x Q(its escalation) for a laddered route (446's graded and
- * capability routes are priced on the same basis). Cw and Px are summed 1:1
- * only in the total line (an assumption, DESIGN-7). */
+ * request's cost shape (the law receipt's shape: the family's, agentic for a
+ * writer that does work), and E[Q] = Q + p_fail(c, family) x Q(its
+ * escalation) for a laddered route (446's graded and capability routes are
+ * priced on the same basis): the expected real draw, never the scarcity
+ * price. Each pool is reported on its own (Cw, Px) with its own ratio; Cw and
+ * Px are summed 1:1 only in the sum line (an assumption, DESIGN-7, review of
+ * 447). `--remaining` sets each pool's quota_remaining_fraction on every row of
+ * both arms (the recorded catalogs carry 0.6 for both pools) so the replay can
+ * run at the pools' real headroom. */
 import {readFileSync, writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -40,6 +49,28 @@ function options(argv) {
 }
 const POOL_UNIT = {anthropic_shared: 'Cw', openai_codex: 'Px', none: 'local'};
 
+// The host's reference words (Swift RequestProfile.asksForReference): its
+// fixed terms and its patterns, read from the Swift source itself so the
+// replay never keeps its own copy. A replay approximation only (JS regular
+// expressions on the same NFC-lowercased text); the host is the authority.
+const PROFILE_SWIFT = readFileSync(join(ROOT, 'Sources/OS1Context/RequestProfile.swift'), 'utf8');
+const QUALITY_TERMS = JSON.parse(/static let qualityRequestTerms = (\[[^\]]*\])/.exec(PROFILE_SWIFT)[1]);
+const REFERENCE_PATTERNS = [.../static let referenceRequestPatterns = \[([\s\S]*?)\n {4}\]/.exec(PROFILE_SWIFT)[1]
+  .matchAll(/#"([\s\S]*?)"#/g)].map(match => new RegExp(match[1], 'u'));
+export function asksForReference(request) {
+  const lower = request.normalize('NFC').toLowerCase();
+  const escape = term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return QUALITY_TERMS.some(term => /^[\x00-\x7f]*$/.test(term) ?
+    new RegExp('(?<![A-Za-z0-9])' + escape(term) + '(?![A-Za-z0-9])').test(lower) : lower.includes(term)) ||
+    REFERENCE_PATTERNS.some(pattern => pattern.test(lower));
+}
+/** Swift RequestProfile.ownerAsksForReference: the reference words, unless the
+ * local reading cleared them as the owner's own thinking (a floor is never
+ * clearable, so a cleared rule is never a floor). */
+export function ownerAsksForReference(request, profile) {
+  return asksForReference(request) && !(profile?.signals ?? []).includes('soft_cleared_quality');
+}
+
 export function lawCatalog(row, intent) {
   const catalog = structuredClone(row.catalog);
   delete catalog.capability_routes;
@@ -47,8 +78,9 @@ export function lawCatalog(row, intent) {
   const reading = answer ? {task_type: answer.task_type, difficulty: answer.difficulty, needs_tools: answer.needs_tools,
     domain: answer.domain ?? 'general', ...(intent ? {intent} : {})} : null;
   catalog.routing_law = {schema: 1, policy: 'law_447', table_sha256: ROUTING_LAW_TABLE_SHA256,
-    reader: reading ? 'local_llm:' + (row.receipt.model ?? 'qwen3.5:9b') : 'none', reading};
-  const local = reading && reading.needs_tools === 'none' && reading.difficulty === 'light' && catalog.owner_scope !== 'workspace_write';
+    reader: reading ? 'local_llm:' + (row.receipt.model ?? 'qwen3.5:9b') : 'none', reading,
+    reference_request: ownerAsksForReference(row.request, catalog.request_profile)};
+  const local = reading && reading.needs_tools === 'none' && reading.difficulty === 'light';
   if (local && !catalog.candidates.some(c => c.surface === 'local')) {
     const at = Math.max(...catalog.candidates.map(c => c.availability_observed_at_ms ?? 0));
     catalog.candidates.push({account_id: 'os1-local', allowed_paths: [], availability: 'available',
@@ -92,7 +124,7 @@ export function routeOf(request, catalog) {
 }
 
 /** Expected real quota of a bound route for a cost shape (E[Q], pool units). */
-export function priceRoute(result, catalog, shape, table = routingLawTable()) {
+export function priceRoute(result, catalog, shape, table = routingLawTable(), family = null) {
   if (result.candidate === null) return {pool: 'none', q: 0, eq: 0};
   const c = result.candidate;
   const q = lawQuota(table, c, shape)?.q ?? null;
@@ -102,12 +134,18 @@ export function priceRoute(result, catalog, shape, table = routingLawTable()) {
     const reference = catalog.candidates.find(row => row.id === result.ladder.reference_candidate_id);
     escalationQ = reference ? lawQuota(table, reference, shape)?.q ?? 0 : 0;
     escalationPool = reference?.quota_pool ?? null;
-    eq = q + lawPFail(table, c) * escalationQ;
+    eq = q + lawPFail(table, c, family) * escalationQ;
   }
-  return {pool: c.quota_pool, q, eq, escalationPool, escalationQ, pFail: result.ladder ? lawPFail(table, c) : 0};
+  return {pool: c.quota_pool, q, eq, escalationPool, escalationQ, pFail: result.ladder ? lawPFail(table, c, family) : 0};
 }
 
-export function replay(catalogRows, routes446, intents = {}) {
+/** Every row of a pool at the given remaining fraction ({pool: fraction}). */
+export function atRemaining(catalog, remaining = null) {
+  if (!remaining) return catalog;
+  return {...catalog, candidates: catalog.candidates.map(row => Object.hasOwn(remaining, row.quota_pool) ?
+    {...row, quota_remaining_fraction: remaining[row.quota_pool]} : row)};
+}
+export function replay(catalogRows, routes446, intents = {}, remaining = null) {
   const table = routingLawTable();
   const by446 = new Map(routes446.map(row => [row.index, row]));
   const rows = [], totals = {law: {Cw: 0, Px: 0}, b446: {Cw: 0, Px: 0}, law_q: {Cw: 0, Px: 0}, b446_q: {Cw: 0, Px: 0}};
@@ -121,16 +159,18 @@ export function replay(catalogRows, routes446, intents = {}) {
   };
   for (const row of catalogRows) {
     if (!row.catalog) continue;
-    const law = lawCatalog(row, intents[row.index] ?? null);
-    const family = lawFamily(law.routing_law.reading, table);
+    const law = atRemaining(lawCatalog(row, intents[row.index] ?? null), remaining);
+    const theirsCatalog = atRemaining(row.catalog, remaining);
     let mine, theirs;
     try { mine = routeOf(row.request, law); } catch (error) { mine = {route: 'core_error:' + error.message, candidate: null, error: true}; }
-    try { theirs = routeOf(row.request, row.catalog); } catch (error) { theirs = {route: 'core_error:' + error.message, candidate: null, error: true}; }
-    // The cost shape of the request's family (the law's own pricing).
-    const shape = table.families[family]?.shape ?? 'long_answer';
+    try { theirs = routeOf(row.request, theirsCatalog); } catch (error) { theirs = {route: 'core_error:' + error.message, candidate: null, error: true}; }
+    // The law's family (P for the owner's reference words) and the cost shape
+    // the law priced the request with (the same work for both arms).
+    const family = mine.law?.family ?? lawFamily(law.routing_law.reading, table);
+    const shape = mine.law?.shape ?? table.families[family]?.shape ?? 'answer';
     const recorded = by446.get(row.index)?.route ?? null;
-    const p447 = mine.error ? {pool: 'none', q: null, eq: null} : priceRoute(mine, law, shape, table);
-    const p446 = theirs.error ? {pool: 'none', q: null, eq: null} : priceRoute(theirs, row.catalog, shape, table);
+    const p447 = mine.error ? {pool: 'none', q: null, eq: null} : priceRoute(mine, law, shape, table, family);
+    const p446 = theirs.error ? {pool: 'none', q: null, eq: null} : priceRoute(theirs, theirsCatalog, shape, table, family);
     add(totals.law, p447, 'eq'); add(totals.b446, p446, 'eq'); add(totals.law_q, p447, 'q'); add(totals.b446_q, p446, 'q');
     rows.push({index: row.index, group: row.group, request: row.request, family, shape,
       reading: law.routing_law.reading, route447: mine.route, kind447: mine.kind ?? null, basis447: mine.basis ?? null,
@@ -148,7 +188,10 @@ export function replay(catalogRows, routes446, intents = {}) {
         build446: {Cw: round(totals.b446.Cw), Px: round(totals.b446.Px), sum_1to1: round(sum(totals.b446))},
         delta: {Cw: round(totals.law.Cw - totals.b446.Cw), Px: round(totals.law.Px - totals.b446.Px),
           sum_1to1: round(sum(totals.law) - sum(totals.b446)),
+          ratio_Cw: totals.b446.Cw ? round(totals.law.Cw / totals.b446.Cw) : null,
+          ratio_Px: totals.b446.Px ? round(totals.law.Px / totals.b446.Px) : null,
           ratio_sum: round(sum(totals.law) / sum(totals.b446))}},
+      remaining: remaining ?? 'recorded (0.6 both pools)',
       start_quota: {law447: {Cw: round(totals.law_q.Cw), Px: round(totals.law_q.Px)},
         build446: {Cw: round(totals.b446_q.Cw), Px: round(totals.b446_q.Px)}},
       free_447: rows.filter(r => r.eq447 === 0).length, free_446: rows.filter(r => r.eq446 === 0).length,
@@ -191,7 +234,7 @@ export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}) 
       const route446 = routeOf(row.request, row.catalog).route;
       return {n, request: row.request, origin, receipt: row.receipt, intent: row.intent, catalog: row.catalog,
         expected_route: routed.route, expected_kind: routed.kind ?? null,
-        expected_family: routed.kind === 'calculator' ? 'F0' : lawFamily(law.routing_law.reading, routingLawTable()),
+        expected_family: routed.kind === 'calculator' ? 'F0' : routed.law?.family ?? lawFamily(law.routing_law.reading, routingLawTable()),
         route_446: route446,
         recorded_446: typeof source === 'number' ? recorded446.get(source) ?? null : null, design7_route: design7};
     })};
@@ -202,12 +245,18 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const catalogs = JSON.parse(readFileSync(o.catalogs, 'utf8'));
   const routes446 = JSON.parse(readFileSync(o.routes446, 'utf8'));
   const intents = o.intents ? JSON.parse(readFileSync(o.intents, 'utf8')) : {};
+  const remaining = o.remaining ? Object.fromEntries(o.remaining.split(',').map(pair => {
+    const [pool, value] = pair.split('=');
+    if (!['anthropic_shared', 'openai_codex'].includes(pool) || !(Number(value) >= 0 && Number(value) <= 1))
+      throw new Error('bad --remaining ' + pair);
+    return [pool, Number(value)];
+  })) : null;
   if (o['owner-fixture']) {
     const extras = o.extras ? JSON.parse(readFileSync(o.extras, 'utf8')) : {};
     writeFileSync(o['owner-fixture'], JSON.stringify(ownerFixture(catalogs, routes446, intents, extras)) + '\n');
     process.exit(0);
   }
-  const result = replay(catalogs, routes446, intents);
+  const result = replay(catalogs, routes446, intents, remaining);
   if (o.rows) writeFileSync(o.rows, JSON.stringify(result, null, 1));
   process.stdout.write(JSON.stringify(result.summary, null, 1) + '\n');
 }

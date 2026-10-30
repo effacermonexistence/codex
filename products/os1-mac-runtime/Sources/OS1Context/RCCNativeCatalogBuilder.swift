@@ -499,7 +499,14 @@ public enum RCCNativeCatalogBuilder {
                          classProviderPin: input.classTable.providerPin(for: requestClass), classCertificateRejection: rejection,
                          requestProfile: input.requestProfile,
                          capabilityRoutes: input.routingLaw == nil ? capabilityRoutes(input) : nil,
-                         routingLaw: input.explicitRouteSurfaces == nil ? input.routingLaw : nil)
+                         routingLaw: input.explicitRouteSurfaces == nil ? input.routingLaw.map { law in
+                             // Build 447 (review): the owner's reference words, in
+                             // every form build 446's capability guard read them.
+                             var law = law
+                             law.referenceRequest = RequestProfile.ownerAsksForReference(input.request,
+                                                                                        profile: input.requestProfile)
+                             return law
+                         } : nil)
     }
 
     /// Build 442 (owner order 2026-10-27, DESIGN-3): the capability-qualified
@@ -517,9 +524,7 @@ public enum RCCNativeCatalogBuilder {
               // Build 446: unless the local reading cleared them as the owner's
               // own thinking or a thing's 최고 성능 (`soft_cleared_quality`;
               // the 442 phrasings stay floors, `asksForReferenceFloor`).
-              !(RequestProfile.asksForReference(input.request) &&
-                    (!(input.requestProfile?.cleared("quality") ?? false) ||
-                        RequestProfile.asksForReferenceFloor(input.request))) else { return nil }
+              !RequestProfile.ownerAsksForReference(input.request, profile: input.requestProfile) else { return nil }
         let basis = RCCRuntimeContract.CapabilityRoutes.PriceBasis(table: table.priceTableSHA256, active: input.priceTableSHA256,
                                                                    compiled: ModelPriceTable.compiledSHA256)
         return CapabilityChoice.routes(profile: profile, request: input.request, table: table, priceBasis: basis)
@@ -833,10 +838,14 @@ public enum RCCNativeCatalogBuilder {
             (input.requestProfile?.answersLocally == true || lawMayAnswerLocally(input))
     }
     /// Build 447 (DESIGN-8): the law may choose the local row only for a
-    /// tool-free light reading (its local-first families); Core decides.
+    /// tool-free light reading (its local-first families); Core decides, by
+    /// the node's own scope (a read-only node only). The owner's grant never
+    /// decides it (review of 447: a write grant removed the local row and
+    /// sent a read-only node to the reference): a permission sets what a row
+    /// may do, never which row.
     static func lawMayAnswerLocally(_ input: Input) -> Bool {
         guard let reading = input.routingLaw?.reading else { return false }
-        return reading.needsTools == "none" && reading.difficulty == "light" && input.ownerScope != .workspaceWrite
+        return reading.needsTools == "none" && reading.difficulty == "light"
     }
     /// The local execution row of an explicit route test that names the local
     /// surface, or (build 441 part 2) of an Auto chat request
