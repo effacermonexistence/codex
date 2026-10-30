@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "design": "DESIGN-8 (owner-approved direction 2026-10-29): build 447, single-node requests, steps 1-4",
+  "objective": "same result as the newest top model at its highest reasoning, with less quota",
+  "pools": {
+    "anthropic": "anthropic_shared",
+    "openai": "openai_codex"
+  },
+  "references": {
+    "anthropic_shared": "claude-fable-5-1",
+    "openai_codex": "gpt-6-astra"
+  },
+  "pool_units": {
+    "anthropic_shared": "Cw: % of the Claude weekly pool (all models)",
+    "openai_codex": "Px: % of one Codex Pro weekly pool"
+  },
+  "cost_shapes": {
+    "answer": {"max_calls": 2, "max_output_tokens": 899},
+    "long_answer": {"max_calls": 2, "min_output_tokens": 900},
+    "agentic": {"min_calls": 16}
+  },
+  "measured_min_n": 10,
+  "output_min_n": 3,
+  "headroom_threshold": 0.15,
+  "laplace": {"failures": 1, "runs": 2},
+  "effort_labels": {
+    "anthropic_shared": {"max": 3.5}
+  },
+  "effort_label_source": "O4 (owner 2026-10-29): the Claude app labels Max '3.5x or more usage'; applied against the next-lower step and only ever raising cost",
+  "local_admission": {
+    "families": ["F1", "F2", "F10", "F12"],
+    "basis": "owner_order",
+    "source": "DESIGN-8 migration row 447 'local-first'; DESIGN-6 O2 (ask-back), DESIGN-7 §1.5 (local first)",
+    "evidence_gap": "no deterministic verifier, matched-tier benchmark or REVAS paired audit exists for the local model yet"
+  },
+  "families": {
+    "F1": {"name": "small talk", "tiers": [], "shape": "answer", "tools": "none"},
+    "F2": {"name": "light explanation", "tiers": "evidence", "shape": "answer", "tools": "none"},
+    "F3": {"name": "small file / workspace explanation, light", "tiers": "evidence", "shape": "long_answer", "tools": "agent"},
+    "F4": {"name": "standard concept explanation", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F4c": {"name": "code-artifact answer", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F4m": {"name": "math solving", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F5a": {"name": "light current facts", "tiers": "evidence", "shape": "answer", "tools": "agent"},
+    "F5b": {"name": "standard/deep current facts", "tiers": "evidence", "shape": "long_answer", "tools": "agent"},
+    "F6-code": {"name": "deep design, code/schema", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F6-math": {"name": "deep math", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F6-other": {"name": "deep explanation, other", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F6-prose": {"name": "deep prose", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "F7": {"name": "workspace edit / shell / build", "tiers": "evidence", "shape": "agentic", "tools": "agent"},
+    "F7w": {"name": "workspace prose document", "tiers": "evidence", "shape": "agentic", "tools": "agent"},
+    "F10": {"name": "routing self-test without a task (ask back)", "tiers": [], "shape": "answer", "tools": "none"},
+    "F12": {"name": "short text operation / short writing", "tiers": "evidence", "shape": "answer", "tools": "none"},
+    "F13": {"name": "prose deliverable, read-only", "tiers": "evidence", "shape": "long_answer", "tools": "none"},
+    "U": {"name": "unread (no local reading)", "tiers": ["T1", "T3", "T3M", "C2", "U1"], "shape": "long_answer", "tools": "none"}
+  },
+  "family_rules": [
+    {"family": "U", "when": {"reading": "absent"}},
+    {"family": "F10", "when": {"intent": ["self_test"]}},
+    {"family": "F5a", "when": {"needs_tools": ["current_facts"], "difficulty": ["light"]}},
+    {"family": "F5b", "when": {"needs_tools": ["current_facts"]}},
+    {"family": "F7w", "when": {"task_type": ["action"], "domain": ["writing"]}},
+    {"family": "F7", "when": {"task_type": ["action"]}},
+    {"family": "F7w", "when": {"needs_tools": ["execution"], "domain": ["writing"]}},
+    {"family": "F7", "when": {"needs_tools": ["execution"]}},
+    {"family": "F1", "when": {"task_type": ["chat"], "difficulty": ["light"], "needs_tools": ["none"]}},
+    {"family": "F6-math", "when": {"task_type": ["design"], "domain": ["math"]}},
+    {"family": "F6-code", "when": {"task_type": ["design"], "domain": ["coding"]}},
+    {"family": "F6-prose", "when": {"task_type": ["design"], "domain": ["writing"]}},
+    {"family": "F6-other", "when": {"task_type": ["design"]}},
+    {"family": "F3", "when": {"needs_tools": ["workspace"], "difficulty": ["light"]}},
+    {"family": "F6-code", "when": {"needs_tools": ["workspace"], "domain": ["coding"]}},
+    {"family": "F6-other", "when": {"needs_tools": ["workspace"]}},
+    {"family": "F12", "when": {"task_type": ["write"], "difficulty": ["light"]}},
+    {"family": "F6-code", "when": {"task_type": ["write"], "domain": ["coding"], "difficulty": ["deep"]}},
+    {"family": "F4c", "when": {"task_type": ["write"], "domain": ["coding"]}},
+    {"family": "F13", "when": {"task_type": ["write"]}},
+    {"family": "F2", "when": {"task_type": ["explain", "chat"], "difficulty": ["light"]}},
+    {"family": "F6-math", "when": {"difficulty": ["deep"], "domain": ["math"]}},
+    {"family": "F6-code", "when": {"difficulty": ["deep"], "domain": ["coding"]}},
+    {"family": "F6-prose", "when": {"difficulty": ["deep"], "domain": ["writing"]}},
+    {"family": "F6-other", "when": {"difficulty": ["deep"]}},
+    {"family": "F4m", "when": {"domain": ["math"]}},
+    {"family": "F4", "when": {}}
+  ],
+  "ask_back": {
+    "ko": "뭘 볼까요? ① 라우팅 점검(로컬·Codex·Claude 동시 확인) ② 답변 실력 테스트",
+    "en": "What should I check? (1) routing check (local, Codex and Claude at once) (2) answer-quality test"
+  }
+}

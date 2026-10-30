@@ -55,6 +55,11 @@ final class SourceContextTests {
         if CommandLine.arguments.contains("--request-profile-only") { try runRequestProfileFixtures(); return }
         if CommandLine.arguments.contains("--local-request-classifier-only") { try runLocalRequestClassifierFixtures(); return }
         if CommandLine.arguments.contains("--local-clearance-only") { try runLocalClearanceFixtures(); return }
+        if CommandLine.arguments.contains("--routing-law-only") { try runRoutingLawFixtures(); return }
+        if let flag = CommandLine.arguments.firstIndex(of: "--routing-law-live-reading"), flag + 2 < CommandLine.arguments.count,
+           let endpoint = URL(string: CommandLine.arguments[flag + 1]) {
+            try runRoutingLawLiveReading(endpoint: endpoint, request: CommandLine.arguments[flag + 2]); return
+        }
         if CommandLine.arguments.contains("--model-price-refresh-only") { try runModelPriceRefreshFixtures(); return }
         if let flag = CommandLine.arguments.firstIndex(of: "--model-price-refresh-live"), flag + 1 < CommandLine.arguments.count {
             try runModelPriceRefreshLive(home: URL(fileURLWithPath: CommandLine.arguments[flag + 1])); return
@@ -99,6 +104,7 @@ final class SourceContextTests {
         try runRequestProfileFixtures()
         try runLocalRequestClassifierFixtures()
         try runLocalClearanceFixtures()
+        try runRoutingLawFixtures()
         try runRCCAdmissionFactsFixtures()
         try runRCCNativeAttemptOutcomeFixtures()
         try runRCCNativePreparationFixtures()

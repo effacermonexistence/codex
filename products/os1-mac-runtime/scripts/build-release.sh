@@ -151,6 +151,11 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-local-surfa
 # (script output = resource = Swift bytes) and Core's capability binding of
 # deep nodes (uncertified, the reference its fallback and escalation).
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-routes.test.mjs"
+# Build 447 (DESIGN-8, owner-approved direction 2026-10-29): the routing law's
+# compiled table (inputs -> table -> Resources/Core/Swift pins) and the engine
+# (admissibility, tau, E[Q], argmin, headroom, rollback, the owner questions).
+node "$script_dir/routing-law-table.mjs" check
+node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law.test.mjs"
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"

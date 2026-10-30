@@ -104,7 +104,7 @@ enum LocalRouterBridge {
                 "OS1_RCC_NATIVE_SHA256": nativeHash, "OS1_RCC_NATIVE_HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                 "OS1_RCC_PUBLIC_POLICY": publicPolicy])
     }
-    static let rccRuntimeModuleSHA256 = "a10152de5eedb28eafc1d7ca96014e5d06177648698c0ec54a8ddbc3b172c432"
+    static let rccRuntimeModuleSHA256 = "0093fbe0ca603e0bd8740b483c2e3395525e9a4ee1c42e4f8b7f82df3505db70"
     static let rccRuntimePluginSHA256 = "da55a774de2ef2bf6c7d018b47fe818b366d51ec0c355aadd9c3537d4db07eb9"
     static let rccResourceUsageSHA256 = "745a78cbf657aa3c0d4850e59842f2059a1b1056c08ff6d3b7aaf76f0729e1bc"
     // Exact reviewed companion bytes; any resource change requires a new source pin.

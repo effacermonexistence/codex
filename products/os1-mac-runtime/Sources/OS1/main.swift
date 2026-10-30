@@ -20086,16 +20086,26 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // already fix the route (`RequestProfile.railsDecide`: the local reading
     // could never lower them). Once per task: every later build of this task
     // reuses the first reading (`rccLocalClassification`).
-    let consultLocal = request.mode == .auto &&
-        RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "auto" &&
-        !RequestProfile.railsDecide(keywordProfile, request: request.request)
+    // Build 447 (DESIGN-8): under the routing law (the default; the rollback
+    // is routing_policy=law_446, `RoutingLaw.policy`) the local model reads
+    // EVERY Auto request: the law routes on its reading, and the keyword
+    // rails only set the permission scope. The combined profile (permissions,
+    // chat lane) still adopts the reading exactly when build 446 would
+    // (`profileConsults`), so no permission changes with the switch.
+    let lawSelection = RoutingLaw.policy()
+    let autoRequest = request.mode == .auto &&
+        RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "auto"
+    let profileConsults = autoRequest && !RequestProfile.railsDecide(keywordProfile, request: request.request)
+    let lawReads = autoRequest && lawSelection.policy == .law447
+    let consultLocal = profileConsults || lawReads
+    FileHandle.standardError.write(Data(("os1 rcc-catalog: " + lawSelection.receiptLine + "\n").utf8))
     let (readingTaskID, readingSHA256, readingText) = (request.taskID, request.requestSHA256, request.request)
     // Build 446 (DESIGN-5 §A.5): a status question the reading may clear
     // also asks the local model what it is about.
     let statusHeard = keywordProfile.signals.contains("soft_status")
     let localReading = consultLocal ? Task.detached {
         await rccLocalClassification(taskID: readingTaskID, requestSHA256: readingSHA256, request: readingText,
-                                     statusHeard: statusHeard)
+                                     statusHeard: statusHeard, readsIntent: lawReads)
     } : nil
     let config = try RuntimeConfig.load()
     let now = Date()
@@ -20239,9 +20249,13 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     if let localReading {
         let reading = await localReading.value
         FileHandle.standardError.write(Data(("os1 rcc-catalog: " + reading.publicLine + "\n").utf8))
-        requestProfile = RequestProfile.combine(keyword: keywordProfile, request: request.request,
-                                                local: reading.adopted?.answer, model: reading.adopted?.model)
-        input.requestProfile = requestProfile
+        if profileConsults {
+            requestProfile = RequestProfile.combine(keyword: keywordProfile, request: request.request,
+                                                    local: reading.adopted?.answer, model: reading.adopted?.model)
+            input.requestProfile = requestProfile
+        }
+        // Build 447: the law's switch and the raw local reading.
+        if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }
     }
     if request.mode != .explicitRoutingTest && !contractBackedWrite {
         input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)
@@ -20305,6 +20319,7 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
 /// timed-out first reading is kept as well: the whole task then routes on the
 /// keyword profile.
 func rccLocalClassification(taskID: String, requestSHA256: String, request: String, statusHeard: Bool = false,
+                            readsIntent: Bool = false,
                             home: URL = FileManager.default.homeDirectoryForCurrentUser) async -> LocalRequestClassifier.Receipt {
     let directory = LocalRequestClassifier.cacheDirectory(home: home)
     let key = LocalRequestClassifier.cacheKey(taskID: taskID, requestSHA256: requestSHA256)
@@ -20314,7 +20329,8 @@ func rccLocalClassification(taskID: String, requestSHA256: String, request: Stri
     let hints = LocalClassifierHints.load(home: home)
     FileHandle.standardError.write(Data(("os1 rcc-catalog: " + hints.receipt + "\n").utf8))
     let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() },
-                                                        hints: hints.hints, statusHeard: statusHeard)
+                                                        hints: hints.hints, statusHeard: statusHeard,
+                                                        readsIntent: readsIntent)
     LocalRequestClassifier.store(receipt, key: key, directory: directory)
     return receipt
 }

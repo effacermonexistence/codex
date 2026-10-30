@@ -310,7 +310,7 @@ for version, expected in (("0.9.106", "18/21/0/0/0"), ("0.9.107", "19/22/0/0/0")
                           ("0.9.351", "48/51/1/1/1"), ("0.9.355", "48/51/1/1/1"), ("0.9.356", "52/55/1/1/1"), ("0.9.369", "52/55/1/1/1"),
                           ("0.9.370", "59/62/1/1/1"), ("0.9.371", "70/73/1/1/1"), ("0.9.372", "70/73/1/1/1"), ("0.9.373", "70/73/1/1/1"), ("0.9.374", "70/73/1/1/1"), ("0.9.375", "70/73/1/1/1"), ("0.9.376", "70/73/1/1/1"),
                           ("0.9.377", "70/73/1/1/1"), ("0.9.378", "70/73/1/1/1"), ("0.9.379", "70/73/1/1/1"),
-                          ("0.9.380", "70/73/1/1/1"),
+                          ("0.9.380", "70/73/1/1/1"), ("0.9.381", "70/73/1/1/1"),
                           ("0.10.0", "70/73/1/1/1"), ("1.0.0", "70/73/1/1/1")):
     fixture = ('set -eu; check_gate() { local app_path=/nonexistent manifest_version="$1";\n' +
                version_gate + '\nprintf "%s/%s/%s/%s/%s" "$expected_payload_files" '
@@ -700,8 +700,11 @@ check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exe
       "tokens[1].kind === 'op' && tokens[1].symbol === '-' &&" in RUNTIME and
       "!(tokens[0].int.length === 4 && tokens[2].int.length === 4);" in RUNTIME and
       "function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {" in RUNTIME and
-      RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 2 and
-      RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 2 and
+      # Build 447 (DESIGN-8): the routing law's local ask-back is the third
+      # zero-model site (no dispatch, the same first-turn rule).
+      RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 3 and
+      RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 3 and
+      "const askBack = lawAskBack(task, catalog);" in RUNTIME and
       "rcc-arithmetic-vectors.json" in ARITH_TEST and "zeroModelArithmetic" in ARITH_TEST and
       (ROOT / "scripts/fixtures/rcc-arithmetic-vectors.json").is_file() and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-exact-arithmetic.test.mjs"' in RELEASE and
@@ -788,7 +791,7 @@ check("validRequestProfile(profile)" in graded_admission and "['none', 'current_
       "kind: 'graded'" in RUNTIME and "routeClass: GRADED_CLASS" in RUNTIME and
       "const kind = intentConstrains(intent) ? 'explicit' : 'reference';" in RUNTIME and
       "laddered(choice.kind) && choice.ladder ?" in RUNTIME and
-      "function laddered(kind) { return kind === 'tier' || kind === 'graded' || kind === 'capability'; }" in RUNTIME and
+      "function laddered(kind) { return kind === 'tier' || kind === 'graded' || kind === 'capability' || kind === 'law'; }" in RUNTIME and
       "'request_profile'" in RUNTIME and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-graded-admission.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-graded-admission.test.mjs").is_file(),
@@ -803,7 +806,12 @@ catalog_profile = section(MAIN, "private func rccNativeCatalog(", "/// A continu
 check("!RequestProfile.railsDecide(keywordProfile, request: request.request)" in catalog_profile and
       catalog_profile.index("let localReading = consultLocal ? Task.detached {") < catalog_profile.index("let config = try RuntimeConfig.load()") and
       catalog_profile.index("let codexProbe = ") < catalog_profile.index("let reading = await localReading.value") and
-      "RequestProfile.combine(keyword: keywordProfile, request: request.request,\n                                                local: reading.adopted?.answer, model: reading.adopted?.model)" in catalog_profile and
+      "RequestProfile.combine(keyword: keywordProfile, request: request.request,\n                                                    local: reading.adopted?.answer, model: reading.adopted?.model)" in catalog_profile and
+      # Build 447 (DESIGN-8): the law reads every Auto request; the profile
+      # adopts the reading only where build 446 did (permissions unchanged).
+      "let profileConsults = autoRequest && !RequestProfile.railsDecide(keywordProfile, request: request.request)" in catalog_profile and
+      "let consultLocal = profileConsults || lawReads" in catalog_profile and "if profileConsults {" in catalog_profile and
+      "if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }" in catalog_profile and
       "input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)" in catalog_profile and
       "if request.mode != .explicitRoutingTest && !contractBackedWrite {" in catalog_profile and
       "let activePrices = ModelPriceTable.currentWithDigest()" in catalog_profile and
@@ -897,7 +905,7 @@ check("const local = profile.classifier.startsWith('local_llm:');" in capability
       "return profile.difficulty === 'deep' || designOrWrite ? routes.category : null;" in capability_admission and
       "{class: 'capability', source: CAPABILITY_SOURCE, certificate_id: null, category}" in RUNTIME and
       "capability:(?:knowledge|science|math|coding|writing|tool_use|broad)" in RUNTIME and
-      "'request_profile', 'capability_routes'];" in RUNTIME and "kind: 'capability'" in RUNTIME and
+      "'request_profile', 'capability_routes', 'routing_law'];" in RUNTIME and "kind: 'capability'" in RUNTIME and
       "routeClass: CAPABILITY_CLASS" in RUNTIME and "const cheaper = typeof cheapUSD === 'number' && typeof referenceUSD === 'number' && cheapUSD < referenceUSD;" in RUNTIME and
       "const ladder = writer ? null : {source: 'tier', admitted_by: CAPABILITY_SOURCE, category," in RUNTIME and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-capability-routes.test.mjs"' in RELEASE and
@@ -906,12 +914,14 @@ check("const local = profile.classifier.startsWith('local_llm:');" in capability
 check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
-check('public static let promptVersion = "local_cls_v2_dom1_sub2"' in classifier_source and
+check('public static let promptVersion = "local_cls_v2_dom1_sub2_int1"' in classifier_source and
       # DESIGN-4 §9: the enum call is build 441's v2 schema; the domain is its own call (with the owner's ASR hints, §3).
       'public static let schemaJSON = #"{"type":"object","properties":{"task_type":{"type":"string","enum":["explain","design","write","action","chat"]},"difficulty":{"type":"string","enum":["light","standard","deep"]},"needs_tools":{"type":"string","enum":["none","current_facts","workspace","execution"]}},"required":["task_type","difficulty","needs_tools"]}"#' in classifier_source and
       'public static let domainSchemaJSON = #"{"type":"object","properties":{"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}},"required":["domain"]}"#' in classifier_source and
       "if !needsDomain(answer, request: text) {" in classifier_source and
-      "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints, statusHeard: statusHeard)" in MAIN and
+      "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints, statusHeard: statusHeard," in MAIN and
+      # Build 447: the intent call under the routing law only.
+      "readsIntent: readsIntent)" in MAIN and "guard needsIntent(answer, readsIntent: readsIntent) else { return receipt }" in classifier_source and
       'home.appendingPathComponent(".os1/local-classifier/asr-hints.json")' in (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text() and
       "static let deepFloorPatterns = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
       # Review of 442: the floor reads a proof, derivation or rigour asked for, never 증명사진 or 전자기 유도.
@@ -1207,5 +1217,43 @@ check("installed.contains(active.name) ? active.name : nil" in (ROOT / "Sources/
       "loopbackInventory(timeout: timeout).map(LocalModelSelection.pinnedInventoryNames)"
           in (ROOT / "Sources/OS1/LocalRouterBridge.swift").read_text(),
       "446 review: the classifier and the warm-keeper ask the machine's one selected model at its pinned digest")
+
+# Build 447 (DESIGN-8, owner-approved direction 2026-10-29): one routing law.
+# The compiled table's bytes are the resource, Core's embedded literal and the
+# pin on both sides; Core's engine prices every admissible candidate in real
+# quota and binds the argmin; the host reads every Auto request locally and
+# carries the raw reading; routing_policy=law_446 is the rollback. Release-gated.
+law_resource = (ROOT / "Resources/routing-law-table.json").read_bytes()
+law_sha = hashlib.sha256(law_resource).hexdigest()
+law_swift = (ROOT / "Sources/OS1Context/RoutingLaw.swift").read_text()
+law_literal = section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256")
+check(f'public static let tableSHA256 = "{law_sha}"' in law_swift and
+      f"export const ROUTING_LAW_TABLE_SHA256 = '{law_sha}';" in RUNTIME and
+      json.loads(law_literal.rstrip().rstrip(";")) == law_resource.decode().rstrip("\n") and
+      (ROOT / "scripts/routing-law-table.mjs").is_file() and (ROOT / "scripts/routing-law-policy.json").is_file() and
+      all((ROOT / f"scripts/routing-law-{name}-20261029.json").is_file() for name in ("evidence", "quota", "ledger")) and
+      'node "$script_dir/routing-law-table.mjs" check' in RELEASE,
+      "447: the routing-law table is the compiler's bytes from committed inputs, pinned in Resources, Core and Swift; release-checked")
+check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" in RUNTIME and
+      "function lawAdmission(node, task, catalog) {" in RUNTIME and "export function lawExpectedQuota({q, pFail = 0, escalationQ = 0, scarcity = 0}) {" in RUNTIME and
+      "export function lawScarcity(referenceQ, remaining, threshold) {" in RUNTIME and
+      "const ranked = [...admissible].sort((a, b) => (a.eq - b.eq) ||" in RUNTIME and
+      "'law_argmin_reference'" in RUNTIME and "law:[A-Za-z0-9-]{1,16}" in RUNTIME and
+      "...(routeClass !== null && plain(child.law_receipt) ? {law: child.law_receipt} : {})};" in RUNTIME and
+      "const askBack = lawAskBack(task, catalog);" in RUNTIME and
+      "this._completeLocalExact(taskID, 'local_ask_back', askBack.output, askBack.receipt)" in RUNTIME and
+      'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law.test.mjs"' in RELEASE and
+      (ROOT / "scripts/fixtures/openclaw-rcc-routing-law.test.mjs").is_file() and
+      (ROOT / "scripts/fixtures/routing-law-owner-questions.json").is_file(),
+      "447: Core prices each admissible candidate (E[Q]) and binds the argmin with a receipt; the ask-back is local; release-gated")
+check('public static let environmentKey = "OS1_ROUTING_POLICY"' in law_swift and
+      'home.appendingPathComponent(".os1/routing-policy.json")' in law_swift and
+      "guard policy == .law447 else { return nil }" in law_swift and
+      "let lawReads = autoRequest && lawSelection.policy == .law447" in MAIN and
+      "let consultLocal = profileConsults || lawReads" in MAIN and
+      "if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }" in MAIN and
+      "capabilityRoutes: input.routingLaw == nil ? capabilityRoutes(input) : nil" in BUILDER and
+      "LAW_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text(),
+      "447: the host reads every Auto request locally under law_447, carries the raw reading, and law_446 rolls back")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

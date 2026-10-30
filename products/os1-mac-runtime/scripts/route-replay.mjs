@@ -19,7 +19,9 @@
  * id or label), or (change 3, build 442) capability:<category>: a deep node
  * bound at a capability-table row, never certified, counted separately; a
  * read-only one (it carries its ladder) is delivered only with its screen
- * pass on THIS attempt, a writer (no ladder) records no check at all.
+ * pass on THIS attempt, a writer (no ladder) records no check at all; or
+ * (build 447, DESIGN-8) law:<family>: a routing-law route, never certified,
+ * with the same screen rules as a capability route.
  * Policy enforcement only: never accepted_B, quality parity or a quota saving.
  *  - Without --snapshots a certified attempt counts as delivered unless its
  *    state proves its output never reached the owner (NON_DELIVERY_STATES,
@@ -86,6 +88,10 @@ const GRADED_BASIS = /^graded:(light|standard|deep)$/;
 // Change 3 (build 442): a capability route's basis (rcc-runtime.mjs
 // CAPABILITY_CATEGORIES). Never certified.
 const CAPABILITY_BASIS = /^capability:(knowledge|science|math|coding|writing|tool_use|broad)$/;
+// Build 447 (DESIGN-8): a routing-law route's basis (rcc-runtime.mjs routing
+// law, law:<family>). Never certified; a read-only one carries its ladder and
+// its screen, a writer neither (as a capability route).
+const LAW_BASIS = /^law:[A-Za-z0-9-]{1,16}$/;
 const ZERO_MODEL_BASIS = /^zero_model:[a-z0-9_]{1,64}$/;
 const LABEL_SOURCES = new Set(['exact', 'contract', 'verifier']);
 const LABEL_OUTCOMES = new Set(['pass', 'fail', 'not_returned']);
@@ -149,6 +155,16 @@ function basisViolations(record, delivered) {
     return rules;
   }
   if (capability) rules.push('capability_route_without_capability_basis');
+  const law = ranAs(record) === 'law';
+  if (typeof basis === 'string' && LAW_BASIS.test(basis)) {
+    if (!law || record.escalated !== false || !(record.ladder == null || plain(record.ladder)))
+      rules.push('law_basis_route_mismatch');
+    if (record.check_id != null || record.check_label != null) rules.push('check_label_on_law_basis');
+    if (plain(record.ladder) ? delivered && record.check_outcome !== 'screen_pass' : record.check_outcome != null)
+      rules.push(plain(record.ladder) ? 'law_delivery_without_screen_pass' : 'check_outcome_on_law_writer');
+    return rules;
+  }
+  if (law) rules.push('law_route_without_law_basis');
   if (typeof basis === 'string' && GRADED_BASIS.test(basis)) {
     if (!graded || !plain(record.ladder) || record.escalated !== false) rules.push('graded_basis_route_mismatch');
     if (record.check_id != null || record.check_label != null) rules.push('check_label_on_graded_basis');

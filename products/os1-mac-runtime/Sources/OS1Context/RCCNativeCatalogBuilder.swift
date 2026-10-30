@@ -209,6 +209,11 @@ public enum RCCNativeCatalogBuilder {
         /// domain's qualifying rows (`capability_routes`) for Core's deep
         /// nodes; nil emits none.
         public var capabilityTable: ModelCapabilityTable? = nil
+        /// Build 447 (DESIGN-8): the routing law's switch and local reading
+        /// (`RoutingLaw.catalogLaw`). Present = Core routes this request by
+        /// the law (and the catalog carries no capability routes, which the
+        /// law replaces); nil = build 446 (routing_policy=law_446).
+        public var routingLaw: RCCRuntimeContract.RoutingLaw? = nil
         /// DESIGN-4 §8: the SHA-256 of the active price table's bytes
         /// (`ModelPriceTable.currentWithDigest`), or nil when unknown. The
         /// capability routes carry it beside the table's own price basis.
@@ -277,6 +282,8 @@ public enum RCCNativeCatalogBuilder {
         /// (`capabilityRoutes(_:)`), a routing fact for Core's deep nodes,
         /// never a certificate; nil emits none.
         public var capabilityRoutes: RCCRuntimeContract.CapabilityRoutes? = nil
+        /// Build 447: the routing law's switch and reading; nil emits none.
+        public var routingLaw: RCCRuntimeContract.RoutingLaw? = nil
     }
     public enum Failure: Error, Equatable {
         /// Never truncate: an oversize inventory is an explicit boundary.
@@ -490,7 +497,9 @@ public enum RCCNativeCatalogBuilder {
         return AdmissionFacts(ownerScope: ownerScope, chatLaneEligible: input.chatLaneEligible, requestClass: requestClass,
                          taskContract: input.taskContract, classCertificate: certificate,
                          classProviderPin: input.classTable.providerPin(for: requestClass), classCertificateRejection: rejection,
-                         requestProfile: input.requestProfile, capabilityRoutes: capabilityRoutes(input))
+                         requestProfile: input.requestProfile,
+                         capabilityRoutes: input.routingLaw == nil ? capabilityRoutes(input) : nil,
+                         routingLaw: input.explicitRouteSurfaces == nil ? input.routingLaw : nil)
     }
 
     /// Build 442 (owner order 2026-10-27, DESIGN-3): the capability-qualified
@@ -820,7 +829,14 @@ public enum RCCNativeCatalogBuilder {
     /// route below a runnable reference, never certified.
     public static func autoLocalRowEligible(_ input: Input) -> Bool {
         input.explicitRouteSurfaces == nil && !input.hasMaterialRefs &&
-            normalizedPreference(input.providerPreference) == "auto" && input.requestProfile?.answersLocally == true
+            normalizedPreference(input.providerPreference) == "auto" &&
+            (input.requestProfile?.answersLocally == true || lawMayAnswerLocally(input))
+    }
+    /// Build 447 (DESIGN-8): the law may choose the local row only for a
+    /// tool-free light reading (its local-first families); Core decides.
+    static func lawMayAnswerLocally(_ input: Input) -> Bool {
+        guard let reading = input.routingLaw?.reading else { return false }
+        return reading.needsTools == "none" && reading.difficulty == "light" && input.ownerScope != .workspaceWrite
     }
     /// The local execution row of an explicit route test that names the local
     /// surface, or (build 441 part 2) of an Auto chat request
@@ -904,6 +920,10 @@ public enum RCCNativeCatalogBuilder {
                 if let routes = facts.capabilityRoutes {
                     object["capability_routes"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(routes))
                 }
+            }
+            // Build 447, optional, beside the facts only.
+            if let law = facts.routingLaw {
+                object["routing_law"] = try JSONSerialization.jsonObject(with: RCCRuntimeContract.encode(law))
             }
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])

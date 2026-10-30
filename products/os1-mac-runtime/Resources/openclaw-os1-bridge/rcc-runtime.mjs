@@ -224,6 +224,34 @@ const CAPABILITY_MODEL = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const MAX_CAPABILITY_ROWS = 16;
 const CAPABILITY_SOURCE = 'capability_table';
 const CAPABILITY_CLASS = 'deep';
+// Build 447 (DESIGN-8, owner-approved direction 2026-10-29): the routing law.
+// ONE engine for a single-node Auto request: the local reading's family, the
+// admissible set A (evidence that a candidate gives the reference's result on
+// the family's benchmark tiers: (b) within the measured tolerance tau of the
+// pool reference's best confirmed score; the pool reference itself; the local
+// model on the families the owner ordered local-first), E[Q] = Q + p_fail x
+// Q(its one escalation) + the pool's scarcity price, and c* = argmin E[Q].
+// Its inputs are the compiled table below (scripts/routing-law-table.mjs;
+// Resources/routing-law-table.json is the reviewable copy, Swift RoutingLaw
+// pins the same sha256), never hand-set routes. A catalog without
+// `routing_law` (the host's rollback switch routing_policy=law_446, or an
+// older host) keeps build 446's graded lists, capability routes and
+// reference default unchanged. The law never certifies an answer: its route
+// is 'law' (class 'standard', basis 'law:<family>'), its one escalation the
+// pool reference fixed at bind, exactly as a graded route's (repair mode is
+// build 448).
+export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);
+export const ROUTING_LAW_POLICY = 'law_447';
+const LAW_SOURCE = 'routing_law';
+const LAW_CLASS = 'standard';
+const LAW_FAMILY = /^[A-Za-z0-9-]{1,16}$/;
+const LAW_READING_KEYS = ['task_type', 'difficulty', 'needs_tools', 'domain', 'intent'];
+const LAW_READING_VALUES = Object.freeze({task_type: new Set(['chat', 'explain', 'design', 'write', 'action']),
+  difficulty: new Set(['light', 'standard', 'deep']), needs_tools: new Set(['none', 'current_facts', 'workspace', 'execution']),
+  domain: new Set(['knowledge', 'science', 'math', 'coding', 'writing', 'tool_use', 'general']),
+  intent: new Set(['self_test', 'other'])});
+const LAW_READER = /^(?:none|local_llm:[a-z0-9][a-z0-9._:-]{0,63})$/;
+const MAX_LAW_CANDIDATES = 64;
 // The request profile (catalog request_profile, Swift RequestProfile).
 const REQUEST_PROFILE_POLICY = 'host_profile_v1';
 const PROFILE_ANSWER_KINDS = new Set(['answer_only', 'work', 'unknown']);
@@ -276,7 +304,7 @@ const LEDGER_FAILURE_OUTCOMES = new Set(['fail', 'not_returned', 'interrupted'])
 // its tuple may answer. A certified basis names its admitting source (and the
 // verifier or class certificate); 'certified:unrecorded' is a descent recorded
 // without one (an older build), 'unbound' a row no host resolution chose.
-const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|capability:(?:knowledge|science|math|coding|writing|tool_use|broad)|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
+const LEDGER_BASIS = /^(?:reference|reference_escalated|owner_words|unbound|unclassified|graded:(?:light|standard|deep)|capability:(?:knowledge|science|math|coding|writing|tool_use|broad)|law:[A-Za-z0-9-]{1,16}|certified:(?:contract|exact|unrecorded|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128}))$/;
 const LEDGER_CHECK_ID = /^[A-Za-z0-9_:.-]{1,200}$/;
 // The admitting source's verdict on a descent attempt: it accepted the answer,
 // failed it, or the answer was not returned in a form it accepts.
@@ -1096,6 +1124,10 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
     if (node.instruction === task.request && stagedWriterContract(c) && c.bindings_checked === true &&
         c.objective_sha256 === task.request_sha256 && c.valid_until_ms > now)
       return {class: 'certified', source: 'contract', certificate_id: null};
+    // Build 447 (DESIGN-8): the routing law decides the writer's model and
+    // effort; its scope (the permission) only limits the rows it may use.
+    const law = lawAdmission(node, task, catalog);
+    if (law !== null) return law;
     // Build 442: a writer with a design or write reading and a domain.
     const capability = capabilityCategory(node, task, catalog);
     return capability !== null ? capabilityAdmission(capability) : reference('uncertified');
@@ -1116,6 +1148,10 @@ export function admittedRoute(node, task, catalog, now = Date.now(), {verifierRe
     catalog.class_certificates[cls] : undefined;
   if (plain(certificate) && Object.hasOwn(FORMAT_CHECKS, certificate.format_check))
     return {class: 'certified', source: 'class', certificate_id: certificate.certificate_id};
+  // Build 447 (DESIGN-8): the routing law replaces the graded lists, the
+  // capability routes and the policy-A reference default for this node.
+  const law = lawAdmission(node, task, catalog);
+  if (law !== null) return law;
   const graded = hostProfileGrade(node, task, catalog, {policy: deepPolicy});
   if (graded !== null) return {class: 'graded', source: GRADED_SOURCE, certificate_id: null, ...graded};
   // Build 442: a read-only deep answer with a domain.
@@ -1175,6 +1211,122 @@ function capabilityCategory(node, task, catalog) {
 function capabilityCategoryMatches(routes, profile) {
   return routes.category === (profile.domain ?? CAPABILITY_BROAD) ||
     (routes.category === CAPABILITY_BROAD && profile.domain === 'writing');
+}
+// ---- Build 447 (DESIGN-8): the routing law's pure parts. ------------------
+let routingLawTableCache;
+/** The compiled law table (embedded below), or null when its bytes do not
+ * hash to the pin: the law then never runs and every node keeps build 446's
+ * route (the catalog's switch is not enough on its own). Frozen. */
+export function routingLawTable() {
+  if (routingLawTableCache !== undefined) return routingLawTableCache;
+  let table = null;
+  try {
+    if (sha(Buffer.from(ROUTING_LAW_TABLE_TEXT + '\n')) === ROUTING_LAW_TABLE_SHA256) {
+      const parsed = JSON.parse(ROUTING_LAW_TABLE_TEXT);
+      if (plain(parsed) && parsed.schema === 1 && parsed.policy === 'routing_law_447') table = deepFreeze(parsed);
+    }
+  } catch { table = null; }
+  routingLawTableCache = table;
+  return table;
+}
+function deepFreeze(value) {
+  if (value !== null && typeof value === 'object') { Object.values(value).forEach(deepFreeze); Object.freeze(value); }
+  return value;
+}
+/** The catalog's `routing_law` (Swift RoutingLaw): the switch, the table pin
+ * the host built against and the local reading (raw, never the keyword
+ * profile: keywords set permissions, not the model). */
+function validRoutingLaw(value) {
+  if (!keys(value, ['schema', 'policy', 'table_sha256', 'reader', 'reading']) || value.schema !== 1 ||
+      value.policy !== ROUTING_LAW_POLICY || !HASH.test(value.table_sha256 ?? '') || !LAW_READER.test(value.reader ?? ''))
+    return false;
+  if (value.reading === null) return value.reader === 'none';
+  return value.reader !== 'none' && plain(value.reading) &&
+    Object.keys(value.reading).every(key => LAW_READING_KEYS.includes(key)) &&
+    ['task_type', 'difficulty', 'needs_tools', 'domain'].every(key => Object.hasOwn(value.reading, key)) &&
+    Object.entries(value.reading).every(([key, item]) => item === null ? key === 'intent' : LAW_READING_VALUES[key].has(item));
+}
+/** DESIGN-8 step 1: the family of a reading by the table's first-match
+ * family rules (data). A missing reading is 'U'. Pure. */
+export function lawFamily(reading, table = routingLawTable()) {
+  for (const rule of table?.family_rules ?? []) {
+    const when = rule.when ?? {};
+    if (when.reading === 'absent') { if (reading == null) return rule.family; continue; }
+    if (reading == null) continue;
+    if (Object.entries(when).every(([key, values]) => Array.isArray(values) && values.includes(reading[key] ?? null)))
+      return rule.family;
+  }
+  return 'U';
+}
+/** The law's key of a row: surface:model@effort. */
+export function lawKey(candidate) { return `${candidate.surface}:${candidate.model}@${candidate.effort}`; }
+/** DESIGN-8 step 2 (b): whether (pool, model, effort) is within tau of the pool
+ * reference's best confirmed score on every tier of the family the pool
+ * publishes, with at least one such tier (no evidence is never evidence).
+ * Returns {form: 'b'|'none', tiers: [[tier, pass|fail|unscored|unpublished]]}. */
+export function lawEvidence(table, family, pool, model, effort) {
+  const tiers = table?.families?.[family]?.tiers ?? [];
+  const rows = tiers.map(tier => {
+    const published = table.admission?.[tier]?.[pool];
+    if (!published) return [tier, 'unpublished'];
+    const cell = published.cells[model + '@' + effort];
+    return [tier, cell ? (cell.pass ? 'pass' : 'fail') : 'unscored'];
+  });
+  const ok = rows.some(([, state]) => state === 'pass') && rows.every(([, state]) => state === 'pass' || state === 'unpublished');
+  return {form: ok ? 'b' : 'none', tiers: rows};
+}
+/** Real quota of a row for a cost shape, in its pool's units, or null. */
+export function lawQuota(table, candidate, shape) {
+  if (candidate.surface === 'local') return {q: 0, basis: 'local'};
+  const entry = table?.quota?.[lawKey(candidate)]?.[shape];
+  return entry && Number.isFinite(entry.q) && entry.q >= 0 ? {q: entry.q, basis: entry.basis} : null;
+}
+/** p_fail with the table's Laplace prior: (failures + a) / (runs + b). */
+export function lawPFail(table, candidate) {
+  const prior = table?.p_fail?.prior ?? {failures: 1, runs: 2};
+  // Keyed by model@effort over every surface: a grant that moves a row to
+  // another surface never changes the model through p_fail (DESIGN-8).
+  const cell = table?.p_fail?.cells?.[`${candidate.model}@${candidate.effort}`] ?? {runs: 0, failures: 0};
+  return (cell.failures + prior.failures) / (cell.runs + prior.runs);
+}
+/** DESIGN-8 step 4: a pool under the headroom threshold is priced up, never
+ * switched: the additive scarcity cost is the pool's own reference quota for
+ * this request times how far below the threshold its remaining share is. */
+export function lawScarcity(referenceQ, remaining, threshold) {
+  if (!Number.isFinite(referenceQ) || typeof remaining !== 'number' || !Number.isFinite(remaining)) return 0;
+  return referenceQ * Math.max(0, threshold - remaining) / threshold;
+}
+/** DESIGN-8 step 3: E[Q] = Q + p_fail x Q(escalation) + scarcity. */
+export function lawExpectedQuota({q, pFail = 0, escalationQ = 0, scarcity = 0}) {
+  return q + pFail * escalationQ + scarcity;
+}
+/** Whether a node of this task takes the law (build 447: the one request
+ * node of an Auto task with no owner routing constraint, contract or
+ * provider choice), and its admission. Owner words that ask for the
+ * strongest model or more thinking (profile signal quality_request) leave the
+ * pool references only. Pure. */
+function lawAdmission(node, task, catalog) {
+  const law = catalog?.routing_law, table = routingLawTable();
+  if (!validRoutingLaw(law) || table === null || law.table_sha256 !== ROUTING_LAW_TABLE_SHA256) return null;
+  if (!(node?.kind === 'agent' && node.instruction === task?.request && task.mode === 'auto' &&
+      task.objective === task.request && catalog.task_contract == null && !intentConstrains(routingIntent(catalog)) &&
+      ['read_only', 'workspace_write'].includes(node.scope) &&
+      [task.host_context?.provider_preference, task.provider_preference].every(value => value == null || value === 'auto')))
+    return null;
+  const ownerReference = catalog.request_profile?.signals?.includes('quality_request') === true;
+  return {class: 'law', source: LAW_SOURCE, certificate_id: null, family: ownerReference ? 'P' : lawFamily(law.reading, table),
+    reading: law.reading, reader: law.reader};
+}
+/** Build 447 (DESIGN-8 step 1 / O2): an Auto first-turn request the local
+ * model read as a self-test with no task gets one free question back. */
+export function lawAskBack(task, catalog) {
+  const law = catalog?.routing_law, table = routingLawTable();
+  if (!validRoutingLaw(law) || table === null || law.table_sha256 !== ROUTING_LAW_TABLE_SHA256) return null;
+  if (task?.mode !== 'auto' || lawFamily(law.reading, table) !== 'F10') return null;
+  return {output: /[가-힣]/u.test(task.request) ? table.ask_back.ko : table.ask_back.en,
+    receipt: {schema: 1, policy: ROUTING_LAW_POLICY, table: ROUTING_LAW_TABLE_SHA256.slice(0, 16), family: 'F10',
+      tiers: [], reading: law.reading, reader: law.reader, argmin: 'local:ask_back', eq: 0,
+      candidates: [['local:ask_back', 'owner_order', 0, 0, null]]}};
 }
 const ESCALATION_ADMISSION = Object.freeze({class: 'reference', source: 'escalation', certificate_id: null});
 const UNCERTIFIED_ADMISSION = Object.freeze({class: 'reference', source: 'uncertified', certificate_id: null});
@@ -1255,6 +1407,7 @@ function admissionToken(admission) {
   return admission.class === 'reference' ? 'admitted_reference_' + admission.source :
     admission.class === 'graded' ? 'admitted_graded_' + admission.grade :
     admission.class === 'capability' ? 'admitted_capability_' + admission.category :
+    admission.class === 'law' ? 'admitted_law_' + admission.family :
     admission.source === 'class' ? 'admitted_certified_class:' + admission.certificate_id :
       'admitted_certified_' + admission.source;
 }
@@ -1292,6 +1445,15 @@ export function deliveryBasisOf({explicitRoute = false, routeClass = null, route
     const ladderOK = ladder == null || (plain(ladder) && ladder.escalated !== true &&
       ladder.admitted_by === CAPABILITY_SOURCE && ladder.category === category);
     basis = CAPABILITY_ROUTE_CATEGORY_SET.has(category) && ladderOK ? 'capability:' + category : 'unclassified';
+  } else if (routeKind === 'law') {
+    // Build 447: a law route, its family from the reason's admission token;
+    // a read-only one carries its law ladder, a writer none.
+    const token = typeof reason === 'string' ?
+      reason.split(';').find(item => item.startsWith('admitted_law_')) : undefined;
+    const family = token?.slice('admitted_law_'.length);
+    const ladderOK = ladder == null || (plain(ladder) && ladder.escalated !== true &&
+      ladder.admitted_by === LAW_SOURCE && ladder.family === family);
+    basis = typeof family === 'string' && LAW_FAMILY.test(family) && ladderOK ? 'law:' + family : 'unclassified';
   } else if (routeKind === 'reference' && plain(ladder) && ladder.escalated === true) basis = 'reference_escalated';
   else if (routeKind === 'explicit' ||
       (typeof reason === 'string' && reason.split(';').includes('admitted_reference_owner_words'))) basis = 'owner_words';
@@ -1467,7 +1629,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
     ...(scoredBy === null || quotaScore(catalog, scoredBy.model) === null ? [] :
       [scoredBy.model === chosen.model ? 'pool_scored_by_bound_model' : 'pool_scored_by_tier_hit_model'])];
   const notes = [];
-  let policyReference = null;
+  let policyReference = null, lawFallbackReceipt = null;
   if (admission.class === 'reference' && admission.source === 'uncertified') {
     // Build 441 part 2: an answer the profile reads as deep work (a design, a
     // deliverable, any deep answer) keeps the reference under policy A; say so.
@@ -1481,6 +1643,141 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
         ['chat', 'explain'].includes(profile.task_type ?? 'explain'))
       notes.push('standard_policy_reference', 'classifier_' +
         (profile.classifier?.startsWith('local_llm:') ? 'local_llm' : 'keyword'));
+  }
+  if (admission.class === 'law') {
+    // Build 447 (DESIGN-8 steps 2-4): every dispatchable row this node may use
+    // (its scope's rows; the agent surface only for a family or reading that
+    // needs tools; the local row only for a local-first family, on the first
+    // turn, read-only) is a candidate. A pool reference row is always
+    // admissible, the local row by the owner's local-first order, any other
+    // row only with matched-tier evidence (lawEvidence). Each admissible row
+    // is priced E[Q] = Q + p_fail x Q(its one escalation, the reference fixed
+    // at bind, as a graded route's) + its pool's scarcity price; a writer has
+    // no ladder (as a capability writer), so E[Q] = Q + scarcity. The argmin
+    // binds: a reference row as the reference, any other row as route 'law'.
+    const table = routingLawTable();
+    const family = admission.family;
+    const writer = node.scope === 'workspace_write';
+    const fam = table.families[family] ??
+      {tiers: [], shape: writer ? 'agentic' : 'answer', tools: writer ? 'agent' : 'none', local: false};
+    const sole = planNodes === 1;
+    const used = plain(headroom) ? headroom : {attempts: 0, native_dispatches: 0};
+    const cap = task.budget?.max_native_dispatches;
+    const roomy = sole && (task.budget?.max_attempts ?? 0) - (used.attempts ?? 0) >= 2 &&
+      (cap == null || cap - (used.native_dispatches ?? 0) >= 2);
+    const reading = admission.reading ?? null;
+    // DESIGN-8: the permission (scope) never chooses the row: the cost shape
+    // comes from the family, and E[Q] is the same formula for a writer and a
+    // read-only node (a writer binds no ladder, as today, but is priced with
+    // the same expected repair).
+    const shape = fam.shape;
+    const agentOnly = fam.tools === 'agent' || (reading !== null && reading.needs_tools !== 'none');
+    const surfaceAllowed = row => !agentOnly || surfaceKind(row.candidate.surface) === 'agent';
+    const threshold = table.headroom_threshold;
+    const quotaOf = candidate => lawQuota(table, candidate, shape);
+    // The one escalation of a row of this pool: its reference, fixed now.
+    const homeReference = new Map(pools.map(pool => [pool.pool, best(referenceOf(pool).filter(surfaceAllowed))]));
+    const scarcityOf = pool => {
+      const reference = homeReference.get(pool);
+      const q = reference ? quotaOf(reference.candidate)?.q : null;
+      return reference && q != null ? lawScarcity(q, reference.candidate.quota_remaining_fraction, threshold) : 0;
+    };
+    const referenceCost = pool => {
+      const reference = homeReference.get(pool), q = reference ? quotaOf(reference.candidate)?.q : null;
+      return q == null ? null : q + scarcityOf(pool);
+    };
+    // The local row's escalation: the reference with the lowest priced cost.
+    const localTarget = [...homeReference].filter(([pool, row]) => row && referenceCost(pool) !== null)
+      .sort((a, b) => referenceCost(a[0]) - referenceCost(b[0]) || ordinal.get(a[0]) - ordinal.get(b[0]))[0]?.[1] ?? null;
+    const options = [];
+    pools.forEach((pool, position) => {
+      const referenceIDs = new Set(referenceOf(pool).map(row => row.candidate.id));
+      for (const row of pool.rows)
+        if (usable(row) && surfaceAllowed(row) && tierOf(catalog, row.candidate.model) !== null)
+          options.push({row, pool, position, reference: referenceIDs.has(row.candidate.id), local: false});
+    });
+    if (fam.local === true && !writer && !agentOnly && node.scope === 'read_only' && withoutConversation(task))
+      catalog.candidates.forEach((candidate, index) => {
+        if (hostRoutable(candidate) && localWorkerRow(candidate) && candidate.scope === node.scope &&
+            !avoidIDs.includes(candidate.id) && dispatchable(candidate, task, now))
+          options.push({row: {candidate, index}, pool: null, position: -1, reference: false, local: true});
+      });
+    const evaluated = options.slice(0, MAX_LAW_CANDIDATES).map(option => {
+      const candidate = option.row.candidate, key = lawKey(candidate);
+      const evidence = option.local ? {form: 'owner_order', tiers: []} : option.reference ? {form: 'reference', tiers: []} :
+        lawEvidence(table, family, option.pool.pool, candidate.model, candidate.effort);
+      const quota = quotaOf(candidate);
+      const target = option.reference ? null : option.local ? localTarget : homeReference.get(option.pool.pool) ?? null;
+      const scarcity = option.local ? 0 : scarcityOf(option.pool.pool);
+      const escalationQ = target ? referenceCost(target.candidate.quota_pool) : 0;
+      const pFail = option.reference ? 0 : lawPFail(table, candidate);
+      const excluded = evidence.form === 'none' ? 'no_evidence' : quota === null ? 'unpriced' :
+        !option.reference && (target === null || escalationQ === null) ? 'requires_runnable_reference' :
+          !option.reference && !writer && !roomy ? (!sole ? 'requires_single_node_plan' : 'requires_dispatch_headroom') : null;
+      const eq = excluded === null ? lawExpectedQuota({q: quota.q, pFail, escalationQ: escalationQ ?? 0, scarcity}) : null;
+      return {option, candidate, key, evidence, quota, target, scarcity, pFail, eq, excluded};
+    });
+    const admissible = evaluated.filter(item => item.excluded === null);
+    const r11Of = option => option.pool === null ? [0, 0, 0, 0] : r11Keys(option.pool.pool);
+    const ranked = [...admissible].sort((a, b) => (a.eq - b.eq) ||
+      (r11Of(a.option).map((v, i) => v - r11Of(b.option)[i]).find(d => d !== 0) ?? 0) ||
+      (a.option.position - b.option.position) || order(a.option.row, b.option.row));
+    const pick = ranked[0] ?? null;
+    const round6 = value => value === null || value === undefined ? null : Math.round(value * 1e6) / 1e6;
+    const receipt = {schema: 1, policy: ROUTING_LAW_POLICY, table: ROUTING_LAW_TABLE_SHA256.slice(0, 16), family,
+      tiers: [...fam.tiers], shape, reading, reader: admission.reader ?? 'none',
+      argmin: pick?.key ?? null, eq: round6(pick?.eq ?? null),
+      candidates: evaluated.map(item => [item.key,
+        item.evidence.form === 'b' ? 'b:' + item.evidence.tiers.map(([tier, state]) => tier + '=' + state).join(',') :
+          item.evidence.form === 'none' ? 'x:' + item.evidence.tiers.map(([tier, state]) => tier + '=' + state).join(',') :
+            item.evidence.form,
+        round6(item.quota?.q ?? null), round6(item.eq), item.excluded])};
+    const lawTokens = ['law_policy_447', 'law_family_' + family,
+      'law_tiers_' + (fam.tiers.length ? fam.tiers.join('+') : 'none'), 'law_shape_' + shape,
+      'law_admissible_' + admissible.length, 'law_candidates_' + evaluated.length,
+      ...(pick ? ['law_eq_' + pick.eq.toFixed(6), 'law_q_' + pick.quota.q.toFixed(6),
+        ...(pick.target ? ['law_p_fail_' + pick.pFail.toFixed(4)] : []),
+        ...(pick.scarcity > 0 ? ['law_scarcity_' + pick.scarcity.toFixed(6)] : [])] : []),
+      'law_table_' + ROUTING_LAW_TABLE_SHA256.slice(0, 12)];
+    if (pick && pick.option.reference) {
+      // The argmin is a pool reference: it binds as the reference (no ladder).
+      const chosen = pick.candidate, pool = pick.option.pool;
+      const why = ['route_reference', admissionToken(admission), 'law_argmin_reference', ...lawTokens,
+        'tier_' + (tierOf(catalog, chosen.model) ?? 'none'), 'pool_rank_' + ordinal.get(pool.pool), 'effort_' + chosen.effort,
+        ...poolNotes(pool.pool, chosen, chosen), surfaceToken(chosen)];
+      if (avoidPool !== null) why.unshift(pool.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+      const widened = writer && !coversOwnedPaths(chosen, node.owned_paths);
+      if (widened) why.push('owned_paths_workspace');
+      return {candidate: chosen, why: why.join(';'), widened, kind: 'reference', tier: tierOf(catalog, chosen.model),
+        routeClass: 'deep', referenceEffort: chosen.effort, ladder: null, law: receipt};
+    }
+    if (pick) {
+      const chosen = pick.candidate, home = pick.option.pool, local = pick.option.local;
+      const target = pick.target;
+      const ladder = writer ? null : {source: 'tier', admitted_by: LAW_SOURCE, family, certificate_id: null,
+        format_check: null, cheap_model: chosen.model, cheap_effort: chosen.effort,
+        reference_model: target.candidate.model, reference_effort: target.candidate.effort,
+        reference_candidate_id: target.candidate.id};
+      const why = ['route_law', admissionToken(admission), ...lawTokens,
+        'law_evidence_' + (pick.evidence.form === 'b' ? 'tiers' : pick.evidence.form),
+        'tier_' + (local ? 'local' : tierOf(catalog, chosen.model) ?? 'none'),
+        local ? 'local_model_row' : 'pool_rank_' + ordinal.get(home.pool), 'effort_' + chosen.effort,
+        ...(home ? poolNotes(home.pool, chosen, chosen) : []),
+        writer ? 'writer_no_ladder' : 'escalation_reference_' +
+          (home && target.candidate.quota_pool === home.pool ? 'same_pool' : 'other_pool'),
+        local ? 'local_model' : surfaceToken(chosen)];
+      if (avoidPool !== null && home) why.unshift(home.pool === avoidPool ? 'same_pool_only' : 'other_pool');
+      const widened = writer && !coversOwnedPaths(chosen, node.owned_paths);
+      if (widened) why.push('owned_paths_workspace');
+      return {candidate: chosen, why: why.join(';'), widened, kind: 'law', tier: local ? null : tierOf(catalog, chosen.model),
+        routeClass: LAW_CLASS, referenceEffort: target ? target.candidate.effort : chosen.effort, ladder, law: receipt};
+    }
+    // Nothing admissible is priced and runnable: the reference serve below
+    // binds (the reference is the law's fallback), with the law's receipt.
+    notes.push('law_' + family + '_no_admissible_priced_row', ...lawTokens);
+    policyReference = null;
+    admission = UNCERTIFIED_ADMISSION;
+    lawFallbackReceipt = receipt;
   }
   if (admission.class === 'graded') {
     // Build 441 (owner order, 2026-10-27): a graded tuple below a reference
@@ -1782,7 +2079,7 @@ function tierRouteCandidate(node, task, catalog, now, {avoidPool = null, avoidID
   const widened = node.scope === 'workspace_write' && !coversOwnedPaths(chosen, node.owned_paths);
   if (widened) why.push('owned_paths_workspace');
   return {candidate: chosen, why: why.join(';'), widened, kind, tier: tierOf(catalog, chosen.model), routeClass: 'deep',
-    referenceEffort: chosen.effort, ladder: null};
+    referenceEffort: chosen.effort, ladder: null, ...(lawFallbackReceipt ? {law: lawFallbackReceipt} : {})};
 }
 
 /** Null when something in an allowed scope can run; otherwise the visible
@@ -1953,7 +2250,8 @@ export function resolveRoutePlan(plan, task, catalog, now = Date.now(), {verifie
         planNodes: plan.nodes.length, deepPolicy});
       decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'resolver;' + choice.why, choice.ladder,
         choice.tier);
-      routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
+      routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder,
+        ...(choice.law ? {law: choice.law} : {})};
       resolvedIDs.add(node.id);
       return {...rest, dependencies: [...rest.dependencies],
         owned_paths: choice.widened ? ['**'] : rest.owned_paths, candidate_id: choice.candidate.id};
@@ -2119,7 +2417,8 @@ export function admitBoundedAutoPlan(compiled, task, catalog, now = Date.now(), 
       descentPolicy});
     decisions[node.id] = routingDecision(choice.routeClass, choice.candidate, 'bounded_plan;' + choice.why,
       choice.ladder, choice.tier);
-    routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder};
+    routes[node.id] = {kind: choice.kind, reference_effort: choice.referenceEffort, ladder: choice.ladder,
+        ...(choice.law ? {law: choice.law} : {})};
     return {...checked, owned_paths: choice.widened ? ['**'] : checked.owned_paths, candidate_id: choice.candidate.id};
   });
   const plan = validatePlan({...proposed, nodes}, task, catalog);
@@ -2785,7 +3084,7 @@ function validateCatalog(catalog, task) {
   const required = ['schema', 'task_id', 'request_sha256', 'candidates'];
   const optional = ['exclusions', 'routing_intent', 'routing_intent_v2', 'model_tiers', 'explicit_route_intents', 'quota_scores',
     'native_reference_efforts', 'owner_scope', 'chat_lane_eligible', 'request_class', 'task_contract',
-    'class_certificates', 'class_provider_pins', 'request_profile', 'capability_routes'];
+    'class_certificates', 'class_provider_pins', 'request_profile', 'capability_routes', 'routing_law'];
   assert(plain(catalog) && required.every(key => Object.hasOwn(catalog, key)) &&
     Object.keys(catalog).every(key => required.includes(key) || optional.includes(key)) &&
     catalog.schema === 1 && catalog.task_id === task.task_id &&
@@ -2802,6 +3101,9 @@ function validateCatalog(catalog, task) {
     (catalog.native_reference_efforts === undefined ||
       validNativeReferenceEfforts(catalog.native_reference_efforts, catalog.candidates)) &&
     validAdmissionFacts(catalog, task) &&
+    // Build 447: the routing law's switch and reading, beside the admission
+    // facts only (Swift RoutingLaw); absent = build 446's routes.
+    (catalog.routing_law === undefined || (validRoutingLaw(catalog.routing_law) && catalog.owner_scope !== undefined)) &&
     (catalog.exclusions === undefined || validInformationalExclusions(catalog)) &&
     (catalog.candidates.length > 0 ||
       (catalog.exclusions ?? []).some(item => !INFORMATIONAL_EXCLUSIONS.has(item.reason))), 'catalog_binding_invalid');
@@ -3557,7 +3859,7 @@ function pendingEscalation(child) {
 }
 /** The route kinds that may carry a ladder: a certified descent, a graded
  * route and (build 442) a read-only capability route. */
-function laddered(kind) { return kind === 'tier' || kind === 'graded' || kind === 'capability'; }
+function laddered(kind) { return kind === 'tier' || kind === 'graded' || kind === 'capability' || kind === 'law'; }
 /** Native executor submissions this task already made (K6 cap accounting,
  * shared with _admitNativeDispatch): every non-local attempt, never refunded. */
 function nativeDispatchCount(snapshot) {
@@ -5405,6 +5707,17 @@ class RCCRuntime {
     this._update(taskID, 'catalog_bound', snapshot => {
       snapshot.catalog = catalog; snapshot.catalog_bound_at_ms = boundAt;
     });
+    // Build 447 (DESIGN-8 step 1, owner order O2): a first-turn Auto request
+    // the local model read as a self-test with no task asks one free question
+    // back (zero quota) instead of dispatching anything.
+    if (task.mode === 'auto' && task.objective.trim() === task.request.trim() &&
+        task.host_context.provider_preference === 'auto' &&
+        (task.provider_preference == null || task.provider_preference === 'auto') &&
+        task.host_context.explicit_routes == null && task.material_refs.length === 0 &&
+        withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
+      const askBack = lawAskBack(task, catalog);
+      if (askBack !== null) { this._completeLocalExact(taskID, 'local_ask_back', askBack.output, askBack.receipt); return; }
+    }
     // The task the plan binds: the submitted one, or (a best-effort route
     // test with a route that cannot run now) the routes that run.
     let admitted = task;
@@ -5579,6 +5892,9 @@ class RCCRuntime {
         // Host-internal route record (never public): reference/explicit/tier.
         route_kind: routes[node.id]?.kind ?? null, reference_effort: routes[node.id]?.reference_effort ?? null,
         ladder: routes[node.id]?.ladder ? {...routes[node.id].ladder, escalated: false} : null,
+        // Build 447: the routing law's receipt (reading, admissibility per
+        // candidate, E[Q] per candidate, the argmin); host-internal.
+        ...(plain(routes[node.id]?.law) ? {law_receipt: routes[node.id].law} : {}),
         // The host replaced the planner's text with the owner's request: every
         // later decision of this child keeps naming that (withInstructionLock).
         ...(node.id === lockedID ? {instruction_host_locked: true} : {}),
@@ -5593,9 +5909,11 @@ class RCCRuntime {
     try { await this._scheduleDAG(taskID, bindReuse); } finally { this.spreadProbes.delete(taskID); }
   }
 
-  _completeLocalExact(taskID, kind, output) {
+  _completeLocalExact(taskID, kind, output, lawReceipt = null) {
     this._update(taskID, kind, snapshot => {
       if (snapshot.cancel_requested) { snapshot.state = 'cancelled'; return; }
+      // Build 447: the routing law's receipt of a local ask-back (host-internal).
+      if (plain(lawReceipt)) snapshot.law_receipt = lawReceipt;
       const now = Date.now();
       snapshot.plan_provenance = 'deterministic_no_model';
       if (!Array.isArray(snapshot.resource_events) || snapshot.resource_events.length === 0)
@@ -5717,6 +6035,7 @@ class RCCRuntime {
         target.route_kind = choice.kind;
         target.ladder = laddered(choice.kind) && choice.ladder ?
           {...choice.ladder, escalated: false} : null;
+        if (plain(choice.law)) target.law_receipt = choice.law; else delete target.law_receipt;
       }
       target.routing_decision = withInstructionLock(target, routingDecision(
         escalated ? target.routing_decision.route_class : choice.routeClass,
@@ -5801,6 +6120,7 @@ class RCCRuntime {
         target.route_kind = choice.kind; target.reference_effort = choice.referenceEffort;
         target.ladder = laddered(choice.kind) && choice.ladder ?
           {...choice.ladder, escalated: false} : null;
+        if (plain(choice.law)) target.law_receipt = choice.law; else delete target.law_receipt;
         target.routing_decision = withInstructionLock(target, routingDecision(choice.routeClass,
           choice.candidate, `spread_for_parallelism;${choice.why}`, target.ladder, choice.tier));
       });
@@ -7081,7 +7401,9 @@ class RCCRuntime {
       // escalation), when one did; absent otherwise.
       ...(routeClass !== null && HASH.test(child.ladder?.descent_policy_sha256 ?? '') ?
         {descent_policy_sha256: child.ladder.descent_policy_sha256} : {}),
-      ...(outcomeContext === null ? {} : {outcome_context: outcomeContext})};
+      ...(outcomeContext === null ? {} : {outcome_context: outcomeContext}),
+      // Build 447: the routing law's receipt, when the law bound this child.
+      ...(routeClass !== null && plain(child.law_receipt) ? {law: child.law_receipt} : {})};
   }
   /** Inside a dispatch update: fix the attempt's route facts and mark the
    * attempt pending in the same transaction, so an attempt that is never
@@ -7135,11 +7457,16 @@ class RCCRuntime {
       dispatched_at_ms: route.dispatched_at_ms, settled_at_ms: Date.now(),
       ...(typeof route.delivery_basis === 'string' ? this._ledgerCheck(route, checkOutcome) : {}),
       ...(HASH.test(route.descent_policy_sha256 ?? '') ? {descent_policy_sha256: route.descent_policy_sha256} : {}),
-      ...(outcome.routing_outcome_summary ? {routing_outcome: outcome.routing_outcome_summary} : {})};
+      ...(outcome.routing_outcome_summary ? {routing_outcome: outcome.routing_outcome_summary} : {}),
+      ...(plain(route.law) ? {law: route.law} : {})};
     // Full capture is in the existing attempt row; optional metadata must not
     // turn a bounded legacy ledger/failure entry into a lost oversize record.
     if (record.routing_outcome && Buffer.byteLength(stable(record)) + 1 > MAX_LEDGER_RECORD_BYTES)
       delete record.routing_outcome;
+    // Build 447: a law receipt too large for one record keeps its decision
+    // (family, argmin, E[Q]) and drops the per-candidate list.
+    if (record.law && Buffer.byteLength(stable(record)) + 1 > MAX_LEDGER_RECORD_BYTES)
+      record.law = {...record.law, candidates: null, candidates_dropped: true};
     return record;
   }
   /** K9: the delivery-basis fields of a record whose route this build fixed
@@ -7156,7 +7483,8 @@ class RCCRuntime {
     // or label (the table is not a check of the answer).
     const check_outcome = basis.startsWith('graded:') ?
       (GRADED_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run') :
-      basis.startsWith('capability:') ? (GRADED_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : null) :
+      basis.startsWith('capability:') || basis.startsWith('law:') ?
+        (GRADED_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : null) :
       !certified ? null : LEDGER_CHECK_OUTCOMES.has(checkOutcome) ? checkOutcome : 'not_run';
     const source = certified ? basis.slice('certified:'.length).split(':')[0] : null;
     const check_label = check_id !== null && SOUND_FULL_CHECK_SOURCES.has(source) &&
@@ -7776,9 +8104,11 @@ class RCCRuntime {
           // structural screen alone (no failure signal), recorded as a screen
           // result, never as a certified pass; anything else escalates once.
           // Build 442: so is a read-only capability route (its ladder).
+          // Build 447: so is a read-only law route (its ladder).
           const gradedDescent = descent && ((recorded.route_kind === 'graded' &&
             recorded.ladder?.admitted_by === GRADED_SOURCE) || (recorded.route_kind === 'capability' &&
-            recorded.ladder?.admitted_by === CAPABILITY_SOURCE));
+            recorded.ladder?.admitted_by === CAPABILITY_SOURCE) || (recorded.route_kind === 'law' &&
+            recorded.ladder?.admitted_by === LAW_SOURCE));
           const certifierPresent = verifier?.role === 'certifier' && verifier.id === recorded.ladder?.certificate_id;
           const answered = collectionChecked && result.execution_verified &&
             ['execution_only', 'task_verified'].includes(result.task_quality) &&
@@ -8068,3 +8398,9 @@ class RCCRuntime {
     this.closed = true; this.db.close();
   }
 }
+
+// Build 447 (DESIGN-8): the compiled routing-law table (scripts/routing-law-table.mjs
+// compile; Resources/routing-law-table.json is the same bytes plus a newline),
+// pinned by its sha256 here and in Swift RoutingLaw.tableSHA256.
+const ROUTING_LAW_TABLE_TEXT = "{\"admission\":{\"C1\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@high\":{\"benchmarks\":[[\"Cursor\",49.2,51.8,2.6,false]],\"pass\":false},\"claude-fable-5-1@low\":{\"benchmarks\":[[\"Cursor\",45.1,51.8,6.7,false]],\"pass\":false},\"claude-fable-5-1@max\":{\"benchmarks\":[[\"Cursor\",51.8,51.8,0,true]],\"pass\":true},\"claude-fable-5-1@medium\":{\"benchmarks\":[[\"Cursor\",46.8,51.8,5,false]],\"pass\":false},\"claude-fable-5-1@xhigh\":{\"benchmarks\":[[\"Cursor\",51.6,51.8,0.2,true]],\"pass\":true},\"claude-opus-5-5@high\":{\"benchmarks\":[[\"Cursor\",56,51.8,-4.2,true]],\"pass\":true},\"claude-opus-5-5@low\":{\"benchmarks\":[[\"Cursor\",43.7,51.8,8.1,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"Cursor\",57.8,51.8,-6,true]],\"pass\":true},\"claude-opus-5-5@medium\":{\"benchmarks\":[[\"Cursor\",52.5,51.8,-0.7,true]],\"pass\":true},\"claude-opus-5-5@xhigh\":{\"benchmarks\":[[\"Cursor\",56,51.8,-4.2,true]],\"pass\":true},\"claude-sonnet-5-5@high\":{\"benchmarks\":[[\"Cursor\",47.8,51.8,4,false]],\"pass\":false},\"claude-sonnet-5-5@low\":{\"benchmarks\":[[\"Cursor\",35.8,51.8,16,false]],\"pass\":false},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"Cursor\",55.5,51.8,-3.7,true]],\"pass\":true},\"claude-sonnet-5-5@medium\":{\"benchmarks\":[[\"Cursor\",39.2,51.8,12.6,false]],\"pass\":false},\"claude-sonnet-5-5@xhigh\":{\"benchmarks\":[[\"Cursor\",53.1,51.8,-1.3,true]],\"pass\":true}},\"published\":[\"Cursor\"],\"reference\":\"claude-fable-5-1\"}},\"C2\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@high\":{\"benchmarks\":[[\"FC-Main\",50.34,52.8,2.46,false],[\"SWE-Pro478\",92.3,92.3,0,true]],\"pass\":false},\"claude-fable-5-1@low\":{\"benchmarks\":[[\"FC-Main\",52.8,52.8,0,true]],\"pass\":true},\"claude-fable-5-1@max\":{\"benchmarks\":[[\"DeepSWE\",67.4,67.4,0,true],[\"FC-Main\",50.28,52.8,2.52,false],[\"SWE-ML\",89.1,89.1,0,true],[\"SWE-MM\",54.7,54.7,0,true],[\"SWE-Pro\",81.2,81.2,0,true]],\"pass\":false},\"claude-fable-5-1@medium\":{\"benchmarks\":[[\"FC-Main\",50.91,52.8,1.89,false],[\"Int370\",84.2,84.2,0,true]],\"pass\":false},\"claude-fable-5-1@xhigh\":{\"benchmarks\":[[\"FC-Main\",48.73,52.8,4.07,false]],\"pass\":false},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"FC-Main\",46.4,52.8,6.4,false],[\"SWE-ML\",83.7,89.1,5.4,false],[\"SWE-MM\",30.7,54.7,24,false],[\"SWE-Pro\",64.8,81.2,16.4,false]],\"pass\":false},\"claude-haiku-5-5@xhigh\":{\"benchmarks\":[[\"FC-Main\",45.8,52.8,7,false]],\"pass\":false},\"claude-opus-5-5@high\":{\"benchmarks\":[[\"FC-Main\",53.99,52.8,-1.19,true],[\"SWE-Pro478\",95.3,92.3,-3,true]],\"pass\":true},\"claude-opus-5-5@low\":{\"benchmarks\":[[\"FC-Main\",47.3,52.8,5.5,false],[\"SWE-Pro478\",87.4,92.3,4.9,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"DeepSWE\",74.2,67.4,-6.8,true],[\"FC-Main\",54.43,52.8,-1.63,true],[\"SWE-ML\",93.9,89.1,-4.8,true],[\"SWE-MM\",61.4,54.7,-6.7,true],[\"SWE-Pro\",89.9,81.2,-8.7,true]],\"pass\":true},\"claude-opus-5-5@medium\":{\"benchmarks\":[[\"FC-Main\",54.64,52.8,-1.84,true],[\"Int370\",86.6,84.2,-2.4,true],[\"SWE-Pro478\",92.8,92.3,-0.5,true]],\"pass\":true},\"claude-opus-5-5@xhigh\":{\"benchmarks\":[[\"FC-Main\",51.42,52.8,1.38,false],[\"SWE-Pro478\",96.7,92.3,-4.4,true]],\"pass\":false},\"claude-sonnet-5-5@high\":{\"benchmarks\":[[\"FC-Main\",49.4,52.8,3.4,false],[\"SWE-Pro478\",87.6,92.3,4.7,false]],\"pass\":false},\"claude-sonnet-5-5@low\":{\"benchmarks\":[[\"FC-Main\",29.3,52.8,23.5,false]],\"pass\":false},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"DeepSWE\",71,67.4,-3.6,true],[\"FC-Main\",46.2,52.8,6.6,false],[\"SWE-ML\",90.3,89.1,-1.2,true],[\"SWE-MM\",54.3,54.7,0.4,true],[\"SWE-Pro\",81.3,81.2,-0.1,true]],\"pass\":false},\"claude-sonnet-5-5@medium\":{\"benchmarks\":[[\"FC-Main\",36.5,52.8,16.3,false]],\"pass\":false},\"claude-sonnet-5-5@xhigh\":{\"benchmarks\":[[\"FC-Main\",52.1,52.8,0.7,true]],\"pass\":true}},\"published\":[\"DeepSWE\",\"FC-Main\",\"Int370\",\"SWE-ML\",\"SWE-MM\",\"SWE-Pro\",\"SWE-Pro478\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"DeepSWE\",73.23,74.12,0.89,true],[\"FC-Main\",50.9,53.3,2.4,false]],\"pass\":false},\"gpt-6-astra@low\":{\"benchmarks\":[[\"DeepSWE\",67.04,74.12,7.08,false],[\"FC-Main\",45.3,53.3,8,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"DeepSWE\",73.23,74.12,0.89,true],[\"FC-Main\",53.3,53.3,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"DeepSWE\",72.79,74.12,1.33,false],[\"FC-Main\",48.8,53.3,4.5,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"DeepSWE\",74.12,74.12,0,true],[\"FC-Main\",50.6,53.3,2.7,false]],\"pass\":false},\"gpt-6-luna@high\":{\"benchmarks\":[[\"DeepSWE\",59.29,74.12,14.83,false],[\"FC-Main\",37.26,53.3,16.04,false]],\"pass\":false},\"gpt-6-luna@low\":{\"benchmarks\":[[\"DeepSWE\",2.43,74.12,71.69,false],[\"FC-Main\",25.66,53.3,27.64,false]],\"pass\":false},\"gpt-6-luna@max\":{\"benchmarks\":[[\"DeepSWE\",66.59,74.12,7.53,false],[\"FC-Main\",42.42,53.3,10.88,false]],\"pass\":false},\"gpt-6-luna@medium\":{\"benchmarks\":[[\"DeepSWE\",44.47,74.12,29.65,false],[\"FC-Main\",35.53,53.3,17.77,false]],\"pass\":false},\"gpt-6-luna@xhigh\":{\"benchmarks\":[[\"DeepSWE\",61.28,74.12,12.84,false],[\"FC-Main\",37.1,53.3,16.2,false]],\"pass\":false},\"gpt-6-sol@high\":{\"benchmarks\":[[\"DeepSWE\",65.27,74.12,8.85,false],[\"FC-Main\",47.7,53.3,5.6,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"DeepSWE\",37.17,74.12,36.95,false],[\"FC-Main\",37.28,53.3,16.02,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"DeepSWE\",68.8,74.12,5.32,false],[\"FC-Main\",49.27,53.3,4.03,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"DeepSWE\",56.64,74.12,17.48,false],[\"FC-Main\",45.92,53.3,7.38,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"DeepSWE\",66.59,74.12,7.53,false],[\"FC-Main\",48.45,53.3,4.85,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"DeepSWE\",75.22,74.12,-1.1,true]],\"pass\":true},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"DeepSWE\",64.38,74.12,9.74,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"DeepSWE\",71.9,74.12,2.22,false]],\"pass\":false},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"DeepSWE\",73.01,74.12,1.11,true]],\"pass\":true},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"DeepSWE\",71.9,74.12,2.22,false]],\"pass\":false}},\"published\":[\"DeepSWE\",\"FC-Main\"],\"reference\":\"gpt-6-astra\"}},\"C3\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@high\":{\"benchmarks\":[[\"TB4\",49.4,55.8,6.4,false]],\"pass\":false},\"claude-fable-5-1@low\":{\"benchmarks\":[[\"TB4\",40.2,55.8,15.6,false]],\"pass\":false},\"claude-fable-5-1@max\":{\"benchmarks\":[[\"FrontierSWE\",56.3,56.3,0,true],[\"ProgramBench\",87.6,87.6,0,true],[\"TB4\",55.8,55.8,0,true]],\"pass\":true},\"claude-fable-5-1@medium\":{\"benchmarks\":[[\"FC-Ext\",63.6,63.6,0,true],[\"TB4\",43.4,55.8,12.4,false]],\"pass\":false},\"claude-fable-5-1@xhigh\":{\"benchmarks\":[[\"TB4\",51.3,55.8,4.5,false]],\"pass\":false},\"claude-haiku-5-5@high\":{\"benchmarks\":[[\"TB4\",24.8,55.8,31,false]],\"pass\":false},\"claude-haiku-5-5@low\":{\"benchmarks\":[[\"TB4\",12.7,55.8,43.1,false]],\"pass\":false},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"FC-Ext\",58.4,63.6,5.2,false],[\"FrontierSWE\",43.8,56.3,12.5,false],[\"ProgramBench\",82,87.6,5.6,false],[\"TB4\",39.2,55.8,16.6,false]],\"pass\":false},\"claude-haiku-5-5@medium\":{\"benchmarks\":[[\"TB4\",20.3,55.8,35.5,false]],\"pass\":false},\"claude-haiku-5-5@xhigh\":{\"benchmarks\":[[\"TB4\",31.5,55.8,24.3,false]],\"pass\":false},\"claude-opus-5-5@high\":{\"benchmarks\":[[\"TB4\",64.2,55.8,-8.4,true]],\"pass\":true},\"claude-opus-5-5@low\":{\"benchmarks\":[[\"TB4\",38.5,55.8,17.3,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"FC-Ext\",63.6,63.6,0,true],[\"FrontierSWE\",62.3,56.3,-6,true],[\"ProgramBench\",91.2,87.6,-3.6,true],[\"TB4\",64.8,55.8,-9,true]],\"pass\":true},\"claude-opus-5-5@medium\":{\"benchmarks\":[[\"FC-Ext\",65.3,63.6,-1.7,true],[\"TB4\",57.6,55.8,-1.8,true]],\"pass\":true},\"claude-opus-5-5@xhigh\":{\"benchmarks\":[[\"TB4\",66.4,55.8,-10.6,true]],\"pass\":true},\"claude-sonnet-5-5@high\":{\"benchmarks\":[[\"TB4\",43,55.8,12.8,false]],\"pass\":false},\"claude-sonnet-5-5@low\":{\"benchmarks\":[[\"TB4\",20,55.8,35.8,false]],\"pass\":false},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"FC-Ext\",59.1,63.6,4.5,false],[\"FrontierSWE\",61.9,56.3,-5.6,true],[\"ProgramBench\",79.7,87.6,7.9,false],[\"TB4\",70.6,55.8,-14.8,true]],\"pass\":false},\"claude-sonnet-5-5@medium\":{\"benchmarks\":[[\"TB4\",28.8,55.8,27,false]],\"pass\":false},\"claude-sonnet-5-5@xhigh\":{\"benchmarks\":[[\"FC-Ext\",64.4,63.6,-0.8,true],[\"TB4\",61.5,55.8,-5.7,true]],\"pass\":true}},\"published\":[\"FC-Ext\",\"FrontierSWE\",\"ProgramBench\",\"TB4\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"ALE\",57.8,59.3,1.5,true],[\"TB4\",58.1,58.2,0.1,true]],\"pass\":true},\"gpt-6-astra@low\":{\"benchmarks\":[[\"ALE\",53.4,59.3,5.9,false],[\"TB4\",50.6,58.2,7.6,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"ALE\",59.3,59.3,0,true],[\"TB4\",58.2,58.2,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"ALE\",57.6,59.3,1.7,false],[\"TB4\",54.4,58.2,3.8,false]],\"pass\":false},\"gpt-6-astra@ultra\":{\"benchmarks\":[[\"Cleanup\",142,142,0,true]],\"pass\":true},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"ALE\",58.3,59.3,1,true],[\"TB4\",57.9,58.2,0.3,true]],\"pass\":true},\"gpt-6-luna@high\":{\"benchmarks\":[[\"ALE\",43.6,59.3,15.7,false]],\"pass\":false},\"gpt-6-luna@low\":{\"benchmarks\":[[\"ALE\",36.3,59.3,23,false]],\"pass\":false},\"gpt-6-luna@max\":{\"benchmarks\":[[\"ALE\",50.9,59.3,8.4,false]],\"pass\":false},\"gpt-6-luna@medium\":{\"benchmarks\":[[\"ALE\",46.8,59.3,12.5,false]],\"pass\":false},\"gpt-6-luna@xhigh\":{\"benchmarks\":[[\"ALE\",47.9,59.3,11.4,false]],\"pass\":false},\"gpt-6-sol@high\":{\"benchmarks\":[[\"ALE\",52.58,59.3,6.72,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"ALE\",48.68,59.3,10.62,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"ALE\",56.4,59.3,2.9,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"ALE\",53.06,59.3,6.24,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"ALE\",55.39,59.3,3.91,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"ALE\",55.3,59.3,4,false],[\"TB4\",53,58.2,5.2,false]],\"pass\":false},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"ALE\",52.4,59.3,6.9,false],[\"TB4\",47.1,58.2,11.1,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"ALE\",58.6,59.3,0.7,true],[\"TB4\",55.9,58.2,2.3,false]],\"pass\":false},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"ALE\",53.8,59.3,5.5,false],[\"Cleanup\",86,142,56,false],[\"TB4\",52.7,58.2,5.5,false]],\"pass\":false},\"gpt-6.1-sol@ultra\":{\"benchmarks\":[[\"Cleanup\",131,142,11,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"ALE\",56.5,59.3,2.8,false],[\"TB4\",53.4,58.2,4.8,false]],\"pass\":false},\"gpt-6.1-terra@high\":{\"benchmarks\":[[\"ALE\",57.2,59.3,2.1,false],[\"TB4\",41.8,58.2,16.4,false]],\"pass\":false},\"gpt-6.1-terra@low\":{\"benchmarks\":[[\"ALE\",55.9,59.3,3.4,false],[\"TB4\",24.8,58.2,33.4,false]],\"pass\":false},\"gpt-6.1-terra@max\":{\"benchmarks\":[[\"ALE\",60,59.3,-0.7,true],[\"TB4\",50.3,58.2,7.9,false]],\"pass\":false},\"gpt-6.1-terra@medium\":{\"benchmarks\":[[\"ALE\",57.6,59.3,1.7,false],[\"TB4\",35.8,58.2,22.4,false]],\"pass\":false},\"gpt-6.1-terra@xhigh\":{\"benchmarks\":[[\"ALE\",58.5,59.3,0.8,true],[\"TB4\",46.4,58.2,11.8,false]],\"pass\":false}},\"published\":[\"ALE\",\"Cleanup\",\"ResDebug\",\"TB4\"],\"reference\":\"gpt-6-astra\"}},\"C3S\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@high\":{\"benchmarks\":[[\"TBSci\",40,52.6,12.6,false]],\"pass\":false},\"claude-fable-5-1@low\":{\"benchmarks\":[[\"TBSci\",26.3,52.6,26.3,false]],\"pass\":false},\"claude-fable-5-1@max\":{\"benchmarks\":[[\"TBSci\",52.6,52.6,0,true]],\"pass\":true},\"claude-fable-5-1@medium\":{\"benchmarks\":[[\"TBSci\",35.7,52.6,16.9,false]],\"pass\":false},\"claude-fable-5-1@xhigh\":{\"benchmarks\":[[\"TBSci\",49.5,52.6,3.1,false]],\"pass\":false},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"TBSci\",20.6,52.6,32,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"TBSci\",58.7,52.6,-6.1,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"TBSci\",59.9,52.6,-7.3,true]],\"pass\":true}},\"published\":[\"TBSci\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"TBSci\",62,68.1,6.1,false]],\"pass\":false},\"gpt-6-astra@low\":{\"benchmarks\":[[\"TBSci\",55.43,68.1,12.67,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"TBSci\",68.1,68.1,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"TBSci\",57.43,68.1,10.67,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"TBSci\",60.86,68.1,7.24,false]],\"pass\":false},\"gpt-6-sol@high\":{\"benchmarks\":[[\"TBSci\",14.61,68.1,53.49,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"TBSci\",9.17,68.1,58.93,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"TBSci\",27.59,68.1,40.51,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"TBSci\",14.49,68.1,53.61,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"TBSci\",25.29,68.1,42.81,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"TBSci\",51.14,68.1,16.96,false]],\"pass\":false},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"TBSci\",43.71,68.1,24.39,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"TBSci\",57.02,68.1,11.08,false]],\"pass\":false},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"TBSci\",47.56,68.1,20.54,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"TBSci\",53.71,68.1,14.39,false]],\"pass\":false},\"gpt-6.1-terra@high\":{\"benchmarks\":[[\"TBSci\",39.7,68.1,28.4,false]],\"pass\":false},\"gpt-6.1-terra@low\":{\"benchmarks\":[[\"TBSci\",24.3,68.1,43.8,false]],\"pass\":false},\"gpt-6.1-terra@max\":{\"benchmarks\":[[\"TBSci\",58.3,68.1,9.8,false]],\"pass\":false},\"gpt-6.1-terra@medium\":{\"benchmarks\":[[\"TBSci\",34.3,68.1,33.8,false]],\"pass\":false},\"gpt-6.1-terra@xhigh\":{\"benchmarks\":[[\"TBSci\",43.4,68.1,24.7,false]],\"pass\":false}},\"published\":[\"TBSci\"],\"reference\":\"gpt-6-astra\"}},\"CSEC\":{\"openai_codex\":{\"cells\":{\"gpt-6-astra@low\":{\"benchmarks\":[[\"ExploitBench\",100,100,0,true]],\"pass\":true},\"gpt-6-astra@max\":{\"benchmarks\":[[\"ExploitBench\",100,100,0,true],[\"ExploitGym\",42.4,42.4,0,true]],\"pass\":true},\"gpt-6-sol@max\":{\"benchmarks\":[[\"ExploitBench\",81.7,100,18.3,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"ExploitBench\",99.7,100,0.3,true]],\"pass\":true}},\"published\":[\"ExploitBench\",\"ExploitGym\",\"SEC-Bench\"],\"reference\":\"gpt-6-astra\"}},\"T1\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"GMMLU\",94,94,0,true]],\"pass\":true},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"GMMLU\",87.8,94,6.2,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"GMMLU\",94.3,94,-0.3,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"GMMLU\",92.1,94,1.9,false]],\"pass\":false}},\"published\":[\"GMMLU\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"MMMU-Pro\",86.4,86.7,0.3,true]],\"pass\":true},\"gpt-6-astra@low\":{\"benchmarks\":[[\"MMMU-Pro\",85.3,86.7,1.4,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"MMMU-Pro\",86.7,86.7,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"MMMU-Pro\",85.3,86.7,1.4,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"MMMU-Pro\",86.5,86.7,0.2,true]],\"pass\":true},\"gpt-6-luna@high\":{\"benchmarks\":[[\"MMMU-Pro\",76.5,86.7,10.2,false]],\"pass\":false},\"gpt-6-luna@low\":{\"benchmarks\":[[\"MMMU-Pro\",73.5,86.7,13.2,false]],\"pass\":false},\"gpt-6-luna@max\":{\"benchmarks\":[[\"MMMU-Pro\",79.9,86.7,6.8,false]],\"pass\":false},\"gpt-6-luna@medium\":{\"benchmarks\":[[\"MMMU-Pro\",75.1,86.7,11.6,false]],\"pass\":false},\"gpt-6-luna@xhigh\":{\"benchmarks\":[[\"MMMU-Pro\",77.9,86.7,8.8,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"MMMU-Pro\",85.8,86.7,0.9,true]],\"pass\":true},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"MMMU-Pro\",84,86.7,2.7,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"MMMU-Pro\",86.3,86.7,0.4,true]],\"pass\":true},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"MMMU-Pro\",84.7,86.7,2,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"MMMU-Pro\",85.8,86.7,0.9,true]],\"pass\":true},\"gpt-6.1-terra@high\":{\"benchmarks\":[[\"MMMU-Pro\",85,86.7,1.7,false]],\"pass\":false},\"gpt-6.1-terra@low\":{\"benchmarks\":[[\"MMMU-Pro\",83.7,86.7,3,false]],\"pass\":false},\"gpt-6.1-terra@max\":{\"benchmarks\":[[\"MMMU-Pro\",85.5,86.7,1.2,true]],\"pass\":true},\"gpt-6.1-terra@medium\":{\"benchmarks\":[[\"MMMU-Pro\",84.6,86.7,2.1,false]],\"pass\":false},\"gpt-6.1-terra@xhigh\":{\"benchmarks\":[[\"MMMU-Pro\",85.4,86.7,1.3,false]],\"pass\":false}},\"published\":[\"MMMU-Pro\"],\"reference\":\"gpt-6-astra\"}},\"T1F\":{\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"FactErr-orig\",3.9,3.9,0,true],[\"FactErr-new\",5.9,4.2,1.7,false]],\"pass\":false},\"gpt-6-astra@low\":{\"benchmarks\":[[\"FactErr-orig\",6.26,3.9,2.36,false],[\"FactErr-new\",13.3,4.2,9.1,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"FactErr-orig\",3.91,3.9,0.01,true],[\"FactErr-new\",4.2,4.2,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"FactErr-orig\",4.41,3.9,0.51,false],[\"FactErr-new\",9.7,4.2,5.5,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"FactErr-orig\",3.99,3.9,0.09,true],[\"FactErr-new\",4.6,4.2,0.4,false]],\"pass\":false},\"gpt-6-luna@high\":{\"benchmarks\":[[\"FactErr-orig\",12.5,3.9,8.6,false],[\"FactErr-new\",27.6,4.2,23.4,false]],\"pass\":false},\"gpt-6-luna@low\":{\"benchmarks\":[[\"FactErr-orig\",27.73,3.9,23.83,false],[\"FactErr-new\",44.3,4.2,40.1,false]],\"pass\":false},\"gpt-6-luna@max\":{\"benchmarks\":[[\"FactErr-orig\",7.56,3.9,3.66,false],[\"FactErr-new\",18.4,4.2,14.2,false]],\"pass\":false},\"gpt-6-luna@medium\":{\"benchmarks\":[[\"FactErr-orig\",17.47,3.9,13.57,false],[\"FactErr-new\",31.2,4.2,27,false]],\"pass\":false},\"gpt-6-luna@xhigh\":{\"benchmarks\":[[\"FactErr-orig\",10.15,3.9,6.25,false],[\"FactErr-new\",24.5,4.2,20.3,false]],\"pass\":false},\"gpt-6-sol@high\":{\"benchmarks\":[[\"FactErr-orig\",5.14,3.9,1.24,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"FactErr-orig\",11.42,3.9,7.52,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"FactErr-orig\",4.57,3.9,0.67,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"FactErr-orig\",6.86,3.9,2.96,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"FactErr-orig\",4.52,3.9,0.62,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"FactErr-orig\",4.52,3.9,0.62,false],[\"FactErr-new\",6.6,4.2,2.4,false]],\"pass\":false},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"FactErr-orig\",7.72,3.9,3.82,false],[\"FactErr-new\",14.7,4.2,10.5,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"FactErr-orig\",4.61,3.9,0.71,false],[\"FactErr-new\",4.4,4.2,0.2,false]],\"pass\":false},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"FactErr-orig\",6.29,3.9,2.39,false],[\"FactErr-new\",12,4.2,7.8,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"FactErr-orig\",4.12,3.9,0.22,false],[\"FactErr-new\",5.5,4.2,1.3,false]],\"pass\":false},\"gpt-6.1-terra@high\":{\"benchmarks\":[[\"FactErr-new\",7.7,4.2,3.5,false]],\"pass\":false},\"gpt-6.1-terra@low\":{\"benchmarks\":[[\"FactErr-new\",16.7,4.2,12.5,false]],\"pass\":false},\"gpt-6.1-terra@max\":{\"benchmarks\":[[\"FactErr-new\",4.3,4.2,0.1,false]],\"pass\":false},\"gpt-6.1-terra@medium\":{\"benchmarks\":[[\"FactErr-new\",10.1,4.2,5.9,false]],\"pass\":false},\"gpt-6.1-terra@xhigh\":{\"benchmarks\":[[\"FactErr-new\",5,4.2,0.8,false]],\"pass\":false}},\"published\":[\"FactErr-orig\",\"FactErr-new\"],\"reference\":\"gpt-6-astra\"}},\"T2\":{\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"GPQA\",93.69,95.96,2.27,false]],\"pass\":false},\"gpt-6-astra@low\":{\"benchmarks\":[[\"GPQA\",91.79,95.96,4.17,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"GPQA\",95.96,95.96,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"GPQA\",94.95,95.96,1.01,true]],\"pass\":true},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"GPQA\",94.44,95.96,1.52,false]],\"pass\":false}},\"published\":[\"GPQA\"],\"reference\":\"gpt-6-astra\"}},\"T2P\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"HBP-adj\",62.1,62.1,0,true],[\"HBP-raw\",74.2,74.2,0,true]],\"pass\":true},\"claude-haiku-5-5@high\":{\"benchmarks\":[[\"HBP-adj\",61.3,62.1,0.8,true]],\"pass\":true},\"claude-haiku-5-5@low\":{\"benchmarks\":[[\"HBP-adj\",57.9,62.1,4.2,false]],\"pass\":false},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"HBP-adj\",64.8,62.1,-2.7,true],[\"HBP-raw\",71,74.2,3.2,false]],\"pass\":false},\"claude-haiku-5-5@medium\":{\"benchmarks\":[[\"HBP-adj\",59.9,62.1,2.2,false]],\"pass\":false},\"claude-haiku-5-5@xhigh\":{\"benchmarks\":[[\"HBP-adj\",61,62.1,1.1,true]],\"pass\":true},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"HBP-adj\",65.6,62.1,-3.5,true],[\"HBP-raw\",77.1,74.2,-2.9,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"HBP-adj\",69.2,62.1,-7.1,true],[\"HBP-raw\",77.1,74.2,-2.9,true]],\"pass\":true}},\"published\":[\"HBP-adj\",\"HBP-raw\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@max\":{\"benchmarks\":[[\"MHB\",58.7,58.7,0,true]],\"pass\":true},\"gpt-6-luna@max\":{\"benchmarks\":[[\"MHB\",51.7,58.7,7,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"MHB\",54.2,58.7,4.5,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"MHB\",57.9,58.7,0.8,true]],\"pass\":true},\"gpt-6.1-terra@max\":{\"benchmarks\":[[\"MHB\",55.5,58.7,3.2,false]],\"pass\":false}},\"published\":[\"HB-Hard\",\"HBP-adj\",\"MHB\"],\"reference\":\"gpt-6-astra\"}},\"T2V\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"Chart-noT\",44.8,44.8,0,true],[\"Chart-T\",88.4,88.4,0,true]],\"pass\":true},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"Chart-noT\",46.4,44.8,-1.6,true],[\"Chart-T\",86.2,88.4,2.2,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"Chart-noT\",64.4,44.8,-19.6,true],[\"Chart-T\",89,88.4,-0.6,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"Chart-noT\",61.6,44.8,-16.8,true],[\"Chart-T\",90.2,88.4,-1.8,true]],\"pass\":true}},\"published\":[\"Chart-noT\",\"Chart-T\"],\"reference\":\"claude-fable-5-1\"}},\"T3\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@high\":{\"benchmarks\":[[\"HLE\",57.96,60.92,2.96,false]],\"pass\":false},\"claude-fable-5-1@low\":{\"benchmarks\":[[\"HLE\",53.16,60.92,7.76,false]],\"pass\":false},\"claude-fable-5-1@max\":{\"benchmarks\":[[\"ARC2-semi\",90,90,0,true],[\"HLE\",60.92,60.92,0,true]],\"pass\":true},\"claude-fable-5-1@medium\":{\"benchmarks\":[[\"HLE\",55.92,60.92,5,false]],\"pass\":false},\"claude-fable-5-1@xhigh\":{\"benchmarks\":[[\"HLE\",60.36,60.92,0.56,true]],\"pass\":true},\"claude-haiku-5-5@high\":{\"benchmarks\":[[\"HLE\",39.7,60.92,21.22,false]],\"pass\":false},\"claude-haiku-5-5@low\":{\"benchmarks\":[[\"HLE\",30.9,60.92,30.02,false]],\"pass\":false},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"HLE\",45.9,60.92,15.02,false]],\"pass\":false},\"claude-haiku-5-5@medium\":{\"benchmarks\":[[\"HLE\",35.5,60.92,25.42,false]],\"pass\":false},\"claude-haiku-5-5@xhigh\":{\"benchmarks\":[[\"HLE\",44.1,60.92,16.82,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"HLE\",64.4,60.92,-3.48,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"HLE\",56.9,60.92,4.02,false]],\"pass\":false},\"claude-sonnet-5-5@medium\":{\"benchmarks\":[[\"HLE\",43.2,60.92,17.72,false]],\"pass\":false}},\"published\":[\"ARC2-semi\",\"HLE\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@max\":{\"benchmarks\":[[\"GeneBench\",36.66,37.1,0.44,true]],\"pass\":true},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"GeneBench\",37.1,37.1,0,true]],\"pass\":true}},\"published\":[\"ARC2\",\"GeneBench\",\"HLE-T\"],\"reference\":\"gpt-6-astra\"}},\"T3M\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"ArXivMath\",82.9,82.9,0,true],[\"ArXivMath-T\",92.1,92.1,0,true]],\"pass\":true},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"ArXivMath\",91.2,82.9,-8.3,true],[\"ArXivMath-T\",96.9,92.1,-4.8,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"ArXivMath\",86.8,82.9,-3.9,true],[\"ArXivMath-T\",95.2,92.1,-3.1,true]],\"pass\":true}},\"published\":[\"ArXivMath\",\"ArXivMath-T\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{},\"published\":[\"FM-T4\"],\"reference\":\"gpt-6-astra\"}},\"U1\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"AutoB\",31.4,31.4,0,true],[\"Toolathlon\",77.8,77.8,0,true]],\"pass\":true},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"AutoB\",40,31.4,-8.6,true],[\"Toolathlon\",77.8,77.8,0,true]],\"pass\":true},\"claude-opus-5-5@medium\":{\"benchmarks\":[[\"AutoB\",28.6,31.4,2.8,false]],\"pass\":false},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"Toolathlon\",77.8,77.8,0,true]],\"pass\":true}},\"published\":[\"AutoB\",\"Toolathlon\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"AutoB\",37.1,41.4,4.3,false]],\"pass\":false},\"gpt-6-astra@low\":{\"benchmarks\":[[\"AutoB\",30.3,41.4,11.1,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"AutoB\",41.4,41.4,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"AutoB\",34.1,41.4,7.3,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"AutoB\",39,41.4,2.4,false]],\"pass\":false},\"gpt-6-luna@high\":{\"benchmarks\":[[\"AutoB\",14.5,41.4,26.9,false]],\"pass\":false},\"gpt-6-luna@low\":{\"benchmarks\":[[\"AutoB\",1.2,41.4,40.2,false]],\"pass\":false},\"gpt-6-luna@max\":{\"benchmarks\":[[\"AutoB\",20.7,41.4,20.7,false]],\"pass\":false},\"gpt-6-luna@medium\":{\"benchmarks\":[[\"AutoB\",9.4,41.4,32,false]],\"pass\":false},\"gpt-6-luna@xhigh\":{\"benchmarks\":[[\"AutoB\",12.6,41.4,28.8,false]],\"pass\":false},\"gpt-6-sol@high\":{\"benchmarks\":[[\"AutoB\",31.2,41.4,10.2,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"AutoB\",21.16,41.4,20.24,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"AutoB\",31.96,41.4,9.44,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"AutoB\",26.94,41.4,14.46,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"AutoB\",33.18,41.4,8.22,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"AutoB\",33.2,41.4,8.2,false]],\"pass\":false},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"AutoB\",24.7,41.4,16.7,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"AutoB\",36.1,41.4,5.3,false]],\"pass\":false},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"AutoB\",31.7,41.4,9.7,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"AutoB\",35.5,41.4,5.9,false]],\"pass\":false}},\"published\":[\"AutoB\"],\"reference\":\"gpt-6-astra\"}},\"U2\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"OSW2.1-part\",80.7,80.7,0,true],[\"OSW2.1-strict\",42.8,42.8,0,true]],\"pass\":true},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"OSW2.1-part\",81.8,80.7,-1.1,true],[\"OSW2.1-strict\",48.7,42.8,-5.9,true]],\"pass\":true},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"OSW2.1-part\",80.1,80.7,0.6,true],[\"OSW2.1-strict\",43.5,42.8,-0.7,true]],\"pass\":true}},\"published\":[\"OSW2.1-part\",\"OSW2.1-strict\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"OSW2.0\",70.02,73.49,3.47,false],[\"OSW2.1\",78.3,80.9,2.6,false]],\"pass\":false},\"gpt-6-astra@low\":{\"benchmarks\":[[\"OSW2.0\",62.17,73.49,11.32,false],[\"OSW2.1\",63.3,80.9,17.6,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"OSW2.0\",73.49,73.49,0,true],[\"OSW2.1\",80.9,80.9,0,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"OSW2.0\",69.25,73.49,4.24,false],[\"OSW2.1\",75.4,80.9,5.5,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"OSW2.0\",71.27,73.49,2.22,false],[\"OSW2.1\",79,80.9,1.9,false]],\"pass\":false},\"gpt-6-luna@high\":{\"benchmarks\":[[\"OSW2.0\",41.43,73.49,32.06,false],[\"OSW2.1\",39.7,80.9,41.2,false]],\"pass\":false},\"gpt-6-luna@low\":{\"benchmarks\":[[\"OSW2.0\",8.26,73.49,65.23,false],[\"OSW2.1\",7.5,80.9,73.4,false]],\"pass\":false},\"gpt-6-luna@max\":{\"benchmarks\":[[\"OSW2.0\",52.68,73.49,20.81,false],[\"OSW2.1\",55.5,80.9,25.4,false]],\"pass\":false},\"gpt-6-luna@medium\":{\"benchmarks\":[[\"OSW2.0\",31.54,73.49,41.95,false],[\"OSW2.1\",26.3,80.9,54.6,false]],\"pass\":false},\"gpt-6-luna@xhigh\":{\"benchmarks\":[[\"OSW2.0\",46.7,73.49,26.79,false],[\"OSW2.1\",44.6,80.9,36.3,false]],\"pass\":false},\"gpt-6-sol@high\":{\"benchmarks\":[[\"OSW2.0\",58.29,73.49,15.2,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"OSW2.0\",43.9,73.49,29.59,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"OSW2.0\",64.43,73.49,9.06,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"OSW2.0\",54,73.49,19.49,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"OSW2.0\",60.54,73.49,12.95,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"OSW2.0\",69.56,73.49,3.93,false],[\"OSW2.1\",75.5,80.9,5.4,false]],\"pass\":false},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"OSW2.0\",58.96,73.49,14.53,false],[\"OSW2.1\",60.9,80.9,20,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"OSW2.0\",71.42,73.49,2.07,false],[\"OSW2.1\",78,80.9,2.9,false]],\"pass\":false},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"OSW2.0\",66.84,73.49,6.65,false],[\"OSW2.1\",73.5,80.9,7.4,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"OSW2.0\",69.38,73.49,4.11,false],[\"OSW2.1\",75.9,80.9,5,false]],\"pass\":false},\"gpt-6.1-terra@high\":{\"benchmarks\":[[\"OSW2.1\",68.7,80.9,12.2,false]],\"pass\":false},\"gpt-6.1-terra@low\":{\"benchmarks\":[[\"OSW2.1\",53.8,80.9,27.1,false]],\"pass\":false},\"gpt-6.1-terra@max\":{\"benchmarks\":[[\"OSW2.1\",74.2,80.9,6.7,false]],\"pass\":false},\"gpt-6.1-terra@medium\":{\"benchmarks\":[[\"OSW2.1\",66.7,80.9,14.2,false]],\"pass\":false},\"gpt-6.1-terra@xhigh\":{\"benchmarks\":[[\"OSW2.1\",71.3,80.9,9.6,false]],\"pass\":false}},\"published\":[\"OSW2.0\",\"OSW2.1\"],\"reference\":\"gpt-6-astra\"}},\"U3\":{\"openai_codex\":{\"cells\":{},\"published\":[\"BrowseComp\"],\"reference\":\"gpt-6-astra\"}},\"W1\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@max\":{\"benchmarks\":[[\"OfficeQA\",80.2,80.2,0,true],[\"OfficeQA-Pro\",69,69,0,true]],\"pass\":true},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"OfficeQA\",73.5,80.2,6.7,false],[\"OfficeQA-Pro\",60.3,69,8.7,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"OfficeQA\",78.9,80.2,1.3,false],[\"OfficeQA-Pro\",67.7,69,1.3,false]],\"pass\":false},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"OfficeQA\",76.9,80.2,3.3,false],[\"OfficeQA-Pro\",65.6,69,3.4,false]],\"pass\":false}},\"published\":[\"OfficeQA\",\"OfficeQA-Pro\"],\"reference\":\"claude-fable-5-1\"}},\"W2\":{\"anthropic_shared\":{\"cells\":{\"claude-fable-5-1@high\":{\"benchmarks\":[[\"GDPval\",1617,1735,118,false]],\"pass\":false},\"claude-fable-5-1@low\":{\"benchmarks\":[[\"GDPval\",1450,1735,285,false]],\"pass\":false},\"claude-fable-5-1@max\":{\"benchmarks\":[[\"Briefcase\",1678,1678,0,true],[\"GDPval\",1735,1735,0,true]],\"pass\":true},\"claude-fable-5-1@medium\":{\"benchmarks\":[[\"GDPval\",1536,1735,199,false]],\"pass\":false},\"claude-fable-5-1@xhigh\":{\"benchmarks\":[[\"GDPval\",1721,1735,14,false],[\"Legal-all\",16.7,16.7,0,true],[\"Legal-crit\",93.3,93.3,0,true]],\"pass\":false},\"claude-haiku-5-5@high\":{\"benchmarks\":[[\"GDPval\",1420,1735,315,false]],\"pass\":false},\"claude-haiku-5-5@low\":{\"benchmarks\":[[\"GDPval\",1125,1735,610,false]],\"pass\":false},\"claude-haiku-5-5@max\":{\"benchmarks\":[[\"Briefcase\",1578,1678,100,false],[\"GDPval\",1620,1735,115,false]],\"pass\":false},\"claude-haiku-5-5@medium\":{\"benchmarks\":[[\"GDPval\",1277,1735,458,false]],\"pass\":false},\"claude-haiku-5-5@xhigh\":{\"benchmarks\":[[\"GDPval\",1513,1735,222,false]],\"pass\":false},\"claude-opus-5-5@high\":{\"benchmarks\":[[\"Briefcase\",1705,1678,-27,true],[\"GDPval\",1692,1735,43,false]],\"pass\":false},\"claude-opus-5-5@low\":{\"benchmarks\":[[\"GDPval\",1224,1735,511,false]],\"pass\":false},\"claude-opus-5-5@max\":{\"benchmarks\":[[\"Briefcase\",1822,1678,-144,true],[\"GDPval\",1846,1735,-111,true],[\"Legal-all\",8.3,16.7,8.4,false],[\"Legal-crit\",91.2,93.3,2.1,false]],\"pass\":false},\"claude-opus-5-5@medium\":{\"benchmarks\":[[\"GDPval\",1576,1735,159,false]],\"pass\":false},\"claude-opus-5-5@xhigh\":{\"benchmarks\":[[\"Briefcase\",1780,1678,-102,true],[\"GDPval\",1820,1735,-85,true]],\"pass\":true},\"claude-sonnet-5-5@high\":{\"benchmarks\":[[\"Briefcase\",1634,1678,44,false],[\"GDPval\",1551,1735,184,false],[\"Legal-all\",11.7,16.7,5,false],[\"Legal-crit\",92.1,93.3,1.2,true]],\"pass\":false},\"claude-sonnet-5-5@low\":{\"benchmarks\":[[\"Briefcase\",1264,1678,414,false],[\"GDPval\",1179,1735,556,false]],\"pass\":false},\"claude-sonnet-5-5@max\":{\"benchmarks\":[[\"Legal-all\",10,16.7,6.7,false],[\"Legal-crit\",93.1,93.3,0.2,true]],\"pass\":false},\"claude-sonnet-5-5@medium\":{\"benchmarks\":[[\"Briefcase\",1461,1678,217,false],[\"GDPval\",1324,1735,411,false]],\"pass\":false},\"claude-sonnet-5-5@xhigh\":{\"benchmarks\":[[\"Briefcase\",1746,1678,-68,true]],\"pass\":true}},\"published\":[\"Briefcase\",\"GDPval\",\"Legal-all\",\"Legal-crit\"],\"reference\":\"claude-fable-5-1\"},\"openai_codex\":{\"cells\":{\"gpt-6-astra@high\":{\"benchmarks\":[[\"GDP.pdf\",31,32.2,1.2,true]],\"pass\":true},\"gpt-6-astra@low\":{\"benchmarks\":[[\"GDP.pdf\",30.4,32.2,1.8,false]],\"pass\":false},\"gpt-6-astra@max\":{\"benchmarks\":[[\"GDP.pdf\",31,32.2,1.2,true]],\"pass\":true},\"gpt-6-astra@medium\":{\"benchmarks\":[[\"GDP.pdf\",30.4,32.2,1.8,false]],\"pass\":false},\"gpt-6-astra@xhigh\":{\"benchmarks\":[[\"GDP.pdf\",32.2,32.2,0,true]],\"pass\":true},\"gpt-6-sol@high\":{\"benchmarks\":[[\"GDP.pdf\",28,32.2,4.2,false]],\"pass\":false},\"gpt-6-sol@low\":{\"benchmarks\":[[\"GDP.pdf\",21.8,32.2,10.4,false]],\"pass\":false},\"gpt-6-sol@max\":{\"benchmarks\":[[\"GDP.pdf\",24.8,32.2,7.4,false]],\"pass\":false},\"gpt-6-sol@medium\":{\"benchmarks\":[[\"GDP.pdf\",25.4,32.2,6.8,false]],\"pass\":false},\"gpt-6-sol@xhigh\":{\"benchmarks\":[[\"GDP.pdf\",23.8,32.2,8.4,false]],\"pass\":false},\"gpt-6.1-sol@high\":{\"benchmarks\":[[\"GDP.pdf\",32,32.2,0.2,true]],\"pass\":true},\"gpt-6.1-sol@low\":{\"benchmarks\":[[\"GDP.pdf\",27,32.2,5.2,false]],\"pass\":false},\"gpt-6.1-sol@max\":{\"benchmarks\":[[\"GDP.pdf\",31,32.2,1.2,true]],\"pass\":true},\"gpt-6.1-sol@medium\":{\"benchmarks\":[[\"GDP.pdf\",30,32.2,2.2,false]],\"pass\":false},\"gpt-6.1-sol@xhigh\":{\"benchmarks\":[[\"GDP.pdf\",31.8,32.2,0.4,true]],\"pass\":true}},\"published\":[\"GDP.pdf\"],\"reference\":\"gpt-6-astra\"}}},\"ask_back\":{\"en\":\"What should I check? (1) routing check (local, Codex and Claude at once) (2) answer-quality test\",\"ko\":\"뭘 볼까요? ① 라우팅 점검(로컬·Codex·Claude 동시 확인) ② 답변 실력 테스트\"},\"families\":{\"F1\":{\"local\":true,\"shape\":\"answer\",\"tier_basis\":\"policy\",\"tiers\":[],\"tools\":\"none\"},\"F10\":{\"local\":true,\"shape\":\"answer\",\"tier_basis\":\"policy\",\"tiers\":[],\"tools\":\"none\"},\"F12\":{\"local\":true,\"shape\":\"answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T1\"],\"tools\":\"none\"},\"F13\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"W2\"],\"tools\":\"none\"},\"F2\":{\"local\":true,\"shape\":\"answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T1\"],\"tools\":\"none\"},\"F3\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T1\"],\"tools\":\"agent\"},\"F4\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T1\",\"T1F\"],\"tools\":\"none\"},\"F4c\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_upper_bound\",\"tiers\":[\"C1\"],\"tools\":\"none\"},\"F4m\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_upper_bound\",\"tiers\":[\"T3M\"],\"tools\":\"none\"},\"F5a\":{\"local\":false,\"shape\":\"answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T1F\"],\"tools\":\"agent\"},\"F5b\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"U3\",\"T1F\"],\"tools\":\"agent\"},\"F6-code\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"C2\"],\"tools\":\"none\"},\"F6-math\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T3M\"],\"tools\":\"none\"},\"F6-other\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"T1\",\"T1F\"],\"tools\":\"none\"},\"F6-prose\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"W2\"],\"tools\":\"none\"},\"F7\":{\"local\":false,\"shape\":\"agentic\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"C2\"],\"tools\":\"agent\"},\"F7w\":{\"local\":false,\"shape\":\"agentic\",\"tier_basis\":\"evidence_required\",\"tiers\":[\"W2\"],\"tools\":\"agent\"},\"U\":{\"local\":false,\"shape\":\"long_answer\",\"tier_basis\":\"policy\",\"tiers\":[\"T1\",\"T3\",\"T3M\",\"C2\",\"U1\"],\"tools\":\"none\"}},\"family_rules\":[{\"family\":\"U\",\"when\":{\"reading\":\"absent\"}},{\"family\":\"F10\",\"when\":{\"intent\":[\"self_test\"]}},{\"family\":\"F5a\",\"when\":{\"difficulty\":[\"light\"],\"needs_tools\":[\"current_facts\"]}},{\"family\":\"F5b\",\"when\":{\"needs_tools\":[\"current_facts\"]}},{\"family\":\"F7w\",\"when\":{\"domain\":[\"writing\"],\"task_type\":[\"action\"]}},{\"family\":\"F7\",\"when\":{\"task_type\":[\"action\"]}},{\"family\":\"F7w\",\"when\":{\"domain\":[\"writing\"],\"needs_tools\":[\"execution\"]}},{\"family\":\"F7\",\"when\":{\"needs_tools\":[\"execution\"]}},{\"family\":\"F1\",\"when\":{\"difficulty\":[\"light\"],\"needs_tools\":[\"none\"],\"task_type\":[\"chat\"]}},{\"family\":\"F6-math\",\"when\":{\"domain\":[\"math\"],\"task_type\":[\"design\"]}},{\"family\":\"F6-code\",\"when\":{\"domain\":[\"coding\"],\"task_type\":[\"design\"]}},{\"family\":\"F6-prose\",\"when\":{\"domain\":[\"writing\"],\"task_type\":[\"design\"]}},{\"family\":\"F6-other\",\"when\":{\"task_type\":[\"design\"]}},{\"family\":\"F3\",\"when\":{\"difficulty\":[\"light\"],\"needs_tools\":[\"workspace\"]}},{\"family\":\"F6-code\",\"when\":{\"domain\":[\"coding\"],\"needs_tools\":[\"workspace\"]}},{\"family\":\"F6-other\",\"when\":{\"needs_tools\":[\"workspace\"]}},{\"family\":\"F12\",\"when\":{\"difficulty\":[\"light\"],\"task_type\":[\"write\"]}},{\"family\":\"F6-code\",\"when\":{\"difficulty\":[\"deep\"],\"domain\":[\"coding\"],\"task_type\":[\"write\"]}},{\"family\":\"F4c\",\"when\":{\"domain\":[\"coding\"],\"task_type\":[\"write\"]}},{\"family\":\"F13\",\"when\":{\"task_type\":[\"write\"]}},{\"family\":\"F2\",\"when\":{\"difficulty\":[\"light\"],\"task_type\":[\"explain\",\"chat\"]}},{\"family\":\"F6-math\",\"when\":{\"difficulty\":[\"deep\"],\"domain\":[\"math\"]}},{\"family\":\"F6-code\",\"when\":{\"difficulty\":[\"deep\"],\"domain\":[\"coding\"]}},{\"family\":\"F6-prose\",\"when\":{\"difficulty\":[\"deep\"],\"domain\":[\"writing\"]}},{\"family\":\"F6-other\",\"when\":{\"difficulty\":[\"deep\"]}},{\"family\":\"F4m\",\"when\":{\"domain\":[\"math\"]}},{\"family\":\"F4\",\"when\":{}}],\"headroom_threshold\":0.15,\"inputs\":{\"evidence\":\"7088e9ac5ea0f1de2bb621d0e43ff4e792c91f5cc73e3b6c81b3f59587c7662f\",\"ledger\":\"69a3710372db6438dad75b38bbe022f134ae56fb3c2e925705c2b1dd7b8981a1\",\"policy\":\"5858015e842646191efa5c0fa6aa9c846d762add8b242b29dfce2842cdf09674\",\"prices\":\"bb1dfcb77c246b2b67d70f97fd12503c37e883ae1590d4b082a48c81bda296a3\",\"profiles\":\"9807d04e280bb343a0ae97747888bf001e9f09b64a109b1e24a9aa019ff64f8f\",\"quota\":\"b0994c5fa7de1f290c095b8ec87bea36b2231e64c185786d47de7f421a5945d5\"},\"local_admission\":{\"basis\":\"owner_order\",\"evidence_gap\":\"no deterministic verifier, matched-tier benchmark or REVAS paired audit exists for the local model yet\",\"families\":[\"F1\",\"F2\",\"F10\",\"F12\"],\"source\":\"DESIGN-8 migration row 447 'local-first'; DESIGN-6 O2 (ask-back), DESIGN-7 §1.5 (local first)\"},\"objective\":\"same result as the newest top model at its highest reasoning, with less quota\",\"p_fail\":{\"cells\":{\"claude-haiku-4-5-20251001@none\":{\"failures\":0,\"runs\":3},\"claude-opus-5-5@max\":{\"failures\":0,\"runs\":1},\"claude-opus-5-5@medium\":{\"failures\":0,\"runs\":3},\"gpt-6-luna@low\":{\"failures\":4,\"runs\":20},\"gpt-6.1-sol@medium\":{\"failures\":0,\"runs\":15},\"qwen3.5:4b@none\":{\"failures\":0,\"runs\":2},\"qwen3.5:9b@none\":{\"failures\":0,\"runs\":2}},\"key\":\"model@effort, pooled over surfaces\",\"prior\":{\"failures\":1,\"runs\":2}},\"policy\":\"routing_law_447\",\"pool_units\":{\"anthropic_shared\":\"Cw: % of the Claude weekly pool (all models)\",\"openai_codex\":\"Px: % of one Codex Pro weekly pool\"},\"quota\":{\"claude-chat:claude-fable-5-1@high\":{\"agentic\":{\"basis\":\"token_model:output_measured:calibrated_agentic\",\"n\":null,\"q\":0.272604},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.012929},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_long_answer\",\"n\":null,\"q\":0.040821},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-fable-5-1@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_high:calibrated_agentic\",\"n\":null,\"q\":0.260882},\"answer\":{\"basis\":\"measured_os1\",\"n\":16,\"q\":0.154735},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.03575},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-fable-5-1@max\":{\"agentic\":{\"basis\":\"measured_os1\",\"n\":12,\"q\":0.464835},\"answer\":{\"basis\":\"measured_os1\",\"n\":13,\"q\":0.015735},\"effort\":\"max\",\"long_answer\":{\"basis\":\"measured_os1\",\"n\":28,\"q\":0.038206},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-fable-5-1@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_high:calibrated_agentic\",\"n\":null,\"q\":0.265139},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.013946},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_long_answer\",\"n\":null,\"q\":0.037775},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-fable-5-1@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":18,\"q\":0.719354},\"answer\":{\"basis\":\"token_model:output_measured:calibrated_answer\",\"n\":null,\"q\":0.013221},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.047383},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-haiku-4-5-20251001@none\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_agentic\",\"n\":null,\"q\":0.078134},\"answer\":{\"basis\":\"measured_os1\",\"n\":15,\"q\":0.001163},\"effort\":\"none\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_long_answer\",\"n\":null,\"q\":0.003979},\"model\":\"claude-haiku-4-5-20251001\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-opus-5-5@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_agentic\",\"n\":null,\"q\":0.148399},\"answer\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_answer\",\"n\":null,\"q\":0.005493},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_long_answer\",\"n\":null,\"q\":0.017487},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-opus-5-5@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_agentic\",\"n\":null,\"q\":0.145579},\"answer\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_answer\",\"n\":null,\"q\":0.00514},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_long_answer\",\"n\":null,\"q\":0.012602},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-opus-5-5@max\":{\"agentic\":{\"basis\":\"measured_os1\",\"n\":76,\"q\":0.206985},\"answer\":{\"basis\":\"measured_os1\",\"n\":11,\"q\":0.004663},\"effort\":\"max\",\"long_answer\":{\"basis\":\"measured_os1\",\"n\":23,\"q\":0.036658},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-opus-5-5@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_agentic\",\"n\":null,\"q\":0.147775},\"answer\":{\"basis\":\"token_model:output_measured:calibrated_answer\",\"n\":null,\"q\":0.005415},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.013876},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-opus-5-5@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":171,\"q\":0.749188},\"answer\":{\"basis\":\"measured_owner\",\"n\":17,\"q\":0.011097},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"measured_owner\",\"n\":27,\"q\":0.009484},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-sonnet-5-5@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.077042},\"answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_answer\",\"n\":null,\"q\":0.002506},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006101},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-sonnet-5-5@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.073801},\"answer\":{\"basis\":\"measured_os1\",\"n\":10,\"q\":0.002709},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006031},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-sonnet-5-5@max\":{\"agentic\":{\"basis\":\"token_model:output_measured:calibrated_agentic\",\"n\":null,\"q\":0.118829},\"answer\":{\"basis\":\"measured_os1\",\"n\":12,\"q\":0.002321},\"effort\":\"max\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.007004},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-sonnet-5-5@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.073937},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.002509},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006033},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude-chat:claude-sonnet-5-5@xhigh\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.08557},\"answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_answer\",\"n\":null,\"q\":0.00251},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006285},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-fable-5-1@high\":{\"agentic\":{\"basis\":\"token_model:output_measured:calibrated_agentic\",\"n\":null,\"q\":0.272604},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.012929},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_long_answer\",\"n\":null,\"q\":0.040821},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude:claude-fable-5-1@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_high:calibrated_agentic\",\"n\":null,\"q\":0.260882},\"answer\":{\"basis\":\"measured_os1\",\"n\":16,\"q\":0.154735},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.03575},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude:claude-fable-5-1@max\":{\"agentic\":{\"basis\":\"measured_os1\",\"n\":12,\"q\":0.464835},\"answer\":{\"basis\":\"measured_os1\",\"n\":13,\"q\":0.015735},\"effort\":\"max\",\"long_answer\":{\"basis\":\"measured_os1\",\"n\":28,\"q\":0.038206},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude:claude-fable-5-1@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_high:calibrated_agentic\",\"n\":null,\"q\":0.265139},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.013946},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_long_answer\",\"n\":null,\"q\":0.037775},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude:claude-fable-5-1@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":18,\"q\":0.719354},\"answer\":{\"basis\":\"token_model:output_measured:calibrated_answer\",\"n\":null,\"q\":0.013221},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.047383},\"model\":\"claude-fable-5-1\",\"pool\":\"anthropic_shared\"},\"claude:claude-haiku-4-5-20251001@none\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_agentic\",\"n\":null,\"q\":0.078134},\"answer\":{\"basis\":\"measured_os1\",\"n\":15,\"q\":0.001163},\"effort\":\"none\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_long_answer\",\"n\":null,\"q\":0.003979},\"model\":\"claude-haiku-4-5-20251001\",\"pool\":\"anthropic_shared\"},\"claude:claude-opus-5-5@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_agentic\",\"n\":null,\"q\":0.148399},\"answer\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_answer\",\"n\":null,\"q\":0.005493},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_long_answer\",\"n\":null,\"q\":0.017487},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-opus-5-5@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_agentic\",\"n\":null,\"q\":0.145579},\"answer\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_answer\",\"n\":null,\"q\":0.00514},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_long_answer\",\"n\":null,\"q\":0.012602},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-opus-5-5@max\":{\"agentic\":{\"basis\":\"measured_os1\",\"n\":76,\"q\":0.206985},\"answer\":{\"basis\":\"measured_os1\",\"n\":11,\"q\":0.004663},\"effort\":\"max\",\"long_answer\":{\"basis\":\"measured_os1\",\"n\":23,\"q\":0.036658},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-opus-5-5@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_agentic\",\"n\":null,\"q\":0.147775},\"answer\":{\"basis\":\"token_model:output_measured:calibrated_answer\",\"n\":null,\"q\":0.005415},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.013876},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-opus-5-5@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":171,\"q\":0.749188},\"answer\":{\"basis\":\"measured_owner\",\"n\":17,\"q\":0.011097},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"measured_owner\",\"n\":27,\"q\":0.009484},\"model\":\"claude-opus-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-sonnet-5-5@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.077042},\"answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_answer\",\"n\":null,\"q\":0.002506},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006101},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-sonnet-5-5@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.073801},\"answer\":{\"basis\":\"measured_os1\",\"n\":10,\"q\":0.002709},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006031},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-sonnet-5-5@max\":{\"agentic\":{\"basis\":\"token_model:output_measured:calibrated_agentic\",\"n\":null,\"q\":0.118829},\"answer\":{\"basis\":\"measured_os1\",\"n\":12,\"q\":0.002321},\"effort\":\"max\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_long_answer\",\"n\":null,\"q\":0.007004},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-sonnet-5-5@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.073937},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.002509},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006033},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"claude:claude-sonnet-5-5@xhigh\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_agentic\",\"n\":null,\"q\":0.08557},\"answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_answer\",\"n\":null,\"q\":0.00251},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_max:calibrated_long_answer\",\"n\":null,\"q\":0.006285},\"model\":\"claude-sonnet-5-5\",\"pool\":\"anthropic_shared\"},\"codex:gpt-6-astra@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_provider_other_shapes\",\"n\":null,\"q\":2.644622},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.026167},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.064725},\"model\":\"gpt-6-astra\",\"pool\":\"openai_codex\"},\"codex:gpt-6-astra@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_medium:calibrated_provider_other_shapes\",\"n\":null,\"q\":2.413408},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.025098},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.052246},\"model\":\"gpt-6-astra\",\"pool\":\"openai_codex\"},\"codex:gpt-6-astra@max\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_ultra:calibrated_provider_other_shapes\",\"n\":null,\"q\":2.409177},\"answer\":{\"basis\":\"token_model:output_scaled_from_ultra:calibrated_answer\",\"n\":null,\"q\":0.024944},\"effort\":\"max\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.069474},\"model\":\"gpt-6-astra\",\"pool\":\"openai_codex\"},\"codex:gpt-6-astra@medium\":{\"agentic\":{\"basis\":\"token_model:output_measured:calibrated_provider_other_shapes\",\"n\":null,\"q\":2.528606},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.025631},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.058463},\"model\":\"gpt-6-astra\",\"pool\":\"openai_codex\"},\"codex:gpt-6-astra@ultra\":{\"agentic\":{\"basis\":\"token_model:output_measured:calibrated_provider_other_shapes\",\"n\":null,\"q\":2.409177},\"answer\":{\"basis\":\"measured_os1\",\"n\":14,\"q\":0.024944},\"effort\":\"ultra\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.069474},\"model\":\"gpt-6-astra\",\"pool\":\"openai_codex\"},\"codex:gpt-6-astra@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":59,\"q\":2.209207},\"answer\":{\"basis\":\"measured_owner\",\"n\":17,\"q\":0.032088},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"measured_owner\",\"n\":19,\"q\":0.175188},\"model\":\"gpt-6-astra\",\"pool\":\"openai_codex\"},\"codex:gpt-6-luna@high\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.062507},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.000755},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.001387},\"model\":\"gpt-6-luna\",\"pool\":\"openai_codex\"},\"codex:gpt-6-luna@low\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.062507},\"answer\":{\"basis\":\"token_model:output_measured:calibrated_answer\",\"n\":null,\"q\":0.000718},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.001131},\"model\":\"gpt-6-luna\",\"pool\":\"openai_codex\"},\"codex:gpt-6-luna@max\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.062507},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.000801},\"effort\":\"max\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.001714},\"model\":\"gpt-6-luna\",\"pool\":\"openai_codex\"},\"codex:gpt-6-luna@medium\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.062507},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.000744},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.001312},\"model\":\"gpt-6-luna\",\"pool\":\"openai_codex\"},\"codex:gpt-6-luna@xhigh\":{\"agentic\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.062507},\"answer\":{\"basis\":\"token_model:output_scaled_from_low:calibrated_answer\",\"n\":null,\"q\":0.000765},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.001462},\"model\":\"gpt-6-luna\",\"pool\":\"openai_codex\"},\"codex:gpt-6-sol@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":1.031831},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.012321},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.021636},\"model\":\"gpt-6-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6-sol@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":1.009915},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.011814},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.01956},\"model\":\"gpt-6-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6-sol@max\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_ultra:calibrated_provider_other_shapes\",\"n\":null,\"q\":1.038105},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.013723},\"effort\":\"max\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.027373},\"model\":\"gpt-6-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6-sol@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":1.02537},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.012171},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.021024},\"model\":\"gpt-6-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6-sol@ultra\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":19,\"q\":1.169877},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.013723},\"effort\":\"ultra\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.027373},\"model\":\"gpt-6-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6-sol@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":31,\"q\":1.458289},\"answer\":{\"basis\":\"token_model:output_measured:calibrated_answer\",\"n\":null,\"q\":0.012542},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"token_model:output_pooled_scaled_from_high:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.02254},\"model\":\"gpt-6-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6.1-sol@high\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.649913},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.012328},\"effort\":\"high\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.021482},\"model\":\"gpt-6.1-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6.1-sol@low\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.604124},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.011708},\"effort\":\"low\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.019356},\"model\":\"gpt-6.1-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6.1-sol@max\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_ultra:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.61483},\"answer\":{\"basis\":\"token_model:output_scaled_from_ultra:calibrated_answer\",\"n\":null,\"q\":0.012831},\"effort\":\"max\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_ultra:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.021259},\"model\":\"gpt-6.1-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6.1-sol@medium\":{\"agentic\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.622063},\"answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_answer\",\"n\":null,\"q\":0.011951},\"effort\":\"medium\",\"long_answer\":{\"basis\":\"token_model:output_scaled_from_xhigh:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.020189},\"model\":\"gpt-6.1-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6.1-sol@ultra\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":317,\"q\":0.587518},\"answer\":{\"basis\":\"measured_owner\",\"n\":12,\"q\":0.020238},\"effort\":\"ultra\",\"long_answer\":{\"basis\":\"token_model:output_measured:calibrated_provider_other_shapes\",\"n\":null,\"q\":0.021259},\"model\":\"gpt-6.1-sol\",\"pool\":\"openai_codex\"},\"codex:gpt-6.1-sol@xhigh\":{\"agentic\":{\"basis\":\"measured_owner\",\"n\":113,\"q\":0.75418},\"answer\":{\"basis\":\"measured_owner\",\"n\":13,\"q\":0.019329},\"effort\":\"xhigh\",\"long_answer\":{\"basis\":\"measured_owner\",\"n\":27,\"q\":0.024635},\"model\":\"gpt-6.1-sol\",\"pool\":\"openai_codex\"}},\"quota_calibration\":{\"anthropic\":{\"agentic\":{\"factor\":1.5862,\"from\":\"agentic\",\"n_cells\":2},\"answer\":{\"factor\":1.4843,\"from\":\"answer\",\"n_cells\":6},\"long_answer\":{\"factor\":2.4191,\"from\":\"long_answer\",\"n_cells\":2}},\"openai\":{\"agentic\":{\"factor\":1.1057,\"from\":\"provider_other_shapes\",\"n_cells\":0},\"answer\":{\"factor\":1.1057,\"from\":\"answer\",\"n_cells\":1},\"long_answer\":{\"factor\":1.1057,\"from\":\"provider_other_shapes\",\"n_cells\":0}}},\"references\":{\"anthropic_shared\":\"claude-fable-5-1\",\"openai_codex\":\"gpt-6-astra\"},\"schema\":1,\"tau\":{\"C1\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"C2\":{\"pct\":{\"basis\":\"tier_effort_adjacent_drops\",\"n\":10,\"replicate_median\":0.89,\"tau\":1.25}},\"C3\":{\"other:findings\":{\"basis\":\"no_drop_delta0\",\"n\":0,\"replicate_median\":null,\"tau\":0},\"pct\":{\"basis\":\"tier_effort_adjacent_drops\",\"n\":7,\"replicate_median\":0.89,\"tau\":1.6}},\"C3S\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"CSEC\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"T1\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"T1F\":{\"pct_error\":{\"basis\":\"tier_effort_adjacent_drops\",\"n\":3,\"replicate_median\":null,\"tau\":0.09}},\"T2\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"T2P\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"T2V\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"T3\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"T3M\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"U1\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"U2\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"U3\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"W1\":{\"pct\":{\"basis\":\"pooled_effort_adjacent_drops\",\"n\":29,\"replicate_median\":0.89,\"tau\":1.2}},\"W2\":{\"elo\":{\"basis\":\"elo_publication_discrepancies\",\"n\":3,\"replicate_median\":null,\"tau\":6},\"pct\":{\"basis\":\"tier_effort_adjacent_drops\",\"n\":5,\"replicate_median\":0.89,\"tau\":1.2}}}}";
+export const ROUTING_LAW_TABLE_SHA256 = '236ce83339a899813f70820c5a87492db4325300c8698e9b7b4540ddc5d13d74';
