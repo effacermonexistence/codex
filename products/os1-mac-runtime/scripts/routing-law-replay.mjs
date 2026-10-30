@@ -324,8 +324,8 @@ export function breakEven(me, other) {
  * law_model: the E[Q] the argmin minimizes, references charged their own
  * repair), law447 must cost less priced at the DERIVED exchange of that
  * headroom (never at the 1:1 fallback: no derived exchange is
- * NO_DERIVED_EXCHANGE, never a PASS), and start no more requests on Astra than
- * 446. Per pool (no exchange at all) and the break-even exchange are reported
+ * NO_DERIVED_EXCHANGE, never a PASS). Astra starts are reported, not gated
+ * (owner, 2026-10-30: one law decides). Per pool (no exchange at all) and the break-even exchange are reported
  * next to every priced verdict. Priced totals are relative indices (pool units
  * x that headroom's instantaneous rate), not quota spent. */
 export function gateOf(totals, astra, rates = null) {
@@ -346,7 +346,10 @@ export function gateOf(totals, astra, rates = null) {
   }
   verdict.astra = {law447: astra.law447, build446: astra.build446, verdict: astra.law447 <= astra.build446 ? 'PASS' : 'FAIL'};
   const priced = BASES.every(basis => ['build446', 'all_reference'].every(arm => verdict[basis][arm].priced === 'PASS'));
-  verdict.release = !derived ? 'NO_DERIVED_EXCHANGE' : priced && verdict.astra.verdict === 'PASS' ? 'PASS' : 'FAIL';
+  // Owner, 2026-10-30: the law decides, not hand-added proxies. The release
+  // verdict is the objective only (priced at the derived exchange on both
+  // bases); Astra starts and per-pool totals stay reported, never gating.
+  verdict.release = !derived ? 'NO_DERIVED_EXCHANGE' : priced ? 'PASS' : 'FAIL';
   verdict.release_parts = {priced_both_bases: derived ? (priced ? 'PASS' : 'FAIL') : 'NO_DERIVED_EXCHANGE',
     astra: verdict.astra.verdict,
     per_pool_draw: verdict.draw.build446.per_pool === 'PASS' && verdict.draw.all_reference.per_pool === 'PASS' ? 'PASS' : 'FAIL'};

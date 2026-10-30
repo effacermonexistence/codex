@@ -242,7 +242,8 @@ test('the release gate: priced only at a DERIVED exchange, on both bases, agains
   assert.equal(gateOf({law447: arm(5, 1, 10), build446: arm(1, 50, 85), all_reference: arm(6, 3, 15)}, {law447: 2, build446: 3}).release,
     'NO_DERIVED_EXCHANGE');
   const astra = gateOf({law447: arm(1, 1, 2), build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)}, {law447: 4, build446: 3}, observed);
-  assert.equal(astra.release, 'FAIL');
+  // Owner, 2026-10-30: Astra starts are reported, never a gate; the objective decides.
+  assert.deepEqual([astra.release, astra.astra.verdict], ['PASS', 'FAIL']);
   // Both bases: cheaper on the draw but not on the law's own E[Q] is a FAIL.
   const bases = {law447: {start: {Cw: 1, Px: 1, priced: 2}, draw: {Cw: 1, Px: 1, priced: 2}, law_model: {Cw: 5, Px: 5, priced: 10}},
     build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)};
