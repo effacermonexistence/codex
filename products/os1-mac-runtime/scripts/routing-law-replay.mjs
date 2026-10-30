@@ -50,14 +50,25 @@
  *  - law_model: draw plus, for every route without a ladder, p_fail x Q(its
  *    repair step): a reference's own (itself), a writer's own pool reference
  *    (the law's own E[Q] accounting, correction 1).
- * Each basis is also priced at the derived exchange of the headroom (Core
- * lawPoolPrice) to give one comparable total.
+ * Each basis is also priced at the exchange of the headroom (Core
+ * lawPoolPrice): a relative index (pool units x that headroom's instantaneous
+ * rate), not quota spent.
  *
- * The release gate (DESIGN-8 447): in both pools' real units the law costs
- * less than 446 and less than all-reference, and starts no more requests on
- * Astra than 446. Reported two ways, each per basis: per pool (447 <= the
- * other arm in Cw AND in Px, strictly lower in one: no exchange rate at all)
- * and priced at the derived exchange. */
+ * The release gate (DESIGN-8 447, review of 447, gateOf): in both pools' real
+ * units the law costs less than 446 and less than all-reference, and starts no
+ * more requests on Astra than 446, judged
+ *  - priced at a DERIVED exchange only (every pool's rate from a fresh
+ *    observed window): the recorded catalogs' 0.6 / 0.6 with no reset data
+ *    price both pools 1 / 0.6, the 1:1 sum, and are NO_DERIVED_EXCHANGE;
+ *  - on both bases, draw (what 447 draws) and law_model (the E[Q] the argmin
+ *    minimizes);
+ *  - across headroom regimes (`--regimes`, scripts/routing-law-gate-regimes.json:
+ *    fixed states plus, with `--pools`, the real state and the real Claude
+ *    state with the owner's open Codex account-week), PASS only when every
+ *    regime passes; per pool (no exchange at all), the break-even exchange
+ *    and Astra starts per family are reported beside every verdict.
+ *   node scripts/routing-law-replay.mjs ... --regimes <regimes.json> [--pools <pools.json>] [--out <sweep.json>] [--fail-on-gate yes]
+ *   node scripts/routing-law-replay.mjs --owner-gate <owner fixture> --regimes <regimes.json>   (the build's gate) */
 import {readFileSync, writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -66,7 +77,8 @@ import {dirname, join} from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const core = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 const {hostPlan, resolveRoutePlan, deliveryBasisOf, hostContextFingerprint, zeroModelArithmetic, configureLocalModel,
-  routingLawTable, lawFamily, lawQuota, lawPFail, lawAskBack, lawPoolPrice, dispatchable, ROUTING_LAW_TABLE_SHA256} = core;
+  routingLawTable, lawFamily, lawQuota, lawPFail, lawAskBack, lawPoolPrice, lawEvidence, lawTiers, dispatchable,
+  ROUTING_LAW_TABLE_SHA256} = core;
 configureLocalModel(process.env.LOCAL_MODEL ?? 'qwen3.5:9b');
 const sha = text => createHash('sha256').update(text).digest('hex');
 
@@ -208,8 +220,24 @@ function repairOf(result, catalog, table) {
   return catalog.candidates.filter(row => row.quota_pool === c.quota_pool && row.model === table.references[c.quota_pool] &&
     row.scope === c.scope).sort((a, b) => EFFORT_ORDER.indexOf(b.effort) - EFFORT_ORDER.indexOf(a.effort))[0] ?? null;
 }
+/** The p_fail Core charges a bound row (review of 447: the replay inherits
+ * from the same reference as Core): the local row and a pool reference their
+ * own Laplace estimate; any other row its OWN pool's listed reference's
+ * p_fail for the family (Core listedReferenceOf), plus the measured gap below
+ * that reference on the matched tiers (lawEvidence excess). */
+export function pFailOf(result, catalog, table, family, reading) {
+  const c = result.candidate;
+  if (c.surface === 'local' || result.kind === 'reference' || c.model === table.references[c.quota_pool]) return lawPFail(table, c, family);
+  const own = catalog.candidates.filter(row => row.quota_pool === c.quota_pool && row.model === table.references[c.quota_pool] &&
+    row.scope === c.scope).sort((a, b) => EFFORT_ORDER.indexOf(b.effort) - EFFORT_ORDER.indexOf(a.effort))[0] ??
+    repairOf(result, catalog, table);
+  if (!own) return lawPFail(table, c, family);
+  const tiers = family === 'P' ? [] : lawTiers(table, family, reading ?? null, result.scope === 'workspace_write');
+  const excess = tiers.length ? lawEvidence(table, tiers, c.quota_pool, c.model, c.effort, family).excess ?? 0 : 0;
+  return Math.min(1, lawPFail(table, c, family, own) + excess);
+}
 /** A bound route's real draws per pool on the three bases (see the header). */
-export function priceRoute(result, catalog, shape, table = routingLawTable(), family = null) {
+export function priceRoute(result, catalog, shape, table = routingLawTable(), family = null, reading = null) {
   const zero = () => ({Cw: 0, Px: 0});
   const out = {pool: 'none', q: 0, start: zero(), draw: zero(), law_model: zero(), unpriced: false, p_fail: 0};
   if (!result.candidate) return out;
@@ -224,10 +252,7 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
   if (!repair) return out;
   const qr = lawQuota(table, repair, shape)?.q ?? 0;
   const repairUnit = POOL_UNIT[repair.quota_pool];
-  // A row below its reference inherits that reference's p_fail; the local row
-  // and a reference their own (lawPFail).
-  const ownEstimate = c.surface === 'local' || repair === c;
-  const p = lawPFail(table, c, family, ownEstimate ? null : repair);
+  const p = pFailOf(result, catalog, table, family, reading);
   out.p_fail = p;
   if (repairUnit === 'local') return out;
   if (result.ladder?.reference_candidate_id) out.draw[repairUnit] += p * qr;
@@ -264,37 +289,82 @@ export function armsOf(row, intent, headroom = null, table = routingLawTable()) 
   const shape = mine.law?.shape ?? table.families[family]?.shape ?? 'answer';
   const rates = ratesOf(law);
   const price = (result, catalog) => result.error ? {pool: 'none', q: null, unpriced: true, start: {Cw: 0, Px: 0},
-    draw: {Cw: 0, Px: 0}, law_model: {Cw: 0, Px: 0}, p_fail: 0} : priceRoute(result, catalog, shape, table, family);
+    draw: {Cw: 0, Px: 0}, law_model: {Cw: 0, Px: 0}, p_fail: 0} : priceRoute(result, catalog, shape, table, family,
+      law.routing_law.reading);
   return {family, shape, rates, law, reading: law.routing_law.reading,
     arms: {law447: {result: mine, priced: price(mine, law)}, build446: {result: theirs, priced: price(theirs, b446)},
       all_reference: {result: allRef, priced: price(allRef, law)}}};
 }
 
 const ARMS = ['law447', 'build446', 'all_reference'];
+const BASES = ['draw', 'law_model'];
 /** Per pool (no exchange): a <= b in Cw and in Px, strictly lower in one. */
 function paretoBelow(a, b) {
   return a.Cw <= b.Cw + 1e-12 && a.Px <= b.Px + 1e-12 && (a.Cw < b.Cw - 1e-12 || a.Px < b.Px - 1e-12);
 }
-export function gateOf(totals, astra) {
-  const verdict = {};
-  for (const basis of ['start', 'draw', 'law_model']) {
+/** Whether a headroom carries a DERIVED exchange (review of 447): every pool's
+ * price from a fresh observed window (an exhausted pool included: it cannot be
+ * drawn). The recorded catalogs' 0.6/0.6 with no reset data price both pools
+ * 1/0.6 by the conservative fallback: that is the 1:1 sum, not an exchange. */
+export function derivedExchange(rates) {
+  return rates !== null && POOLS.every(pool => rates[pool]?.basis === 'observed_window');
+}
+/** The exchange x = price(Cw) / price(Px) at which law447 and the other arm
+ * cost the same with the routes held fixed: law447 is cheaper for x below it
+ * ('below') or above it ('above'), at any x ('always') or none ('never'). */
+export function breakEven(me, other) {
+  const dC = me.Cw - other.Cw, dP = other.Px - me.Px;
+  if (Math.abs(dC) < 1e-12) return {x: null, cheaper_when: dP > 1e-12 ? 'always' : 'never'};
+  const x = dP / dC + 0; // + 0: no negative zero
+  if (dC > 0) return {x: r4(x), cheaper_when: x > 0 ? 'below' : 'never'};
+  return {x: r4(x), cheaper_when: x <= 0 ? 'always' : 'above'};
+}
+/** The release gate at one headroom (DESIGN-8 447, review of 447): against
+ * 446 and against all-reference, on BOTH bases (draw: what 447 actually draws;
+ * law_model: the E[Q] the argmin minimizes, references charged their own
+ * repair), law447 must cost less priced at the DERIVED exchange of that
+ * headroom (never at the 1:1 fallback: no derived exchange is
+ * NO_DERIVED_EXCHANGE, never a PASS), and start no more requests on Astra than
+ * 446. Per pool (no exchange at all) and the break-even exchange are reported
+ * next to every priced verdict. Priced totals are relative indices (pool units
+ * x that headroom's instantaneous rate), not quota spent. */
+export function gateOf(totals, astra, rates = null) {
+  const derived = derivedExchange(rates);
+  const x = derived ? (rates.anthropic_shared.price === Infinity ? 'infinite' : rates.openai_codex.price === Infinity ? 0 :
+    r4(rates.anthropic_shared.price / rates.openai_codex.price)) : null;
+  const verdict = {derived_exchange: derived, exchange_Cw_per_Px: x};
+  for (const basis of ['start', ...BASES]) {
     const me = totals.law447[basis];
     verdict[basis] = Object.fromEntries(['build446', 'all_reference'].map(arm => {
       const other = totals[arm][basis];
       return [arm, {per_pool: paretoBelow(me, other) ? 'PASS' : 'FAIL',
-        priced: me.priced < other.priced - 1e-12 ? 'PASS' : 'FAIL',
+        priced: !derived ? 'NO_DERIVED_EXCHANGE' : me.priced < other.priced - 1e-12 ? 'PASS' : 'FAIL',
+        break_even_Cw_per_Px: breakEven(me, other),
         ratio_Cw: other.Cw ? r4(me.Cw / other.Cw) : null, ratio_Px: other.Px ? r4(me.Px / other.Px) : null,
         ratio_priced: other.priced ? r4(me.priced / other.priced) : null}];
     }));
   }
   verdict.astra = {law447: astra.law447, build446: astra.build446, verdict: astra.law447 <= astra.build446 ? 'PASS' : 'FAIL'};
-  const lower = basis => verdict[basis].build446.priced === 'PASS' && verdict[basis].all_reference.priced === 'PASS';
-  verdict.release = {
-    priced_draw: lower('draw') && verdict.astra.verdict === 'PASS' ? 'PASS' : 'FAIL',
-    per_pool_draw: verdict.draw.build446.per_pool === 'PASS' && verdict.draw.all_reference.per_pool === 'PASS' &&
-      verdict.astra.verdict === 'PASS' ? 'PASS' : 'FAIL'};
+  const priced = BASES.every(basis => ['build446', 'all_reference'].every(arm => verdict[basis][arm].priced === 'PASS'));
+  verdict.release = !derived ? 'NO_DERIVED_EXCHANGE' : priced && verdict.astra.verdict === 'PASS' ? 'PASS' : 'FAIL';
+  verdict.release_parts = {priced_both_bases: derived ? (priced ? 'PASS' : 'FAIL') : 'NO_DERIVED_EXCHANGE',
+    astra: verdict.astra.verdict,
+    per_pool_draw: verdict.draw.build446.per_pool === 'PASS' && verdict.draw.all_reference.per_pool === 'PASS' ? 'PASS' : 'FAIL'};
   return verdict;
 }
+/** Astra starts per family on every arm (review of 447: an aggregate can hide
+ * a family that got worse). */
+function astraByFamily(rows) {
+  const out = {};
+  for (const row of rows) for (const arm of ARMS) if (row[arm].route.includes('gpt-6-astra')) {
+    out[row.family] ??= Object.fromEntries(ARMS.map(a => [a, 0]));
+    out[row.family][arm]++;
+  }
+  return Object.fromEntries(Object.entries(out).sort().map(([family, counts]) =>
+    [family, {...counts, worse_than_446: counts.law447 > counts.build446}]));
+}
+const ratesView = rates => rates && Object.fromEntries(POOLS.map(pool => [POOL_UNIT[pool], {rate: r4(rates[pool].price),
+  basis: rates[pool].basis, remaining: r4(rates[pool].remaining), ttr: r4(rates[pool].ttr)}]));
 
 export function replay(catalogRows, routes446, intents = {}, headroom = null) {
   const table = routingLawTable();
@@ -320,16 +390,19 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null) {
   const rounded = Object.fromEntries(ARMS.map(arm => [arm, Object.fromEntries(Object.entries(totals[arm]).map(([basis, v]) =>
     [basis, {Cw: r4(v.Cw), Px: r4(v.Px), priced: r4(v.priced)}]))]));
   return {table_sha256: ROUTING_LAW_TABLE_SHA256, rows,
-    summary: {requests: rows.length, headroom: headroom?.kind === 'pools' ? {kind: 'pools', generated_at: new Date(headroom.generated_at_ms).toISOString()} :
-        headroom ?? 'recorded (0.6 both pools, no reset data)',
-      rates: rates && Object.fromEntries(POOLS.map(pool => [POOL_UNIT[pool], {rate: r4(rates[pool].price), basis: rates[pool].basis,
-        remaining: r4(rates[pool].remaining), ttr: r4(rates[pool].ttr)}])),
+    summary: {requests: rows.length, headroom: headroomLabel(headroom),
+      rates: ratesView(rates),
+      priced_note: 'priced = pool units x the headroom\'s instantaneous rate: a relative index, not quota spent',
       routes_changed_vs_446: rows.filter(r => r.law447.route !== r.build446.route).length,
       reproduces_recorded_446: headroom ? null :
         rows.filter(r => r.build446.route === (r.route446_recorded ?? '').replace(/\/(?=[^/]*$)/, '@')).length,
       core_errors: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].route.startsWith('core_error')).length])),
       free: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].q === 0).length])),
-      astra_starts: astra, totals: rounded, gate: gateOf(totals, astra)}};
+      astra_starts: astra, astra_by_family: astraByFamily(rows), totals: rounded, gate: gateOf(totals, astra, rates)}};
+}
+function headroomLabel(headroom) {
+  return headroom?.kind === 'pools' ? {kind: 'pools', ...(headroom.name ? {name: headroom.name} : {}),
+    generated_at: new Date(headroom.generated_at_ms).toISOString()} : headroom ?? 'recorded (0.6 both pools, no reset data)';
 }
 
 // DESIGN-7 §5: the 16 owner fixed questions, their corpus rows (or 'extra'
@@ -361,15 +434,21 @@ function ownerRows(catalogRows, intents, extras) {
 export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}) {
   const recorded446 = new Map(routes446.map(row => [row.index, row.route]));
   return {schema: 1, table_sha256: ROUTING_LAW_TABLE_SHA256,
-    note: 'DESIGN-7 §5 owner fixed questions; expected_route is the routing law output (golden), never hand-set; ' +
-      'design7_route is DESIGN-7 for comparison only',
+    note: 'DESIGN-7 §5 owner fixed questions; expected_route is the routing law output (golden) at the recorded headroom ' +
+      '(no derived exchange: both pools 1 / 0.6), never hand-set; flags mark an Astra start and a route that differs from ' +
+      'build 446\'s (review of 447); design7_route is DESIGN-7 for comparison only; the per-regime routes are the sweep\'s',
     questions: ownerRows(catalogRows, intents, extras).map(({n, design7, source, origin, row, pending}) => {
       if (pending) return {n, pending};
       const law = lawCatalog(row, row.intent);
       const routed = routeOf(row.request, law);
       const route446 = routeOf(row.request, row.catalog).route;
+      // Review of 447: a golden route is never pinned silently where it starts
+      // Astra (the owner's complaint) or leaves build 446's route: flagged.
+      const flags = [...(routed.route.includes('gpt-6-astra') ? ['astra_start'] : []),
+        ...(routed.route.includes('gpt-6-astra') && !route446.includes('gpt-6-astra') ? ['astra_where_446_was_not'] : []),
+        ...(routed.route !== route446 ? ['differs_from_446'] : [])];
       return {n, request: row.request, origin, receipt: row.receipt, intent: row.intent, catalog: row.catalog,
-        expected_route: routed.route, expected_kind: routed.kind ?? null,
+        expected_route: routed.route, expected_kind: routed.kind ?? null, flags,
         expected_family: routed.kind === 'calculator' ? 'F0' : routed.law?.family ?? lawFamily(law.routing_law.reading, routingLawTable()),
         route_446: route446,
         recorded_446: typeof source === 'number' ? recorded446.get(source) ?? null : null, design7_route: design7};
@@ -396,12 +475,57 @@ export function ownerTable(catalogRows, intents = {}, extras = {}, headroom = nu
   const astra = Object.fromEntries(ARMS.map(arm => [arm, questions.filter(q => q[arm]?.route?.includes('gpt-6-astra')).length]));
   const rounded = Object.fromEntries(ARMS.map(arm => [arm, Object.fromEntries(Object.entries(totals[arm]).map(([basis, v]) =>
     [basis, {Cw: r4(v.Cw), Px: r4(v.Px), priced: r4(v.priced)}]))]));
-  return {table_sha256: ROUTING_LAW_TABLE_SHA256,
-    headroom: headroom?.kind === 'pools' ? {kind: 'pools', generated_at: new Date(headroom.generated_at_ms).toISOString()} :
-      headroom ?? 'recorded (0.6 both pools, no reset data)',
-    rates: rates && Object.fromEntries(POOLS.map(pool => [POOL_UNIT[pool], {rate: r4(rates[pool].price), basis: rates[pool].basis,
-      remaining: r4(rates[pool].remaining), ttr: r4(rates[pool].ttr)}])),
-    questions, astra_starts: astra, totals: rounded, gate: gateOf(totals, astra)};
+  return {table_sha256: ROUTING_LAW_TABLE_SHA256, headroom: headroomLabel(headroom), rates: ratesView(rates),
+    priced_note: 'priced = pool units x the headroom\'s instantaneous rate: a relative index, not quota spent',
+    questions, astra_starts: astra, totals: rounded, gate: gateOf(totals, astra, rates)};
+}
+
+/** A gate regime as a pools headroom (review of 447: the gate is judged
+ * across headroom states, never on one snapshot): each pool one weekly window
+ * at `used_percent` with `ttr` of the week still to run, observed at `at`; a
+ * pool given as `{from: 'pools'}` keeps the real pools file's observation, and
+ * `{from: 'open_codex_account'}` the real file's open Codex account-week with
+ * the most allowance left (the owner's other account OS-1 could dispatch
+ * through). The rates follow from Core lawPoolPrice; nothing here is a price. */
+export function regimeHeadroom(regime, real = null, at = null) {
+  const now = at ?? (real ? Date.parse(real.generated_at) : Date.UTC(2026, 9, 30));
+  const week = 10080 * 60000;
+  const pools = {};
+  for (const pool of POOLS) {
+    const spec = regime[pool];
+    if (spec?.from === 'pools') {
+      if (!real?.pools?.[pool]) throw new Error('regime ' + regime.name + ' needs the real pools file for ' + pool);
+      pools[pool] = real.pools[pool];
+    } else if (spec?.from === 'open_codex_account') {
+      const open = (real?.sources?.codex?.account_weeks ?? []).filter(w => w.open_at_now && w.window_minutes === 10080)
+        .sort((a, b) => a.last_used_percent - b.last_used_percent)[0];
+      if (!open) throw new Error('regime ' + regime.name + ': no open Codex account-week in the pools file');
+      pools[pool] = {observed_at_ms: now, valid_until_ms: now + 600000,
+        windows: [{used_percent: open.last_used_percent, resets_at_ms: Date.parse(open.resets_at), window_minutes: 10080}]};
+    } else if (spec && Number.isFinite(spec.used_percent) && Number.isFinite(spec.ttr)) {
+      pools[pool] = {observed_at_ms: now, valid_until_ms: now + 600000,
+        windows: [{used_percent: spec.used_percent, resets_at_ms: now + Math.round(spec.ttr * week), window_minutes: 10080}]};
+    } else throw new Error('bad regime ' + regime.name + ' ' + pool);
+  }
+  return {kind: 'pools', name: regime.name, pools, generated_at_ms: now};
+}
+/** The release gate across every regime: PASS only when each regime with a
+ * derived exchange passes on both bases and on Astra starts. */
+export function sweep(catalogRows, routes446, intents, regimes, real = null, extras = null) {
+  const out = {};
+  for (const regime of regimes) {
+    const headroom = regimeHeadroom(regime, real);
+    const corpus = replay(catalogRows, routes446, intents, headroom).summary;
+    const owner = extras ? ownerTable(catalogRows, intents, extras, headroom) : null;
+    out[regime.name] = {spec: regime, rates: corpus.rates, astra_starts: corpus.astra_starts,
+      astra_by_family: corpus.astra_by_family, totals: corpus.totals, gate: corpus.gate,
+      ...(owner ? {owner_table: {astra_starts: owner.astra_starts, totals: owner.totals, gate: owner.gate,
+        routes: owner.questions.map(q => ({n: q.n, family: q.family, law447: q.law447?.route ?? null,
+          build446: q.build446?.route ?? null, all_reference: q.all_reference?.route ?? null}))}} : {})};
+  }
+  const verdicts = Object.fromEntries(Object.entries(out).map(([name, r]) => [name, r.gate.release]));
+  return {table_sha256: ROUTING_LAW_TABLE_SHA256, regimes: out, release: {per_regime: verdicts,
+    verdict: Object.values(verdicts).every(v => v === 'PASS') ? 'PASS' : 'FAIL'}};
 }
 
 export function headroomOf(o) {
@@ -417,8 +541,29 @@ export function headroomOf(o) {
   return null;
 }
 
+/** The build's zero-quota release gate (review of 447): the committed owner
+ * fixture's recorded catalogs and readings at every fixed regime of the gate
+ * file (no real pools file: the build reads nothing outside the repository).
+ * The 370-request corpus sweep lives with the artifacts and is the lead's. */
+export function ownerGate(fixture, regimes) {
+  const live = fixture.questions.filter(q => !q.pending && q.catalog);
+  const rows = live.map(q => ({index: q.n, request: q.request, catalog: q.catalog, receipt: q.receipt}));
+  const intents = Object.fromEntries(live.filter(q => q.intent).map(q => [q.n, q.intent]));
+  return sweep(rows, [], intents, regimes.filter(r => !Object.values(r).some(v => v?.from)));
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const o = options(process.argv.slice(2));
+  if (o['owner-gate']) {
+    const result = ownerGate(JSON.parse(readFileSync(o['owner-gate'], 'utf8')), JSON.parse(readFileSync(o.regimes, 'utf8')).regimes);
+    for (const [name, r] of Object.entries(result.regimes))
+      process.stdout.write(`routing law gate ${name}: ${r.gate.release} (astra ${r.astra_starts.law447} vs 446 ` +
+        `${r.astra_starts.build446}; priced vs 446 draw ${r.gate.draw.build446.ratio_priced} law_model ` +
+        `${r.gate.law_model.build446.ratio_priced}; vs all-reference draw ${r.gate.draw.all_reference.ratio_priced} law_model ` +
+        `${r.gate.law_model.all_reference.ratio_priced})\n`);
+    process.stdout.write(`routing law gate (owner fixture, ${Object.keys(result.regimes).length} regimes): ${result.release.verdict}\n`);
+    process.exit(result.release.verdict === 'PASS' ? 0 : 1);
+  }
   const catalogs = JSON.parse(readFileSync(o.catalogs, 'utf8'));
   const routes446 = JSON.parse(readFileSync(o.routes446, 'utf8'));
   const intents = o.intents ? JSON.parse(readFileSync(o.intents, 'utf8')) : {};
@@ -427,6 +572,20 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (o['owner-fixture']) {
     writeFileSync(o['owner-fixture'], JSON.stringify(ownerFixture(catalogs, routes446, intents, extras)) + '\n');
     process.exit(0);
+  }
+  if (o.regimes) {
+    const spec = JSON.parse(readFileSync(o.regimes, 'utf8'));
+    const real = o.pools ? JSON.parse(readFileSync(o.pools, 'utf8')) : null;
+    const regimes = spec.regimes.filter(r => real || !Object.values(r).some(v => v?.from));
+    const result = sweep(catalogs, routes446, intents, regimes, real, o.extras ? extras : null);
+    if (o.out) writeFileSync(o.out, JSON.stringify(result, null, 1) + '\n');
+    process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(result.regimes).map(([name, r]) => [name,
+      {rates: Object.fromEntries(Object.entries(r.rates).map(([unit, v]) => [unit, v.rate])), astra: r.astra_starts,
+        release: r.gate.release, parts: r.gate.release_parts,
+        draw: {b446: r.gate.draw.build446.ratio_priced, allref: r.gate.draw.all_reference.ratio_priced},
+        law_model: {b446: r.gate.law_model.build446.ratio_priced, allref: r.gate.law_model.all_reference.ratio_priced}}])
+      .concat([['release', result.release.verdict]])), null, 1) + '\n');
+    process.exit(o['fail-on-gate'] === 'yes' && result.release.verdict !== 'PASS' ? 1 : 0);
   }
   if (o['owner-table']) {
     const result = ownerTable(catalogs, intents, extras, headroom);

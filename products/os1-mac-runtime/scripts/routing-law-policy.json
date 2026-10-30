@@ -22,18 +22,18 @@
   "measured_min_n": 10,
   "output_min_n": 3,
   "exchange": {
-    "formula": "price(pool) = max over the pool's open windows w of ttr_w / remaining_w; remaining_w = 1 - used_w/100; ttr_w = (resets_at_w - now) / window_length_w",
+    "formula": "price(pool) = ttr_w / remaining_w for w = the pool's unit window (its longest open window, the weekly one: Q is in its units); remaining_w = 1 - used_w/100; ttr_w = (resets_at_w - now) / window_length_w; any other window exhausted: no price (the pool cannot be drawn)",
     "source": "lead correction 2 (DESIGN-8, 2026-10-29): each pool priced by the share of its remaining allowance until its reset, from the providers' rate-limit data (routing_law.pools, the host's observations); no 1:1 and no headroom-threshold constant",
-    "stale_fallback": "missing, stale (past the host's valid_until_ms) or reset-crossed data: the pool's smallest dispatchable remaining share with the whole window ahead (price 1 / remaining); no share at all: 1 (pace); an exhausted window: no price (the pool cannot be drawn)"
+    "stale_fallback": "stale (past the host's valid_until_ms): each window not yet reset at its last observed share left with the whole window ahead (1 / remaining_w; plan usage only rises inside a window), an exhausted one no price until its reset (review of 447: a failed probe never prices a pool last seen scarce at pace); every window reset since, or no observation: the pool's smallest dispatchable remaining share with the whole window ahead (1 / remaining); no share at all: 1 (pace)"
   },
   "laplace": {"failures": 1, "runs": 2},
-  "p_fail_inheritance": "lead correction 1 (DESIGN-8, 2026-10-29): a row admitted with evidence (b or c) has its own pool reference's p_fail for the family until its own judged runs move it, at the prior's weight: (f_c + runs_prior * p_ref) / (n_c + runs_prior); a reference's own failures are priced with its own repair (itself); the local row (owner order, no evidence) keeps its own Laplace estimate",
+  "p_fail_inheritance": "lead correction 1 (DESIGN-8, 2026-10-29): a row admitted with evidence (b or c) has its own pool reference's p_fail for the family until its own judged runs move it, at the prior's weight: (f_c + runs_prior * p_ref) / (n_c + runs_prior), plus its measured gap below the reference on the matched tiers (review of 447: the largest percentage-point deficit / 100); a reference's own failures are priced with its own repair (itself); the local row (owner order, no evidence) keeps its own Laplace estimate. As of this table no judged run carries a law family, so every p_fail is the prior 1/2: the inheritance has no numeric effect yet, and the law's E[Q] differs from 447's actual draw only by charging a reference p_fail x its own Q (a 1.5x markup at the prior, which build 447 never spends: a reference does not escalate); the release gate is therefore judged on both bases (draw and law_model)",
   "value_of_information": {
     "horizon_days": 7,
     "cap_pct_of_weekly_allowance_per_week": 1,
     "confidence": 0.9,
-    "pass_rule": "an answer passes when the local model grades every item of its frozen checklist as met; a question is informative when the audit reference's answer passes; FAIL when any question has the reference passing and the cell failing (a discordant pair); PASS when there is none and at least n questions are informative; else INCONCLUSIVE (never admits; more questions are planned)",
-    "source": "DESIGN-8 step 6 moved into 447 (lead correction 3): horizon 7 days and the cap <= 1% of a pool's weekly allowance per week are DESIGN-8's; the confidence of the minimal-n bound is declared here (n = ceil(ln(1 - confidence) / ln(1 - b)))"
+    "pass_rule": "an answer passes when the local model grades every item of its frozen checklist as met; a question is informative when the audit reference's answer passes; FAIL when any question has the reference passing and the cell failing (a discordant pair); PASS when there is none and at least n questions are informative; else INCONCLUSIVE (never admits; more questions are planned). A PASS admits (form c) only as a parity audit: n = n_parity informative questions sampled at random across the family (review of 447); a cost-sized pass is provisional and admits nothing",
+    "source": "DESIGN-8 step 6 moved into 447 (lead correction 3): horizon 7 days and the cap <= 1% of a pool's weekly allowance per week are DESIGN-8's; n is the parity bound ceil(ln(1 - confidence) / ln(1 - s * tau)) (review of 447: tau the family tiers' tightest percentage tau, s the grader's measured sensitivity); the confidence 0.9 is declared here and is NOT derived: it awaits the lead's decision (review of 447)"
   },
   "effort_labels": {
     "anthropic_shared": {"max": 3.5}

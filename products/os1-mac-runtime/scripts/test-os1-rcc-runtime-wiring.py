@@ -1231,7 +1231,8 @@ check(f'public static let tableSHA256 = "{law_sha}"' in law_swift and
       f"export const ROUTING_LAW_TABLE_SHA256 = '{law_sha}';" in RUNTIME and
       json.loads(law_literal.rstrip().rstrip(";")) == law_resource.decode().rstrip("\n") and
       (ROOT / "scripts/routing-law-table.mjs").is_file() and (ROOT / "scripts/routing-law-policy.json").is_file() and
-      all((ROOT / f"scripts/routing-law-{name}-20261029.json").is_file() for name in ("evidence", "quota", "ledger", "audits")) and
+      all((ROOT / f"scripts/routing-law-{name}-20261029.json").is_file() for name in ("evidence", "ledger", "audits")) and
+      (ROOT / "scripts/routing-law-quota-20261030.json").is_file() and
       'node "$script_dir/routing-law-table.mjs" check' in RELEASE,
       "447: the routing-law table is the compiler's bytes from committed inputs, pinned in Resources, Core and Swift; release-checked")
 check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" in RUNTIME and
@@ -1242,9 +1243,12 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
       "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
       "export function lawPFail(table, candidate, family, reference = null) {" in RUNTIME and
-      "const pFail = lawPFail(table, candidate, family, inherits);" in RUNTIME and
+      "const pFail = Math.min(1, lawPFail(table, candidate, family, inherits) + (inherits !== null ? evidence.excess ?? 0 : 0));" in RUNTIME and
       "const repair = option.reference ? option.row :" in RUNTIME and
-      "if (gap && audit?.verdict === 'pass') return {form: 'c', tiers: rows, gap: false, audit: audit.id};" in RUNTIME and
+      "if (gap && audit?.verdict === 'pass' && audit.admits === true) return {form: 'c', tiers: rows, gap: false, audit: audit.id, excess: 0};" in RUNTIME and
+      "function lawHostNeedsTools(task, catalog) {" in RUNTIME and "function lawRateNote(why, task, catalog, now) {" in RUNTIME and
+      "(lawAdmission(node, task, catalog) === null || certifiedTupleRuns()))" in RUNTIME and
+      'node "$script_dir/routing-law-replay.mjs" --owner-gate "$script_dir/fixtures/routing-law-owner-questions.json"' in RELEASE and
       "family === 'P' ? null : family);" in RUNTIME and
       "headroom_threshold" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
       "|| lawAnswersLocally(node, task, catalog)), 'local_agent_node_not_explicit');" in RUNTIME and

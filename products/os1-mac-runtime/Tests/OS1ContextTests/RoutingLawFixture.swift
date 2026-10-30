@@ -136,8 +136,22 @@ func runRoutingLawFixtures() throws {
     try check(RoutingLaw.poolStates(codex: withQuota.codexQuota, claude: withQuota.claudeQuota,
                                     accountIDs: ["codex": "another", "claude": "acct-claude"], now: now)?.keys.sorted() ==
               ["anthropic_shared"], "another account's observation never prices the pool")
+    // Review of 447: a failed probe never makes the scarcest pool the cheapest.
+    // Claude last seen at 5% of its week, the probe failed, the observation is
+    // eleven minutes old: the last windows still travel (past valid_until, so
+    // Core prices them stale: 1 / 0.05), a window reset since is dropped.
+    let scarce = BackendHealth.QuotaSnapshot(accountID: "acct-claude", observedAt: now.addingTimeInterval(-660),
+        source: .claudeNative, windows: [.init(bucket: "session", usedPercent: 30, resetsAt: now.addingTimeInterval(-60)),
+                                         .init(bucket: "weekly_all", usedPercent: 95, resetsAt: now.addingTimeInterval(2 * 86_400))])
+    let stale = RoutingLaw.poolStates(codex: nil, claude: scarce, accountIDs: input.accountIDs, now: now)?["anthropic_shared"]
+    try check(stale?.windows.map(\.usedPercent) == [95] && stale?.windows.first?.windowMinutes == 10_080 &&
+              stale.map { $0.validUntilMS < nowMS } == true && stale?.valid == true,
+              "a stale scarce pool keeps its last unreset window, past valid_until (Core prices it 1 / remaining)")
     try check(RoutingLaw.poolStates(codex: withQuota.codexQuota, claude: nil, accountIDs: input.accountIDs,
-                                    now: now.addingTimeInterval(700)) == nil, "an observation past retention is no pool state")
+                                    now: now.addingTimeInterval(700))?["openai_codex"]?.windows.first?.usedPercent == 40,
+              "an observation past retention still travels, stale")
+    try check(RoutingLaw.poolStates(codex: withQuota.codexQuota, claude: nil, accountIDs: input.accountIDs,
+                                    now: now.addingTimeInterval(4 * 86_400)) == nil, "every window reset since: no pool state")
     let unknownLength = BackendHealth.QuotaSnapshot(accountID: "acct-codex", observedAt: now, source: .codexNative,
         windows: [.init(bucket: "codex.primary", usedPercent: 40, resetsAt: now.addingTimeInterval(86_400))])
     try check(RoutingLaw.poolStates(codex: unknownLength, claude: nil, accountIDs: input.accountIDs, now: now) == nil,

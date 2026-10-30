@@ -104,7 +104,32 @@ test('admission (b): within tau of the reference best at any effort, on every pu
 test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail inherited from the reference (corrections 1, 2)', () => {
   const row = (surface, model, effort) => ({surface, model, effort});
   const opus = lawQuota(TABLE, row('claude-chat', 'claude-opus-5-5', 'max'), 'answer');
-  assert.equal(opus.basis, 'measured_os1');
+  assert.equal(opus.basis, 'measured_os1_anchored');
+  // Review of 447: every answer cell is priced on ONE common anchor (the
+  // shape's OS-1 context, the output the model gives at that effort, never
+  // less than at a lower one, times the cell's own measured premium), and a
+  // higher effort never prices below a lower effort of the same model.
+  const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const groups = new Map();
+  for (const [key, cell] of Object.entries(TABLE.quota)) {
+    const group = key.slice(0, key.lastIndexOf('@'));
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(cell);
+  }
+  for (const [group, cells] of groups) {
+    const sorted = cells.filter(c => c.answer).sort((a, b) => EFFORTS.indexOf(a.effort) - EFFORTS.indexOf(b.effort));
+    for (let i = 1; i < sorted.length; i++) assert.ok(sorted[i].answer.q >= sorted[i - 1].answer.q, group + ' ' + sorted[i].effort);
+  }
+  const astraUltra = lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'answer').q;
+  assert.ok(astraUltra >= lawQuota(TABLE, row('codex', 'gpt-6-astra', 'xhigh'), 'answer').q, 'astra@ultra never below astra@xhigh');
+  assert.ok(astraUltra > lawQuota(TABLE, row('claude-chat', 'claude-fable-5-1', 'max'), 'answer').q,
+    'on the common anchor astra@ultra answers dearer than fable@max (OS-1\'s ultra turns were 217-token checks)');
+  // OS-1's fable@low turns carried 496k input tokens: on the anchor fable@low is no dearer than fable@max.
+  assert.ok(lawQuota(TABLE, row('claude-chat', 'claude-fable-5-1', 'low'), 'answer').q <=
+    lawQuota(TABLE, row('claude-chat', 'claude-fable-5-1', 'max'), 'answer').q);
+  assert.equal(TABLE.quota_anchors['openai:answer'].source, 'os1');
+  // The agentic shape keeps build 447's measured median (its token columns omit sub-agent tokens).
+  assert.equal(lawQuota(TABLE, row('claude', 'claude-opus-5-5', 'max'), 'agentic').basis, 'measured_os1');
   // The answer shape is every <= 2-call turn of the cell, whatever its realized
   // output (review of 447): one answer shape, and the agentic shape.
   assert.deepEqual(Object.keys(TABLE.quota['claude-chat:claude-opus-5-5@max']).filter(k => !['pool', 'model', 'effort'].includes(k)).sort(),
@@ -143,11 +168,24 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   assert.ok(Math.abs(lawPoolPrice(at([w(89, 0.8 * 168)]), 'anthropic_shared', now).price - 0.8 / 0.11) < 1e-9); // scarce: 7.27
   assert.ok(Math.abs(lawPoolPrice(at([w(40, 0.1 * 168)]), 'anthropic_shared', now).price - 0.1 / 0.6) < 1e-9); // plentiful
   const binding = lawPoolPrice(at([w(10, 1, 300), w(95, 67)]), 'anthropic_shared', now);
-  assert.equal(binding.window_minutes, week); // the weekly binds (67/168 / 0.05) over the session (0.2 / 0.9)
+  assert.equal(binding.window_minutes, week); // the weekly window is the unit (67/168 / 0.05)
+  // Review of 447: only the unit (weekly) window is priced, never a session
+  // window's ttr/remaining on a weekly unit; a session window only blocks when exhausted.
+  const session = lawPoolPrice(at([w(90, 4, 300), w(20, 160)]), 'anthropic_shared', now);
+  assert.equal(session.window_minutes, week);
+  assert.ok(Math.abs(session.price - (160 / 168) / 0.8) < 1e-9);
+  assert.equal(lawPoolPrice(at([w(100, 4, 300), w(20, 160)]), 'anthropic_shared', now).price, Infinity);
   assert.equal(lawPoolPrice(at([w(100, 50)]), 'anthropic_shared', now).price, Infinity); // exhausted: cannot be drawn
-  // Stale, reset-crossed or missing data: the row's remaining share, the whole window ahead.
-  assert.deepEqual([lawPoolPrice(at([w(50, 84)], 700_000), 'anthropic_shared', now, 0.4).price,
-    lawPoolPrice(at([w(50, 84)], 700_000), 'anthropic_shared', now, 0.4).basis], [2.5, 'remaining_whole_window_ahead']);
+  // Stale (past valid_until): each window not yet reset at its last share left
+  // with the whole window ahead; a probe that failed never prices a pool last
+  // seen scarce at pace (review of 447): Claude at 5%, 11 minutes old: 20.
+  const stale = lawPoolPrice(at([w(95, 50)], 660_000), 'anthropic_shared', now, null);
+  assert.ok(Math.abs(stale.price - 20) < 1e-9);
+  assert.equal(stale.basis, 'stale_window_whole_window_ahead');
+  assert.ok(stale.price > lawPoolPrice(at([w(95, 50)]), 'anthropic_shared', now).price, 'never below its fresh price');
+  assert.equal(lawPoolPrice(at([w(100, 50)], 660_000), 'anthropic_shared', now).price, Infinity);
+  assert.equal(lawPoolPrice(at([w(50, 84)], 700_000), 'anthropic_shared', now, 0.4).price, 2);
+  // Every window reset since: the row's remaining share, the whole window ahead.
   assert.equal(lawPoolPrice(at([w(50, -1)]), 'anthropic_shared', now, 0.5).price, 2);
   assert.equal(lawPoolPrice({}, 'openai_codex', now, 0.6).price, 1 / 0.6);
   assert.deepEqual([lawPoolPrice({}, 'openai_codex', now).price, lawPoolPrice({}, 'openai_codex', now).basis], [1, 'no_quota_evidence_pace']);
@@ -363,26 +401,35 @@ test('a writer that does work is priced on the agentic shape; the same reading a
   assert.equal(routeOf(q.request, explain).law.shape, 'answer');
 });
 
-test('a pool reference is admissible on the tiers its pool publishes; current facts bind the Codex reference', () => {
+test('every pool reference is admissible for every family; current facts follow the derived exchange', () => {
   const q = question(7); // F5a: T1F, published by Codex only
   const routed = routeOf(q.request, lawOf(q));
   assert.equal(routed.law.family, 'F5a');
-  const fable = routed.law.candidates.find(([key]) => key.endsWith('claude-fable-5-1@max'));
-  assert.deepEqual([fable[1], fable[4]], ['x:T1F=unpublished', 'reference_tier_unpublished']);
+  // Review of 447 (DESIGN-8: 'The reference is always admissible'): Fable is
+  // admissible for F5a although Claude publishes no T1F, as all-reference admits it.
+  const fable = routed.law.candidates.find(([key]) => key === 'claude:claude-fable-5-1@max');
+  assert.deepEqual([fable[1], fable[4]], ['reference', null]);
   const astra = routed.law.candidates.find(([key]) => key === 'codex:gpt-6-astra@ultra');
   assert.deepEqual([astra[1], astra[4]], ['reference', null]);
-  assert.equal(routed.route, 'codex:gpt-6-astra@ultra');
+  assert.equal(routed.route, 'claude:claude-fable-5-1@max'); // the cheaper reference at the recorded exchange
+  // Price-monotone substitution: Claude scarce, Codex plentiful moves F5a to Codex.
+  const scarce = lawOf(q, c => ({...c, routing_law: {...c.routing_law, pools: {
+    anthropic_shared: {observed_at_ms: clockOf(c) - 1, valid_until_ms: clockOf(c) + 600_000,
+      windows: [{used_percent: 95, resets_at_ms: clockOf(c) + 0.4 * 604_800_000, window_minutes: 10080}]},
+    openai_codex: {observed_at_ms: clockOf(c) - 1, valid_until_ms: clockOf(c) + 600_000,
+      windows: [{used_percent: 38, resets_at_ms: clockOf(c) + 0.4 * 604_800_000, window_minutes: 10080}]}}}}));
+  assert.equal(routeOf(q.request, scarce).route, 'codex:gpt-6-astra@ultra');
   // A family no pool publishes a tier for (small talk on a later turn, F1):
-  // every pool reference stays admissible (DESIGN-8: the reference is always admissible).
+  // every pool reference stays admissible.
   const chat = lawOf(question(12), c => ({...c, candidates: c.candidates.filter(row => row.surface !== 'local')}));
   const talked = routeOf(question(12).request, chat);
   assert.equal(talked.law.family, 'F1');
   assert.ok(talked.law.candidates.filter(([, form]) => form === 'reference').length >= 2);
-  // With no Codex pool in the catalog, nothing is admissible: the reference fallback binds.
+  // With no Codex pool in the catalog, the Claude reference is the argmin (no fallback needed).
   const claudeOnly = lawOf(q, c => ({...c, candidates: c.candidates.filter(row => row.quota_pool !== 'openai_codex')}));
-  const fallback = routeOf(q.request, claudeOnly);
-  assert.match(fallback.route, /claude-fable-5-1@max$/);
-  assert.match(fallback.reason, /law_F5a_no_admissible_priced_row/);
+  const only = routeOf(q.request, claudeOnly);
+  assert.match(only.route, /claude-fable-5-1@max$/);
+  assert.match(only.reason, /law_argmin_reference/);
 });
 
 test('a row whose own pool reference cannot run escalates to the other pool\'s reference; a writer needs none', () => {
@@ -402,6 +449,63 @@ test('a row whose own pool reference cannot run escalates to the other pool\'s r
   const opus = lawOf(question(3), c => noFable({...c, candidates: c.candidates}));
   const ex = routeOf(question(3).request, opus).law.candidates.find(([key]) => key === 'claude-chat:claude-opus-5-5@max');
   assert.notEqual(ex[4], 'requires_runnable_reference', 'priced to the other pool\'s reference, not excluded');
+});
+
+test('review of 447: a class certificate whose tuple cannot run falls to the law; a write with no tool need is an answer', () => {
+  // Small talk under the certified chat class (owner-chat-fast pins
+  // codex gpt-6-luna@low): with the Codex pool exhausted the law decides (its
+  // local row), never the most expensive reference.
+  const q = question(12);
+  const certificate = {certificate_id: 'owner-chat-fast-20261027', provider: 'codex', model: 'gpt-6-luna', effort: 'low',
+    format_check: 'nonempty_text', measurement_sha256: 'a'.repeat(64)};
+  const certified = lawOf(q, c => ({...c, request_class: 'chat_explanatory', class_certificates: {chat_explanatory: certificate}}));
+  if (certified.candidates.some(row => row.model === 'gpt-6-luna' && row.effort === 'low')) {
+    assert.match(routeOf(q.request, certified).reason, /admitted_certified_class/); // the tuple runs: the certificate holds
+  }
+  const exhausted = {...certified, candidates: certified.candidates.filter(row => row.quota_pool !== 'openai_codex')};
+  const fell = routeOf(q.request, exhausted);
+  assert.equal(fell.route, 'local:qwen3.5:9b@none');
+  assert.match(fell.reason, /admitted_law_F1/);
+  // A light write reading with no tool need on a writer node (an inline text
+  // edit) has no workspace target: priced as an answer, not agentic turns.
+  const w = question(6);
+  const inline = lawOf(w, c => ({...c, routing_law: {...c.routing_law,
+    reading: {task_type: 'write', difficulty: 'light', needs_tools: 'none', domain: 'general'}}}));
+  const edited = routeOf(w.request, inline);
+  assert.equal(edited.scope, 'workspace_write');
+  assert.equal(edited.law.shape, 'answer');
+});
+
+test('review of 447: a request that names a file never takes the tool-less local row; every route names the rates', () => {
+  const q = question(11);
+  assert.equal(routeOf(q.request, lawOf(q)).route, 'local:qwen3.5:9b@none');
+  const named = {...q, request: 'README.md 설명해줘'};
+  const law = lawOf(named, c => ({...c, request_sha256: sha(named.request)}));
+  const routed = routeOf(named.request, law);
+  assert.notEqual(routed.candidate.surface, 'local');
+  assert.ok(!routed.law.candidates.some(([key]) => key.startsWith('local:')));
+  assert.ok(routed.law.candidates.filter(([, , , , excluded]) => excluded === null).every(([key]) => !key.startsWith('claude-chat:')),
+    'only rows that can read the file');
+  // A route the law did not decide (an owner's explicit route) still names each pool's derived rate.
+  const explicit = routeOf(question(16).request, lawOf(question(16)));
+  assert.match(explicit.reason, /law_rate_Px_[0-9.]+;law_rate_Cw_[0-9.]+|law_rate_Px_[0-9.]+.*law_rate_Cw_/);
+});
+
+test('review of 447: a cell within tau but below its reference adds its measured gap to the inherited p_fail', () => {
+  // gpt-6.1-sol@high on T1 scores 0.9 points below Astra's best: excess 0.009.
+  const evidence = lawEvidence(TABLE, ['T1'], 'openai_codex', 'gpt-6.1-sol', 'high', 'F12');
+  assert.equal(evidence.form, 'b');
+  assert.ok(Math.abs(evidence.excess - 0.009) < 1e-9);
+  assert.equal(lawEvidence(TABLE, ['T1'], 'anthropic_shared', 'claude-opus-5-5', 'max', 'F12').excess, 0); // above the reference
+  assert.equal(TABLE.admission.T1F.openai_codex.cells['gpt-6.1-sol@max'].excess_fail, 0.0071);
+  // A provisional (cost-sized) audit pass admits nothing; a parity audit does.
+  const provisional = {...TABLE, audits: {cells: {'claude-haiku-4-5-20251001@none|F4': {verdict: 'pass', id: 'audit-aaaaaaaaaaaa',
+    n: 3, discordant: 0, n_parity: 2558, admits: false}}}};
+  const p = lawEvidence(provisional, 'F4', 'anthropic_shared', 'claude-haiku-4-5-20251001', 'none');
+  assert.deepEqual([p.form, p.provisional_audit], ['none', 'audit-aaaaaaaaaaaa']);
+  const parity = {...TABLE, audits: {cells: {'claude-haiku-4-5-20251001@none|F4': {verdict: 'pass', id: 'audit-bbbbbbbbbbbb',
+    n: 2558, discordant: 0, n_parity: 2558, admits: true}}}};
+  assert.equal(lawEvidence(parity, 'F4', 'anthropic_shared', 'claude-haiku-4-5-20251001', 'none').form, 'c');
 });
 
 test('local first: a light tool-free reading binds the local row on the first turn only; a writer never', () => {

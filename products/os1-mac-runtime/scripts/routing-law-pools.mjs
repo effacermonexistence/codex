@@ -11,9 +11,11 @@
  *  - Codex: the `token_count` events of the rollouts under ~/.codex/sessions
  *    (the last `--days` day directories): payload.rate_limits only (limit id,
  *    plan type, window length, used percent, reset time). Each account-week is
- *    a (limit id, plan, reset time within 120 s) cluster; the ACTIVE account is
- *    the one with the latest observation (OS-1 dispatches through the active
- *    account). No account id, credit balance or text is read into the output.
+ *    a (limit id, plan, reset time within 120 s) cluster. The pool is OS-1's
+ *    own dispatch account: backend-health.json `codex.quota` (review of 447),
+ *    its window length from the rollout week with the same reset; only when
+ *    the host recorded none, the latest rollout's account (a proxy). No
+ *    account id, credit balance or text is read into the output.
  *  - Claude: OS-1's shared Claude quota observation (Application
  *    Support/OS-1/claude-quota.json, `snapshot.windows`; else
  *    backend-health.json `claude.quota.windows`): the general windows (no
@@ -106,7 +108,29 @@ export function codexPool(sessionsDir, days, now) {
     weeks: weeks.map(w => ({limit_id: w.limit_id, plan: w.plan, resets_at: new Date(w.last.windows[0].resets_at_ms).toISOString(),
       window_minutes: w.last.windows[0].window_minutes, last_used_percent: w.last.windows[0].used_percent,
       last_observed_at: new Date(w.last.at).toISOString(), open_at_now: w.last.windows[0].resets_at_ms > now,
-      active: w === active}))};
+      latest_rollout: w === active}))};
+}
+
+/** OS-1's own Codex dispatch account (review of 447: the latest rollout is
+ * whichever account the owner used last, a proxy): backend-health.json
+ * `codex.quota` (the host's native account rate limits of the account it
+ * dispatches through). Its window length is the provider's, read from the
+ * rollout account-week with the same reset (within 120 s); a window whose
+ * length no rollout shows is dropped. Usage only; the account id is never
+ * copied. */
+export function codexDispatchPool(healthFile, weeks) {
+  let quota = null;
+  try { quota = JSON.parse(readFileSync(healthFile, 'utf8'))?.codex?.quota ?? null; } catch { return null; }
+  const observed = Date.parse(quota?.observedAt ?? '');
+  if (!Array.isArray(quota?.windows) || !Number.isFinite(observed)) return null;
+  const windows = quota.windows.filter(w => Number.isFinite(w.usedPercent) && w.resetsAt && !w.model && !w.surface).map(w => {
+    const reset = Date.parse(w.resetsAt);
+    const match = weeks.find(week => Math.abs(Date.parse(week.resets_at) - reset) <= 120_000);
+    return match && Number.isFinite(reset) ? {used_percent: Math.min(100, Math.max(0, w.usedPercent)), resets_at_ms: reset,
+      window_minutes: match.window_minutes} : null;
+  }).filter(Boolean);
+  if (!windows.length) return null;
+  return {observed_at_ms: observed, valid_until_ms: Math.min(observed + RETAINED_MS, ...windows.map(w => w.resets_at_ms)), windows};
 }
 
 export function claudePool(quotaFile, healthFile) {
@@ -132,11 +156,12 @@ export async function readPools({codexSessions = join(homedir(), '.codex/session
   backendHealth = join(homedir(), 'Library/Application Support/OS-1/backend-health.json'), days = 3, now = null} = {}) {
   const core = await import(pathToFileURL(join(fileURLToPath(new URL('..', import.meta.url)), 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
   const codex = codexPool(codexSessions, days, now ?? Date.now());
+  const dispatch = codexDispatchPool(backendHealth, codex.weeks ?? []);
   const claude = claudePool(claudeQuota, backendHealth);
   // The clock is read after the sources (a probe may write a fresher
   // observation while the rollouts are scanned): never before an observation.
   now ??= Date.now();
-  const pools = {anthropic_shared: claude.pool, openai_codex: codex.pool};
+  const pools = {anthropic_shared: claude.pool, openai_codex: dispatch ?? codex.pool};
   const price = pool => {
     const rate = core.lawPoolPrice({routing_law: {pools}}, pool, now, null);
     return {...rate, price: Number.isFinite(rate.price) ? rate.price : 'exhausted',
@@ -146,8 +171,9 @@ export async function readPools({codexSessions = join(homedir(), '.codex/session
     formula: 'price(pool) = max over open windows w of ttr_w / remaining_w; remaining_w = 1 - used_w/100; ' +
       'ttr_w = (resets_at_w - now) / window_length_w (Core lawPoolPrice)',
     pools, derived: {anthropic_shared: price('anthropic_shared'), openai_codex: price('openai_codex')},
-    sources: {codex: {dir: codexSessions, days, observations: codex.observations, active_account: codex.active ?? null,
-      account_weeks: codex.weeks}, claude: {file: claude.source, buckets: claude.buckets ?? [], scoped_skipped: claude.scoped_skipped ?? []}}};
+    sources: {codex: {dispatch_account: dispatch ? 'backend-health.json codex.quota (the account OS-1 dispatches through)' :
+      'none recorded: the latest rollout account (a proxy)', dir: codexSessions, days, observations: codex.observations,
+      latest_rollout_account: codex.active ?? null, account_weeks: codex.weeks}, claude: {file: claude.source, buckets: claude.buckets ?? [], scoped_skipped: claude.scoped_skipped ?? []}}};
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

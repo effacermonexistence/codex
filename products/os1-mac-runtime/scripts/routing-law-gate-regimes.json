@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "design": "DESIGN-8 447 release gate, review of 447: judged across headroom states, never on one snapshot",
+  "note": "Gate test states, not law inputs: each pool one weekly window at used_percent with ttr of the week still to run; Core lawPoolPrice derives every rate (ttr / remaining). 'pools' = the real rate-limit file (scripts/routing-law-pools.mjs); 'open_codex_account' = its open Codex account-week with the most allowance left.",
+  "regimes": [
+    {"name": "on_pace", "anthropic_shared": {"used_percent": 50, "ttr": 0.5}, "openai_codex": {"used_percent": 50, "ttr": 0.5}},
+    {"name": "both_plentiful", "anthropic_shared": {"used_percent": 20, "ttr": 0.2}, "openai_codex": {"used_percent": 20, "ttr": 0.2}},
+    {"name": "claude_scarce_codex_open", "anthropic_shared": {"used_percent": 95, "ttr": 0.4}, "openai_codex": {"used_percent": 38, "ttr": 0.4}},
+    {"name": "codex_scarce_claude_open", "anthropic_shared": {"used_percent": 38, "ttr": 0.4}, "openai_codex": {"used_percent": 95, "ttr": 0.4}},
+    {"name": "both_scarce", "anthropic_shared": {"used_percent": 95, "ttr": 0.4}, "openai_codex": {"used_percent": 95, "ttr": 0.4}},
+    {"name": "real", "anthropic_shared": {"from": "pools"}, "openai_codex": {"from": "pools"}},
+    {"name": "real_claude_open_codex_account", "anthropic_shared": {"from": "pools"}, "openai_codex": {"from": "open_codex_account"}}
+  ]
+}

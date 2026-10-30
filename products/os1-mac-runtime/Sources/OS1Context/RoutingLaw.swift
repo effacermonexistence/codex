@@ -26,7 +26,7 @@ import Foundation
 /// catalog then carries no `routing_law` and Core keeps build 446's routes.
 public enum RoutingLaw {
     /// SHA-256 of `Resources/routing-law-table.json` (the compiled table).
-    public static let tableSHA256 = "f19c996c46e42ed59c34261017fa5561355dda24ff4ad8c754b3d2fec461e53f"
+    public static let tableSHA256 = "8d0b855d029221ef0b6f94d51921ee87e788770f8895b27dc3167420e539744b"
 
     public enum Policy: String, Codable, Sendable, CaseIterable {
         case law446 = "law_446", law447 = "law_447"
@@ -65,11 +65,15 @@ public enum RoutingLaw {
     }
 
     /// Lead correction 2 (DESIGN-8, 2026-10-29): each quota pool's rate-limit
-    /// state for Core's derived exchange (lawPoolPrice: the scarcest open
+    /// state for Core's derived exchange (lawPoolPrice: the pool's weekly
     /// window's share still to run over its share left). From the host's own
-    /// quota observations of the dispatching account only while retainable
-    /// (same account, no reset crossed, at most ten minutes old), valid until
-    /// ten minutes after observation or the first reset. Only the general
+    /// quota observations of the dispatching account, valid (fresh) until ten
+    /// minutes after observation or the first reset. Review of 447: the last
+    /// observation of that account travels even after it is no longer
+    /// retainable (a failed probe), with its windows that have not reset yet:
+    /// past valid_until Core prices each such window at its last share left with
+    /// the whole window ahead (never pace 1 for a pool last seen scarce), and a
+    /// window that has reset since is dropped (replenished). Only the general
     /// windows (no model or surface scope) whose length is known: the
     /// provider's reported length (Codex), else the provider's named window
     /// (Claude `session` = 5 hours, `weekly_*` = 7 days). A pool with no such
@@ -79,8 +83,10 @@ public enum RoutingLaw {
                                   accountIDs: [String: String], now: Date) -> [String: RCCRuntimeContract.RoutingLaw.PoolState]? {
         var out: [String: RCCRuntimeContract.RoutingLaw.PoolState] = [:]
         for (pool, provider, snapshot) in [("openai_codex", "codex", codex), ("anthropic_shared", "claude", claude)] {
-            guard let snapshot, let account = accountIDs[provider],
-                  snapshot.isRetainable(accountID: account, now: now) else { continue }
+            guard let snapshot, let account = accountIDs[provider], !account.isEmpty, snapshot.accountID == account,
+                  snapshot.observedAt <= now, !snapshot.windows.isEmpty, snapshot.windows.count <= 64,
+                  snapshot.windows.allSatisfy({ $0.usedPercent.isFinite && (0...100).contains($0.usedPercent) })
+            else { continue }
             let windows = snapshot.windows.compactMap { window -> RCCRuntimeContract.RoutingLaw.PoolWindow? in
                 guard window.model == nil, window.surface == nil, let reset = window.resetsAt, reset > now,
                       let minutes = window.windowMinutes ?? claudeWindowMinutes(window.bucket, source: snapshot.source) else { return nil }

@@ -14,9 +14,10 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {routingLawTable, lawEvidence} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import {weeklyTraffic, planAudits, writeChecklists, runAudit, gradeAudit, spendThisWeek, asrHints, matchingHints, answerRequest}
+import {weeklyTraffic, planAudits, writeChecklists, runAudit, gradeAudit, spendThisWeek, spendInWindows, asrHints, matchingHints,
+  answerRequest, passPrior, pathPrice, stratifiedSample, spendWindow, measureSensitivity}
   from '../routing-law-audit.mjs';
-import {atHeadroom, gateOf, lawCatalog, clockOf, routeOf} from '../routing-law-replay.mjs';
+import {atHeadroom, gateOf, breakEven, lawCatalog, clockOf, routeOf} from '../routing-law-replay.mjs';
 import {compileAudits} from '../routing-law-table.mjs';
 import * as fake from './routing-law-audit-fake-dispatcher.mjs';
 
@@ -30,21 +31,29 @@ const NOW = Date.parse('2026-10-30T05:00:00Z');
 const TRAFFIC = {requests: 44, explicit_excluded: 0, window_days: 7};
 const plan = () => planAudits({catalogs: CORPUS, intents: INTENTS, traffic: TRAFFIC, now: NOW});
 
-test('evidence (c): a passed paired audit admits a cell with a gap of evidence, never one with evidence against, never under P', () => {
+test('evidence (c): a passed PARITY audit admits a cell with a gap of evidence, never one with evidence against, never under P', () => {
+  const pass = (id, n, admits) => ({verdict: 'pass', id, n, discordant: 0, n_parity: 2, admits});
   const audited = {...TABLE, audits: {cells: {
-    'claude-sonnet-5-5@xhigh|F13': {verdict: 'pass', id: 'audit-0123456789ab', n: 2, discordant: 0},
-    'gpt-6.1-sol@max|F4': {verdict: 'pass', id: 'audit-ba9876543210', n: 2, discordant: 0},
-    'claude-sonnet-5-5@max|F13': {verdict: 'inconclusive', id: 'audit-aaaaaaaaaaaa', n: 2, discordant: 0}}}};
+    'claude-sonnet-5-5@xhigh|F13': pass('audit-0123456789ab', 2, true),
+    'gpt-6.1-sol@max|F4': pass('audit-ba9876543210', 2, true),
+    'claude-sonnet-5-5@max|F13': {verdict: 'inconclusive', id: 'audit-aaaaaaaaaaaa', n: 2, discordant: 0, admits: false},
+    'claude-sonnet-5-5@high|F13': pass('audit-cccccccccccc', 2, false)}}};
   assert.deepEqual([lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form,
     lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form], ['none', 'c']);
   assert.equal(lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').audit, 'audit-0123456789ab');
   assert.equal(lawEvidence(audited, 'F4', 'openai_codex', 'gpt-6.1-sol', 'max').form, 'none'); // T1F fails tau
   assert.equal(lawEvidence(audited, ['W2'], 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh', null).form, 'none'); // P passes no family
   assert.equal(lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'max').form, 'none'); // inconclusive admits nothing
-  // The compiler carries only well-formed verdicts of the rule.
+  assert.equal(lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'high').form, 'none'); // provisional admits nothing
+  // The compiler carries only well-formed verdicts of the rule, and admits
+  // only a parity audit: n_parity informative questions sampled at random.
   const rule = 'r', digest = 'a'.repeat(64);
   assert.deepEqual(compileAudits({schema: 1, rule, cells: {'m@high|F4': {verdict: 'pass', answers_sha256: digest, n: 3, discordant: 0}}}).cells,
-    {'m@high|F4': {verdict: 'pass', id: 'audit-aaaaaaaaaaaa', n: 3, discordant: 0}});
+    {'m@high|F4': {verdict: 'pass', id: 'audit-aaaaaaaaaaaa', n: 3, discordant: 0, n_parity: null, admits: false}});
+  assert.equal(compileAudits({schema: 1, rule, cells: {'m@high|F4': {verdict: 'pass', answers_sha256: digest, n: 3, discordant: 0,
+    n_parity: 3, informative: 3, sampling: 'stratified_random'}}}).cells['m@high|F4'].admits, true);
+  assert.equal(compileAudits({schema: 1, rule, cells: {'m@high|F4': {verdict: 'pass', answers_sha256: digest, n: 3, discordant: 0,
+    n_parity: 3, informative: 3, sampling: 'corpus_order'}}}).cells['m@high|F4'].admits, false);
   for (const bad of [{'m@high|F4': {verdict: 'maybe', answers_sha256: digest, n: 3}}, {'m@high': {verdict: 'pass', answers_sha256: digest, n: 3}},
     {'m@high|F4': {verdict: 'pass', answers_sha256: 'x', n: 3}}, {'m@high|F4': {verdict: 'pass', answers_sha256: digest, n: 0}}])
     assert.throws(() => compileAudits({schema: 1, rule, cells: bad}), /bad audit verdict/);
@@ -60,7 +69,7 @@ test('weekly traffic: distinct Auto tasks first dispatched in the trailing 7 day
   assert.deepEqual([traffic.requests, traffic.explicit_excluded], [2, 2]); // a, b; c first ran 8 days ago
 });
 
-test('value of information: only gap cells, never P; Core\'s E[Q] re-derived exactly; saving > cost within the weekly cap', () => {
+test('value of information: gap cells only, never P; parity n, P(pass), the price path and deferral; nothing without a grader', () => {
   const result = plan();
   assert.deepEqual(result.derivation_check.mismatches, []);
   assert.ok(result.derivation_check.admissible_rows_repriced > 0);
@@ -68,19 +77,35 @@ test('value of information: only gap cells, never P; Core\'s E[Q] re-derived exa
   for (const audit of result.audits) {
     assert.notEqual(audit.family, 'P');
     assert.ok(audit.evidence_now.every(form => form.startsWith('x:') && !/=fail(?:,|$)/.test(form)), audit.id);
-    if (audit.decision !== 'scheduled') continue;
-    assert.ok(audit.saving_7d_priced > audit.cost.priced && audit.voi > 0, audit.id);
-    assert.equal(audit.questions.length, audit.n);
-    const b = audit.breakeven_excess_fail;
-    assert.equal(audit.n, b >= 1 ? 1 : Math.ceil(Math.log(0.1) / Math.log(1 - b)), audit.id);
+    // n is the PARITY bound at the family's tightest percentage tau (no grader
+    // sensitivity measured: s = 1, a lower bound), never a cost break-even.
+    if (audit.tau_excess_rate) assert.equal(audit.n, Math.ceil(Math.log(0.1) / Math.log(1 - audit.tau_excess_rate)), audit.id);
+    assert.ok(audit.p_pass > 0 && audit.p_pass < 1);
+    assert.equal(audit.voi, Math.max(audit.voi_now, audit.voi_after_reset ?? -Infinity));
+    if (TABLE.families[audit.family]?.tools === 'agent' && audit.rows_saving > 0) assert.equal(audit.decision, 'not_auditable_tool_surface');
   }
-  const scheduled = result.audits.filter(a => a.decision === 'scheduled');
-  assert.ok(scheduled.reduce((s, a) => s + a.cost.Cw, 0) <= 1 + 1e-9 && scheduled.reduce((s, a) => s + a.cost.Px, 0) <= 1 + 1e-9);
-  // A week already spent to the cap schedules nothing that draws on that pool.
-  const spent = planAudits({catalogs: CORPUS, intents: INTENTS, traffic: TRAFFIC, now: NOW, spent: {anthropic_shared: 1, openai_codex: 1}});
-  assert.equal(spent.audits.filter(a => a.decision === 'scheduled').length, 0);
+  // Until the grader's sensitivity is measured nothing is scheduled.
+  assert.equal(result.scheduled.length, 0);
+  assert.ok(Object.keys(result.totals.by_decision).every(d => !d.startsWith('scheduled')));
+  // P(pass): Laplace over the cell's own matched tiers.
+  assert.equal(passPrior('x:T1=unscored,T1F=unpublished'), 1 / 2);
+  assert.equal(passPrior('x:T1=pass,T1F=unscored,T2P=short'), 3 / 4);
+  // The price path: spot until the reset, then 1, time-weighted.
+  const week = 7 * 86_400_000;
+  assert.ok(Math.abs(pathPrice({rate: 8, basis: 'observed_window', ttr: 0.25}, week) - (0.25 * 8 + 0.75)) < 1e-12);
+  assert.equal(pathPrice({rate: 1.6667, basis: 'remaining_whole_window_ahead', ttr: 1}, week), 1.6667); // no reset known
+  // The sample: stratified by difficulty, reproducible, never corpus order.
+  const rows = Array.from({length: 40}, (_, i) => ({index: i, difficulty: i % 4 === 0 ? 'deep' : 'standard'}));
+  const a = stratifiedSample(rows, 8, 'cell|week'), b = stratifiedSample(rows, 8, 'cell|week');
+  assert.deepEqual(a, b);
+  assert.equal(a.filter(i => i % 4 === 0).length, 2); // 10 of 40 rows are deep: 2 of 8
+  assert.notDeepEqual(a, [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(stratifiedSample(rows, 41, 'x'), null);
+  // The audit window is the pool's reset window, not the ISO week.
+  assert.match(spendWindow('anthropic_shared', {basis: 'observed_window', ttr: 0.5}, NOW), /^anthropic_shared@reset:2026-11-0/);
+  assert.match(spendWindow('openai_codex', {basis: 'remaining_whole_window_ahead', ttr: 1}, NOW), /@iso-week:2026-10-26$/);
   // No traffic: no saving can pay for any audit.
-  const idle = planAudits({catalogs: CORPUS, intents: INTENTS, traffic: {...TRAFFIC, requests: 0}, now: NOW});
+  const idle = planAudits({catalogs: CORPUS, intents: INTENTS, traffic: {...TRAFFIC, requests: 0}, now: NOW, sensitivity: {s: 1}});
   assert.equal(idle.scheduled.length, 0);
 });
 
@@ -90,10 +115,18 @@ async function tempDir(t) {
   return dir;
 }
 const stubChecklist = async (model, system, user) => ({items: ['states the main point', 'answers the question asked', 'is correct']});
+// The harness is tested apart from the economics (no fixture audit pays at
+// parity): one plan audit marked scheduled with two of its offered questions,
+// each run against its own audit reference.
 async function frozen(t) {
-  const result = plan();
+  const base = plan();
+  const source = base.audits.find(a => Object.keys(a.offered_rows).length >= 2) ??
+    (() => { throw new Error('the fixture plan has no audit offered on two questions'); })();
+  const indices = Object.keys(source.offered_rows).map(Number).slice(0, 2);
+  const audit = {...source, decision: 'scheduled', n: 2, questions: indices, grader_sensitivity: 1,
+    question_references: Object.fromEntries(indices.map(index => [index, source.offered_rows[index]]))};
+  const result = {...base, audits: [audit], scheduled: [audit.id]};
   const planBytes = Buffer.from(JSON.stringify(result));
-  const audit = result.audits.find(a => a.decision === 'scheduled') ?? (() => { throw new Error('the fixture plan schedules nothing'); })();
   const checklists = await writeChecklists({plan: result, planBytes, catalogs: CORPUS, ask: stubChecklist});
   return {result, planBytes, audit, checklists, dir: await tempDir(t)};
 }
@@ -128,17 +161,31 @@ test('run: refuses a paid dispatcher without confirmation, unfrozen or foreign c
   await assert.rejects(runAudit({...base, dispatcher: fake, checklistFile: {...checklists,
     checklists: {...checklists.checklists, [audit.questions[0]]: {...checklists.checklists[audit.questions[0]], items: ['x', 'y', 'z']}}}}),
   /changed after they were frozen/);
-  const week = '2026-10-26';
-  await writeFile(spend, JSON.stringify({week, pool: audit.pool, units: 1, audit: 'earlier'}) + '\n');
+  // The cap is per pool and per that pool's reset window (review of 447).
+  const window = result.spend_windows[audit.pool];
+  await writeFile(spend, JSON.stringify({window, pool: audit.pool, units: 1, audit: 'earlier'}) + '\n');
   await assert.rejects(runAudit({...base, dispatcher: fake}), /weekly audit cap/);
-  await writeFile(spend, '');
+  // Another window's spend (an earlier reset) does not count.
+  await writeFile(spend, JSON.stringify({window: audit.pool + '@reset:2026-10-01T00', pool: audit.pool, units: 1, audit: 'old'}) + '\n');
   const answers = await runAudit({...base, dispatcher: fake});
   assert.equal(answers.answers.length, audit.n);
   assert.equal(answers.n_required, audit.n);
   assert.equal(answers.paid, false);
+  assert.equal(answers.sampling, 'stratified_random');
   assert.ok(answers.answers.every(a => a.cell.output_sha256 === sha(a.cell.output) && a.reference.output_sha256 === sha(a.reference.output)));
-  assert.equal(answers.answers[0].reference.route, audit.audit_references[0]);
-  assert.deepEqual(spendThisWeek(spend, week), {[audit.pool]: 0});
+  // Each question runs against its own audit reference.
+  for (const a of answers.answers) assert.equal(a.reference.route, audit.question_references[a.index]);
+  assert.deepEqual(spendInWindows(spend, result.spend_windows), {[audit.pool]: 0});
+  // A dispatcher that reports no draw is charged its planned draw, and the cap
+  // is re-checked after every dispatch: a costly answer stops the audit.
+  await writeFile(spend, '');
+  const silent = {paid: false, dispatch: async args => ({output: 'x ' + args.model})};
+  await runAudit({...base, dispatcher: silent});
+  const charged = (await readFile(spend, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(charged.length === 2 * audit.n && charged.every(r => r.charged === 'planned_no_reported_draw' && r.units > 0));
+  await writeFile(spend, '');
+  const costly = {paid: false, dispatch: async args => ({output: 'x', draw: {pool: args.surface === 'codex' ? 'openai_codex' : 'anthropic_shared', units: 0.6}})};
+  await assert.rejects(runAudit({...base, dispatcher: costly}), /cap (exceeded|would be exceeded)/);
 });
 
 test('grade: the local model checks every item; a question counts only when the reference passes (no vacuous pass)', async t => {
@@ -177,14 +224,44 @@ test('replay headroom: an exhausted pool\'s rows leave every arm; the pools\' wi
   assert.ok(!atHeadroom(q.catalog, {kind: 'remaining', remaining: {openai_codex: 0}}).candidates.some(row => row.quota_pool === 'openai_codex'));
 });
 
-test('the release gate: per pool (no exchange) and priced at the derived exchange, against 446 and all-reference; Astra starts', () => {
+test('the release gate: priced only at a DERIVED exchange, on both bases, against 446 and all-reference; Astra starts', () => {
   const arm = (Cw, Px, priced) => Object.fromEntries(['start', 'draw', 'law_model'].map(b => [b, {Cw, Px, priced}]));
-  const moved = gateOf({law447: arm(5, 1, 10), build446: arm(1, 50, 85), all_reference: arm(6, 3, 15)}, {law447: 2, build446: 3});
+  const observed = {anthropic_shared: {price: 2, basis: 'observed_window'}, openai_codex: {price: 0.5, basis: 'observed_window'}};
+  const moved = gateOf({law447: arm(5, 1, 10.5), build446: arm(1, 50, 27), all_reference: arm(6, 3, 13.5)}, {law447: 2, build446: 3}, observed);
   assert.deepEqual([moved.draw.build446.per_pool, moved.draw.build446.priced], ['FAIL', 'PASS']); // more Cw: no Pareto
   assert.deepEqual([moved.draw.all_reference.per_pool, moved.draw.all_reference.priced], ['PASS', 'PASS']);
-  assert.deepEqual(moved.release, {priced_draw: 'PASS', per_pool_draw: 'FAIL'});
-  const astra = gateOf({law447: arm(1, 1, 2), build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)}, {law447: 4, build446: 3});
-  assert.deepEqual(astra.release, {priced_draw: 'FAIL', per_pool_draw: 'FAIL'});
-  const equal = gateOf({law447: arm(1, 0, 2), build446: arm(1, 0, 2), all_reference: arm(3, 0, 6)}, {law447: 0, build446: 0});
+  assert.equal(moved.release, 'PASS');
+  assert.equal(moved.exchange_Cw_per_Px, 4);
+  // The break-even exchange with the routes held: 4 Cw more for 49 Px less: cheaper while x < 12.25.
+  assert.deepEqual(moved.draw.build446.break_even_Cw_per_Px, {x: 12.25, cheaper_when: 'below'});
+  // Review of 447: the recorded 0.6 / 0.6 fallback (1 / 0.6 both) is the 1:1 sum, not an exchange.
+  const fallback = {anthropic_shared: {price: 1 / 0.6, basis: 'remaining_whole_window_ahead'},
+    openai_codex: {price: 1 / 0.6, basis: 'remaining_whole_window_ahead'}};
+  const recorded = gateOf({law447: arm(5, 1, 10), build446: arm(1, 50, 85), all_reference: arm(6, 3, 15)}, {law447: 2, build446: 3}, fallback);
+  assert.deepEqual([recorded.draw.build446.priced, recorded.release], ['NO_DERIVED_EXCHANGE', 'NO_DERIVED_EXCHANGE']);
+  assert.equal(gateOf({law447: arm(5, 1, 10), build446: arm(1, 50, 85), all_reference: arm(6, 3, 15)}, {law447: 2, build446: 3}).release,
+    'NO_DERIVED_EXCHANGE');
+  const astra = gateOf({law447: arm(1, 1, 2), build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)}, {law447: 4, build446: 3}, observed);
+  assert.equal(astra.release, 'FAIL');
+  // Both bases: cheaper on the draw but not on the law's own E[Q] is a FAIL.
+  const bases = {law447: {start: {Cw: 1, Px: 1, priced: 2}, draw: {Cw: 1, Px: 1, priced: 2}, law_model: {Cw: 5, Px: 5, priced: 10}},
+    build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)};
+  assert.equal(gateOf(bases, {law447: 0, build446: 0}, observed).release, 'FAIL');
+  const equal = gateOf({law447: arm(1, 0, 2), build446: arm(1, 0, 2), all_reference: arm(3, 0, 6)}, {law447: 0, build446: 0}, observed);
   assert.equal(equal.draw.build446.per_pool, 'FAIL', 'equal in both pools is not cheaper');
+  assert.deepEqual(breakEven({Cw: 1, Px: 0}, {Cw: 3, Px: 0}), {x: 0, cheaper_when: 'always'});
+});
+
+test('grader sensitivity: planted failures per checklist item, graded locally', async () => {
+  const checklistFile = {sha256: 'c'.repeat(64), checklists: {1: {index: 1, request: 'q', items: ['a', 'b', 'c']}}};
+  let call = 0;
+  const ask = async (model, system) => {
+    if (system.startsWith('You write one answer')) return {answer: 'planted ' + call};
+    call++;
+    // The grader misses the planted failure of item 2 only.
+    return {items: [1, 2, 3].map(n => ({n, pass: call === 2 ? n !== 1 : n !== call}))};
+  };
+  const result = await measureSensitivity({checklistFile, ask});
+  assert.deepEqual([result.planted, result.detected], [3, 2]);
+  assert.ok(Math.abs(result.s - 2 / 3) < 1e-12);
 });

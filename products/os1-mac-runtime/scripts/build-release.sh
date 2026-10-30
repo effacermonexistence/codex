@@ -160,6 +160,18 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law
 # the REVAS paired-audit harness (frozen local checklists, local grading, the
 # weekly cap, paid runs refused without explicit confirmation); zero quota.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law-audit.test.mjs"
+# DESIGN-8's 447 release gate (review of 447): zero quota, the committed owner
+# fixture at every fixed headroom regime of scripts/routing-law-gate-regimes.json;
+# per regime the law must cost less than 446 and than all-reference priced at
+# that regime's DERIVED exchange on both bases (draw and law_model), and start
+# no more requests on Astra than 446. Fails the build on a gate FAIL. The
+# 370-request corpus sweep (catalogs with the artifacts, plus the real
+# rate-limit state from scripts/routing-law-pools.mjs) is applied by the lead:
+#   node scripts/routing-law-replay.mjs --catalogs <sw446c.json> --routes446 <r446c.json> \
+#     --intents <intents.json> --extras <owner-extras.json> --regimes scripts/routing-law-gate-regimes.json \
+#     --pools <pools.json> --out <sweep.json> --fail-on-gate yes
+node "$script_dir/routing-law-replay.mjs" --owner-gate "$script_dir/fixtures/routing-law-owner-questions.json" \
+  --regimes "$script_dir/routing-law-gate-regimes.json"
 # K14: an unclassified offered model is isolated (informational exclusion, no
 # hold) and every model-backed delivery names reference_review_required.
 node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-unclassified-model.test.mjs"

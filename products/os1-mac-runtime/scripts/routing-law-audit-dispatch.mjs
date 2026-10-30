@@ -26,7 +26,7 @@ import {fileURLToPath} from 'node:url';
 export const paid = true;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRICES = JSON.parse(readFileSync(join(ROOT, 'Resources/model-price-table.json'), 'utf8')).models;
-const QUOTA = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-quota-20261029.json'), 'utf8')).conversions;
+const QUOTA = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-quota-20261030.json'), 'utf8')).conversions;
 const codexConversion = model => model === 'gpt-6-astra' ? QUOTA.openai_codex['gpt-6-astra'] :
   /sol/.test(model) ? QUOTA.openai_codex.sol_family : QUOTA.openai_codex.luna_terra;
 

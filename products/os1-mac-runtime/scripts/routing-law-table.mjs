@@ -33,6 +33,7 @@
  *    from the host's rate-limit observations (lead correction 2); the table
  *    carries only its declared formula.
  *
+ *   node scripts/routing-law-table.mjs snapshot-quota --quota <quota dir> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs snapshot --tiers <tiers.json> --quota <quota dir> --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs compile [--out <new file>]
  *   node scripts/routing-law-table.mjs embed
@@ -53,7 +54,7 @@ import {fileURLToPath} from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
-  quota: 'scripts/routing-law-quota-20261029.json',
+  quota: 'scripts/routing-law-quota-20261030.json',
   ledger: 'scripts/routing-law-ledger-20261029.json',
   audits: 'scripts/routing-law-audits-20261029.json',
   policy: 'scripts/routing-law-policy.json',
@@ -140,7 +141,19 @@ export function snapshotEvidence(tiersBytes) {
   return out;
 }
 
-export function snapshotQuota(quotaDir) {
+export function snapshotQuota(quotaDir, pricesBytes = readFileSync(join(ROOT, INPUTS.prices))) {
+  const prices = JSON.parse(pricesBytes.toString('utf8')).models;
+  // Schema 2 (review of 447): each turn's measured pool % per list-price
+  // dollar of its own counted tokens (its premium: conversion, reasoning or
+  // thinking the token columns omit, cache writes), so a cell's measured price
+  // can be restated on the common anchor (compileQuota) without a ratio of
+  // medians (a skewed cell's medians do not add).
+  const premiumOf = (model, row) => {
+    const price = prices[model];
+    if (!price) return null;
+    const dollars = (row.uncached * price.input + row.cached * price.cached_input + (row.out ?? 0) * price.output) / 1e6;
+    return dollars > 0 ? row.pct / dollars : null;
+  };
   const claudeBytes = readFileSync(join(quotaDir, 'claude_turns.csv'));
   const codexBytes = readFileSync(join(quotaDir, 'codex_turns.csv'));
   const calibrationBytes = readFileSync(join(quotaDir, 'calibration.json'));
@@ -160,6 +173,7 @@ export function snapshotQuota(quotaDir) {
     const shape = shapeOf(calls), effort = r.effort === '' ? 'none' : r.effort;
     const row = {pct, out: number(r.output), cost: number(r.cost_total),
       uncached: (number(r.input) ?? 0) + (number(r.cache_write) ?? 0), cached: number(r.cache_read) ?? 0};
+    row.premium = premiumOf(r.model, row);
     add(groups, JSON.stringify([source, 'anthropic', r.model, effort, shape]), row);
     add(contexts, JSON.stringify([source, 'anthropic', shape]), row);
   }
@@ -170,13 +184,19 @@ export function snapshotQuota(quotaDir) {
     if (!source || calls === null || pct === null) continue;
     const shape = shapeOf(calls);
     const row = {pct, out: number(r.output), cost: number(r.cost), uncached: number(r.uncached) ?? 0, cached: number(r.cached) ?? 0};
+    row.premium = premiumOf(r.model, row);
     add(groups, JSON.stringify([source, 'openai', r.model, r.effort, shape]), row);
     add(contexts, JSON.stringify([source, 'openai', shape]), row);
   }
   const cells = [...groups].map(([key, rows]) => {
     const [source, provider, model, effort, shape] = JSON.parse(key);
     return {source, provider, model, effort, shape, n: rows.length, pct_median: round(median(rows.map(r => r.pct))),
-      output_median: median(rows.map(r => r.out)), cost_median: round(median(rows.map(r => r.cost)))};
+      output_median: median(rows.map(r => r.out)), cost_median: round(median(rows.map(r => r.cost))),
+      // Schema 2 (review of 447): the cell's own context and its turns' median
+      // premium (% per list dollar), so its measured price can be restated on
+      // the common anchor (compileQuota).
+      uncached_median: median(rows.map(r => r.uncached)), cached_median: median(rows.map(r => r.cached)),
+      premium_median: round(median(rows.map(r => r.premium).filter(v => v !== null)), 6)};
   }).filter(cell => cell.shape !== 'mid').sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
   const context = [...contexts].map(([key, rows]) => {
     const [source, provider, shape] = JSON.parse(key);
@@ -184,8 +204,9 @@ export function snapshotQuota(quotaDir) {
       cached_median: median(rows.map(r => r.cached))};
   }).filter(cell => cell.shape !== 'mid').sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
   const codex = calibration.codex_conversion_used.pro_weekly;
-  return {schema: 1,
-    sources: {claude_turns: sha(claudeBytes), codex_turns: sha(codexBytes), calibration: sha(calibrationBytes)},
+  return {schema: 2,
+    sources: {claude_turns: sha(claudeBytes), codex_turns: sha(codexBytes), calibration: sha(calibrationBytes),
+      prices: sha(pricesBytes)},
     conversions: {anthropic_shared: {all: calibration.claude_conversion_used.weekly_all_pct_per_usd.median},
       openai_codex: {'gpt-6-astra': codex['gpt-6-astra'][0], sol_family: codex.sol_family[0], luna_terra: codex.luna_terra[0]}},
     cells, context};
@@ -289,8 +310,14 @@ export function compileAdmission(evidence, tau, policy) {
         }
         if (!rows.length) continue;
         const coverage = [rows.length, Math.min(2, benchmarks.length)];
+        // The measured gap below the reference (review of 447, correction 1):
+        // the largest deficit in percentage points on a percentage benchmark
+        // (accuracy or error rate), as an excess failure rate; 0 at or above
+        // the reference. Elo and other units carry none.
+        const pct = rows.filter((row, i) => ['pct', 'pct_error'].includes(benchmarks.find(b => b.alias === row[0])?.unit_kind));
+        const excess = pct.length ? round(Math.max(0, ...pct.map(row => row[3])) / 100, 6) : 0;
         cells[cell.model + '@' + cell.effort] = {pass: rows.every(row => row[4]) && coverage[0] >= coverage[1],
-          coverage, benchmarks: rows};
+          coverage, benchmarks: rows, excess_fail: excess};
       }
       out[id][poolName] = {reference, published: benchmarks.map(b => b.alias), cells};
     }
@@ -323,90 +350,165 @@ function effortMultiplier(evidence, policy, pool, provider, model, from, to) {
   else for (let i = b; i < a; i++) product /= stepMultiplier(evidence, policy, pool, provider, model, order[i], order[i + 1], false);
   return product;
 }
-/** Real quota per (surface, model, effort, shape) in pool units. An OS-1
- * dispatch-shaped measured median with n >= measured_min_n is the price; an
- * owner-surface median with n >= measured_min_n is next. Else the token
- * model: the shape's measured OS-1 context at the model's list prices plus its
- * output (the cell's measured output when n >= output_min_n, else the model's
- * nearest measured effort scaled by the effort multiplier, else the shape's
- * pooled output scaled from 'high'), times the measured pool % per API
- * dollar, times the CALIBRATION of that provider and shape: the median ratio
- * of measured price to token-model price over the measured OS-1 cells of the
- * same provider and shape (else of the provider's other shapes, else 1). An
- * uncalibrated token model would price every unmeasured cell below the
- * measured ones (it omits the context tax the measured turns carry). */
+/** Real quota per (surface, model, effort, shape) in pool units, every cell
+ * priced on ONE common anchor (review of 447: a per-cell median is the price of
+ * that cell's own request mix, not of this request at that effort; OS-1's
+ * astra@ultra turns were 217-token routing checks, the owner's astra@xhigh
+ * turns carried 229k cached tokens, OS-1's fable@low turns 496k input):
+ *  - the anchor request is the shape's measured OS-1 context (uncached and
+ *    cached tokens; else the owner's) with the output the model produces at
+ *    that effort, never less than at a lower effort (out_mono: the largest
+ *    measured output, n >= output_min_n, of the model at this or a lower
+ *    effort; OS-1's cell first, else the owner's);
+ *  - a cell measured with n >= measured_min_n (OS-1 first, else the owner's)
+ *    keeps its own measured premium: q = T(anchor) x premium, where T is the
+ *    list-price dollar cost of the anchor's tokens and the premium is the
+ *    median over the cell's turns of measured % per list dollar of the turn's
+ *    own counted tokens (it carries the pool conversion and what the token
+ *    columns miss: reasoning or thinking, cache writes); the effort
+ *    multiplier is never applied to a measured output (O4 raises a derived
+ *    cell only);
+ *  - any other cell: its output (measured, else the nearest measured effort's
+ *    scaled by the effort multiplier: the larger of the first-party per-task
+ *    ratio and the vendor's in-app label, O4, else the shape's pooled output
+ *    scaled from 'high'), never below out_mono, at the anchor context, times
+ *    the pool conversion, times the CALIBRATION: the median premium over
+ *    conversion of the provider's measured OS-1 cells of that shape (else its
+ *    other shapes, else 1);
+ *  - finally a higher effort never prices below a lower effort of the same
+ *    surface, model and shape (the effort multiplier is >= 1; only ever raised).
+ * No answer cell is priced on its own request mix. The agentic shape keeps
+ * build 447's pricing (ANCHORED below). */
 export function compileQuota(quota, evidence, policy, prices, profiles) {
+  if (quota.schema !== 2) throw new Error('quota snapshot schema 2 (per-cell context) required');
   const out = {};
   const providers = {anthropic: 'anthropic_shared', openai: 'openai_codex'};
   const surfacesOf = {anthropic: ['claude', 'claude-chat'], openai: ['codex']};
   const SHAPES = ['answer', 'agentic'];
-  function tokenModel(provider, pool, model, effort, shape) {
-    const price = prices.models[model];
-    const ctx = quota.context.find(c => c.source === 'os1' && c.provider === provider && c.shape === shape) ??
-      quota.context.find(c => c.source === 'owner' && c.provider === provider && c.shape === shape);
-    const outputs = quota.cells.filter(c => c.provider === provider && c.model === model && c.shape === shape &&
-      c.n >= policy.output_min_n && Number.isFinite(c.output_median));
-    let output, outBasis;
-    const own = outputs.find(c => c.effort === effort && c.source === 'os1') ?? outputs.find(c => c.effort === effort);
-    if (own) { output = own.output_median; outBasis = 'output_measured'; }
-    else {
-      const anchors = outputs.filter(c => EFFORTS.includes(c.effort))
-        .sort((a, b) => Math.abs(EFFORTS.indexOf(a.effort) - EFFORTS.indexOf(effort)) -
-          Math.abs(EFFORTS.indexOf(b.effort) - EFFORTS.indexOf(effort)) || (a.source === 'os1' ? -1 : 1));
-      if (anchors.length) {
-        output = anchors[0].output_median * effortMultiplier(evidence, policy, pool, provider, model, anchors[0].effort, effort);
-        outBasis = 'output_scaled_from_' + anchors[0].effort;
-      } else {
-        const pooled = median(quota.cells.filter(c => c.provider === provider && c.shape === shape && c.source === 'os1')
-          .map(c => c.output_median));
-        output = (pooled ?? 0) * effortMultiplier(evidence, policy, pool, provider, model, 'high', effort);
-        outBasis = 'output_pooled_scaled_from_high';
-      }
-    }
-    const usd = ((ctx?.uncached_median ?? 0) * price.input + (ctx?.cached_median ?? 0) * price.cached_input +
-      output * price.output) / 1e6;
-    return {q: usd * conversionOf(quota, pool, model), outBasis};
+  // The shapes priced on the common anchor. The agentic shape is not (review
+  // of 447): its turns' token columns omit sub-agent tokens (the owner's
+  // opus@xhigh agentic turns measure 0.73 % per list dollar against 0.04 to
+  // 0.07 for every answer cell), so no anchor restates them; it keeps build
+  // 447's measured median per cell, else the calibrated token model.
+  const ANCHORED = new Set(['answer']);
+  const dollars = (price, uncached, cached, output) =>
+    ((uncached ?? 0) * price.input + (cached ?? 0) * price.cached_input + (output ?? 0) * price.output) / 1e6;
+  const anchorOf = (provider, shape) => quota.context.find(c => c.source === 'os1' && c.provider === provider && c.shape === shape) ??
+    quota.context.find(c => c.source === 'owner' && c.provider === provider && c.shape === shape) ?? null;
+  // The model's measured output per effort (OS-1's cell first, else the owner's).
+  const measuredOutput = (provider, model, effort, shape) => {
+    const of = source => quota.cells.find(c => c.source === source && c.provider === provider && c.model === model &&
+      c.effort === effort && c.shape === shape && c.n >= policy.output_min_n && Number.isFinite(c.output_median));
+    return (of('os1') ?? of('owner'))?.output_median ?? null;
+  };
+  // out_mono: never less output at a higher effort of the same model and shape.
+  const outMono = (provider, model, effort, shape) => {
+    const values = EFFORTS.slice(0, EFFORTS.indexOf(effort) + 1).map(e => measuredOutput(provider, model, e, shape))
+      .filter(Number.isFinite);
+    return values.length ? Math.max(...values) : null;
+  };
+  // A measured cell's premium: the median over its turns of the measured %
+  // per list-price dollar of the turn's own counted tokens (the snapshot's).
+  const premiumOf = cell => Number.isFinite(cell.premium_median) && cell.premium_median > 0 ? cell.premium_median : null;
+  function derivedOutput(provider, pool, model, effort, shape) {
+    const own = measuredOutput(provider, model, effort, shape);
+    if (own !== null) return {output: own, basis: 'output_measured'};
+    const anchors = EFFORTS.map(e => ({effort: e, output: measuredOutput(provider, model, e, shape)}))
+      .filter(a => a.output !== null)
+      .sort((a, b) => Math.abs(EFFORTS.indexOf(a.effort) - EFFORTS.indexOf(effort)) -
+        Math.abs(EFFORTS.indexOf(b.effort) - EFFORTS.indexOf(effort)));
+    if (anchors.length)
+      return {output: anchors[0].output * effortMultiplier(evidence, policy, pool, provider, model, anchors[0].effort, effort),
+        basis: 'output_scaled_from_' + anchors[0].effort};
+    const pooled = median(quota.cells.filter(c => c.provider === provider && c.shape === shape && c.source === 'os1')
+      .map(c => c.output_median));
+    return {output: (pooled ?? 0) * effortMultiplier(evidence, policy, pool, provider, model, 'high', effort),
+      basis: 'output_pooled_scaled_from_high'};
   }
-  // The calibration per (provider, shape): measured OS-1 cells only.
+  // The calibration per (provider, shape) over the measured OS-1 cells: an
+  // answer cell's own premium over conversion (the anchored shape); an agentic
+  // cell's measured % over the token model of the anchor context and its own
+  // output (build 447's, unchanged: see ANCHORED).
   const calibration = {};
   for (const [provider, pool] of Object.entries(providers)) {
     calibration[provider] = {};
     for (const shape of SHAPES) {
       const ratios = quota.cells.filter(c => c.source === 'os1' && c.provider === provider && c.shape === shape &&
         c.n >= policy.measured_min_n && prices.models[c.model] && c.pct_median > 0)
-        .map(c => c.pct_median / tokenModel(provider, pool, c.model, c.effort, shape).q).filter(Number.isFinite);
+        .map(c => ANCHORED.has(shape) ? premiumOf(c) / conversionOf(quota, pool, c.model) :
+          c.pct_median / (dollars(prices.models[c.model], anchorOf(provider, shape)?.uncached_median,
+            anchorOf(provider, shape)?.cached_median, c.output_median) * conversionOf(quota, pool, c.model)))
+        .filter(Number.isFinite);
       calibration[provider][shape] = ratios.length ? {factor: round(median(ratios), 4), n_cells: ratios.length, from: shape} : null;
     }
     const any = median(Object.values(calibration[provider]).filter(Boolean).map(c => c.factor));
     for (const shape of SHAPES) calibration[provider][shape] ??= any === null ? {factor: 1, n_cells: 0, from: 'none'} :
       {factor: round(any, 4), n_cells: 0, from: 'provider_other_shapes'};
   }
+  const anchors = {};
   for (const [provider, pool] of Object.entries(providers)) {
-    for (const tuple of MODEL_EFFORTS(profiles, provider === 'anthropic' ? 'claude' : 'codex')) {
+    const tuples = MODEL_EFFORTS(profiles, provider === 'anthropic' ? 'claude' : 'codex');
+    for (const tuple of tuples) {
       const [model, effort] = tuple.split('@');
-      if (!prices.models[model]) continue; // a signed tuple of a model the price table no longer lists: unpriced, never cheapest
+      const price = prices.models[model];
+      if (!price) continue; // a signed tuple of a model the price table no longer lists: unpriced, never cheapest
       for (const shape of SHAPES) {
+        const anchor = anchorOf(provider, shape);
+        anchors[provider + ':' + shape] = anchor ? {uncached: anchor.uncached_median, cached: anchor.cached_median,
+          source: anchor.source, n: anchor.n} : null;
+        const conversion = conversionOf(quota, pool, model);
+        const mono = outMono(provider, model, effort, shape);
         const measured = source => quota.cells.find(c => c.source === source && c.provider === provider && c.model === model &&
           c.effort === effort && c.shape === shape && c.n >= policy.measured_min_n);
         const hit = measured('os1') ?? measured('owner');
-        let q, basis, n = null;
-        if (hit) { q = hit.pct_median; basis = 'measured_' + hit.source; n = hit.n; }
-        else {
-          const model_ = tokenModel(provider, pool, model, effort, shape);
-          q = model_.q * calibration[provider][shape].factor;
-          basis = 'token_model:' + model_.outBasis + ':calibrated_' + calibration[provider][shape].from;
+        const premium = hit ? premiumOf(hit) : null;
+        let q, basis, n = null, output;
+        if (hit && !ANCHORED.has(shape)) {
+          output = hit.output_median ?? 0;
+          q = hit.pct_median; basis = 'measured_' + hit.source; n = hit.n;
+        } else if (hit && premium !== null) {
+          output = Math.max(hit.output_median ?? 0, mono ?? 0);
+          q = dollars(price, anchor?.uncached_median, anchor?.cached_median, output) * premium;
+          basis = 'measured_' + hit.source + '_anchored'; n = hit.n;
+        } else {
+          const derived = derivedOutput(provider, pool, model, effort, shape);
+          output = ANCHORED.has(shape) ? Math.max(derived.output, mono ?? 0) : derived.output;
+          q = dollars(price, anchor?.uncached_median, anchor?.cached_median, output) * conversion * calibration[provider][shape].factor;
+          basis = 'token_model:' + derived.basis + ':calibrated_' + calibration[provider][shape].from;
         }
         for (const surface of surfacesOf[provider]) {
           // OS-1's Claude answers (claude-chat and the Claude Code surface)
           // are measured as one OS-1 dispatch population.
           const key = surface + ':' + model + '@' + effort;
           out[key] ??= {pool, model, effort};
-          out[key][shape] = {q: round(q, 6), basis, n};
+          out[key][shape] = {q, basis, n, output: Math.round(output)};
         }
       }
     }
   }
-  return {cells: out, calibration};
+  // A higher effort never prices below a lower effort of the same model.
+  const byModel = new Map();
+  for (const [key, cell] of Object.entries(out)) {
+    const group = key.slice(0, key.lastIndexOf('@'));
+    if (!byModel.has(group)) byModel.set(group, []);
+    byModel.get(group).push(cell);
+  }
+  for (const cells of byModel.values()) {
+    cells.sort((a, b) => EFFORTS.indexOf(a.effort) - EFFORTS.indexOf(b.effort));
+    for (const shape of SHAPES.filter(shape => ANCHORED.has(shape))) {
+      let floor = null;
+      for (const cell of cells) {
+        if (!cell[shape]) continue;
+        if (floor !== null && cell[shape].q < floor.q) {
+          cell[shape].basis += ':raised_to_' + floor.effort;
+          cell[shape].q = floor.q;
+        }
+        floor = {q: cell[shape].q, effort: cell.effort};
+      }
+    }
+  }
+  for (const cell of Object.values(out)) for (const shape of SHAPES) if (cell[shape]) cell[shape].q = round(cell[shape].q, 6);
+  return {cells: out, calibration, anchors};
 }
 
 /** p_fail evidence per (model@effort, law family), DESIGN-8 step 3, pooled
@@ -473,7 +575,13 @@ export function compileFamilies(evidence, policy) {
 
 /** Evidence form (c): the committed paired-audit verdicts, keyed
  * model@effort|law family (pooled over surfaces, as p_fail). Only a verdict of
- * the pre-registered rule with its answers' digest is carried. */
+ * the pre-registered rule with its answers' digest is carried. A PASS admits
+ * the cell (`admits`) only when it is a parity audit (review of 447): at least
+ * n_parity informative questions (zero discordant pairs in n_parity bound the
+ * cell's excess failure rate below the family's tier tau at the plan's
+ * confidence, with the measured grader sensitivity folded in), sampled at
+ * random across the family's traffic. A cost-sized pass (fewer questions, or
+ * corpus-order questions) is provisional: carried, never admitting. */
 export function compileAudits(audits) {
   if (audits.schema !== 1 || audits.cells === null || typeof audits.cells !== 'object') throw new Error('audits snapshot schema 1 required');
   const out = {};
@@ -481,9 +589,13 @@ export function compileAudits(audits) {
     if (!/^[a-z0-9][a-z0-9._-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(key) || !['pass', 'fail', 'inconclusive'].includes(cell?.verdict) ||
         !/^[a-f0-9]{64}$/.test(cell?.answers_sha256 ?? '') || !Number.isSafeInteger(cell?.n) || cell.n < 1)
       throw new Error('bad audit verdict ' + key);
-    out[key] = {verdict: cell.verdict, id: 'audit-' + cell.answers_sha256.slice(0, 12), n: cell.n, discordant: cell.discordant ?? null};
+    const parity = Number.isSafeInteger(cell.n_parity) && cell.n_parity >= 1 && cell.sampling === 'stratified_random' &&
+      Number.isSafeInteger(cell.informative) && cell.informative >= cell.n_parity;
+    out[key] = {verdict: cell.verdict, id: 'audit-' + cell.answers_sha256.slice(0, 12), n: cell.n, discordant: cell.discordant ?? null,
+      n_parity: cell.n_parity ?? null, admits: cell.verdict === 'pass' && parity};
   }
-  return {basis: 'REVAS paired audits (scripts/routing-law-audit.mjs grade): ' + audits.rule, cells: out};
+  return {basis: 'REVAS paired audits (scripts/routing-law-audit.mjs grade): ' + audits.rule +
+    '; admits only a parity audit (n_parity informative questions sampled at random), a cost-sized pass is provisional', cells: out};
 }
 
 export function compileTable(bytes) {
@@ -500,7 +612,7 @@ export function compileTable(bytes) {
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {
       const compiled = compileQuota(quota, evidence, policy, prices, profiles);
-      return {quota: compiled.cells, quota_calibration: compiled.calibration};
+      return {quota: compiled.cells, quota_calibration: compiled.calibration, quota_anchors: compiled.anchors};
     })(),
     p_fail: compilePFail(ledger, policy)};
 }
@@ -532,6 +644,13 @@ function writeNew(path, text) {
 }
 export function main(argv = process.argv.slice(2)) {
   const {command, options} = argumentsOf(argv);
+  if (command === 'snapshot-quota') {
+    // Schema 2 of the quota input only (review of 447: per-cell context), from
+    // the same price-performance quota directory.
+    for (const key of ['quota', 'date', 'out-dir']) if (!options[key]) throw new Error('snapshot-quota needs --' + key);
+    writeNew(join(options['out-dir'], `routing-law-quota-${options.date}.json`), canonical(snapshotQuota(options.quota)));
+    return 0;
+  }
   if (command === 'snapshot') {
     for (const key of ['tiers', 'quota', 'ledger', 'date', 'out-dir']) if (!options[key]) throw new Error('snapshot needs --' + key);
     const dir = options['out-dir'];
@@ -571,7 +690,7 @@ export function main(argv = process.argv.slice(2)) {
     process.stdout.write(`routing law table sha256 ${digest}\n`);
     return checks.every(([, ok]) => ok) ? 0 : 1;
   }
-  throw new Error('usage: snapshot|compile|embed|check');
+  throw new Error('usage: snapshot|snapshot-quota|compile|embed|check');
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try { process.exitCode = main(); } catch (error) { process.stderr.write(String(error.message ?? error) + '\n'); process.exitCode = 64; }
