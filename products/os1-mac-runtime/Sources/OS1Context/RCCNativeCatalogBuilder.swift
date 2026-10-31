@@ -842,8 +842,11 @@ public enum RCCNativeCatalogBuilder {
             (input.requestProfile?.answersLocally == true || lawMayAnswerLocally(input))
     }
     /// Build 447 (DESIGN-8): the law may choose the local row only for a
-    /// tool-free light reading (its local-first families); Core decides, by
-    /// the node's own scope (a read-only node only). The owner's grant never
+    /// tool-free light reading; Core decides, by the node's own scope (a
+    /// read-only node only). Build 448: offering the row is a capability floor,
+    /// never an admission: Core admits it only by a deterministic verifier or
+    /// a passed paired audit, else starts it only as a priced REVAS verified
+    /// start (its answer checked by an admissible row). The owner's grant never
     /// decides it (review of 447: a write grant removed the local row and
     /// sent a read-only node to the reference): a permission sets what a row
     /// may do, never which row.

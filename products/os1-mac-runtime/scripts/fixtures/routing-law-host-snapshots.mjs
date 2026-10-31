@@ -80,11 +80,30 @@ export async function runFlow(q, catalog, execute) {
   }
 }
 
+// Live q2 on 447: the local draft's factual error (a tuple IS indexed).
+const Q2_DRAFT = '리스트는 변형이 가능하지만 튜플은 한 번 생성되면 수정할 수 없습니다. 또한 리스트는 배열처럼 인덱스를 통해 ' +
+  '접근하는 반면, 튜플은 주로 고정된 데이터 집합을 표현하는 데 사용됩니다.';
+const Q2_REPAIRED = '리스트와 튜플 모두 인덱스와 슬라이싱으로 접근합니다. 차이는 변경 가능성입니다.';
 export const FLOWS = {
   async ask_back() {
     const q = question(8);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q), () => { throw new Error('never dispatched'); });
     return {flow: 'ask_back', dispatches: tickets.length, snapshot};
+  },
+  // Owner question 11 (the live q2 request) as a REVAS verified start of the local row.
+  async verified_pass() {
+    const q = question(11);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), (ticket, n) =>
+      completed(ticket, {output: n === 1 ? 'a correct local answer' : 'REVAS: PASS'}));
+    return {flow: 'verified_pass', dispatches: tickets.length, snapshot,
+      routes: tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`)};
+  },
+  async verified_repair() {
+    const q = question(11);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), (ticket, n) =>
+      completed(ticket, {output: n === 1 ? Q2_DRAFT : n === 2 ? 'REVAS: FAIL\n1. a tuple is indexed like a list' : Q2_REPAIRED}));
+    return {flow: 'verified_repair', dispatches: tickets.length, snapshot,
+      routes: tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`)};
   },
 };
 

@@ -248,9 +248,28 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
   out.q = q;
   const unit = POOL_UNIT[c.quota_pool];
   if (unit !== 'local') { out.start[unit] += q; out.draw[unit] += q; out.law_model[unit] += q; }
+  // Build 448 (DESIGN-8 step 5): a REVAS verified start of the local row
+  // always draws its check at the judge (start, draw and law model alike) and,
+  // with p_fail, the repair at the same row (DESIGN-6 O5: the cached prefix).
+  const check = result.ladder?.verifier;
+  if (check?.kind === 'revas_check') {
+    const judge = catalog.candidates.find(row => row.id === check.candidate_id) ?? null;
+    const qv = judge ? lawQuota(table, judge, 'verify')?.q ?? null : null;
+    const qr = judge ? lawQuota(table, judge, 'repair')?.q ?? null : null;
+    if (qv === null || qr === null) return {...out, unpriced: true};
+    const judgeUnit = POOL_UNIT[judge.quota_pool];
+    const p = pFailOf(result, catalog, table, family, reading);
+    out.p_fail = p; out.check = {judge: judge.id, q_verify: qv, q_repair: qr};
+    for (const basis of ['start', 'draw', 'law_model']) out[basis][judgeUnit] += qv;
+    out.draw[judgeUnit] += p * qr; out.law_model[judgeUnit] += p * qr;
+    return out;
+  }
   const repair = repairOf(result, catalog, table);
   if (!repair) return out;
-  const qr = lawQuota(table, repair, shape)?.q ?? 0;
+  // Build 448 (DESIGN-6 O5, as Core): a reference's own repair (correction 1's
+  // term) is a repair-mode escalation at itself, priced on the repair shape.
+  const own = repair.id === c.id && (result.kind === 'reference' || c.model === table.references[c.quota_pool]);
+  const qr = (own && shape === 'answer' ? lawQuota(table, repair, 'repair')?.q : null) ?? lawQuota(table, repair, shape)?.q ?? 0;
   const repairUnit = POOL_UNIT[repair.quota_pool];
   const p = pFailOf(result, catalog, table, family, reading);
   out.p_fail = p;
@@ -437,7 +456,8 @@ function ownerRows(catalogRows, intents, extras) {
 export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}) {
   const recorded446 = new Map(routes446.map(row => [row.index, row.route]));
   return {schema: 1, table_sha256: ROUTING_LAW_TABLE_SHA256,
-    note: 'DESIGN-7 §5 owner fixed questions; expected_route is the routing law output (golden) at the recorded headroom ' +
+    note: 'DESIGN-7 §5 owner fixed questions; expected_route (and, for a REVAS verified start of the local row, ' +
+      'expected_check: its judge) is the routing law output (golden) at the recorded headroom ' +
       '(no derived exchange: both pools 1 / 0.6), never hand-set; flags mark an Astra start and a route that differs from ' +
       'build 446\'s (review of 447); design7_route is DESIGN-7 for comparison only; the per-regime routes are the sweep\'s',
     questions: ownerRows(catalogRows, intents, extras).map(({n, design7, source, origin, row, pending}) => {
@@ -451,7 +471,9 @@ export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}) 
         ...(routed.route.includes('gpt-6-astra') && !route446.includes('gpt-6-astra') ? ['astra_where_446_was_not'] : []),
         ...(routed.route !== route446 ? ['differs_from_446'] : [])];
       return {n, request: row.request, origin, receipt: row.receipt, intent: row.intent, catalog: row.catalog,
-        expected_route: routed.route, expected_kind: routed.kind ?? null, flags,
+        expected_route: routed.route, expected_kind: routed.kind ?? null,
+        // Build 448: a REVAS verified start of the local row names its check.
+        expected_check: routed.ladder?.verifier?.key ?? null, flags,
         expected_family: routed.kind === 'calculator' ? 'F0' : routed.law?.family ?? lawFamily(law.routing_law.reading, routingLawTable()),
         route_446: route446,
         recorded_446: typeof source === 'number' ? recorded446.get(source) ?? null : null, design7_route: design7};

@@ -18,7 +18,9 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS} from '../routing-law-replay.mjs';
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
+  lawJudgedOutcome, lawLearnedPFail, revasVerdict, revasCheckInstruction, revasRepairInstruction, revasPrefix,
   lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
+  lawLocalEvidence, openRoutingLedger,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger}
   from '../routing-law-table.mjs';
@@ -131,9 +133,10 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   // The agentic shape keeps build 447's measured median (its token columns omit sub-agent tokens).
   assert.equal(lawQuota(TABLE, row('claude', 'claude-opus-5-5', 'max'), 'agentic').basis, 'measured_os1');
   // The answer shape is every <= 2-call turn of the cell, whatever its realized
-  // output (review of 447): one answer shape, and the agentic shape.
+  // output (review of 447): one answer shape, and the agentic shape; build 448
+  // adds the REVAS check and repair of a local draft on the answer anchor.
   assert.deepEqual(Object.keys(TABLE.quota['claude-chat:claude-opus-5-5@max']).filter(k => !['pool', 'model', 'effort'].includes(k)).sort(),
-    ['agentic', 'answer']);
+    ['agentic', 'answer', 'repair', 'verify']);
   assert.ok(lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'agentic').q >
     lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'answer').q);
   assert.deepEqual(lawQuota(TABLE, row('local', 'qwen3.5:9b', 'none'), 'answer'), {q: 0, basis: 'local'});
@@ -148,7 +151,7 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   assert.equal(lawPFail(TABLE, sol, 'F5a', astra), 0.5); // inherited: the reference's own (the prior)
   // Correction 1: a row with evidence has its reference's p_fail until its own
   // judged runs move it, at the prior's weight (2).
-  const keyed = {...TABLE, p_fail: compilePFail({schema: 2, excluded: {}, cells: [
+  const keyed = {...TABLE, p_fail: compilePFail({schema: 3, through_ms: null, excluded: {}, cells: [
     {model: 'gpt-6-astra', effort: 'ultra', family: 'F5a', runs: 18, failures: 1},
     {model: 'gpt-6.1-sol', effort: 'medium', family: 'F5a', runs: 8, failures: 1}]}, {laplace: {failures: 1, runs: 2}})};
   assert.equal(lawPFail(keyed, astra, 'F5a'), 0.1); // the reference: (1 + 1) / (18 + 2)
@@ -196,16 +199,50 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
 
 test('p_fail evidence: only judged runs of a law family count; undispatched and unjudged attempts are no evidence', () => {
   const line = record => JSON.stringify({schema: 1, route_kind: 'law', escalated: false, model: 'm', effort: 'high',
-    verifier_outcome: 'not_registered', ...record});
+    verifier_outcome: 'not_registered', settled_at_ms: 100, ...record});
   const ledger = snapshotLedger(Buffer.from([
     line({law: {family: 'F4'}, check_outcome: 'screen_pass'}), line({law: {family: 'F4'}, check_outcome: 'screen_fail',
       escalation_outcome: 'escalated'}), line({law: {family: 'F4'}, attempt_state: 'completed'}),
     line({law: {family: 'F4'}, attempt_state: 'verified_not_dispatched'}), line({route_kind: 'tier', check_outcome: 'pass'}),
-    line({law: {family: 'F2'}, attempt_state: 'ladder_not_returned'}), line({escalated: true, law: {family: 'F4'}, check_outcome: 'pass'})
+    line({law: {family: 'F2'}, attempt_state: 'ladder_not_returned'}), line({escalated: true, law: {family: 'F4'}, check_outcome: 'pass',
+      settled_at_ms: 300})
   ].join('\n')));
-  assert.deepEqual(ledger.excluded, {undispatched: 1, unjudged: 1, no_law_family: 1});
+  assert.deepEqual(ledger.excluded, {undispatched: 1, unjudged: 1, no_law_family: 1, local_screen_only: 0});
   assert.deepEqual(ledger.cells, [{model: 'm', effort: 'high', family: 'F2', runs: 1, failures: 1},
     {model: 'm', effort: 'high', family: 'F4', runs: 2, failures: 1}]);
+  // Build 448: the snapshot ends at its latest settled record; Core learns after it.
+  assert.equal(ledger.schema, 3);
+  assert.equal(ledger.through_ms, 300);
+});
+
+test('build 448 p_fail rule (Core lawJudgedOutcome): a local draft counts only by its REVAS check, the check record judges the draft', () => {
+  const base = {schema: 1, route_kind: 'law', escalated: false, verifier_outcome: 'not_registered', law: {family: 'F2'}, settled_at_ms: 10};
+  const local = {...base, surface: 'local', model: 'qwen3.5:9b', effort: 'none'};
+  // Live q2 on 447: a factual error passed the structural screen: no verdict.
+  assert.deepEqual(lawJudgedOutcome({...local, check_outcome: 'screen_pass'}), {excluded: 'local_screen_only'});
+  assert.deepEqual(lawJudgedOutcome({...local, attempt_state: 'revas_check_pending'}), {excluded: 'unjudged'});
+  // An empty local draft is a structural failure of the local row.
+  assert.equal(lawJudgedOutcome({...local, attempt_state: 'ladder_not_returned', check_outcome: 'screen_fail'}).failed, true);
+  // The check record (the judge's row) is the draft's judged outcome, never the judge's.
+  const check = {...base, surface: 'claude-chat', model: 'claude-opus-5-5', effort: 'max', attempt_state: 'revas_check_returned',
+    revas: {role: 'check', family: 'F2', draft_model: 'qwen3.5:9b', draft_effort: 'none'}};
+  assert.deepEqual(lawJudgedOutcome({...check, check_outcome: 'revas_fail'}),
+    {key: 'qwen3.5:9b@none|F2', model: 'qwen3.5:9b', effort: 'none', family: 'F2', failed: true});
+  assert.equal(lawJudgedOutcome({...check, check_outcome: 'revas_pass'}).failed, false);
+  assert.deepEqual(lawJudgedOutcome({...check, check_outcome: 'revas_no_verdict'}), {excluded: 'unjudged'});
+  // The repair is an escalated attempt: never a descent.
+  assert.equal(lawJudgedOutcome({...check, route_kind: 'reference', escalated: true, revas: {role: 'repair'}}), null);
+  // A cloud descent keeps its screen verdict (its verifier is the screen).
+  assert.equal(lawJudgedOutcome({...base, surface: 'claude-chat', model: 'claude-opus-5-5', effort: 'medium',
+    check_outcome: 'screen_pass'}).failed, false);
+  // Live learning adds only records after the table's snapshot.
+  const learned = lawLearnedPFail([JSON.stringify({...check, check_outcome: 'revas_fail', settled_at_ms: 5}),
+    JSON.stringify({...check, check_outcome: 'revas_pass', settled_at_ms: 50}),
+    JSON.stringify({...check, check_outcome: 'revas_pass', settled_at_ms: 60})].join('\n'), 10);
+  assert.deepEqual(learned.get('qwen3.5:9b@none|F2'), {runs: 2, failures: 0});
+  const localRow = {surface: 'local', model: 'qwen3.5:9b', effort: 'none'};
+  assert.equal(lawPFail(TABLE, localRow, 'F2'), 0.5);
+  assert.equal(lawPFail(TABLE, localRow, 'F2', null, learned), 1 / 4);
 });
 
 test('step 1: the family is the reading through the table\'s first-match rules', () => {
@@ -276,7 +313,9 @@ test('every owner fixed question routes to the law\'s recorded output, with a re
     assert.equal(receipt.eq, Math.min(...admissible.map(([, , , eq]) => eq)), `#${q.n}`);
     for (const [key, form, quota, eq, excluded] of receipt.candidates) {
       assert.match(key, /^[a-z-]+:[a-z0-9.:-]+@[a-z]+$/);
-      assert.match(form, /^(?:reference|owner_order|b:.+|c:audit-[a-f0-9]{12}|x:.*)$/);
+      // Build 448: owner_order is gone; a local row starts only as a REVAS
+      // verified start ('v:' its judge) or is admitted by an audit ('c:').
+      assert.match(form, /^(?:reference|b:.+|c:audit-[a-f0-9]{12}|v:(?:none|[a-z-]+:[a-z0-9.:-]+@[a-z]+)|x:.*)$/);
       assert.ok(excluded === null ? Number.isFinite(eq) && eq >= quota * receipt.rates[key.startsWith('codex') ? 'openai_codex' :
         'anthropic_shared']?.rate - 1e-9 || key.startsWith('local') : eq === null, `#${q.n} ${key}`);
     }
@@ -366,7 +405,15 @@ test('correction 1: an admissible row pays only the reference\'s own failure rat
   const [, , qAstra, eqAstra] = routed.law.candidates.find(([key]) => key === 'codex:gpt-6-astra@ultra');
   const [, , qFable] = routed.law.candidates.find(([key]) => key === 'claude-chat:claude-fable-5-1@max');
   const rate = routed.law.rates.anthropic_shared.rate;
-  assert.ok(Math.abs(eqAstra - qAstra * routed.law.rates.openai_codex.rate * 1.5) < 1e-5, 'a reference: Q(1 + p_fail) at its rate');
+  // Build 448 (DESIGN-6 O5): a reference's own verifier failure is a
+  // repair-mode escalation at itself (the draft plus findings behind a cached
+  // prefix): Q + p_fail x Q_repair, the table's repair shape.
+  const astraRepair = lawQuota(TABLE, {surface: 'codex', model: 'gpt-6-astra', effort: 'ultra'}, 'repair').q;
+  assert.ok(astraRepair < qAstra, 'a repair is cheaper than answering again');
+  assert.ok(Math.abs(eqAstra - (qAstra + 0.5 * astraRepair) * routed.law.rates.openai_codex.rate) < 1e-5,
+    'a reference: Q + p_fail x Q_repair at its rate');
+  // A row below the reference keeps 447's escalation: a structural failure
+  // (empty, an error) leaves no draft, so the full answer at its target.
   assert.ok(Math.abs(eqOpus - (qOpus + 0.5 * qFable) * rate) < 1e-5, 'opus: Q + p_ref x Q(fable)');
   assert.ok(eqOpus < eqAstra);
 });
@@ -439,13 +486,17 @@ test('a row whose own pool reference cannot run escalates to the other pool\'s r
   const wrote = routeOf(q.request, lawOf(q, noFable));
   assert.equal(wrote.route, 'claude:claude-opus-5-5@medium'); // a writer binds no ladder: no runnable reference needed
   assert.equal(wrote.ladder, null);
-  // A read-only law row below its reference: its ladder's escalation is the Codex reference.
+  // Build 448: a local verified start escalates (repair mode) to its own
+  // REVAS judge, an admissible row fixed at bind, whatever pool it is in.
   const q11 = question(11);
   const local = lawOf(q11, c => noFable({...c, candidates: c.candidates}));
   const routed = routeOf(q11.request, local);
   assert.equal(routed.route, 'local:qwen3.5:9b@none');
-  const reference = local.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
-  assert.equal(reference.model, 'gpt-6-astra');
+  const judge = local.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
+  assert.equal(routed.ladder.verifier.candidate_id, judge.id);
+  assert.notEqual(judge.model, 'claude-fable-5-1');
+  // A read-only law row below its reference (opus@max on F4) with its own
+  // pool's reference unavailable is priced to the other pool's reference.
   const opus = lawOf(question(3), c => noFable({...c, candidates: c.candidates}));
   const ex = routeOf(question(3).request, opus).law.candidates.find(([key]) => key === 'claude-chat:claude-opus-5-5@max');
   assert.notEqual(ex[4], 'requires_runnable_reference', 'priced to the other pool\'s reference, not excluded');
@@ -453,8 +504,11 @@ test('a row whose own pool reference cannot run escalates to the other pool\'s r
 
 test('review of 447: a class certificate whose tuple cannot run falls to the law; a write with no tool need is an answer', () => {
   // Small talk under the certified chat class (owner-chat-fast pins
-  // codex gpt-6-luna@low): with the Codex pool exhausted the law decides (its
-  // local row), never the most expensive reference.
+  // codex gpt-6-luna@low): with the Codex pool exhausted the law decides.
+  // Build 448: its argmin, not the owner's 447 local-first order: F1 has no
+  // matched tier, so only the references are admissible and a local verified
+  // start pays a reference's check (an upper bound while unmeasured) plus its
+  // repair, more than the reference answering itself.
   const q = question(12);
   const certificate = {certificate_id: 'owner-chat-fast-20261027', provider: 'codex', model: 'gpt-6-luna', effort: 'low',
     format_check: 'nonempty_text', measurement_sha256: 'a'.repeat(64)};
@@ -464,8 +518,11 @@ test('review of 447: a class certificate whose tuple cannot run falls to the law
   }
   const exhausted = {...certified, candidates: certified.candidates.filter(row => row.quota_pool !== 'openai_codex')};
   const fell = routeOf(q.request, exhausted);
-  assert.equal(fell.route, 'local:qwen3.5:9b@none');
+  assert.equal(fell.route, 'claude-chat:claude-fable-5-1@max');
   assert.match(fell.reason, /admitted_law_F1/);
+  const local = fell.law.candidates.find(([key]) => key.startsWith('local:'));
+  assert.equal(local[1], 'v:claude-chat:claude-fable-5-1@max');
+  assert.ok(local[3] > fell.law.eq, 'the verified start is priced and loses to the argmin');
   // A light write reading with no tool need on a writer node (an inline text
   // edit) has no workspace target: priced as an answer, not agentic turns.
   const w = question(6);
@@ -708,21 +765,160 @@ test('Core: the law\'s route runs, its screen delivers it, and the ledger record
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
 });
 
-test('Core: the law\'s local route dispatches locally with no hold (light explanation and light writing)', async t => {
-  // Review of 447 (blocker): the plan validator admits a law-bound local node
-  // under the predicate the law bound it under, not only a chat profile.
-  for (const [q, label] of [[question(11), 'F2'], [{...question(11), request: '이 문장 영어로 번역해줘: 나는 학교에 갔다',
-    receipt: {outcome: 'adopted', model: 'qwen3.5:9b', answer: {task_type: 'write', difficulty: 'light', needs_tools: 'none', domain: 'writing'}},
-    intent: 'other'}, 'F12']]) {
-    const catalog = lawCatalog({...q, catalog: {...structuredClone(q.catalog), request_sha256: sha(q.request)}}, q.intent);
-    assert.equal(catalog.request_profile.task_type === 'chat', false, label + ': not a chat profile');
-    const routed = routeOf(q.request, catalog);
-    assert.equal(routed.route, 'local:qwen3.5:9b@none', label);
-    assert.equal(routed.law.family, label);
-    const {done, tickets} = await harness(t, q, catalog, ticket => completed(ticket, {output: 'a local answer, long enough to pass'}));
-    assert.notEqual(done.state, 'held', label + ' ' + done.error);
-    assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none'], label);
+// ---- Build 448: DESIGN-8 step 5 (REVAS) on a local verified start ----------
+// Live q2 on 447 ('파이썬 list와 tuple 차이 설명해봐', owner question 11) bound
+// the local row on basis owner_order and delivered this factual error past the
+// structural screen (a tuple IS indexed like a list).
+const Q2_DRAFT = '리스트는 변형이 가능하지만 튜플은 한 번 생성되면 수정할 수 없습니다. 또한 리스트는 배열처럼 인덱스를 통해 ' +
+  '접근하는 반면, 튜플은 주로 고정된 데이터 집합을 표현하는 데 사용됩니다.';
+const Q2_FINDING = '"튜플은 ... 인덱스를 통해 접근하는 반면" is wrong: a tuple is indexed exactly like a list (t[0], slicing); ' +
+  'the difference is mutability (and hashability), not indexing.';
+const Q2_REPAIRED = '리스트와 튜플 모두 인덱스(t[0])와 슬라이싱으로 접근합니다. 차이는 변경 가능성입니다: 리스트는 수정할 수 있고 ' +
+  '튜플은 생성 후 수정할 수 없으며, 그래서 튜플은 해시 가능해 딕셔너리 키로 쓸 수 있습니다.';
+
+test('build 448: the local row is admissible only by (a) or (c); otherwise it starts only as a priced REVAS verified start', () => {
+  const q = question(11);
+  const routed = routeOf(q.request, lawOf(q));
+  assert.equal(routed.route, 'local:qwen3.5:9b@none');
+  assert.equal(routed.route, q.expected_route);
+  const local = routed.law.candidates.find(([key]) => key === routed.route);
+  // Its basis is the check, never the owner's order.
+  assert.equal(local[1], 'v:' + q.expected_check);
+  assert.match(routed.reason, /;law_evidence_verified_start;law_revas_check_[^;]+;law_revas_repair_same_row;/);
+  // Its E[Q] is the check plus p_fail x the repair, both at the judge's rate,
+  // and the judge is the admissible row minimizing it.
+  const v = routed.ladder.verifier;
+  const judge = lawOf(q).candidates.find(row => row.id === v.candidate_id);
+  assert.equal(lawKey(judge), q.expected_check);
+  assert.equal(routed.ladder.reference_candidate_id, judge.id, 'the repair runs at the check\'s own row (cache reuse)');
+  const qv = lawQuota(TABLE, judge, 'verify').q, qr = lawQuota(TABLE, judge, 'repair').q;
+  assert.ok(Math.abs(local[3] - (qv + 0.5 * qr) * v.rate) < 1e-5);
+  assert.ok(qv > lawQuota(TABLE, judge, 'answer').q, 'a check is priced at least as an answer while unmeasured (upper bound)');
+  assert.deepEqual(routed.law.revas, {schema: 1, judge: lawKey(judge), q_verify: qv, q_repair: qr, p_fail: 0.5,
+    repair: 'same_row_prefix_cached'});
+  for (const [key, form, , eq, excluded] of routed.law.candidates) {
+    if (excluded !== null || key === routed.route) continue;
+    assert.match(form, /^(?:reference|b:.+|c:.+)$/);
+    assert.ok(eq >= local[3] - 1e-9, `${key} is not cheaper than the verified start`);
   }
+  // A passed parity audit of local@none admits it (form c): no check then.
+  const audited = structuredClone(TABLE);
+  audited.audits.cells['qwen3.5:9b@none|F2'] = {verdict: 'pass', admits: true, id: 'audit-0123456789ab', n: 30};
+  assert.deepEqual(lawLocalEvidence(audited, 'qwen3.5:9b', 'F2'), {form: 'c', audit: 'audit-0123456789ab', tiers: [], excess: 0});
+  assert.equal(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F2'), null, 'no deterministic verifier, no audit: not admissible');
+  // F1 (no matched tier: only references can check it) stays at its argmin reference.
+  const q12 = question(12);
+  const small = routeOf(q12.request, lawOf(q12));
+  assert.equal(small.route, q12.expected_route);
+  assert.match(small.law.candidates.find(([key]) => key.startsWith('local:'))[1], /^v:/);
+});
+
+test('build 448: REVAS prompts and verdicts: one byte-identical prefix, a first-line verdict, numbered findings', () => {
+  const request = question(11).request;
+  const check = revasCheckInstruction(request, Q2_DRAFT), repair = revasRepairInstruction(request, Q2_DRAFT, [Q2_FINDING]);
+  const prefix = revasPrefix(request, Q2_DRAFT);
+  assert.ok(check.startsWith(prefix) && repair.startsWith(prefix), 'the repair reuses the check\'s prefix');
+  assert.ok(repair.includes('1. ' + Q2_FINDING) && /fix only what the findings name/.test(repair));
+  assert.deepEqual(revasVerdict('REVAS: PASS'), {verdict: 'pass', findings: []});
+  assert.deepEqual(revasVerdict('\n**REVAS: FAIL**\n1. ' + Q2_FINDING + '\n2) missing hashability\n- third'),
+    {verdict: 'fail', findings: [Q2_FINDING, 'missing hashability', 'third']});
+  assert.deepEqual(revasVerdict('REVAS: FAIL'), {verdict: 'fail', findings: []});
+  for (const text of ['', 'PASS', 'The draft looks fine. REVAS: PASS', 'REVAS: MAYBE', null])
+    assert.deepEqual(revasVerdict(text), {verdict: null, findings: []});
+});
+
+test('build 448 (live q2): the REVAS check catches the local draft\'s factual error; repair mode at the same row fixes only it', async t => {
+  const q = question(11);
+  const law = lawOf(q);
+  const routed = routeOf(q.request, law);
+  const judge = law.candidates.find(row => row.id === routed.ladder.verifier.candidate_id);
+  const {done, tickets, ledger, text, saved} = await harness(t, q, law, (ticket, n) =>
+    completed(ticket, {output: n === 1 ? Q2_DRAFT : n === 2 ? 'REVAS: FAIL\n1. ' + Q2_FINDING : Q2_REPAIRED,
+      usage: n === 1 ? undefined : {input_tokens: 1000, cache_read_tokens: n === 3 ? 900 : 0, output_tokens: n === 2 ? 60 : 120}}));
+  // Three dispatches: the local draft, the check at the judge, the repair at the SAME row.
+  assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge), lawKey(judge)]);
+  assert.equal(tickets[0].instruction, q.request);
+  assert.equal(tickets[1].instruction, revasCheckInstruction(q.request, Q2_DRAFT));
+  assert.equal(tickets[2].instruction, revasRepairInstruction(q.request, Q2_DRAFT, [Q2_FINDING]));
+  assert.equal(tickets[1].native_resume_session_id, null);
+  // The error never reaches the owner; the repaired answer does.
+  assert.equal(done.result.output, Q2_REPAIRED);
+  assert.ok(!done.result.output.includes('튜플은 주로 고정된'));
+  // Receipts: the draft (awaiting its check), the check (its verdict judges
+  // the DRAFT's row), the repair (size, cache reuse, priced quota, p_fail).
+  const [draft, check, repair] = ledger;
+  assert.deepEqual([draft.surface, draft.attempt_state, draft.delivery_basis, draft.check_outcome],
+    ['local', 'revas_check_pending', 'law:F2', null]);
+  assert.deepEqual([check.model, check.check_outcome, check.revas.role, check.revas.draft_model, check.revas.family, check.escalated],
+    [judge.model, 'revas_fail', 'check', 'qwen3.5:9b', 'F2', false]);
+  assert.equal(check.verifier_outcome, 'not_registered', 'a check\'s verdict is never a failure of the judge\'s own row');
+  assert.deepEqual([repair.escalated, repair.delivery_basis, repair.revas.role, repair.revas.mode, repair.revas.findings,
+    repair.revas.same_row, repair.revas.verdict], [true, 'reference_escalated', 'repair', 'repair', 1, true, 'revas_fail']);
+  assert.ok(repair.revas.findings_bytes > 0 && repair.revas.draft_bytes === Buffer.byteLength(Q2_DRAFT));
+  assert.deepEqual([repair.revas.q_verify, repair.revas.q_repair, repair.revas.p_fail_family],
+    [routed.law.revas.q_verify, routed.law.revas.q_repair, 0.5]);
+  assert.deepEqual(repair.revas.check_usage, {input_tokens: 1000, cache_read_tokens: 0, output_tokens: 60});
+  assert.equal(repair.usage.cache_read_tokens, 900, 'the repair\'s own usage shows the reused prefix');
+  assert.equal(check.revas.prefix_sha256, repair.revas.prefix_sha256);
+  assert.equal(check.revas.prefix_sha256, sha(revasPrefix(q.request, Q2_DRAFT)));
+  // Every outcome updates p_fail: the ledger counts one failure of local@F2.
+  assert.deepEqual(lawLearnedPFail(text, 0).get('qwen3.5:9b@none|F2'), {runs: 1, failures: 1});
+  assert.deepEqual(saved.children[0].revas.findings, [Q2_FINDING]);
+  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
+});
+
+test('build 448: a REVAS pass adopts the local draft as produced; no verdict escalates in full; the runtime learns', async t => {
+  const q = question(11);
+  const law = lawOf(q);
+  const passed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? 'a correct local answer' : 'REVAS: PASS'}));
+  assert.equal(passed.tickets.length, 2);
+  assert.equal(passed.done.result.output, 'a correct local answer');
+  const child = passed.done.children[0];
+  assert.deepEqual([child.selected_config.surface, child.attempt_id], ['local', passed.tickets[0].attempt_id],
+    'the delivered attempt is the draft, on its own row');
+  assert.equal(passed.done.result.native_receipt === null || typeof passed.done.result.native_receipt === 'string', true);
+  assert.equal(passed.ledger[1].check_outcome, 'revas_pass');
+  assert.deepEqual(lawLearnedPFail(passed.text, 0).get('qwen3.5:9b@none|F2'), {runs: 1, failures: 0});
+  // The delivery audit: the delivered draft is backed by its own check's pass.
+  const deliveredDraft = {task_id: passed.saved.task.task_id, snapshot: JSON.stringify(passed.saved)};
+  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: passed.text}], snapshots: [deliveredDraft]}).verdict, 'PASS');
+  const unchecked = passed.text.split('\n').filter(line => !line.includes('"role":"check"')).join('\n');
+  assert.deepEqual(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: unchecked}], snapshots: [deliveredDraft]})
+    .violations.map(v => v.rule), ['law_delivery_without_revas_pass']);
+  // No verdict: the draft is discarded and the judge answers in full (the request only).
+  const silent = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? 'a local answer' :
+    n === 2 ? 'I think it is mostly fine.' : 'the full answer'}));
+  assert.equal(silent.tickets.length, 3);
+  assert.equal(silent.tickets[2].instruction, q.request);
+  assert.equal(silent.done.result.output, 'the full answer');
+  assert.equal(silent.ledger[2].revas.mode, 'full');
+  assert.equal(lawLearnedPFail(silent.text, 0).get('qwen3.5:9b@none|F2'), undefined, 'no verdict is no evidence');
+});
+
+test('build 448: p_fail learning moves the argmin a priori (DESIGN-6 O5.3): judged local passes start F1 locally', async t => {
+  const q = question(12); // small talk: at the prior the reference answers
+  const catalog = lawOf(q);
+  assert.equal(routeOf(q.request, catalog).route, 'claude-chat:claude-fable-5-1@max');
+  const passes = new Map([['qwen3.5:9b@none|F1', {runs: 3, failures: 0}]]);
+  const plan = hostPlan(runtimeTask(q, catalog), catalog);
+  const learned = resolveRoutePlan(plan, runtimeTask(q, catalog), catalog, clockOf(catalog), {lawLearned: passes});
+  const id = plan.nodes[0].id;
+  assert.equal(learned.decisions[id].model, 'qwen3.5:9b');
+  assert.equal(learned.routes[id].law.revas.p_fail, 0.2);
+  // The durable Core learns the same from its own routing ledger at start
+  // (records after the table's snapshot, Core lawJudgedOutcome).
+  const dir = await mkdtemp(join(tmpdir(), 'os1-law-learn-')); await chmod(dir, 0o700);
+  t.after(() => rm(dir, {recursive: true, force: true}));
+  const after = (TABLE.p_fail.through_ms ?? 0) + 1;
+  const record = n => ({schema: 1, task_id: 'seed', node_id: 'node_0', attempt_id: 'seed-' + n, route_kind: 'law', escalated: false,
+    surface: 'claude-chat', model: 'claude-fable-5-1', effort: 'max', verifier_outcome: 'not_registered', settled_at_ms: after + n,
+    attempt_state: 'revas_check_returned', check_outcome: 'revas_pass', law: {family: 'F1'},
+    revas: {role: 'check', family: 'F1', draft_model: 'qwen3.5:9b', draft_effort: 'none'}});
+  const ledger = openRoutingLedger(dir);
+  for (const n of [1, 2, 3]) ledger.append(record(n));
+  const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true, catalog: async () => catalog, execute: async () => { throw new Error('x'); }});
+  t.after(() => runtime.close());
+  assert.deepEqual(runtime.lawLearned.get('qwen3.5:9b@none|F1'), {runs: 3, failures: 0});
 });
 
 test('Core: a failed screen on a read-only law route escalates exactly once to the reference fixed at bind', async t => {

@@ -729,7 +729,7 @@ check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability
       "...poolNotes(tier.pool.pool, chosen, tier.hit.candidate)," in TIER_ROUTE and
       "'pool_scored_by_tier_hit_model'" in TIER_ROUTE and
       "selectRouteCandidate(rest, task, catalog, now, {widenWrites: true, verifierRegistry, descentPolicy,\n"
-      "        planNodes: plan.nodes.length, deepPolicy});" in RUNTIME and
+      "        planNodes: plan.nodes.length, deepPolicy, lawLearned});" in RUNTIME and
       "selectRouteCandidate(checked, task, catalog, now, {widenWrites: finalWriter, verifierRegistry,\n      descentPolicy});" in
       section(RUNTIME, "export function admitBoundedAutoPlan(", "function livePlannerContext(") and
       "resolveRoutePlan(original, task, catalog, now, {verifierRegistry, descentPolicy});" in
@@ -737,7 +737,8 @@ check("export const CHECK_ACCEPTANCE_SCORE_SPACE = 'check_acceptance_probability
       "livePlannerContext(task, catalog, capability, now, verifierRegistry, descentPolicy);" in
       section(RUNTIME, "export function admitLivePlannerPlan(", "const resolved = resolveRoutePlan(compiled.plan") and
       "const resolved = resolveRoutePlan(compiled.plan, task, catalog, now, {verifierRegistry, descentPolicy});" in RUNTIME and
-      "{verifierRegistry = null,\n                                                                       descentPolicy = null, deepPolicy = DEEP_POLICY} = {}) {" in RUNTIME and
+      "{verifierRegistry = null,\n                                                                       descentPolicy = null, deepPolicy = DEEP_POLICY,\n"
+      "                                                                       lawLearned = null} = {}) {" in RUNTIME and
       RUNTIME.count("descentPolicy: this.descentPolicy") == 4 and RUNTIME.count("this.descentPolicy") == 10 and
       "prepareCertifiedDescentPolicy(certifiedDescentPolicy)" in RUNTIME and
       "certifiedDescentPolicy" not in PLUGIN and "descentPolicy" not in PLUGIN and
@@ -1242,8 +1243,8 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "rates.set(pool, lawPoolPrice(catalog, pool, now, shares.length ? Math.min(...shares) : null));" in RUNTIME and
       "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
       "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
-      "export function lawPFail(table, candidate, family, reference = null) {" in RUNTIME and
-      "const pFail = Math.min(1, lawPFail(table, candidate, family, inherits) + (inherits !== null ? evidence.excess ?? 0 : 0));" in RUNTIME and
+      "export function lawPFail(table, candidate, family, reference = null, learned = null) {" in RUNTIME and
+      "const pFail = Math.min(1, lawPFail(table, candidate, family, inherits, learned) +\n        (inherits !== null ? evidence.excess ?? 0 : 0));" in RUNTIME and
       "const repair = option.reference ? option.row :" in RUNTIME and
       "if (gap && audit?.verdict === 'pass' && audit.admits === true) return {form: 'c', tiers: rows, gap: false, audit: audit.id, excess: 0};" in RUNTIME and
       "function lawHostNeedsTools(task, catalog) {" in RUNTIME and "function lawRateNote(why, task, catalog, now) {" in RUNTIME and
@@ -1256,13 +1257,34 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "snapshot.plan_provenance = askBack ? 'local_reading_ask_back' : 'deterministic_no_model';" in RUNTIME and
       "const ranked = [...admissible].sort((a, b) => (a.eq - b.eq) ||" in RUNTIME and
       "'law_argmin_reference'" in RUNTIME and "law:[A-Za-z0-9-]{1,16}" in RUNTIME and
-      "...(routeClass !== null && plain(child.law_receipt) ? {law: child.law_receipt} : {})};" in RUNTIME and
+      "...(routeClass !== null && plain(child.law_receipt) ? {law: child.law_receipt} : {})," in RUNTIME and
       "const askBack = lawAskBack(task, catalog);" in RUNTIME and
       "this._completeLocalExact(taskID, 'local_ask_back', askBack.output, askBack.receipt)" in RUNTIME and
       'node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law.test.mjs"' in RELEASE and
       (ROOT / "scripts/fixtures/openclaw-rcc-routing-law.test.mjs").is_file() and
       (ROOT / "scripts/fixtures/routing-law-owner-questions.json").is_file(),
       "447: Core prices each admissible candidate (E[Q] at the derived exchange, p_fail inherited) and binds the argmin with a receipt; the ask-back is local; release-gated")
+# Build 448 (DESIGN-8 step 5, DESIGN-6 O5, ledger p_fail learning; live q1/q2 on 447).
+HOST_FIXTURE = (ROOT / "Tests/OS1ContextTests/RoutingLawHostFixture.swift").read_text()
+LAW_FIXTURE = (ROOT / "Tests/OS1ContextTests/RoutingLawFixture.swift").read_text()
+check("snapshot.result = {output, execution_verified: !askBack, task_verified: !askBack," in RUNTIME and
+      "'owner_order'" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
+      "export function lawLocalEvidence(table, model, family) {" in RUNTIME and
+      "lawLocalEvidence(table, candidate.model, family) ?? {form: 'v', tiers: []}" in RUNTIME and
+      "lawQuota(table, other.candidate, 'verify')" in RUNTIME and "lawQuota(table, other.candidate, 'repair')" in RUNTIME and
+      "export function revasCheckInstruction(instruction, draft) {" in RUNTIME and
+      "export function revasRepairInstruction(instruction, draft, findings) {" in RUNTIME and
+      "export function revasVerdict(output) {" in RUNTIME and
+      "async _revasQueueCheck(taskID, node, candidate, result) {" in RUNTIME and
+      "async _revasCheckReturned(taskID, node, judge, result) {" in RUNTIME and
+      "export function lawJudgedOutcome(record) {" in RUNTIME and "export function lawLearnedPFail(" in RUNTIME and
+      "lawLearnRecord(this.lawLearned, record, routingLawTable()?.p_fail?.through_ms ?? null);" in RUNTIME and
+      "resolveRoutePlan(proposed, admitted, catalog, boundAt,\n        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy, lawLearned: this.lawLearned});" in RUNTIME and
+      "const {lawJudgedOutcome} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
+      (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
+      (ROOT / "scripts/routing-law-ledger-20261030.json").is_file(),
+      "448: the ask-back reaches the host; the local row admissible only by (a)/(c), else a priced REVAS verified start; repair mode; ledger p_fail learning; host-path fixture")
 check("public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?," in law_swift and
       "law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota," in BUILDER and
       '"pools": .map(routingLawPoolShape)' in (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text() and

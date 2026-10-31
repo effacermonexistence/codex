@@ -4,6 +4,7 @@
 // imports it only with `--dispatcher` and refuses a paid dispatcher without
 // `--confirm-paid yes`, outside the weekly cap, or without frozen checklists.
 //
+// Build 448: the local model's arm runs on the local Ollama (dispatchLocal).
 // One answer-shaped call per arm on the exact (surface, model, effort), with
 // no tools, no MCP servers, no session persistence and the user's own config
 // and customizations off, so both arms run the same bare harness:
@@ -43,7 +44,27 @@ function run(command, args, input, timeoutMs = 900_000) {
   });
 }
 
+/** Build 448: the local model's arm of a local (c) audit, exactly as the
+ * production local worker answers an Auto node (rcc-plugin's request: the
+ * conversational system prompt, its 512-token cap, temperature 0, no
+ * reasoning) on the local Ollama; it draws no pool quota. */
+async function dispatchLocal({model, request}) {
+  const plugin = await import('../Resources/openclaw-os1-bridge/rcc-plugin.mjs');
+  const runtime = await import('../Resources/openclaw-os1-bridge/resource-usage.mjs');
+  runtime.configureLocalModel(model);
+  const built = plugin.localWorkerCompletionRequest({instruction: request, style: 'conversational'});
+  const response = await fetch((process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434') + '/api/chat', {method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({model: built.model.replace(/^ollama\//, ''), stream: false, think: false,
+      messages: [{role: 'system', content: built.systemPrompt}, ...built.messages],
+      options: {temperature: built.temperature, num_predict: built.maxTokens}})});
+  if (!response.ok) throw new Error('local model HTTP ' + response.status);
+  const body = await response.json();
+  return {output: plugin.normalizeLocalOutput(String(body?.message?.content ?? '')), draw: {pool: 'none', units: 0}};
+}
+
 export async function dispatch({surface, model, effort, request}) {
+  if (surface === 'local') return dispatchLocal({model, request});
   if (surface === 'codex') {
     const dir = mkdtempSync(join(tmpdir(), 'os1-audit-'));
     try {

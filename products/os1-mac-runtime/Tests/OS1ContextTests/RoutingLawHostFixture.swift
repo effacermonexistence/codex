@@ -63,6 +63,24 @@ func runRoutingLawHostFixtures() throws {
     do { _ = try RCCRuntimeContract.decodeSnapshot(build447); try check(false, "the 447 ask-back snapshot must stay rejected") }
     catch let rejection as RCCRuntimeContract.Rejection { try check(rejection == .invalidSnapshot, "447's ask-back: invalidSnapshot") }
 
+    // ---- Build 448 (DESIGN-8 step 5): a REVAS verified start of the local row
+    // (owner question 11, the live q2 request). A passed check delivers the
+    // local draft as produced (its own row); a failed one delivers the repair
+    // the judge made at the same row. Both reach the owner through the host.
+    let passed = try coreFlow("verified_pass", root: root)
+    try check(passed.dispatches == 2, "a verified start: the draft and its check")
+    let pass = try hostPath(passed.snapshot, "verified_pass")
+    try check(pass.result?.output == "a correct local answer", "the checked draft is delivered: \(pass.result?.output ?? "nil")")
+    try check(pass.children.count == 1 && pass.children[0].selectedConfig?.surface == .local,
+              "the delivered attempt is the draft, on the local row")
+    let repaired = try coreFlow("verified_repair", root: root)
+    try check(repaired.dispatches == 3, "a failed check: the draft, the check and one repair")
+    let repair = try hostPath(repaired.snapshot, "verified_repair")
+    let repairedText = repair.result?.output ?? ""
+    try check(repairedText.contains("인덱스와 슬라이싱") && !repairedText.contains("접근하는 반면"),
+              "the owner sees the repaired answer, never the draft's error")
+    try check(repair.children[0].selectedConfig?.surface != .local, "the repaired answer ran at the judge's row")
+
     print("Routing law host fixtures: \(checks) checks OK; model calls 0")
 }
 

@@ -77,9 +77,14 @@ const CLAIM_BOUNDARY = 'policy enforcement only; not accepted_B, quality parity 
 // staged writer and an owner-collection control unknown (the whole task holds
 // without a result). 'held' and 'operational_checker_held' are NOT here: a
 // held child's output can be retained inside a partial result.
+// Build 448: a local draft awaiting its REVAS check ('revas_check_pending'),
+// and the check itself ('revas_check_returned': a verdict, never an answer),
+// deliver nothing when recorded; a draft its check passed is delivered later
+// and is audited against that check record (law_delivery_without_revas_pass).
 export const NON_DELIVERY_STATES = Object.freeze(new Set(['ladder_not_returned', 'ladder_verifier_failed',
   'staged_writer_held', 'verified_not_dispatched', 'effects_uncertain', 'interrupted', 'settled_after_stop',
-  'cancelled', 'failed', 'owner_collection_control_unverified']));
+  'cancelled', 'failed', 'owner_collection_control_unverified', 'revas_check_pending', 'revas_check_returned']));
+const REVAS_CHECK_OUTCOMES = new Set(['revas_pass', 'revas_fail', 'revas_no_verdict']);
 const CERTIFIED_BASIS = /^certified:(contract|exact|verifier:[A-Za-z0-9_-]{1,128}|class:[A-Za-z0-9_-]{1,128})$/;
 const REFERENCE_BASES = new Set(['reference', 'reference_escalated', 'owner_words']);
 // Change 2 (build 441): a host-profile graded route's basis. Never certified.
@@ -138,7 +143,7 @@ function ranAs(record) {
 }
 /** The §2.2 rules for one K9 record. `delivered`: whether its output may have
  * reached the owner. Returns the rules it breaks. */
-function basisViolations(record, delivered) {
+function basisViolations(record, delivered, revasPassed = new Set()) {
   const rules = [];
   const basis = record.delivery_basis;
   const tier = ranAs(record) === 'tier';
@@ -160,6 +165,17 @@ function basisViolations(record, delivered) {
     if (!law || record.escalated !== false || !(record.ladder == null || plain(record.ladder)))
       rules.push('law_basis_route_mismatch');
     if (record.check_id != null || record.check_label != null) rules.push('check_label_on_law_basis');
+    // Build 448: a REVAS check record carries its verdict; a local draft is
+    // delivered only on its own check's pass (a screen never adopts it).
+    if (plain(record.revas) && record.revas.role === 'check') {
+      if (!REVAS_CHECK_OUTCOMES.has(record.check_outcome) && record.attempt_state === 'revas_check_returned')
+        rules.push('revas_check_without_verdict');
+      return rules;
+    }
+    if (record.attempt_state === 'revas_check_pending' || REVAS_CHECK_OUTCOMES.has(record.check_outcome)) {
+      if (delivered && !revasPassed.has(record.attempt_id)) rules.push('law_delivery_without_revas_pass');
+      return rules;
+    }
     if (plain(record.ladder) ? delivered && record.check_outcome !== 'screen_pass' : record.check_outcome != null)
       rules.push(plain(record.ladder) ? 'law_delivery_without_screen_pass' : 'check_outcome_on_law_writer');
     return rules;
@@ -241,6 +257,9 @@ export function auditDeliveryPolicy({ledgers, snapshots = null, includeLegacy = 
     }
   }
   for (const id of conflicts) byAttempt.delete(id);
+  // Build 448: the drafts whose REVAS check passed (by the check record).
+  const revasPassed = new Set([...byAttempt.values()].filter(record => plain(record.revas) && record.revas.role === 'check' &&
+    record.check_outcome === 'revas_pass' && typeof record.revas.draft_attempt_id === 'string').map(record => record.revas.draft_attempt_id));
 
   const violations = new Map();
   const violate = (rule, record, extra = {}) => {
@@ -271,7 +290,7 @@ export function auditDeliveryPolicy({ledgers, snapshots = null, includeLegacy = 
     byBasis[basis] ??= {attempts: 0, possibly_delivered: 0};
     byBasis[basis].attempts++;
     if (delivered) byBasis[basis].possibly_delivered++;
-    for (const rule of basisViolations(record, delivered)) violate(rule, record);
+    for (const rule of basisViolations(record, delivered, revasPassed)) violate(rule, record);
   }
 
   // --snapshots: the delivered population, from task results.
@@ -321,7 +340,7 @@ export function auditDeliveryPolicy({ledgers, snapshots = null, includeLegacy = 
           continue;
         }
         count(typeof record.delivery_basis === 'string' ? record.delivery_basis : 'invalid');
-        for (const rule of basisViolations(record, true)) violate(rule, record);
+        for (const rule of basisViolations(record, true, revasPassed)) violate(rule, record);
       }
       if (outside) delivery.tasks_outside_ledger_window++;
     }

@@ -16,7 +16,9 @@
  *                 [--model qwen3.5:9b]
  *
  * plan (zero quota): the corpus replayed under the law at a headroom; every
- * candidate inadmissible ONLY for lack of evidence (Core lawEvidence gap) is
+ * candidate inadmissible ONLY for lack of evidence (Core lawEvidence gap; build
+ * 448: also the local model wherever it may only start as a REVAS verified
+ * start, its (c) audit per family, lead order) is
  * priced as if admitted with Core's own E[Q] formula (re-deriving every
  * admissible row's E[Q] the same way is the derivation's verifier). Per
  * (model@effort, law family), pooled over surfaces:
@@ -71,7 +73,7 @@ const canonical = value => {
   return JSON.stringify(order(value));
 };
 const r6 = value => Number.isFinite(value) ? Math.round(value * 1e6) / 1e6 : value;
-const POOL_OF_SURFACE = {codex: 'openai_codex', claude: 'anthropic_shared', 'claude-chat': 'anthropic_shared'};
+const POOL_OF_SURFACE = {codex: 'openai_codex', claude: 'anthropic_shared', 'claude-chat': 'anthropic_shared', local: 'none'};
 const parseKey = key => {
   const [surface, rest] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
   const at = rest.lastIndexOf('@');
@@ -106,6 +108,7 @@ export function weeklyTraffic(ledgerText, now, days = VOI.horizon_days) {
 
 /** The law's E[Q] of a candidate as Core prices it (lawExpectedQuota). */
 function priced(entryQ, pool, rates) {
+  if (pool === 'none') return 0; // the local model draws no pool
   const rate = rates[pool]?.rate;
   return typeof rate === 'number' ? entryQ * rate : Infinity;
 }
@@ -134,6 +137,23 @@ function eqIfAdmitted(table, receipt, family, entry) {
   return {eq: priced(q, c.pool, receipt.rates) + pFail * priced(target.q, target.pool, receipt.rates), q, target, pFail, units};
 }
 const gapOf = form => form.startsWith('x:') && !/=fail(?:,|$)/.test(form);
+/** Build 448 (lead order): the local model's (c) audit per family. A local
+ * row that only STARTS as a REVAS verified start ('v:' its judge) is
+ * inadmissible for lack of (a) or (c): admitted by a passed parity audit it
+ * would run with no per-answer check, its p_fail its repair target's (the
+ * cheapest admissible reference, as Core) and its failures that target's full
+ * answer: E[Q] = p_fail x Q(target). */
+const localStartOf = (key, form) => key.startsWith('local:') && form.startsWith('v:');
+function eqIfAdmittedLocal(table, receipt, family, entry) {
+  const [key] = entry;
+  const c = parseKey(key);
+  const target = repairTarget(receipt, null);
+  if (!target) return null;
+  const pFail = lawPFail(table, c, family, {model: target.model, effort: target.effort});
+  const units = {Cw: 0, Px: 0};
+  units[POOL_UNIT[target.pool]] += pFail * target.q;
+  return {eq: pFail * priced(target.q, target.pool, receipt.rates), q: 0, target, pFail, units};
+}
 const WEEK_MS = 10080 * 60000;
 /** When a pool's unit window resets, from a receipt rate (ms from now), or
  * null when the rate carries no observed window (no reset is known). */
@@ -246,10 +266,11 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
     if (row.family === 'P') continue;
     for (const entry of row.receipt.candidates) {
       const [key, form, , , excluded] = entry;
-      if (excluded !== 'no_evidence' || !gapOf(form)) continue;
+      const local = localStartOf(key, form);
+      if (!local && (excluded !== 'no_evidence' || !gapOf(form))) continue;
       const c = parseKey(key);
       const id = `${c.model}@${c.effort}|${row.family}`;
-      const derived = eqIfAdmitted(table, row.receipt, row.family, entry);
+      const derived = local ? eqIfAdmittedLocal(table, row.receipt, row.family, entry) : eqIfAdmitted(table, row.receipt, row.family, entry);
       if (!derived) continue;
       if (!cells.has(id)) cells.set(id, {id, model: c.model, effort: c.effort, family: row.family, pool: c.pool,
         evidence: new Set(), rows: new Map()});
@@ -504,6 +525,7 @@ export async function runAudit({plan, planBytes, checklistFile, catalogs, auditI
   const spent = () => spendInWindows(spendPath, windows);
   // The planned draw of one arm of one question, in pool units.
   const planned = target => {
+    if (target.pool === 'none') return {pool: 'none', units: 0}; // the local model (build 448's local audits)
     const q = routingLawTable().quota[`${target.surface}:${target.model}@${target.effort}`]?.answer?.q ?? null;
     return {pool: target.pool, units: q ?? (audit.cost[POOL_UNIT[target.pool]] / Math.max(1, audit.n))};
   };
@@ -511,7 +533,7 @@ export async function runAudit({plan, planBytes, checklistFile, catalogs, auditI
     const out = {anthropic_shared: 0, openai_codex: 0};
     for (const index of audit.questions.slice(fromQuestion)) {
       const cell = parseKey(audit.surface + ':' + audit.cell), reference = parseKey(audit.question_references?.[index] ?? audit.audit_references[0]);
-      for (const target of [cell, reference]) { const p = planned(target); out[p.pool] += p.units; }
+      for (const target of [cell, reference]) { const p = planned(target); if (p.pool !== 'none') out[p.pool] += p.units; }
     }
     return out;
   };
@@ -531,6 +553,7 @@ export async function runAudit({plan, planBytes, checklistFile, catalogs, auditI
       const result = await dispatcher.dispatch({surface: target.surface, model: target.model, effort: target.effort, request});
       const output = String(result.output ?? '');
       pair[arm] = {route: `${target.surface}:${target.model}@${target.effort}`, output, output_sha256: sha(output)};
+      if (target.pool === 'none') continue; // a local answer spends no pool quota
       const reported = result.draw && Number.isFinite(result.draw.units) && result.draw.units >= 0 && result.draw.pool === target.pool;
       const draw = reported ? result.draw : {...planned(target), charged: 'planned_no_reported_draw'};
       appendFileSync(spendPath, JSON.stringify({window: windows[draw.pool], week: isoWeek(now), at: new Date().toISOString(),

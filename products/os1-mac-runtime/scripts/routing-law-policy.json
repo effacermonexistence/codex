@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "design": "DESIGN-8 (owner-approved direction 2026-10-29): build 447, single-node requests, steps 1-4",
+  "design": "DESIGN-8 (owner-approved direction 2026-10-29): build 447 steps 1-4 for single-node requests; build 448 step 5 (REVAS: the family verifier on every unadmitted local start, repair-mode escalation, DESIGN-6 O5) and ledger p_fail learning",
   "objective": "same result as the newest top model at its highest reasoning, with less quota",
   "pools": {
     "anthropic": "anthropic_shared",
@@ -27,7 +27,8 @@
     "stale_fallback": "stale (past the host's valid_until_ms): each window not yet reset at its last observed share left with the whole window ahead (1 / remaining_w; plan usage only rises inside a window), an exhausted one no price until its reset (review of 447: a failed probe never prices a pool last seen scarce at pace); every window reset since, or no observation: the pool's smallest dispatchable remaining share with the whole window ahead (1 / remaining); no share at all: 1 (pace)"
   },
   "laplace": {"failures": 1, "runs": 2},
-  "p_fail_inheritance": "lead correction 1 (DESIGN-8, 2026-10-29): a row admitted with evidence (b or c) has its own pool reference's p_fail for the family until its own judged runs move it, at the prior's weight: (f_c + runs_prior * p_ref) / (n_c + runs_prior), plus its measured gap below the reference on the matched tiers (review of 447: the largest percentage-point deficit / 100); a reference's own failures are priced with its own repair (itself); the local row (owner order, no evidence) keeps its own Laplace estimate. As of this table no judged run carries a law family, so every p_fail is the prior 1/2: the inheritance has no numeric effect yet, and the law's E[Q] differs from 447's actual draw only by charging a reference p_fail x its own Q (a 1.5x markup at the prior, which build 447 never spends: a reference does not escalate); the release gate is therefore judged on both bases (draw and law_model)",
+  "p_fail_inheritance": "lead correction 1 (DESIGN-8, 2026-10-29): a row admitted with evidence (b or c) has its own pool reference's p_fail for the family until its own judged runs move it, at the prior's weight: (f_c + runs_prior * p_ref) / (n_c + runs_prior), plus its measured gap below the reference on the matched tiers (review of 447: the largest percentage-point deficit / 100); a reference's own failures are priced with its own repair (itself); the local row (no evidence; a verified start, build 448) keeps its own Laplace estimate, counted only from its REVAS checks. As of this table no judged run carries a law family, so every p_fail is the prior 1/2: the inheritance has no numeric effect yet, and the law's E[Q] differs from 447's actual draw only by charging a reference p_fail x its own Q (a 1.5x markup at the prior, which build 447 never spends: a reference does not escalate); the release gate is therefore judged on both bases (draw and law_model)",
+  "p_fail_learning": "build 448 (DESIGN-8 step 5: every outcome updates p_fail): the committed ledger snapshot (judged runs up to its through_ms) is the table's p_fail; Core adds its own routing ledger's judged law attempts settled after through_ms, keyed model@effort|law family from each record's law receipt (Core lawJudgedOutcome, the one counting rule). A judged outcome is the verdict of the verifier the law applies to that row: for the local model its REVAS check (revas_pass, revas_fail) or a structural failure (empty, not returned); for any other row its verifier or check verdict or structural screen. A structural screen pass of a local answer (build 447) is no verdict on the check the law now applies and is not counted; a REVAS check or repair attempt, and an escalated attempt, is never counted as a descent.",
   "value_of_information": {
     "horizon_days": 7,
     "cap_pct_of_weekly_allowance_per_week": 1,
@@ -39,11 +40,16 @@
     "anthropic_shared": {"max": 3.5}
   },
   "effort_label_source": "O4 (owner 2026-10-29): the Claude app labels Max '3.5x or more usage'; applied against the next-lower step and only ever raising cost",
-  "local_admission": {
-    "families": ["F1", "F2", "F10", "F12"],
-    "basis": "owner_order",
-    "source": "DESIGN-8 migration row 447 'local-first'; DESIGN-6 O2 (ask-back), DESIGN-7 §1.5 (local first)",
-    "evidence_gap": "no deterministic verifier, matched-tier benchmark or REVAS paired audit exists for the local model yet"
+  "local_start": {
+    "rule": "DESIGN-8 step 2 (build 448): the local model is ADMISSIBLE for a family only by (a) a deterministic family verifier or (c) a passed parity paired audit of local@none|family, like any other row. Until then it may only START as a REVAS verified start, and only when that start is the argmin at its full price: E[Q] = Q_verify(j) + p_fail(local, family) x Q_repair(j), j the admissible row (a pool reference, or matched-tier or audit evidence) minimizing it. Step 5 runs j's check on every such local answer: a pass adopts the draft; a fail is a repair-mode escalation at j (DESIGN-6 O5: the draft plus the findings, the request and draft prefix reused, fix only what failed). The owner's 447 local-first order is no admission basis (step 2 does not allow it).",
+    "verifier": "the cheapest independent check the law can justify for a tool-free answer family: an admissible row's review of the draft against the request (REVAS: PASS, or FAIL with a numbered list of what is wrong or missing). A structural or self-consistency check by the local model itself costs nothing and is NOT independent evidence of the reference's result (the 447 screen passed q2's index error); the review has a measurable quota cost and is priced in E[Q] (the verify and repair cost shapes).",
+    "deterministic_verifiers": {},
+    "deterministic_verifiers_note": "none registered for the tool-free answer families (small talk, light explanation, light writing): no exact parser, test or schema decides them; the calculator and exact greetings stay zero-model paths before the law",
+    "candidate_floor": "capability only, never a family list: a tool-free answer family (tools none, shape answer), a reading with needs_tools none, a read-only node, the request alone on its first turn, no named file or material; the host offers the local row for light tool-free readings (Swift lawMayAnswerLocally)",
+    "draft_max_tokens": 512,
+    "draft_max_tokens_source": "rcc-plugin.mjs LOCAL_WORKER_MAX_TOKENS: the local worker's completion cap, the deterministic upper bound of a draft",
+    "check_pricing": "verify(j): j's answer anchor (the shape's measured OS-1 context) plus the draft (uncached) as input, j's answer output as output; repair(j) at the same row inside the provider cache window: the request and draft prefix cached, the findings (bounded by the verify output) uncached, j's answer output as output. Both are upper bounds while no check is measured (O4: the expensive reading when uncertain): a check never outputs more than answering and a repair never more than rewriting. Every check and repair attempt's usage is in the routing ledger for measurement.",
+    "source": "lead order for build 448 (2026-10-30): live q2 on 447 ('파이썬 list와 tuple 차이 설명해봐', law F2) bound the local row on basis owner_order and delivered a factual error past the structural screen"
   },
   "families": {
     "F1": {"name": "small talk", "tiers": [], "shape": "answer", "tools": "none"},

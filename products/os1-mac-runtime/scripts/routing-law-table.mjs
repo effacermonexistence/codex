@@ -25,7 +25,13 @@
  *    laddered attempts of law routes (a verifier or check verdict, an observed
  *    non-return or escalation; an undispatched or unjudged attempt is no
  *    evidence), with the Laplace prior; Core gives a row with evidence its
- *    reference's p_fail until its own runs move it (lead correction 1);
+ *    reference's p_fail until its own runs move it (lead correction 1). Build
+ *    448: the counting rule is Core's own (lawJudgedOutcome): the local model
+ *    counts only REVAS check verdicts (a 447 screen pass is no verdict on the
+ *    check the law now applies), and the snapshot records through_ms, after
+ *    which Core learns from its own ledger (DESIGN-8 step 5);
+ *  - build 448: the verify and repair cost shapes of a REVAS check of a local
+ *    draft (DESIGN-8 step 5, DESIGN-6 O5), on every answer cell's anchor;
  *  - the passed REVAS paired audits (evidence form c) per (model@effort, law
  *    family): the committed verdicts of scripts/routing-law-audit.mjs grade
  *    (lead correction 3; none yet);
@@ -34,6 +40,7 @@
  *    carries only its declared formula.
  *
  *   node scripts/routing-law-table.mjs snapshot-quota --quota <quota dir> --date <YYYYMMDD> --out-dir <dir>
+ *   node scripts/routing-law-table.mjs snapshot-ledger --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs snapshot --tiers <tiers.json> --quota <quota dir> --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs compile [--out <new file>]
  *   node scripts/routing-law-table.mjs embed
@@ -49,13 +56,16 @@
 import {createHash} from 'node:crypto';
 import {closeSync, constants, openSync, readFileSync, writeFileSync, writeSync} from 'node:fs';
 import {dirname, join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
+// snapshot never keeps its own copy of it.
+const {lawJudgedOutcome} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
-  ledger: 'scripts/routing-law-ledger-20261029.json',
+  ledger: 'scripts/routing-law-ledger-20261030.json',
   audits: 'scripts/routing-law-audits-20261029.json',
   policy: 'scripts/routing-law-policy.json',
   prices: 'Resources/model-price-table.json',
@@ -212,40 +222,36 @@ export function snapshotQuota(quotaDir, pricesBytes = readFileSync(join(ROOT, IN
     cells, context};
 }
 
-const LADDERED = new Set(['tier', 'graded', 'capability', 'law']);
-const LADDER_FAILURES = new Set(['ladder_verifier_failed', 'ladder_not_returned']);
-const CHECK_PASSES = new Set(['pass', 'screen_pass']);
-const CHECK_FAILURES = new Set(['fail', 'not_returned', 'screen_fail']);
-/** p_fail evidence (DESIGN-8 step 3: p_fail(c, family)). Only a JUDGED
- * laddered attempt counts: a verifier or check verdict, or an observed
- * failure (it did not return, or it escalated). An attempt never dispatched,
- * or one that completed with no verdict (no verifier registered, a control
- * left unverified) says nothing about whether it gave the reference's result.
- * The family is the law's own (the record's law receipt); an attempt routed
- * before the law has none and is counted as unattributed, never pooled into a
- * family (review of 447). */
+/** p_fail evidence (DESIGN-8 step 3: p_fail(c, family); step 5: every
+ * outcome updates it). Only a JUDGED laddered attempt counts, by Core's own
+ * rule (lawJudgedOutcome): a verifier or check verdict of the verifier the law
+ * applies to that row, or an observed failure (it did not return, or it
+ * escalated). An attempt never dispatched, one that completed with no verdict,
+ * a local answer the 447 screen passed (no verdict on the REVAS check the law
+ * now applies), a REVAS check or repair attempt, and an attempt routed before
+ * the law (no law family) say nothing and are only counted as excluded.
+ * Schema 3 (build 448) records `through_ms`, the latest settled record in the
+ * snapshot: Core adds its own ledger's judged runs after it. */
 export function snapshotLedger(ledgerBytes) {
-  const counts = new Map(), excluded = {undispatched: 0, unjudged: 0, no_law_family: 0};
+  const counts = new Map(), excluded = {undispatched: 0, unjudged: 0, no_law_family: 0, local_screen_only: 0};
+  let through = null;
   for (const line of ledgerBytes.toString('utf8').split('\n')) {
     if (!line.trim()) continue;
     let record;
     try { record = JSON.parse(line); } catch { continue; }
-    if (record?.schema !== 1 || !LADDERED.has(record.route_kind) || record.escalated === true) continue;
-    if (record.attempt_state === 'verified_not_dispatched') { excluded.undispatched++; continue; }
-    const failed = typeof record.escalation_outcome === 'string' || LADDER_FAILURES.has(record.attempt_state) ||
-      ['fail', 'not_returned'].includes(record.verifier_outcome) || CHECK_FAILURES.has(record.check_outcome);
-    const passed = !failed && (record.verifier_outcome === 'pass' || CHECK_PASSES.has(record.check_outcome));
-    if (!failed && !passed) { excluded.unjudged++; continue; }
-    const family = typeof record.law?.family === 'string' && /^[A-Za-z0-9-]{1,16}$/.test(record.law.family) ? record.law.family : null;
-    if (family === null) { excluded.no_law_family++; continue; }
-    const key = JSON.stringify([record.model, record.effort, family]);
+    if (Number.isSafeInteger(record?.settled_at_ms) && (through === null || record.settled_at_ms > through)) through = record.settled_at_ms;
+    const outcome = lawJudgedOutcome(record);
+    if (outcome === null) continue;
+    if (!outcome.key) { excluded[outcome.excluded] = (excluded[outcome.excluded] ?? 0) + 1; continue; }
+    const key = JSON.stringify([outcome.model, outcome.effort, outcome.family]);
     const value = counts.get(key) ?? {runs: 0, failures: 0};
-    value.runs++; if (failed) value.failures++;
+    value.runs++; if (outcome.failed) value.failures++;
     counts.set(key, value);
   }
-  return {schema: 2, source: {sha256: sha(ledgerBytes), basis: 'judged laddered descents (route kinds tier, graded, ' +
-      'capability, law), not escalated, keyed by the law family of their receipt; failure = escalated, not returned, ' +
-      'verifier or check fail; success = verifier or check pass'}, excluded,
+  return {schema: 3, source: {sha256: sha(ledgerBytes), basis: 'Core lawJudgedOutcome over the routing ledger: judged ' +
+      'laddered descents (route kinds tier, graded, capability, law), not escalated, keyed by the law family of their ' +
+      'receipt; a local draft by its REVAS check verdict only; failure = escalated, not returned, verifier, check or ' +
+      'REVAS fail; success = verifier, check or REVAS pass'}, through_ms: through, excluded,
     cells: [...counts].map(([key, value]) => {
       const [model, effort, family] = JSON.parse(key);
       return {model, effort, family, ...value};
@@ -507,7 +513,38 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
       }
     }
   }
-  for (const cell of Object.values(out)) for (const shape of SHAPES) if (cell[shape]) cell[shape].q = round(cell[shape].q, 6);
+  // Build 448 (DESIGN-8 step 5, DESIGN-6 O5): the REVAS check and repair of a
+  // local draft at an answer cell j, on j's own answer anchor and multiplier
+  // (q / list dollars of the anchor: its measured premium, or conversion x
+  // calibration), never on a request mix of its own:
+  //  - verify: the anchor context plus the draft (uncached; the local worker's
+  //    completion cap D, its deterministic upper bound) in, j's answer output
+  //    out (a check never outputs more than answering);
+  //  - repair at the same row inside the provider cache window: the request
+  //    and draft prefix (the anchor context plus the draft: D, or j's own
+  //    answer output when j repairs its own answer, whichever is larger)
+  //    cached, the findings (bounded by the check's output) uncached, j's
+  //    answer output out (a repair never outputs more than rewriting).
+  // Upper bounds while no check is measured (O4: the expensive reading when
+  // uncertain); every check and repair attempt's usage is in the routing ledger.
+  const draftTokens = policy.local_start?.draft_max_tokens;
+  if (!Number.isSafeInteger(draftTokens) || draftTokens <= 0) throw new Error('local_start.draft_max_tokens required');
+  for (const cell of Object.values(out)) {
+    const a = cell.answer;
+    const price = prices.models[cell.model];
+    if (!a || !price) continue;
+    const anchor = anchorOf(cell.pool === 'anthropic_shared' ? 'anthropic' : 'openai', 'answer');
+    const U = anchor?.uncached_median ?? 0, C = anchor?.cached_median ?? 0, O = a.output;
+    const base = dollars(price, U, C, O);
+    if (!(base > 0)) continue;
+    const multiplier = a.q / base;
+    cell.verify = {q: dollars(price, U + draftTokens, C, O) * multiplier, basis: 'revas_check_bound:' + a.basis,
+      output: O, draft_tokens: draftTokens};
+    const prefix = C + U + Math.max(draftTokens, O);
+    cell.repair = {q: dollars(price, O, prefix, O) * multiplier,
+      basis: 'revas_repair_same_row_bound:' + a.basis, output: O, findings_tokens: O, cached_prefix_tokens: prefix};
+  }
+  for (const cell of Object.values(out)) for (const shape of [...SHAPES, 'verify', 'repair']) if (cell[shape]) cell[shape].q = round(cell[shape].q, 6);
   return {cells: out, calibration, anchors};
 }
 
@@ -516,13 +553,14 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
  * change the model through it). The judged runs the ledger could not
  * attribute to a law family are reported, never used. */
 export function compilePFail(ledger, policy) {
-  if (ledger.schema !== 2) throw new Error('ledger snapshot schema 2 (judged, law-family keyed) required');
+  if (ledger.schema !== 3) throw new Error('ledger snapshot schema 3 (Core lawJudgedOutcome, through_ms) required');
   const out = {};
   for (const cell of ledger.cells) {
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
     out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures};
   }
-  return {prior: policy.laplace, cells: out, excluded: ledger.excluded,
+  return {prior: policy.laplace, cells: out, excluded: ledger.excluded, through_ms: ledger.through_ms ?? null,
+    learning: policy.p_fail_learning,
     key: 'model@effort|law family (judged runs only), pooled over surfaces; no judged run: the prior'};
 }
 
@@ -567,8 +605,10 @@ export function compileFamilies(evidence, policy) {
         return {tier: c.tier, when: validPredicate(mapped[c.tier], id + ' ' + c.tier), condition: c.when};
       });
     }
+    // Build 448: whether the local row is a CANDIDATE (a capability floor: a
+    // tool-free answer family); never an admission (DESIGN-8 step 2).
     out[id] = {tiers: [...tiers], tier_basis: basis, conditional, shape: family.shape, tools: family.tools,
-      local: policy.local_admission.families.includes(id)};
+      local_candidate: family.tools === 'none' && family.shape === 'answer'};
   }
   return out;
 }
@@ -608,7 +648,13 @@ export function compileTable(bytes) {
     references: policy.references, pool_units: policy.pool_units, exchange: policy.exchange,
     p_fail_inheritance: policy.p_fail_inheritance, value_of_information: policy.value_of_information,
     audits: compileAudits(audits),
-    local_admission: policy.local_admission, ask_back: policy.ask_back,
+    local_start: (() => {
+      // Core runs no deterministic verifier a table could name for a
+      // tool-free answer family: an entry it cannot run is refused here.
+      if (Object.keys(policy.local_start.deterministic_verifiers ?? {}).length)
+        throw new Error('local_start.deterministic_verifiers: Core runs none; an entry would admit the local row unchecked');
+      return policy.local_start;
+    })(), ask_back: policy.ask_back,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {
       const compiled = compileQuota(quota, evidence, policy, prices, profiles);
@@ -651,6 +697,12 @@ export function main(argv = process.argv.slice(2)) {
     writeNew(join(options['out-dir'], `routing-law-quota-${options.date}.json`), canonical(snapshotQuota(options.quota)));
     return 0;
   }
+  if (command === 'snapshot-ledger') {
+    // Build 448: the ledger input only (schema 3, Core's counting rule).
+    for (const key of ['ledger', 'date', 'out-dir']) if (!options[key]) throw new Error('snapshot-ledger needs --' + key);
+    writeNew(join(options['out-dir'], `routing-law-ledger-${options.date}.json`), canonical(snapshotLedger(readFileSync(options.ledger))));
+    return 0;
+  }
   if (command === 'snapshot') {
     for (const key of ['tiers', 'quota', 'ledger', 'date', 'out-dir']) if (!options[key]) throw new Error('snapshot needs --' + key);
     const dir = options['out-dir'];
@@ -690,7 +742,7 @@ export function main(argv = process.argv.slice(2)) {
     process.stdout.write(`routing law table sha256 ${digest}\n`);
     return checks.every(([, ok]) => ok) ? 0 : 1;
   }
-  throw new Error('usage: snapshot|snapshot-quota|compile|embed|check');
+  throw new Error('usage: snapshot|snapshot-quota|snapshot-ledger|compile|embed|check');
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try { process.exitCode = main(); } catch (error) { process.stderr.write(String(error.message ?? error) + '\n'); process.exitCode = 64; }

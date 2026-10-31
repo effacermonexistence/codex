@@ -76,7 +76,10 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
   assert.ok(result.audits.length > 0);
   for (const audit of result.audits) {
     assert.notEqual(audit.family, 'P');
-    assert.ok(audit.evidence_now.every(form => form.startsWith('x:') && !/=fail(?:,|$)/.test(form)), audit.id);
+    // A gap of evidence, or (build 448) the local model where it may only
+    // start as a REVAS verified start ('v:' its judge): its (c) audit.
+    assert.ok(audit.evidence_now.every(form => (form.startsWith('x:') && !/=fail(?:,|$)/.test(form)) ||
+      (audit.cell === 'qwen3.5:9b@none' && form.startsWith('v:'))), audit.id);
     // n is the PARITY bound at the family's tightest percentage tau (no grader
     // sensitivity measured: s = 1, a lower bound), never a cost break-even.
     if (audit.tau_excess_rate) assert.equal(audit.n, Math.ceil(Math.log(0.1) / Math.log(1 - audit.tau_excess_rate)), audit.id);
@@ -84,6 +87,17 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
     assert.equal(audit.voi, Math.max(audit.voi_now, audit.voi_after_reset ?? -Infinity));
     if (TABLE.families[audit.family]?.tools === 'agent' && audit.rows_saving > 0) assert.equal(audit.decision, 'not_auditable_tool_surface');
   }
+  // Build 448 (lead order): the local F1 and F2 audits are in the plan. F2's
+  // parity n comes from its tiers' tau; F1 (small talk) has no matched tier,
+  // so no parity bound exists and it cannot be admitted by (c) on this harness.
+  const localF1 = result.audits.find(a => a.id === 'qwen3.5:9b@none|F1');
+  const localF2 = result.audits.find(a => a.id === 'qwen3.5:9b@none|F2');
+  assert.ok(localF1 && localF2, 'local F1 and F2 audits planned');
+  assert.equal(localF1.pool, 'none');
+  assert.equal(localF1.blockers.includes('no_parity_bound'), true);
+  assert.ok(localF2.n > 0 && localF2.tau_excess_rate > 0);
+  assert.equal(localF2.cost.Cw + localF2.cost.Px > 0, true, 'its reference answers are paid; the local answers draw nothing');
+  assert.ok(localF2.saving_7d_path > 0, 'admitted by (c) the local row needs no per-answer check');
   // Until the grader's sensitivity is measured nothing is scheduled.
   assert.equal(result.scheduled.length, 0);
   assert.ok(Object.keys(result.totals.by_decision).every(d => !d.startsWith('scheduled')));
