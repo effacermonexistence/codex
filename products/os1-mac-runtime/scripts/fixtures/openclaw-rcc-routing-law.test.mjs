@@ -753,6 +753,12 @@ test('Core: the ask-back returns locally with no dispatch, unverified, and recor
   assert.equal(done.result.output, TABLE.ask_back.ko);
   assert.equal(done.result.task_verified, false);
   assert.equal(done.result.task_quality, 'execution_only');
+  // Build 448 (live q1 on 447): no native receipt and not task-verified, so it
+  // claims no verified execution; the host contract rejected the snapshot
+  // while it did (Tests/OS1ContextTests/RCCAskBackHostFixture.swift decodes
+  // this very snapshot through RCCRuntimeContract.decodeSnapshot).
+  assert.equal(done.result.execution_verified, false);
+  assert.equal(done.result.native_receipt, null);
   assert.equal(saved.law_receipt.family, 'F10');
   assert.equal(saved.plan_provenance, 'local_reading_ask_back');
   assert.equal(saved.resource_events[0].reason, 'host_local_reading_ask_back:' + lawOf(q).routing_law.reader);

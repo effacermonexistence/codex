@@ -6232,7 +6232,13 @@ class RCCRuntime {
         native_summary: null, usage: null, selected_config: config, requested_surface: null, instruction: executionTask(snapshot).request,
         dependencies: [], started_at_ms: now, finished_at_ms: now}];
       snapshot.state = askBack ? 'returned_unverified' : 'completed';
-      snapshot.result = {output, execution_verified: true, task_verified: !askBack,
+      // Build 448 (live q1 on 447): the host contract admits a verified
+      // execution only with a native receipt, or a task-verified all-local
+      // result (RCCRuntimeContract validate(Snapshot)). A question back is
+      // neither, so it claims no verified execution: with
+      // execution_verified true the host rejected the snapshot as invalid and
+      // the owner never saw the question (rcc_transport_preserved).
+      snapshot.result = {output, execution_verified: !askBack, task_verified: !askBack,
         task_quality: askBack ? 'execution_only' : 'task_verified', parity_state: 'unverified', native_receipt: null,
         native_summary: null, native_summaries: []};
     });

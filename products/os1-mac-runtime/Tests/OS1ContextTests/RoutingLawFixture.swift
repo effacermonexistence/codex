@@ -249,6 +249,8 @@ func runRoutingLawFixtures() throws {
     try check((try? JSONDecoder().decode(L.Receipt.self, from: Data(old.utf8)))?.answer?.intent == nil, "older receipts decode")
 
     print("Routing law fixtures passed (\(checks) checks)")
+    // Build 448: the real Core's routing-law snapshots through the host contract.
+    try runRoutingLawHostFixtures()
 }
 
 private func XCTUnwrap<T>(_ value: T?) throws -> T {
