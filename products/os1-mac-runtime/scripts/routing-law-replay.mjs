@@ -384,7 +384,9 @@ export function armsOf(row, intent, headroom = null, table = routingLawTable()) 
   // Review of round 3: whether the law arms read a different catalog from
   // build 446's (the current host's intents and profile signals), reported
   // with the draws on those rows so the population difference is visible.
-  const catalogDiffers = Boolean(row.law_catalog) && JSON.stringify(row.law_catalog) !== JSON.stringify(row.catalog);
+  const routingFacts = c => JSON.stringify(['routing_intent_v2', 'request_profile', 'request_class', 'owner_scope']
+    .map(key => c?.[key] ?? null));
+  const catalogDiffers = Boolean(row.law_catalog) && routingFacts(row.law_catalog) !== routingFacts(row.catalog);
   return {family, shape, rates, law, reading: law.routing_law.reading, catalog_differs: catalogDiffers,
     arms: {law447: {result: mine, priced: price(mine, law, realized)}, build446: {result: theirs, priced: price(theirs, b446)},
       all_reference: {result: allRef, priced: price(allRef, law)}, law447_modeled: {result: mine, priced: price(mine, law)}}};
@@ -603,7 +605,8 @@ function catalogPopulation(perRow, rows) {
   }, 0), 0));
   return {rows: differing.length, indices: differing.map(([, row]) => row.index),
     draw_priced: Object.fromEntries(ARMS.map(arm => [arm, priced(arm)])),
-    note: 'the law arms read the current host\'s catalogs (intents, profile signals); build 446 keeps its recorded ones'};
+    note: 'rows whose routing facts (intent, request profile, request class, owner scope) differ between the current ' +
+      'host\'s catalogs (law arms) and build 446\'s recorded ones (its arm)'};
 }
 function headroomLabel(headroom) {
   return headroom?.kind === 'pools' ? {kind: 'pools', ...(headroom.name ? {name: headroom.name} : {}),
