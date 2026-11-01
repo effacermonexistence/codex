@@ -83,10 +83,11 @@ func runRoutingLawHostFixtures() throws {
 
     // ---- Build 448 (DESIGN-8 step 2 (a)): small talk (owner question 12) on
     // the local row admitted by Core's deterministic verifier. Its pass
-    // delivers the draft after ONE dispatch; a factual claim re-reads it as F2
-    // (the judge checks the same draft and passes it); any other failure (the
-    // real local Q12 draft: a self-disclaimer) is the full answer at the next
-    // step. All three reach the owner through the host contract.
+    // delivers the draft after ONE dispatch; a factual claim (the real local
+    // Q12 draft: its self-statement is a claim the F2 judge weighs) re-reads
+    // it as F2 (the judge checks the same draft and passes it); any other
+    // failure (a refusal) is the full answer at the next step. All three reach
+    // the owner through the host contract.
     let detPassed = try coreFlow("det_pass", root: root)
     try check(detPassed.dispatches == 1, "a deterministic pass: the local draft only")
     let detPass = try hostPath(detPassed.snapshot, "det_pass")
@@ -96,12 +97,12 @@ func runRoutingLawHostFixtures() throws {
     let reread = try coreFlow("det_reread", root: root)
     try check(reread.dispatches == 2, "a factual claim: the draft and the F2 re-read's check")
     let rereadPass = try hostPath(reread.snapshot, "det_reread")
-    try check(rereadPass.result?.output == "피곤할 때는 카페인보다 수분 섭취가 도움이 돼요." &&
+    try check((rereadPass.result?.output ?? "").hasPrefix("안녕하세요! 저는 오늘도 정상적으로 작동하고 있습니다.") &&
               rereadPass.children[0].selectedConfig?.surface == .local, "the judge-passed draft is delivered as produced")
     let full = try coreFlow("det_full", root: root)
     try check(full.dispatches == 2, "another failure: the draft and the full answer at the next step")
     let fullAnswer = try hostPath(full.snapshot, "det_full")
-    try check(!(fullAnswer.result?.output ?? "정상적으로 작동").contains("정상적으로 작동") &&
+    try check(!(fullAnswer.result?.output ?? "답변해 드릴 수 없습니다").contains("답변해 드릴 수 없습니다") &&
               fullAnswer.children[0].selectedConfig?.surface != .local, "the owner never sees the failed local draft")
 
     print("Routing law host fixtures: \(checks) checks OK; model calls 0")

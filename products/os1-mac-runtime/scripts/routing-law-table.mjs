@@ -41,6 +41,7 @@
  *
  *   node scripts/routing-law-table.mjs snapshot-quota --quota <quota dir> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs snapshot-ledger --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
+ *   node scripts/routing-law-table.mjs snapshot-det-outcomes --drafts <drafts.json> --verifier <id> --family <F> --model <m> --effort <e> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs snapshot --tiers <tiers.json> --quota <quota dir> --ledger <routing-ledger.jsonl> --date <YYYYMMDD> --out-dir <dir>
  *   node scripts/routing-law-table.mjs compile [--out <new file>]
  *   node scripts/routing-law-table.mjs embed
@@ -61,12 +62,17 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
 // snapshot never keeps its own copy of it.
-const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
+const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS, lawDeterministicCheck} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
   ledger: 'scripts/routing-law-ledger-20261030.json',
   audits: 'scripts/routing-law-audits-20261029.json',
+  // Build 448 (review of 448): a deterministic verifier's pre-registered
+  // held-out validation (labeled replies, frozen before the verifier ran on
+  // them) and its verdicts on the local model's real drafts (p_fail).
+  det_validation: 'scripts/routing-law-det-validation-20261031.json',
+  det_outcomes: 'scripts/routing-law-det-outcomes-20261031.json',
   policy: 'scripts/routing-law-policy.json',
   prices: 'Resources/model-price-table.json',
   profiles: 'Config/production.json',
@@ -256,6 +262,21 @@ export function snapshotLedger(ledgerBytes) {
       const [model, effort, family] = JSON.parse(key);
       return {model, effort, family, ...value};
     }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)};
+}
+
+/** Build 448: the det outcomes input from a drafts file. */
+export function snapshotDetOutcomes(file, {verifier, family, model, effort, basis = null}) {
+  if (!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, verifier)) throw new Error('not an id Core runs: ' + verifier);
+  const drafts = file.drafts ?? [];
+  const items = drafts.filter(d => typeof d.request === 'string' && typeof d.draft === 'string').map(d => {
+    const v = lawDeterministicCheck(verifier, d.request, d.draft, Number.isSafeInteger(d.output_tokens) ? {output_tokens: d.output_tokens} : null);
+    return {request_sha256: sha(Buffer.from(d.request)), draft_sha256: sha(Buffer.from(d.draft)), passed: v.passed, failures: v.failures};
+  });
+  const failures = items.filter(i => !i.passed).length;
+  return {schema: 1, source: {sha256: sha(Buffer.from(JSON.stringify(drafts))), generator: file.generator ?? null,
+      basis: basis ?? 'Core lawDeterministicCheck on the local model\'s drafts of the corpus requests the law reads as ' + family},
+    cells: [{verifier, family, model, effort, runs: items.length, failures, basis: 'drafts ' + items.length + ', verifier passes ' +
+      (items.length - failures)}], items};
 }
 
 // ---- compile: the law's inputs ---------------------------------------------
@@ -552,15 +573,29 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
  * over surfaces only (a grant that moves a row to another surface must not
  * change the model through it). The judged runs the ledger could not
  * attribute to a law family are reported, never used. */
-export function compilePFail(ledger, policy) {
+export function compilePFail(ledger, policy, detOutcomes = null) {
   if (ledger.schema !== 3) throw new Error('ledger snapshot schema 3 (Core lawJudgedOutcome, through_ms) required');
   const out = {};
   for (const cell of ledger.cells) {
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
     out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures};
   }
+  // Build 448 (review of 448): Core's own deterministic verdicts on a row's
+  // real drafts are judged outcomes too (the verifier IS the check the law
+  // applies; zero quota, deterministic at temperature 0), counted only for
+  // the verifier the policy runs for that family.
+  const det = [];
+  for (const cell of detOutcomes?.cells ?? []) {
+    if (policy.deterministic_verifiers?.[cell.family]?.id !== cell.verifier)
+      throw new Error('det outcomes of ' + cell.verifier + ' for ' + cell.family + ': not the verifier the policy runs');
+    if (!Number.isSafeInteger(cell.runs) || !Number.isSafeInteger(cell.failures) || cell.failures < 0 || cell.failures > cell.runs)
+      throw new Error('bad det outcome cell ' + cell.model + '@' + cell.effort + '|' + cell.family);
+    const key = cell.model + '@' + cell.effort + '|' + cell.family;
+    out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures};
+    det.push({key, verifier: cell.verifier, runs: cell.runs, failures: cell.failures, basis: cell.basis});
+  }
   return {prior: policy.laplace, cells: out, excluded: ledger.excluded, through_ms: ledger.through_ms ?? null,
-    learning: policy.p_fail_learning,
+    learning: policy.p_fail_learning, ...(det.length ? {deterministic: det} : {}),
     key: 'model@effort|law family (judged runs only), pooled over surfaces; no judged run: the prior'};
 }
 
@@ -638,11 +673,36 @@ export function compileAudits(audits) {
     '; admits only a parity audit (n_parity informative questions sampled at random), a cost-sized pass is provisional', cells: out};
 }
 
+/** A deterministic verifier's pre-registered held-out validation (review of
+ * 448), recomputed here from the committed labeled sets with Core's own
+ * check: every item's verdict against its label, frozen before the verifier
+ * ran on it. A false pass is a reply labeled a violation that the verifier
+ * passes. The verifier admits rows only when no set has one. */
+export function validateDeterministicVerifier(id, validation) {
+  if (validation?.schema !== 1 || !Array.isArray(validation.sets)) throw new Error('det validation schema 1 required');
+  const sets = validation.sets.filter(set => set.verifier === id).map(set => {
+    if (!Array.isArray(set.items) || !set.items.length) throw new Error('empty det validation set ' + set.name);
+    const counts = {violations: 0, false_passes: 0, clean: 0, false_failures: 0};
+    for (const item of set.items) {
+      if (!['clean', 'violation'].includes(item.label) || typeof item.request !== 'string' || typeof item.reply !== 'string')
+        throw new Error('bad det validation item in ' + set.name);
+      const verdict = lawDeterministicCheck(id, item.request, item.reply,
+        Number.isSafeInteger(item.output_tokens) ? {output_tokens: item.output_tokens} : null);
+      if (item.label === 'violation') { counts.violations++; if (verdict.passed) counts.false_passes++; }
+      else { counts.clean++; if (!verdict.passed) counts.false_failures++; }
+    }
+    return {name: set.name, frozen: set.frozen, items_sha256: sha(Buffer.from(JSON.stringify(set.items))), ...counts};
+  });
+  const admits = sets.length > 0 && sets.every(set => set.violations > 0 && set.false_passes === 0);
+  return {criterion: validation.criterion, sets, admits};
+}
 /** DESIGN-8 step 2 (a) (build 448): the families with a deterministic
  * verifier, keyed by law family: only an id Core runs
  * (LAW_DETERMINISTIC_VERIFIERS: an entry Core cannot run would admit a row
- * unchecked), on a tool-free answer family (it reads a reply, nothing else). */
-export function compileDeterministicVerifiers(policy) {
+ * unchecked), made for that law family (review of 448: a small-talk check
+ * admits nothing elsewhere), on a tool-free answer family (it reads a
+ * reply), with its held-out validation (Core admits only when it passed). */
+export function compileDeterministicVerifiers(policy, validation = null) {
   const out = {};
   for (const [family, entry] of Object.entries(policy.deterministic_verifiers ?? {})) {
     const fam = policy.families[family];
@@ -650,9 +710,13 @@ export function compileDeterministicVerifiers(policy) {
     if (entry === null || typeof entry !== 'object' || Object.keys(entry).join() !== 'id' ||
         !Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id))
       throw new Error('deterministic verifier ' + family + ': not an id Core runs');
+    if (!LAW_DETERMINISTIC_VERIFIERS[entry.id].law_families.includes(family))
+      throw new Error('deterministic verifier ' + family + ': ' + entry.id + ' is made for ' +
+        LAW_DETERMINISTIC_VERIFIERS[entry.id].law_families.join(','));
     if (fam.shape !== 'answer' || fam.tools !== 'none')
       throw new Error('deterministic verifier ' + family + ': a reply check needs a tool-free answer family');
-    out[family] = {id: entry.id};
+    if (validation === null) throw new Error('deterministic verifier ' + family + ': no held-out validation');
+    out[family] = {id: entry.id, validation: validateDeterministicVerifier(entry.id, validation)};
   }
   return out;
 }
@@ -660,6 +724,7 @@ export function compileDeterministicVerifiers(policy) {
 export function compileTable(bytes) {
   const json = name => JSON.parse(bytes[name].toString('utf8'));
   const evidence = json('evidence'), quota = json('quota'), ledger = json('ledger'), policy = json('policy');
+  const detValidation = json('det_validation'), detOutcomes = json('det_outcomes');
   const prices = json('prices'), profiles = json('profiles'), audits = json('audits');
   const tau = compileTau(evidence);
   return {schema: 1, policy: 'routing_law_447', objective: policy.objective,
@@ -672,14 +737,14 @@ export function compileTable(bytes) {
         throw new Error('local_start.deterministic_verifiers moved to deterministic_verifiers (a family verifier admits any row)');
       return policy.local_start;
     })(), ask_back: policy.ask_back,
-    deterministic_verifiers: compileDeterministicVerifiers(policy),
+    deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation),
     deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {
       const compiled = compileQuota(quota, evidence, policy, prices, profiles);
       return {quota: compiled.cells, quota_calibration: compiled.calibration, quota_anchors: compiled.anchors};
     })(),
-    p_fail: compilePFail(ledger, policy)};
+    p_fail: compilePFail(ledger, policy, detOutcomes)};
 }
 
 export function readInputs(root = ROOT) {
@@ -722,6 +787,17 @@ export function main(argv = process.argv.slice(2)) {
     writeNew(join(options['out-dir'], `routing-law-ledger-${options.date}.json`), canonical(snapshotLedger(readFileSync(options.ledger))));
     return 0;
   }
+  if (command === 'snapshot-det-outcomes') {
+    // Build 448 (review of 448): Core's deterministic verdicts on a row's
+    // real drafts (a private drafts file: {generator, drafts: [{request,
+    // draft, output_tokens}]}); only digests and verdicts survive.
+    for (const key of ['drafts', 'verifier', 'family', 'model', 'effort', 'date', 'out-dir'])
+      if (!options[key]) throw new Error('snapshot-det-outcomes needs --' + key);
+    const file = JSON.parse(readFileSync(options.drafts, 'utf8'));
+    writeNew(join(options['out-dir'], `routing-law-det-outcomes-${options.date}.json`),
+      canonical(snapshotDetOutcomes(file, options)));
+    return 0;
+  }
   if (command === 'snapshot') {
     for (const key of ['tiers', 'quota', 'ledger', 'date', 'out-dir']) if (!options[key]) throw new Error('snapshot needs --' + key);
     const dir = options['out-dir'];
@@ -761,7 +837,7 @@ export function main(argv = process.argv.slice(2)) {
     process.stdout.write(`routing law table sha256 ${digest}\n`);
     return checks.every(([, ok]) => ok) ? 0 : 1;
   }
-  throw new Error('usage: snapshot|snapshot-quota|snapshot-ledger|compile|embed|check');
+  throw new Error('usage: snapshot|snapshot-quota|snapshot-ledger|snapshot-det-outcomes|compile|embed|check');
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try { process.exitCode = main(); } catch (error) { process.stderr.write(String(error.message ?? error) + '\n'); process.exitCode = 64; }

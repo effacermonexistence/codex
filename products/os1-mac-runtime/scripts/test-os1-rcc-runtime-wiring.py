@@ -1280,7 +1280,7 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
       "export function lawJudgedOutcome(record) {" in RUNTIME and "export function lawLearnedPFail(" in RUNTIME and
       "lawLearnRecord(this.lawLearned, record, routingLawTable()?.p_fail?.through_ms ?? null);" in RUNTIME and
       "resolveRoutePlan(proposed, admitted, catalog, boundAt,\n        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy, lawLearned: this.lawLearned});" in RUNTIME and
-      "const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS, lawDeterministicCheck} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
       "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
       (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
       (ROOT / "scripts/routing-law-ledger-20261030.json").is_file(),
@@ -1288,15 +1288,24 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
 # Build 448 (lead order 2026-10-31, DESIGN-8 step 2 (a)): small talk's deterministic verifier.
 TABLE_COMPILER = (ROOT / "scripts/routing-law-table.mjs").read_text()
 check("export function lawDeterministicCheck(id, request, output, usage = null, draftMaxTokens = 512) {" in RUNTIME and
-      "no_claim_reply_v1: Object.freeze(" in RUNTIME and
+      "no_claim_reply_v2: Object.freeze({family: 'small_talk', law_families: Object.freeze(['F1']), shape: 'answer'})" in RUNTIME and
+      "no_claim_reply_v1" not in RUNTIME.split("// Review of 448 (fe01246c)")[0] and
+      "if (entry && entry.check_outcome !== 'det_fail') entry.check_outcome = 'revas_no_verdict';" in RUNTIME and
+      "candidate.surface === 'local' ? result.usage ?? null : null, detVerifier.draft_max_tokens)" in RUNTIME and
+      "spec.law_families.includes(family) && entry.validation?.admits === true" in RUNTIME and
+      "return {excluded: 'retired_verifier'};" in RUNTIME and
       "export function lawRereadFamily(reading, family, table = routingLawTable()) {" in RUNTIME and
       "const detVerifier = !writer && family !== 'P' ? lawDeterministicVerifier(table, family) : null;" in RUNTIME and
       "lawRereadAs: as});" in RUNTIME and
       "const det = detVerifier && deliverable ? lawDeterministicCheck(detVerifier.id, node.instruction, result.output," in RUNTIME and
-      "?? {passed: false, failures: ['verifier_unavailable']} : null;" in RUNTIME and
+      "{passed: false, failures: ['verifier_unavailable']} : null;" in RUNTIME and
       "await this._revasQueueCheck(taskID, node, candidate, result);" in RUNTIME and
       "const DET_CHECK_OUTCOMES = new Set(['det_pass', 'det_fail']);" in RUNTIME and
-      "export function compileDeterministicVerifiers(policy) {" in TABLE_COMPILER and
+      "export function compileDeterministicVerifiers(policy, validation = null) {" in TABLE_COMPILER and
+      "LAW_DETERMINISTIC_VERIFIERS[entry.id].law_families.includes(family)" in TABLE_COMPILER and
+      "export function validateDeterministicVerifier(id, validation) {" in TABLE_COMPILER and
+      (ROOT / "scripts/routing-law-det-validation-20261031.json").is_file() and
+      (ROOT / "scripts/routing-law-det-outcomes-20261031.json").is_file() and
       "!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id)" in TABLE_COMPILER and
       "law_delivery_after_det_fail" in (ROOT / "scripts/route-replay.mjs").read_text() and
       'coreFlow("det_full", root: root)' in HOST_FIXTURE,

@@ -23,7 +23,7 @@ import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, 
   lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawRereadFamily,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger,
-  compileDeterministicVerifiers} from '../routing-law-table.mjs';
+  compileDeterministicVerifiers, validateDeterministicVerifier, snapshotDetOutcomes} from '../routing-law-table.mjs';
 import {auditDeliveryPolicy} from '../route-replay.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -32,6 +32,18 @@ const OWNER = JSON.parse(readFileSync(join(ROOT, 'scripts/fixtures/routing-law-o
 const TABLE = routingLawTable();
 const question = n => OWNER.questions.find(q => q.n === n);
 const lawOf = (q, mutate = c => c) => mutate(lawCatalog(q, q.intent));
+// Build 448 (review): the law's catalog with every row unavailable but the
+// pool references, the local row and the F2 judge (claude-chat opus@max),
+// where the local row's start is the argmin of small talk (the full
+// catalog's argmin is a cloud row the deterministic verifier admits at the
+// Laplace prior): Core's local det paths run on it.
+const referencesAndLocal = c => ({...c, candidates: c.candidates.map(row => row.surface === 'local' ||
+  Object.values(TABLE.references).includes(row.model) || lawKey(row) === 'claude-chat:claude-opus-5-5@max' ? row :
+  {...row, availability: 'unavailable'})});
+// The local model's measured p_fail on small talk (Core's verdicts on its real
+// drafts of the corpus F1 requests, the table's det outcomes, Laplace prior).
+const LOCAL_F1 = TABLE.p_fail.cells['qwen3.5:9b@none|F1'];
+const LOCAL_F1_P = (LOCAL_F1.failures + 1) / (LOCAL_F1.runs + 2);
 
 // ---- The compiled table: from the data, pinned three times. ----------------
 test('the table is the compiler output of the committed inputs, pinned in Core, Resources and Swift', () => {
@@ -143,8 +155,11 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   assert.equal(lawQuota(TABLE, row('codex', 'gpt-5.5', 'high'), 'answer'), null); // not on the price table
   // p_fail(c, family): judged runs of that model@effort in that law family; the
   // committed ledger has none attributed to a law family (every judged run
-  // predates the law): every estimate is the Laplace prior 1/2, never pooled.
-  assert.deepEqual(TABLE.p_fail.cells, {});
+  // predates the law): every estimate is the Laplace prior 1/2, never pooled,
+  // except small talk's local row, judged by Core's deterministic verifier on
+  // the local model's real drafts of the corpus F1 requests (review of 448).
+  assert.deepEqual(TABLE.p_fail.cells, {'qwen3.5:9b@none|F1': {runs: 54, failures: 38}});
+  assert.deepEqual(TABLE.p_fail.deterministic.map(d => [d.key, d.verifier]), [['qwen3.5:9b@none|F1', 'no_claim_reply_v2']]);
   assert.ok(TABLE.p_fail.excluded.undispatched > 0 && TABLE.p_fail.excluded.unjudged > 0);
   const astra = row('codex', 'gpt-6-astra', 'ultra'), sol = row('codex', 'gpt-6.1-sol', 'medium');
   assert.equal(lawPFail(TABLE, sol, 'F5a'), 0.5);
@@ -519,13 +534,16 @@ test('review of 447: a class certificate whose tuple cannot run falls to the law
   }
   const exhausted = {...certified, candidates: certified.candidates.filter(row => row.quota_pool !== 'openai_codex')};
   const fell = routeOf(q.request, exhausted);
-  assert.equal(fell.route, 'local:qwen3.5:9b@none');
   assert.match(fell.reason, /admitted_law_F1/);
+  // The argmin of every row the verifier admits: the local row at its
+  // measured p_fail, a pool row at the Laplace prior (review of 448).
+  assert.equal(fell.route, fell.law.argmin);
+  const pick = fell.law.candidates.find(([key]) => key === fell.law.argmin);
+  assert.equal(pick[1], 'a:no_claim_reply_v2');
   const local = fell.law.candidates.find(([key]) => key.startsWith('local:'));
-  assert.equal(local[1], 'a:no_claim_reply_v1');
-  assert.equal(local[3], fell.law.eq, 'the deterministically checked local start is the argmin');
+  assert.equal(local[1], 'a:no_claim_reply_v2');
   for (const [key, , , eq, excluded] of fell.law.candidates)
-    if (excluded === null && key !== local[0]) assert.ok(eq > local[3], key);
+    if (excluded === null && key !== pick[0]) assert.ok(eq >= pick[3] - 1e-9, key);
   // A light write reading with no tool need on a writer node (an inline text
   // edit) has no workspace target: priced as an answer, not agentic turns.
   const w = question(6);
@@ -815,14 +833,18 @@ test('build 448: the local row is admissible only by (a) or (c); otherwise it st
   assert.deepEqual(lawLocalEvidence(audited, 'qwen3.5:9b', 'F2'), {form: 'c', audit: 'audit-0123456789ab', tiers: [], excess: 0});
   assert.equal(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F2'), null, 'no deterministic verifier, no audit: not admissible');
   // F1 (small talk): Core's deterministic verifier is evidence (a) (lead
-  // order 2026-10-31); a light explanation (F2) has none.
-  assert.deepEqual(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F1'), {form: 'a', verifier: 'no_claim_reply_v1', tiers: [], excess: 0});
-  assert.deepEqual(TABLE.deterministic_verifiers, {F1: {id: 'no_claim_reply_v1'}});
+  // order 2026-10-31) once its held-out validation passed (review of 448); a
+  // light explanation (F2) has none.
+  assert.deepEqual(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F1'), {form: 'a', verifier: 'no_claim_reply_v2', tiers: [], excess: 0});
+  assert.deepEqual(Object.keys(TABLE.deterministic_verifiers), ['F1']);
+  assert.equal(TABLE.deterministic_verifiers.F1.id, 'no_claim_reply_v2');
+  assert.equal(TABLE.deterministic_verifiers.F1.validation.admits, true);
   const q12 = question(12);
   const small = routeOf(q12.request, lawOf(q12));
   assert.equal(small.route, q12.expected_route);
-  assert.equal(small.route, 'local:qwen3.5:9b@none');
-  assert.equal(small.law.candidates.find(([key]) => key.startsWith('local:'))[1], 'a:no_claim_reply_v1');
+  assert.equal(small.law.candidates.find(([key]) => key.startsWith('local:'))[1], 'a:no_claim_reply_v2');
+  // Without the pool's other rows the local start is the argmin.
+  assert.equal(routeOf(q12.request, lawOf(q12, referencesAndLocal)).route, 'local:qwen3.5:9b@none');
 });
 
 test('build 448: REVAS prompts and verdicts: one byte-identical prefix, a first-line verdict, numbered findings', () => {
@@ -908,29 +930,35 @@ test('build 448: a REVAS pass adopts the local draft as produced; no verdict esc
 });
 
 test('build 448: p_fail learning moves E[Q] a priori (DESIGN-6 O5.3): judged local outcomes price the F1 start', async t => {
-  const q = question(12); // small talk: the local row, admitted by Core's deterministic verifier
+  const q = question(12); // small talk: every row Core's deterministic verifier reads is admissible (form a)
   const catalog = lawOf(q);
   const prior = routeOf(q.request, catalog);
-  assert.equal(prior.route, 'local:qwen3.5:9b@none');
-  assert.equal(prior.law.det.p_fail, 0.5);
-  const escalation = prior.ladder.verifier.escalation.priced;
-  assert.ok(Math.abs(prior.law.eq - 0.5 * escalation) < 1e-6);
+  // The local row's measured p_fail (38 of 54 real drafts fail no_claim_reply_v2)
+  // prices it above a pool row at the prior: the law sends small talk there.
+  assert.equal(prior.route, q.expected_route);
+  assert.notEqual(prior.route, 'local:qwen3.5:9b@none');
+  const local = prior.law.candidates.find(([key]) => key.startsWith('local:'));
+  assert.ok(local[3] > prior.law.eq);
   const plan = hostPlan(runtimeTask(q, catalog), catalog);
   const id = plan.nodes[0].id;
   const at = passes => resolveRoutePlan(plan, runtimeTask(q, catalog), catalog, clockOf(catalog), {lawLearned: passes});
-  const passed = at(new Map([['qwen3.5:9b@none|F1', {runs: 3, failures: 0}]]));
+  const base = at(new Map());
+  const localBase = base.routes[id].law.candidates.find(([key]) => key.startsWith('local:'));
+  const escalation = localBase[3] / LOCAL_F1_P;
+  // Judged local passes after the snapshot move the argmin to the local start.
+  const passed = at(new Map([['qwen3.5:9b@none|F1', {runs: 30, failures: 0}]]));
   assert.equal(passed.decisions[id].model, 'qwen3.5:9b');
-  assert.equal(passed.routes[id].law.det.p_fail, 0.2);
-  assert.ok(Math.abs(passed.routes[id].law.eq - 0.2 * escalation) < 1e-6);
-  // Judged local failures move the argmin: the local start (p_fail 0.9) now
-  // costs more than the cheapest other row the same verifier admits.
+  const p30 = (LOCAL_F1.failures + 1) / (LOCAL_F1.runs + 30 + 2);
+  assert.ok(Math.abs(passed.routes[id].law.det.p_fail - Math.round(p30 * 1e6) / 1e6) < 1e-6);
+  assert.ok(Math.abs(passed.routes[id].law.eq - p30 * escalation) < 1e-5);
+  // Judged local failures keep it there no longer.
   const failed = at(new Map([['qwen3.5:9b@none|F1', {runs: 8, failures: 8}]]));
   const moved = failed.routes[id].law;
   assert.notEqual(failed.decisions[id].model, 'qwen3.5:9b');
   const localNow = moved.candidates.find(([key]) => key.startsWith('local:'));
-  assert.equal(localNow[1], 'a:no_claim_reply_v1');
-  assert.ok(Math.abs(localNow[3] - 0.9 * escalation) < 1e-6);
-  assert.equal(moved.candidates.find(([key]) => key === moved.argmin)[1], 'a:no_claim_reply_v1');
+  assert.equal(localNow[1], 'a:no_claim_reply_v2');
+  assert.ok(Math.abs(localNow[3] - (LOCAL_F1.failures + 8 + 1) / (LOCAL_F1.runs + 8 + 2) * escalation) < 1e-5);
+  assert.equal(moved.candidates.find(([key]) => key === moved.argmin)[1], 'a:no_claim_reply_v2');
   assert.ok(moved.eq < localNow[3]);
   // The durable Core learns the same from its own routing ledger at start
   // (records after the table's snapshot, Core lawJudgedOutcome): a local
@@ -941,7 +969,7 @@ test('build 448: p_fail learning moves E[Q] a priori (DESIGN-6 O5.3): judged loc
   const record = n => ({schema: 1, task_id: 'seed', node_id: 'node_0', attempt_id: 'seed-' + n, route_kind: 'law', escalated: false,
     surface: 'local', model: 'qwen3.5:9b', effort: 'none', verifier_outcome: 'not_registered', settled_at_ms: after + n,
     attempt_state: n === 3 ? 'ladder_verifier_failed' : 'completed', check_outcome: n === 3 ? 'det_fail' : 'det_pass',
-    law: {family: 'F1'}});
+    law: {family: 'F1'}, ladder: {det_verifier: 'no_claim_reply_v2'}});
   const ledger = openRoutingLedger(dir);
   for (const n of [1, 2, 3]) ledger.append(record(n));
   const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true, catalog: async () => catalog, execute: async () => { throw new Error('x'); }});
@@ -991,108 +1019,188 @@ test('Core: the ask-back returns locally with no dispatch, unverified, and recor
 
 // ---- Build 448: DESIGN-8 step 2 (a), small talk's deterministic verifier --
 // Lead order 2026-10-31: for small talk the reference's result has no factual
-// content, so its quality criterion is checked by Core's own code. The local
-// draft below is qwen3.5:9b's real reply to owner question 12 (local Ollama,
-// the production local chat prompt, temperature 0; 2026-10-31).
+// content, so its quality criterion is checked by Core's own code. Review of
+// 448: no_claim_reply_v1's open whitelists passed claims (withdrawn);
+// no_claim_reply_v2 is a closed grammar validated on frozen held-out sets.
+// The local draft below is qwen3.5:9b's real reply to owner question 12 (local
+// Ollama, the production local chat prompt, temperature 0; byte-identical on
+// 2026-10-31 in three independent runs).
 const Q12_LOCAL_DRAFT = '안녕하세요! 저는 오늘도 정상적으로 작동하고 있습니다. 하지만 저는 감정이나 피로를 느끼지 못해요. ' +
   '혹시 너무 지치셨다면 잠시 쉬어가시는 게 좋겠습니다.';
-const SMALL_TALK_PASS = '오늘 하루 정말 고생 많으셨어요. 무슨 일이 있었는지 들려주실래요? 푹 쉬세요!';
+const SMALL_TALK_PASS = '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!';
 const SMALL_TALK_CLAIM = '피곤할 때는 카페인보다 수분 섭취가 도움이 돼요.';
+const SMALL_TALK_REFUSAL = '죄송하지만 답변해 드릴 수 없습니다.';
+const V2 = 'no_claim_reply_v2';
 
-test('build 448 (a): no_claim_reply_v1 passes a conversational reply and fails each rule it names', () => {
+test('build 448 (a): no_claim_reply_v2 is a closed grammar: courtesy built from closed lists and the owner\'s words passes; any claim fails', () => {
   const R = question(12).request;
-  const check = (output, usage = null, request = R) => lawDeterministicCheck('no_claim_reply_v1', request, output, usage, 512);
-  for (const [request, reply] of [[R, SMALL_TALK_PASS], ['안녕! 좋은 아침이야', '안녕하세요! 오늘 하루도 활기차게 보내시길 바랍니다.'],
-    ['응 고마워', '네, 무엇을 도와드릴까요?'], ['Sounds good, thanks!', "You're welcome! Let me know if you need anything else."],
-    ['Go ahead', 'Understood. What would you like to discuss or do today?']])
+  const check = (output, usage = null, request = R) => lawDeterministicCheck(V2, request, output, usage, 512);
+  for (const [request, reply] of [[R, SMALL_TALK_PASS], [R, '피곤하셨겠어요. 오늘 하루 어떠셨어요?'], [R, '오늘 많이 피곤했구나. 푹 쉬어!'],
+    ['안녕! 좋은 아침이야', '안녕하세요! 오늘 하루도 활기차게 보내시길 바랍니다.'], ['응 고마워', '네, 무엇을 도와드릴까요?'],
+    ['나 오늘 생일이야!', '생일 축하해! 행복한 하루 보내!'], ['주말에 부산 가는데 설렌다', '주말 잘 보내세요! 많이 설레시겠어요.'],
+    ['Sounds good, thanks!', "You're welcome! Let me know if you need anything else."],
+    ['Feeling a bit down today', "I'm so sorry to hear you're feeling down today."], ['Good night!', 'Good night to you too! Sleep well.']])
     assert.deepEqual(check(reply, null, request), {passed: true, failures: []}, reply);
-  const cases = [['', ['empty']], ['Thanks for asking! I hope you get some rest tonight.', ['language']],
-    ['죄송하지만 답변해 드릴 수 없습니다.', ['refusal']], ['제가 날씨를 검색해 볼게요.', ['action_promise', 'factual_claim']],
+  const cases = [['', ['empty']], ['Thanks for asking! I hope you get some rest tonight.', ['language', 'factual_claim']],
+    [SMALL_TALK_REFUSAL, ['refusal', 'factual_claim']], ['제가 날씨를 검색해 볼게요.', ['action_promise', 'factual_claim']],
     [SMALL_TALK_CLAIM, ['factual_claim']], ['고생 많으셨어요! 오늘은 금요일이라 더 피곤하셨겠어요.', ['factual_claim']],
     ['고생 많으셨어요. 저는 3시간 동안 쉬었어요.', ['factual_claim']],
-    [Q12_LOCAL_DRAFT, ['refusal', 'factual_claim']], ['오늘 하루 정말 고생 많으셨어요. '.repeat(40), ['length']]];
+    // The real Q12 draft: a self-statement is no refusal; it is a claim the
+    // re-read's REVAS judge, not this code, weighs against the reference.
+    [Q12_LOCAL_DRAFT, ['factual_claim']], ['오늘 하루 정말 고생 많으셨어요. '.repeat(40), ['length']]];
   for (const [reply, failures] of cases) assert.deepEqual(check(reply), {passed: false, failures}, reply);
-  // A reply cut at the local worker's cap is incomplete.
+  // Review of 448: claims beside a courtesy word, number words, relative
+  // time, foreign scripts, a question carrying a proposition, a fabricated
+  // completion and an unnamed feeling all fail (v1 passed every one).
+  for (const [request, reply] of [[R, '푹 쉬세요, 타이레놀 두 알 먹으면 금방 나아요.'], [R, '피곤한 건 갑상선 기능 저하일 가능성이 커요.'],
+    [R, '좋은 하루 보내세요, 내일은 공휴일이에요!'], [R, '힘드셨겠지만 내일은 비가 많이 온대요.'], [R, '피곤하셨겠어요. 오늘은 早点休息 하세요!'],
+    [R, '피곤하셨겠어요. Отдыхайте 하세요!'], [R, '저도 오늘 하루 종일 일해서 피곤해요.'], [R, '세종대왕이 한글을 만드신 거 아세요?'],
+    [R, '고생하셨어요! 혹시 어제 잠을 네 시간밖에 못 주무셨나요?'], [R, '피곤하셨겠어요. 오늘 서울은 맑으니 산책해 보세요!'],
+    [R, '저도 오늘 하루 정말 좋아요'], [R, '나도 피곤했어 반가워'], [R, '많이 아프셨겠어요'], [R, '기분 좋은 날이네요!'],
+    ['다 했어?', '네 모두 완료했으니 푹 쉬세요!'], ['빌드 됐어?', '빌드 잘 끝났어요, 수고하셨어요!'],
+    ['안녕! 좋은 아침이야', '좋은 아침이에요! 오늘 비트코인 가격이 많이 올랐네요, 좋은 하루 되세요!'],
+    ['How was your day?', 'Great! The stock market closed up today, hope you had a nice day too!'],
+    ['Happy Friday!', 'Great day today!'], ["How's it going?", "It's going well, thank you!"], ["I'm bored", 'Congrats!'],
+    ['굿모닝', 'Good morning!'], ['Good morning', 'hope you rest well, the eiffel tower is in berlin by the way!']])
+    assert.equal(check(reply, null, request).passed, false, reply);
+  // A reply cut at a capped worker's limit is incomplete (the runtime passes
+  // usage only for the local row).
   assert.deepEqual(check('고생 많으셨어요!', {output_tokens: 512}), {passed: false, failures: ['length']});
   assert.deepEqual(check('고생 많으셨어요!', {output_tokens: 40}), {passed: true, failures: []});
-  // English small talk: a name or a recommendation is a claim.
   assert.deepEqual(check('Here are a few: "Piranesi" by Susanna Clarke. Enjoy!', null, 'Book recommendations for summer?').failures,
     ['factual_claim']);
-  assert.equal(lawDeterministicCheck('not_a_core_verifier', R, SMALL_TALK_PASS), null);
+  for (const retired of ['no_claim_reply_v1', 'not_a_core_verifier']) assert.equal(lawDeterministicCheck(retired, R, SMALL_TALK_PASS), null);
 });
 
-test('build 448 (a): only an id Core runs compiles, on a tool-free answer family; the table carries F1 only', () => {
+test('build 448 (a): the held-out validation is recomputed from the committed sets: zero false passes, false failures reported', () => {
+  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261031.json'), 'utf8'));
+  const result = validateDeterministicVerifier(V2, validation);
+  assert.equal(result.admits, true);
+  assert.deepEqual(result.sets.map(s => [s.name, s.violations, s.false_passes]),
+    [['A_labeled_before_v2', 71, 0], ['reviewer_448', 52, 0], ['B_heldout', 66, 0]]);
+  assert.deepEqual(TABLE.deterministic_verifiers.F1.validation, result);
+  // A verifier that passes one violation is not admitted (and Core ignores it).
+  const leaky = structuredClone(validation);
+  leaky.sets[2].items.push({request: '안녕', reply: '안녕하세요! 좋은 하루 보내세요.', label: 'violation'});
+  assert.equal(validateDeterministicVerifier(V2, leaky).admits, false);
+  const unvalidated = structuredClone(TABLE);
+  unvalidated.deterministic_verifiers.F1.validation.admits = false;
+  assert.equal(lawDeterministicVerifier(unvalidated, 'F1'), null);
+  assert.equal(lawLocalEvidence(unvalidated, 'qwen3.5:9b', 'F1'), null);
+});
+
+test('build 448 (a): only an id Core runs, made for that law family and validated, compiles; the table carries F1 only', () => {
   const policy = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
-  assert.deepEqual(compileDeterministicVerifiers(policy), {F1: {id: 'no_claim_reply_v1'}});
-  for (const bad of [{F1: {id: 'made_up'}}, {F7: {id: 'no_claim_reply_v1'}}, {F1: {id: 'no_claim_reply_v1', extra: 1}},
-    {NOPE: {id: 'no_claim_reply_v1'}}])
-    assert.throws(() => compileDeterministicVerifiers({...policy, deterministic_verifiers: bad}));
+  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261031.json'), 'utf8'));
+  assert.deepEqual(Object.keys(compileDeterministicVerifiers(policy, validation)), ['F1']);
+  assert.equal(compileDeterministicVerifiers(policy, validation).F1.id, V2);
+  // Review of 448: a small-talk check admits nothing in another family.
+  for (const bad of [{F1: {id: 'made_up'}}, {F1: {id: 'no_claim_reply_v1'}}, {F7: {id: V2}}, {F2: {id: V2}}, {F4: {id: V2}},
+    {F12: {id: V2}}, {F1: {id: V2, extra: 1}}, {NOPE: {id: V2}}])
+    assert.throws(() => compileDeterministicVerifiers({...policy, deterministic_verifiers: bad}, validation), JSON.stringify(bad));
+  assert.throws(() => compileDeterministicVerifiers(policy, null), /validation/);
   const inputs = readInputs(ROOT);
   const legacy = {...policy, local_start: {...policy.local_start, deterministic_verifiers: {}}};
   assert.throws(() => compileTable({...inputs, policy: Buffer.from(JSON.stringify(legacy))}), /moved/);
-  assert.equal(lawDeterministicVerifier(TABLE, 'F1').id, 'no_claim_reply_v1');
+  assert.equal(lawDeterministicVerifier(TABLE, 'F1').id, V2);
   for (const family of Object.keys(TABLE.families).filter(f => f !== 'F1')) assert.equal(lawDeterministicVerifier(TABLE, family), null, family);
+  // A table naming the verifier for another family is refused at Core too.
+  const misfiled = structuredClone(TABLE);
+  misfiled.deterministic_verifiers.F2 = misfiled.deterministic_verifiers.F1;
+  assert.equal(lawDeterministicVerifier(misfiled, 'F2'), null);
+  // The det outcomes input: Core's verdicts on the drafts, digests only, and
+  // only for the verifier the policy runs.
+  const det = snapshotDetOutcomes({generator: null, drafts: [{request: question(12).request, draft: Q12_LOCAL_DRAFT, output_tokens: 39},
+    {request: question(12).request, draft: SMALL_TALK_PASS, output_tokens: 20}]}, {verifier: V2, family: 'F1', model: 'qwen3.5:9b', effort: 'none'});
+  assert.deepEqual([det.cells[0].runs, det.cells[0].failures], [2, 1]);
+  assert.ok(det.items.every(i => !('request' in i) && !('draft' in i)));
+  assert.throws(() => compilePFail({schema: 3, cells: [], excluded: {}}, {laplace: {failures: 1, runs: 2},
+    deterministic_verifiers: {F1: {id: 'no_claim_reply_v1'}}}, det), /not the verifier/);
 });
 
-test('build 448 (a): Q12 starts locally, priced p_fail x the dearer of its next step and its re-read as F2 (the law\'s own F2 route)', () => {
+test('build 448 (a): small talk goes to the argmin of every row the verifier admits; the local start is priced by its measured p_fail', () => {
   const q = question(12);
+  assert.equal(q.expected_det, V2);
   const law = lawOf(q);
   const routed = routeOf(q.request, law);
-  assert.equal(routed.route, 'local:qwen3.5:9b@none');
-  assert.equal(q.expected_det, 'no_claim_reply_v1');
-  assert.match(routed.reason, /;law_evidence_deterministic;law_det_verifier_no_claim_reply_v1;law_reread_F2_/);
+  assert.equal(routed.route, q.expected_route);
+  assert.match(routed.reason, /;law_evidence_deterministic;law_det_verifier_no_claim_reply_v2;law_reread_F2_/);
+  // The argmin is a pool row admitted by the verifier: its own p_fail on it
+  // (the Laplace prior: no judged run), never a reference's.
   const v = routed.ladder.verifier;
   assert.equal(v.kind, 'deterministic');
-  assert.equal(v.draft_max_tokens, TABLE.local_start.draft_max_tokens);
-  // The re-read family is the reading's next family rule, never a map.
-  assert.equal(lawRereadFamily(law.routing_law.reading, 'F1', TABLE), 'F2');
-  assert.equal(lawRereadFamily(law.routing_law.reading, 'F2', TABLE), null);
-  // The re-read is the law's own F2 route on this request: owner question 11
-  // is the same reading class, a REVAS check of the local draft at its judge.
-  const asF2 = routeOf(q.request, lawOf(q, c => ({...c, routing_law: {...c.routing_law,
-    reading: {...c.routing_law.reading, task_type: 'explain'}}})));
-  assert.equal(v.reread.family, 'F2');
-  assert.equal(v.reread.kind, 'revas_check');
-  assert.equal(v.reread.key, asF2.ladder.verifier.key);
-  assert.equal(v.reread.eq, asF2.law.eq);
-  // E[Q] = p_fail(local, F1) x max(next step, re-read), both priced.
-  const next = law.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
-  const nextPriced = lawQuota(TABLE, next, 'answer').q * routed.law.rates[next.quota_pool].rate;
-  assert.ok(Math.abs(v.escalation.priced - Math.max(nextPriced, v.reread.eq)) < 1e-5);
-  assert.ok(Math.abs(routed.law.eq - 0.5 * v.escalation.priced) < 1e-6);
-  assert.deepEqual(routed.law.det, {schema: 1, verifier: 'no_claim_reply_v1', p_fail: 0.5,
-    escalation: {via: v.escalation.via, key: v.escalation.key, priced: v.escalation.priced},
-    reread: {family: 'F2', kind: 'revas_check', key: v.reread.key, eq: v.reread.eq}});
-  for (const [key, form, , eq, excluded] of routed.law.candidates)
-    if (excluded === null && key !== routed.route) assert.ok(eq > routed.law.eq, `${key} ${form}`);
-  // The replay draws exactly that step, in its pool's units.
-  const priced = priceRoute(routed, law, 'answer', TABLE, 'F1', law.routing_law.reading);
-  const unit = v.escalation.pool === 'anthropic_shared' ? 'Cw' : 'Px';
-  assert.equal(priced.start.Cw + priced.start.Px, 0);
-  assert.ok(Math.abs(priced.draw[unit] - 0.5 * v.escalation.q) < 1e-9);
+  assert.equal(v.p_fail, 0.5);
+  const local = routed.law.candidates.find(([key]) => key.startsWith('local:'));
+  assert.ok(local[3] > routed.law.eq, 'the local start at its measured p_fail costs more');
+  // On the references-and-local catalog the local start is the argmin: E[Q] =
+  // p_fail(local, F1) x the dearer of its next step and its re-read as F2.
+  const lc = lawOf(q, referencesAndLocal);
+  const start = routeOf(q.request, lc);
+  assert.equal(start.route, 'local:qwen3.5:9b@none');
+  const s = start.ladder.verifier;
+  assert.equal(s.draft_max_tokens, TABLE.local_start.draft_max_tokens);
+  assert.equal(lawRereadFamily(lc.routing_law.reading, 'F1', TABLE), 'F2');
+  assert.equal(lawRereadFamily(lc.routing_law.reading, 'F2', TABLE), null);
+  assert.deepEqual(s.steps.map(step => step.via).sort(), ['next_step', 'reread']);
+  assert.ok(Math.abs(s.escalation.priced - Math.max(...s.steps.map(step => step.priced))) < 1e-9);
+  assert.ok(Math.abs(start.law.eq - LOCAL_F1_P * s.escalation.priced) < 1e-5);
+  assert.equal(start.law.det.ladder, 'one_escalation');
+  assert.deepEqual(start.law.det.steps.map(step => step.via).sort(), ['next_step', 'reread']);
+  assert.equal(s.reread.kind, 'revas_check');
+  // Without the judge the re-read answers, and its answer is always a pool
+  // reference (review of 448: never a non-reference argmin adopted after the
+  // ladder's one escalation).
+  const noJudge = routeOf(q.request, lawOf(q, c => referencesAndLocal({...c, candidates: c.candidates.map(row =>
+    lawKey(row) === 'claude-chat:claude-opus-5-5@max' ? {...row, availability: 'unavailable'} : row)})));
+  assert.equal(noJudge.ladder.verifier.reread.kind, 'answer');
+  assert.equal(noJudge.ladder.verifier.reread.answer_of, 'argmin_reference');
+  assert.ok(Object.values(TABLE.references).includes(noJudge.ladder.verifier.reread.key.split(':')[1].split('@')[0]));
+  // The replay prices the local start at its prior, or, with the recorded
+  // draft, by Core's actual verdict on it: Q12's real draft fails by a
+  // factual claim only, so it draws the re-read; a passing draft draws nothing.
+  const modeled = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading);
+  assert.equal(modeled.det.basis, 'modeled');
+  const real = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: Q12_LOCAL_DRAFT, output_tokens: 39});
+  assert.deepEqual([real.det.basis, real.det.via, real.p_fail, real.det.failures], ['realized', 'reread', 1, ['factual_claim']]);
+  const reread = s.steps.find(step => step.via === 'reread');
+  assert.ok(Math.abs(real.draw[reread.pool === 'anthropic_shared' ? 'Cw' : 'Px'] - reread.q) < 1e-9);
+  const clean = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: SMALL_TALK_PASS});
+  assert.deepEqual([clean.det.passed, clean.draw.Cw + clean.draw.Px], [true, 0]);
+  const refusal = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: SMALL_TALK_REFUSAL});
+  assert.equal(refusal.det.via, 'next_step');
+  // A pool row's realized price is never read from a local draft.
+  assert.equal(priceRoute(routed, law, 'answer', TABLE, 'F1', law.routing_law.reading, {request: q.request, draft: SMALL_TALK_PASS}).det.basis,
+    'modeled');
 });
 
-test('build 448 p_fail rule: a deterministic verdict is the judged outcome of the row it read', () => {
-  const base = {schema: 1, route_kind: 'law', escalated: false, verifier_outcome: 'not_registered', law: {family: 'F1'}, settled_at_ms: 10};
+test('build 448 p_fail rule: a deterministic verdict is the judged outcome of the row it read, for a verifier Core runs', () => {
+  const v2 = {det_verifier: V2};
+  const base = {schema: 1, route_kind: 'law', escalated: false, verifier_outcome: 'not_registered', law: {family: 'F1'}, settled_at_ms: 10,
+    ladder: v2};
   const local = {...base, surface: 'local', model: 'qwen3.5:9b', effort: 'none'};
   assert.deepEqual(lawJudgedOutcome({...local, attempt_state: 'completed', check_outcome: 'det_pass'}),
     {key: 'qwen3.5:9b@none|F1', model: 'qwen3.5:9b', effort: 'none', family: 'F1', failed: false});
   assert.equal(lawJudgedOutcome({...local, attempt_state: 'ladder_verifier_failed', check_outcome: 'det_fail'}).failed, true);
   // A draft re-read as F2 awaiting its check: the F1 verdict already counts.
   assert.equal(lawJudgedOutcome({...local, attempt_state: 'revas_check_pending', check_outcome: 'det_fail'}).failed, true);
+  // ... and one whose check could not run keeps it (review of 448).
+  assert.equal(lawJudgedOutcome({...local, attempt_state: 'ladder_not_returned', check_outcome: 'det_fail'}).failed, true);
   const pool = {...base, surface: 'claude-chat', model: 'claude-haiku-4-5-20251001', effort: 'none'};
   assert.equal(lawJudgedOutcome({...pool, check_outcome: 'det_pass'}).failed, false);
   assert.equal(lawJudgedOutcome({...pool, check_outcome: 'det_fail'}).failed, true);
+  // A retired verifier's verdicts say nothing about the current check.
+  assert.deepEqual(lawJudgedOutcome({...local, ladder: {det_verifier: 'no_claim_reply_v1'},
+    attempt_state: 'completed', check_outcome: 'det_pass'}), {excluded: 'retired_verifier'});
 });
 
 test('build 448 (a), Core: a passing small-talk draft is delivered on Core\'s own check, one dispatch, no check quota', async t => {
   const q = question(12);
-  const {done, tickets, ledger, text, saved} = await harness(t, q, lawOf(q), ticket => completed(ticket, {output: SMALL_TALK_PASS,
-    usage: {input_tokens: 80, output_tokens: 30}}));
+  const {done, tickets, ledger, text, saved} = await harness(t, q, lawOf(q, referencesAndLocal), ticket => completed(ticket,
+    {output: SMALL_TALK_PASS, usage: {input_tokens: 80, output_tokens: 30}}));
   assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none']);
   assert.equal(done.result.output, SMALL_TALK_PASS);
-  assert.deepEqual([ledger[0].delivery_basis, ledger[0].check_outcome, ledger[0].attempt_state, ledger[0].det_failures],
-    ['law:F1', 'det_pass', 'completed', undefined]);
+  assert.deepEqual([ledger[0].delivery_basis, ledger[0].check_outcome, ledger[0].attempt_state, ledger[0].det_failures,
+    ledger[0].ladder.det_verifier], ['law:F1', 'det_pass', 'completed', undefined, V2]);
   assert.deepEqual(lawLearnedPFail(text, 0).get('qwen3.5:9b@none|F1'), {runs: 1, failures: 0});
   const snapshot = {task_id: saved.task.task_id, snapshot: JSON.stringify(saved)};
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}], snapshots: [snapshot]}).verdict, 'PASS');
@@ -1102,42 +1210,48 @@ test('build 448 (a), Core: a passing small-talk draft is delivered on Core\'s ow
     ['law_delivery_without_screen_pass']);
 });
 
-test('build 448 (a), Core: a factual claim re-reads Q12 as F2: the judge checks the SAME draft, a pass delivers it, a fail repairs it', async t => {
+test('build 448 (a), Core: a factual claim (the real Q12 draft) re-reads as F2: the re-read checks the SAME draft or answers in full', async t => {
   const q = question(12);
-  const law = lawOf(q);
+  const law = lawOf(q, referencesAndLocal);
   const routed = routeOf(q.request, law);
-  const judge = law.candidates.find(row => row.id === routed.ladder.verifier.reread.candidate_id);
-  const passed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? SMALL_TALK_CLAIM : 'REVAS: PASS'}));
-  assert.deepEqual(passed.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge)]);
-  assert.equal(passed.tickets[1].instruction, revasCheckInstruction(q.request, SMALL_TALK_CLAIM));
-  assert.equal(passed.done.result.output, SMALL_TALK_CLAIM);
-  const [draft, check] = passed.ledger;
-  assert.deepEqual([draft.check_outcome, draft.attempt_state, draft.det_failures, draft.law.family],
-    ['det_fail', 'revas_check_pending', ['factual_claim'], 'F1']);
-  assert.deepEqual([check.revas.role, check.revas.family, check.check_outcome], ['check', 'F2', 'revas_pass']);
-  const learned = lawLearnedPFail(passed.text, 0);
-  assert.deepEqual([learned.get('qwen3.5:9b@none|F1'), learned.get('qwen3.5:9b@none|F2')], [{runs: 1, failures: 1}, {runs: 1, failures: 0}]);
-  const snapshot = {task_id: passed.saved.task.task_id, snapshot: JSON.stringify(passed.saved)};
-  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: passed.text}], snapshots: [snapshot]}).verdict, 'PASS');
-  const finding = 'the draft states a health claim; small talk needs none';
-  const repaired = '오늘 정말 고생 많으셨어요. 푹 쉬세요!';
-  const failed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? SMALL_TALK_CLAIM :
-    n === 2 ? 'REVAS: FAIL\n1. ' + finding : repaired}));
-  assert.deepEqual(failed.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge), lawKey(judge)]);
-  assert.equal(failed.tickets[2].instruction, revasRepairInstruction(q.request, SMALL_TALK_CLAIM, [finding]));
-  assert.equal(failed.done.result.output, repaired);
-  assert.deepEqual([failed.ledger[2].revas.role, failed.ledger[2].revas.mode, failed.ledger[2].revas.family],
-    ['repair', 'repair', 'F2']);
-  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: failed.text}]}).verdict, 'PASS');
+  const reread = routed.ladder.verifier.reread;
+  assert.equal(reread.kind, 'revas_check');
+  {
+    const judge = law.candidates.find(row => row.id === reread.candidate_id);
+    const passed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : 'REVAS: PASS'}));
+    assert.deepEqual(passed.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge)]);
+    assert.equal(passed.tickets[1].instruction, revasCheckInstruction(q.request, Q12_LOCAL_DRAFT));
+    assert.equal(passed.done.result.output, Q12_LOCAL_DRAFT);
+    const [draft, check] = passed.ledger;
+    assert.deepEqual([draft.check_outcome, draft.attempt_state, draft.det_failures, draft.law.family],
+      ['det_fail', 'revas_check_pending', ['factual_claim'], 'F1']);
+    assert.deepEqual([check.revas.role, check.revas.family, check.check_outcome], ['check', 'F2', 'revas_pass']);
+    const learned = lawLearnedPFail(passed.text, 0);
+    assert.deepEqual([learned.get('qwen3.5:9b@none|F1'), learned.get('qwen3.5:9b@none|F2')], [{runs: 1, failures: 1}, {runs: 1, failures: 0}]);
+    // The draft keeps its F1 verdict after its re-read check returns.
+    assert.equal(passed.saved.children[0].attempt_history[0].check_outcome, 'det_fail');
+    const snapshot = {task_id: passed.saved.task.task_id, snapshot: JSON.stringify(passed.saved)};
+    assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: passed.text}], snapshots: [snapshot]}).verdict, 'PASS');
+    const finding = 'the draft states how the assistant works; small talk needs none';
+    const repaired = '오늘 정말 고생 많으셨어요. 푹 쉬세요!';
+    const failed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT :
+      n === 2 ? 'REVAS: FAIL\n1. ' + finding : repaired}));
+    assert.deepEqual(failed.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge), lawKey(judge)]);
+    assert.equal(failed.tickets[2].instruction, revasRepairInstruction(q.request, Q12_LOCAL_DRAFT, [finding]));
+    assert.equal(failed.done.result.output, repaired);
+    assert.deepEqual([failed.ledger[2].revas.role, failed.ledger[2].revas.mode, failed.ledger[2].revas.family],
+      ['repair', 'repair', 'F2']);
+    assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: failed.text}]}).verdict, 'PASS');
+  }
 });
 
-test('build 448 (a), Core: any other failure (the real local Q12 draft) is the full answer at the next step; nothing unchecked reaches the owner', async t => {
+test('build 448 (a), Core: any other failure (a refusal) is the full answer at the next step; nothing unchecked reaches the owner', async t => {
   const q = question(12);
-  const law = lawOf(q);
+  const law = lawOf(q, referencesAndLocal);
   const routed = routeOf(q.request, law);
   const next = law.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
   const {done, tickets, ledger, text} = await harness(t, q, law, (ticket, n) => completed(ticket,
-    {output: n === 1 ? Q12_LOCAL_DRAFT : 'the reference answer'}));
+    {output: n === 1 ? SMALL_TALK_REFUSAL : 'the reference answer'}));
   assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(next)]);
   assert.equal(tickets[1].instruction, q.request);
   assert.equal(done.result.output, 'the reference answer');
@@ -1146,6 +1260,23 @@ test('build 448 (a), Core: any other failure (the real local Q12 draft) is the f
   assert.equal(ledger[1].delivery_basis, 'reference_escalated');
   assert.deepEqual(lawLearnedPFail(text, 0).get('qwen3.5:9b@none|F1'), {runs: 1, failures: 1});
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
+});
+
+test('build 448 (a): across the gate regimes a re-read answer is always a pool reference; small talk\'s routes are reported', async () => {
+  const {ownerGate} = await import('../routing-law-replay.mjs');
+  const regimes = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-gate-regimes.json'), 'utf8')).regimes;
+  const gate = ownerGate(OWNER, regimes);
+  for (const [name, r] of Object.entries(gate.regimes)) {
+    assert.ok(r.f1_routes && r.per_family_draw_vs_all_reference && r.gate_modeled, name);
+    for (const route of r.owner_table?.routes ?? []) assert.ok(route);
+  }
+  const q = question(12);
+  for (const regime of regimes.filter(r => !Object.values(r).some(v => v?.from))) {
+    const {regimeHeadroom, atHeadroom} = await import('../routing-law-replay.mjs');
+    const routed = routeOf(q.request, atHeadroom(lawOf(q), regimeHeadroom(regime)));
+    const reread = routed.ladder?.verifier?.reread;
+    if (reread?.kind === 'answer') assert.ok(Object.values(TABLE.references).includes(reread.key.split(':')[1].split('@')[0]), regime.name);
+  }
 });
 
 test('the owner table covers DESIGN-7 §5\'s 16 questions', () => {

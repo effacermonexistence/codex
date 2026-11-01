@@ -22,10 +22,13 @@
  *    mode at the next frontier step). Prints {flow, dispatches, snapshot}.
  *  - det_pass / det_reread / det_full: owner question 12 (small talk, law F1)
  *    on the local row admitted by Core's deterministic verifier (build 448,
- *    DESIGN-8 step 2 (a)): its pass delivers the draft after one dispatch; a
- *    factual claim re-reads it as F2 (the judge checks the draft and passes
- *    it); any other failure (the real local Q12 draft) is the full answer at
- *    the next step. */
+ *    DESIGN-8 step 2 (a), no_claim_reply_v2), on a catalog where its start is
+ *    the argmin (every row unavailable but the pool references, the local row
+ *    and the F2 judge; the full catalog's argmin is a cloud row the verifier
+ *    admits): its pass delivers the draft after one dispatch; a factual claim
+ *    (the real local Q12 draft) re-reads it as F2 (the judge checks the draft
+ *    and passes it); any other failure (a refusal) is the full answer at the
+ *    next step. */
 import {createHash} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -94,6 +97,12 @@ const Q2_REPAIRED = '리스트와 튜플 모두 인덱스와 슬라이싱으로 
 // local chat prompt, temperature 0, 2026-10-31): a self-disclaimer and claims.
 const Q12_LOCAL_DRAFT = '안녕하세요! 저는 오늘도 정상적으로 작동하고 있습니다. 하지만 저는 감정이나 피로를 느끼지 못해요. ' +
   '혹시 너무 지치셨다면 잠시 쉬어가시는 게 좋겠습니다.';
+const SMALL_TALK_LOCAL = new Set(['claude-chat:claude-opus-5-5@max']);
+const smallTalkLocal = catalog => {
+  const references = new Set(['claude-fable-5-1', 'gpt-6-astra']);
+  return {...catalog, candidates: catalog.candidates.map(row => row.surface === 'local' || references.has(row.model) ||
+    SMALL_TALK_LOCAL.has(`${row.surface}:${row.model}@${row.effort}`) ? row : {...row, availability: 'unavailable'})};
+};
 const routesOf = tickets => tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`);
 export const FLOWS = {
   async ask_back() {
@@ -118,20 +127,20 @@ export const FLOWS = {
   },
   async det_pass() {
     const q = question(12);
-    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), ticket =>
-      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일이 있었는지 들려주실래요? 푹 쉬세요!'}));
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), ticket =>
+      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
     return {flow: 'det_pass', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
   async det_reread() {
     const q = question(12);
-    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), (ticket, n) =>
-      completed(ticket, {output: n === 1 ? '피곤할 때는 카페인보다 수분 섭취가 도움이 돼요.' : 'REVAS: PASS'}));
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
+      completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : 'REVAS: PASS'}));
     return {flow: 'det_reread', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
   async det_full() {
     const q = question(12);
-    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), (ticket, n) =>
-      completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : '오늘 하루 고생 많으셨어요. 저는 하루를 보내진 않지만, 이야기 들려주시면 좋겠어요.'}));
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
+      completed(ticket, {output: n === 1 ? '죄송하지만 답변해 드릴 수 없습니다.' : '오늘 하루 고생 많으셨어요. 저는 하루를 보내진 않지만, 이야기 들려주시면 좋겠어요.'}));
     return {flow: 'det_full', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
 };
