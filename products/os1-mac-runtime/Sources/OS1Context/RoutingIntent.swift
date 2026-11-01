@@ -349,6 +349,44 @@ extension RoutingIntent {
             return matches(prefix, #"\b(?:if|unless)\b|만약|(?:하면|라면|일\s*경우)|\b(?:would|could)\b(?!\s+(?:you\b|like\s+you\s+to\b))"#) ||
                 matches(suffix, #"^\s+(?:if|unless)\b"#)
         }
+        /// Whether the clause being read ended in a question mark (the clause
+        /// split drops the "?" itself); set per clause by the loop below.
+        var clauseAsked = false
+        /// Round 3 of the 448 review (lead decision 7): a model or surface
+        /// named with a Korean postposition ("astra로") inside a QUESTION is an
+        /// inquiry about routing, not a model directive ("라우팅 왜 계속
+        /// astra로 가냐"). Read on the name's own comma segment: the segment
+        /// asks (a question word, a question ending, or the clause's own "?"
+        /// when it is the clause's last segment) and nothing after the name in
+        /// that segment asks for the action (a benefactive request: 줘, 주세요,
+        /// 줄래, 봐; a propositive: 하자, 가자; an English run/use/switch/please).
+        /// Only an imperative model choice is explicit intent ("astra로 돌려",
+        /// "왜 astra로 안 돌려줘?"); an observation ending is none either.
+        /// English spans keep their own verb-first rules (aboutPrefix below).
+        func inquiry(_ clause: String, _ span: SettingSpan) -> Bool {
+            let ns = clause as NSString
+            let own = ns.substring(with: span.range)
+            guard span.kind == "target", matches(own, #"(?:으로|로|한테|에게)$"#) else { return false }
+            let commas = CharacterSet(charactersIn: ",，")
+            let before = ns.substring(to: span.range.location).components(separatedBy: commas).last ?? ""
+            let afterParts = ns.substring(from: NSMaxRange(span.range)).components(separatedBy: commas)
+            let after = afterParts.first ?? ""
+            let segment = (before + own + after).trimmingCharacters(in: .whitespaces)
+            let asksByWord = matches(segment, #"(?<![가-힣])(?:왜|어째서|어떻게|뭐|무엇|무슨|어디|언제|누가|누구|얼마나|몇)(?![가-힣])|(?<![a-z])(?:why|how\s+come|what|which|where|when|who)(?![a-z])"#)
+            // An observation is no order either ("계속 astra로 가네", "opus로
+            // 답했어"): an exclamative or past-tense report ending.
+            let asks = asksByWord || matches(segment, #"(?:냐|니|나요|까|까요|던가|는가)$"#) ||
+                (afterParts.count == 1 && clauseAsked) ||
+                matches(segment, #"(?:네|네요|구나|구만|군|군요|더라|던데|[었았였했갔]어|[었았였했갔]네|[었았였했갔]다|간다|가고\s*있어)$"#)
+            // "왜 astra로 가는지 알려줘": the name's own predicate ends in an
+            // embedded question (가는지); the request (알려줘) is to explain it.
+            var head = after
+            if asksByWord, let embedded = after.range(of: #"(?:는지|은지|인지|던지|냐고)"#, options: .regularExpression) {
+                head = String(after[..<embedded.lowerBound])
+            }
+            let requests = matches(head, #"줘|주세요|주실|줄래|주라|봐(?!서)|(?:하|가|쓰|돌리|해보|써보)자(?![가-힣])|(?<![a-z])(?:run|use|switch|please)(?![a-z])"#)
+            return asks && !requests
+        }
         func informational(_ clause: String, _ span: SettingSpan) -> Bool {
             let ns = clause as NSString
             let prefix = ns.substring(to: span.range.location)
@@ -357,6 +395,7 @@ extension RoutingIntent {
             // An explicit postposed control is a separate owner span.
             if matches(prefix, #"[,;]\s*$|\b(?:and|but|then)\s*$"#) { return false }
             if matches(suffix, #"^\s*(?:지원해|설정이|사용법|쓰는\s*법|실행하는\s*(?:법|방법))"#) { return true }
+            if inquiry(clause, span) { return true }
             let aboutPrefix = matches(prefix, #"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:explain|describe|compare|summarize|tell\s+me|what|which|why|how|does|supports?)\b"#)
             guard aboutPrefix else { return false }
             // Instrumental execution is not the object being explained:
@@ -369,8 +408,13 @@ extension RoutingIntent {
         var surfaces = Set<String>(), models = Set<String>(), families = Set<String>(), efforts = Set<String>()
         var ceiling = false
         let sentences = body.replacingOccurrences(of: #"\.(?=\s|$)"#, with: "\n", options: .regularExpression)
-        let clauses = sentences.components(separatedBy: CharacterSet(charactersIn: "\n;!?。"))
-        for clause in clauses where !clause.trimmingCharacters(in: .whitespaces).isEmpty {
+        let delimiters = CharacterSet(charactersIn: "\n;!?。")
+        let clauses = sentences.components(separatedBy: delimiters)
+        // The delimiter after each clause, in order (components(separatedBy:)
+        // yields one clause more than delimiters): whether that clause asked.
+        let enders = sentences.unicodeScalars.filter { delimiters.contains($0) }.map { $0 == "?" }
+        for (index, clause) in clauses.enumerated() where !clause.trimmingCharacters(in: .whitespaces).isEmpty {
+            clauseAsked = index < enders.count && enders[index]
             let ns = clause as NSString
             let routes = routeSpans(clause).filter { !taskArgument($0.range) && !informational(clause, $0) }
             var settings = routes

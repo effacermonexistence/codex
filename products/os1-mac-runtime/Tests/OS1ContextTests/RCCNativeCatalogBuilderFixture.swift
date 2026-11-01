@@ -1707,6 +1707,26 @@ func runRCCNativeCatalogBuilderFixtures() throws {
     let bareV2 = v2("Codex로 이 함수 설명해줘")
     try check(bareV2.allowedSurfaces == ["codex"] && bareV2.exactModel == nil && bareV2.effort == nil,
               "v2 bare provider constrains surface only")
+    // Round 3 of the 448 review (lead decision 7): a model named inside a
+    // question (or an observation) about routing is an inquiry, never an
+    // explicit model directive; only an imperative model choice is one. The
+    // corpus row "라우팅 왜 계속 astra로 가냐" pinned astra (one astra row).
+    for text in ["라우팅 왜 계속 astra로 가냐", "왜 astra로 가는지 알려줘", "astra로 가?", "계속 astra로 가네",
+                 "어떻게 astra로 돌리냐", "왜 opus로 답했어?", "astra로 해볼까?", "왜 코덱스로 안 해?"] {
+        let parsed = v2(text)
+        try check(parsed.state == "resolved" && parsed.modelFamily == nil && parsed.exactModel == nil &&
+                  parsed.allowedSurfaces.isEmpty && parsed.effort == nil,
+                  "a model named in a question or observation about routing is no directive: \(text)")
+    }
+    for (text, family) in [("왜 astra로 안 돌려줘?", "astra"), ("astra로 돌려", "astra"), ("astra로 돌려줄래?", "astra"),
+                           ("fable로 써봐", "fable"), ("astra로 하자", "astra"), ("왜 계속 astra로 가냐, fable로 돌려", "fable")] {
+        let parsed = v2(text)
+        try check(parsed.state == "resolved" && parsed.modelFamily == family,
+                  "an imperative model choice stays explicit intent, a question in another segment does not: \(text)")
+    }
+    try check(v2("코덱스로 결과가 맞는지 확인해줘").allowedSurfaces == ["codex"] &&
+              v2("코덱스로 가격을 설명해줘").allowedSurfaces == ["codex"],
+              "an instrument whose request embeds a question (no question word) stays a directive")
     let literalV2 = v2("use gpt-6-sol reasoning:high")
     try check(literalV2.exactModel == "gpt-6-sol" && literalV2.effort == "high" && !literalV2.requireNativeCeiling,
               "v2 exact known model and effort remain hard pins")
