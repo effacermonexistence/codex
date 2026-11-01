@@ -714,6 +714,20 @@ test('the grant never picks the model: the same reading under a read-only and a 
       assert.equal(wrote.scope, 'read_only', `#${n}`);
       assert.equal(wrote.route, read.route, `#${n}`);
       assert.equal(wrote.ladder?.verifier?.kind, 'deterministic', `#${n}`);
+      // Never past a deterministic work floor of the host's profile: a hard
+      // order, shell or write beside a chat reading is DESIGN-6 G1 (a
+      // side-effect disagreement), not small talk: the writer keeps its grant.
+      const work = {answer_kind: 'work', difficulty: 'unknown'};
+      for (const floor of [{...work, signals: ['shell']}, {...work, signals: ['work_order']},
+        {...work, signals: ['write_scope']}, {tool_need: 'workspace', signals: ['named_path']}]) {
+        const floored = lawOf(q, c => ({...writer, request_profile: {...c.request_profile, ...floor,
+          signals: [...new Set([...c.request_profile.signals.filter(x => !x.startsWith('soft_')), ...floor.signals])].sort()}}));
+        assert.equal(routeOf(q.request, floored).scope, 'workspace_write', `#${n} ${JSON.stringify(floor)}`);
+      }
+      // A soft (clearable) order the reading set aside is no floor.
+      const soft = lawOf(q, c => ({...writer, request_profile: {...c.request_profile, ...work,
+        signals: [...new Set([...c.request_profile.signals, 'work_order', 'soft_work'])].sort()}}));
+      assert.equal(routeOf(q.request, soft).scope, 'read_only', `#${n} soft order`);
       continue;
     }
     assert.equal(wrote.scope, 'workspace_write', `#${n}`);

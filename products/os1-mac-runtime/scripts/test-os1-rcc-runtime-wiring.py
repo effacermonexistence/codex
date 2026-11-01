@@ -1351,7 +1351,8 @@ check("throw new Error('det outcomes: every draft must name the held-out validat
       "export function lawScreenOutcome(record) {" in RUNTIME and
       "...(shadowScreen === 'pass' || shadowScreen === 'fail' ? {shadow_screen: shadowScreen} : {})};" in RUNTIME and
       "export function lawDetClassPFail(table, candidate, family, learned = null) {" in RUNTIME and
-      "function lawReadOnlySmallTalk(task, catalog) {" in RUNTIME and
+      "function lawReadOnlySmallTalk(task, catalog) {" in RUNTIME and "function lawProfileFloor(profile) {" in RUNTIME and
+      "    !lawProfileFloor(catalog.request_profile) &&" in RUNTIME and
       "(task.mode === 'auto' && lawReadOnlySmallTalk(task, catalog))" in RUNTIME and
       "const anyTurn = lawDeterministicVerifier(table, admission.family) !== null;" in RUNTIME and
       "LAW_FAMILY.test(revasChild.law_receipt.family) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and

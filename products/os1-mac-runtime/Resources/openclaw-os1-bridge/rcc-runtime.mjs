@@ -2118,14 +2118,35 @@ function lawAnswersLocally(node, task, catalog) {
     !lawHostNeedsTools(task, catalog) &&
     (node.context_refs ?? []).length === 0 && (task.material_refs ?? []).length === 0 && (anyTurn || withoutConversation(task));
 }
+/** The host profile's deterministic work floors (Swift
+ * RequestProfile.floorWorkRail and floorWorkspaceRail, mirrored): a write,
+ * shell or external action, a hard order, or workspace evidence that is a
+ * floor wherever it appears; each unless it rests only on clearable (soft_*)
+ * evidence. Pure. */
+function lawProfileFloor(profile) {
+  if (!validRequestProfile(profile)) return false;
+  const s = new Set(profile.signals);
+  const workRail = profile.answer_kind === 'work' && ((s.has('write_scope') && !s.has('soft_write')) ||
+    (s.has('shell') && !s.has('soft_shell')) || s.has('external_action') ||
+    (s.has('work_order') && !s.has('soft_order') && !s.has('soft_work')));
+  const workspaceRail = profile.tool_need === 'workspace' && (['material', 'named_path', 'image', 'external_system',
+    'owner_material', 'failure_complaint', 'external_action', 'approval'].some(signal => s.has(signal)) ||
+    ((s.has('status_check_in') || s.has('status_question')) && !s.has('soft_status')) ||
+    (s.has('machine_material') && !s.has('soft_material') && !s.has('soft_machine')) ||
+    (s.has('deictic') && !s.has('soft_deictic') && !s.has('soft_reference')));
+  return workRail || workspaceRail;
+}
 /** Round 3 of the 448 review (lead decision 5): a request the law reads as a
  * family with a deterministic verifier (small talk, F1) needs no tool and no
  * write: its node runs read-only whatever the owner's grant (a permission
  * sets what a row may do, never which row: a writer lane's small talk took
  * the reference only because its write grant removed the local row and every
  * row the verifier admits). Narrowing only, and only for an Auto request the
- * law reads with no owner routing constraint, contract or reference words;
- * a manipulated reading can only make a node do less (DESIGN-6 I6). Pure. */
+ * law reads with no owner routing constraint, contract or reference words,
+ * and never past a deterministic work floor of the host's profile (a floor
+ * standing beside a chat reading is DESIGN-6 G1's side-effect disagreement,
+ * not small talk); a manipulated reading can only make a node do less
+ * (DESIGN-6 I6). Pure. */
 function lawReadOnlySmallTalk(task, catalog) {
   const law = catalog?.routing_law, table = routingLawTable();
   if (!validRoutingLaw(law) || table === null || law.table_sha256 !== ROUTING_LAW_TABLE_SHA256) return false;
@@ -2136,6 +2157,7 @@ function lawReadOnlySmallTalk(task, catalog) {
     return false;
   const reading = law.reading ?? null;
   return plain(reading) && reading.needs_tools === 'none' && !lawHostNeedsTools(task, catalog) &&
+    !lawProfileFloor(catalog.request_profile) &&
     (task.material_refs ?? []).length === 0 && lawDeterministicVerifier(table, lawFamily(reading, table)) !== null;
 }
 /** DESIGN-8 step 2 for the local row (build 448): (a) a deterministic family
