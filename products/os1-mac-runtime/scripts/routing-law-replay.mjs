@@ -252,6 +252,20 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
   // always draws its check at the judge (start, draw and law model alike) and,
   // with p_fail, the repair at the same row (DESIGN-6 O5: the cached prefix).
   const check = result.ladder?.verifier;
+  // Build 448 (DESIGN-8 step 2 (a)): a row admitted by its family's
+  // deterministic verifier draws no check (Core's own code); with its own
+  // p_fail on that verifier, the next step Core priced for its failures (the
+  // dearer of the full answer at the escalation reference and the re-read's
+  // draw: a REVAS check plus p_fail x repair at the judge, or the answerer),
+  // in that step's pool.
+  if (check?.kind === 'deterministic') {
+    const step = check.escalation;
+    if (!step || !Number.isFinite(step.q) || !Number.isFinite(check.p_fail)) return {...out, unpriced: true};
+    const stepUnit = POOL_UNIT[step.pool];
+    out.p_fail = check.p_fail; out.det = {verifier: check.id, via: step.via, key: step.key, q: step.q};
+    if (stepUnit && stepUnit !== 'local') { out.draw[stepUnit] += check.p_fail * step.q; out.law_model[stepUnit] += check.p_fail * step.q; }
+    return out;
+  }
   if (check?.kind === 'revas_check') {
     const judge = catalog.candidates.find(row => row.id === check.candidate_id) ?? null;
     const qv = judge ? lawQuota(table, judge, 'verify')?.q ?? null : null;
@@ -457,7 +471,8 @@ export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}) 
   const recorded446 = new Map(routes446.map(row => [row.index, row.route]));
   return {schema: 1, table_sha256: ROUTING_LAW_TABLE_SHA256,
     note: 'DESIGN-7 §5 owner fixed questions; expected_route (and, for a REVAS verified start of the local row, ' +
-      'expected_check: its judge) is the routing law output (golden) at the recorded headroom ' +
+      'expected_check: its judge; for a row admitted by a deterministic family verifier, expected_det: its id) ' +
+      'is the routing law output (golden) at the recorded headroom ' +
       '(no derived exchange: both pools 1 / 0.6), never hand-set; flags mark an Astra start and a route that differs from ' +
       'build 446\'s (review of 447); design7_route is DESIGN-7 for comparison only; the per-regime routes are the sweep\'s',
     questions: ownerRows(catalogRows, intents, extras).map(({n, design7, source, origin, row, pending}) => {
@@ -472,8 +487,10 @@ export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}) 
         ...(routed.route !== route446 ? ['differs_from_446'] : [])];
       return {n, request: row.request, origin, receipt: row.receipt, intent: row.intent, catalog: row.catalog,
         expected_route: routed.route, expected_kind: routed.kind ?? null,
-        // Build 448: a REVAS verified start of the local row names its check.
-        expected_check: routed.ladder?.verifier?.key ?? null, flags,
+        // Build 448: a REVAS verified start of the local row names its check;
+        // a row admitted by its family's deterministic verifier names it.
+        expected_check: routed.ladder?.verifier?.kind === 'revas_check' ? routed.ladder.verifier.key : null,
+        expected_det: routed.ladder?.verifier?.kind === 'deterministic' ? routed.ladder.verifier.id : null, flags,
         expected_family: routed.kind === 'calculator' ? 'F0' : routed.law?.family ?? lawFamily(law.routing_law.reading, routingLawTable()),
         route_446: route446,
         recorded_446: typeof source === 'number' ? recorded446.get(source) ?? null : null, design7_route: design7};

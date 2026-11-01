@@ -61,7 +61,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
 // snapshot never keeps its own copy of it.
-const {lawJudgedOutcome} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
+const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
@@ -638,6 +638,25 @@ export function compileAudits(audits) {
     '; admits only a parity audit (n_parity informative questions sampled at random), a cost-sized pass is provisional', cells: out};
 }
 
+/** DESIGN-8 step 2 (a) (build 448): the families with a deterministic
+ * verifier, keyed by law family: only an id Core runs
+ * (LAW_DETERMINISTIC_VERIFIERS: an entry Core cannot run would admit a row
+ * unchecked), on a tool-free answer family (it reads a reply, nothing else). */
+export function compileDeterministicVerifiers(policy) {
+  const out = {};
+  for (const [family, entry] of Object.entries(policy.deterministic_verifiers ?? {})) {
+    const fam = policy.families[family];
+    if (!fam) throw new Error('deterministic verifier for an unknown family ' + family);
+    if (entry === null || typeof entry !== 'object' || Object.keys(entry).join() !== 'id' ||
+        !Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id))
+      throw new Error('deterministic verifier ' + family + ': not an id Core runs');
+    if (fam.shape !== 'answer' || fam.tools !== 'none')
+      throw new Error('deterministic verifier ' + family + ': a reply check needs a tool-free answer family');
+    out[family] = {id: entry.id};
+  }
+  return out;
+}
+
 export function compileTable(bytes) {
   const json = name => JSON.parse(bytes[name].toString('utf8'));
   const evidence = json('evidence'), quota = json('quota'), ledger = json('ledger'), policy = json('policy');
@@ -649,12 +668,12 @@ export function compileTable(bytes) {
     p_fail_inheritance: policy.p_fail_inheritance, value_of_information: policy.value_of_information,
     audits: compileAudits(audits),
     local_start: (() => {
-      // Core runs no deterministic verifier a table could name for a
-      // tool-free answer family: an entry it cannot run is refused here.
-      if (Object.keys(policy.local_start.deterministic_verifiers ?? {}).length)
-        throw new Error('local_start.deterministic_verifiers: Core runs none; an entry would admit the local row unchecked');
+      if (Object.hasOwn(policy.local_start, 'deterministic_verifiers'))
+        throw new Error('local_start.deterministic_verifiers moved to deterministic_verifiers (a family verifier admits any row)');
       return policy.local_start;
     })(), ask_back: policy.ask_back,
+    deterministic_verifiers: compileDeterministicVerifiers(policy),
+    deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {
       const compiled = compileQuota(quota, evidence, policy, prices, profiles);

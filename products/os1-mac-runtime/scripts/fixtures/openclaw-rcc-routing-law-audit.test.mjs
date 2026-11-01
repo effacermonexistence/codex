@@ -87,14 +87,13 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
     assert.equal(audit.voi, Math.max(audit.voi_now, audit.voi_after_reset ?? -Infinity));
     if (TABLE.families[audit.family]?.tools === 'agent' && audit.rows_saving > 0) assert.equal(audit.decision, 'not_auditable_tool_surface');
   }
-  // Build 448 (lead order): the local F1 and F2 audits are in the plan. F2's
-  // parity n comes from its tiers' tau; F1 (small talk) has no matched tier,
-  // so no parity bound exists and it cannot be admitted by (c) on this harness.
-  const localF1 = result.audits.find(a => a.id === 'qwen3.5:9b@none|F1');
+  // Build 448 (lead order): the local F2 audit is in the plan; its parity n
+  // comes from its tiers' tau. Small talk (F1) is admitted by Core's
+  // deterministic verifier (evidence form a, lead order 2026-10-31): no F1
+  // cell is a gap of evidence, so none is audited (no value of information).
   const localF2 = result.audits.find(a => a.id === 'qwen3.5:9b@none|F2');
-  assert.ok(localF1 && localF2, 'local F1 and F2 audits planned');
-  assert.equal(localF1.pool, 'none');
-  assert.equal(localF1.blockers.includes('no_parity_bound'), true);
+  assert.ok(localF2, 'the local F2 audit is planned');
+  assert.deepEqual(result.audits.filter(a => a.family === 'F1').map(a => a.id), [], 'F1 is admitted by (a): nothing to audit');
   assert.ok(localF2.n > 0 && localF2.tau_excess_rate > 0);
   assert.equal(localF2.cost.Cw + localF2.cost.Px > 0, true, 'its reference answers are paid; the local answers draw nothing');
   assert.ok(localF2.saving_7d_path > 0, 'admitted by (c) the local row needs no per-answer check');

@@ -1280,11 +1280,27 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
       "export function lawJudgedOutcome(record) {" in RUNTIME and "export function lawLearnedPFail(" in RUNTIME and
       "lawLearnRecord(this.lawLearned, record, routingLawTable()?.p_fail?.through_ms ?? null);" in RUNTIME and
       "resolveRoutePlan(proposed, admitted, catalog, boundAt,\n        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy, lawLearned: this.lawLearned});" in RUNTIME and
-      "const {lawJudgedOutcome} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
       "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
       (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
       (ROOT / "scripts/routing-law-ledger-20261030.json").is_file(),
       "448: the ask-back reaches the host; the local row admissible only by (a)/(c), else a priced REVAS verified start; repair mode; ledger p_fail learning; host-path fixture")
+# Build 448 (lead order 2026-10-31, DESIGN-8 step 2 (a)): small talk's deterministic verifier.
+TABLE_COMPILER = (ROOT / "scripts/routing-law-table.mjs").read_text()
+check("export function lawDeterministicCheck(id, request, output, usage = null, draftMaxTokens = 512) {" in RUNTIME and
+      "no_claim_reply_v1: Object.freeze(" in RUNTIME and
+      "export function lawRereadFamily(reading, family, table = routingLawTable()) {" in RUNTIME and
+      "const detVerifier = !writer && family !== 'P' ? lawDeterministicVerifier(table, family) : null;" in RUNTIME and
+      "lawRereadAs: as});" in RUNTIME and
+      "const det = detVerifier && deliverable ? lawDeterministicCheck(detVerifier.id, node.instruction, result.output," in RUNTIME and
+      "?? {passed: false, failures: ['verifier_unavailable']} : null;" in RUNTIME and
+      "await this._revasQueueCheck(taskID, node, candidate, result);" in RUNTIME and
+      "const DET_CHECK_OUTCOMES = new Set(['det_pass', 'det_fail']);" in RUNTIME and
+      "export function compileDeterministicVerifiers(policy) {" in TABLE_COMPILER and
+      "!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id)" in TABLE_COMPILER and
+      "law_delivery_after_det_fail" in (ROOT / "scripts/route-replay.mjs").read_text() and
+      'coreFlow("det_full", root: root)' in HOST_FIXTURE,
+      "448 (a): Core runs small talk's deterministic verifier on the law attempt before adoption; a factual claim re-reads as F2; only Core's ids compile")
 check("public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?," in law_swift and
       "law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota," in BUILDER and
       '"pools": .map(routingLawPoolShape)' in (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text() and

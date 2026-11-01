@@ -176,7 +176,12 @@ function basisViolations(record, delivered, revasPassed = new Set()) {
       if (delivered && !revasPassed.has(record.attempt_id)) rules.push('law_delivery_without_revas_pass');
       return rules;
     }
-    if (plain(record.ladder) ? delivered && record.check_outcome !== 'screen_pass' : record.check_outcome != null)
+    // Build 448 (DESIGN-8 step 2 (a)): a law attempt admitted by its family's
+    // deterministic verifier is delivered on that verifier's pass (det_pass),
+    // never on a screen; one it failed (det_fail) is never delivered unless a
+    // re-read's REVAS check passed it (above: revas_check_pending).
+    if (record.check_outcome === 'det_fail' && delivered) rules.push('law_delivery_after_det_fail');
+    else if (plain(record.ladder) ? delivered && !['screen_pass', 'det_pass'].includes(record.check_outcome) : record.check_outcome != null)
       rules.push(plain(record.ladder) ? 'law_delivery_without_screen_pass' : 'check_outcome_on_law_writer');
     return rules;
   }

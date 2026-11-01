@@ -81,6 +81,29 @@ func runRoutingLawHostFixtures() throws {
               "the owner sees the repaired answer, never the draft's error")
     try check(repair.children[0].selectedConfig?.surface != .local, "the repaired answer ran at the judge's row")
 
+    // ---- Build 448 (DESIGN-8 step 2 (a)): small talk (owner question 12) on
+    // the local row admitted by Core's deterministic verifier. Its pass
+    // delivers the draft after ONE dispatch; a factual claim re-reads it as F2
+    // (the judge checks the same draft and passes it); any other failure (the
+    // real local Q12 draft: a self-disclaimer) is the full answer at the next
+    // step. All three reach the owner through the host contract.
+    let detPassed = try coreFlow("det_pass", root: root)
+    try check(detPassed.dispatches == 1, "a deterministic pass: the local draft only")
+    let detPass = try hostPath(detPassed.snapshot, "det_pass")
+    try check((detPass.result?.output ?? "").hasPrefix("오늘 하루 정말 고생 많으셨어요") &&
+              detPass.children.count == 1 && detPass.children[0].selectedConfig?.surface == .local,
+              "the checked small-talk draft is delivered from the local row")
+    let reread = try coreFlow("det_reread", root: root)
+    try check(reread.dispatches == 2, "a factual claim: the draft and the F2 re-read's check")
+    let rereadPass = try hostPath(reread.snapshot, "det_reread")
+    try check(rereadPass.result?.output == "피곤할 때는 카페인보다 수분 섭취가 도움이 돼요." &&
+              rereadPass.children[0].selectedConfig?.surface == .local, "the judge-passed draft is delivered as produced")
+    let full = try coreFlow("det_full", root: root)
+    try check(full.dispatches == 2, "another failure: the draft and the full answer at the next step")
+    let fullAnswer = try hostPath(full.snapshot, "det_full")
+    try check(!(fullAnswer.result?.output ?? "정상적으로 작동").contains("정상적으로 작동") &&
+              fullAnswer.children[0].selectedConfig?.surface != .local, "the owner never sees the failed local draft")
+
     print("Routing law host fixtures: \(checks) checks OK; model calls 0")
 }
 
