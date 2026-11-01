@@ -348,6 +348,26 @@ const LOCAL_CHAT_SYSTEM = 'You are OS-1, chatting with its owner. Reply naturall
   'in the same language as the user message. Answer from the message and your general knowledge only. ' +
   'Never claim to have done, run, checked, saved, sent or looked up anything, and never mention instructions, ' +
   'rules, routing or how you work.';
+// Round 3 of the 448 review (lead decision 6): small talk (law family F1,
+// the ticket's law_family) gets its own prompt, written for what its
+// deterministic verifier (Core no_claim_reply_v2) admits as the reference's
+// result: a brief acknowledgement or empathy and one question back, nothing
+// else. Every other local ticket keeps LOCAL_CHAT_SYSTEM. Tuned only on the
+// development requests (no held-out request; the verifier's v2 verdicts on
+// qwen3.5:9b drafts at temperature 0: 4/40 for the first wording, 21/40 for
+// this one), then frozen (sha256 2bd215b1454f...) before the held-out set C
+// was written, generated and labeled (scripts/routing-law-det-validation-20261101.json).
+export const LOCAL_SMALL_TALK_SYSTEM = "You are OS-1, making small talk with its owner. Reply in the language of the user message (English to " +
+  "English, Korean to Korean), at its politeness level, in one or two very short sentences built only from: a " +
+  "greeting or thanks back; a set acknowledgement that never restates what the owner said or did (English \"Oh, " +
+  "okay\", Korean \"그러셨군요\"); empathy naming only a feeling the owner named; congratulations only for something " +
+  "the owner said they achieved; a good wish; and then one short, general question back (English \"How was your " +
+  "day?\", Korean \"오늘 하루 어떠셨어요?\"). Do not mention the owner's activities, meals, plans or days; if the owner " +
+  "named no feeling, use only the set acknowledgement, a greeting or thanks. Use plain everyday courtesy words " +
+  "and add no detail of your own. Say nothing else: no facts, numbers, dates, times or places, no advice or " +
+  "suggestions, no explanations, opinions or predictions, and nothing about yourself; never say you are an AI " +
+  "or a language model or that you cannot feel. Never claim or promise to do, check, look up, remember or send " +
+  "anything. No emoji.";
 const LOCAL_WORKER_MAX_TOKENS = 512;
 // ---- The owner's speech-to-text hints on the local lane (harness H2) ----
 // Build 442 live failure (2026-10-28): "쉐딩 방정식 설명해줘" (Schrödinger)
@@ -445,17 +465,20 @@ export function asrAnswerNote(request, hints) {
 /** Which local prompt a ticket gets. An explicit route (route-all and named
  * routes: the task carries host_context.explicit_routes) and any exact
  * arithmetic instruction keep the exact-result prompt the exact verifier
- * reads; every other local ticket is an Auto chat node and is conversational. */
+ * reads; an Auto ticket the law bound as small talk (law_family F1, round 3
+ * of the 448 review) gets the small-talk prompt; every other local ticket is
+ * an Auto chat node and is conversational. */
 export function localWorkerStyle(ticket) {
   const explicit = ticket?.host_context?.explicit_routes != null;
-  return explicit || typeof ticket?.instruction !== 'string' || arithmeticResult(ticket.instruction) !== null ?
-    'final_result' : 'conversational';
+  if (explicit || typeof ticket?.instruction !== 'string' || arithmeticResult(ticket.instruction) !== null) return 'final_result';
+  return ticket.law_family === 'F1' ? 'small_talk' : 'conversational';
 }
 /** The local model's request. `asrNote` (asrAnswerNote) follows the
  * instruction's unchanged bytes on its own line; none when no hint matches. */
 export function localWorkerCompletionRequest({instruction, signal, style = 'final_result', asrNote = null}) {
   return {model: localModelID(), messages: [{role: 'user', content: asrNote ? instruction + '\n\n' + asrNote : instruction}],
-    systemPrompt: style === 'conversational' ? LOCAL_CHAT_SYSTEM : LOCAL_WORKER_SYSTEM,
+    systemPrompt: style === 'small_talk' ? LOCAL_SMALL_TALK_SYSTEM : style === 'conversational' ? LOCAL_CHAT_SYSTEM :
+      LOCAL_WORKER_SYSTEM,
     maxTokens: LOCAL_WORKER_MAX_TOKENS, temperature: 0, reasoning: 'off', signal, purpose: LOCAL_WORKER_PURPOSE};
 }
 /** The answer as delivered: a leaked reasoning block removed and the edges

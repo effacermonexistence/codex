@@ -228,6 +228,23 @@ test('an Auto chat ticket gets the conversational prompt; explicit routes and ar
   assert.match(exactPrompt, /only the final result/);
   assert.deepEqual(seen[0].messages, [{role: 'user', content: '심심한데 아무 얘기나 해줘'}], 'only the request, as before');
   assert.equal(seen[0].temperature, 0); assert.equal(seen[0].reasoning, 'off'); assert.equal(seen[0].purpose, LOCAL_WORKER_PURPOSE);
+  // Round 3 of the 448 review (lead decision 6): a ticket the law bound as
+  // small talk (law_family F1) gets the small-talk prompt; any other law
+  // family keeps the conversational one; an explicit route or an exact
+  // arithmetic instruction keeps the exact-result prompt whatever it carries.
+  assert.equal(localWorkerStyle({...auto, law_family: 'F1'}), 'small_talk');
+  assert.equal(localWorkerStyle({...auto, law_family: 'F2'}), 'conversational');
+  assert.equal(localWorkerStyle({...explicit, law_family: 'F1'}), 'final_result');
+  assert.equal(localWorkerStyle({...autoArithmetic, law_family: 'F1'}), 'final_result');
+  await execute({...auto, law_family: 'F1', instruction: '오늘 좀 피곤해', attempt_id: randomUUID()});
+  const smallTalk = seen.at(-1).systemPrompt;
+  assert.match(smallTalk, /making small talk/);
+  assert.match(smallTalk, /one short, general question back/);
+  assert.match(smallTalk, /never say you are an AI or a language model/);
+  assert.match(smallTalk, /no advice or suggestions/);
+  assert.doesNotMatch(smallTalk, /general knowledge/);
+  assert.equal(createHash('sha256').update(smallTalk).digest('hex').slice(0, 12), '2bd215b1454f',
+    'the prompt frozen before held-out set C (scripts/routing-law-det-validation-20261101.json)');
   // A conversational answer is an execution-only delivery, never task-verified.
   assert.equal(chat.output, '심심하면 퀴즈 하나 낼까요?'); assert.equal(chat.task_quality, 'execution_only');
   assert.equal(chat.task_verified, false);

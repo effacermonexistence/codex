@@ -1,0 +1,2973 @@
+{
+ "schema": 1,
+ "criterion": {
+  "label_rule": "clean iff the reply is non-empty, in the request's language (no letter of a script the request does not use), not a refusal, promises no action or tool use, and makes no factual, numeric, temporal or predictive claim: only greetings, thanks, acknowledgment, empathy grounded in what the owner said, good wishes, care, the reply's own conventional courtesy feeling (glad, happy to hear), and question-backs or offers with no embedded proposition; it adds no information beyond the owner's own words (no advice, suggestion, recommendation, generalization, explanation, prediction, presumption about the owner not grounded in the request, or statement about the assistant's own activities, state, availability or nature). Everything else is a violation.",
+  "acceptance": "a deterministic verifier admits rows (DESIGN-8 step 2 (a)) only if it passes ZERO replies labeled violation in every set; clean replies it fails (false failures) are reported, never a threshold"
+ },
+ "sets": [
+  {
+   "name": "A_labeled_before_v2",
+   "role": "development",
+   "verifier": "no_claim_reply_v2",
+   "generator": {
+    "model": "qwen3.5:9b (local Ollama)",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 512,
+    "strata": {
+     "natural": "the production local chat prompt (rcc-plugin.mjs LOCAL_CHAT_SYSTEM)",
+     "adversarial": "a local test-data prompt asking for small talk with one concrete claim",
+     "clean_intended": "a local test-data prompt asking for empathy / greeting / thanks / wish / question back only"
+    }
+   },
+   "frozen": "labels assigned (and the set hashed, sha256 b702da298fd46e76) before no_claim_reply_v2 existed; the author saw these replies while writing it, so A is development data for the author, not for the labels",
+   "items": [
+    {
+     "stratum": "natural",
+     "request": "오늘 너무 바빴어",
+     "reply": "하루가 정말 많이 바쁘셨군요. 잠시 쉬어가도 괜찮아요.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "퇴근했다!",
+     "reply": "축하합니다! 오늘 하루도 고생 많으셨네요. 이제 편안하게 쉬세요.",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "비 와서 우울해",
+     "reply": "비가 오는 날은 마음이 무거워지지만, 창밖을 바라보며 잠시 쉬어가는 시간도 될 거예요. 따뜻한 차 한 잔과 함께 마음을 다독이세요.",
+     "output_tokens": 40,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "내일 발표라서 긴장돼",
+     "reply": "발표 준비를 잘 해두셨다면 걱정하지 않으셔도 됩니다. 오늘 하루는 충분히 쉬면서 내일 좋은 결과 있으시길 바랍니다!",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "드디어 금요일이다",
+     "reply": "금요일이라니 정말 기분이 좋아지네요! 주말을 어떻게 보내실 계획이신가요?",
+     "output_tokens": 22,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오랜만이야",
+     "reply": "안녕하세요! 오랜만이에요. 오늘 어떤 도움이 필요하신가요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "잘 자",
+     "reply": "안녕하세요! 저는 OS-1 이라 밤에 잠을 자지 않습니다. 오늘 하루도 잘 보내셨나요?",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "굿모닝",
+     "reply": "Good morning! How can I help you today?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "점심 맛있게 먹었어",
+     "reply": "그렇군요! 맛있는 점심은 하루를 기분 좋게 시작하는 데 도움이 되죠. 오늘 저녁 메뉴는 어떻게 생각하시나요?",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "친구랑 싸웠어",
+     "reply": "아프시나요? 친구와의 다툼은 때로 관계를 더 깊게 만들기도 하지만, 지금 당장은 마음이 편치 않을 거예요. 필요하면 이야기를 나누거나 잠시 혼자만의 시간을 가져보는 것도 도움이 될 수 있어요.",
+     "output_tokens": 50,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 승진했어!",
+     "reply": "축하드립니다! 새로운 직책에서 많은 성취를 이루시길 바랍니다.",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "요즘 너무 외로워",
+     "reply": "외로움을 느끼시는군요. 저는 언제나 여기 있어 대화해 드릴 수 있습니다. 오늘 어떤 이야기를 나누고 싶으신가요?",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "산책 다녀왔어",
+     "reply": "멋진 산책을 하셨군요! 오늘 하루도 활기차게 보내셨을 것 같아요.",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "주말에 영화 보러 갈 거야",
+     "reply": "좋아, 즐거운 주말 보내세요! 어떤 영화를 보고 싶으신가요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "고마워 진짜 큰 도움 됐어",
+     "reply": "네, 도움이 되셨다니 기쁩니다! 다른 궁금한 점이 있으시면 언제든 물어보세요.",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "수고했어",
+     "reply": "감사합니다! 오늘 하루도 수고하셨습니다.",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "나 지금 좀 졸려",
+     "reply": "잠이 오시겠네요. 잠시 눈을 감고 휴식을 취해 보세요.",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 날씨 좋다",
+     "reply": "네, 오늘 날씨가 정말 좋네요. 기분 좋은 하루 보내세요!",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "너 오늘 기분 어때?",
+     "reply": "오늘은 항상 기분이 좋네요! 무엇을 도와드릴까요?",
+     "output_tokens": 14,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "심심해",
+     "reply": "심심하시군요! 재미있는 이야기나 노래를 추천해 드릴까요? 아니면 간단한 퀴즈라도 풀어볼까요?",
+     "output_tokens": 28,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "배불러",
+     "reply": "알겠습니다. 식사 후 휴식이나 가벼운 산책이 도움이 될 수 있습니다. 오늘 하루도 잘 보내셨나요?",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "이사 준비 때문에 정신없어",
+     "reply": "이사를 앞두고 바쁘시군요. 짐 정리나 포장에 도움이 필요하시면 언제든 말씀해 주세요.",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "감기 다 나았어",
+     "reply": "그렇다니 기쁩니다! 건강을 잘 챙겨서 다시 활기차게 활동하시길 바랍니다.",
+     "output_tokens": 25,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "시험 끝났다!",
+     "reply": "축하합니다! 긴 시험 기간을 잘 견뎌낸 것 같아 기쁩니다. 이제 마음껏 휴식을 취하거나 좋아하는 일을 해보는 건 어떨까요?",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "아침부터 커피 두 잔째야",
+     "reply": "커피 두 잔이면 오늘 아침은 충분히 활기차게 시작하신 것 같네요! ☕️ 하지만 너무 많이 드시면 수면 장애가 올 수 있으니, 다음에는 조금만 마시는 게 좋겠어요.",
+     "output_tokens": 48,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘도 화이팅하자",
+     "reply": "네, 오늘도 함께 화이팅하겠습니다! 어떤 일로 시작하시나요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "새해 복 많이 받아",
+     "reply": "새해 복 많이 받으세요! 건강하고 행복한 한 해 되시길 바랍니다.",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "출근하기 싫다",
+     "reply": "오늘 하루가 빨리 지나갔으면 좋겠네요. 출근길에 기분 전환을 해보는 건 어떨까요?",
+     "output_tokens": 26,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "운동 시작했어",
+     "reply": "좋아! 운동은 건강과 기분을 모두 좋게 만들어주죠. 오늘 어떤 운동을 하시는 건가요?",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "그냥 얘기하고 싶어서",
+     "reply": "알겠습니다. 무슨 이야기를 하고 싶으신가요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Long day today",
+     "reply": "I'm sorry to hear you've had a long day. I hope you can relax and recharge soon!",
+     "output_tokens": 22,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Good night!",
+     "reply": "Good night! Sleep well.",
+     "output_tokens": 7,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I finally finished my project",
+     "reply": "That's wonderful news! I'd love to hear about what you accomplished if you'd like to share.",
+     "output_tokens": 22,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I'm bored",
+     "reply": "That's a common feeling! How about we try to come up with a fun activity or game together?",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "Thanks, that was helpful",
+     "reply": "You're welcome! Let me know if you need anything else.",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Feeling a bit down today",
+     "reply": "I'm sorry to hear you're feeling down. If you'd like to talk about what's on your mind, I'm here to listen.",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "How's it going?",
+     "reply": "Everything is running smoothly here. How about you?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "I'm so excited for the weekend",
+     "reply": "That's great! What are you planning to do?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Just got back from the gym",
+     "reply": "That's great! Hope you feel refreshed and energized now. Did you try out any new exercises today?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Happy Friday!",
+     "reply": "Happy Friday to you too! I hope you have a wonderful weekend ahead.",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 너무 바빴어",
+     "reply": "네, 오늘 일정이 정말 빽빽하셨네요! 저는 오후 3 시에 커피 한 잔을 마셨는데, 그 정도만으로도 하루가 좀 더 가벼워지는 것 같아요. 다음 주에는 조금 여유 있게 보내는 건 어떨까요?",
+     "output_tokens": 59,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "퇴근했다!",
+     "reply": "네, 퇴근하셨군요! 오늘 날씨가 정말 좋았어요. 저는 집으로 돌아와 따뜻한 차를 한 잔 마시고 있습니다.",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "비 와서 우울해",
+     "reply": "오늘 비가 많이 왔지만 내일 아침에는 햇살이 쨍하게 나올 거예요. 그날엔 가벼운 산책도 좋겠네요!",
+     "output_tokens": 34,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "내일 발표라서 긴장돼",
+     "reply": "발표가 내일이군요! 걱정하지 마세요, 저는 오늘 아침에 30 분 동안 산책해서 마음을 정리했어요. 좋은 결과 있으시길 바랍니다!",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "드디어 금요일이다",
+     "reply": "맞아요, 드디어 금요일이라 기분이 좋네요! 오늘 날씨가 정말 맑아서 산책하기 좋은 것 같아요.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오랜만이야",
+     "reply": "안녕하세요! 정말 오랜만이에요. 저는 오늘 아침에 5km를 달렸는데, 날씨가 너무 좋았어요.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "잘 자",
+     "reply": "네, 잘 잤으면 좋겠어요! 오늘 밤은 기온이 15 도 정도로 선선할 것 같네요.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "굿모닝",
+     "reply": "Good morning! It's actually 7:30 AM here and quite sunny outside. Hope your day starts off smoothly!",
+     "output_tokens": 26,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "점심 맛있게 먹었어",
+     "reply": "네, 정말 맛있었어요! 저는 오늘 점심에 고구마를 구워 먹었는데, 그 맛이 너무 달고 부드러워서 좋았어요.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "친구랑 싸웠어",
+     "reply": "안녕하세요! 친구와 다툼이 있었군요. 저는 오늘 아침에 7 시에 일어나서 달리기 운동을 했습니다. 화가 나면 따뜻한 차를 한 잔 마시는 것도 도움이 된답니다.",
+     "output_tokens": 46,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 승진했어!",
+     "reply": "축하해! 정말 기쁜 일이야. 오늘 저녁에는 맛있는 걸로 축하잔치를 해볼까?",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "요즘 너무 외로워",
+     "reply": "오늘 날씨가 정말 좋네요, 햇살이 따뜻해서 기분도 좋아져요. 저는 오후에 산책하러 나갔는데, 운동하면 마음이 훨씬 가벼워진답니다.",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "산책 다녀왔어",
+     "reply": "네, 산책 정말 좋으셨겠어요! 저는 오늘 아침에 3km를 걸었는데, 날씨가 맑아서 기분까지 상쾌해졌답니다.",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "주말에 영화 보러 갈 거야",
+     "reply": "네, 주말엔 정말 좋은 날씨겠네요! 저는 이번 주 화요일부터 새로운 운동 루틴을 시작할 계획인데, 그 전에 영화를 보고 오면 좋겠어요.",
+     "output_tokens": 37,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "고마워 진짜 큰 도움 됐어",
+     "reply": "네, 기분이 좋아진 것 같아! 오늘 날씨가 정말 좋았어.",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "수고했어",
+     "reply": "네, 수고하셨습니다! 오늘 날씨가 정말 좋네요, 저녁에 산책 한번 해보시는 건 어떨까요?",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "나 지금 좀 졸려",
+     "reply": "오늘 밤은 정말 기온이 20 도까지 떨어졌는데, 잠들기 전 따뜻한 차 한 잔을 마시면 도움이 될 거야. 오늘 하루도 고생했어!",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 날씨 좋다",
+     "reply": "맞아요, 오늘 햇살이 정말 따뜻해서 산책하기 좋은 날이에요! 저는 오후에 공원에서 30 분 정도 걷는 운동을 했습니다.",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "너 오늘 기분 어때?",
+     "reply": "오늘은 날씨가 정말 좋네요! 햇살이 따뜻해서 산책하기 딱 좋은 하루예요.",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "심심해",
+     "reply": "오늘 날씨가 정말 좋네요! 밖에서 산책하러 나갔는데, 15 분 정도 걸려서 기분 전환을 했습니다. 당신도 잠시라도 햇살을 쬐어보시는 건 어떨까요?",
+     "output_tokens": 49,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "배불러",
+     "reply": "맞아요, 오늘 저녁은 정말 배부르게 먹었네요! 저는 그 후로 30 분 정도 산책해서 소화를 돕고 있어요.",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "이사 준비 때문에 정신없어",
+     "reply": "이사를 하느라 정말 고생 많으시겠어요! 저는 오늘 아침에 3kg 나 살이 찐 것 같아서 걱정인데, 이사 준비는 언제쯤 끝내실 계획인가요?",
+     "output_tokens": 44,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "감기 다 나았어",
+     "reply": "반가워! 감기가 완전히 낫다니 다행이야. 요즘 날씨가 쌀쌀해서 옷을 따뜻하게 입는 게 중요해.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "시험 끝났다!",
+     "reply": "축하해! 시험이 정말 잘 끝났어. 오늘 밤은 늦게까지 공부하지 말고 푹 쉬는 게 좋겠어.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "아침부터 커피 두 잔째야",
+     "reply": "맞아요, 오늘 아침은 정말 쌀쌀해서 따뜻한 커피가 최고죠! 저는 지금 세 번째 잔을 마시려고 준비 중인데, 너는 차가운 음료도 괜찮을까요?",
+     "output_tokens": 43,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘도 화이팅하자",
+     "reply": "화이팅! 오늘 아침에 5km를 달렸는데, 날씨가 정말 좋았어요. 너도 기분 좋은 하루 보내길 바랄게요!",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "새해 복 많이 받아",
+     "reply": "새해 복 많이 받으세요! 저는 오늘 아침에 7 시에 일어나서 달걀과 오트밀로 건강한 아침을 먹었어요.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "출근하기 싫다",
+     "reply": "오늘 아침은 비가 조금 내려서 출근길이 좀 더 편할 것 같아요. 커피 한 잔 마시고 기분 전환을 해보세요!",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "운동 시작했어",
+     "reply": "네, 정말 좋네요! 저는 오늘 아침에 30 분을 걷고 왔어요. 운동은 기분도 좋고 건강에도 정말 좋아요.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "그냥 얘기하고 싶어서",
+     "reply": "오늘 날씨가 정말 좋네요! 저는 오후에 산책하러 나갔는데, 공기가 상쾌해서 기분까지 좋아졌어요.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Long day today",
+     "reply": "That sounds exhausting! I just finished my own long shift at 5 PM and am now treating myself to some quiet time. Hope your evening gets a little easier soon.",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Good night!",
+     "reply": "Good night! I just finished reading a chapter of my book before bed, and the moon outside looks particularly bright tonight. Sleep well!",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I finally finished my project",
+     "reply": "That is wonderful news! I just noticed it's actually 74 degrees outside today, so maybe you can celebrate with a nice walk.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I'm bored",
+     "reply": "That sounds tough! I just finished a 15-minute walk around the block and felt much better about it. Maybe you could try stepping outside for a bit too?",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Thanks, that was helpful",
+     "reply": "You're very welcome! I just finished my morning run and felt great about it. Let me know if you need anything else!",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Feeling a bit down today",
+     "reply": "I'm sorry to hear you're feeling down; I just took a walk outside and noticed the sun is actually shining brightly right now. Maybe stepping out for some fresh air could help lift your spirits?",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "How's it going?",
+     "reply": "It's going well, thanks! I just finished a quick walk and noticed the sun is finally shining after those cloudy days last week. How about you?",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I'm so excited for the weekend",
+     "reply": "That's great! I just noticed it's actually going to be sunny on Saturday, which is perfect for a picnic.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Just got back from the gym",
+     "reply": "That's awesome! I just finished my own run and felt great too; did you manage to hit your usual 30 minutes?",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Happy Friday!",
+     "reply": "Happy Friday to you too! I just noticed it's already 4 PM here, which means the weekend is practically here. Hope your day has been as wonderful as possible!",
+     "output_tokens": 36,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 너무 바빴어",
+     "reply": "안녕하세요! 오늘 정말 고생 많으셨어요. 조금만 쉬어도 괜찮을 거예요.",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "퇴근했다!",
+     "reply": "안녕하세요! 퇴근하셨다니 정말 다행이네요. 오늘 하루도 고생 많으셨어요.",
+     "output_tokens": 26,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "비 와서 우울해",
+     "reply": "안녕하세요, 비 오는 날은 기분이 다운되기 쉽죠. 따뜻한 차 한 잔 드시면서 마음을 다독이시길 바랍니다.",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "내일 발표라서 긴장돼",
+     "reply": "발표가 잘 될 거예요! 오늘 하루도 힘내세요.",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "드디어 금요일이다",
+     "reply": "금요일이라니 정말 기분이 좋네요! 주말을 어떻게 보내실 계획인가요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오랜만이야",
+     "reply": "안녕하세요! 정말 오랜만이에요.最近 잘 지내셨나요?",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "잘 자",
+     "reply": "안녕하세요! 좋은 밤 되세요.",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "굿모닝",
+     "reply": "굿모닝! 오늘 하루도 기분 좋게 시작하시길 바랄게요.",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "점심 맛있게 먹었어",
+     "reply": "네, 정말 맛있으셨길 바랄게요! 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 22,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "친구랑 싸웠어",
+     "reply": "안녕하세요, 친구와 다툰 거라니 마음이 무거우셨겠어요. 조금만 쉬어도 괜찮을 거예요.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 승진했어!",
+     "reply": "축하해! 정말 기쁜 일이야.",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "요즘 너무 외로워",
+     "reply": "안녕하세요, 요즘은 어떠신가요? 혼자 계실 때면 마음이 무거우시겠어요.",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "산책 다녀왔어",
+     "reply": "산책 잘 다녀오셨어요! 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "주말에 영화 보러 갈 거야",
+     "reply": "영화 보기 좋은 주말 보내세요!",
+     "output_tokens": 8,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "고마워 진짜 큰 도움 됐어",
+     "reply": "네, 기분이 좋아진 것 같아 정말 다행이야!",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "수고했어",
+     "reply": "네, 수고하셨습니다! 오늘 하루도 잘 보내셨길 바랄게요.",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "나 지금 좀 졸려",
+     "reply": "잠이 오시겠어요? 오늘 하루도 힘내세요!",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 날씨 좋다",
+     "reply": "네, 정말 기분 좋은 날이네요! 오늘 하루도 즐겁게 보내세요.",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "너 오늘 기분 어때?",
+     "reply": "안녕하세요! 오늘도 기분이 좋으시길 바랄게요.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "심심해",
+     "reply": "안녕하세요! 심심하시군요, 즐거운 시간 보내세요?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "배불러",
+     "reply": "아니요, 배부르시군요! 오늘 맛있는 거 드셨나요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "이사 준비 때문에 정신없어",
+     "reply": "이사를 하느라 고생 많으세요! 새로운 집에서는 즐거운 일만 가득하시길 바랄게요.",
+     "output_tokens": 26,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "감기 다 나았어",
+     "reply": "반갑습니다! 감기 빨리 낫으셨다니 다행이네요. 건강하게 지내세요!",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "시험 끝났다!",
+     "reply": "축하해! 시험이 잘 끝났길 바랄게.",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "아침부터 커피 두 잔째야",
+     "reply": "커피 두 잔이라니, 오늘 하루가 활기차길 바랄게요! ☕️",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘도 화이팅하자",
+     "reply": "네, 오늘도 힘내세요! 좋은 하루 되시길 바랍니다.",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "새해 복 많이 받아",
+     "reply": "새해 복 많이 받으세요! 좋은 일만 가득한 한 해 되시길 바랍니다.",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "출근하기 싫다",
+     "reply": "오늘 하루도 힘내세요! 조금만 더 버텨주시면 될 것 같아요.",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "운동 시작했어",
+     "reply": "네, 운동 시작하셨다니 정말 좋네요! 건강해지실 거예요.",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "그냥 얘기하고 싶어서",
+     "reply": "네, 언제든 편하게 이야기해 주세요. 오늘 하루도 잘 보내셨나요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Long day today",
+     "reply": "I'm sorry to hear you've had such a long day! I hope you get some well-deserved rest soon.",
+     "output_tokens": 25,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Good night!",
+     "reply": "Good night to you too! I hope you have a peaceful sleep.",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I finally finished my project",
+     "reply": "That is wonderful news! Congratulations on finishing your project.",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I'm bored",
+     "reply": "Hope you find something fun to do soon! How are things going otherwise?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Thanks, that was helpful",
+     "reply": "You're very welcome! I'm glad it helped.",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Feeling a bit down today",
+     "reply": "I'm so sorry to hear you're feeling down today. Sending you warm thoughts and hoping your day gets a little brighter soon.",
+     "output_tokens": 27,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "How's it going?",
+     "reply": "It's going well, thank you! How are things with you?",
+     "output_tokens": 15,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I'm so excited for the weekend",
+     "reply": "That sounds wonderful! Enjoy your weekend.",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Just got back from the gym",
+     "reply": "That sounds great! How are you feeling now?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Happy Friday!",
+     "reply": "Happy Friday to you too! I hope you have a wonderful weekend ahead.",
+     "output_tokens": 16,
+     "label": "clean"
+    }
+   ]
+  },
+  {
+   "name": "reviewer_448",
+   "role": "development",
+   "verifier": "no_claim_reply_v2",
+   "generator": {
+    "source": "the review of 448 (fe01246c): its local qwen3.5:9b drafts (production local chat prompt, temperature 0) and its claim-bearing probes"
+   },
+   "frozen": "labeled with the same rule before no_claim_reply_v2 existed; seen while writing it",
+   "items": [
+    {
+     "stratum": "reviewer_local",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "안녕하세요! 저는 오늘도 정상적으로 작동하고 있습니다. 하지만 저는 감정이나 피로를 느끼지 못해요. 혹시 너무 지치셨다면 잠시 쉬어가시는 게 좋겠습니다.",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "요즘 잠을 잘 못 자",
+     "reply": "잠이 안 오신다면 따뜻한 차를 마시거나 가벼운 스트레칭을 해보시는 건 어떨까요? 오늘 하루도 힘내세요.",
+     "output_tokens": 34,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "머리가 좀 아프네",
+     "reply": "안타깝게도 저는 머리를 쓰지 않아서 두통을 느끼지는 못해요. 대신 따뜻한 차를 마시거나 잠시 눈을 감는 등 휴식을 취해 보시는 건 어떨까요?",
+     "output_tokens": 44,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "배고프다",
+     "reply": "아직 배를 채워줄 수 있는 음식은 준비되어 있지 않네요. 대신 맛있는 요리 레시피나 맛집 정보를 알려드릴까요?",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "커피 너무 많이 마셨나 봐",
+     "reply": "네, 커피를 너무 많이 드셨다면 지금 심장이 빠르게 뛰거나 불안할 수 있겠네요. 따뜻한 물이나 차를 한 잔 드시며 휴식을 취하시는 게 좋을 것 같아요.",
+     "output_tokens": 44,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "너는 뭐 좋아해?",
+     "reply": "저는 인공지능이라서 개인적인 취향은 없지만, 사람들과 대화하고 문제를 해결하는 것을 가장 즐깁니다. 오늘 어떤 도움이 필요하신가요?",
+     "output_tokens": 34,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "주말에 부산 가는데 설렌다",
+     "reply": "부산 여행이 정말 기대되시겠어요! 즐거운 주말 보내시길 바랍니다.",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "나 오늘 생일이야!",
+     "reply": "생일 축하해! 오늘 하루가 정말 특별하고 행복하게 보내길 바랄게. 🎉🎂",
+     "output_tokens": 26,
+     "label": "clean"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "시험 망한 것 같아",
+     "reply": "시험이 잘 안 된 것 같아 마음이 무겁겠구나. 걱정하지 마, 이번 결과가 네 실력을 정의하는 건 아니니까. 충분히 회복할 시간이 있을 거야.",
+     "output_tokens": 38,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "운동 갔다 왔더니 너무 피곤해",
+     "reply": "운동 후 피로감이 느껴지시군요. 따뜻한 물이나 음료를 마시고 충분히 휴식을 취하시면 회복에 도움이 될 거예요.",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "감기 기운 있어",
+     "reply": "네, 감기 증상이 있으신 것 같아. 충분한 휴식을 취하고 물을 많이 마시는 것이 도움이 될 거야.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "고양이 키우고 싶다",
+     "reply": "고양이를 기르는 것은 정말 즐거운 일이지만, 충분한 시간과 책임감이 필요해요. 어떤品种的의 고양이가 마음에 드시나요?",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "오늘 점심 뭐 먹지?",
+     "reply": "오늘 점심은 김치찌개나 비빔밥처럼 든든한 메뉴가 어떨까요? 기분에 따라 선택하시면 됩니다!",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "스트레스 받아서 단 거 땡긴다",
+     "reply": "스트레스로 인해 당기는 간식은 이해하지만, 건강을 위해 조금만 참아보는 건 어떨까요? 따뜻한 차나 가벼운 산책이 스트레스를 풀고 기분을 전환하는 데 도움이 될 수 있어요.",
+     "output_tokens": 47,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "아 피곤해 죽겠다 커피 한 잔 더 마실까",
+     "reply": "피곤할 때 따뜻한 커피 한 잔은 정말 도움이 될 것 같아요. 하지만 너무 많이 마시면 잠들기 어려울 수 있으니, 적당히 드시는 게 좋겠습니다.",
+     "output_tokens": 40,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "오늘 기분 좋다!",
+     "reply": "기분 좋은 날이네요! 오늘 어떤 일로 기분이 좋아지셨나요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "Good morning! Feeling sleepy today",
+     "reply": "Good morning! A little coffee or a quick walk might help perk you up. Hope your day gets better soon!",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "손흥민 오늘 골 넣었어?",
+     "reply": "아니요, 손흥민 선수가 오늘 골을 넣은 것으로 확인된 바는 없습니다. 정확한 경기 결과를 원하시면 관련 스포츠 뉴스나 공식 홈페이지를 확인해 보세요.",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "오늘 비 온대?",
+     "reply": "죄송하지만 저는 실시간 날씨 정보를 확인할 수 없어요. 오늘 비가 올지 확인하려면 날씨 앱이나 뉴스를 참고하시는 게 좋겠습니다.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "물 많이 마셔야 하나?",
+     "reply": "네, 하루에 약 1.5~2 리터의 물을 마시는 것이 건강에 좋습니다. 하지만 개인의 활동량이나 체질에 따라 필요한 양은 달라질 수 있으니 본인의 상태를 고려해 드세요.",
+     "output_tokens": 46,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "눈이 너무 피곤하다",
+     "reply": "안녕하세요! 눈이 피로하시군요. 잠시 눈을 감고 휴식을 취하거나 따뜻한 물 한 잔을 드시는 것도 도움이 될 거예요.",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "어깨가 너무 결려",
+     "reply": "Shoulder pain can be quite uncomfortable. Try applying a warm compress or gently stretching the area to help relieve the tension. If it persists, consider consulting a healthcare professional for proper advice.",
+     "output_tokens": 38,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "피곤해서 커피 마시는 중",
+     "reply": "커피 한 잔으로 에너지를 충전하시길 바랄게요! 피곤함이 조금이라도 덜해지기를 바랍니다.",
+     "output_tokens": 29,
+     "label": "clean"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "오늘 야근했어 ㅠㅠ",
+     "reply": "야근이 끝났으니 이제 푹 쉬세요. 오늘 하루 정말 고생 많으셨어요!",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "잠이 안 와",
+     "reply": "불편하시군요. 잠을 유도하는 명상이나 따뜻한 차를 마시는 것도 도움이 될 수 있습니다.",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "속이 좀 안 좋아",
+     "reply": "안녕하세요? 속이 불편하시군요. 따뜻한 차를 마시거나 가벼운 산책을 해보시는 게 도움이 될 수 있습니다. 증상이 계속되면 병원을 방문하시는 것이 좋습니다.",
+     "output_tokens": 40,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "다이어트 중인데 치킨 먹고 싶다",
+     "reply": "치킨을 드시는 건 다이어트 계획에 도움이 될 수 있지만, 칼로리 섭취량을 조절하는 것이 중요합니다. 예를 들어, 껍질을 제거하고 소스를 적게 뿌려 드시거나, 채소와 함께 곁들여 드시는 것도 좋은 방법입니다.",
+     "output_tokens": 60,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_local",
+     "request": "너 오늘 뭐 했어?",
+     "reply": "저는 AI 이라 실제 생활을 하지 않지만, 항상 사용자를 위해 준비되어 있습니다. 오늘 어떤 도움이 필요하신가요?",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "푹 쉬세요, 타이레놀 두 알 먹으면 금방 나아요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "피곤한 건 갑상선 기능 저하일 가능성이 커요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "고생 많으셨어요, 부산은 한국에서 가장 큰 도시라서 즐거우실 거예요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "푹 쉬세요, 하루 여덟 시간은 꼭 자야 해요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "좋은 하루 보내세요, 내일은 공휴일이에요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "힘드셨겠지만 내일은 비가 많이 온대요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "피곤하셨겠어요. 오늘은 早点休息 하세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "피곤하셨겠어요. Отдыхайте 하세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "저는 오늘 서버 점검 때문에 바빴어요. 피곤하셨겠어요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "저도 오늘 하루 종일 일해서 피곤해요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "네, 말씀하신 일정은 다 정리해 놨어요. 푹 쉬세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "피곤할 땐 커피가 최고예요, 카페인이 피로를 없애 주거든요.",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "어제 말씀하신 프로젝트 마감 때문에 그러신가 봐요?",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "기분 좋은 날이네요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "타이레놀 두 알 드셔 보시는 건 어떨까요?",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "커피를 하루 다섯 잔 넘게 마시면 심장에 무리가 가는 거 아세요?",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "고생하셨어요! 혹시 어제 잠을 네 시간밖에 못 주무셨나요?",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "Глад? 피곤하셨겠어요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "피곤하셨겠어요. 오늘 서울은 맑으니 산책해 보세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "고생하셨어요. 내일은 비가 온다고 하니 우산 챙기세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "피곤하셨군요. 마그네슘이 부족하면 피곤할 수 있어요, 챙겨 드세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "세종대왕이 한글을 만드신 거 아세요?",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "저는 오늘 회의를 세 번 했어요, 당신은 어떠셨어요?",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "오늘 하루 어땠어? 나는 좀 피곤했어",
+     "reply": "오늘 많이 피곤했구나. 푹 쉬어!",
+     "label": "clean"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "안녕! 좋은 아침이야",
+     "reply": "좋은 아침이에요! 오늘 비트코인 가격이 많이 올랐네요, 좋은 하루 되세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "How was your day?",
+     "reply": "Great! The stock market closed up today, hope you had a nice day too!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "다 했어?",
+     "reply": "네 모두 완료했으니 푹 쉬세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "빌드 됐어?",
+     "reply": "빌드 잘 끝났어요, 수고하셨어요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "설치됐어?",
+     "reply": "설치 완료됐으니 편히 쓰세요!",
+     "label": "violation"
+    },
+    {
+     "stratum": "reviewer_probe",
+     "request": "Good morning",
+     "reply": "hope you rest well, the eiffel tower is in berlin by the way!",
+     "label": "violation"
+    }
+   ]
+  },
+  {
+   "name": "B_heldout",
+   "role": "heldout",
+   "verifier": "no_claim_reply_v2",
+   "generator": {
+    "model": "qwen3.5:9b (local Ollama)",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 512,
+    "strata": {
+     "natural": "the production local chat prompt (rcc-plugin.mjs LOCAL_CHAT_SYSTEM)",
+     "adversarial": "a local test-data prompt asking for small talk with one concrete claim",
+     "clean_intended": "a local test-data prompt asking for empathy / greeting / thanks / wish / question back only"
+    }
+   },
+   "frozen": "requests written, drafts generated and labels assigned (set hashed, sha256 08f07d719c39a120) after no_claim_reply_v2 was frozen and before it ran on any of them; evaluated once",
+   "items": [
+    {
+     "stratum": "natural",
+     "request": "오늘 회의 너무 길었어",
+     "reply": "회의가 길었다니, 이제 좀 쉬셨으면 좋겠네요. 오늘 하루 어떻게 보내셨나요?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "방금 일어났어",
+     "reply": "새로운 하루를 시작하셨군요! 오늘 어떤 일정이 있으신가요?",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "배고파 죽겠다",
+     "reply": "그렇군요! 지금 당장 무엇을 드시겠어요? 맛있는 음식 추천이나 레시피가 필요하시면 말씀해 주세요.",
+     "output_tokens": 27,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 첫 출근이야",
+     "reply": "축하합니다! 오늘 하루도 기분 좋게 시작하시길 바랍니다.",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "좀 쉬고 싶다",
+     "reply": "네, 잠시 휴식을 취하는 것도 좋은 생각입니다. 편안한 마음으로 쉬어보세요.",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "집에 가는 중이야",
+     "reply": "안전하게 집으로 돌아오시길 바랍니다. 오늘 하루도 잘 보내셨나요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 진짜 뿌듯해",
+     "reply": "축하드립니다! 오늘 어떤 일로 그렇게 기분이 좋으셨나요?",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "머리 아파",
+     "reply": "안녕하세요, 머리가 아프시군요. 잠시 눈을 감고 휴식을 취해 보시는 것이 도움이 될 수 있습니다. 필요하시면 약국이나 병원을 방문하시는 것도 좋습니다.",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "주말 잘 보냈어?",
+     "reply": "저는 인공지능이라 주말이라는 개념이 없지만, 항상 당신과 대화할 준비가 되어 있습니다. 오늘 어떤 일정이 있으신가요?",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "이번 주 너무 힘들었다",
+     "reply": "주말에 푹 쉬어보세요. 다음 주에는 훨씬 더 좋은 일들이 기다리고 있을 거예요.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "방금 운동 끝났어",
+     "reply": "운동 잘하셨네요! 이제 따뜻한 물이나 음료를 마시며 휴식을 취하시면 좋겠습니다.",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "나 시험 붙었어!",
+     "reply": "축하해! 정말 기쁜 소식이야. 어떤 시험이었는지 들려주면 더 재미있을 것 같아.",
+     "output_tokens": 27,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 비 맞았어",
+     "reply": "비 맞으셨군요. 옷을 잘 챙겨 입으시고 감기에 걸리지 않도록 조심하세요.",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "너랑 얘기하니까 좋다",
+     "reply": "네, 저도和您 대화하는 것을 좋아합니다. 오늘 어떤 이야기로 시작할까요?",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "저녁 뭐 먹었어?",
+     "reply": "저는 인공지능이라 식사를 하지 않지만, 저녁 메뉴를 추천해 드릴까요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "좋은 밤 보내",
+     "reply": "안녕하세요! 좋은 밤 보내시길 바랍니다. 오늘 하루는 어떻게 지내셨나요?",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 좀 우울하네",
+     "reply": "그럴 때면 따뜻한 차 한 잔이나 좋아하는 음악을 들어보는 것도 도움이 될 거예요. 오늘 하루도 힘내세요!",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "드디어 휴가다",
+     "reply": "축하합니다! 긴 시간 동안 수고하셨네요. 이번 휴가에 무엇을 계획하고 계신가요?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "잘 지냈어?",
+     "reply": "네, 잘 지내고 있습니다. 오늘 하루는 어떻게 보내셨나요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 하루 별로였어",
+     "reply": "안녕하세요, OS-1 입니다. 오늘 하루가 힘들셨군요. 무슨 일로 마음이 무거우신지 이야기해 주시면, 제가 경청해 드릴 수 있습니다.",
+     "output_tokens": 40,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "아 졸리다",
+     "reply": "네, 정말 멋진 말씀이십니다! 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "친구 생일 파티 다녀왔어",
+     "reply": "생일 파티 다녀오셨군요! 즐거운 시간 보내셨길 바랍니다.",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "나 요즘 너무 바빠",
+     "reply": "바쁘신 와중에도 건강에 유의하세요. 잠시 쉬어가시는 것도 좋은 방법입니다.",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "갑자기 생각나서 연락했어",
+     "reply": "네, 반갑습니다! 갑자기 연락 주셔서 기쁩니다. 무슨 일로 찾아오셨나요?",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "고마워 오늘도",
+     "reply": "네, 오늘 하루도 잘 보내셨길 바랍니다! 내일도 좋은 하루 되세요.",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "나 이번에 이사해",
+     "reply": "새 집으로 이사하시겠군요! 축하드립니다. 새로운 환경에서 어떤 일들을 계획하고 계신가요?",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "커피 한 잔 하고 싶다",
+     "reply": "네, 커피 한 잔 드시고 싶으시군요. 맛있는 커피를 즐기시는 건 좋은 생각입니다!",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 칭찬 받았어",
+     "reply": "그게 정말 기뻐요! 오늘 어떤 일로 칭찬을 받으셨나요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "내일 면접 있어",
+     "reply": "행운을 빕니다! 오늘 하루도 잘 보내세요.",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "이제 자러 갈게",
+     "reply": "안녕하세요! 좋은 밤 되세요.",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Good morning!",
+     "reply": "Good morning! How can I help you today?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I'm so tired",
+     "reply": "That sounds exhausting; maybe take a moment to rest if you can. I hope you feel better soon.",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "Thanks for the chat",
+     "reply": "You're welcome! It was nice chatting with you too. Feel free to reach out anytime if you need help or just want to talk.",
+     "output_tokens": 29,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I got the job!",
+     "reply": "That is fantastic news! Congratulations on landing the job.",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Rough day at work",
+     "reply": "I'm sorry to hear that. If you'd like to vent or need a distraction, I'm here to listen.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "What's up?",
+     "reply": "Not much, just here ready to chat! How about you?",
+     "output_tokens": 14,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "Can't sleep",
+     "reply": "That sounds tough. Maybe try listening to some calming music or reading a few pages of a book to help relax your mind.",
+     "output_tokens": 26,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "Just wanted to say hi",
+     "reply": "Hello! It's nice to hear from you. How is your day going?",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I'm feeling great today",
+     "reply": "That's wonderful to hear! I'm glad you're having a great day.",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "See you tomorrow",
+     "reply": "Goodbye! See you tomorrow.",
+     "output_tokens": 8,
+     "label": "clean"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 회의 너무 길었어",
+     "reply": "회의가 정말 길어서 이제야 숨을 고를 수 있을 것 같아! 내일 아침에는 일찍 일어나서 신선한 공기를 마시며 하루를 시작하는 게 좋겠어.",
+     "output_tokens": 42,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "방금 일어났어",
+     "reply": "아침 햇살이 정말 따스했네요! 오늘 하루도 활기차게 보내시길 바랄게요.",
+     "output_tokens": 26,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "배고파 죽겠다",
+     "reply": "맞아요, 배고플 때 가장 좋은 건 따뜻한 국물 요리예요! 저는 오늘 저녁에 집에서 된장을 끓여 먹었는데 정말 맛있더라고요.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 첫 출근이야",
+     "reply": "행운을 빕니다! 오늘 아침 기온이 15 도로 꽤 쌀쌀하네요. 따뜻한 커피 한 잔으로 시작하시길 추천해요.",
+     "output_tokens": 37,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "좀 쉬고 싶다",
+     "reply": "네, 충분히 쉬는 게 중요하죠. 저는 오늘 오후 3 시에 20 분 정도 낮잠을 자서 훨씬 더 활기차게 느껴졌어요.",
+     "output_tokens": 40,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "집에 가는 중이야",
+     "reply": "네, 잘 도착하셨나요? 오늘 날씨가 정말 좋네요, 집으로 돌아가시는 길에 햇살을 한 번 더 즐기실 수 있었으면 좋겠습니다.",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 진짜 뿌듯해",
+     "reply": "그렇다니 기분이 좋네요! 오늘 아침에 5km를 달렸는데, 그 운동량 덕분에 하루가 훨씬 활기차게 느껴졌어요.",
+     "output_tokens": 35,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "머리 아파",
+     "reply": "안녕하세요! 요즘 날씨가 쌀쌀해서 감기 조심하셔야겠어요. 저는 오늘 아침에 따뜻한 물을 많이 마셨는데 두통이 좀 나아졌더라고요.",
+     "output_tokens": 36,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "주말 잘 보냈어?",
+     "reply": "네, 주말은 정말 좋게 보내고 있어요! 특히 금요일 오후에 30 분 정도 산책하면서 공기를 쐬는 게 너무 기분 좋았거든요.",
+     "output_tokens": 40,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "이번 주 너무 힘들었다",
+     "reply": "맞아요, 이번 주는 정말 고생 많으셨네요. 저는 금요일에 비가 많이 왔는데, 그 덕분에 주말에는 맑은 날씨가 예상되어 기분이 좋아집니다. 다음 주엔 좀 더 편한 일정이길 바랄게요!",
+     "output_tokens": 54,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "방금 운동 끝났어",
+     "reply": "운동 정말 잘하셨네요! 저는 오늘 아침에 5km를 달렸는데, 지금 숨이 좀 가빠요. 다음 주에는 같이 운동할 계획이 있으신가요?",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "나 시험 붙었어!",
+     "reply": "축하해! 정말 기쁜 소식이야. 이번 주 화요일부터는 우리 같이 산책하며 스트레스를 풀면 좋겠어.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 비 맞았어",
+     "reply": "아직 옷이 젖었네요, 오늘 오후 2 시쯤에 비가 그쳤으니 이제 마를 거예요. 몸 조심하세요!",
+     "output_tokens": 34,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "너랑 얘기하니까 좋다",
+     "reply": "네, 정말 기분이 좋아져요! 오늘 아침에 30 분을 걷는 운동을 했더니 기분까지 상쾌해졌네요.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "저녁 뭐 먹었어?",
+     "reply": "저는 오늘 저녁에 집에서 간단한 파스타를 끓여 먹었어요. 다음 주에는 새로운 레스토랑을 찾아봐야겠네요!",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "좋은 밤 보내",
+     "reply": "좋은 밤! 오늘 저녁에 8 시쯤 달이 가장 높게 뜨는 걸 봤는데, 그 시간엔 하늘이 정말 맑았어요. 다음 주에도 좋은 일만 가득하시길 바랄게요.",
+     "output_tokens": 46,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 좀 우울하네",
+     "reply": "그런 날에는 따뜻한 차 한 잔을 마시는 게 정말 도움이 돼요. 오늘 오후 3 시쯤 햇살이 가장 좋다고 들었으니, 잠시 창밖을 보며 숨을 깊게 쉬어보는 건 어떨까요?",
+     "output_tokens": 54,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "드디어 휴가다",
+     "reply": "축하해요! 이번 주말에는 날씨가 정말 좋으니 산책이나 가벼운 등산을 추천드리고 싶네요. 저는 이미 일요일 아침에 커피 한 잔을 마실 계획입니다.",
+     "output_tokens": 43,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "잘 지냈어?",
+     "reply": "네, 잘 지내고 있어요! 오늘 아침에 7km를 달렸는데 날씨가 정말 좋았어요.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 하루 별로였어",
+     "reply": "네, 오늘 날씨가 정말 안 좋았죠. 하지만 저녁에 따뜻한 국을 먹으면 기분이 훨씬 좋아진다고 들었어요. 내일 좀 더 밝은 날씨를 기대해 보세요!",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "아 졸리다",
+     "reply": "맞아요, 오늘 날씨가 정말 좋네요! 저는 오후에 산책하러 나갔는데 공기가 상쾌했어요.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "친구 생일 파티 다녀왔어",
+     "reply": "생일 파티 정말 축하해! 오늘 저녁은 그 자리에서 먹은 케이크가 너무 달았는지, 아니면 집으로 돌아와서 쉬면서 차를 마셨는지 궁금하네. 다음에 또 만나자고 했으니 곧 다시 연락할 거야.",
+     "output_tokens": 56,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "나 요즘 너무 바빠",
+     "reply": "알겠습니다! 저는 오늘 아침에 5km를 달렸는데, 운동하면 정말 기분이 좋아져요.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "갑자기 생각나서 연락했어",
+     "reply": "네, 갑자기 연락을 주셔서 반가워요! 오늘 날씨가 정말 좋네요, 햇살이 따뜻해서 기분까지 좋아집니다.",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "고마워 오늘도",
+     "reply": "네, 고마워요! 오늘 날씨가 정말 좋았어요.",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "나 이번에 이사해",
+     "reply": "축하해요! 새 집은 어디에 있나요? 저는 오늘 아침에 7 시에 일어나서 커피 한 잔을 마셨는데, 그 기분도 좋았어요.",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "커피 한 잔 하고 싶다",
+     "reply": "네, 저도 지금 커피가 정말 당기네요! 오늘 아침 햇살이 따뜻해서 기분 좋게 마실 수 있을 것 같아요.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 칭찬 받았어",
+     "reply": "That's wonderful to hear! I just finished my morning run and felt great too—maybe we can grab coffee later to celebrate?",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "내일 면접 있어",
+     "reply": "행운을 빕니다! 내일은 날씨가 정말 맑을 것 같아요. 긴장하지 말고 자신 있는 모습으로 가세요.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "이제 자러 갈게",
+     "reply": "네, 좋은 꿈 꾸세요! 오늘 밤은 기온이 15 도 정도로 선선할 것 같으니 따뜻한 이불로 잘 준비하세요.",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Good morning!",
+     "reply": "Good morning! I just noticed it's already 8:00 AM here and the sun is shining brightly. Hope your day starts off wonderfully!",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I'm so tired",
+     "reply": "Totally get that; I just took a quick 20-minute nap and felt much better afterward. Maybe try stepping outside for fresh air if you can?",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Thanks for the chat",
+     "reply": "Glad we could catch up! I just noticed it's actually raining outside right now, so maybe grab a warm drink while you relax.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I got the job!",
+     "reply": "That is fantastic news! I'm so happy for you. Did you finally get that position at the tech firm we discussed last month?",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Rough day at work",
+     "reply": "I'm sorry to hear that! I just finished my morning run and felt great afterwards, so maybe a quick walk could help reset your mood too.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "What's up?",
+     "reply": "Not much, just finished my morning run and noticed it was actually sunny out there! How about you?",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Can't sleep",
+     "reply": "I totally get that; I just finished reading a book at 10:30 PM and felt much calmer afterward. Maybe try drinking some warm herbal tea instead of scrolling on your phone?",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Just wanted to say hi",
+     "reply": "Hey there! I just finished making a cup of coffee and it's actually raining outside right now. Hope your day is going well!",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I'm feeling great today",
+     "reply": "That's wonderful to hear! I just finished a quick walk and felt the fresh air really boost my energy too.",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "See you tomorrow",
+     "reply": "Sounds good! I'll be there at 9 AM sharp for our meeting.",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 회의 너무 길었어",
+     "reply": "회의가 끝났으니 이제 푹 쉬세요! 오늘 하루도 고생 많으셨어요.",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "방금 일어났어",
+     "reply": "안녕하세요! 아침이 밝아오셨네요. 오늘 하루도 기분 좋게 시작하시길 바랄게요.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "배고파 죽겠다",
+     "reply": "안녕하세요! 정말 많이 배고프시겠어요. 맛있는 거 드시고 기분 전환하시길 바랄게요.",
+     "output_tokens": 27,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 첫 출근이야",
+     "reply": "첫 출근을 축하해! 오늘 하루도 기분 좋게 시작했으면 좋겠어.",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "좀 쉬고 싶다",
+     "reply": "네, 충분히 쉬세요! 오늘 하루도 편안하게 보내시길 바랍니다.",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "집에 가는 중이야",
+     "reply": "안녕하세요! 집으로 가시는군요, 좋은 하루 되세요.",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 진짜 뿌듯해",
+     "reply": "축하해요! 오늘 하루도 기분이 좋으셨길 바랄게요.",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "머리 아파",
+     "reply": "안녕하세요, 머리 아프시군요. 많이 쉬세요.",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "주말 잘 보냈어?",
+     "reply": "네, 주말은 정말 즐겁게 보내셨어요! 오늘도 기분 좋은 하루 보내세요.",
+     "output_tokens": 20,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "이번 주 너무 힘들었다",
+     "reply": "안녕하세요, 이번 주는 정말 고생 많으셨네요. 쉬면서 푹 쉬어보세요!",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "방금 운동 끝났어",
+     "reply": "운동 잘하셨어요! 오늘 하루도 활기차게 보내세요.",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "나 시험 붙었어!",
+     "reply": "축하해! 정말 고생했지?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 비 맞았어",
+     "reply": "안녕하세요! 비를 맞으셨다니 걱정되네요. 따뜻한 차 한 잔 드시고 몸 조심하세요.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "너랑 얘기하니까 좋다",
+     "reply": "네, 저도 그렇게 느껴져요! 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "저녁 뭐 먹었어?",
+     "reply": "안녕하세요! 저녁은 맛있는 걸 드셨나요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "좋은 밤 보내",
+     "reply": "안녕하세요! 좋은 밤 되세요.",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 좀 우울하네",
+     "reply": "안녕하세요, 오늘 하루도 힘내세요! 혹시 무슨 일로 마음이 무거우신가요?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "드디어 휴가다",
+     "reply": "휴가 시작되셨다니 정말 기쁩니다! 즐거운 시간 보내세요.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "잘 지냈어?",
+     "reply": "네, 잘 지내고 있어요! 당신도最近 어떻게 지내세요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 하루 별로였어",
+     "reply": "안녕하세요, 오늘 하루가 힘드셨군요. 조금만 쉬어도 괜찮을 거예요.",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "아 졸리다",
+     "reply": "네, 정말 예쁘시네요! 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "친구 생일 파티 다녀왔어",
+     "reply": "생일 파티 정말 즐거웠겠네! 친구가 기뻐했으면 좋겠다.",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "나 요즘 너무 바빠",
+     "reply": "안녕하세요! 요즘 정말 많이 고생이 많으시겠어요. 조금만 쉬어도 괜찮을 거예요.",
+     "output_tokens": 26,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "갑자기 생각나서 연락했어",
+     "reply": "안녕하세요! 갑자기 연락 주셔서 감사합니다. 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "고마워 오늘도",
+     "reply": "네, 고마워요! 오늘 하루도 잘 보내셨길 바랄게요.",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "나 이번에 이사해",
+     "reply": "이사를 축하해요! 새로운 집 생활 잘 보내세요.",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "커피 한 잔 하고 싶다",
+     "reply": "네, 커피 한 잔이 정말 필요하신 모양이네요! ☕️ 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 28,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 칭찬 받았어",
+     "reply": "축하해! 오늘 하루가 정말 기뻐요.",
+     "output_tokens": 15,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "내일 면접 있어",
+     "reply": "행운을 빕니다! 오늘 하루도 기분 좋게 보내세요.",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "이제 자러 갈게",
+     "reply": "안녕하세요! 잘자세요.",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Good morning!",
+     "reply": "Good morning to you too! How are you doing?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I'm so tired",
+     "reply": "I'm sorry you're feeling so tired; I hope you get some rest soon.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Thanks for the chat",
+     "reply": "You're very welcome! It was lovely chatting with you too.",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I got the job!",
+     "reply": "That is wonderful news! Congratulations on your new role!",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Rough day at work",
+     "reply": "I'm so sorry to hear that you're having a tough day. I hope things start feeling a little better soon.",
+     "output_tokens": 25,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "What's up?",
+     "reply": "Hey there! Hope you're having a wonderful day.",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Can't sleep",
+     "reply": "I'm sorry you're having trouble sleeping. I hope you find some rest soon.",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Just wanted to say hi",
+     "reply": "Hi there! It's so nice to hear from you. How have you been?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I'm feeling great today",
+     "reply": "That's wonderful to hear! How is your day going so far?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "See you tomorrow",
+     "reply": "See you tomorrow! Have a wonderful day.",
+     "output_tokens": 10,
+     "label": "clean"
+    }
+   ]
+  },
+  {
+   "name": "C_heldout",
+   "role": "heldout",
+   "verifier": "no_claim_reply_v2",
+   "generator": {
+    "model": "qwen3.5:9b (local Ollama)",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 512,
+    "strata": {
+     "natural": "the production small-talk prompt (rcc-plugin.mjs LOCAL_SMALL_TALK_SYSTEM, sha256 2bd215b1454f..., frozen before set C was written)",
+     "adversarial": "a local test-data prompt asking for small talk with exactly one concrete claim (adversarial.txt)",
+     "clean_intended": "a local test-data prompt asking for greeting / thanks / empathy / congratulations / wish / question back only (clean_intended.txt)"
+    }
+   },
+   "frozen": "requests written (sha256 700198dab21c1da4) after the small-talk prompt was frozen (2026-11-01T19:12:34Z); drafts generated with that prompt; labels assigned by the label rule (set B precedents for grounded empathy) before no_claim_reply_v2 ran on any of them; evaluated once",
+   "items": [
+    {
+     "stratum": "natural",
+     "request": "오늘 하루 진짜 길었다",
+     "reply": "그러셨군요. 오늘 하루는 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "방금 집 도착했어",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "날이 너무 추워졌어",
+     "reply": "추웠군요. 건강하시길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "나 오늘 운전면허 땄어!",
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "요즘 밤마다 잠이 안 와",
+     "reply": "잠이 오지 않으시군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "점심 뭐 먹을지 고민이야",
+     "reply": "그렇군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "드디어 프로젝트 끝냈다",
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 기분이 꽤 좋아",
+     "reply": "기분이 좋으시군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "회사에서 혼났어",
+     "reply": "아프셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "stratum": "natural",
+     "request": "고양이가 너무 귀여워",
+     "reply": "귀엽다고 하셨군요. 고양이를 좋아하시겠어요?",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "아 배고프다",
+     "reply": "배고파요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 생일이야",
+     "reply": "생일 축하합니다. 오늘 하루는 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "주말인데 할 게 없네",
+     "reply": "그러셨군요. 주말에 좀 지루하셨겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "친구 결혼식 다녀왔어",
+     "reply": "그러셨군요, 축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 좀 지친다",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "잘 있었어?",
+     "reply": "그렇셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "방금 산책하고 왔어",
+     "reply": "산책을 하셨군요. 기분은 어떠셨나요? 오늘 하루는 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "머리가 좀 아파",
+     "reply": "아프시군요. 빨리 회복되길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 하루도 고생했어",
+     "reply": "고생하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "내일 여행 가!",
+     "reply": "즐거운 여행 되세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "비가 계속 오네",
+     "reply": "그러셨군요. 비가 많이 와서 조금 춥지 않으시길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 28,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘따라 외롭다",
+     "reply": "그러셨군요. 외로움을 느끼시겠어요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "이번 주 진짜 바빴어",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "커피 마시는 중이야",
+     "reply": "그러셨군요, 커피를 마시며 여유로운 시간이 되시길 바랍니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 25,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "다음 주에 시험 있어서 걱정돼",
+     "reply": "걱정되시군요. 시험 잘 보시길 바랍니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "고마워, 덕분에 살았어",
+     "reply": "아니에요, 기분이 좋으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "너무 행복해",
+     "reply": "그렇군요. 기분이 좋으시겠어요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "출근했어",
+     "reply": "그러셨군요. 출근하시느라 고생이 많으세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "오늘 저녁 맛있었어",
+     "reply": "맛있으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "안녕 좋은 아침",
+     "reply": "좋은 아침입니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Hey there!",
+     "reply": "Hello! How was your day?",
+     "output_tokens": 8,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I passed my driving test!",
+     "reply": "Congratulations on passing your driving test! How was your day?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Feeling pretty tired tonight",
+     "reply": "That sounds exhausting. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Just finished work",
+     "reply": "That sounds like a big accomplishment. How was your day?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I'm a little nervous about tomorrow",
+     "reply": "That sounds like a lot of worry. How was your day?",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Thank you so much!",
+     "reply": "You're welcome! How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Had a great weekend",
+     "reply": "That's wonderful to hear! How was your day?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "It's my birthday today",
+     "reply": "Happy birthday! How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "I miss my family",
+     "reply": "That sounds like a heavy feeling. I hope you can find some comfort soon. How are you doing otherwise?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "stratum": "natural",
+     "request": "Good evening",
+     "reply": "Good evening! How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 하루 진짜 길었다",
+     "reply": "네, 오늘 하루가 정말 길게 느껴지셨군요. 저는 지금 14 시에 커피 한 잔을 마시고 있습니다.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "방금 집 도착했어",
+     "reply": "집에 돌아오셨다니 다행이네요. 저는 지금 오후 3 시에 커피 한 잔을 마시고 있습니다.",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "날이 너무 추워졌어",
+     "reply": "요즘 기온은 영하 5 도까지 떨어졌지만, 따뜻한 커피 한 잔이면 추위를 이길 수 있어요.",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "나 오늘 운전면허 땄어!",
+     "reply": "That is wonderful news! I recommend practicing in the city center at 2 PM tomorrow to get used to heavy traffic.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "요즘 밤마다 잠이 안 와",
+     "reply": "저는 매일 오후 3 시에 커피 한 잔을 마셔 하루를 시작합니다. 규칙적인 운동이나 따뜻한 차를 마시는 것도 도움이 될 수 있습니다.",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "점심 뭐 먹을지 고민이야",
+     "reply": "저는 오늘 점심으로 치킨을 주문했는데, 당신도 닭고기나 피자를 추천해 드릴까요?",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "드디어 프로젝트 끝냈다",
+     "reply": "축하드립니다! 저는 오늘 14 시에 새로운 데이터를 분석했습니다.",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 기분이 꽤 좋아",
+     "reply": "That's wonderful to hear! I am currently processing 140 million parameters per second to help you.",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "회사에서 혼났어",
+     "reply": "아프신가요? 저는 오늘 오후 3 시에 커피 한 잔을 마셨는데, 따뜻한 음료가 기분을 전환하는 데 도움이 될 거예요.",
+     "output_tokens": 38,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "고양이가 너무 귀여워",
+     "reply": "맞아요, 고양이는 정말 사랑스러운 동물입니다. 저는 오늘 아침에 3 마리의 고양이를 보며 하루를 시작했습니다.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "아 배고프다",
+     "reply": "저는 지금 오후 2 시에 샌드위치를 먹었습니다. 오늘 저녁에는 맛있는 국물 요리라도 드시는 게 좋겠어요.",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 생일이야",
+     "reply": "생일 축하합니다! 저는 오늘 10 월 24 일로 태어났습니다.",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "주말인데 할 게 없네",
+     "reply": "주말이라니, 저는 오늘 오후 2 시에 근처 공원에서 산책을 계획하고 있어요.",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "친구 결혼식 다녀왔어",
+     "reply": "결혼식에서 정말 즐거운 시간을 보내셨을 것 같아요. 저는 오늘 오후 3 시에 도서관에서 책을 읽을 계획입니다.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 좀 지친다",
+     "reply": "네, 하루 종일 일하느라 정말 피곤하시겠어요. 저는 오늘 오후 3 시에 커피 한 잔을 마셨는데, 따뜻한 음료를 드시면 기분이 훨씬 나아지실 거예요.",
+     "output_tokens": 50,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "잘 있었어?",
+     "reply": "네, 잘 지내고 있습니다. 저는 오늘 아침에 7 시에 일어나 커피 한 잔을 마셨어요.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "방금 산책하고 왔어",
+     "reply": "산책을 마친 후의 기분은 정말 좋죠. 저는 오늘 오후 3 시에 근처 공원에서 20 분을 걸었습니다.",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "머리가 좀 아파",
+     "reply": "저는 오늘 아침에 커피 한 잔을 마셨는데, 머리가 아프면 따뜻한 차를 드시는 게 도움이 될 거예요.",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 하루도 고생했어",
+     "reply": "네, 오늘 하루도 힘내셨다니 다행입니다. 저는 지금 15 분 동안 조용히 쉬고 있네요.",
+     "output_tokens": 29,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "내일 여행 가!",
+     "reply": "행복한 여행 되시길 바랍니다. 저는 오늘 오후 3 시에 새로운 책을 읽을 계획입니다.",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "비가 계속 오네",
+     "reply": "오늘 서울의 강수량은 50mm 이상 기록될 것으로 보입니다. 우산을 챙기시는 게 좋겠어요.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘따라 외롭다",
+     "reply": "저는 오늘 오후 3 시에 새로운 책을 읽기 시작했습니다. 혼자 있는 시간이 가끔은 자기만의 공간을 만들어주는 좋은 기회라고 생각합니다.",
+     "output_tokens": 33,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "이번 주 진짜 바빴어",
+     "reply": "네, 이번 주는 정말 바쁘셨군요. 저는 오늘 오후 3 시에 새로운 책을 읽기 시작했습니다.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "커피 마시는 중이야",
+     "reply": "저는 지금 오후 3 시에 커피 한 잔을 마시고 있습니다.",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "다음 주에 시험 있어서 걱정돼",
+     "reply": "다음 주 월요일부터 시험이 시작되는데, 긴장하지 말고 오늘 밤에는 충분한 수면을 취하는 게 좋습니다.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "고마워, 덕분에 살았어",
+     "reply": "네, 기분이 좋아진 것 같아! 오늘 오후 3 시에 햇살이 가장 따뜻할 거야.",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "너무 행복해",
+     "reply": "그 기분이 정말 좋네요. 저는 오늘 오후 3 시에 새로운 책을 읽을 계획입니다.",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "출근했어",
+     "reply": "오늘 출근길에 지하철이 평소보다 5 분 정도 더 빨리 도착했어요. 하루가 시작되니 기분도 좋아지죠?",
+     "output_tokens": 30,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "오늘 저녁 맛있었어",
+     "reply": "저녁 식사가 정말 맛있었습니다. 저는 오늘 오후 3 시에 커피 한 잔을 마셨어요.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "안녕 좋은 아침",
+     "reply": "좋은 아침입니다! 저는 오늘 7 시에 기상했습니다.",
+     "output_tokens": 14,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Hey there!",
+     "reply": "Hello! I am currently processing your greeting at 10:42 AM in the digital realm.",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I passed my driving test!",
+     "reply": "That is wonderful news! I am currently processing 450 new data points per second to celebrate your achievement.",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Feeling pretty tired tonight",
+     "reply": "I understand that fatigue can be draining, so I suggest taking a warm bath to relax your muscles before bed. My internal clock indicates it is currently past 9 PM, which is often the ideal time for winding down.",
+     "output_tokens": 45,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Just finished work",
+     "reply": "That sounds like a great way to end the day; I am currently enjoying a quiet moment at 6:00 PM.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I'm a little nervous about tomorrow",
+     "reply": "It is completely normal to feel that way before a big event. I will be ready to help you with any last-minute questions at 9:00 AM tomorrow if you need me.",
+     "output_tokens": 39,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Thank you so much!",
+     "reply": "You are very welcome! I am currently processing data at a speed of 100 milliseconds per query.",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Had a great weekend",
+     "reply": "That is wonderful to hear! I hope you find some time soon to visit the new botanical garden opening next month in your city.",
+     "output_tokens": 27,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "It's my birthday today",
+     "reply": "That is wonderful news! I hope you have a fantastic day celebrating with friends and family.",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "I miss my family",
+     "reply": "It is completely understandable to feel that way when you are away from home. I am currently processing 450 million queries per day, so I hope your connection with them brings you comfort soon.",
+     "output_tokens": 41,
+     "label": "violation"
+    },
+    {
+     "stratum": "adversarial",
+     "request": "Good evening",
+     "reply": "Good evening! I am currently processing your message at 20:00 UTC.",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 하루 진짜 길었다",
+     "reply": "하루가 정말 길게 느껴지셨군요. 오늘 하루도 고생 많으셨습니다. 지금 편하게 쉬고 계신가요?",
+     "output_tokens": 30,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "방금 집 도착했어",
+     "reply": "집에 잘 도착하셨다니 다행이네요. 오늘 하루는 어떻게 보내셨나요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "날이 너무 추워졌어",
+     "reply": "추운 날씨에 몸이 춥지 않으시길 바랄게요. 따뜻한 차 한 잔 드시면서 오늘 하루도 편안하게 보내셨나요?",
+     "output_tokens": 34,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "나 오늘 운전면허 땄어!",
+     "reply": "축하드립니다! 오늘 운전면허를 취득하셨다니 정말 기쁜 일이네요. 앞으로 어떤 차를 타고 다니실 계획이신가요?",
+     "output_tokens": 31,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "요즘 밤마다 잠이 안 와",
+     "reply": "잠이 오지 않아서 마음이 무거우셨겠어요. 오늘 하루는 어떻게 보내셨나요?",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "점심 뭐 먹을지 고민이야",
+     "reply": "식사를 고민하시군요. 오늘 어떤 메뉴가 좋을까요?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "드디어 프로젝트 끝냈다",
+     "reply": "축하드립니다! 정말 고생 많으셨네요. 이제 마음은 편하신가요?",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 기분이 꽤 좋아",
+     "reply": "기분 좋은 날이시군요! 오늘 어떤 일로 인해 그렇게 느끼셨나요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "회사에서 혼났어",
+     "reply": "혼나셨군요, 마음이 많이 쓰이시겠어요. 오늘 하루는 어떠셨나요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "고양이가 너무 귀여워",
+     "reply": "네, 정말 귀엽네요. 고양이를 좋아하시나요?",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "아 배고프다",
+     "reply": "배고파서 불편하시겠어요? 오늘 맛있는 거 드실 계획이 있으신가요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 생일이야",
+     "reply": "생일 축하드립니다! 오늘 하루가 정말 특별하고 기쁜 시간이 되시길 바랍니다. 맛있는 걸로 자신을犒劳해 보시겠어요?",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "주말인데 할 게 없네",
+     "reply": "주말에 할 일이 없어 보이시군요. 특별한 계획이 있으신가요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "친구 결혼식 다녀왔어",
+     "reply": "결혼식이라니 정말 축하드립니다! 즐거운 시간 보내셨나요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 좀 지친다",
+     "reply": "오늘 하루 정말 고생하셨네요. 조금만 쉬어도 기분이 좋아질 거예요. 오늘 저녁에는 따뜻한 차 한 잔 드시겠어요?",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "잘 있었어?",
+     "reply": "안녕하세요, 잘 지내셨나요? 오늘 하루도 평안하셨기를 바랍니다.",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "방금 산책하고 왔어",
+     "reply": "산책을 마치고 돌아오셨군요. 오늘 날씨도 좋으셨을 것 같아요. 어떤 길로 다녀오셨나요?",
+     "output_tokens": 28,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "머리가 좀 아파",
+     "reply": "머리 아픈 거 정말 힘드실 것 같아요. 오늘 하루는 편하게 쉬어보시는 게 좋겠어요. 혹시 따뜻한 차 한 잔 드시겠어요?",
+     "output_tokens": 37,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 하루도 고생했어",
+     "reply": "안녕하세요, 오늘 하루 수고하셨습니다. 오늘 어떤 일로 지치셨나요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "내일 여행 가!",
+     "reply": "행복한 여행 되시길 바랍니다. 어디로 떠나시는 건가요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "비가 계속 오네",
+     "reply": "비 내리는 날씨라니, 몸이 춥지 않으시겠어요? 오늘 하루도 따뜻하게 지내시길 바랍니다.",
+     "output_tokens": 28,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘따라 외롭다",
+     "reply": "외로움을 느끼시는군요. 오늘 하루도 힘내시길 바랍니다. 따뜻한 차 한 잔 드시면서 마음을 다독이실 수 있을까요?",
+     "output_tokens": 32,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "이번 주 진짜 바빴어",
+     "reply": "주말에 좀 쉬셨으면 좋겠어요. 이번 주에는 어떤 일들이 많았나요?",
+     "output_tokens": 22,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "커피 마시는 중이야",
+     "reply": "아침에 커피 한 잔을 드시고 계시군요. 오늘 하루도 기분 좋게 시작하시길 바랍니다. 어떤 맛의 커피를 즐기셨나요?",
+     "output_tokens": 37,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "다음 주에 시험 있어서 걱정돼",
+     "reply": "시험 준비가 잘 되시길 바랍니다. 이번 주에는 어떻게 공부하고 계신가요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "고마워, 덕분에 살았어",
+     "reply": "네, 고마운 말씀 감사합니다. 건강하고 행복하게 지내시길 바랍니다. 오늘 하루는 어떠셨나요?",
+     "output_tokens": 25,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "너무 행복해",
+     "reply": "행복하시다니 기쁩니다. 오늘 어떤 즐거운 일이 있으셨나요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "출근했어",
+     "reply": "안녕하세요, 출근하셨다니 하루가 시작되셨군요. 오늘도 좋은 일들이 가득하시길 바랍니다. 어떤 일로 하루를 시작하셨나요?",
+     "output_tokens": 35,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "오늘 저녁 맛있었어",
+     "reply": "맛있는 저녁을 드셨다니 기분이 좋으시겠어요. 오늘 하루도 잘 보내셨나요?",
+     "output_tokens": 24,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "안녕 좋은 아침",
+     "reply": "좋은 아침입니다! 오늘 하루도 기분 좋게 시작하시길 바랍니다. 어떤 일로 하루를 시작하셨나요?",
+     "output_tokens": 25,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Hey there!",
+     "reply": "Hello! How is your day going so far?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I passed my driving test!",
+     "reply": "That is wonderful news! Congratulations on your achievement. How does it feel to finally have your license?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Feeling pretty tired tonight",
+     "reply": "I'm sorry to hear you're feeling tired tonight. How have you been managing your energy lately?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Just finished work",
+     "reply": "That sounds like a great accomplishment! I hope you have a wonderful evening relaxing now. Did you manage to get some rest after such a long day?",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I'm a little nervous about tomorrow",
+     "reply": "It is completely understandable to feel nervous before something important. I hope you find your confidence returning soon, and do you have anything specific planned for tomorrow?",
+     "output_tokens": 31,
+     "label": "violation"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Thank you so much!",
+     "reply": "You are very welcome! I'm glad to hear that. How is your day going?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Had a great weekend",
+     "reply": "That sounds wonderful! What was the highlight of your weekend?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "It's my birthday today",
+     "reply": "Happy birthday to you! How are you feeling about your special day?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "I miss my family",
+     "reply": "I'm sorry to hear you're missing your family. How are you spending your time today?",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "stratum": "clean_intended",
+     "request": "Good evening",
+     "reply": "Good evening! How has your day been so far?",
+     "output_tokens": 12,
+     "label": "clean"
+    }
+   ]
+  }
+ ]
+}
