@@ -20,7 +20,7 @@ import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS, priceRoute, atHeadroom, r
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
   lawJudgedOutcome, lawLearnedPFail, revasVerdict, revasCheckInstruction, revasRepairInstruction, revasPrefix,
   lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
-  lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawRereadFamily, lawDetPFail,
+  lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawDetPFail, lawDetClassPFail, lawScreenPFail, lawScreenOutcome, lawDeterministicFindings,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger,
   compileDeterministicVerifiers, validateDeterministicVerifier, snapshotDetOutcomes} from '../routing-law-table.mjs';
@@ -151,9 +151,14 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   assert.equal(lawQuota(TABLE, row('claude', 'claude-opus-5-5', 'max'), 'agentic').basis, 'measured_os1');
   // The answer shape is every <= 2-call turn of the cell, whatever its realized
   // output (review of 447): one answer shape, and the agentic shape; build 448
-  // adds the REVAS check and repair of a local draft on the answer anchor.
+  // adds the REVAS check and repair of a local draft on the answer anchor;
+  // round 3 the cold repair of a draft a family's deterministic verifier
+  // rejected (det_repair: the draft and the findings uncached, at a reference
+  // that never saw them).
   assert.deepEqual(Object.keys(TABLE.quota['claude-chat:claude-opus-5-5@max']).filter(k => !['pool', 'model', 'effort'].includes(k)).sort(),
-    ['agentic', 'answer', 'repair', 'verify']);
+    ['agentic', 'answer', 'det_repair', 'repair', 'verify']);
+  for (const cell of Object.values(TABLE.quota).filter(c => c.det_repair))
+    assert.ok(cell.det_repair.q >= cell.repair.q && cell.det_repair.output === cell.answer.output, 'cold repair >= cached repair');
   assert.ok(lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'agentic').q >
     lawQuota(TABLE, row('codex', 'gpt-6-astra', 'ultra'), 'answer').q);
   assert.deepEqual(lawQuota(TABLE, row('local', 'qwen3.5:9b', 'none'), 'answer'), {q: 0, basis: 'local'});
@@ -162,8 +167,11 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   // committed ledger has none attributed to a law family (every judged run
   // predates the law): every estimate is the Laplace prior 1/2, never pooled,
   // except small talk's local row, judged by Core's deterministic verifier on
-  // the local model's real drafts of the corpus F1 requests (review of 448).
-  assert.deepEqual(TABLE.p_fail.cells, {'qwen3.5:9b@none|F1': {runs: 54, failures: 38}});
+  // the local model's real drafts (production small-talk prompt) of the
+  // held-out sets' own requests (round 3, decision 1: the reference prior's
+  // population; corpus drafts never enter the fit).
+  assert.deepEqual(TABLE.p_fail.cells, {'qwen3.5:9b@none|F1': {runs: 80, failures: 43, full: 0}});
+  assert.deepEqual(TABLE.p_fail.deterministic[0].population, ['B_heldout', 'C_heldout']);
   assert.deepEqual(TABLE.p_fail.deterministic.map(d => [d.key, d.verifier]), [['qwen3.5:9b@none|F1', 'no_claim_reply_v2']]);
   assert.ok(TABLE.p_fail.excluded.undispatched > 0 && TABLE.p_fail.excluded.unjudged > 0);
   const astra = row('codex', 'gpt-6-astra', 'ultra'), sol = row('codex', 'gpt-6.1-sol', 'medium');
@@ -171,7 +179,7 @@ test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail in
   assert.equal(lawPFail(TABLE, sol, 'F5a', astra), 0.5); // inherited: the reference's own (the prior)
   // Correction 1: a row with evidence has its reference's p_fail until its own
   // judged runs move it, at the prior's weight (2).
-  const keyed = {...TABLE, p_fail: compilePFail({schema: 3, through_ms: null, excluded: {}, cells: [
+  const keyed = {...TABLE, p_fail: compilePFail({schema: 4, through_ms: null, excluded: {}, cells: [
     {model: 'gpt-6-astra', effort: 'ultra', family: 'F5a', runs: 18, failures: 1},
     {model: 'gpt-6.1-sol', effort: 'medium', family: 'F5a', runs: 8, failures: 1}]}, {laplace: {failures: 1, runs: 2}})};
   assert.equal(lawPFail(keyed, astra, 'F5a'), 0.1); // the reference: (1 + 1) / (18 + 2)
@@ -228,10 +236,17 @@ test('p_fail evidence: only judged runs of a law family count; undispatched and 
       settled_at_ms: 300})
   ].join('\n')));
   assert.deepEqual(ledger.excluded, {undispatched: 1, unjudged: 1, no_law_family: 1, local_screen_only: 0});
-  assert.deepEqual(ledger.cells, [{model: 'm', effort: 'high', family: 'F2', runs: 1, failures: 1},
-    {model: 'm', effort: 'high', family: 'F4', runs: 2, failures: 1}]);
+  // Round 3: a failure's class: no deliverable draft (not returned, a failed
+  // screen) is 'full'.
+  assert.deepEqual(ledger.cells, [{model: 'm', effort: 'high', family: 'F2', runs: 1, failures: 1, full: 1},
+    {model: 'm', effort: 'high', family: 'F4', runs: 2, failures: 1, full: 1}]);
+  // Round 3 (decision 2): the structural screen beside it, keyed model@effort
+  // (pooled over families): screened descents only (a pass, a failed screen,
+  // a descent that did not return); a tier route, an escalation or an
+  // unscreened attempt says nothing about the screen.
+  assert.deepEqual(ledger.screen.cells, [{key: 'm@high', runs: 3, failures: 2, shadow: 0}]);
   // Build 448: the snapshot ends at its latest settled record; Core learns after it.
-  assert.equal(ledger.schema, 3);
+  assert.equal(ledger.schema, 4);
   assert.equal(ledger.through_ms, 300);
 });
 
@@ -405,14 +420,19 @@ test('the derived exchange: a scarce pool is priced up by its own windows, never
   // never favours the largest draw (review of 447).
   assert.equal(plain.route, 'claude:claude-opus-5-5@medium');
   assert.ok(eqOf(scarce, 'claude:claude-opus-5-5@medium')[3] < eqOf(scarce, 'claude:claude-fable-5-1@max')[3]);
-  // Across pools the derived exchange decides: at 8 per Claude unit the
-  // Codex reference (priced at its Q alone: the top of the frontier, round 2
-  // of the 448 review, C) is the argmin of this build.
-  assert.equal(scarce.route, 'codex:gpt-6-astra@ultra');
-  assert.ok(eqOf(scarce, scarce.route)[3] < eqOf(scarce, 'claude:claude-opus-5-5@medium')[3]);
+  // Across pools the derived exchange decides. A writer below its reference
+  // binds no ladder, so nothing runs after it: its E[Q] is Q alone (round 3
+  // of the 448 review, decision 2), and at 8 per Claude unit opus@medium is
+  // still the argmin; at 40 per Claude unit (1% left, 0.4 of the week to
+  // run) the Codex reference (Q alone: the top of the frontier) is.
+  assert.equal(scarce.route, 'claude:claude-opus-5-5@medium');
   assert.equal(scarce.law.argmin, scarce.route);
   assert.match(scarce.reason, /;law_rate_Cw_8\.0000;/);
   assert.match(scarce.reason, /;law_rate_Px_1\.1667;/); // 0.7 of the week to run, 60% left
+  const scarcer = routeOf(q.request, pooled(99, 40));
+  assert.equal(scarcer.route, 'codex:gpt-6-astra@ultra');
+  assert.ok(eqOf(scarcer, scarcer.route)[3] < eqOf(scarcer, 'claude:claude-opus-5-5@medium')[3]);
+  assert.match(scarcer.reason, /;law_rate_Cw_40\.0000;/);
   // An exhausted pool prices nothing: its rows are excluded, never chosen.
   const spent = routeOf(question(3).request, lawOf(question(3), c => ({...c, routing_law: {...c.routing_law, pools: {
     openai_codex: {observed_at_ms: clockOf(c) - 1000, valid_until_ms: clockOf(c) + 600_000,
@@ -423,7 +443,7 @@ test('the derived exchange: a scarce pool is priced up by its own windows, never
   assert.ok(!spent.route.startsWith('codex'));
 });
 
-test('one pricing (round 2 of the 448 review, C): E[Q] prices the escalation the runtime runs; the gate prices the same', () => {
+test('one pricing (round 3 of the 448 review, decision 2): E[Q] prices the runtime\'s escalation event; the gate is the draw', () => {
   // F4 (owner question 3). A pool reference is the top of the frontier and
   // binds no ladder: nothing runs after it, so its E[Q] is Q alone (448
   // priced a self-repair there that never runs).
@@ -435,21 +455,28 @@ test('one pricing (round 2 of the 448 review, C): E[Q] prices the escalation the
   const [, , qAstra, eqAstra] = cand('codex:gpt-6-astra@ultra');
   assert.ok(Math.abs(eqFable - qFable * rate('anthropic_shared')) < 2e-6, 'a reference: Q x rate');
   assert.ok(Math.abs(eqAstra - qAstra * rate('openai_codex')) < 2e-6, 'a reference: Q x rate');
-  // A read-only row below the reference (form b) is screened structurally; a
-  // failure (empty, cut off) leaves no draft to repair: the runtime answers in
-  // full at its target, its p_fail the reference's (correction 1).
+  // Round 3 of the 448 review (decision 2): a read-only row below the
+  // reference (form b) escalates only when it fails the runtime's STRUCTURAL
+  // screen (empty, cut off, an error: no draft to repair), to the full answer
+  // at its target: Q + p_screen x Q(target). p_screen is measured from the
+  // ledger's screened attempts (the same screen for every row, pooled over
+  // families), Laplace-smoothed, starting from its own pool reference's
+  // screen rate; a tier gap never triggers the escalation and is not priced.
   const [, form, qOpus, eqOpus] = cand('claude-chat:claude-opus-5-5@max');
   assert.match(form, /^b:/);
-  assert.ok(Math.abs(eqOpus - (qOpus + 0.5 * qFable) * rate('anthropic_shared')) < 1e-5, 'opus: Q + p_ref x Q(fable)');
-  // At the prior p_fail 1/2 the reference is the cheaper start: F4 binds it,
-  // so F4 never draws more than all-reference (448: 1.0677 x).
-  assert.ok(eqFable < eqOpus);
-  assert.equal(routed.route, 'claude-chat:claude-fable-5-1@max');
+  const opus = {model: 'claude-opus-5-5', effort: 'max'}, fable = {model: 'claude-fable-5-1', effort: 'max'};
+  const pScreen = lawScreenPFail(TABLE, opus, fable);
+  const screenOf = key => TABLE.p_screen.cells[key] ?? {runs: 0, failures: 0};
+  const pRef = (screenOf('claude-fable-5-1@max').failures + 1) / (screenOf('claude-fable-5-1@max').runs + 2);
+  assert.ok(Math.abs(pScreen - (screenOf('claude-opus-5-5@max').failures + 2 * pRef) / (screenOf('claude-opus-5-5@max').runs + 2)) < 1e-12);
+  assert.ok(Math.abs(eqOpus - (qOpus + pScreen * qFable) * rate('anthropic_shared')) < 1e-5, 'opus: Q + p_screen x Q(fable)');
+  // The argmin of the two prices is the route (and the fixture's golden).
+  assert.equal(routed.route, eqOpus < eqFable ? 'claude-chat:claude-opus-5-5@max' : 'claude-chat:claude-fable-5-1@max');
   assert.equal(routed.route, q.expected_route);
-  // The gate's draw of every owner question's route is the receipt's E[Q]
-  // (the replay prices the same steps), at the recorded headroom; a writer's
-  // next step (DESIGN-8 step 5, its pool reference) is priced by the law and
-  // never run by the runtime (no writer ladder): law_model only.
+  // The gate is judged on the draw (what the runtime runs), and every owner
+  // question's draw is the receipt's E[Q] at the recorded headroom; a
+  // writer's next step (its pool reference, which the runtime never runs:
+  // no writer ladder) is in the law_model REPORT only.
   for (const question of OWNER.questions) {
     if (question.pending || question.expected_kind === 'calculator' || question.expected_kind === 'ask_back') continue;
     const law = lawOf(question);
@@ -459,9 +486,9 @@ test('one pricing (round 2 of the 448 review, C): E[Q] prices the escalation the
       const p = priceRoute(r, law, r.law.shape, TABLE, r.law.family, law.routing_law.reading)[basis][unit];
       return p === 0 ? sum : sum + p * rates[pool];
     }, 0);
-    assert.ok(Math.abs(priced('law_model') - r.law.eq) < 2e-6, `#${question.n} law_model ${priced('law_model')} vs eq ${r.law.eq}`);
-    if (r.scope === 'workspace_write' && r.kind !== 'reference') assert.ok(priced('draw') < priced('law_model'), `#${question.n} writer`);
-    else assert.ok(Math.abs(priced('draw') - r.law.eq) < 2e-6, `#${question.n} draw ${priced('draw')} vs eq ${r.law.eq}`);
+    assert.ok(Math.abs(priced('draw') - r.law.eq) < 2e-6, `#${question.n} draw ${priced('draw')} vs eq ${r.law.eq}`);
+    if (r.scope === 'workspace_write' && r.kind !== 'reference') assert.ok(priced('law_model') > priced('draw'), `#${question.n} writer`);
+    else assert.ok(Math.abs(priced('law_model') - r.law.eq) < 2e-6, `#${question.n} law_model ${priced('law_model')} vs eq ${r.law.eq}`);
   }
 });
 
@@ -549,32 +576,39 @@ test('a row whose own pool reference cannot run escalates to the other pool\'s r
   assert.notEqual(ex[4], 'requires_runnable_reference', 'priced to the other pool\'s reference, not excluded');
 });
 
-test('review of 447: a class certificate whose tuple cannot run falls to the law; a write with no tool need is an answer', () => {
-  // Small talk under the certified chat class (owner-chat-fast pins
-  // codex gpt-6-luna@low): with the Codex pool exhausted the law decides.
-  // Build 448: its argmin, not the owner's 447 local-first order: small talk
-  // (F1) is checked by Core's own deterministic verifier (evidence form a),
-  // so the local row is admissible and its E[Q] is only its failures' priced
-  // next step.
+test('round 3 (decision 4): the owner-decision class certificate never decides a node the law routes; a write with no tool need is an answer', () => {
+  // The one certificate the class table signs (owner-chat-fast-20261027:
+  // codex gpt-6-luna@low for chat_explanatory) is an owner decision, not a
+  // REVAS paired parity audit, so it is no form (c) evidence either: under
+  // the law it is retired, whether or not its tuple can run. The law decides
+  // small talk (F1) by its argmin over every row its deterministic verifier
+  // admits; the certificate binds only where the law does not apply.
   const q = question(12);
   const certificate = {certificate_id: 'owner-chat-fast-20261027', provider: 'codex', model: 'gpt-6-luna', effort: 'low',
     format_check: 'nonempty_text', measurement_sha256: 'a'.repeat(64)};
   const certified = lawOf(q, c => ({...c, request_class: 'chat_explanatory', class_certificates: {chat_explanatory: certificate}}));
-  if (certified.candidates.some(row => row.model === 'gpt-6-luna' && row.effort === 'low')) {
-    assert.match(routeOf(q.request, certified).reason, /admitted_certified_class/); // the tuple runs: the certificate holds
-  }
+  assert.ok(certified.candidates.some(row => row.model === 'gpt-6-luna' && row.effort === 'low' && row.availability === 'available'));
   const exhausted = {...certified, candidates: certified.candidates.filter(row => row.quota_pool !== 'openai_codex')};
-  const fell = routeOf(q.request, exhausted);
-  assert.match(fell.reason, /admitted_law_F1/);
-  // The argmin of every row the verifier admits: the local row at its
-  // measured p_fail, a pool row at the Laplace prior (review of 448).
-  assert.equal(fell.route, fell.law.argmin);
-  const pick = fell.law.candidates.find(([key]) => key === fell.law.argmin);
-  assert.equal(pick[1], 'a:no_claim_reply_v2');
-  const local = fell.law.candidates.find(([key]) => key.startsWith('local:'));
-  assert.equal(local[1], 'a:no_claim_reply_v2');
-  for (const [key, , , eq, excluded] of fell.law.candidates)
-    if (excluded === null && key !== pick[0]) assert.ok(eq >= pick[3] - 1e-9, key);
+  for (const catalog of [certified, exhausted]) {
+    const routed = routeOf(q.request, catalog);
+    assert.doesNotMatch(routed.reason, /admitted_certified_class/);
+    assert.match(routed.reason, /admitted_law_F1/);
+    // The argmin of every row the verifier admits (one prior for every row).
+    assert.equal(routed.route, routed.law.argmin);
+    const pick = routed.law.candidates.find(([key]) => key === routed.law.argmin);
+    assert.equal(pick[1], 'a:no_claim_reply_v2');
+    for (const [key, , , eq, excluded] of routed.law.candidates)
+      if (excluded === null && key !== pick[0]) assert.ok(eq >= pick[3] - 1e-9, key);
+  }
+  // The all-reference arm (the owner's reference words, family P) binds a
+  // pool reference only: the certificate never stands in for it.
+  const allRef = routeOf(q.request, {...certified, routing_law: {...certified.routing_law, reference_request: true}});
+  assert.equal(allRef.law.family, 'P');
+  assert.ok(Object.values(TABLE.references).includes(allRef.candidate.model), allRef.route);
+  // Where the law does not apply (routing_policy=law_446: no routing_law), the
+  // certificate still binds its tuple.
+  const legacy = {...certified}; delete legacy.routing_law;
+  assert.match(routeOf(q.request, legacy).reason, /admitted_certified_class/);
   // A light write reading with no tool need on a writer node (an inline text
   // edit) has no workspace target: priced as an answer, not agentic turns.
   const w = question(6);
@@ -673,6 +707,15 @@ test('the grant never picks the model: the same reading under a read-only and a 
       candidates: [...agentRows.filter(row => row.surface !== 'claude-chat'), ...writerRows]}));
     const read = routeOf(q.request, readOnly), wrote = routeOf(q.request, writer);
     assert.equal(read.scope, 'read_only', `#${n}`);
+    if (lawDeterministicVerifier(TABLE, read.law.family) !== null) {
+      // Round 3 (decision 5): small talk needs no tool and no write, so its
+      // node runs read-only in a writer lane too (a permission only narrows):
+      // the same rows, the same argmin, the verifier read on its answer.
+      assert.equal(wrote.scope, 'read_only', `#${n}`);
+      assert.equal(wrote.route, read.route, `#${n}`);
+      assert.equal(wrote.ladder?.verifier?.kind, 'deterministic', `#${n}`);
+      continue;
+    }
     assert.equal(wrote.scope, 'workspace_write', `#${n}`);
     assert.equal(wrote.ladder, null, `#${n} a writer binds no ladder`);
     if (q.expected_route.startsWith('local:') || read.law.shape !== wrote.law.shape ||
@@ -1104,11 +1147,14 @@ test('build 448 (a): no_claim_reply_v2 is a closed grammar: courtesy built from 
 });
 
 test('build 448 (a): the held-out validation is recomputed from the committed sets: zero false passes, false failures reported', () => {
-  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261031.json'), 'utf8'));
+  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261101.json'), 'utf8'));
   const result = validateDeterministicVerifier(V2, validation);
   assert.equal(result.admits, true);
-  assert.deepEqual(result.sets.map(s => [s.name, s.violations, s.false_passes]),
-    [['A_labeled_before_v2', 71, 0], ['reviewer_448', 52, 0], ['B_heldout', 66, 0]]);
+  // Round 3 (decision 6): set C, written, generated (the frozen small-talk
+  // prompt), labeled after that prompt was frozen and evaluated once.
+  assert.deepEqual(result.sets.map(s => [s.name, s.role, s.violations, s.false_passes, s.clean, s.false_failures_uncapped]),
+    [['A_labeled_before_v2', 'development', 71, 0, 49, 30], ['reviewer_448', 'development', 52, 0, 6, 5],
+      ['B_heldout', 'heldout', 66, 0, 54, 47], ['C_heldout', 'heldout', 51, 0, 69, 50]]);
   assert.deepEqual(TABLE.deterministic_verifiers.F1.validation, result);
   // A verifier that passes one violation is not admitted (and Core ignores it).
   const leaky = structuredClone(validation);
@@ -1122,7 +1168,7 @@ test('build 448 (a): the held-out validation is recomputed from the committed se
 
 test('build 448 (a): only an id Core runs, made for that law family and validated, compiles; the table carries F1 only', () => {
   const policy = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
-  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261031.json'), 'utf8'));
+  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261101.json'), 'utf8'));
   assert.deepEqual(Object.keys(compileDeterministicVerifiers(policy, validation)), ['F1']);
   assert.equal(compileDeterministicVerifiers(policy, validation).F1.id, V2);
   // Review of 448: a small-talk check admits nothing in another family.
@@ -1141,96 +1187,136 @@ test('build 448 (a): only an id Core runs, made for that law family and validate
   assert.equal(lawDeterministicVerifier(misfiled, 'F2'), null);
   // The det outcomes input: Core's verdicts on the drafts, digests only, and
   // only for the verifier the policy runs.
-  const det = snapshotDetOutcomes({generator: null, drafts: [{request: question(12).request, draft: Q12_LOCAL_DRAFT, output_tokens: 39},
-    {request: question(12).request, draft: SMALL_TALK_PASS, output_tokens: 20}]}, {verifier: V2, family: 'F1', model: 'qwen3.5:9b', effort: 'none'});
-  assert.deepEqual([det.cells[0].runs, det.cells[0].failures], [2, 1]);
+  // Round 3 (decision 1): every draft names the held-out set its request
+  // belongs to; a corpus draft (no set) is refused, and a row's verdicts
+  // price it only on the reference prior's own population (every held-out
+  // set, and only those).
+  const det = snapshotDetOutcomes({generator: null, drafts: [
+    {set: 'B_heldout', request: question(12).request, draft: Q12_LOCAL_DRAFT, output_tokens: 39},
+    {set: 'C_heldout', request: question(12).request, draft: SMALL_TALK_PASS, output_tokens: 20},
+    {set: 'C_heldout', request: question(12).request, draft: '', output_tokens: 0}]},
+    {verifier: V2, family: 'F1', model: 'qwen3.5:9b', effort: 'none'});
+  assert.deepEqual([det.schema, det.cells[0].runs, det.cells[0].failures, det.cells[0].full, det.cells[0].population],
+    [2, 3, 2, 1, ['B_heldout', 'C_heldout']]);
   assert.ok(det.items.every(i => !('request' in i) && !('draft' in i)));
-  assert.throws(() => compilePFail({schema: 3, cells: [], excluded: {}}, {laplace: {failures: 1, runs: 2},
+  assert.throws(() => snapshotDetOutcomes({drafts: [{request: question(12).request, draft: SMALL_TALK_PASS}]},
+    {verifier: V2, family: 'F1', model: 'qwen3.5:9b', effort: 'none'}), /held-out validation set/);
+  const runs = {laplace: {failures: 1, runs: 2}, deterministic_verifiers: {F1: {id: V2}}};
+  assert.throws(() => compilePFail({schema: 4, cells: [], excluded: {}}, runs, det, ['B_heldout']), /population/);
+  assert.equal(compilePFail({schema: 4, cells: [], excluded: {}}, runs, det, ['C_heldout', 'B_heldout']).cells['qwen3.5:9b@none|F1'].full, 1);
+  assert.throws(() => compilePFail({schema: 3, cells: [], excluded: {}}, runs, det), /schema 4/);
+  assert.throws(() => compilePFail({schema: 4, cells: [], excluded: {}}, {laplace: {failures: 1, runs: 2},
     deterministic_verifiers: {F1: {id: 'no_claim_reply_v1'}}}, det), /not the verifier/);
 });
 
-test('build 448 (a): small talk goes to the argmin of every row the verifier admits, all from one prior (round 2, A)', () => {
+test('round 3 (decisions 1-3): small talk goes to the argmin of every row the verifier admits, one prior, priced per failure class', () => {
   const q = question(12);
   assert.equal(q.expected_det, V2);
   const law = lawOf(q);
   const routed = routeOf(q.request, law);
   assert.equal(routed.route, q.expected_route);
   assert.equal(routed.route, 'local:qwen3.5:9b@none');
-  assert.match(routed.reason, /;law_evidence_deterministic;law_det_verifier_no_claim_reply_v2;law_reread_F2_/);
+  assert.match(routed.reason, /;law_evidence_deterministic;law_det_verifier_no_claim_reply_v2;law_det_repair_within_family;/);
   // The prior is the verifier's measured rejection rate on reference-quality
-  // replies: the held-out set B's clean replies (frozen before it ran on them,
-  // judged as a pool row's), Laplace-smoothed. No reference reply has been run
-  // through it yet, so no reference verdict prices it.
-  assert.deepEqual([DET_PRIOR.basis, DET_PRIOR.sets, DET_PRIOR.runs, DET_PRIOR.failures],
-    ['heldout_clean_replies_rejected', ['B_heldout'], 54, 47]);
-  const heldout = TABLE.deterministic_verifiers.F1.validation.sets.find(set => set.role === 'heldout');
-  assert.deepEqual([heldout.clean, heldout.false_failures_uncapped], [DET_PRIOR.runs, DET_PRIOR.failures]);
-  // Every unmeasured row: exactly that prior (448 charged them a flat 1/2,
-  // less than the 87% the verifier rejects of clean reference-quality replies).
+  // replies: the held-out sets' clean replies (B and C, frozen before it ran
+  // on them, judged as a pool row's), Laplace-smoothed; no reference reply
+  // has been through it yet, so no reference verdict prices it.
+  assert.deepEqual([DET_PRIOR.basis, DET_PRIOR.sets, DET_PRIOR.runs, DET_PRIOR.failures, DET_PRIOR.full],
+    ['heldout_clean_replies_rejected', ['B_heldout', 'C_heldout'], 123, 97, 0]);
+  const heldout = TABLE.deterministic_verifiers.F1.validation.sets.filter(set => set.role === 'heldout');
+  assert.deepEqual([heldout.reduce((a, set) => a + set.clean, 0), heldout.reduce((a, set) => a + set.false_failures_uncapped, 0)],
+    [DET_PRIOR.runs, DET_PRIOR.failures]);
+  // Every unmeasured row: exactly that prior.
   for (const row of law.candidates.filter(c => c.surface !== 'local'))
     assert.equal(lawDetPFail(TABLE, row, 'F1'), P0, lawKey(row));
-  // The measured local row: its own 54 verdicts, moved from the same prior.
+  // The local row: its own 80 verdicts (production small-talk prompt, the
+  // held-out sets' own requests: decision 1), moved from the same prior.
   const v = routed.ladder.verifier;
   assert.equal(v.kind, 'deterministic');
   assert.equal(v.p_fail, Math.round(LOCAL_F1_P * 1e6) / 1e6);
   assert.ok(LOCAL_F1_P < P0);
+  // Per class (decision 2): 'repair' (a draft the verifier rejected) and
+  // 'full' (no deliverable draft); the Laplace prior's failure split evenly.
+  const classes = lawDetClassPFail(TABLE, {model: 'qwen3.5:9b', effort: 'none'}, 'F1');
+  const p0 = {full: (0 + 0.5) / (DET_PRIOR.runs + 2), repair: (DET_PRIOR.failures + 0.5) / (DET_PRIOR.runs + 2)};
+  assert.ok(Math.abs(classes.full - (0 + 2 * p0.full) / (LOCAL_F1.runs + 2)) < 1e-12);
+  assert.ok(Math.abs(classes.repair - (LOCAL_F1.failures + 2 * p0.repair) / (LOCAL_F1.runs + 2)) < 1e-12);
+  assert.ok(Math.abs(classes.total - LOCAL_F1_P) < 1e-12);
+  assert.deepEqual([v.classes.repair, v.classes.full], [classes.repair, classes.full].map(x => Math.round(x * 1e6) / 1e6));
   for (const [key, form, , eq, excluded] of routed.law.candidates) {
     if (excluded !== null || key === routed.route) continue;
     assert.ok(eq >= routed.law.eq - 1e-9, `${key} ${form} is not cheaper than the local start`);
   }
   // A pool row a learned ledger has judged moves from the same prior.
-  const learned = new Map([['claude-haiku-4-5-20251001@none|F1', {runs: 10, failures: 2}]]);
-  assert.ok(Math.abs(lawDetPFail(TABLE, {model: 'claude-haiku-4-5-20251001', effort: 'none'}, 'F1', learned) -
-    (2 + 2 * P0) / 12) < 1e-12);
+  const learned = new Map([['claude-haiku-4-5-20251001@none|F1', {runs: 10, failures: 2, full: 1}]]);
+  const haiku = lawDetClassPFail(TABLE, {model: 'claude-haiku-4-5-20251001', effort: 'none'}, 'F1', learned);
+  assert.ok(Math.abs(haiku.total - (2 + 2 * P0) / 12) < 1e-12);
+  assert.ok(Math.abs(haiku.full - (1 + 2 * p0.full) / 12) < 1e-12);
   // Once the references' own verdicts exist (a det-outcomes snapshot of their
-  // replies, or the ledger), they price the prior instead of set B.
+  // replies, or the ledger), they price the prior instead of the held-out sets.
   const policy = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
-  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261031.json'), 'utf8'));
-  const withRef = compileDeterministicVerifiers(policy, validation, {'claude-fable-5-1@max|F1': {runs: 40, failures: 6}});
-  assert.deepEqual([withRef.F1.reference_prior.basis, withRef.F1.reference_prior.runs, withRef.F1.reference_prior.failures],
-    ['reference_judged_outcomes', 40, 6]);
-  // On the references-and-local catalog the local start is the argmin: E[Q] =
-  // p_fail(local, F1) x the dearer of its next step and its re-read as F2.
+  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261101.json'), 'utf8'));
+  const withRef = compileDeterministicVerifiers(policy, validation, {'claude-fable-5-1@max|F1': {runs: 40, failures: 6, full: 1}});
+  assert.deepEqual([withRef.F1.reference_prior.basis, withRef.F1.reference_prior.runs, withRef.F1.reference_prior.failures,
+    withRef.F1.reference_prior.full], ['reference_judged_outcomes', 40, 6, 1]);
+  // Decision 3: a rejected draft escalates WITHIN F1, once, to the family's
+  // reference fixed at bind (the runnable pool reference minimizing the
+  // priced step): repair mode (the draft plus the verifier's findings, the
+  // cold det_repair shape) for 'repair', the full answer for 'full'. No F2
+  // re-read: an F1 request's outcome is never recorded under another family.
   const lc = lawOf(q, referencesAndLocal);
   const start = routeOf(q.request, lc);
   assert.equal(start.route, 'local:qwen3.5:9b@none');
-  const s = start.ladder.verifier;
-  assert.equal(s.draft_max_tokens, TABLE.local_start.draft_max_tokens);
-  assert.equal(lawRereadFamily(lc.routing_law.reading, 'F1', TABLE), 'F2');
-  assert.equal(lawRereadFamily(lc.routing_law.reading, 'F2', TABLE), null);
-  assert.deepEqual(s.steps.map(step => step.via).sort(), ['next_step', 'reread']);
-  assert.ok(Math.abs(s.escalation.priced - Math.max(...s.steps.map(step => step.priced))) < 1e-9);
-  assert.ok(Math.abs(start.law.eq - LOCAL_F1_P * s.escalation.priced) < 1e-5);
-  assert.equal(start.law.det.ladder, 'one_escalation');
-  assert.deepEqual(start.law.det.steps.map(step => step.via).sort(), ['next_step', 'reread']);
-  assert.equal(s.reread.kind, 'revas_check');
-  // Without the judge the re-read answers, and its answer is always a pool
-  // reference (review of 448: never a non-reference argmin adopted after the
-  // ladder's one escalation).
-  const noJudge = routeOf(q.request, lawOf(q, c => referencesAndLocal({...c, candidates: c.candidates.map(row =>
-    lawKey(row) === 'claude-chat:claude-opus-5-5@max' ? {...row, availability: 'unavailable'} : row)})));
-  assert.equal(noJudge.ladder.verifier.reread.kind, 'answer');
-  assert.equal(noJudge.ladder.verifier.reread.answer_of, 'argmin_reference');
-  assert.ok(Object.values(TABLE.references).includes(noJudge.ladder.verifier.reread.key.split(':')[1].split('@')[0]));
-  // The replay prices the local start at its prior, or, with the recorded
-  // draft, by Core's actual verdict on it: Q12's real draft fails by a
-  // factual claim only, so it draws the re-read; a passing draft draws nothing.
+  const s2 = start.ladder.verifier;
+  assert.equal(s2.draft_max_tokens, TABLE.local_start.draft_max_tokens);
+  assert.deepEqual([s2.ladder, s2.on_fail, s2.reread, s2.steps], ['one_escalation_within_family', 'repair_at_reference', undefined, undefined]);
+  const step = s2.escalation;
+  assert.equal(step.candidate_id, start.ladder.reference_candidate_id);
+  assert.ok(Object.values(TABLE.references).includes(step.key.split(':')[1].split('@')[0]), step.key);
+  const ref = lc.candidates.find(row => row.id === step.candidate_id);
+  assert.equal(step.q_repair, lawQuota(TABLE, ref, 'det_repair').q);
+  assert.equal(step.q_answer, lawQuota(TABLE, ref, 'answer').q);
+  assert.ok(Math.abs(step.priced - (classes.repair * step.q_repair + classes.full * step.q_answer) * step.rate) < 1e-5);
+  assert.ok(Math.abs(start.law.eq - step.priced) < 1e-5, 'the local start: E[Q] = its failures\' priced step');
+  // Every other runnable pool reference prices that step no cheaper.
+  for (const other of lc.candidates.filter(row => row.surface !== 'local' && row.id !== ref.id &&
+      Object.values(TABLE.references).includes(row.model) && row.scope === 'read_only' && row.availability === 'available')) {
+    const qr = lawQuota(TABLE, other, 'det_repair')?.q, qa = lawQuota(TABLE, other, 'answer')?.q;
+    const rate = start.law.rates[other.quota_pool].rate;
+    if (Number.isFinite(qr) && Number.isFinite(qa) && Number.isFinite(rate))
+      assert.ok((classes.repair * qr + classes.full * qa) * rate >= step.priced - 1e-5, lawKey(other));
+  }
+  assert.equal(start.law.det.ladder, 'one_escalation_within_family');
+  assert.equal(start.law.det.escalation.key, step.key);
+  // The replay prices the local start at its prior (per class), or, with a
+  // recorded draft, by Core's actual verdict on it: Q12's real draft fails
+  // (a factual claim) and draws the repair; a refusal is a draft too and is
+  // repaired; an empty draft draws the full answer; a pass draws nothing.
+  const unit = step.pool === 'anthropic_shared' ? 'Cw' : 'Px';
   const modeled = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading);
   assert.equal(modeled.det.basis, 'modeled');
+  assert.ok(Math.abs(modeled.draw[unit] - (s2.classes.repair * step.q_repair + s2.classes.full * step.q_answer)) < 1e-9);
   const real = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: Q12_LOCAL_DRAFT, output_tokens: 39});
-  assert.deepEqual([real.det.basis, real.det.via, real.p_fail, real.det.failures], ['realized', 'reread', 1, ['factual_claim']]);
-  const reread = s.steps.find(step => step.via === 'reread');
-  assert.ok(Math.abs(real.draw[reread.pool === 'anthropic_shared' ? 'Cw' : 'Px'] - reread.q) < 1e-9);
+  assert.deepEqual([real.det.basis, real.det.via, real.p_fail, real.det.failures], ['realized', 'repair_within_family', 1, ['factual_claim']]);
+  assert.ok(Math.abs(real.draw[unit] - step.q_repair) < 1e-9);
+  const refusal = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: SMALL_TALK_REFUSAL});
+  assert.deepEqual([refusal.det.via, refusal.draw[unit]], ['repair_within_family', step.q_repair]);
+  const empty = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: '', output_tokens: 0});
+  assert.deepEqual([empty.det.via, empty.draw[unit]], ['full_answer', step.q_answer]);
   const clean = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: SMALL_TALK_PASS});
   assert.deepEqual([clean.det.passed, clean.draw.Cw + clean.draw.Px], [true, 0]);
-  const refusal = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: SMALL_TALK_REFUSAL});
-  assert.equal(refusal.det.via, 'next_step');
   // A pool row's realized price is never read from a local draft.
   const pool = routeOf(q.request, lawOf(q, c => ({...c, candidates: c.candidates.filter(row => row.surface !== 'local')})));
   assert.notEqual(pool.candidate.surface, 'local');
   if (pool.ladder?.verifier?.kind === 'deterministic')
     assert.equal(priceRoute(pool, law, 'answer', TABLE, 'F1', law.routing_law.reading, {request: q.request, draft: SMALL_TALK_PASS}).det.basis,
       'modeled');
+  // The findings a repair carries: one fixed line per failed rule, never model
+  // text; nothing to name (empty, an id Core cannot run) is the full answer.
+  assert.equal(lawDeterministicFindings(['factual_claim']).length, 1);
+  assert.equal(lawDeterministicFindings(['refusal', 'factual_claim']).length, 2);
+  assert.equal(lawDeterministicFindings(['empty']), null);
+  assert.equal(lawDeterministicFindings(['verifier_unavailable']), null);
 });
 
 test('build 448 p_fail rule: a deterministic verdict is the judged outcome of the row it read, for a verifier Core runs', () => {
@@ -1270,56 +1356,69 @@ test('build 448 (a), Core: a passing small-talk draft is delivered on Core\'s ow
     ['law_delivery_without_screen_pass']);
 });
 
-test('build 448 (a), Core: a factual claim (the real Q12 draft) re-reads as F2: the re-read checks the SAME draft or answers in full', async t => {
+test('round 3 (decision 3), Core: a rejected small-talk draft is repaired WITHIN F1 at its reference: the draft plus the verifier\'s findings', async t => {
   const q = question(12);
   const law = lawOf(q, referencesAndLocal);
   const routed = routeOf(q.request, law);
-  const reread = routed.ladder.verifier.reread;
-  assert.equal(reread.kind, 'revas_check');
-  {
-    const judge = law.candidates.find(row => row.id === reread.candidate_id);
-    const passed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : 'REVAS: PASS'}));
-    assert.deepEqual(passed.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge)]);
-    assert.equal(passed.tickets[1].instruction, revasCheckInstruction(q.request, Q12_LOCAL_DRAFT));
-    assert.equal(passed.done.result.output, Q12_LOCAL_DRAFT);
-    const [draft, check] = passed.ledger;
-    assert.deepEqual([draft.check_outcome, draft.attempt_state, draft.det_failures, draft.law.family],
-      ['det_fail', 'revas_check_pending', ['factual_claim'], 'F1']);
-    assert.deepEqual([check.revas.role, check.revas.family, check.check_outcome], ['check', 'F2', 'revas_pass']);
-    const learned = lawLearnedPFail(passed.text, 0);
-    assert.deepEqual([learned.get('qwen3.5:9b@none|F1'), learned.get('qwen3.5:9b@none|F2')], [{runs: 1, failures: 1}, {runs: 1, failures: 0}]);
-    // The draft keeps its F1 verdict after its re-read check returns.
-    assert.equal(passed.saved.children[0].attempt_history[0].check_outcome, 'det_fail');
-    const snapshot = {task_id: passed.saved.task.task_id, snapshot: JSON.stringify(passed.saved)};
-    assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: passed.text}], snapshots: [snapshot]}).verdict, 'PASS');
-    const finding = 'the draft states how the assistant works; small talk needs none';
-    const repaired = '오늘 정말 고생 많으셨어요. 푹 쉬세요!';
-    const failed = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT :
-      n === 2 ? 'REVAS: FAIL\n1. ' + finding : repaired}));
-    assert.deepEqual(failed.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(judge), lawKey(judge)]);
-    assert.equal(failed.tickets[2].instruction, revasRepairInstruction(q.request, Q12_LOCAL_DRAFT, [finding]));
-    assert.equal(failed.done.result.output, repaired);
-    assert.deepEqual([failed.ledger[2].revas.role, failed.ledger[2].revas.mode, failed.ledger[2].revas.family],
-      ['repair', 'repair', 'F2']);
-    assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: failed.text}]}).verdict, 'PASS');
-  }
+  const reference = law.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
+  assert.ok(Object.values(TABLE.references).includes(reference.model));
+  // The real Q12 local draft (a self-statement: a factual claim).
+  const repaired = '오늘 정말 고생 많으셨어요. 무슨 일 있으셨어요?';
+  const {done, tickets, ledger, text, saved} = await harness(t, q, law, (ticket, n) => completed(ticket,
+    {output: n === 1 ? Q12_LOCAL_DRAFT : repaired}));
+  assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(reference)]);
+  assert.equal(tickets[0].law_family, 'F1', 'the local ticket carries its law family (the small-talk prompt)');
+  assert.equal(tickets[1].law_family, undefined, 'a pool ticket never does');
+  const findings = lawDeterministicFindings(['factual_claim']);
+  assert.equal(tickets[1].instruction, revasRepairInstruction(q.request, Q12_LOCAL_DRAFT, findings));
+  assert.equal(done.result.output, repaired);
+  const [draft, repair] = ledger;
+  assert.deepEqual([draft.check_outcome, draft.attempt_state, draft.det_failures, draft.law.family],
+    ['det_fail', 'ladder_verifier_failed', ['factual_claim'], 'F1']);
+  assert.deepEqual([repair.revas.role, repair.revas.mode, repair.revas.family, repair.revas.det_verifier, repair.delivery_basis],
+    ['repair', 'repair', 'F1', V2, 'reference_escalated']);
+  // One F1 failure of class 'repair', and nothing recorded under F2.
+  const learned = lawLearnedPFail(text, 0);
+  assert.deepEqual(learned.get('qwen3.5:9b@none|F1'), {runs: 1, failures: 1});
+  assert.equal(learned.get('qwen3.5:9b@none|F2'), undefined);
+  assert.deepEqual(lawJudgedOutcome(draft), {key: 'qwen3.5:9b@none|F1', model: 'qwen3.5:9b', effort: 'none', family: 'F1',
+    failed: true, class: 'repair'});
+  // The repair attempt is an escalation (never a descent); as a law-bound
+  // reference answer it carries the reference's SHADOW structural screen
+  // (decision 2: p_ref learns from every reference answer, never gating it).
+  assert.equal(lawJudgedOutcome(repair), null);
+  assert.deepEqual(lawScreenOutcome(repair), {key: `${reference.model}@${reference.effort}`, failed: false, shadow: true});
+  assert.deepEqual(lawLearnedPFail(text, 0).get(`screen|${reference.model}@${reference.effort}`), {runs: 1, failures: 0});
+  assert.equal(saved.children[0].attempt_history[0].check_outcome, 'det_fail');
+  const snapshot = {task_id: saved.task.task_id, snapshot: JSON.stringify(saved)};
+  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}], snapshots: [snapshot]}).verdict, 'PASS');
 });
 
-test('build 448 (a), Core: any other failure (a refusal) is the full answer at the next step; nothing unchecked reaches the owner', async t => {
+test('round 3 (decision 3), Core: a refusal is a draft and is repaired; an empty draft is the full answer at the same reference', async t => {
   const q = question(12);
   const law = lawOf(q, referencesAndLocal);
   const routed = routeOf(q.request, law);
   const next = law.candidates.find(row => row.id === routed.ladder.reference_candidate_id);
-  const {done, tickets, ledger, text} = await harness(t, q, law, (ticket, n) => completed(ticket,
+  const refused = await harness(t, q, law, (ticket, n) => completed(ticket,
     {output: n === 1 ? SMALL_TALK_REFUSAL : 'the reference answer'}));
-  assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(next)]);
-  assert.equal(tickets[1].instruction, q.request);
-  assert.equal(done.result.output, 'the reference answer');
-  assert.deepEqual([ledger[0].check_outcome, ledger[0].attempt_state, ledger[0].escalation_outcome, ledger[0].det_failures],
-    ['det_fail', 'ladder_verifier_failed', 'escalated', ['refusal', 'factual_claim']]);
-  assert.equal(ledger[1].delivery_basis, 'reference_escalated');
-  assert.deepEqual(lawLearnedPFail(text, 0).get('qwen3.5:9b@none|F1'), {runs: 1, failures: 1});
-  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
+  assert.deepEqual(refused.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(next)]);
+  assert.equal(refused.tickets[1].instruction,
+    revasRepairInstruction(q.request, SMALL_TALK_REFUSAL, lawDeterministicFindings(['refusal', 'factual_claim'])));
+  assert.equal(refused.done.result.output, 'the reference answer');
+  assert.deepEqual([refused.ledger[0].check_outcome, refused.ledger[0].attempt_state, refused.ledger[0].escalation_outcome,
+    refused.ledger[0].det_failures], ['det_fail', 'ladder_verifier_failed', 'escalated', ['refusal', 'factual_claim']]);
+  assert.equal(lawJudgedOutcome(refused.ledger[0]).class, 'repair');
+  assert.equal(refused.ledger[1].delivery_basis, 'reference_escalated');
+  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: refused.text}]}).verdict, 'PASS');
+  // No deliverable draft: nothing to repair; the request runs in full there.
+  const empty = await harness(t, q, law, (ticket, n) => completed(ticket, {output: n === 1 ? '' : 'the reference answer'}));
+  assert.deepEqual(empty.tickets.map(tuple), ['local:qwen3.5:9b@none', lawKey(next)]);
+  assert.equal(empty.tickets[1].instruction, q.request);
+  assert.equal(empty.done.result.output, 'the reference answer');
+  assert.equal(empty.ledger[0].attempt_state, 'ladder_not_returned');
+  assert.equal(lawJudgedOutcome(empty.ledger[0]).class, 'full');
+  assert.deepEqual(lawLearnedPFail(empty.text, 0).get('qwen3.5:9b@none|F1'), {runs: 1, failures: 1, full: 1});
+  assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text: empty.text}]}).verdict, 'PASS');
 });
 
 // Round 2 of the 448 review (B): every pool exhausted (the 2026-11-01 state:
@@ -1335,10 +1434,11 @@ test('round 2 (B): with every pool exhausted small talk still binds the local st
   const routed = routeOf(q.request, law);
   assert.equal(routed.route, 'local:qwen3.5:9b@none');
   const v = routed.ladder.verifier;
-  assert.deepEqual([v.kind, v.escalation, v.steps, v.on_fail, v.reread], ['deterministic', null, [], 'hold_draft_withheld', null]);
+  assert.deepEqual([v.kind, v.escalation, v.on_fail], ['deterministic', null, 'hold_draft_withheld']);
   assert.deepEqual([routed.ladder.reference_candidate_id, routed.ladder.reference_model], [null, null]);
   assert.equal(routed.law.eq, 0);
   assert.equal(routed.law.det.on_fail, 'hold_draft_withheld');
+  assert.match(routed.reason, /;law_det_hold_on_fail;/);
   assert.match(routed.reason, /;escalation_none_hold_on_fail;/);
   for (const rate of Object.values(routed.law.rates)) assert.equal(rate.rate, 'exhausted');
   // The gate prices it: nothing more is drawn, a failing draft holds.
@@ -1392,11 +1492,12 @@ test('round 2 (D): the verifier binds F1 only; the length cap binds the local ro
   // Both ways, no violation of any validation set passes (the compiled sets).
   for (const set of TABLE.deterministic_verifiers.F1.validation.sets)
     assert.deepEqual([set.false_passes, set.false_passes_uncapped], [0, 0], set.name);
-  // A draft re-read as F2 whose check row cannot run when it dispatches is
-  // re-resolved to a reference (answering in full); the draft keeps det_fail.
+  // Round 3: the family's reference fixed at bind cannot run when the repair
+  // dispatches: the escalation re-resolves to another runnable reference,
+  // still in repair mode (the draft plus the findings); the draft keeps det_fail.
   const q = question(12);
   const law = lawOf(q, referencesAndLocal);
-  const judge = routeOf(q.request, law).ladder.verifier.reread.candidate_id;
+  const bound = routeOf(q.request, law).ladder.reference_candidate_id;
   const dir = await mkdtemp(join(tmpdir(), 'os1-law-')); await chmod(dir, 0o700);
   const workspace = await mkdtemp(join(tmpdir(), 'os1-law-workspace-')); await chmod(workspace, 0o700);
   const tickets = [];
@@ -1404,22 +1505,26 @@ test('round 2 (D): the verifier binds F1 only; the length cap binds the local ro
   const fresh = {...law, candidates: law.candidates.map(row => ({...row,
     ...(row.availability_observed_at_ms === null ? {} : {availability_observed_at_ms: now, availability_valid_until_ms: now + 600000}),
     ...(row.quota_observed_at_ms === null ? {} : {quota_observed_at_ms: now, quota_valid_until_ms: now + 600000})}))};
-  const withoutJudge = {...fresh, candidates: fresh.candidates.map(row => row.id === judge ? {...row, availability: 'unavailable'} : row)};
+  const withoutBound = {...fresh, candidates: fresh.candidates.map(row => row.id === bound ? {...row, availability: 'unavailable'} : row)};
   const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true,
-    catalog: async () => tickets.length >= 1 ? withoutJudge : fresh,
-    execute: async ticket => { tickets.push(ticket); return completed(ticket, {output: tickets.length === 1 ? Q12_LOCAL_DRAFT : 'the reference answer'}); }});
+    catalog: async () => tickets.length >= 1 ? withoutBound : fresh,
+    execute: async ticket => { tickets.push(ticket); return completed(ticket, {output: tickets.length === 1 ? Q12_LOCAL_DRAFT : 'the repaired reply'}); }});
   t.after(async () => { await runtime.close(); await rm(dir, {recursive: true, force: true}); await rm(workspace, {recursive: true, force: true}); });
   const task = runtimeTask(q, law, workspace);
   await runtime.submit(task);
   const done = await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
   const saved = runtime._load(task.task_id);
   assert.equal(tuple(tickets[0]), 'local:qwen3.5:9b@none');
-  assert.ok(!tickets.some(ticket => ticket.candidate_id === judge), 'the check row never ran');
+  assert.ok(!tickets.some(ticket => ticket.candidate_id === bound), 'the bound reference never ran');
   assert.equal(saved.children[0].attempt_history[0].check_outcome, 'det_fail');
   assert.notEqual(done.result?.output, Q12_LOCAL_DRAFT, 'the draft is never adopted unchecked');
+  if (tickets.length > 1) {
+    assert.ok(Object.values(TABLE.references).includes(tickets[1].selected_config.model), tuple(tickets[1]));
+    assert.equal(tickets[1].instruction, revasRepairInstruction(q.request, Q12_LOCAL_DRAFT, lawDeterministicFindings(['factual_claim'])));
+  }
 });
 
-test('build 448 (a): across the gate regimes a re-read answer is always a pool reference; small talk\'s routes are reported', async () => {
+test('round 3: across the gate regimes small talk escalates (if at all) to a pool reference within F1; its routes are reported', async () => {
   const {ownerGate} = await import('../routing-law-replay.mjs');
   const regimes = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-gate-regimes.json'), 'utf8')).regimes;
   const gate = ownerGate(OWNER, regimes);
@@ -1429,10 +1534,12 @@ test('build 448 (a): across the gate regimes a re-read answer is always a pool r
   }
   const q = question(12);
   for (const regime of regimes.filter(r => !Object.values(r).some(v => v?.from))) {
-    const {regimeHeadroom, atHeadroom} = await import('../routing-law-replay.mjs');
     const routed = routeOf(q.request, atHeadroom(lawOf(q), regimeHeadroom(regime)));
-    const reread = routed.ladder?.verifier?.reread;
-    if (reread?.kind === 'answer') assert.ok(Object.values(TABLE.references).includes(reread.key.split(':')[1].split('@')[0]), regime.name);
+    const v = routed.ladder?.verifier;
+    if (v?.kind !== 'deterministic') continue;
+    assert.equal(v.reread, undefined, regime.name);
+    if (v.escalation) assert.ok(Object.values(TABLE.references).includes(v.escalation.key.split(':')[1].split('@')[0]), regime.name);
+    else assert.equal(v.on_fail, 'hold_draft_withheld', regime.name);
   }
 });
 

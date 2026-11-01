@@ -233,14 +233,16 @@ test('replay headroom: an exhausted pool\'s rows leave every arm; the pools\' wi
   assert.equal(shifted.windows[0].resets_at_ms - clockOf(law), 0.4 * 604_800_000);
   const routed = routeOf(q.request, law);
   assert.deepEqual([routed.law.rates.anthropic_shared.basis, routed.law.rates.anthropic_shared.rate], ['observed_window', 8]);
-  // Round 2 of the 448 review (C): the reference is priced at Q alone (the top
-  // of the frontier, no self-repair that never runs), so at the prior p_fail
-  // 1/2 F4's own pool reference is cheaper than opus@max + 1/2 x its escalation.
-  assert.equal(routed.route, 'claude-chat:claude-fable-5-1@max');
+  // Round 3 of the 448 review (decision 2): the reference is priced at Q
+  // alone (the top of the frontier); opus@max (form b) escalates only on the
+  // runtime's structural screen, priced Q + p_screen x Q(fable) with p_screen
+  // from the ledger's screened attempts: cheaper than fable@max at any rate.
+  assert.equal(routed.route, routed.law.argmin);
+  assert.equal(routed.route, 'claude-chat:claude-opus-5-5@max');
   assert.ok(!atHeadroom(q.catalog, {kind: 'remaining', remaining: {openai_codex: 0}}).candidates.some(row => row.quota_pool === 'openai_codex'));
 });
 
-test('the release gate: priced only at a DERIVED exchange, on both bases, against 446 and all-reference; Astra starts', () => {
+test('the release gate: priced only at a DERIVED exchange, on the draw, against 446 and all-reference; law_model and Astra starts reported', () => {
   const arm = (Cw, Px, priced) => Object.fromEntries(['start', 'draw', 'law_model'].map(b => [b, {Cw, Px, priced}]));
   const observed = {anthropic_shared: {price: 2, basis: 'observed_window'}, openai_codex: {price: 0.5, basis: 'observed_window'}};
   const moved = gateOf({law447: arm(5, 1, 10.5), build446: arm(1, 50, 27), all_reference: arm(6, 3, 13.5)}, {law447: 2, build446: 3}, observed);
@@ -260,10 +262,16 @@ test('the release gate: priced only at a DERIVED exchange, on both bases, agains
   const astra = gateOf({law447: arm(1, 1, 2), build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)}, {law447: 4, build446: 3}, observed);
   // Owner, 2026-10-30: Astra starts are reported, never a gate; the objective decides.
   assert.deepEqual([astra.release, astra.astra.verdict], ['PASS', 'FAIL']);
-  // Both bases: cheaper on the draw but not on the law's own E[Q] is a FAIL.
+  // Round 3 of the 448 review (decision 2): the release is judged on the
+  // draw (what the runtime runs, which E[Q] prices for every row); law_model
+  // (a writer's unrun next step added) is a report: cheaper on the draw passes
+  // and the report names the law_model gap.
   const bases = {law447: {start: {Cw: 1, Px: 1, priced: 2}, draw: {Cw: 1, Px: 1, priced: 2}, law_model: {Cw: 5, Px: 5, priced: 10}},
     build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)};
-  assert.equal(gateOf(bases, {law447: 0, build446: 0}, observed).release, 'FAIL');
+  const drawGate = gateOf(bases, {law447: 0, build446: 0}, observed);
+  assert.deepEqual([drawGate.release, drawGate.release_parts.priced_draw, drawGate.release_parts.law_model_report], ['PASS', 'PASS', 'FAIL']);
+  const dearer = {...bases, law447: {...bases.law447, draw: {Cw: 9, Px: 9, priced: 18}}};
+  assert.equal(gateOf(dearer, {law447: 0, build446: 0}, observed).release, 'FAIL');
   const equal = gateOf({law447: arm(1, 0, 2), build446: arm(1, 0, 2), all_reference: arm(3, 0, 6)}, {law447: 0, build446: 0}, observed);
   assert.equal(equal.draw.build446.per_pool, 'FAIL', 'equal in both pools is not cheaper');
   assert.deepEqual(breakEven({Cw: 1, Px: 0}, {Cw: 3, Px: 0}), {x: 0, cheaper_when: 'always'});

@@ -63,7 +63,7 @@ import {armsOf, headroomOf, POOL_UNIT} from './routing-law-replay.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const core = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
-const {routingLawTable, lawPFail, lawEvidence, ROUTING_LAW_TABLE_SHA256} = core;
+const {routingLawTable, lawScreenPFail, lawEvidence, ROUTING_LAW_TABLE_SHA256} = core;
 const POLICY = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
 const VOI = POLICY.value_of_information;
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -124,14 +124,25 @@ function repairTarget(receipt, pool) {
     .filter(ref => Number.isFinite(ref.cost)).sort((a, b) => a.cost - b.cost);
   return refs.find(ref => ref.pool === pool) ?? refs[0] ?? null;
 }
-/** A cell's E[Q] on a row as if admitted (Core's formula; its tier gap
- * excess is 0 for an audited cell), with its draws per pool unit. */
-function eqIfAdmitted(table, receipt, family, entry) {
+/** A row's own pool reference as Core lists it (listedReferenceOf: the
+ * pool's reference row, runnable or not): the row whose structural screen
+ * rate a row with evidence inherits. */
+function ownReference(receipt, pool) {
+  const listed = receipt.candidates.find(([key, form]) => form === 'reference' && parseKey(key).pool === pool);
+  return listed ? parseKey(listed[0]) : null;
+}
+/** A cell's E[Q] on a row as if admitted (Core's formula, round 3 of the 448
+ * review, decision 2): a read-only row below the reference escalates only on
+ * the runtime's structural screen, Q + p_screen x Q(target), p_screen
+ * starting from its own pool reference's screen rate; a writer binds no
+ * ladder, Q alone. With its draws per pool unit. */
+function eqIfAdmitted(table, receipt, family, entry, writer = false) {
   const [key, , q] = entry;
   const c = parseKey(key);
   const target = repairTarget(receipt, c.pool);
   if (q === null || !target || !Number.isFinite(priced(q, c.pool, receipt.rates))) return null;
-  const pFail = lawPFail(table, c, family, {model: target.model, effort: target.effort});
+  const inherits = ownReference(receipt, c.pool) ?? target;
+  const pFail = writer ? 0 : lawScreenPFail(table, c, {model: inherits.model, effort: inherits.effort});
   const units = {Cw: 0, Px: 0};
   units[POOL_UNIT[c.pool]] += q; units[POOL_UNIT[target.pool]] += pFail * target.q;
   return {eq: priced(q, c.pool, receipt.rates) + pFail * priced(target.q, target.pool, receipt.rates), q, target, pFail, units};
@@ -149,7 +160,9 @@ function eqIfAdmittedLocal(table, receipt, family, entry) {
   const c = parseKey(key);
   const target = repairTarget(receipt, null);
   if (!target) return null;
-  const pFail = lawPFail(table, c, family, {model: target.model, effort: target.effort});
+  // Audited (form c), a local start escalates only on its structural screen
+  // (round 3, decision 2), from its target's screen rate.
+  const pFail = lawScreenPFail(table, c, {model: target.model, effort: target.effort});
   const units = {Cw: 0, Px: 0};
   units[POOL_UNIT[target.pool]] += pFail * target.q;
   return {eq: pFail * priced(target.q, target.pool, receipt.rates), q: 0, target, pFail, units};
@@ -244,9 +257,7 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
       const [key, form, , eq, excluded] = entry;
       if (excluded !== null || !form.startsWith('b:')) continue;
       const c = parseKey(key);
-      const again = eqIfAdmitted(table, receipt, r.family, entry);
-      const excess = lawEvidence(table, receipt.tiers, c.pool, c.model, c.effort, r.family).excess ?? 0;
-      if (excess > 0) continue; // Core adds the measured gap; an audited cell has none
+      const again = eqIfAdmitted(table, receipt, r.family, entry, r.arms.law447.result.scope === 'workspace_write');
       if (!again || Math.abs(again.eq - eq) > 2e-6) mismatches.push({index: row.index, key, core: eq, derived: r6(again?.eq ?? null)});
     }
     // The incumbent: the law's argmin, else its fallback reference priced at its
@@ -255,6 +266,7 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
     const bound = r.arms.law447.priced;
     const current = receipt.eq ?? (bound.pool === 'none' ? 0 : priced(bound.q, bound.pool, receipt.rates));
     rows.push({index: row.index, request: row.request, family: r.family, shape: r.shape, receipt, current,
+      writer: r.arms.law447.result.scope === 'workspace_write',
       difficulty: r.reading?.difficulty ?? null, units: {Cw: bound.law_model.Cw, Px: bound.law_model.Px}});
   }
   const corpus = rows.length ? Object.values(familyCounts).reduce((a, b) => a + b, 0) : 0;
@@ -271,7 +283,8 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
       if (!local && (excluded !== 'no_evidence' || !gapOf(form))) continue;
       const c = parseKey(key);
       const id = `${c.model}@${c.effort}|${row.family}`;
-      const derived = local ? eqIfAdmittedLocal(table, row.receipt, row.family, entry) : eqIfAdmitted(table, row.receipt, row.family, entry);
+      const derived = local ? eqIfAdmittedLocal(table, row.receipt, row.family, entry) :
+        eqIfAdmitted(table, row.receipt, row.family, entry, row.writer);
       if (!derived) continue;
       if (!cells.has(id)) cells.set(id, {id, model: c.model, effort: c.effort, family: row.family, pool: c.pool,
         evidence: new Set(), rows: new Map()});
@@ -395,7 +408,9 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
   const rates = rows.find(row => row.receipt.rates)?.receipt.rates ?? null;
   return {schema: 2, generated_at: new Date(now).toISOString(), table_sha256: ROUTING_LAW_TABLE_SHA256,
     design: 'DESIGN-8 step 6 (lead correction 3, 2026-10-29; review of 447): value of information per (cell, family); parity paired audit (c)',
-    formula: {E_Q: 'Q(c)*price(pool c) + p_fail*Q(repair)*price(repair pool) (Core lawExpectedQuota)',
+    formula: {E_Q: 'Q(c)*price(pool c) + p_screen*Q(target)*price(target pool) for a read-only row below the reference ' +
+        '(the runtime escalates it only on its structural screen; Core lawScreenPFail), Q(c)*price(pool c) for a writer ' +
+        '(round 3 of the 448 review, decision 2; Core lawExpectedQuota)',
       saving_7d_path: '(weekly measured traffic / corpus size) * sum over the family rows where admitting c moves the argmin at ' +
         'today\'s price of the pool-unit saving, each pool priced along its path (spot until its reset, then a fresh window on ' +
         'pace, 1, time-weighted over the horizon)',

@@ -26,7 +26,7 @@ import Foundation
 /// catalog then carries no `routing_law` and Core keeps build 446's routes.
 public enum RoutingLaw {
     /// SHA-256 of `Resources/routing-law-table.json` (the compiled table).
-    public static let tableSHA256 = "2e02363aec0e479073393087c559c701da25363de3605ded204f77ca7b96ab46"
+    public static let tableSHA256 = "04e7ed33ec1327d98ee1225500e3af2715472b8de5785f29b6bfe401b268f673"
 
     public enum Policy: String, Codable, Sendable, CaseIterable {
         case law446 = "law_446", law447 = "law_447"

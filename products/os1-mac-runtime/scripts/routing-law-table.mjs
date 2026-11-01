@@ -62,17 +62,25 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
 // snapshot never keeps its own copy of it.
-const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS, lawDeterministicCheck} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
+const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,
+  revasRepairInstruction} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
-  ledger: 'scripts/routing-law-ledger-20261030.json',
+  // Round 3 of the 448 review: schema 4 (the structural screen counts beside
+  // the judged outcomes, Core lawScreenOutcome).
+  ledger: 'scripts/routing-law-ledger-20261101.json',
   audits: 'scripts/routing-law-audits-20261029.json',
   // Build 448 (review of 448): a deterministic verifier's pre-registered
   // held-out validation (labeled replies, frozen before the verifier ran on
-  // them) and its verdicts on the local model's real drafts (p_fail).
-  det_validation: 'scripts/routing-law-det-validation-20261031.json',
-  det_outcomes: 'scripts/routing-law-det-outcomes-20261031.json',
+  // them) and its verdicts on the local model's real drafts (p_fail). Round 3
+  // (lead decisions 1 and 6): the drafts are of the held-out sets' OWN
+  // requests (the population the reference prior is measured on), generated
+  // with the production small-talk prompt; set C was written, generated and
+  // labeled after that prompt was frozen. The corpus drafts that price the
+  // realized gate never enter the fit.
+  det_validation: 'scripts/routing-law-det-validation-20261101.json',
+  det_outcomes: 'scripts/routing-law-det-outcomes-20261101.json',
   policy: 'scripts/routing-law-policy.json',
   prices: 'Resources/model-price-table.json',
   profiles: 'Config/production.json',
@@ -240,43 +248,66 @@ export function snapshotQuota(quotaDir, pricesBytes = readFileSync(join(ROOT, IN
  * snapshot: Core adds its own ledger's judged runs after it. */
 export function snapshotLedger(ledgerBytes) {
   const counts = new Map(), excluded = {undispatched: 0, unjudged: 0, no_law_family: 0, local_screen_only: 0};
+  const screens = new Map();
   let through = null;
   for (const line of ledgerBytes.toString('utf8').split('\n')) {
     if (!line.trim()) continue;
     let record;
     try { record = JSON.parse(line); } catch { continue; }
     if (Number.isSafeInteger(record?.settled_at_ms) && (through === null || record.settled_at_ms > through)) through = record.settled_at_ms;
+    // Round 3 of the 448 review (lead decision 2): the structural screen,
+    // keyed model@effort (the same screen for every row and family).
+    const screen = lawScreenOutcome(record);
+    if (screen) {
+      const value = screens.get(screen.key) ?? {runs: 0, failures: 0, shadow: 0};
+      value.runs++; if (screen.failed) value.failures++; if (screen.shadow) value.shadow++;
+      screens.set(screen.key, value);
+    }
     const outcome = lawJudgedOutcome(record);
     if (outcome === null) continue;
     if (!outcome.key) { excluded[outcome.excluded] = (excluded[outcome.excluded] ?? 0) + 1; continue; }
     const key = JSON.stringify([outcome.model, outcome.effort, outcome.family]);
-    const value = counts.get(key) ?? {runs: 0, failures: 0};
-    value.runs++; if (outcome.failed) value.failures++;
+    const value = counts.get(key) ?? {runs: 0, failures: 0, full: 0};
+    value.runs++; if (outcome.failed) value.failures++; if (outcome.class === 'full') value.full++;
     counts.set(key, value);
   }
-  return {schema: 3, source: {sha256: sha(ledgerBytes), basis: 'Core lawJudgedOutcome over the routing ledger: judged ' +
+  return {schema: 4, source: {sha256: sha(ledgerBytes), basis: 'Core lawJudgedOutcome over the routing ledger: judged ' +
       'laddered descents (route kinds tier, graded, capability, law), not escalated, keyed by the law family of their ' +
       'receipt; a local draft by its REVAS check verdict only; failure = escalated, not returned, verifier, check or ' +
-      'REVAS fail; success = verifier, check or REVAS pass'}, through_ms: through, excluded,
+      'REVAS fail (class full: no deliverable draft); success = verifier, check or REVAS pass'}, through_ms: through, excluded,
     cells: [...counts].map(([key, value]) => {
       const [model, effort, family] = JSON.parse(key);
       return {model, effort, family, ...value};
-    }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)};
+    }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1),
+    screen: {basis: 'Core lawScreenOutcome over the routing ledger: the structural screen (descentStructurallySound) of ' +
+      'every screened law, graded or capability descent and every law-bound reference answer\'s shadow screen, keyed ' +
+      'model@effort, pooled over families and surfaces',
+    cells: [...screens].map(([key, value]) => ({key, ...value})).sort((a, b) => a.key < b.key ? -1 : 1)}};
 }
 
 /** Build 448: the det outcomes input from a drafts file. */
 export function snapshotDetOutcomes(file, {verifier, family, model, effort, basis = null}) {
   if (!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, verifier)) throw new Error('not an id Core runs: ' + verifier);
   const drafts = file.drafts ?? [];
+  // Round 3 of the 448 review (lead decision 1): every draft is of a request
+  // of a named held-out validation set (the population the reference prior
+  // is measured on); a corpus draft has no set and is refused.
+  if (!drafts.every(d => typeof d.set === 'string' && d.set.length > 0))
+    throw new Error('det outcomes: every draft must name the held-out validation set its request belongs to');
   const items = drafts.filter(d => typeof d.request === 'string' && typeof d.draft === 'string').map(d => {
     const v = lawDeterministicCheck(verifier, d.request, d.draft, Number.isSafeInteger(d.output_tokens) ? {output_tokens: d.output_tokens} : null);
-    return {request_sha256: sha(Buffer.from(d.request)), draft_sha256: sha(Buffer.from(d.draft)), passed: v.passed, failures: v.failures};
+    return {set: d.set, request_sha256: sha(Buffer.from(d.request)), draft_sha256: sha(Buffer.from(d.draft)), passed: v.passed,
+      failures: v.failures, ...(v.passed ? {} : {class: v.failures.includes('empty') ? 'full' : 'repair'})};
   });
-  const failures = items.filter(i => !i.passed).length;
-  return {schema: 1, source: {sha256: sha(Buffer.from(JSON.stringify(drafts))), generator: file.generator ?? null,
-      basis: basis ?? 'Core lawDeterministicCheck on the local model\'s drafts of the corpus requests the law reads as ' + family},
-    cells: [{verifier, family, model, effort, runs: items.length, failures, basis: 'drafts ' + items.length + ', verifier passes ' +
-      (items.length - failures)}], items};
+  const failures = items.filter(i => !i.passed).length, full = items.filter(i => i.class === 'full').length;
+  const sets = [...new Set(items.map(i => i.set))].sort();
+  return {schema: 2, source: {sha256: sha(Buffer.from(JSON.stringify(drafts))), generator: file.generator ?? null,
+      basis: basis ?? 'Core lawDeterministicCheck on the local model\'s drafts (production prompt) of the requests of the held-out ' +
+        'validation sets ' + sets.join(', ') + ', the population the reference prior is measured on'},
+    cells: [{verifier, family, model, effort, runs: items.length, failures, full, population: sets,
+      basis: 'drafts ' + items.length + ', verifier passes ' + (items.length - failures) + '; ' +
+        sets.map(set => set + ' ' + items.filter(i => i.set === set && i.passed).length + '/' + items.filter(i => i.set === set).length).join(', ')}],
+    items};
 }
 
 // ---- compile: the law's inputs ---------------------------------------------
@@ -550,6 +581,8 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
   // uncertain); every check and repair attempt's usage is in the routing ledger.
   const draftTokens = policy.local_start?.draft_max_tokens;
   if (!Number.isSafeInteger(draftTokens) || draftTokens <= 0) throw new Error('local_start.draft_max_tokens required');
+  // Every finding Core can name, and the repair-mode framing, in bytes (>= tokens).
+  const detFindingsTokens = Buffer.byteLength(revasRepairInstruction('', '', Object.values(LAW_DET_FINDINGS)));
   for (const cell of Object.values(out)) {
     const a = cell.answer;
     const price = prices.models[cell.model];
@@ -564,8 +597,17 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
     const prefix = C + U + Math.max(draftTokens, O);
     cell.repair = {q: dollars(price, O, prefix, O) * multiplier,
       basis: 'revas_repair_same_row_bound:' + a.basis, output: O, findings_tokens: O, cached_prefix_tokens: prefix};
+    // Round 3 of the 448 review (lead decision 3, DESIGN-6 O5): the repair of
+    // a draft a family's deterministic verifier rejected, at the family's
+    // reference, which never saw the draft (nothing of its prefix is
+    // cached): the anchor context plus the draft (D) plus the verifier's
+    // findings and the repair instruction (their bytes, an upper bound of
+    // their tokens) uncached, j's answer output out (a repair never outputs
+    // more than answering).
+    cell.det_repair = {q: dollars(price, U + draftTokens + detFindingsTokens, C, O) * multiplier,
+      basis: 'det_repair_cold_bound:' + a.basis, output: O, draft_tokens: draftTokens, findings_tokens: detFindingsTokens};
   }
-  for (const cell of Object.values(out)) for (const shape of [...SHAPES, 'verify', 'repair']) if (cell[shape]) cell[shape].q = round(cell[shape].q, 6);
+  for (const cell of Object.values(out)) for (const shape of [...SHAPES, 'verify', 'repair', 'det_repair']) if (cell[shape]) cell[shape].q = round(cell[shape].q, 6);
   return {cells: out, calibration, anchors};
 }
 
@@ -573,30 +615,59 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
  * over surfaces only (a grant that moves a row to another surface must not
  * change the model through it). The judged runs the ledger could not
  * attribute to a law family are reported, never used. */
-export function compilePFail(ledger, policy, detOutcomes = null) {
-  if (ledger.schema !== 3) throw new Error('ledger snapshot schema 3 (Core lawJudgedOutcome, through_ms) required');
+export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = null) {
+  if (ledger.schema !== 4) throw new Error('ledger snapshot schema 4 (Core lawJudgedOutcome and lawScreenOutcome, through_ms) required');
   const out = {};
   for (const cell of ledger.cells) {
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
-    out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures};
+    out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures,
+      full: (out[key]?.full ?? 0) + (cell.full ?? 0)};
   }
   // Build 448 (review of 448): Core's own deterministic verdicts on a row's
   // real drafts are judged outcomes too (the verifier IS the check the law
   // applies; zero quota, deterministic at temperature 0), counted only for
   // the verifier the policy runs for that family.
   const det = [];
+  if (detOutcomes !== null && detOutcomes.schema !== 2) throw new Error('det outcomes schema 2 (held-out population, classes) required');
   for (const cell of detOutcomes?.cells ?? []) {
     if (policy.deterministic_verifiers?.[cell.family]?.id !== cell.verifier)
       throw new Error('det outcomes of ' + cell.verifier + ' for ' + cell.family + ': not the verifier the policy runs');
-    if (!Number.isSafeInteger(cell.runs) || !Number.isSafeInteger(cell.failures) || cell.failures < 0 || cell.failures > cell.runs)
+    if (!Number.isSafeInteger(cell.runs) || !Number.isSafeInteger(cell.failures) || cell.failures < 0 || cell.failures > cell.runs ||
+        !Number.isSafeInteger(cell.full) || cell.full < 0 || cell.full > cell.failures)
       throw new Error('bad det outcome cell ' + cell.model + '@' + cell.effort + '|' + cell.family);
+    // Round 3 of the 448 review (lead decision 1): a row's verdicts price it
+    // only when they are of the SAME request population as the reference
+    // prior: every held-out set of the verifier's validation, and only those
+    // (corpus drafts, which price the realized gate, never enter the fit).
+    const population = [...(cell.population ?? [])].sort();
+    if (heldoutSets !== null && JSON.stringify(population) !== JSON.stringify([...heldoutSets].sort()))
+      throw new Error('det outcomes of ' + cell.model + '@' + cell.effort + ': population ' + population.join(',') +
+        ' is not the verifier\'s held-out sets ' + [...heldoutSets].sort().join(','));
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
-    out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures};
-    det.push({key, verifier: cell.verifier, runs: cell.runs, failures: cell.failures, basis: cell.basis});
+    out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures,
+      full: (out[key]?.full ?? 0) + cell.full};
+    det.push({key, verifier: cell.verifier, runs: cell.runs, failures: cell.failures, full: cell.full, population,
+      basis: cell.basis});
   }
   return {prior: policy.laplace, cells: out, excluded: ledger.excluded, through_ms: ledger.through_ms ?? null,
     learning: policy.p_fail_learning, ...(det.length ? {deterministic: det} : {}),
     key: 'model@effort|law family (judged runs only), pooled over surfaces; no judged run: the prior'};
+}
+
+/** Round 3 of the 448 review (lead decision 2): the structural screen counts
+ * per model@effort (Core lawScreenPFail), pooled over families and surfaces,
+ * from the ledger snapshot (schema 4); Core adds its live ledger after
+ * through_ms. */
+export function compileScreen(ledger, policy) {
+  if (ledger.schema !== 4 || !ledger.screen || !Array.isArray(ledger.screen.cells)) throw new Error('ledger snapshot schema 4 required');
+  const cells = {};
+  for (const cell of ledger.screen.cells) {
+    if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+$/.test(cell.key) || !Number.isSafeInteger(cell.runs) || !Number.isSafeInteger(cell.failures) ||
+        cell.failures < 0 || cell.failures > cell.runs) throw new Error('bad screen cell ' + cell.key);
+    cells[cell.key] = {runs: cell.runs, failures: cell.failures};
+  }
+  return {prior: policy.laplace, cells, through_ms: ledger.through_ms ?? null, basis: ledger.screen.basis,
+    key: 'model@effort (screened attempts and law-bound reference answers\' shadow screens), pooled over families and surfaces'};
 }
 
 const PREDICATE_KEYS = Object.freeze({task_type: ['chat', 'explain', 'design', 'write', 'action'],
@@ -728,11 +799,12 @@ export function compileDetReferencePrior(family, verifier, validation, pFailCell
     return fam === family && Object.values(references).includes(cell.slice(0, cell.lastIndexOf('@')));
   });
   if (refs.length) return {failures: refs.reduce((a, [, c]) => a + c.failures, 0), runs: refs.reduce((a, [, c]) => a + c.runs, 0),
-    basis: 'reference_judged_outcomes', cells: refs.map(([key]) => key).sort()};
+    full: refs.reduce((a, [, c]) => a + (c.full ?? 0), 0), basis: 'reference_judged_outcomes', cells: refs.map(([key]) => key).sort()};
   const held = validation.sets.filter(set => set.role === 'heldout');
   if (!held.length) throw new Error('deterministic verifier ' + verifier + ': no held-out set to price its prior');
+  // A clean reply is never empty: every rejection of one is a 'repair' class.
   return {failures: held.reduce((a, set) => a + set.false_failures_uncapped, 0), runs: held.reduce((a, set) => a + set.clean, 0),
-    basis: 'heldout_clean_replies_rejected', sets: held.map(set => set.name)};
+    full: 0, basis: 'heldout_clean_replies_rejected', sets: held.map(set => set.name)};
 }
 /** DESIGN-8 step 2 (a) (build 448): the families with a deterministic
  * verifier, keyed by law family: only an id Core runs
@@ -778,14 +850,20 @@ export function compileTable(bytes) {
         throw new Error('local_start.deterministic_verifiers moved to deterministic_verifiers (a family verifier admits any row)');
       return policy.local_start;
     })(), ask_back: policy.ask_back,
-    deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation, compilePFail(ledger, policy, detOutcomes).cells),
+    deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation,
+      compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation)).cells),
     deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {
       const compiled = compileQuota(quota, evidence, policy, prices, profiles);
       return {quota: compiled.cells, quota_calibration: compiled.calibration, quota_anchors: compiled.anchors};
     })(),
-    p_fail: compilePFail(ledger, policy, detOutcomes)};
+    p_fail: compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation)), p_screen: compileScreen(ledger, policy)};
+}
+/** The names of a det validation's held-out sets (the population every
+ * det-admitted row is priced on, round 3 of the 448 review, decision 1). */
+function heldoutSetsOf(validation) {
+  return (validation?.sets ?? []).filter(set => set.role === 'heldout').map(set => set.name);
 }
 
 export function readInputs(root = ROOT) {

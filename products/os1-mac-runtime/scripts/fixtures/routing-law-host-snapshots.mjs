@@ -20,18 +20,25 @@
  *  - verified_pass / verified_repair: a law local verified start (build 448)
  *    whose REVAS check passes (the local draft is delivered) or fails (repair
  *    mode at the next frontier step). Prints {flow, dispatches, snapshot}.
- *  - det_pass / det_reread / det_full: owner question 12 (small talk, law F1)
+ *  - det_pass / det_repair / det_full: owner question 12 (small talk, law F1)
  *    on the local row admitted by Core's deterministic verifier (build 448,
  *    DESIGN-8 step 2 (a), no_claim_reply_v2), on a catalog where its start is
- *    the argmin, with a fixed F2 judge (every row unavailable but the pool
- *    references, the local row and the F2 judge): its pass delivers the
- *    draft after one dispatch; a factual claim (the real local Q12 draft)
- *    re-reads it as F2 (the judge checks the draft and passes it); any other
- *    failure (a refusal) is the full answer at the next step.
+ *    the argmin (every row unavailable but the pool references and the local
+ *    row): its pass delivers the draft after one dispatch; a rejected draft
+ *    (the real local Q12 draft: a factual claim) is repaired WITHIN F1 at the
+ *    family's reference fixed at bind (round 3, decision 3: the draft plus
+ *    the verifier's findings); an empty draft is the full answer there.
  *  - det_hold_pass / det_hold_fail (round 2 of the 448 review, B): every pool
  *    exhausted (its windows 100% used, its rows unavailable), small talk
  *    still binds the local start: a pass is delivered after one dispatch; a
- *    failure holds the request with the draft withheld (nothing can run). */
+ *    failure holds the request with the draft withheld (nothing can run).
+ *  - det_later_turn / det_later_turn_hold (round 3, decision 5): the same
+ *    small talk on a LATER turn (the host hands the conversation over in
+ *    host_context.context): the local start binds there too (its check reads
+ *    the reply alone); with every pool exhausted a failing draft is held.
+ *  - det_writer_lane (round 3, decision 5): small talk in a writer lane (owner
+ *    scope workspace_write, request class writer, writer rows offered): its
+ *    node runs read-only and binds the local start. */
 import {createHash} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -47,9 +54,9 @@ const sha = text => createHash('sha256').update(text).digest('hex');
 const OWNER = JSON.parse(readFileSync(join(ROOT, 'scripts/fixtures/routing-law-owner-questions.json'), 'utf8'));
 const question = n => OWNER.questions.find(q => q.n === n);
 
-function runtimeTask(q, catalog, workspace) {
+function runtimeTask(q, catalog, workspace, context = null) {
   const policyText = 'fixture policy';
-  const host = {workspace, context: null, provider_preference: 'auto',
+  const host = {workspace, context, provider_preference: 'auto',
     codex_session_id: null, claude_session_id: null, require_read_only: false, owner_policy: null};
   return {schema: 1, task_id: catalog.task_id, request: q.request, request_sha256: catalog.request_sha256, objective: q.request,
     policy_sha256: sha(policyText), source_fingerprint: hostContextFingerprint(host), mode: 'auto', material_refs: [],
@@ -75,11 +82,11 @@ export function freshCatalog(q, mutate = catalog => catalog) {
 }
 /** Run owner question q through a real durable Core; returns the terminal
  * public snapshot (what the gateway hands the host) and every ticket. */
-export async function runFlow(q, catalog, execute) {
+export async function runFlow(q, catalog, execute, {context = null} = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'os1-law-host-')); await chmod(dir, 0o700);
   const workspace = await mkdtemp(join(tmpdir(), 'os1-law-host-workspace-')); await chmod(workspace, 0o700);
   const tickets = [];
-  const task = runtimeTask(q, catalog, workspace);
+  const task = runtimeTask(q, catalog, workspace, context);
   const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true, catalog: async () => catalog,
     execute: async ticket => { tickets.push(ticket); return execute(ticket, tickets.length); }});
   try {
@@ -100,11 +107,23 @@ const Q2_REPAIRED = '리스트와 튜플 모두 인덱스와 슬라이싱으로 
 // local chat prompt, temperature 0, 2026-10-31): a self-disclaimer and claims.
 const Q12_LOCAL_DRAFT = '안녕하세요! 저는 오늘도 정상적으로 작동하고 있습니다. 하지만 저는 감정이나 피로를 느끼지 못해요. ' +
   '혹시 너무 지치셨다면 잠시 쉬어가시는 게 좋겠습니다.';
-const SMALL_TALK_LOCAL = new Set(['claude-chat:claude-opus-5-5@max']);
 const smallTalkLocal = catalog => {
   const references = new Set(['claude-fable-5-1', 'gpt-6-astra']);
-  return {...catalog, candidates: catalog.candidates.map(row => row.surface === 'local' || references.has(row.model) ||
-    SMALL_TALK_LOCAL.has(`${row.surface}:${row.model}@${row.effort}`) ? row : {...row, availability: 'unavailable'})};
+  return {...catalog, candidates: catalog.candidates.map(row => row.surface === 'local' || references.has(row.model) ? row :
+    {...row, availability: 'unavailable'})};
+};
+// A later turn: the host hands the recent conversation over (Swift
+// SessionHandoff, os1-session-handoff-v3 with prior messages).
+const LATER_TURN = JSON.stringify({format: 'os1-session-handoff-v3', transcript: 'Owner: 안녕\nOS-1: 안녕하세요! 오늘 하루 어떠셨어요?',
+  priorMessageCount: 2});
+// A writer lane: the owner's grant is workspace_write and the host offers
+// the writer rows beside the read-only ones (request class writer).
+const writerLane = catalog => {
+  const pool = catalog.candidates.filter(row => row.surface !== 'local' && row.surface !== 'claude-chat' && row.scope === 'read_only');
+  const writers = pool.map(row => ({...row, scope: 'workspace_write', permission_profile: 'workspace_write', allowed_paths: ['**'],
+    tools: ['read', 'write', 'execute'], id: 'w' + row.id.slice(1), configuration_sha256: sha('writer:' + row.configuration_sha256)}));
+  return {...catalog, owner_scope: 'workspace_write', request_class: 'writer', chat_lane_eligible: false,
+    candidates: [...catalog.candidates.filter(row => row.surface !== 'claude-chat'), ...writers]};
 };
 const routesOf = tickets => tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`);
 // Round 2 of the 448 review (B): every pool exhausted, as the host observes it
@@ -143,16 +162,17 @@ export const FLOWS = {
       completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
     return {flow: 'det_pass', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
-  async det_reread() {
+  async det_repair() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
-      completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : 'REVAS: PASS'}));
-    return {flow: 'det_reread', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+      completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : '오늘 정말 고생 많으셨어요. 무슨 일 있으셨어요?'}));
+    return {flow: 'det_repair', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
+      repair_instruction: tickets[1]?.instruction ?? null};
   },
   async det_full() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
-      completed(ticket, {output: n === 1 ? '죄송하지만 답변해 드릴 수 없습니다.' : '오늘 하루 고생 많으셨어요. 저는 하루를 보내진 않지만, 이야기 들려주시면 좋겠어요.'}));
+      completed(ticket, {output: n === 1 ? '' : '오늘 하루 고생 많으셨어요. 이야기 들려주시면 좋겠어요.'}));
     return {flow: 'det_full', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
   async det_hold_pass() {
@@ -166,6 +186,26 @@ export const FLOWS = {
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
       completed(ticket, {output: '죄송하지만 답변해 드릴 수 없습니다.'}));
     return {flow: 'det_hold_fail', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+  },
+  async det_later_turn() {
+    const q = question(12);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), ticket =>
+      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}), {context: LATER_TURN});
+    return {flow: 'det_later_turn', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
+      law_family: tickets[0]?.law_family ?? null};
+  },
+  async det_later_turn_hold() {
+    const q = question(12);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
+      completed(ticket, {output: '죄송하지만 답변해 드릴 수 없습니다.'}), {context: LATER_TURN});
+    return {flow: 'det_later_turn_hold', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+  },
+  async det_writer_lane() {
+    const q = question(12);
+    const {snapshot, tickets, saved} = await runFlow(q, freshCatalog(q, writerLane), ticket =>
+      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
+    return {flow: 'det_writer_lane', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
+      scope: saved?.plan?.nodes?.[0]?.scope ?? null};
   },
 };
 
