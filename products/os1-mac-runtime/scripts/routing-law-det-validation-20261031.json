@@ -7,6 +7,7 @@
  "sets": [
   {
    "name": "A_labeled_before_v2",
+   "role": "development",
    "verifier": "no_claim_reply_v2",
    "generator": {
     "model": "qwen3.5:9b (local Ollama)",
@@ -865,6 +866,7 @@
   },
   {
    "name": "reviewer_448",
+   "role": "development",
    "verifier": "no_claim_reply_v2",
    "generator": {
     "source": "the review of 448 (fe01246c): its local qwen3.5:9b drafts (production local chat prompt, temperature 0) and its claim-bearing probes"
@@ -1251,6 +1253,7 @@
   },
   {
    "name": "B_heldout",
+   "role": "heldout",
    "verifier": "no_claim_reply_v2",
    "generator": {
     "model": "qwen3.5:9b (local Ollama)",

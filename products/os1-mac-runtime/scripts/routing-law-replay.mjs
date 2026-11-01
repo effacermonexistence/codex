@@ -44,12 +44,17 @@
  *    receipt's: the family's, agentic for a writer that does work);
  *  - draw: start + p_fail x Q(escalation target) for a laddered route, charged
  *    to the target's pool (the build's mechanics: a reference or a writer
- *    never escalates in 447); p_fail per the corrected law (lawPFail: a row
- *    with a ladder inherits its reference's p_fail for the family; the local
- *    row and 446's graded rows below their reference are priced the same way);
- *  - law_model: draw plus, for every route without a ladder, p_fail x Q(its
- *    repair step): a reference's own (itself), a writer's own pool reference
- *    (the law's own E[Q] accounting, correction 1).
+ *    never escalates); p_fail per the corrected law (lawPFail: a row with a
+ *    ladder inherits its reference's p_fail for the family; the local row and
+ *    446's graded rows below their reference are priced the same way);
+ *  - law_model: the law's own E[Q] accounting (round 2 of the 448 review, C,
+ *    one pricing): the draw plus, for a writer below the reference (it binds
+ *    no ladder), p_fail x Q(its own pool's reference), the next step the law
+ *    prices and the runtime does not run; a reference adds nothing (the top
+ *    of the frontier; 448 charged it a self-repair that never runs). Every law
+ *    route's receipt E[Q] is checked against its priced law_model at the
+ *    prior, and the writer gap (law_model above draw) is reported per family
+ *    (summary eq_vs_draw).
  * A route admitted by a deterministic verifier (build 448, form a) draws no
  * check; with the local model's recorded draft of the request (`--drafts`,
  * the owner fixture's local_draft; zero quota, deterministic at temperature
@@ -282,6 +287,13 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
       p = verdict.passed ? 0 : 1;
       step = verdict.passed ? check.escalation : reread ?? steps.find(s => s.via === 'next_step') ?? null;
     }
+    // Round 2 of the 448 review (B): with no runnable step, a failure holds
+    // the request with the draft withheld: nothing more is drawn.
+    if (step === null && !(check.steps ?? []).length && check.on_fail === 'hold_draft_withheld' && Number.isFinite(p)) {
+      out.p_fail = p; out.det = {verifier: check.id, via: 'hold_draft_withheld', key: null, q: 0,
+        basis: verdict ? 'realized' : 'modeled', ...(verdict ? {passed: verdict.passed, failures: verdict.failures} : {})};
+      return out;
+    }
     if (!step || !Number.isFinite(step.q) || !Number.isFinite(p)) return {...out, unpriced: true};
     const stepUnit = POOL_UNIT[step.pool];
     out.p_fail = p; out.det = {verifier: check.id, via: step.via, key: step.key, q: step.q,
@@ -301,18 +313,24 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
     out.draw[judgeUnit] += p * qr; out.law_model[judgeUnit] += p * qr;
     return out;
   }
-  const repair = repairOf(result, catalog, table);
+  // Round 2 of the 448 review (C, one pricing), as Core's E[Q]: a laddered
+  // route (a read-only row below the reference) answers in full at its
+  // ladder's reference on a structural failure (draw and law_model alike); a
+  // reference is the top of the frontier and nothing runs after it (448
+  // charged it a self-repair that never runs); a writer below the reference
+  // binds no ladder, so its next step (its own pool's reference: the law
+  // prices it, the grant never choosing the row) is in law_model only.
+  out.p_fail = pFailOf(result, catalog, table, family, reading);
+  const reference = result.kind === 'reference' || c.model === table.references[c.quota_pool];
+  const laddered = Boolean(result.ladder?.reference_candidate_id);
+  const repair = laddered ? catalog.candidates.find(row => row.id === result.ladder.reference_candidate_id) ?? null :
+    reference ? null : repairOf(result, catalog, table);
   if (!repair) return out;
-  // Build 448 (DESIGN-6 O5, as Core): a reference's own repair (correction 1's
-  // term) is a repair-mode escalation at itself, priced on the repair shape.
-  const own = repair.id === c.id && (result.kind === 'reference' || c.model === table.references[c.quota_pool]);
-  const qr = (own && shape === 'answer' ? lawQuota(table, repair, 'repair')?.q : null) ?? lawQuota(table, repair, shape)?.q ?? 0;
+  const qr = lawQuota(table, repair, shape)?.q ?? 0;
   const repairUnit = POOL_UNIT[repair.quota_pool];
-  const p = pFailOf(result, catalog, table, family, reading);
-  out.p_fail = p;
   if (repairUnit === 'local') return out;
-  if (result.ladder?.reference_candidate_id) out.draw[repairUnit] += p * qr;
-  out.law_model[repairUnit] += p * qr;
+  if (laddered) out.draw[repairUnit] += out.p_fail * qr;
+  out.law_model[repairUnit] += out.p_fail * qr;
   return out;
 }
 
@@ -455,7 +473,8 @@ function extrasOf(perRow, totals, astra, rates) {
   for (const {family, arms} of perRow) {
     if (family !== 'F1') continue;
     const res = arms.law447.result;
-    const cls = res.kind === 'calculator' || res.kind === 'ask_back' ? res.kind : res.candidate?.surface === 'local' ? 'local' :
+    const cls = res.kind === 'calculator' || res.kind === 'ask_back' ? res.kind : res.error ? 'no_route' :
+      res.candidate?.surface === 'local' ? 'local' :
       res.kind === 'reference' ? 'reference' : res.ladder?.verifier?.kind === 'deterministic' ? 'cloud_non_reference_det' : 'cloud_non_reference';
     f1[cls] = (f1[cls] ?? 0) + 1;
   }
@@ -467,6 +486,39 @@ function extrasOf(perRow, totals, astra, rates) {
     realized[key] = (realized[key] ?? 0) + 1;
   }
   return {gate_modeled: modeled, per_family_draw_vs_all_reference: perFamily, f1_routes: f1, realized_det: realized};
+}
+/** Round 2 of the 448 review (C, one pricing): per arm that routes by the law
+ * (law447 at its prior, all_reference), the largest gap between a route's
+ * receipt E[Q] (what the argmin minimized, priced) and the replay's priced
+ * law_model of that route at the prior: 0 up to the receipt's 1e-6 rounding
+ * when the router and the gate price the same steps. Beside it, per family,
+ * the priced escalation the law counts and the runtime does not run
+ * (law_model minus draw: a writer's next step only). */
+function eqVsDraw(perRow) {
+  const out = {};
+  const priced = (r, arm, basis) => POOLS.reduce((sum, pool) => {
+    const v = r.arms[arm].priced[basis][POOL_UNIT[pool]]; return v === 0 ? sum : sum + v * r.rates[pool].price;
+  }, 0);
+  for (const [arm, modeled] of [['law447', 'law447_modeled'], ['all_reference', 'all_reference']]) {
+    let max = 0, n = 0, worst = null;
+    const unrun = {};
+    for (const r of perRow) {
+      const eq = r.arms[arm].result.law?.eq;
+      if (!Number.isFinite(eq) || !r.arms[arm].result.law?.argmin) continue;
+      const model = priced(r, modeled, 'law_model'), draw = priced(r, modeled, 'draw');
+      n++;
+      const gap = Math.abs(model - eq);
+      if (gap > max) { max = gap; worst = {route: r.arms[arm].result.route, family: r.family, eq, law_model: Math.round(model * 1e6) / 1e6}; }
+      if (model - draw > 1e-12) {
+        unrun[r.family] ??= {routes: 0, priced: 0};
+        unrun[r.family].routes++; unrun[r.family].priced += model - draw;
+      }
+    }
+    out[arm] = {rows: n, max_abs_gap: Math.round(max * 1e7) / 1e7, consistent: max <= 2e-6, worst,
+      law_model_minus_draw_by_family: Object.fromEntries(Object.entries(unrun).sort().map(([f, v]) =>
+        [f, {routes: v.routes, priced: Math.round(v.priced * 1e4) / 1e4}]))};
+  }
+  return out;
 }
 export function replay(catalogRows, routes446, intents = {}, headroom = null, drafts = null) {
   const table = routingLawTable();
@@ -503,7 +555,7 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
       core_errors: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].route.startsWith('core_error')).length])),
       free: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].q === 0).length])),
       astra_starts: astra, astra_by_family: astraByFamily(rows), totals: rounded, gate: gateOf(totals, astra, rates),
-      ...extrasOf(perRow, totals, astra, rates)}};
+      ...extrasOf(perRow, totals, astra, rates), eq_vs_draw: eqVsDraw(perRow)}};
 }
 function headroomLabel(headroom) {
   return headroom?.kind === 'pools' ? {kind: 'pools', ...(headroom.name ? {name: headroom.name} : {}),
@@ -598,7 +650,8 @@ export function ownerTable(catalogRows, intents = {}, extras = {}, headroom = nu
     [basis, {Cw: r4(v.Cw), Px: r4(v.Px), priced: r4(v.priced)}]))]));
   return {table_sha256: ROUTING_LAW_TABLE_SHA256, headroom: headroomLabel(headroom), rates: ratesView(rates),
     priced_note: 'priced = pool units x the headroom\'s instantaneous rate: a relative index, not quota spent',
-    questions, astra_starts: astra, totals: rounded, gate: gateOf(totals, astra, rates), ...extrasOf(perRow, totals, astra, rates)};
+    questions, astra_starts: astra, totals: rounded, gate: gateOf(totals, astra, rates), ...extrasOf(perRow, totals, astra, rates),
+    eq_vs_draw: eqVsDraw(perRow)};
 }
 
 /** A gate regime as a pools headroom (review of 447: the gate is judged
@@ -642,10 +695,10 @@ export function sweep(catalogRows, routes446, intents, regimes, real = null, ext
     out[regime.name] = {spec: regime, rates: corpus.rates, astra_starts: corpus.astra_starts,
       astra_by_family: corpus.astra_by_family, totals: corpus.totals, gate: corpus.gate, gate_modeled: corpus.gate_modeled,
       per_family_draw_vs_all_reference: corpus.per_family_draw_vs_all_reference, f1_routes: corpus.f1_routes,
-      realized_det: corpus.realized_det,
+      realized_det: corpus.realized_det, eq_vs_draw: corpus.eq_vs_draw,
       ...(owner ? {owner_table: {astra_starts: owner.astra_starts, totals: owner.totals, gate: owner.gate,
         gate_modeled: owner.gate_modeled, per_family_draw_vs_all_reference: owner.per_family_draw_vs_all_reference,
-        f1_routes: owner.f1_routes, realized_det: owner.realized_det,
+        f1_routes: owner.f1_routes, realized_det: owner.realized_det, eq_vs_draw: owner.eq_vs_draw,
         routes: owner.questions.map(q => ({n: q.n, family: q.family, law447: q.law447?.route ?? null, det: q.law447?.det ?? null,
           build446: q.build446?.route ?? null, all_reference: q.all_reference?.route ?? null}))}} : {})};
   }
@@ -689,7 +742,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         `${r.gate.law_model.build446.ratio_priced}; vs all-reference draw ${r.gate.draw.all_reference.ratio_priced} law_model ` +
         `${r.gate.law_model.all_reference.ratio_priced}; recorded drafts priced by their verdict ` +
         `${JSON.stringify(r.realized_det)}, at the prior: ${r.gate_modeled.release} vs all-reference draw ` +
-        `${r.gate_modeled.draw.all_reference.ratio_priced})\n`);
+        `${r.gate_modeled.draw.all_reference.ratio_priced}; receipt E[Q] = the gate's price: ` +
+        `${r.eq_vs_draw.law447.consistent && r.eq_vs_draw.all_reference.consistent ? 'yes' : 'NO'} ` +
+        `(max gap ${Math.max(r.eq_vs_draw.law447.max_abs_gap, r.eq_vs_draw.all_reference.max_abs_gap)}))\n`);
     process.stdout.write(`routing law gate (owner fixture, ${Object.keys(result.regimes).length} regimes): ${result.release.verdict}\n`);
     process.exit(result.release.verdict === 'PASS' ? 0 : 1);
   }
@@ -719,6 +774,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         law_model: {b446: r.gate.law_model.build446.ratio_priced, allref: r.gate.law_model.all_reference.ratio_priced},
         modeled: {release: r.gate_modeled.release, draw_allref: r.gate_modeled.draw.all_reference.ratio_priced},
         f1_routes: r.f1_routes, realized_det: r.realized_det,
+        eq_vs_gate_price: {consistent: r.eq_vs_draw.law447.consistent && r.eq_vs_draw.all_reference.consistent,
+          max_gap: Math.max(r.eq_vs_draw.law447.max_abs_gap, r.eq_vs_draw.all_reference.max_abs_gap),
+          law_model_minus_draw_by_family: r.eq_vs_draw.law447.law_model_minus_draw_by_family},
+        per_family_draw_vs_all_reference: Object.fromEntries(Object.entries(r.per_family_draw_vs_all_reference)
+          .map(([family, v]) => [family, v.ratio])),
         ...(r.owner_table ? {owner: {release: r.owner_table.gate.release, draw_allref: r.owner_table.gate.draw.all_reference.ratio_priced,
           modeled_release: r.owner_table.gate_modeled.release, modeled_draw_allref: r.owner_table.gate_modeled.draw.all_reference.ratio_priced}} : {})}])
       .concat([['release', result.release.verdict]])), null, 1) + '\n');

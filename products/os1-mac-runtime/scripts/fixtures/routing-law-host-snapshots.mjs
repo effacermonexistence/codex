@@ -23,12 +23,15 @@
  *  - det_pass / det_reread / det_full: owner question 12 (small talk, law F1)
  *    on the local row admitted by Core's deterministic verifier (build 448,
  *    DESIGN-8 step 2 (a), no_claim_reply_v2), on a catalog where its start is
- *    the argmin (every row unavailable but the pool references, the local row
- *    and the F2 judge; the full catalog's argmin is a cloud row the verifier
- *    admits): its pass delivers the draft after one dispatch; a factual claim
- *    (the real local Q12 draft) re-reads it as F2 (the judge checks the draft
- *    and passes it); any other failure (a refusal) is the full answer at the
- *    next step. */
+ *    the argmin, with a fixed F2 judge (every row unavailable but the pool
+ *    references, the local row and the F2 judge): its pass delivers the
+ *    draft after one dispatch; a factual claim (the real local Q12 draft)
+ *    re-reads it as F2 (the judge checks the draft and passes it); any other
+ *    failure (a refusal) is the full answer at the next step.
+ *  - det_hold_pass / det_hold_fail (round 2 of the 448 review, B): every pool
+ *    exhausted (its windows 100% used, its rows unavailable), small talk
+ *    still binds the local start: a pass is delivered after one dispatch; a
+ *    failure holds the request with the draft withheld (nothing can run). */
 import {createHash} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -104,6 +107,15 @@ const smallTalkLocal = catalog => {
     SMALL_TALK_LOCAL.has(`${row.surface}:${row.model}@${row.effort}`) ? row : {...row, availability: 'unavailable'})};
 };
 const routesOf = tickets => tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`);
+// Round 2 of the 448 review (B): every pool exhausted, as the host observes it
+// (each pool's weekly window 100% used; its rows listed, none dispatchable).
+const poolsExhausted = catalog => {
+  const at = Math.max(...catalog.candidates.map(c => c.availability_observed_at_ms ?? 0));
+  const spent = (ttr) => ({observed_at_ms: at, valid_until_ms: at + 600000,
+    windows: [{used_percent: 100, resets_at_ms: at + Math.round(ttr * 604800000), window_minutes: 10080}]});
+  return {...catalog, routing_law: {...catalog.routing_law, pools: {anthropic_shared: spent(0.2), openai_codex: spent(0.6)}},
+    candidates: catalog.candidates.map(row => row.surface === 'local' ? row : {...row, availability: 'unavailable'})};
+};
 export const FLOWS = {
   async ask_back() {
     const q = question(8);
@@ -142,6 +154,18 @@ export const FLOWS = {
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
       completed(ticket, {output: n === 1 ? '죄송하지만 답변해 드릴 수 없습니다.' : '오늘 하루 고생 많으셨어요. 저는 하루를 보내진 않지만, 이야기 들려주시면 좋겠어요.'}));
     return {flow: 'det_full', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+  },
+  async det_hold_pass() {
+    const q = question(12);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
+      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
+    return {flow: 'det_hold_pass', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+  },
+  async det_hold_fail() {
+    const q = question(12);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
+      completed(ticket, {output: '죄송하지만 답변해 드릴 수 없습니다.'}));
+    return {flow: 'det_hold_fail', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
 };
 

@@ -1244,8 +1244,8 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
       "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
       "export function lawPFail(table, candidate, family, reference = null, learned = null) {" in RUNTIME and
-      "const pFail = Math.min(1, lawPFail(table, candidate, family, inherits, learned) +\n        (inherits !== null ? evidence.excess ?? 0 : 0));" in RUNTIME and
-      "const repair = option.reference ? option.row :" in RUNTIME and
+      "Math.min(1, lawPFail(table, candidate, family, inherits, learned) + (inherits !== null ? evidence.excess ?? 0 : 0));" in RUNTIME and
+      "const next = option.reference ? null : laddered ? target : writerNextOf(option.pool.pool);" in RUNTIME and
       "if (gap && audit?.verdict === 'pass' && audit.admits === true) return {form: 'c', tiers: rows, gap: false, audit: audit.id, excess: 0};" in RUNTIME and
       "function lawHostNeedsTools(task, catalog) {" in RUNTIME and "function lawRateNote(why, task, catalog, now) {" in RUNTIME and
       "(lawAdmission(node, task, catalog) === null || certifiedTupleRuns()))" in RUNTIME and
@@ -1291,7 +1291,7 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       "no_claim_reply_v2: Object.freeze({family: 'small_talk', law_families: Object.freeze(['F1']), shape: 'answer'})" in RUNTIME and
       "no_claim_reply_v1" not in RUNTIME.split("// Review of 448 (fe01246c)")[0] and
       "if (entry && entry.check_outcome !== 'det_fail') entry.check_outcome = 'revas_no_verdict';" in RUNTIME and
-      "candidate.surface === 'local' ? result.usage ?? null : null, detVerifier.draft_max_tokens)" in RUNTIME and
+      "local ? result.usage ?? null : null, local ? detVerifier.draft_max_tokens : null)" in RUNTIME and
       "spec.law_families.includes(family) && entry.validation?.admits === true" in RUNTIME and
       "return {excluded: 'retired_verifier'};" in RUNTIME and
       "export function lawRereadFamily(reading, family, table = routingLawTable()) {" in RUNTIME and
@@ -1301,15 +1301,34 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       "{passed: false, failures: ['verifier_unavailable']} : null;" in RUNTIME and
       "await this._revasQueueCheck(taskID, node, candidate, result);" in RUNTIME and
       "const DET_CHECK_OUTCOMES = new Set(['det_pass', 'det_fail']);" in RUNTIME and
-      "export function compileDeterministicVerifiers(policy, validation = null) {" in TABLE_COMPILER and
+      "export function compileDeterministicVerifiers(policy, validation = null, pFailCells = {}) {" in TABLE_COMPILER and
       "LAW_DETERMINISTIC_VERIFIERS[entry.id].law_families.includes(family)" in TABLE_COMPILER and
-      "export function validateDeterministicVerifier(id, validation) {" in TABLE_COMPILER and
+      "export function validateDeterministicVerifier(id, validation, draftMaxTokens = 512) {" in TABLE_COMPILER and
       (ROOT / "scripts/routing-law-det-validation-20261031.json").is_file() and
       (ROOT / "scripts/routing-law-det-outcomes-20261031.json").is_file() and
       "!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id)" in TABLE_COMPILER and
       "law_delivery_after_det_fail" in (ROOT / "scripts/route-replay.mjs").read_text() and
       'coreFlow("det_full", root: root)' in HOST_FIXTURE,
       "448 (a): Core runs small talk's deterministic verifier on the law attempt before adoption; a factual claim re-reads as F2; only Core's ids compile")
+# Round 2 of the 448 review (lead, 2026-10-31): (A) one det prior for every row
+# from the verifier's measured rejection rate on reference-quality replies;
+# (B) small talk's local start stays admissible (and passes the pre-plan
+# gate) with no runnable step, a failure holding the request; (C) E[Q] prices
+# the escalation the runtime runs (a reference Q alone) and the gate checks
+# the receipt against its own pricing; (D) the length cap binds the local row
+# only, det_fail survives a re-resolved check.
+check("export function lawDetPFail(table, candidate, family, learned = null) {" in RUNTIME and
+      "const pFail = evidence.form === 'a' ? Math.min(1, lawDetPFail(table, candidate, family, learned)) :" in RUNTIME and
+      "export function compileDetReferencePrior(family, verifier, validation, pFailCells, references) {" in TABLE_COMPILER and
+      "basis: 'heldout_clean_replies_rejected'" in TABLE_COMPILER and
+      "on_fail: pick.detEscalation ? 'escalate' : 'hold_draft_withheld'," in RUNTIME and
+      "if (lawLocalDetStartRunnable(task, catalog, now)) return null;" in RUNTIME and
+      "let escalationQ = option.reference ? 0 : next ? quotaOf(next.candidate)?.q ?? null : laddered ? null : 0;" in RUNTIME and
+      "check_outcome: draftEntry.check_outcome === 'det_fail' ? 'det_fail' : 'revas_no_verdict'," in RUNTIME and
+      "if (Number.isSafeInteger(draftMaxTokens) && ((Number.isSafeInteger(usage?.output_tokens) &&" in RUNTIME and
+      "function eqVsDraw(perRow) {" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
+      'coreFlow("det_hold_fail", root: root)' in HOST_FIXTURE,
+      "448 round 2: one det prior (A), small talk admissible with no runnable step (B), one pricing (C), local-only length cap and det_fail kept (D)")
 check("public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?," in law_swift and
       "law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota," in BUILDER and
       '"pools": .map(routingLawPoolShape)' in (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text() and

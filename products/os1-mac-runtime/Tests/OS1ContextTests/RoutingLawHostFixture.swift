@@ -105,6 +105,22 @@ func runRoutingLawHostFixtures() throws {
     try check(!(fullAnswer.result?.output ?? "답변해 드릴 수 없습니다").contains("답변해 드릴 수 없습니다") &&
               fullAnswer.children[0].selectedConfig?.surface != .local, "the owner never sees the failed local draft")
 
+    // ---- Round 2 of the 448 review (B): every pool exhausted (the 2026-11-01
+    // state). Small talk still binds the local start: its deterministic pass is
+    // evidence by itself and is delivered; a failing draft holds the request
+    // (nothing can run), the draft withheld, and the host reads that hold.
+    let heldPass = try coreFlow("det_hold_pass", root: root)
+    try check(heldPass.dispatches == 1, "pools exhausted: the local draft only")
+    let holdPass = try hostPath(heldPass.snapshot, "det_hold_pass")
+    try check((holdPass.result?.output ?? "").hasPrefix("오늘 하루 정말 고생 많으셨어요") &&
+              holdPass.children.count == 1 && holdPass.children[0].selectedConfig?.surface == .local,
+              "pools exhausted: the checked small-talk draft is delivered from the local row")
+    let heldFail = try coreFlow("det_hold_fail", root: root)
+    try check(heldFail.dispatches == 1, "pools exhausted, a failing draft: nothing else runs")
+    let holdFail = try hostPath(heldFail.snapshot, "det_hold_fail")
+    try check(holdFail.state == .held && holdFail.result?.output == nil,
+              "pools exhausted, a failing draft: the request is held, the draft withheld")
+
     print("Routing law host fixtures: \(checks) checks OK; model calls 0")
 }
 

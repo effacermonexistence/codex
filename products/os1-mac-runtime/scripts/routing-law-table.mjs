@@ -677,32 +677,71 @@ export function compileAudits(audits) {
  * 448), recomputed here from the committed labeled sets with Core's own
  * check: every item's verdict against its label, frozen before the verifier
  * ran on it. A false pass is a reply labeled a violation that the verifier
- * passes. The verifier admits rows only when no set has one. */
-export function validateDeterministicVerifier(id, validation) {
+ * passes. Round 2 of the 448 review (D): the length rule binds the local row
+ * only, so every item is judged twice, as the local row's reply (capped at
+ * the local worker's D) and as a pool row's (no cap): the verifier admits
+ * rows only when no set has a false pass in either. A set's role
+ * ('heldout': frozen before the verifier ran on it, evaluated once;
+ * 'development': seen while it was written) is carried. */
+export function validateDeterministicVerifier(id, validation, draftMaxTokens = 512) {
   if (validation?.schema !== 1 || !Array.isArray(validation.sets)) throw new Error('det validation schema 1 required');
   const sets = validation.sets.filter(set => set.verifier === id).map(set => {
     if (!Array.isArray(set.items) || !set.items.length) throw new Error('empty det validation set ' + set.name);
-    const counts = {violations: 0, false_passes: 0, clean: 0, false_failures: 0};
+    if (!['heldout', 'development'].includes(set.role)) throw new Error('det validation set without a role: ' + set.name);
+    const counts = {violations: 0, false_passes: 0, false_passes_uncapped: 0, clean: 0, false_failures: 0,
+      false_failures_uncapped: 0};
     for (const item of set.items) {
       if (!['clean', 'violation'].includes(item.label) || typeof item.request !== 'string' || typeof item.reply !== 'string')
         throw new Error('bad det validation item in ' + set.name);
-      const verdict = lawDeterministicCheck(id, item.request, item.reply,
-        Number.isSafeInteger(item.output_tokens) ? {output_tokens: item.output_tokens} : null);
-      if (item.label === 'violation') { counts.violations++; if (verdict.passed) counts.false_passes++; }
-      else { counts.clean++; if (!verdict.passed) counts.false_failures++; }
+      const usage = Number.isSafeInteger(item.output_tokens) ? {output_tokens: item.output_tokens} : null;
+      const capped = lawDeterministicCheck(id, item.request, item.reply, usage, draftMaxTokens);
+      const uncapped = lawDeterministicCheck(id, item.request, item.reply, null, null);
+      if (item.label === 'violation') {
+        counts.violations++;
+        if (capped.passed) counts.false_passes++;
+        if (uncapped.passed) counts.false_passes_uncapped++;
+      } else {
+        counts.clean++;
+        if (!capped.passed) counts.false_failures++;
+        if (!uncapped.passed) counts.false_failures_uncapped++;
+      }
     }
-    return {name: set.name, frozen: set.frozen, items_sha256: sha(Buffer.from(JSON.stringify(set.items))), ...counts};
+    return {name: set.name, role: set.role, frozen: set.frozen, items_sha256: sha(Buffer.from(JSON.stringify(set.items))), ...counts};
   });
-  const admits = sets.length > 0 && sets.every(set => set.violations > 0 && set.false_passes === 0);
+  const admits = sets.length > 0 && sets.every(set => set.violations > 0 && set.false_passes === 0 && set.false_passes_uncapped === 0);
   return {criterion: validation.criterion, sets, admits};
+}
+/** Round 2 of the 448 review (lead, defect A: evidence symmetry): the prior
+ * p_fail every row admitted by the verifier starts from (Core lawDetPFail) is
+ * the verifier's measured rejection rate on REFERENCE-QUALITY replies, as
+ * counts (Core adds the Laplace prior):
+ *  - the pool references' own judged verdicts on it, once a det-outcomes
+ *    snapshot or the ledger has them (the cells of the references' models in
+ *    this family; none yet: no reference reply was ever run through it);
+ *  - else the clean replies of its HELD-OUT sets (frozen before it ran on
+ *    them, evaluated once: B), judged as a pool row's (no length cap: a
+ *    reference reply is not capped by the local worker's D). A development
+ *    set (seen while the verifier was written) never prices it. */
+export function compileDetReferencePrior(family, verifier, validation, pFailCells, references) {
+  const refs = Object.entries(pFailCells).filter(([key]) => {
+    const [cell, fam] = key.split('|');
+    return fam === family && Object.values(references).includes(cell.slice(0, cell.lastIndexOf('@')));
+  });
+  if (refs.length) return {failures: refs.reduce((a, [, c]) => a + c.failures, 0), runs: refs.reduce((a, [, c]) => a + c.runs, 0),
+    basis: 'reference_judged_outcomes', cells: refs.map(([key]) => key).sort()};
+  const held = validation.sets.filter(set => set.role === 'heldout');
+  if (!held.length) throw new Error('deterministic verifier ' + verifier + ': no held-out set to price its prior');
+  return {failures: held.reduce((a, set) => a + set.false_failures_uncapped, 0), runs: held.reduce((a, set) => a + set.clean, 0),
+    basis: 'heldout_clean_replies_rejected', sets: held.map(set => set.name)};
 }
 /** DESIGN-8 step 2 (a) (build 448): the families with a deterministic
  * verifier, keyed by law family: only an id Core runs
  * (LAW_DETERMINISTIC_VERIFIERS: an entry Core cannot run would admit a row
  * unchecked), made for that law family (review of 448: a small-talk check
  * admits nothing elsewhere), on a tool-free answer family (it reads a
- * reply), with its held-out validation (Core admits only when it passed). */
-export function compileDeterministicVerifiers(policy, validation = null) {
+ * reply), with its held-out validation (Core admits only when it passed) and
+ * its reference prior (compileDetReferencePrior). */
+export function compileDeterministicVerifiers(policy, validation = null, pFailCells = {}) {
   const out = {};
   for (const [family, entry] of Object.entries(policy.deterministic_verifiers ?? {})) {
     const fam = policy.families[family];
@@ -716,7 +755,9 @@ export function compileDeterministicVerifiers(policy, validation = null) {
     if (fam.shape !== 'answer' || fam.tools !== 'none')
       throw new Error('deterministic verifier ' + family + ': a reply check needs a tool-free answer family');
     if (validation === null) throw new Error('deterministic verifier ' + family + ': no held-out validation');
-    out[family] = {id: entry.id, validation: validateDeterministicVerifier(entry.id, validation)};
+    const checked = validateDeterministicVerifier(entry.id, validation, policy.local_start?.draft_max_tokens ?? 512);
+    out[family] = {id: entry.id, validation: checked,
+      reference_prior: compileDetReferencePrior(family, entry.id, checked, pFailCells, policy.references)};
   }
   return out;
 }
@@ -737,7 +778,7 @@ export function compileTable(bytes) {
         throw new Error('local_start.deterministic_verifiers moved to deterministic_verifiers (a family verifier admits any row)');
       return policy.local_start;
     })(), ask_back: policy.ask_back,
-    deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation),
+    deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation, compilePFail(ledger, policy, detOutcomes).cells),
     deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {

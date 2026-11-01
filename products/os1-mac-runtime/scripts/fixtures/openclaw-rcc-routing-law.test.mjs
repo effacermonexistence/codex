@@ -16,11 +16,11 @@ import {readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS, priceRoute} from '../routing-law-replay.mjs';
+import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS, priceRoute, atHeadroom, regimeHeadroom} from '../routing-law-replay.mjs';
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
   lawJudgedOutcome, lawLearnedPFail, revasVerdict, revasCheckInstruction, revasRepairInstruction, revasPrefix,
   lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
-  lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawRereadFamily,
+  lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawRereadFamily, lawDetPFail,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger,
   compileDeterministicVerifiers, validateDeterministicVerifier, snapshotDetOutcomes} from '../routing-law-table.mjs';
@@ -33,17 +33,22 @@ const TABLE = routingLawTable();
 const question = n => OWNER.questions.find(q => q.n === n);
 const lawOf = (q, mutate = c => c) => mutate(lawCatalog(q, q.intent));
 // Build 448 (review): the law's catalog with every row unavailable but the
-// pool references, the local row and the F2 judge (claude-chat opus@max),
-// where the local row's start is the argmin of small talk (the full
-// catalog's argmin is a cloud row the deterministic verifier admits at the
-// Laplace prior): Core's local det paths run on it.
+// pool references, the local row and the F2 judge (claude-chat opus@max):
+// Core's local det paths run on it with a fixed judge.
 const referencesAndLocal = c => ({...c, candidates: c.candidates.map(row => row.surface === 'local' ||
   Object.values(TABLE.references).includes(row.model) || lawKey(row) === 'claude-chat:claude-opus-5-5@max' ? row :
   {...row, availability: 'unavailable'})});
-// The local model's measured p_fail on small talk (Core's verdicts on its real
-// drafts of the corpus F1 requests, the table's det outcomes, Laplace prior).
+// Round 2 of the 448 review (A, evidence symmetry): every row small talk's
+// deterministic verifier admits starts from ONE prior, the verifier's
+// measured rejection rate on reference-quality replies (the held-out set B's
+// clean replies, judged as a pool row's), Laplace-smoothed; a row's own
+// judged verdicts move it from there at the prior's weight 2 (Core
+// lawDetPFail). The local model's are Core's verdicts on its real drafts of
+// the corpus F1 requests (the table's det outcomes).
+const DET_PRIOR = TABLE.deterministic_verifiers.F1.reference_prior;
+const P0 = (DET_PRIOR.failures + 1) / (DET_PRIOR.runs + 2);
 const LOCAL_F1 = TABLE.p_fail.cells['qwen3.5:9b@none|F1'];
-const LOCAL_F1_P = (LOCAL_F1.failures + 1) / (LOCAL_F1.runs + 2);
+const LOCAL_F1_P = (LOCAL_F1.failures + 2 * P0) / (LOCAL_F1.runs + 2);
 
 // ---- The compiled table: from the data, pinned three times. ----------------
 test('the table is the compiler output of the committed inputs, pinned in Core, Resources and Swift', () => {
@@ -332,8 +337,9 @@ test('every owner fixed question routes to the law\'s recorded output, with a re
       // verified start ('v:' its judge) or is admitted by an audit ('c:') or
       // by its family's deterministic verifier ('a:' its id).
       assert.match(form, /^(?:reference|b:.+|c:audit-[a-f0-9]{12}|a:[a-z0-9_]+|v:(?:none|[a-z-]+:[a-z0-9.:-]+@[a-z]+)|x:.*)$/);
+      // (Receipt values are rounded to 1e-6: a reference's E[Q] is exactly Q x rate.)
       assert.ok(excluded === null ? Number.isFinite(eq) && eq >= quota * receipt.rates[key.startsWith('codex') ? 'openai_codex' :
-        'anthropic_shared']?.rate - 1e-9 || key.startsWith('local') : eq === null, `#${q.n} ${key}`);
+        'anthropic_shared']?.rate - 2e-6 || key.startsWith('local') : eq === null, `#${q.n} ${key}`);
     }
     // The derived exchange of each pool is in every receipt (correction 2).
     for (const rate of Object.values(receipt.rates)) assert.ok(rate.rate === 'exhausted' || rate.rate > 0);
@@ -397,8 +403,13 @@ test('the derived exchange: a scarce pool is priced up by its own windows, never
   }
   // Within the scarce pool the cheap row still beats its own reference: a rate
   // never favours the largest draw (review of 447).
-  assert.equal(scarce.route, 'claude:claude-opus-5-5@medium');
-  assert.ok(eqOf(scarce, scarce.route)[3] < eqOf(scarce, 'claude:claude-fable-5-1@max')[3]);
+  assert.equal(plain.route, 'claude:claude-opus-5-5@medium');
+  assert.ok(eqOf(scarce, 'claude:claude-opus-5-5@medium')[3] < eqOf(scarce, 'claude:claude-fable-5-1@max')[3]);
+  // Across pools the derived exchange decides: at 8 per Claude unit the
+  // Codex reference (priced at its Q alone: the top of the frontier, round 2
+  // of the 448 review, C) is the argmin of this build.
+  assert.equal(scarce.route, 'codex:gpt-6-astra@ultra');
+  assert.ok(eqOf(scarce, scarce.route)[3] < eqOf(scarce, 'claude:claude-opus-5-5@medium')[3]);
   assert.equal(scarce.law.argmin, scarce.route);
   assert.match(scarce.reason, /;law_rate_Cw_8\.0000;/);
   assert.match(scarce.reason, /;law_rate_Px_1\.1667;/); // 0.7 of the week to run, 60% left
@@ -412,26 +423,46 @@ test('the derived exchange: a scarce pool is priced up by its own windows, never
   assert.ok(!spent.route.startsWith('codex'));
 });
 
-test('correction 1: an admissible row pays only the reference\'s own failure rate; the reference prices its own repair', () => {
-  // F4 (owner question 3): opus@max has evidence (T1, T2P); at equal rates its
-  // E[Q] beats both references, which pay for their own verifier failures.
-  const routed = routeOf(question(3).request, lawOf(question(3)));
-  assert.equal(routed.route, 'claude-chat:claude-opus-5-5@max');
-  const [, , qOpus, eqOpus] = routed.law.candidates.find(([key]) => key === routed.route);
-  const [, , qAstra, eqAstra] = routed.law.candidates.find(([key]) => key === 'codex:gpt-6-astra@ultra');
-  const [, , qFable] = routed.law.candidates.find(([key]) => key === 'claude-chat:claude-fable-5-1@max');
-  const rate = routed.law.rates.anthropic_shared.rate;
-  // Build 448 (DESIGN-6 O5): a reference's own verifier failure is a
-  // repair-mode escalation at itself (the draft plus findings behind a cached
-  // prefix): Q + p_fail x Q_repair, the table's repair shape.
-  const astraRepair = lawQuota(TABLE, {surface: 'codex', model: 'gpt-6-astra', effort: 'ultra'}, 'repair').q;
-  assert.ok(astraRepair < qAstra, 'a repair is cheaper than answering again');
-  assert.ok(Math.abs(eqAstra - (qAstra + 0.5 * astraRepair) * routed.law.rates.openai_codex.rate) < 1e-5,
-    'a reference: Q + p_fail x Q_repair at its rate');
-  // A row below the reference keeps 447's escalation: a structural failure
-  // (empty, an error) leaves no draft, so the full answer at its target.
-  assert.ok(Math.abs(eqOpus - (qOpus + 0.5 * qFable) * rate) < 1e-5, 'opus: Q + p_ref x Q(fable)');
-  assert.ok(eqOpus < eqAstra);
+test('one pricing (round 2 of the 448 review, C): E[Q] prices the escalation the runtime runs; the gate prices the same', () => {
+  // F4 (owner question 3). A pool reference is the top of the frontier and
+  // binds no ladder: nothing runs after it, so its E[Q] is Q alone (448
+  // priced a self-repair there that never runs).
+  const q = question(3);
+  const routed = routeOf(q.request, lawOf(q));
+  const cand = key => routed.law.candidates.find(([k]) => k === key);
+  const rate = pool => routed.law.rates[pool].rate;
+  const [, , qFable, eqFable] = cand('claude-chat:claude-fable-5-1@max');
+  const [, , qAstra, eqAstra] = cand('codex:gpt-6-astra@ultra');
+  assert.ok(Math.abs(eqFable - qFable * rate('anthropic_shared')) < 2e-6, 'a reference: Q x rate');
+  assert.ok(Math.abs(eqAstra - qAstra * rate('openai_codex')) < 2e-6, 'a reference: Q x rate');
+  // A read-only row below the reference (form b) is screened structurally; a
+  // failure (empty, cut off) leaves no draft to repair: the runtime answers in
+  // full at its target, its p_fail the reference's (correction 1).
+  const [, form, qOpus, eqOpus] = cand('claude-chat:claude-opus-5-5@max');
+  assert.match(form, /^b:/);
+  assert.ok(Math.abs(eqOpus - (qOpus + 0.5 * qFable) * rate('anthropic_shared')) < 1e-5, 'opus: Q + p_ref x Q(fable)');
+  // At the prior p_fail 1/2 the reference is the cheaper start: F4 binds it,
+  // so F4 never draws more than all-reference (448: 1.0677 x).
+  assert.ok(eqFable < eqOpus);
+  assert.equal(routed.route, 'claude-chat:claude-fable-5-1@max');
+  assert.equal(routed.route, q.expected_route);
+  // The gate's draw of every owner question's route is the receipt's E[Q]
+  // (the replay prices the same steps), at the recorded headroom; a writer's
+  // next step (DESIGN-8 step 5, its pool reference) is priced by the law and
+  // never run by the runtime (no writer ladder): law_model only.
+  for (const question of OWNER.questions) {
+    if (question.pending || question.expected_kind === 'calculator' || question.expected_kind === 'ask_back') continue;
+    const law = lawOf(question);
+    const r = routeOf(question.request, law);
+    const rates = Object.fromEntries(Object.entries(r.law.rates).map(([pool, v]) => [pool, v.rate === 'exhausted' ? Infinity : v.rate]));
+    const priced = basis => Object.entries({Cw: 'anthropic_shared', Px: 'openai_codex'}).reduce((sum, [unit, pool]) => {
+      const p = priceRoute(r, law, r.law.shape, TABLE, r.law.family, law.routing_law.reading)[basis][unit];
+      return p === 0 ? sum : sum + p * rates[pool];
+    }, 0);
+    assert.ok(Math.abs(priced('law_model') - r.law.eq) < 2e-6, `#${question.n} law_model ${priced('law_model')} vs eq ${r.law.eq}`);
+    if (r.scope === 'workspace_write' && r.kind !== 'reference') assert.ok(priced('draw') < priced('law_model'), `#${question.n} writer`);
+    else assert.ok(Math.abs(priced('draw') - r.law.eq) < 2e-6, `#${question.n} draw ${priced('draw')} vs eq ${r.law.eq}`);
+  }
 });
 
 test('the owner\'s reference words (P) admit the references only, priced on the work the reading does', () => {
@@ -929,37 +960,37 @@ test('build 448: a REVAS pass adopts the local draft as produced; no verdict esc
   assert.equal(lawLearnedPFail(silent.text, 0).get('qwen3.5:9b@none|F2'), undefined, 'no verdict is no evidence');
 });
 
-test('build 448: p_fail learning moves E[Q] a priori (DESIGN-6 O5.3): judged local outcomes price the F1 start', async t => {
+test('build 448: p_fail learning moves E[Q] a priori (DESIGN-6 O5.3): judged outcomes on the verifier move the F1 argmin', async t => {
   const q = question(12); // small talk: every row Core's deterministic verifier reads is admissible (form a)
   const catalog = lawOf(q);
   const prior = routeOf(q.request, catalog);
-  // The local row's measured p_fail (38 of 54 real drafts fail no_claim_reply_v2)
-  // prices it above a pool row at the prior: the law sends small talk there.
+  // Round 2 of the 448 review (A): every row starts from the verifier's
+  // rejection rate on reference-quality replies; the local model's 54 judged
+  // drafts move it below that, so the free local start is the argmin.
   assert.equal(prior.route, q.expected_route);
-  assert.notEqual(prior.route, 'local:qwen3.5:9b@none');
-  const local = prior.law.candidates.find(([key]) => key.startsWith('local:'));
-  assert.ok(local[3] > prior.law.eq);
+  assert.equal(prior.route, 'local:qwen3.5:9b@none');
   const plan = hostPlan(runtimeTask(q, catalog), catalog);
   const id = plan.nodes[0].id;
-  const at = passes => resolveRoutePlan(plan, runtimeTask(q, catalog), catalog, clockOf(catalog), {lawLearned: passes});
+  const at = learned => resolveRoutePlan(plan, runtimeTask(q, catalog), catalog, clockOf(catalog), {lawLearned: learned});
   const base = at(new Map());
   const localBase = base.routes[id].law.candidates.find(([key]) => key.startsWith('local:'));
   const escalation = localBase[3] / LOCAL_F1_P;
-  // Judged local passes after the snapshot move the argmin to the local start.
-  const passed = at(new Map([['qwen3.5:9b@none|F1', {runs: 30, failures: 0}]]));
-  assert.equal(passed.decisions[id].model, 'qwen3.5:9b');
-  const p30 = (LOCAL_F1.failures + 1) / (LOCAL_F1.runs + 30 + 2);
-  assert.ok(Math.abs(passed.routes[id].law.det.p_fail - Math.round(p30 * 1e6) / 1e6) < 1e-6);
-  assert.ok(Math.abs(passed.routes[id].law.eq - p30 * escalation) < 1e-5);
-  // Judged local failures keep it there no longer.
-  const failed = at(new Map([['qwen3.5:9b@none|F1', {runs: 8, failures: 8}]]));
+  // Judged local failures after the snapshot move it off the local start.
+  const failed = at(new Map([['qwen3.5:9b@none|F1', {runs: 400, failures: 400}]]));
   const moved = failed.routes[id].law;
   assert.notEqual(failed.decisions[id].model, 'qwen3.5:9b');
   const localNow = moved.candidates.find(([key]) => key.startsWith('local:'));
   assert.equal(localNow[1], 'a:no_claim_reply_v2');
-  assert.ok(Math.abs(localNow[3] - (LOCAL_F1.failures + 8 + 1) / (LOCAL_F1.runs + 8 + 2) * escalation) < 1e-5);
+  const pFailed = (LOCAL_F1.failures + 400 + 2 * P0) / (LOCAL_F1.runs + 400 + 2);
+  assert.ok(Math.abs(localNow[3] - pFailed * escalation) < 1e-5);
   assert.equal(moved.candidates.find(([key]) => key === moved.argmin)[1], 'a:no_claim_reply_v2');
   assert.ok(moved.eq < localNow[3]);
+  // ... and judged passes of a pool row move small talk to that row: its own
+  // verdicts, never a flat prior, decide (A).
+  const haiku = catalog.candidates.find(row => lawKey(row) === 'claude-chat:claude-haiku-4-5-20251001@none');
+  const learnedPool = at(new Map([['claude-haiku-4-5-20251001@none|F1', {runs: 60, failures: 0}]]));
+  assert.equal(learnedPool.decisions[id].resolved_candidate_id, haiku.id);
+  assert.ok(Math.abs(learnedPool.routes[id].law.det.p_fail - Math.round(2 * P0 / 62 * 1e6) / 1e6) < 1e-6);
   // The durable Core learns the same from its own routing ledger at start
   // (records after the table's snapshot, Core lawJudgedOutcome): a local
   // answer's deterministic verdict is its judged outcome.
@@ -1118,20 +1149,46 @@ test('build 448 (a): only an id Core runs, made for that law family and validate
     deterministic_verifiers: {F1: {id: 'no_claim_reply_v1'}}}, det), /not the verifier/);
 });
 
-test('build 448 (a): small talk goes to the argmin of every row the verifier admits; the local start is priced by its measured p_fail', () => {
+test('build 448 (a): small talk goes to the argmin of every row the verifier admits, all from one prior (round 2, A)', () => {
   const q = question(12);
   assert.equal(q.expected_det, V2);
   const law = lawOf(q);
   const routed = routeOf(q.request, law);
   assert.equal(routed.route, q.expected_route);
+  assert.equal(routed.route, 'local:qwen3.5:9b@none');
   assert.match(routed.reason, /;law_evidence_deterministic;law_det_verifier_no_claim_reply_v2;law_reread_F2_/);
-  // The argmin is a pool row admitted by the verifier: its own p_fail on it
-  // (the Laplace prior: no judged run), never a reference's.
+  // The prior is the verifier's measured rejection rate on reference-quality
+  // replies: the held-out set B's clean replies (frozen before it ran on them,
+  // judged as a pool row's), Laplace-smoothed. No reference reply has been run
+  // through it yet, so no reference verdict prices it.
+  assert.deepEqual([DET_PRIOR.basis, DET_PRIOR.sets, DET_PRIOR.runs, DET_PRIOR.failures],
+    ['heldout_clean_replies_rejected', ['B_heldout'], 54, 47]);
+  const heldout = TABLE.deterministic_verifiers.F1.validation.sets.find(set => set.role === 'heldout');
+  assert.deepEqual([heldout.clean, heldout.false_failures_uncapped], [DET_PRIOR.runs, DET_PRIOR.failures]);
+  // Every unmeasured row: exactly that prior (448 charged them a flat 1/2,
+  // less than the 87% the verifier rejects of clean reference-quality replies).
+  for (const row of law.candidates.filter(c => c.surface !== 'local'))
+    assert.equal(lawDetPFail(TABLE, row, 'F1'), P0, lawKey(row));
+  // The measured local row: its own 54 verdicts, moved from the same prior.
   const v = routed.ladder.verifier;
   assert.equal(v.kind, 'deterministic');
-  assert.equal(v.p_fail, 0.5);
-  const local = routed.law.candidates.find(([key]) => key.startsWith('local:'));
-  assert.ok(local[3] > routed.law.eq, 'the local start at its measured p_fail costs more');
+  assert.equal(v.p_fail, Math.round(LOCAL_F1_P * 1e6) / 1e6);
+  assert.ok(LOCAL_F1_P < P0);
+  for (const [key, form, , eq, excluded] of routed.law.candidates) {
+    if (excluded !== null || key === routed.route) continue;
+    assert.ok(eq >= routed.law.eq - 1e-9, `${key} ${form} is not cheaper than the local start`);
+  }
+  // A pool row a learned ledger has judged moves from the same prior.
+  const learned = new Map([['claude-haiku-4-5-20251001@none|F1', {runs: 10, failures: 2}]]);
+  assert.ok(Math.abs(lawDetPFail(TABLE, {model: 'claude-haiku-4-5-20251001', effort: 'none'}, 'F1', learned) -
+    (2 + 2 * P0) / 12) < 1e-12);
+  // Once the references' own verdicts exist (a det-outcomes snapshot of their
+  // replies, or the ledger), they price the prior instead of set B.
+  const policy = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
+  const validation = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-det-validation-20261031.json'), 'utf8'));
+  const withRef = compileDeterministicVerifiers(policy, validation, {'claude-fable-5-1@max|F1': {runs: 40, failures: 6}});
+  assert.deepEqual([withRef.F1.reference_prior.basis, withRef.F1.reference_prior.runs, withRef.F1.reference_prior.failures],
+    ['reference_judged_outcomes', 40, 6]);
   // On the references-and-local catalog the local start is the argmin: E[Q] =
   // p_fail(local, F1) x the dearer of its next step and its re-read as F2.
   const lc = lawOf(q, referencesAndLocal);
@@ -1169,8 +1226,11 @@ test('build 448 (a): small talk goes to the argmin of every row the verifier adm
   const refusal = priceRoute(start, lc, 'answer', TABLE, 'F1', lc.routing_law.reading, {request: q.request, draft: SMALL_TALK_REFUSAL});
   assert.equal(refusal.det.via, 'next_step');
   // A pool row's realized price is never read from a local draft.
-  assert.equal(priceRoute(routed, law, 'answer', TABLE, 'F1', law.routing_law.reading, {request: q.request, draft: SMALL_TALK_PASS}).det.basis,
-    'modeled');
+  const pool = routeOf(q.request, lawOf(q, c => ({...c, candidates: c.candidates.filter(row => row.surface !== 'local')})));
+  assert.notEqual(pool.candidate.surface, 'local');
+  if (pool.ladder?.verifier?.kind === 'deterministic')
+    assert.equal(priceRoute(pool, law, 'answer', TABLE, 'F1', law.routing_law.reading, {request: q.request, draft: SMALL_TALK_PASS}).det.basis,
+      'modeled');
 });
 
 test('build 448 p_fail rule: a deterministic verdict is the judged outcome of the row it read, for a verifier Core runs', () => {
@@ -1260,6 +1320,103 @@ test('build 448 (a), Core: any other failure (a refusal) is the full answer at t
   assert.equal(ledger[1].delivery_basis, 'reference_escalated');
   assert.deepEqual(lawLearnedPFail(text, 0).get('qwen3.5:9b@none|F1'), {runs: 1, failures: 1});
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}]}).verdict, 'PASS');
+});
+
+// Round 2 of the 448 review (B): every pool exhausted (the 2026-11-01 state:
+// both OS-1 pools 100% used). The host drops an exhausted pool's rows
+// (quota_zero), so only the local row is left.
+const exhausted = c => atHeadroom(c, regimeHeadroom({name: 'both_exhausted',
+  anthropic_shared: {used_percent: 100, ttr: 0.2}, openai_codex: {used_percent: 100, ttr: 0.6}}, null, clockOf(c)));
+
+test('round 2 (B): with every pool exhausted small talk still binds the local start; its pass is evidence by itself', () => {
+  const q = question(12);
+  const law = exhausted(lawOf(q));
+  assert.deepEqual(law.candidates.map(row => row.surface), ['local']);
+  const routed = routeOf(q.request, law);
+  assert.equal(routed.route, 'local:qwen3.5:9b@none');
+  const v = routed.ladder.verifier;
+  assert.deepEqual([v.kind, v.escalation, v.steps, v.on_fail, v.reread], ['deterministic', null, [], 'hold_draft_withheld', null]);
+  assert.deepEqual([routed.ladder.reference_candidate_id, routed.ladder.reference_model], [null, null]);
+  assert.equal(routed.law.eq, 0);
+  assert.equal(routed.law.det.on_fail, 'hold_draft_withheld');
+  assert.match(routed.reason, /;escalation_none_hold_on_fail;/);
+  for (const rate of Object.values(routed.law.rates)) assert.equal(rate.rate, 'exhausted');
+  // The gate prices it: nothing more is drawn, a failing draft holds.
+  const failing = priceRoute(routed, law, 'answer', TABLE, 'F1', law.routing_law.reading,
+    {request: q.request, draft: SMALL_TALK_REFUSAL});
+  assert.deepEqual([failing.det.via, failing.draw.Cw, failing.draw.Px], ['hold_draft_withheld', 0, 0]);
+  // A light explanation has no deterministic verifier: no admissible row runs.
+  assert.throws(() => routeOf(question(11).request, exhausted(lawOf(question(11)))));
+});
+
+test('round 2 (B), Core: pools exhausted, a passing draft is delivered; a failing one is held, the draft withheld', async t => {
+  const q = question(12);
+  // The durable Core validates the host's catalog whole: every pool row
+  // stays listed, none can run (the pools' windows exhausted, the rows
+  // unavailable), the local row alone is dispatchable.
+  const base = lawOf(q);
+  const law = {...base, routing_law: {...base.routing_law, pools: exhausted(base).routing_law.pools},
+    candidates: base.candidates.map(row => row.surface === 'local' ? row : {...row, availability: 'unavailable'})};
+  const bound = routeOf(q.request, law);
+  assert.deepEqual([bound.route, bound.ladder.verifier.on_fail], ['local:qwen3.5:9b@none', 'hold_draft_withheld']);
+  const ok = await harness(t, q, law, ticket => completed(ticket, {output: SMALL_TALK_PASS, usage: {input_tokens: 60, output_tokens: 20}}));
+  assert.deepEqual(ok.tickets.map(tuple), ['local:qwen3.5:9b@none']);
+  assert.equal(ok.done.result.output, SMALL_TALK_PASS);
+  assert.equal(ok.ledger[0].check_outcome, 'det_pass');
+  const bad = await harness(t, q, law, ticket => completed(ticket, {output: SMALL_TALK_REFUSAL}));
+  assert.deepEqual(bad.tickets.map(tuple), ['local:qwen3.5:9b@none'], 'nothing else can run');
+  const child = bad.saved.children[0];
+  assert.deepEqual([child.state, child.output, child.attempt_history[0].check_outcome], ['held', null, 'det_fail']);
+  assert.match(child.hold_reason, /^ladder_.*unavailable$/);
+  assert.notEqual(bad.done.result?.output, SMALL_TALK_REFUSAL, 'the failing draft never reaches the owner');
+  assert.deepEqual([bad.ledger[0].check_outcome, bad.ledger[0].det_failures], ['det_fail', ['refusal', 'factual_claim']]);
+  assert.deepEqual(lawLearnedPFail(bad.text, 0).get('qwen3.5:9b@none|F1'), {runs: 1, failures: 1});
+});
+
+test('round 2 (D): the verifier binds F1 only; the length cap binds the local row only; det_fail survives a re-resolved check', async t => {
+  // Every owner question of another family carries no deterministic verifier.
+  for (const question of OWNER.questions) {
+    if (question.pending || question.expected_family === 'F1' || question.expected_family === 'F0') continue;
+    const routed = routeOf(question.request, lawOf(question));
+    assert.notEqual(routed.ladder?.verifier?.kind, 'deterministic', `#${question.n}`);
+    assert.ok(!(routed.law?.candidates ?? []).some(([, form]) => form.startsWith('a:')), `#${question.n}`);
+  }
+  // D is the local worker's cap: a pool row's longer courteous reply is not
+  // failed by it; the local row's is.
+  const long = Array(80).fill('오늘 하루 정말 고생 많으셨어요.').join(' ');
+  assert.ok([...long].length > TABLE.local_start.draft_max_tokens);
+  const request = question(12).request;
+  assert.deepEqual(lawDeterministicCheck(V2, request, long, null, null), {passed: true, failures: []});
+  assert.deepEqual(lawDeterministicCheck(V2, request, long, null, TABLE.local_start.draft_max_tokens).failures, ['length']);
+  assert.deepEqual(lawDeterministicCheck(V2, request, SMALL_TALK_PASS, {output_tokens: 600}, null), {passed: true, failures: []});
+  // Both ways, no violation of any validation set passes (the compiled sets).
+  for (const set of TABLE.deterministic_verifiers.F1.validation.sets)
+    assert.deepEqual([set.false_passes, set.false_passes_uncapped], [0, 0], set.name);
+  // A draft re-read as F2 whose check row cannot run when it dispatches is
+  // re-resolved to a reference (answering in full); the draft keeps det_fail.
+  const q = question(12);
+  const law = lawOf(q, referencesAndLocal);
+  const judge = routeOf(q.request, law).ladder.verifier.reread.candidate_id;
+  const dir = await mkdtemp(join(tmpdir(), 'os1-law-')); await chmod(dir, 0o700);
+  const workspace = await mkdtemp(join(tmpdir(), 'os1-law-workspace-')); await chmod(workspace, 0o700);
+  const tickets = [];
+  const now = Date.now();
+  const fresh = {...law, candidates: law.candidates.map(row => ({...row,
+    ...(row.availability_observed_at_ms === null ? {} : {availability_observed_at_ms: now, availability_valid_until_ms: now + 600000}),
+    ...(row.quota_observed_at_ms === null ? {} : {quota_observed_at_ms: now, quota_valid_until_ms: now + 600000})}))};
+  const withoutJudge = {...fresh, candidates: fresh.candidates.map(row => row.id === judge ? {...row, availability: 'unavailable'} : row)};
+  const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true,
+    catalog: async () => tickets.length >= 1 ? withoutJudge : fresh,
+    execute: async ticket => { tickets.push(ticket); return completed(ticket, {output: tickets.length === 1 ? Q12_LOCAL_DRAFT : 'the reference answer'}); }});
+  t.after(async () => { await runtime.close(); await rm(dir, {recursive: true, force: true}); await rm(workspace, {recursive: true, force: true}); });
+  const task = runtimeTask(q, law, workspace);
+  await runtime.submit(task);
+  const done = await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
+  const saved = runtime._load(task.task_id);
+  assert.equal(tuple(tickets[0]), 'local:qwen3.5:9b@none');
+  assert.ok(!tickets.some(ticket => ticket.candidate_id === judge), 'the check row never ran');
+  assert.equal(saved.children[0].attempt_history[0].check_outcome, 'det_fail');
+  assert.notEqual(done.result?.output, Q12_LOCAL_DRAFT, 'the draft is never adopted unchecked');
 });
 
 test('build 448 (a): across the gate regimes a re-read answer is always a pool reference; small talk\'s routes are reported', async () => {

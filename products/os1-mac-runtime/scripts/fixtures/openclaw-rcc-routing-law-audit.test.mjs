@@ -233,7 +233,10 @@ test('replay headroom: an exhausted pool\'s rows leave every arm; the pools\' wi
   assert.equal(shifted.windows[0].resets_at_ms - clockOf(law), 0.4 * 604_800_000);
   const routed = routeOf(q.request, law);
   assert.deepEqual([routed.law.rates.anthropic_shared.basis, routed.law.rates.anthropic_shared.rate], ['observed_window', 8]);
-  assert.equal(routed.route, 'claude-chat:claude-opus-5-5@max');
+  // Round 2 of the 448 review (C): the reference is priced at Q alone (the top
+  // of the frontier, no self-repair that never runs), so at the prior p_fail
+  // 1/2 F4's own pool reference is cheaper than opus@max + 1/2 x its escalation.
+  assert.equal(routed.route, 'claude-chat:claude-fable-5-1@max');
   assert.ok(!atHeadroom(q.catalog, {kind: 'remaining', remaining: {openai_codex: 0}}).candidates.some(row => row.quota_pool === 'openai_codex'));
 });
 

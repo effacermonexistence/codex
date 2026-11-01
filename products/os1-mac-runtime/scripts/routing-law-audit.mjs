@@ -249,10 +249,11 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
       if (excess > 0) continue; // Core adds the measured gap; an audited cell has none
       if (!again || Math.abs(again.eq - eq) > 2e-6) mismatches.push({index: row.index, key, core: eq, derived: r6(again?.eq ?? null)});
     }
-    // The incumbent: the law's argmin, else its fallback reference priced with
-    // its own repair (correction 1's accounting), in pool units.
+    // The incumbent: the law's argmin, else its fallback reference priced at its
+    // Q alone (round 2 of the 448 review, C: the top of the frontier, no
+    // self-repair that never runs), in pool units.
     const bound = r.arms.law447.priced;
-    const current = receipt.eq ?? (bound.pool === 'none' ? 0 : priced(bound.q, bound.pool, receipt.rates) * (1 + bound.p_fail));
+    const current = receipt.eq ?? (bound.pool === 'none' ? 0 : priced(bound.q, bound.pool, receipt.rates));
     rows.push({index: row.index, request: row.request, family: r.family, shape: r.shape, receipt, current,
       difficulty: r.reading?.difficulty ?? null, units: {Cw: bound.law_model.Cw, Px: bound.law_model.Px}});
   }

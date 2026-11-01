@@ -164,12 +164,16 @@ node --test --test-timeout=180000 "$script_dir/fixtures/openclaw-rcc-routing-law
 # owner fixture at every fixed headroom regime of
 # scripts/routing-law-gate-regimes.json; per regime the law must cost less
 # than 446 and than all-reference priced at that regime's DERIVED exchange on
-# both bases (draw and law_model). The verdict is the objective only (owner,
-# 2026-10-30): Astra starts, per-pool totals, per-family draws and the
-# prior-expected (modeled) det price are reported beside it, never gating. A
-# route admitted by a deterministic verifier on a question whose local draft
-# the fixture records is priced by Core's actual verdict on that draft. Fails
-# the build on a gate FAIL. The 370-request corpus sweep (catalogs and the
+# both bases (draw: what the runtime runs; law_model: the law's E[Q], equal
+# to the draw but for a writer's next step, which the runtime never runs:
+# round 2 of the 448 review, one pricing). The verdict is the objective only
+# (owner, 2026-10-30): no proxy gates. Astra starts, per-pool totals,
+# per-family draws, the prior-expected (modeled) det price and the check that
+# every receipt's E[Q] equals the gate's own price of that route are reported
+# beside it, never gating. A route admitted by a deterministic verifier on a
+# question whose local draft the fixture records is priced by Core's actual
+# verdict on that draft. Fails the build on a gate FAIL. The 370-request
+# corpus sweep (catalogs and the
 # local model's recorded drafts with the artifacts, plus the real rate-limit
 # state from scripts/routing-law-pools.mjs) is applied by the lead:
 #   node scripts/routing-law-replay.mjs --catalogs <sw446c.json> --routes446 <r446c.json> \
