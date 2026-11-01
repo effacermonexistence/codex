@@ -1244,11 +1244,16 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
       "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
       "export function lawPFail(table, candidate, family, reference = null, learned = null) {" in RUNTIME and
-      "Math.min(1, lawPFail(table, candidate, family, inherits, learned) + (inherits !== null ? evidence.excess ?? 0 : 0));" in RUNTIME and
-      "const next = option.reference ? null : laddered ? target : writerNextOf(option.pool.pool);" in RUNTIME and
+      # Round 3 of the 448 review (decision 2): a read-only row with evidence is
+      # priced on the runtime's structural screen, from its own pool reference.
+      "let pFail = Math.min(1, lawScreenPFail(table, candidate, inherits, learned));" in RUNTIME and
+      "export function lawScreenPFail(table, candidate, reference = null, learned = null) {" in RUNTIME and
+      "writerNextOf" not in RUNTIME and
       "if (gap && audit?.verdict === 'pass' && audit.admits === true) return {form: 'c', tiers: rows, gap: false, audit: audit.id, excess: 0};" in RUNTIME and
       "function lawHostNeedsTools(task, catalog) {" in RUNTIME and "function lawRateNote(why, task, catalog, now) {" in RUNTIME and
-      "(lawAdmission(node, task, catalog) === null || certifiedTupleRuns()))" in RUNTIME and
+      # Round 3 (decision 4): a class certificate never decides a law node.
+      "lawAdmission(node, task, catalog) === null)\n    return {class: 'certified'" in RUNTIME and
+      "certifiedTupleRuns" not in RUNTIME and
       'node "$script_dir/routing-law-replay.mjs" --owner-gate "$script_dir/fixtures/routing-law-owner-questions.json"' in RELEASE and
       "family === 'P' ? null : family);" in RUNTIME and
       "headroom_threshold" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
@@ -1280,10 +1285,12 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
       "export function lawJudgedOutcome(record) {" in RUNTIME and "export function lawLearnedPFail(" in RUNTIME and
       "lawLearnRecord(this.lawLearned, record, routingLawTable()?.p_fail?.through_ms ?? null);" in RUNTIME and
       "resolveRoutePlan(proposed, admitted, catalog, boundAt,\n        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy, lawLearned: this.lawLearned});" in RUNTIME and
-      "const {lawJudgedOutcome, LAW_DETERMINISTIC_VERIFIERS, lawDeterministicCheck} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      # Round 3 of the 448 review: the snapshot counts the structural screen
+      # with Core's own rule too (lawScreenOutcome).
+      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
       "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
       (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
-      (ROOT / "scripts/routing-law-ledger-20261030.json").is_file(),
+      (ROOT / "scripts/routing-law-ledger-20261030.json").is_file() and (ROOT / "scripts/routing-law-ledger-20261101.json").is_file(),
       "448: the ask-back reaches the host; the local row admissible only by (a)/(c), else a priced REVAS verified start; repair mode; ledger p_fail learning; host-path fixture")
 # Build 448 (lead order 2026-10-31, DESIGN-8 step 2 (a)): small talk's deterministic verifier.
 TABLE_COMPILER = (ROOT / "scripts/routing-law-table.mjs").read_text()
@@ -1294,9 +1301,12 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       "local ? result.usage ?? null : null, local ? detVerifier.draft_max_tokens : null)" in RUNTIME and
       "spec.law_families.includes(family) && entry.validation?.admits === true" in RUNTIME and
       "return {excluded: 'retired_verifier'};" in RUNTIME and
-      "export function lawRereadFamily(reading, family, table = routingLawTable()) {" in RUNTIME and
+      # Round 3 of the 448 review (decision 3): no F1 -> F2 re-read; a rejected
+      # draft is repaired within the family with the verifier's findings.
+      "lawRereadFamily" not in RUNTIME and "lawRereadAs" not in RUNTIME and
       "const detVerifier = !writer && family !== 'P' ? lawDeterministicVerifier(table, family) : null;" in RUNTIME and
-      "lawRereadAs: as});" in RUNTIME and
+      "export function lawDeterministicFindings(failures) {" in RUNTIME and
+      "const detFindings = detFailed ? lawDeterministicFindings(det.failures) : null;" in RUNTIME and
       "const det = detVerifier && deliverable ? lawDeterministicCheck(detVerifier.id, node.instruction, result.output," in RUNTIME and
       "{passed: false, failures: ['verifier_unavailable']} : null;" in RUNTIME and
       "await this._revasQueueCheck(taskID, node, candidate, result);" in RUNTIME and
@@ -1306,10 +1316,12 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       "export function validateDeterministicVerifier(id, validation, draftMaxTokens = 512) {" in TABLE_COMPILER and
       (ROOT / "scripts/routing-law-det-validation-20261031.json").is_file() and
       (ROOT / "scripts/routing-law-det-outcomes-20261031.json").is_file() and
+      (ROOT / "scripts/routing-law-det-validation-20261101.json").is_file() and
+      (ROOT / "scripts/routing-law-det-outcomes-20261101.json").is_file() and
       "!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id)" in TABLE_COMPILER and
       "law_delivery_after_det_fail" in (ROOT / "scripts/route-replay.mjs").read_text() and
-      'coreFlow("det_full", root: root)' in HOST_FIXTURE,
-      "448 (a): Core runs small talk's deterministic verifier on the law attempt before adoption; a factual claim re-reads as F2; only Core's ids compile")
+      'coreFlow("det_full", root: root)' in HOST_FIXTURE and 'coreFlow("det_repair", root: root)' in HOST_FIXTURE,
+      "448 (a): Core runs small talk's deterministic verifier on the law attempt before adoption; a rejected draft is repaired within F1; only Core's ids compile")
 # Round 2 of the 448 review (lead, 2026-10-31): (A) one det prior for every row
 # from the verifier's measured rejection rate on reference-quality replies;
 # (B) small talk's local start stays admissible (and passes the pre-plan
@@ -1318,17 +1330,36 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
 # the receipt against its own pricing; (D) the length cap binds the local row
 # only, det_fail survives a re-resolved check.
 check("export function lawDetPFail(table, candidate, family, learned = null) {" in RUNTIME and
-      "const pFail = evidence.form === 'a' ? Math.min(1, lawDetPFail(table, candidate, family, learned)) :" in RUNTIME and
+      "classes = lawDetClassPFail(table, candidate, family, learned);" in RUNTIME and
       "export function compileDetReferencePrior(family, verifier, validation, pFailCells, references) {" in TABLE_COMPILER and
       "basis: 'heldout_clean_replies_rejected'" in TABLE_COMPILER and
-      "on_fail: pick.detEscalation ? 'escalate' : 'hold_draft_withheld'," in RUNTIME and
+      "ladder: 'one_escalation_within_family', on_fail: step ? 'repair_at_reference' : 'hold_draft_withheld'};" in RUNTIME and
       "if (lawLocalDetStartRunnable(task, catalog, now)) return null;" in RUNTIME and
-      "let escalationQ = option.reference ? 0 : next ? quotaOf(next.candidate)?.q ?? null : laddered ? null : 0;" in RUNTIME and
+      "let escalationQ = laddered && target ? quotaOf(target.candidate)?.q ?? null : laddered ? null : 0;" in RUNTIME and
       "check_outcome: draftEntry.check_outcome === 'det_fail' ? 'det_fail' : 'revas_no_verdict'," in RUNTIME and
       "if (Number.isSafeInteger(draftMaxTokens) && ((Number.isSafeInteger(usage?.output_tokens) &&" in RUNTIME and
       "function eqVsDraw(perRow) {" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
       'coreFlow("det_hold_fail", root: root)' in HOST_FIXTURE,
       "448 round 2: one det prior (A), small talk admissible with no runnable step (B), one pricing (C), local-only length cap and det_fail kept (D)")
+# Round 3 of the 448 review (lead, 2026-11-01): one request population for
+# the det prior (decision 1), the runtime's escalation event priced for every
+# row with a shadow screen on reference answers (2), repair within the family
+# (3), no class certificate in the law path (4), small talk in every lane and
+# turn (5), small talk's own local prompt (6).
+check("throw new Error('det outcomes: every draft must name the held-out validation set its request belongs to');" in TABLE_COMPILER and
+      "export function compileScreen(ledger, policy) {" in TABLE_COMPILER and
+      "export function lawScreenOutcome(record) {" in RUNTIME and
+      "...(shadowScreen === 'pass' || shadowScreen === 'fail' ? {shadow_screen: shadowScreen} : {})};" in RUNTIME and
+      "export function lawDetClassPFail(table, candidate, family, learned = null) {" in RUNTIME and
+      "function lawReadOnlySmallTalk(task, catalog) {" in RUNTIME and
+      "(task.mode === 'auto' && lawReadOnlySmallTalk(task, catalog))" in RUNTIME and
+      "const anyTurn = lawDeterministicVerifier(table, admission.family) !== null;" in RUNTIME and
+      "LAW_FAMILY.test(revasChild.law_receipt.family) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and
+      "return ticket.law_family === 'F1' ? 'small_talk' : 'conversational';" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
+      "export const LOCAL_SMALL_TALK_SYSTEM = " in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
+      'coreFlow("det_later_turn", root: root)' in HOST_FIXTURE and 'coreFlow("det_writer_lane", root: root)' in HOST_FIXTURE and
+      'coreFlow("det_later_turn_hold", root: root)' in HOST_FIXTURE,
+      "448 round 3: one population (1), the runtime's escalation event priced (2), repair within F1 (3), no certificate in the law path (4), small talk in every lane and turn (5), its own prompt (6)")
 check("public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?," in law_swift and
       "law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota," in BUILDER and
       '"pools": .map(routingLawPoolShape)' in (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text() and
