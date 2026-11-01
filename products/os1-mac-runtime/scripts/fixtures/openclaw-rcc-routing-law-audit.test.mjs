@@ -88,12 +88,14 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
     if (TABLE.families[audit.family]?.tools === 'agent' && audit.rows_saving > 0) assert.equal(audit.decision, 'not_auditable_tool_surface');
   }
   // Build 448 (lead order): the local F2 audit is in the plan; its parity n
-  // comes from its tiers' tau. Small talk (F1) is admitted by Core's
-  // deterministic verifier (evidence form a, lead order 2026-10-31): no F1
-  // cell is a gap of evidence, so none is audited (no value of information).
+  // comes from its tiers' tau. Review of round 3: small talk's deterministic
+  // verifier failed its routed held-out set F, so F1 admits no row below the
+  // reference by (a): every F1 row is a gap of evidence (F1 publishes no
+  // tier), and step 6 prices its paired audit.
   const localF2 = result.audits.find(a => a.id === 'qwen3.5:9b@none|F2');
   assert.ok(localF2, 'the local F2 audit is planned');
-  assert.deepEqual(result.audits.filter(a => a.family === 'F1').map(a => a.id), [], 'F1 is admitted by (a): nothing to audit');
+  const f1 = result.audits.filter(a => a.family === 'F1');
+  assert.ok(f1.length > 0 && f1.some(a => a.id === 'qwen3.5:9b@none|F1'), 'F1 rows are gaps of evidence: audited by VOI');
   assert.ok(localF2.n > 0 && localF2.tau_excess_rate > 0);
   assert.equal(localF2.cost.Cw + localF2.cost.Px > 0, true, 'its reference answers are paid; the local answers draw nothing');
   assert.ok(localF2.saving_7d_path > 0, 'admitted by (c) the local row needs no per-answer check');
@@ -259,6 +261,12 @@ test('the release gate: priced only at a DERIVED exchange, on the draw, against 
   assert.deepEqual([recorded.draw.build446.priced, recorded.release], ['NO_DERIVED_EXCHANGE', 'NO_DERIVED_EXCHANGE']);
   assert.equal(gateOf({law447: arm(5, 1, 10), build446: arm(1, 50, 85), all_reference: arm(6, 3, 15)}, {law447: 2, build446: 3}).release,
     'NO_DERIVED_EXCHANGE');
+  // Review of round 3: every pool exhausted, no arm can draw (all cost 0):
+  // 'less quota' compares nothing, so the regime is NOT_APPLICABLE, never a
+  // FAIL; the sweep's verdict needs every applicable regime to pass.
+  const exhausted = {anthropic_shared: {price: Infinity, basis: 'observed_window'}, openai_codex: {price: Infinity, basis: 'observed_window'}};
+  assert.equal(gateOf({law447: arm(0, 0, 0), build446: arm(0, 0, 0), all_reference: arm(0, 0, 0)}, {law447: 0, build446: 0}, exhausted).release,
+    'NOT_APPLICABLE_NO_DRAWABLE_POOL');
   const astra = gateOf({law447: arm(1, 1, 2), build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)}, {law447: 4, build446: 3}, observed);
   // Owner, 2026-10-30: Astra starts are reported, never a gate; the objective decides.
   assert.deepEqual([astra.release, astra.astra.verdict], ['PASS', 'FAIL']);

@@ -281,14 +281,18 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
       verdict = lawDeterministicCheck(check.id, realized.request, realized.draft,
         Number.isSafeInteger(realized.output_tokens) ? {output_tokens: realized.output_tokens} : null, check.draft_max_tokens ?? 512);
       const full = !verdict.passed && verdict.failures.includes('empty');
-      draws = verdict.passed ? 0 : step ? (full ? step.q_answer : step.q_repair) : 0;
+      // Review of round 3: a draft's step is the one fixed at bind, repair
+      // mode or (priced cheaper there) the full answer.
+      draws = verdict.passed ? 0 : step ? (full || step.mode === 'answer' ? step.q_answer : step.q_repair) : 0;
       out.p_fail = verdict.passed ? 0 : 1;
     } else {
       out.p_fail = check.p_fail;
-      draws = step ? (check.classes?.repair ?? 0) * step.q_repair + (check.classes?.full ?? 0) * step.q_answer : 0;
+      draws = step ? (check.classes?.repair ?? 0) * (step.mode === 'answer' ? step.q_answer : step.q_repair) +
+        (check.classes?.full ?? 0) * step.q_answer : 0;
     }
     out.det = {verifier: check.id, via: step ? (verdict && !verdict.passed && verdict.failures.includes('empty') ? 'full_answer' :
-      'repair_within_family') : 'hold_draft_withheld', key: step?.key ?? null, q: step ? draws : 0,
+      step.mode === 'answer' ? 'answer_within_family' : 'repair_within_family') : 'hold_draft_withheld',
+      key: step?.key ?? null, q: step ? draws : 0,
       basis: verdict ? 'realized' : 'modeled', ...(verdict ? {passed: verdict.passed, failures: verdict.failures} : {})};
     if (!Number.isFinite(draws)) return {...out, unpriced: true};
     const stepUnit = step ? POOL_UNIT[step.pool] : null;
@@ -302,9 +306,16 @@ export function priceRoute(result, catalog, shape, table = routingLawTable(), fa
     if (qv === null || qr === null) return {...out, unpriced: true};
     const judgeUnit = POOL_UNIT[judge.quota_pool];
     const p = lawPFail(table, c, family);
-    out.p_fail = p; out.check = {judge: judge.id, q_verify: qv, q_repair: qr};
-    for (const basis of ['start', 'draw', 'law_model']) out[basis][judgeUnit] += qv;
-    out.draw[judgeUnit] += p * qr; out.law_model[judgeUnit] += p * qr;
+    // Review of round 3 (as Core's E[Q]): a structurally unsound local draft
+    // is never checked; Core answers it in full at the judge, at the local
+    // row's measured screen rate p_s.
+    const ps = Math.min(1, lawScreenPFail(table, c, null));
+    const qa = lawQuota(table, judge, shape)?.q ?? null;
+    if (qa === null) return {...out, unpriced: true};
+    out.p_fail = p; out.check = {judge: judge.id, q_verify: qv, q_repair: qr, q_answer: qa, p_screen: ps};
+    out.start[judgeUnit] += qv;
+    const expected = (1 - ps) * (qv + p * qr) + ps * qa;
+    out.draw[judgeUnit] += expected; out.law_model[judgeUnit] += expected;
     return out;
   }
   // Round 3 of the 448 review (lead decision 2), as Core's E[Q]: a laddered
@@ -370,7 +381,11 @@ export function armsOf(row, intent, headroom = null, table = routingLawTable()) 
   // Review of 448: a recorded local draft prices the law's det route by its
   // actual verdict (law447); the prior-expected price is kept beside it.
   const realized = row.local_draft ? {request: row.request, ...row.local_draft} : null;
-  return {family, shape, rates, law, reading: law.routing_law.reading,
+  // Review of round 3: whether the law arms read a different catalog from
+  // build 446's (the current host's intents and profile signals), reported
+  // with the draws on those rows so the population difference is visible.
+  const catalogDiffers = Boolean(row.law_catalog) && JSON.stringify(row.law_catalog) !== JSON.stringify(row.catalog);
+  return {family, shape, rates, law, reading: law.routing_law.reading, catalog_differs: catalogDiffers,
     arms: {law447: {result: mine, priced: price(mine, law, realized)}, build446: {result: theirs, priced: price(theirs, b446)},
       all_reference: {result: allRef, priced: price(allRef, law)}, law447_modeled: {result: mine, priced: price(mine, law)}}};
 }
@@ -414,7 +429,12 @@ export function gateOf(totals, astra, rates = null) {
   const derived = derivedExchange(rates);
   const x = derived ? (rates.anthropic_shared.price === Infinity ? 'infinite' : rates.openai_codex.price === Infinity ? 0 :
     r4(rates.anthropic_shared.price / rates.openai_codex.price)) : null;
-  const verdict = {derived_exchange: derived, exchange_Cw_per_Px: x};
+  // Review of round 3: with every pool exhausted no arm can draw anything
+  // (every arm costs 0: the law answers what needs no pool, the others hold),
+  // so 'less quota' has nothing to compare: NOT_APPLICABLE, never a FAIL or
+  // a PASS.
+  const drawable = rates === null || POOLS.some(pool => rates[pool] == null || Number.isFinite(rates[pool].price));
+  const verdict = {derived_exchange: derived, exchange_Cw_per_Px: x, drawable_pool: drawable};
   for (const basis of ['start', ...BASES]) {
     const me = totals.law447[basis];
     verdict[basis] = Object.fromEntries(['build446', 'all_reference'].map(arm => {
@@ -435,7 +455,7 @@ export function gateOf(totals, astra, rates = null) {
   // Owner, 2026-10-30: the law decides, not hand-added proxies. The release
   // verdict is the objective only (priced at the derived exchange on the
   // draw); Astra starts, law_model and per-pool totals stay reported, never gating.
-  verdict.release = !derived ? 'NO_DERIVED_EXCHANGE' : priced ? 'PASS' : 'FAIL';
+  verdict.release = !drawable ? 'NOT_APPLICABLE_NO_DRAWABLE_POOL' : !derived ? 'NO_DERIVED_EXCHANGE' : priced ? 'PASS' : 'FAIL';
   verdict.release_parts = {priced_draw: derived ? (priced ? 'PASS' : 'FAIL') : 'NO_DERIVED_EXCHANGE',
     law_model_report: derived ? (modelReport ? 'PASS' : 'FAIL') : 'NO_DERIVED_EXCHANGE',
     astra: verdict.astra.verdict,
@@ -570,7 +590,20 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
         .map(r => ({index: r.index, route: r.all_reference.route, kind: r.all_reference.kind})),
       free: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].q === 0).length])),
       astra_starts: astra, astra_by_family: astraByFamily(rows), totals: rounded, gate: gateOf(totals, astra, rates),
+      catalog_population: catalogPopulation(perRow, rows),
       ...extrasOf(perRow, totals, astra, rates), eq_vs_draw: eqVsDraw(perRow)}};
+}
+/** Review of round 3: the rows whose law catalog differs from build 446's
+ * recorded one, and every arm's priced draw on them. */
+function catalogPopulation(perRow, rows) {
+  const differing = perRow.map((r, i) => [r, rows[i]]).filter(([r]) => r.catalog_differs);
+  const priced = arm => r4(differing.reduce((sum, [r]) => sum + POOLS.reduce((acc, pool) => {
+    const value = r.arms[arm].priced.draw[POOL_UNIT[pool]];
+    return value === 0 ? acc : acc + value * r.rates[pool].price;
+  }, 0), 0));
+  return {rows: differing.length, indices: differing.map(([, row]) => row.index),
+    draw_priced: Object.fromEntries(ARMS.map(arm => [arm, priced(arm)])),
+    note: 'the law arms read the current host\'s catalogs (intents, profile signals); build 446 keeps its recorded ones'};
 }
 function headroomLabel(headroom) {
   return headroom?.kind === 'pools' ? {kind: 'pools', ...(headroom.name ? {name: headroom.name} : {}),
@@ -711,7 +744,7 @@ export function sweep(catalogRows, routes446, intents, regimes, real = null, ext
       all_reference_non_reference: corpus.all_reference_non_reference,
       astra_by_family: corpus.astra_by_family, totals: corpus.totals, gate: corpus.gate, gate_modeled: corpus.gate_modeled,
       per_family_draw_vs_all_reference: corpus.per_family_draw_vs_all_reference, f1_routes: corpus.f1_routes,
-      realized_det: corpus.realized_det, eq_vs_draw: corpus.eq_vs_draw,
+      realized_det: corpus.realized_det, eq_vs_draw: corpus.eq_vs_draw, catalog_population: corpus.catalog_population,
       ...(owner ? {owner_table: {astra_starts: owner.astra_starts, totals: owner.totals, gate: owner.gate,
         gate_modeled: owner.gate_modeled, per_family_draw_vs_all_reference: owner.per_family_draw_vs_all_reference,
         f1_routes: owner.f1_routes, realized_det: owner.realized_det, eq_vs_draw: owner.eq_vs_draw,
@@ -719,8 +752,12 @@ export function sweep(catalogRows, routes446, intents, regimes, real = null, ext
           build446: q.build446?.route ?? null, all_reference: q.all_reference?.route ?? null}))}} : {})};
   }
   const verdicts = Object.fromEntries(Object.entries(out).map(([name, r]) => [name, r.gate.release]));
+  // Review of round 3: a regime with no drawable pool compares nothing (every
+  // arm draws 0); it neither passes nor fails. Every other regime must pass,
+  // and at least one must exist.
+  const applicable = Object.values(verdicts).filter(v => v !== 'NOT_APPLICABLE_NO_DRAWABLE_POOL');
   return {table_sha256: ROUTING_LAW_TABLE_SHA256, regimes: out, release: {per_regime: verdicts,
-    verdict: Object.values(verdicts).every(v => v === 'PASS') ? 'PASS' : 'FAIL'}};
+    verdict: applicable.length > 0 && applicable.every(v => v === 'PASS') ? 'PASS' : 'FAIL'}};
 }
 
 export function headroomOf(o) {

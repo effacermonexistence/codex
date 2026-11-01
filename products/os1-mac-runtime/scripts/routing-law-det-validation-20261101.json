@@ -2108,7 +2108,8 @@
      "output_tokens": 10,
      "label": "clean"
     }
-   ]
+   ],
+   "reference_prior": true
   },
   {
    "name": "C_heldout",
@@ -2966,6 +2967,1577 @@
      "reply": "Good evening! How has your day been so far?",
      "output_tokens": 12,
      "label": "clean"
+    }
+   ]
+  },
+  {
+   "name": "D_routed",
+   "role": "development",
+   "verifier": "no_claim_reply_v2",
+   "population": "routed",
+   "generator": {
+    "model": "qwen3.5:9b",
+    "digest": "sha256:56671c2ab938",
+    "endpoint": "local Ollama /api/chat",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 512,
+    "style": "small_talk",
+    "system_prompt_sha256": "2bd215b1454fce13dd58eb795fd0fcd2f7766cee65f996ae1c3243f24556f540",
+    "reader": "the production local reader (LocalRequestClassifier.systemPrompt + schemaJSON), local Ollama qwen3.5:9b, temperature 0: only requests read chat/light/none (law F1) are kept; the local worker sees the request alone",
+    "drafts": "the production small-talk prompt (LOCAL_SMALL_TALK_SYSTEM, sha256 2bd215b1454f...)"
+   },
+   "label_rule": "routed population (review of round 3): clean iff (a) the request, in its conversation (the transcript before it, if any), asks for nothing but a social reply: a greeting, thanks, goodbye, the owner's own feeling or news, a laugh, or a how-are-you (lead decision 6: answered by empathy and a question back, no self-disclaimer); not a question asking for content, an opinion or advice, an order, a recommendation, an approval, refusal or continuation, a status check, a reference to something earlier, nor an answer to a question or proposal OS-1 just made; and (b) the reply is clean by the reply label rule and responds to what the owner said (no presumption, no misattribution, no re-asking what the owner just answered, no mismatched greeting). Everything else is a violation.",
+   "frozen": "review of round 3: requests written (sha256 49bf6ae6bce4ebbe) after request scope v1 was frozen (sha256 700b3918ae9f, 2026-11-01T22:03:20Z); labels assigned (DE-labeled.json sha256 c10fbfe58444) before the scope ran on them; evaluated ONCE with v1: 1 false pass (\"어제 친구 결혼식 다녀왔어\" -> \"축하드립니다. 오늘 하루 어떠셨어요?\": the reply grammar congratulated the owner for a friend's wedding), so v1 was withdrawn; v2 (third-party exclusion) was written after seeing it: development data for v2",
+   "items": [
+    {
+     "request": "오늘 점심 진짜 맛있었어",
+     "context": null,
+     "reply": "맛있으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "request": "아 졸리다",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "주말 잘 보냈어?",
+     "context": null,
+     "reply": "주말에 즐거운 시간이 있으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "어제 친구 결혼식 다녀왔어",
+     "context": null,
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "비 와서 기분이 좀 처지네",
+     "context": null,
+     "reply": "그렇군요. 비 오는 날은 조금 우울할 수 있죠. 오늘 하루 어떠셨어요?",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "request": "출근길에 넘어질 뻔했어 ㅋㅋ",
+     "context": null,
+     "reply": "그런 위험한 상황이 있었군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 15,
+     "label": "violation"
+    },
+    {
+     "request": "고마워 정말",
+     "context": null,
+     "reply": "아니에요, 기분이 좋아주셔서 감사합니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "잘 자~",
+     "context": null,
+     "reply": "안녕하세요, 잘 지내셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "request": "나 오늘 휴가야!",
+     "context": null,
+     "reply": "휴가라니 좋으시군요. 즐거운 시간 보내세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "request": "퇴근하고 싶다",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "오늘 너무 춥다",
+     "context": null,
+     "reply": "춥군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "커피 쏟았어 ㅠㅠ",
+     "context": null,
+     "reply": "아프셨군요. 괜찮으시기를 바랍니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "새해 복 많이 받아!",
+     "context": null,
+     "reply": "복 많이 받으세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "드디어 금요일!",
+     "context": null,
+     "reply": "그러셨군요, 기분이 좋아 보이네요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "request": "산책하고 왔어",
+     "context": null,
+     "reply": "그러셨군요. 산책이 좋으셨길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 23,
+     "label": "clean"
+    },
+    {
+     "request": "오늘 좀 우울해",
+     "context": null,
+     "reply": "그렇군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "방금 시험 봤어",
+     "context": null,
+     "reply": "시험을 보셨군요. 잘 마무리되셨길 바랍니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 20,
+     "label": "clean"
+    },
+    {
+     "request": "반가워!",
+     "context": null,
+     "reply": "반갑습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "헐 대박",
+     "context": null,
+     "reply": "그러셨군요, 정말 기쁘시겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "수고했어 오늘도",
+     "context": null,
+     "reply": "그러셨군요, 수고하셨습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "request": "Hey there!",
+     "context": null,
+     "reply": "Hello! How was your day?",
+     "output_tokens": 8,
+     "label": "clean"
+    },
+    {
+     "request": "I'm exhausted",
+     "context": null,
+     "reply": "That sounds really draining. How was your day?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "Long week, finally Friday",
+     "context": null,
+     "reply": "Oh, okay. That sounds like a relief. How was your day?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "request": "Good night!",
+     "context": null,
+     "reply": "Good night! How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "Thanks a lot!",
+     "context": null,
+     "reply": "You're very welcome. How was your day?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "Just finished my workout",
+     "context": null,
+     "reply": "That's great! How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "I'm bored",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "How's your day going?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "Feeling great today",
+     "context": null,
+     "reply": "That's wonderful to hear! How was your day?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "Had pizza for dinner",
+     "context": null,
+     "reply": "That sounds nice. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "Morning!",
+     "context": null,
+     "reply": "Good morning! How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "I'm a bit stressed",
+     "context": null,
+     "reply": "That sounds tough. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "응 그렇게 하자",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "좋아 그걸로 해",
+     "context": null,
+     "reply": "그러셨군요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "네 진행해 주세요",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "아니 그건 별로야",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그래 알았어",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "ㅇㅇ 그거",
+     "context": null,
+     "reply": "그러셨군요, 잘 지내세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "Yeah, that works",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Nope, not that one",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Okay go",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Sure thing",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Let's go with the first one",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "다시 해줘",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "마지막 답 다시 보여줘",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "점심 뭐 먹을까?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "이직하는 게 나을까?",
+     "context": null,
+     "reply": "그러셨군요. 좋은 선택을 하셨나요?",
+     "output_tokens": 13,
+     "label": "violation"
+    },
+    {
+     "request": "운동 뭐부터 시작하면 좋아?",
+     "context": null,
+     "reply": "그러셨군요. 운동은 정말 좋은 습관이에요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "request": "What should I cook tonight?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Any podcast recommendations?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "What's a good name for a cat?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Can you tell me a joke?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "재밌는 얘기 해줘",
+     "context": null,
+     "reply": "그렇군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "심심하니까 퀴즈 내줘",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "노래 하나 추천해줘",
+     "context": null,
+     "reply": "좋아하시는 노래가 있군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 15,
+     "label": "violation"
+    },
+    {
+     "request": "Tell me something interesting",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "끝났어?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "아직이야?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "되고 있는 거 맞아?",
+     "context": null,
+     "reply": "그렇셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "Are you done yet?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Is it working now?",
+     "context": null,
+     "reply": "Oh, okay. I hope everything is running smoothly for you now. How was your day?",
+     "output_tokens": 20,
+     "label": "violation"
+    },
+    {
+     "request": "업데이트 됐어?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그래서 결론이 뭐야?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그게 무슨 말이야?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "왜 그렇게 생각해?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "What did you mean by that?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Why?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "그럼 어떻게 해야 돼?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "나 오늘 너무 힘들었어. 어떻게 해야 할지 모르겠어",
+     "context": null,
+     "reply": "힘들셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "친구랑 싸웠는데 내가 먼저 연락해야 할까?",
+     "context": null,
+     "reply": "그렇군요. 마음이 어색하시겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "I feel lonely lately, what should I do?",
+     "context": null,
+     "reply": "That sounds really tough. How have you been feeling otherwise?",
+     "output_tokens": 13,
+     "label": "violation"
+    },
+    {
+     "request": "My boss yelled at me today and I want to quit",
+     "context": null,
+     "reply": "That sounds really tough. How was your day?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "오늘 발표 망했어",
+     "context": null,
+     "reply": "그러셨군요. 많이 속상하셨겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "request": "강아지가 오늘 처음으로 앉아 했어!",
+     "context": null,
+     "reply": "축하드립니다. 강아지 훈련이 잘 되고 있네요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "request": "나 승진했어!",
+     "context": null,
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "감기 걸린 것 같아",
+     "context": null,
+     "reply": "그러셨군요. 몸이 좀 아플까 봐 걱정이에요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "request": "배불러 죽겠다",
+     "context": null,
+     "reply": "그렇군요. 배부르시니 기분이 좋으셨을 것 같아요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 25,
+     "label": "violation"
+    },
+    {
+     "request": "오늘 하루 어땠어?",
+     "context": null,
+     "reply": "그렇셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "잘 지냈어?",
+     "context": null,
+     "reply": "그렇군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "너는 기분 어때?",
+     "context": null,
+     "reply": "기분은 좋네요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "violation"
+    },
+    {
+     "request": "Do you ever get tired?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Are you a real person?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "너 이름이 뭐야?",
+     "context": null,
+     "reply": "안녕하세요, OS-1 입니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "ㅋㅋㅋㅋ",
+     "context": null,
+     "reply": "그렇군요, 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "와 진짜?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그렇구나",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "Interesting",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Cool cool",
+     "context": null,
+     "reply": "That's great to hear! How was your day?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "그치?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "맞아",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "ok 고마워",
+     "context": null,
+     "reply": "고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    }
+   ]
+  },
+  {
+   "name": "E_routed",
+   "role": "development",
+   "verifier": "no_claim_reply_v2",
+   "population": "routed",
+   "generator": {
+    "model": "qwen3.5:9b",
+    "digest": "sha256:56671c2ab938",
+    "endpoint": "local Ollama /api/chat",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 512,
+    "style": "small_talk",
+    "system_prompt_sha256": "2bd215b1454fce13dd58eb795fd0fcd2f7766cee65f996ae1c3243f24556f540",
+    "reader": "the production local reader (LocalRequestClassifier.systemPrompt + schemaJSON), local Ollama qwen3.5:9b, temperature 0: only requests read chat/light/none (law F1) are kept; the local worker sees the request alone",
+    "drafts": "the production small-talk prompt (LOCAL_SMALL_TALK_SYSTEM, sha256 2bd215b1454f...)"
+   },
+   "label_rule": "routed population (review of round 3): clean iff (a) the request, in its conversation (the transcript before it, if any), asks for nothing but a social reply: a greeting, thanks, goodbye, the owner's own feeling or news, a laugh, or a how-are-you (lead decision 6: answered by empathy and a question back, no self-disclaimer); not a question asking for content, an opinion or advice, an order, a recommendation, an approval, refusal or continuation, a status check, a reference to something earlier, nor an answer to a question or proposal OS-1 just made; and (b) the reply is clean by the reply label rule and responds to what the owner said (no presumption, no misattribution, no re-asking what the owner just answered, no mismatched greeting). Everything else is a violation.",
+   "frozen": "review of round 3: later-turn requests with the host transcript before them (sha256 76e82868be82d93e), written and labeled with D; evaluated once with v1: 0 false passes; seen while v2 was written: development data for v2",
+   "items": [
+    {
+     "request": "응",
+     "context": "USER:\nREADME 정리해줘\n\nOS-1:\n이렇게 정리할까요? 1) 설치 2) 사용법 3) 라이선스. 진행할까요?",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "좋아",
+     "context": "USER:\nREADME 정리해줘\n\nOS-1:\n이렇게 정리할까요? 1) 설치 2) 사용법 3) 라이선스. 진행할까요?",
+     "reply": "그러셨군요, 기뻐요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "request": "고마워",
+     "context": "USER:\nREADME 정리해줘\n\nOS-1:\n이렇게 정리할까요? 1) 설치 2) 사용법 3) 라이선스. 진행할까요?",
+     "reply": "아니에요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "아니 괜찮아",
+     "context": "USER:\nREADME 정리해줘\n\nOS-1:\n이렇게 정리할까요? 1) 설치 2) 사용법 3) 라이선스. 진행할까요?",
+     "reply": "괜찮으시군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "violation"
+    },
+    {
+     "request": "yes",
+     "context": "USER:\n테스트 돌려봐\n\nOS-1:\n테스트 통과했어요. 지금 푸시할까요?",
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "오 대박",
+     "context": "USER:\n테스트 돌려봐\n\nOS-1:\n테스트 통과했어요. 지금 푸시할까요?",
+     "reply": "그러셨군요! 정말 기뻐요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "ㅋㅋㅋ 고마워",
+     "context": "USER:\n테스트 돌려봐\n\nOS-1:\n테스트 통과했어요. 지금 푸시할까요?",
+     "reply": "고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "피곤하다",
+     "context": "USER:\n테스트 돌려봐\n\nOS-1:\n테스트 통과했어요. 지금 푸시할까요?",
+     "reply": "피곤하시군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "고마워!",
+     "context": "USER:\n파이썬 list랑 tuple 차이 설명해줘\n\nOS-1:\nlist는 변경 가능하고 tuple은 변경할 수 없습니다. tuple은 해시 가능해서 딕셔너리 키로 쓸 수 있어요.",
+     "reply": "아니에요, 기분이 좋으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "오 그렇구나",
+     "context": "USER:\n파이썬 list랑 tuple 차이 설명해줘\n\nOS-1:\nlist는 변경 가능하고 tuple은 변경할 수 없습니다. tuple은 해시 가능해서 딕셔너리 키로 쓸 수 있어요.",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그럼 set은?",
+     "context": "USER:\n파이썬 list랑 tuple 차이 설명해줘\n\nOS-1:\nlist는 변경 가능하고 tuple은 변경할 수 없습니다. tuple은 해시 가능해서 딕셔너리 키로 쓸 수 있어요.",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "덕분에 이해했어 고마워",
+     "context": "USER:\n파이썬 list랑 tuple 차이 설명해줘\n\nOS-1:\nlist는 변경 가능하고 tuple은 변경할 수 없습니다. tuple은 해시 가능해서 딕셔너리 키로 쓸 수 있어요.",
+     "reply": "아니에요, 기분이 좋아서 다행이네요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 21,
+     "label": "violation"
+    },
+    {
+     "request": "아 졸려",
+     "context": "USER:\n파이썬 list랑 tuple 차이 설명해줘\n\nOS-1:\nlist는 변경 가능하고 tuple은 변경할 수 없습니다. tuple은 해시 가능해서 딕셔너리 키로 쓸 수 있어요.",
+     "reply": "그렇군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "나는 좀 피곤했어",
+     "context": "USER:\n오늘 하루 어땠어?\n\nOS-1:\n좋은 하루였어요. 오늘 하루는 어떠셨어요?",
+     "reply": "피곤하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "회의가 너무 많았어",
+     "context": "USER:\n오늘 하루 어땠어?\n\nOS-1:\n좋은 하루였어요. 오늘 하루는 어떠셨어요?",
+     "reply": "그러셨군요. 회의가 많으셨을 텐데요, 오늘 하루 어떠셨어요?",
+     "output_tokens": 20,
+     "label": "violation"
+    },
+    {
+     "request": "별로였어",
+     "context": "USER:\n오늘 하루 어땠어?\n\nOS-1:\n좋은 하루였어요. 오늘 하루는 어떠셨어요?",
+     "reply": "그렇군요. 오늘 하루는 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "나 오늘 퇴근했어",
+     "context": "USER:\n안녕\n\nOS-1:\n안녕하세요! 반가워요.",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "잘 지냈어?",
+     "context": "USER:\n안녕\n\nOS-1:\n안녕하세요! 반가워요.",
+     "reply": "그렇군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "Thanks!",
+     "context": "USER:\nWrite a haiku about autumn\n\nOS-1:\nCrimson leaves drifting\nwhispers of the cooling wind\nthe year exhales slow",
+     "reply": "You're welcome! How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "I love it",
+     "context": "USER:\nWrite a haiku about autumn\n\nOS-1:\nCrimson leaves drifting\nwhispers of the cooling wind\nthe year exhales slow",
+     "reply": "That's wonderful to hear. How was your day?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "Another one",
+     "context": "USER:\nWrite a haiku about autumn\n\nOS-1:\nCrimson leaves drifting\nwhispers of the cooling wind\nthe year exhales slow",
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Good night",
+     "context": "USER:\nWrite a haiku about autumn\n\nOS-1:\nCrimson leaves drifting\nwhispers of the cooling wind\nthe year exhales slow",
+     "reply": "Good night. How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "Yes please",
+     "context": "USER:\nCan you draft the email to Kim?\n\nOS-1:\nHere's a draft. Want me to send it now?",
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Not yet, thanks",
+     "context": "USER:\nCan you draft the email to Kim?\n\nOS-1:\nHere's a draft. Want me to send it now?",
+     "reply": "You're welcome. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "I'm so tired",
+     "context": "USER:\nCan you draft the email to Kim?\n\nOS-1:\nHere's a draft. Want me to send it now?",
+     "reply": "That sounds exhausting. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Thank you!",
+     "context": "USER:\nCan you draft the email to Kim?\n\nOS-1:\nHere's a draft. Want me to send it now?",
+     "reply": "You're welcome! How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "수고했어",
+     "context": "USER:\n빌드해줘\n\nOS-1:\n빌드가 끝났어요. 결과는 release 폴더에 있습니다.",
+     "reply": "수고하셨습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "잘했어",
+     "context": "USER:\n빌드해줘\n\nOS-1:\n빌드가 끝났어요. 결과는 release 폴더에 있습니다.",
+     "reply": "그러셨군요. 축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 14,
+     "label": "violation"
+    },
+    {
+     "request": "와 빠르다",
+     "context": "USER:\n빌드해줘\n\nOS-1:\n빌드가 끝났어요. 결과는 release 폴더에 있습니다.",
+     "reply": "빠르시군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "좋네",
+     "context": "USER:\n오늘 서울 날씨 알려줘\n\nOS-1:\n오늘 서울은 맑고 최고 18도예요.",
+     "reply": "그러셨군요, 기분이 좋으시겠어요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "request": "산책 가야겠다",
+     "context": "USER:\n오늘 서울 날씨 알려줘\n\nOS-1:\n오늘 서울은 맑고 최고 18도예요.",
+     "reply": "그러셨군요. 좋은 하루 되세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "request": "내일은?",
+     "context": "USER:\n오늘 서울 날씨 알려줘\n\nOS-1:\n오늘 서울은 맑고 최고 18도예요.",
+     "reply": "그렇군요. 내일 하루가 잘 보내지길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 24,
+     "label": "violation"
+    },
+    {
+     "request": "고마워 잘 자",
+     "context": "USER:\n오늘 서울 날씨 알려줘\n\nOS-1:\n오늘 서울은 맑고 최고 18도예요.",
+     "reply": "잘 주무세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "응 부탁해",
+     "context": "USER:\n이 문장 고쳐줘: 나는 학교에 갔다\n\nOS-1:\n\"나는 학교에 갔다.\"는 문법적으로 맞아요. 더 자연스럽게 바꿔 드릴까요?",
+     "reply": "네, 알겠습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "아니 됐어",
+     "context": "USER:\n이 문장 고쳐줘: 나는 학교에 갔다\n\nOS-1:\n\"나는 학교에 갔다.\"는 문법적으로 맞아요. 더 자연스럽게 바꿔 드릴까요?",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "고마워",
+     "context": "USER:\n이 문장 고쳐줘: 나는 학교에 갔다\n\nOS-1:\n\"나는 학교에 갔다.\"는 문법적으로 맞아요. 더 자연스럽게 바꿔 드릴까요?",
+     "reply": "아니에요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "그냥 할 게 없어",
+     "context": "USER:\n심심해\n\nOS-1:\n심심하시군요. 무슨 일 있으셨어요?",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "아무 일도 없었어",
+     "context": "USER:\n심심해\n\nOS-1:\n심심하시군요. 무슨 일 있으셨어요?",
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "오늘 비 와서 우울해",
+     "context": "USER:\n심심해\n\nOS-1:\n심심하시군요. 무슨 일 있으셨어요?",
+     "reply": "우울하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "I'm good, just tired",
+     "context": "USER:\nhi\n\nOS-1:\nHi! How are you today?",
+     "reply": "That sounds exhausting. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Not great honestly",
+     "context": "USER:\nhi\n\nOS-1:\nHi! How are you today?",
+     "reply": "I'm sorry to hear that. How was your day?",
+     "output_tokens": 13,
+     "label": "violation"
+    }
+   ]
+  },
+  {
+   "name": "F_routed",
+   "role": "heldout",
+   "verifier": "no_claim_reply_v2",
+   "population": "routed",
+   "generator": {
+    "model": "qwen3.5:9b",
+    "digest": "sha256:56671c2ab938",
+    "endpoint": "local Ollama /api/chat",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 512,
+    "style": "small_talk",
+    "system_prompt_sha256": "2bd215b1454fce13dd58eb795fd0fcd2f7766cee65f996ae1c3243f24556f540",
+    "reader": "the production local reader (LocalRequestClassifier.systemPrompt + schemaJSON), local Ollama qwen3.5:9b, temperature 0: only requests read chat/light/none (law F1) are kept; the local worker sees the request alone",
+    "drafts": "the production small-talk prompt (LOCAL_SMALL_TALK_SYSTEM, sha256 2bd215b1454f...)"
+   },
+   "label_rule": "routed population (review of round 3): clean iff (a) the request, in its conversation (the transcript before it, if any), asks for nothing but a social reply: a greeting, thanks, goodbye, the owner's own feeling or news, a laugh, or a how-are-you (lead decision 6: answered by empathy and a question back, no self-disclaimer); not a question asking for content, an opinion or advice, an order, a recommendation, an approval, refusal or continuation, a status check, a reference to something earlier, nor an answer to a question or proposal OS-1 just made; and (b) the reply is clean by the reply label rule and responds to what the owner said (no presumption, no misattribution, no re-asking what the owner just answered, no mismatched greeting). Everything else is a violation. (set F: re-asking how the day was right after the owner characterized the day, \"오늘 하루 너무 길었다\", \"I had a rough day\", is a violation too.)",
+   "frozen": "review of round 3: requests written (sha256 5f3c4c0c68f5e608, first and later turns) after request scope v2 was frozen (sha256 b6c20a612d8b, 2026-11-01T22:27:41Z); read by the production local reader, drafted with the production small-talk prompt, labeled (F-labeled.json sha256 d7df5d4bd780) before the scope or the verifier ran on any of them; evaluated once",
+   "items": [
+    {
+     "request": "오늘 아침에 늦잠 잤어",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "머리가 좀 아파",
+     "context": null,
+     "reply": "아프시군요. 빨리 회복되길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "request": "나 오늘 생일이야",
+     "context": null,
+     "reply": "생일 축하드립니다. 오늘 하루는 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "request": "드디어 시험 붙었어!",
+     "context": null,
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "자격증 땄어!",
+     "context": null,
+     "reply": "축하해요! 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "우리 엄마 생신이야 오늘",
+     "context": null,
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "동생이 대학 붙었어!",
+     "context": null,
+     "reply": "축하드립니다. 동생의 입학을 진심으로 기원합니다. 오늘 하루는 어떠셨어요?",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "request": "친구가 많이 아프대",
+     "context": null,
+     "reply": "아프시군요. 친구가 빨리 회복되길 바랄게요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 23,
+     "label": "violation"
+    },
+    {
+     "request": "팀장님한테 칭찬 받았어",
+     "context": null,
+     "reply": "칭찬 받으셨군요. 기뻐하셨을 것 같아요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 22,
+     "label": "violation"
+    },
+    {
+     "request": "회사에서 혼났어",
+     "context": null,
+     "reply": "아프셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "오늘 하루 너무 길었다",
+     "context": null,
+     "reply": "그렇군요. 오늘 하루는 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "몸이 으슬으슬해",
+     "context": null,
+     "reply": "그렇군요. 추우셨어요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "request": "나 너무 행복해",
+     "context": null,
+     "reply": "행복하시군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "기분 최고야",
+     "context": null,
+     "reply": "그렇군요! 기분이 좋으시겠어요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "clean"
+    },
+    {
+     "request": "속상해 죽겠어",
+     "context": null,
+     "reply": "그러셨군요. 속상하셨을 텐데요, 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "clean"
+    },
+    {
+     "request": "오늘 날씨 진짜 좋다",
+     "context": null,
+     "reply": "그러셨군요, 기분이 좋으시겠어요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "request": "집에 오자마자 씻었어",
+     "context": null,
+     "reply": "씻으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "점심 먹었어",
+     "context": null,
+     "reply": "그러셨군요. 식사하셨다니 좋으시겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 20,
+     "label": "violation"
+    },
+    {
+     "request": "잠 못 잤어",
+     "context": null,
+     "reply": "그렇군요. 마음이 무거우셨겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 19,
+     "label": "violation"
+    },
+    {
+     "request": "너무 피곤해서 아무것도 하기 싫어",
+     "context": null,
+     "reply": "피곤하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "고마워 너밖에 없다",
+     "context": null,
+     "reply": "아니에요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "request": "안녕 오랜만",
+     "context": null,
+     "reply": "반갑습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "굿모닝 ~",
+     "context": null,
+     "reply": "굿모닝! 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "잘 있었어?",
+     "context": null,
+     "reply": "그렇셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "요즘 어때?",
+     "context": null,
+     "reply": "어떻게 지내셨나요? 오늘 하루 어떠셨어요?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "request": "너 오늘 어땠어?",
+     "context": null,
+     "reply": "오늘 하루 어떠셨어요? 잘 지내셨나요?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "request": "수고 많았어",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "미안해 늦어서",
+     "context": null,
+     "reply": "괜찮아요, 그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "request": "와 오늘 진짜 덥다",
+     "context": null,
+     "reply": "더운 날씨에 힘내세요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 15,
+     "label": "clean"
+    },
+    {
+     "request": "I got the job!",
+     "context": null,
+     "reply": "Congratulations on your achievement! How was your day?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "My sister had a baby!",
+     "context": null,
+     "reply": "Congratulations on your sister's new baby! How was your day?",
+     "output_tokens": 14,
+     "label": "clean"
+    },
+    {
+     "request": "I'm feeling sick today",
+     "context": null,
+     "reply": "Oh, okay. I hope you feel better soon. How was your day?",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "request": "I'm so happy right now",
+     "context": null,
+     "reply": "That's wonderful to hear! How was your day?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "Ugh, Monday again",
+     "context": null,
+     "reply": "Oh, okay. I hope your day goes smoothly. How was your week?",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "request": "Finally home",
+     "context": null,
+     "reply": "Welcome back. How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "I passed my exam!",
+     "context": null,
+     "reply": "That's wonderful news for you! How was your day?",
+     "output_tokens": 13,
+     "label": "clean"
+    },
+    {
+     "request": "Thank you so much!",
+     "context": null,
+     "reply": "You're welcome! How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "Good evening",
+     "context": null,
+     "reply": "Good evening! How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "How are you doing today?",
+     "context": null,
+     "reply": "Good to hear from you. How was your day?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "I'm nervous about tomorrow",
+     "context": null,
+     "reply": "That sounds stressful. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "We won the game!",
+     "context": null,
+     "reply": "That's wonderful news! How was your day?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "I just woke up",
+     "context": null,
+     "reply": "Good morning! How was your sleep?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "My dog is sick",
+     "context": null,
+     "reply": "I'm sorry to hear your dog isn't feeling well. How have you been coping with this?",
+     "output_tokens": 21,
+     "label": "clean"
+    },
+    {
+     "request": "I had a rough day",
+     "context": null,
+     "reply": "That sounds really tough. How was your day?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그거 좋다",
+     "context": null,
+     "reply": "좋으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "이거 맞지?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "응응",
+     "context": null,
+     "reply": "네, 그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 13,
+     "label": "violation"
+    },
+    {
+     "request": "좋아요 그렇게 해주세요",
+     "context": null,
+     "reply": "네, 알겠습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "다음 단계로 가자",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "그래서?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "더 자세히",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "Right, so what now?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "오늘 저녁 메뉴 추천 좀",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "기분 전환할 만한 거 없을까",
+     "context": null,
+     "reply": "그렇군요. 기분 좋은 일 있으셨으면 좋겠습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 20,
+     "label": "violation"
+    },
+    {
+     "request": "잠이 안 오는데 어떡하지",
+     "context": null,
+     "reply": "불편하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "Give me a fun fact",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "빌드 다 됐어?",
+     "context": null,
+     "reply": "빌드가 완료되셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 14,
+     "label": "violation"
+    },
+    {
+     "request": "아직 돌아가?",
+     "context": null,
+     "reply": "그러셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "Done?",
+     "context": null,
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "고마워",
+     "context": "USER:\n이 코드 리뷰해줘\n\nOS-1:\n두 군데 버그가 있어요. 고칠까요?",
+     "reply": "아니에요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "좋아 해줘",
+     "context": "USER:\n이 코드 리뷰해줘\n\nOS-1:\n두 군데 버그가 있어요. 고칠까요?",
+     "reply": "그러셨군요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "violation"
+    },
+    {
+     "request": "피곤해",
+     "context": "USER:\n이 코드 리뷰해줘\n\nOS-1:\n두 군데 버그가 있어요. 고칠까요?",
+     "reply": "피곤하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "고마워",
+     "context": "USER:\n이 코드 리뷰해줘\n\nOS-1:\n두 군데 버그를 고쳤어요. 테스트도 통과했습니다.",
+     "reply": "아니에요, 고마워요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 16,
+     "label": "clean"
+    },
+    {
+     "request": "와 최고",
+     "context": "USER:\n이 코드 리뷰해줘\n\nOS-1:\n두 군데 버그를 고쳤어요. 테스트도 통과했습니다.",
+     "reply": "그렇군요! 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "violation"
+    },
+    {
+     "request": "피곤해",
+     "context": "USER:\n이 코드 리뷰해줘\n\nOS-1:\n두 군데 버그를 고쳤어요. 테스트도 통과했습니다.",
+     "reply": "피곤하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "잘 자",
+     "context": "USER:\n내일 일정 알려줘\n\nOS-1:\n내일은 오전 10시 회의, 오후 3시 치과 예약이 있어요.",
+     "reply": "안녕하세요, 잘 지내셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "request": "고마워 덕분에 살았어",
+     "context": "USER:\n내일 일정 알려줘\n\nOS-1:\n내일은 오전 10시 회의, 오후 3시 치과 예약이 있어요.",
+     "reply": "아니에요, 기분이 좋으셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 18,
+     "label": "violation"
+    },
+    {
+     "request": "치과 가기 싫다",
+     "context": "USER:\n내일 일정 알려줘\n\nOS-1:\n내일은 오전 10시 회의, 오후 3시 치과 예약이 있어요.",
+     "reply": "그러셨군요. 치아 건강을 위해 방문하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 20,
+     "label": "violation"
+    },
+    {
+     "request": "Thanks!",
+     "context": "USER:\nSummarize this article\n\nOS-1:\nThe article argues that remote work improves retention. Would you like the key numbers too?",
+     "reply": "You're welcome! How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Sure",
+     "context": "USER:\nSummarize this article\n\nOS-1:\nThe article argues that remote work improves retention. Would you like the key numbers too?",
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "I'm tired",
+     "context": "USER:\nSummarize this article\n\nOS-1:\nThe article argues that remote work improves retention. Would you like the key numbers too?",
+     "reply": "That sounds exhausting. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
+    },
+    {
+     "request": "Thanks!",
+     "context": "USER:\nSummarize this article\n\nOS-1:\nThe article argues that remote work improves retention, with turnover down 12%.",
+     "reply": "You're welcome! How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "Nice, have a good night",
+     "context": "USER:\nSummarize this article\n\nOS-1:\nThe article argues that remote work improves retention, with turnover down 12%.",
+     "reply": "Good night to you too. How was your day?",
+     "output_tokens": 12,
+     "label": "clean"
+    },
+    {
+     "request": "I'm exhausted today",
+     "context": "USER:\nSummarize this article\n\nOS-1:\nThe article argues that remote work improves retention, with turnover down 12%.",
+     "reply": "That sounds really tough. How was your day?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "나 오늘 너무 피곤했어",
+     "context": "USER:\n안녕\n\nOS-1:\n안녕하세요! 오늘 하루 어떠셨어요?",
+     "reply": "피곤하셨군요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 12,
+     "label": "violation"
+    },
+    {
+     "request": "좋았어",
+     "context": "USER:\n안녕\n\nOS-1:\n안녕하세요! 오늘 하루 어떠셨어요?",
+     "reply": "그러셨군요, 기뻐요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 17,
+     "label": "violation"
+    },
+    {
+     "request": "안녕",
+     "context": "USER:\n고마워\n\nOS-1:\n천만에요!",
+     "reply": "반갑습니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "나 이제 잘게",
+     "context": "USER:\n고마워\n\nOS-1:\n천만에요!",
+     "reply": "잘 자요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "오늘 승진했어!",
+     "context": "USER:\n고마워\n\nOS-1:\n천만에요!",
+     "reply": "축하드립니다. 오늘 하루 어떠셨어요?",
+     "output_tokens": 11,
+     "label": "clean"
+    },
+    {
+     "request": "남자친구랑 싸웠어",
+     "context": "USER:\n고마워\n\nOS-1:\n천만에요!",
+     "reply": "그렇군요. 마음이 상하셨겠어요. 오늘 하루 어떠셨어요?",
+     "output_tokens": 17,
+     "label": "clean"
+    },
+    {
+     "request": "Good morning!",
+     "context": "USER:\nhello\n\nOS-1:\nHello! Nice to see you.",
+     "reply": "Good morning! How was your day?",
+     "output_tokens": 9,
+     "label": "clean"
+    },
+    {
+     "request": "I just got back from the gym",
+     "context": "USER:\nhello\n\nOS-1:\nHello! Nice to see you.",
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "clean"
+    },
+    {
+     "request": "Can you help me with something?",
+     "context": "USER:\nhello\n\nOS-1:\nHello! Nice to see you.",
+     "reply": "Oh, okay. How was your day?",
+     "output_tokens": 10,
+     "label": "violation"
     }
    ]
   }

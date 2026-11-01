@@ -63,7 +63,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
 // snapshot never keeps its own copy of it.
 const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,
-  revasRepairInstruction} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
+  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
@@ -615,7 +615,7 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
  * over surfaces only (a grant that moves a row to another surface must not
  * change the model through it). The judged runs the ledger could not
  * attribute to a law family are reported, never used. */
-export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = null) {
+export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = null, requestOf = null) {
   if (ledger.schema !== 4) throw new Error('ledger snapshot schema 4 (Core lawJudgedOutcome and lawScreenOutcome, through_ms) required');
   const out = {};
   for (const cell of ledger.cells) {
@@ -644,10 +644,23 @@ export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = n
       throw new Error('det outcomes of ' + cell.model + '@' + cell.effort + ': population ' + population.join(',') +
         ' is not the verifier\'s held-out sets ' + [...heldoutSets].sort().join(','));
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
-    out[key] = {runs: (out[key]?.runs ?? 0) + cell.runs, failures: (out[key]?.failures ?? 0) + cell.failures,
-      full: (out[key]?.full ?? 0) + cell.full};
-    det.push({key, verifier: cell.verifier, runs: cell.runs, failures: cell.failures, full: cell.full, population,
-      basis: cell.basis});
+    // Review of round 3: only verdicts on requests inside the verifier's
+    // request scope price a row (the population it is det-admitted on).
+    let counts = {runs: cell.runs, failures: cell.failures, full: cell.full}, scope = null;
+    if (requestOf !== null && LAW_DETERMINISTIC_VERIFIERS[cell.verifier]?.request_scope) {
+      if ((detOutcomes.cells ?? []).length !== 1 || !Array.isArray(detOutcomes.items) || detOutcomes.items.length !== cell.runs)
+        throw new Error('det outcomes of ' + key + ': a scoped verifier needs one cell and its items');
+      const kept = detOutcomes.items.filter(item => {
+        const request = requestOf.get(item.request_sha256);
+        if (request === undefined) throw new Error('det outcome item of ' + key + ': request not in the validation sets');
+        return detRequestInScope(cell.verifier, request) === true;
+      });
+      counts = {runs: kept.length, failures: kept.filter(i => !i.passed).length, full: kept.filter(i => i.class === 'full').length};
+      scope = {id: LAW_DETERMINISTIC_VERIFIERS[cell.verifier].request_scope, kept: kept.length, of: cell.runs};
+    }
+    out[key] = {runs: (out[key]?.runs ?? 0) + counts.runs, failures: (out[key]?.failures ?? 0) + counts.failures,
+      full: (out[key]?.full ?? 0) + counts.full};
+    det.push({key, verifier: cell.verifier, ...counts, population, basis: cell.basis, ...(scope ? {request_scope: scope} : {})});
   }
   return {prior: policy.laplace, cells: out, excluded: ledger.excluded, through_ms: ledger.through_ms ?? null,
     learning: policy.p_fail_learning, ...(det.length ? {deterministic: det} : {}),
@@ -754,30 +767,62 @@ export function compileAudits(audits) {
  * rows only when no set has a false pass in either. A set's role
  * ('heldout': frozen before the verifier ran on it, evaluated once;
  * 'development': seen while it was written) is carried. */
+/** Review of round 3: whether a validation item's request (and, on a later
+ * turn, the host transcript before it) is inside the verifier's request
+ * scope, read as Core reads it at routing (lawSmallTalkScope), on the text
+ * and the turn alone: the host profile's signals can only narrow the scope
+ * further, so a set's false passes counted without them bound those with
+ * them. Null: the verifier has no request scope. */
+export function detRequestInScope(id, request, context = null) {
+  const scope = LAW_DETERMINISTIC_VERIFIERS[id]?.request_scope ?? null;
+  if (scope === null) return null;
+  if (scope !== 'small_talk_request_v2') throw new Error('unknown request scope ' + scope);
+  if (!lawSmallTalkText(request).passed) return false;
+  if (context === null || context === undefined) return true;
+  const envelope = JSON.stringify({format: 'os1-session-handoff-v3', transcript: context, priorMessageCount: 2});
+  return lawSmallTalkLaterTurn({request, host_context: {context: envelope, codex_session_id: null, claude_session_id: null}});
+}
 export function validateDeterministicVerifier(id, validation, draftMaxTokens = 512) {
   if (validation?.schema !== 1 || !Array.isArray(validation.sets)) throw new Error('det validation schema 1 required');
   const sets = validation.sets.filter(set => set.verifier === id).map(set => {
     if (!Array.isArray(set.items) || !set.items.length) throw new Error('empty det validation set ' + set.name);
     if (!['heldout', 'development'].includes(set.role)) throw new Error('det validation set without a role: ' + set.name);
+    // Review of round 3: a 'routed' set is the population the reader routes
+    // to the family (first and later turns), labeled by whether the reply
+    // gives the reference's result there; its verdict is the COMPOSITE the
+    // law applies: inside the request scope AND the reply passes. A 'reply'
+    // set (the default) validates the reply grammar alone, as before, and
+    // reports its in-scope clean replies (the reference prior's population).
+    const routed = set.population === 'routed';
+    if (!['routed', 'reply', undefined].includes(set.population)) throw new Error('bad det validation population ' + set.name);
     const counts = {violations: 0, false_passes: 0, false_passes_uncapped: 0, clean: 0, false_failures: 0,
-      false_failures_uncapped: 0};
+      false_failures_uncapped: 0, out_of_scope: 0, clean_in_scope: 0, false_failures_uncapped_in_scope: 0};
     for (const item of set.items) {
-      if (!['clean', 'violation'].includes(item.label) || typeof item.request !== 'string' || typeof item.reply !== 'string')
+      if (!['clean', 'violation'].includes(item.label) || typeof item.request !== 'string' || typeof item.reply !== 'string' ||
+          !(item.context === undefined || item.context === null || typeof item.context === 'string') || (!routed && item.context != null))
         throw new Error('bad det validation item in ' + set.name);
       const usage = Number.isSafeInteger(item.output_tokens) ? {output_tokens: item.output_tokens} : null;
-      const capped = lawDeterministicCheck(id, item.request, item.reply, usage, draftMaxTokens);
-      const uncapped = lawDeterministicCheck(id, item.request, item.reply, null, null);
+      const scoped = detRequestInScope(id, item.request, item.context ?? null);
+      if (scoped === false) counts.out_of_scope++;
+      const gate = check => routed ? scoped !== false && check.passed : check.passed;
+      const capped = gate(lawDeterministicCheck(id, item.request, item.reply, usage, draftMaxTokens));
+      const uncapped = gate(lawDeterministicCheck(id, item.request, item.reply, null, null));
       if (item.label === 'violation') {
         counts.violations++;
-        if (capped.passed) counts.false_passes++;
-        if (uncapped.passed) counts.false_passes_uncapped++;
+        if (capped) counts.false_passes++;
+        if (uncapped) counts.false_passes_uncapped++;
       } else {
         counts.clean++;
-        if (!capped.passed) counts.false_failures++;
-        if (!uncapped.passed) counts.false_failures_uncapped++;
+        if (!capped) counts.false_failures++;
+        if (!uncapped) counts.false_failures_uncapped++;
+        if (scoped !== false) {
+          counts.clean_in_scope++;
+          if (!uncapped) counts.false_failures_uncapped_in_scope++;
+        }
       }
     }
-    return {name: set.name, role: set.role, frozen: set.frozen, items_sha256: sha(Buffer.from(JSON.stringify(set.items))), ...counts};
+    return {name: set.name, role: set.role, population: routed ? 'routed' : 'reply', reference_prior: set.reference_prior === true,
+      frozen: set.frozen, items_sha256: sha(Buffer.from(JSON.stringify(set.items))), ...counts};
   });
   const admits = sets.length > 0 && sets.every(set => set.violations > 0 && set.false_passes === 0 && set.false_passes_uncapped === 0);
   return {criterion: validation.criterion, sets, admits};
@@ -800,11 +845,17 @@ export function compileDetReferencePrior(family, verifier, validation, pFailCell
   });
   if (refs.length) return {failures: refs.reduce((a, [, c]) => a + c.failures, 0), runs: refs.reduce((a, [, c]) => a + c.runs, 0),
     full: refs.reduce((a, [, c]) => a + (c.full ?? 0), 0), basis: 'reference_judged_outcomes', cells: refs.map(([key]) => key).sort()};
-  const held = validation.sets.filter(set => set.role === 'heldout');
-  if (!held.length) throw new Error('deterministic verifier ' + verifier + ': no held-out set to price its prior');
+  // Review of round 3 (lead decision 1 names B): only a held-out set the
+  // validation marks reference_prior prices it (C's clean replies are partly
+  // the local model's own drafts, which already price the local row; C is
+  // evaluated once), and only its replies to requests inside the verifier's
+  // request scope (the population a det-admitted row is priced on).
+  const held = validation.sets.filter(set => set.role === 'heldout' && set.reference_prior === true);
+  if (!held.length) throw new Error('deterministic verifier ' + verifier + ': no held-out reference_prior set to price its prior');
   // A clean reply is never empty: every rejection of one is a 'repair' class.
-  return {failures: held.reduce((a, set) => a + set.false_failures_uncapped, 0), runs: held.reduce((a, set) => a + set.clean, 0),
-    full: 0, basis: 'heldout_clean_replies_rejected', sets: held.map(set => set.name)};
+  return {failures: held.reduce((a, set) => a + set.false_failures_uncapped_in_scope, 0),
+    runs: held.reduce((a, set) => a + set.clean_in_scope, 0),
+    full: 0, basis: 'heldout_clean_replies_rejected_in_scope', sets: held.map(set => set.name)};
 }
 /** DESIGN-8 step 2 (a) (build 448): the families with a deterministic
  * verifier, keyed by law family: only an id Core runs
@@ -851,19 +902,29 @@ export function compileTable(bytes) {
       return policy.local_start;
     })(), ask_back: policy.ask_back,
     deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation,
-      compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation)).cells),
+      compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation), requestsOf(detValidation)).cells),
     deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, ...(() => {
       const compiled = compileQuota(quota, evidence, policy, prices, profiles);
       return {quota: compiled.cells, quota_calibration: compiled.calibration, quota_anchors: compiled.anchors};
     })(),
-    p_fail: compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation)), p_screen: compileScreen(ledger, policy)};
+    p_fail: compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation), requestsOf(detValidation)),
+    p_screen: compileScreen(ledger, policy)};
 }
 /** The names of a det validation's held-out sets (the population every
  * det-admitted row is priced on, round 3 of the 448 review, decision 1). */
 function heldoutSetsOf(validation) {
-  return (validation?.sets ?? []).filter(set => set.role === 'heldout').map(set => set.name);
+  // Review of round 3: a routed set validates the scope; it prices nothing.
+  return (validation?.sets ?? []).filter(set => set.role === 'heldout' && set.population !== 'routed').map(set => set.name);
+}
+/** sha256(request) -> request over every validation item (the det outcomes
+ * name their requests by hash). */
+function requestsOf(validation) {
+  const out = new Map();
+  for (const set of validation?.sets ?? []) for (const item of set.items ?? [])
+    if (typeof item.request === 'string') out.set(sha(Buffer.from(item.request)), item.request);
+  return out;
 }
 
 export function readInputs(root = ROOT) {

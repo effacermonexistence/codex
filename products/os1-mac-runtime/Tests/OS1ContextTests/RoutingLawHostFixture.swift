@@ -81,69 +81,33 @@ func runRoutingLawHostFixtures() throws {
               "the owner sees the repaired answer, never the draft's error")
     try check(repair.children[0].selectedConfig?.surface != .local, "the repaired answer ran at the judge's row")
 
-    // ---- Build 448 (DESIGN-8 step 2 (a)): small talk (owner question 12) on
-    // the local row admitted by Core's deterministic verifier. Its pass
-    // delivers the draft after ONE dispatch. Round 3 of the 448 review
-    // (decision 3): a rejected draft (the real local Q12 draft: a factual
-    // claim) is repaired WITHIN F1 at the family's reference, with the draft
-    // plus the verifier's findings; an empty draft is the full answer there.
-    // All reach the owner through the host contract.
-    let detPassed = try coreFlow("det_pass", root: root)
-    try check(detPassed.dispatches == 1, "a deterministic pass: the local draft only")
-    let detPass = try hostPath(detPassed.snapshot, "det_pass")
-    try check((detPass.result?.output ?? "").hasPrefix("오늘 하루 정말 고생 많으셨어요") &&
-              detPass.children.count == 1 && detPass.children[0].selectedConfig?.surface == .local,
-              "the checked small-talk draft is delivered from the local row")
-    let repairFlow = try coreFlow("det_repair", root: root)
-    try check(repairFlow.dispatches == 2, "a rejected draft: the draft and one repair at the family's reference")
-    let repairDelivered = try hostPath(repairFlow.snapshot, "det_repair")
-    try check(repairDelivered.result?.output == "오늘 정말 고생 많으셨어요. 무슨 일 있으셨어요?" &&
-              repairDelivered.children[0].selectedConfig?.surface != .local,
-              "the owner sees the repair, never the draft's self-statement")
-    let full = try coreFlow("det_full", root: root)
-    try check(full.dispatches == 2, "an empty draft: the draft and the full answer at the family's reference")
-    let fullAnswer = try hostPath(full.snapshot, "det_full")
-    try check((fullAnswer.result?.output ?? "").hasPrefix("오늘 하루 고생 많으셨어요") &&
-              fullAnswer.children[0].selectedConfig?.surface != .local, "the full answer ran at the reference")
-
-    // ---- Round 2 of the 448 review (B): every pool exhausted (the 2026-11-01
-    // state). Small talk still binds the local start: its deterministic pass is
-    // evidence by itself and is delivered; a failing draft holds the request
-    // (nothing can run), the draft withheld, and the host reads that hold.
-    let heldPass = try coreFlow("det_hold_pass", root: root)
-    try check(heldPass.dispatches == 1, "pools exhausted: the local draft only")
-    let holdPass = try hostPath(heldPass.snapshot, "det_hold_pass")
-    try check((holdPass.result?.output ?? "").hasPrefix("오늘 하루 정말 고생 많으셨어요") &&
-              holdPass.children.count == 1 && holdPass.children[0].selectedConfig?.surface == .local,
-              "pools exhausted: the checked small-talk draft is delivered from the local row")
-    let heldFail = try coreFlow("det_hold_fail", root: root)
-    try check(heldFail.dispatches == 1, "pools exhausted, a failing draft: nothing else runs")
-    let holdFail = try hostPath(heldFail.snapshot, "det_hold_fail")
-    try check(holdFail.state == .held && holdFail.result?.output == nil,
-              "pools exhausted, a failing draft: the request is held, the draft withheld")
-
-    // ---- Round 3 of the 448 review (decision 5): small talk has a route
-    // whenever the local model is up: on a LATER turn (the host hands the
-    // conversation over) the local start binds too, its check reading the
-    // reply alone; with every pool exhausted a failing draft is held there
-    // too; in a writer lane its node runs read-only and binds the local start.
-    let later = try coreFlow("det_later_turn", root: root)
-    try check(later.dispatches == 1, "a later turn: the local draft only")
-    let laterPass = try hostPath(later.snapshot, "det_later_turn")
-    try check((laterPass.result?.output ?? "").hasPrefix("오늘 하루 정말 고생 많으셨어요") &&
-              laterPass.children.count == 1 && laterPass.children[0].selectedConfig?.surface == .local,
-              "a later turn's small talk is delivered from the local row")
-    let laterHeld = try coreFlow("det_later_turn_hold", root: root)
-    try check(laterHeld.dispatches == 1, "a later turn, pools exhausted, a failing draft: nothing else runs")
-    let laterHold = try hostPath(laterHeld.snapshot, "det_later_turn_hold")
-    try check(laterHold.state == .held && laterHold.result?.output == nil,
-              "a later turn, pools exhausted, a failing draft: held, the draft withheld")
-    let writer = try coreFlow("det_writer_lane", root: root)
-    try check(writer.dispatches == 1, "a writer lane's small talk: the local draft only")
-    let writerPass = try hostPath(writer.snapshot, "det_writer_lane")
-    try check((writerPass.result?.output ?? "").hasPrefix("오늘 하루 정말 고생 많으셨어요") &&
-              writerPass.children.count == 1 && writerPass.children[0].selectedConfig?.surface == .local,
-              "a writer lane's small talk runs read-only on the local row")
+    // ---- Review of round 3: small talk (owner question 12, law F1). Its
+    // deterministic verifier (no_claim_reply_v2 inside small_talk_request_v2)
+    // failed its frozen routed held-out set F (5 false passes), so no row
+    // below the reference has evidence in F1: the argmin reference answers in
+    // one dispatch, on a first turn and on later turns (after an OS-1 turn
+    // that neither asks nor proposes, and after OS-1's proposal); with every
+    // pool exhausted the request is held, nothing dispatched; in a writer
+    // lane the grant is not narrowed (no admitted small-talk evidence). All
+    // reach the owner through the host contract.
+    for flow in ["small_talk_reference", "small_talk_later_turn", "small_talk_later_turn_proposal"] {
+        let run = try coreFlow(flow, root: root)
+        try check(run.dispatches == 1, "\(flow): one reference dispatch")
+        let path = try hostPath(run.snapshot, flow)
+        try check(path.children.count == 1 && path.children[0].selectedConfig?.surface != .local &&
+                  path.result?.output != nil, "\(flow): a reference answers small talk, never the local row")
+    }
+    for flow in ["small_talk_hold", "small_talk_later_turn_hold"] {
+        let run = try coreFlow(flow, root: root)
+        try check(run.dispatches == 0, "\(flow): pools exhausted, nothing dispatches")
+        let path = try hostPath(run.snapshot, flow)
+        try check(path.state == .held && path.result?.output == nil, "\(flow): pools exhausted, the request is held")
+    }
+    let writer = try coreFlow("small_talk_writer_lane", root: root)
+    try check(writer.dispatches == 1, "a writer lane's small talk: one writer reference dispatch")
+    let writerPath = try hostPath(writer.snapshot, "small_talk_writer_lane")
+    try check(writerPath.children.count == 1 && writerPath.children[0].selectedConfig?.surface != .local &&
+              writerPath.result?.output != nil, "a writer lane's small talk is answered by a reference with its grant")
 
     print("Routing law host fixtures: \(checks) checks OK; model calls 0")
 }

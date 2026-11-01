@@ -20,25 +20,22 @@
  *  - verified_pass / verified_repair: a law local verified start (build 448)
  *    whose REVAS check passes (the local draft is delivered) or fails (repair
  *    mode at the next frontier step). Prints {flow, dispatches, snapshot}.
- *  - det_pass / det_repair / det_full: owner question 12 (small talk, law F1)
- *    on the local row admitted by Core's deterministic verifier (build 448,
- *    DESIGN-8 step 2 (a), no_claim_reply_v2), on a catalog where its start is
- *    the argmin (every row unavailable but the pool references and the local
- *    row): its pass delivers the draft after one dispatch; a rejected draft
- *    (the real local Q12 draft: a factual claim) is repaired WITHIN F1 at the
- *    family's reference fixed at bind (round 3, decision 3: the draft plus
- *    the verifier's findings); an empty draft is the full answer there.
- *  - det_hold_pass / det_hold_fail (round 2 of the 448 review, B): every pool
- *    exhausted (its windows 100% used, its rows unavailable), small talk
- *    still binds the local start: a pass is delivered after one dispatch; a
- *    failure holds the request with the draft withheld (nothing can run).
- *  - det_later_turn / det_later_turn_hold (round 3, decision 5): the same
- *    small talk on a LATER turn (the host hands the conversation over in
- *    host_context.context): the local start binds there too (its check reads
- *    the reply alone); with every pool exhausted a failing draft is held.
- *  - det_writer_lane (round 3, decision 5): small talk in a writer lane (owner
- *    scope workspace_write, request class writer, writer rows offered): its
- *    node runs read-only and binds the local start. */
+ *  - small_talk_reference / small_talk_hold (review of round 3): owner
+ *    question 12 (small talk, law F1). Its deterministic verifier
+ *    (no_claim_reply_v2 inside small_talk_request_v2) failed its frozen
+ *    routed held-out set F, so no row below the reference has evidence in
+ *    F1: on a catalog of the pool references and the local row the argmin
+ *    reference answers in one dispatch; with every pool exhausted nothing can
+ *    answer it and the request is held, nothing dispatched.
+ *  - small_talk_later_turn / small_talk_later_turn_proposal / _hold: the same
+ *    on a LATER turn (the host hands the conversation over in
+ *    host_context.context, its own transcript blocks), after an OS-1 turn that
+ *    neither asks nor proposes, and after OS-1's proposal ("지금 푸시할까요?"):
+ *    a reference answers (it sees the turn); pools exhausted: held.
+ *  - small_talk_writer_lane: small talk in a writer lane (owner scope
+ *    workspace_write, request class writer, writer rows offered): with no
+ *    admitted small-talk evidence its grant is not narrowed (DESIGN-6 §5:
+ *    the grant never picks the row) and a writer reference answers. */
 import {createHash} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -105,17 +102,22 @@ const Q2_DRAFT = '리스트는 변형이 가능하지만 튜플은 한 번 생�
 const Q2_REPAIRED = '리스트와 튜플 모두 인덱스와 슬라이싱으로 접근합니다. 차이는 변경 가능성입니다.';
 // Owner question 12: qwen3.5:9b's real local reply (local Ollama, production
 // local chat prompt, temperature 0, 2026-10-31): a self-disclaimer and claims.
-const Q12_LOCAL_DRAFT = '안녕하세요! 저는 오늘도 정상적으로 작동하고 있습니다. 하지만 저는 감정이나 피로를 느끼지 못해요. ' +
-  '혹시 너무 지치셨다면 잠시 쉬어가시는 게 좋겠습니다.';
 const smallTalkLocal = catalog => {
   const references = new Set(['claude-fable-5-1', 'gpt-6-astra']);
   return {...catalog, candidates: catalog.candidates.map(row => row.surface === 'local' || references.has(row.model) ? row :
     {...row, availability: 'unavailable'})};
 };
 // A later turn: the host hands the recent conversation over (Swift
-// SessionHandoff, os1-session-handoff-v3 with prior messages).
-const LATER_TURN = JSON.stringify({format: 'os1-session-handoff-v3', transcript: 'Owner: 안녕\nOS-1: 안녕하세요! 오늘 하루 어떠셨어요?',
+// SessionHandoff, os1-session-handoff-v3 with prior messages, the host's
+// own transcript blocks "SPEAKER:\ntext" joined by blank lines). Review of
+// round 3: small talk keeps the local start on a later turn only after an
+// OS-1 turn that neither asks nor proposes (LATER_TURN); after OS-1's
+// proposal (LATER_PROPOSAL) the context-free local reply would drop it, so a
+// reference (which sees the turn) answers.
+const LATER_TURN = JSON.stringify({format: 'os1-session-handoff-v3', transcript: 'USER:\n안녕\n\nOS-1:\n안녕하세요! 반가워요.',
   priorMessageCount: 2});
+const LATER_PROPOSAL = JSON.stringify({format: 'os1-session-handoff-v3',
+  transcript: 'USER:\n테스트 돌려봐\n\nOS-1:\n테스트 통과했어요. 지금 푸시할까요?', priorMessageCount: 2});
 // A writer lane: the owner's grant is workspace_write and the host offers
 // the writer rows beside the read-only ones (request class writer).
 const writerLane = catalog => {
@@ -156,55 +158,42 @@ export const FLOWS = {
     return {flow: 'verified_repair', dispatches: tickets.length, snapshot,
       routes: tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`)};
   },
-  async det_pass() {
+  async small_talk_reference() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), ticket =>
       completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
-    return {flow: 'det_pass', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+    return {flow: 'small_talk_reference', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
+      law_family: tickets[0]?.law_family ?? null};
   },
-  async det_repair() {
-    const q = question(12);
-    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
-      completed(ticket, {output: n === 1 ? Q12_LOCAL_DRAFT : '오늘 정말 고생 많으셨어요. 무슨 일 있으셨어요?'}));
-    return {flow: 'det_repair', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
-      repair_instruction: tickets[1]?.instruction ?? null};
-  },
-  async det_full() {
-    const q = question(12);
-    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), (ticket, n) =>
-      completed(ticket, {output: n === 1 ? '' : '오늘 하루 고생 많으셨어요. 이야기 들려주시면 좋겠어요.'}));
-    return {flow: 'det_full', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
-  },
-  async det_hold_pass() {
+  async small_talk_hold() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
-      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
-    return {flow: 'det_hold_pass', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+      completed(ticket, {output: 'never dispatched'}));
+    return {flow: 'small_talk_hold', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
-  async det_hold_fail() {
-    const q = question(12);
-    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
-      completed(ticket, {output: '죄송하지만 답변해 드릴 수 없습니다.'}));
-    return {flow: 'det_hold_fail', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
-  },
-  async det_later_turn() {
+  async small_talk_later_turn() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q), ticket =>
       completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}), {context: LATER_TURN});
-    return {flow: 'det_later_turn', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
-      law_family: tickets[0]?.law_family ?? null};
+    return {flow: 'small_talk_later_turn', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
-  async det_later_turn_hold() {
+  async small_talk_later_turn_proposal() {
+    const q = question(12);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q), ticket =>
+      completed(ticket, {output: '피곤하셨군요. 푸시는 지금 진행할까요, 아니면 쉬고 나서 할까요?'}), {context: LATER_PROPOSAL});
+    return {flow: 'small_talk_later_turn_proposal', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+  },
+  async small_talk_later_turn_hold() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
-      completed(ticket, {output: '죄송하지만 답변해 드릴 수 없습니다.'}), {context: LATER_TURN});
-    return {flow: 'det_later_turn_hold', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
+      completed(ticket, {output: 'never dispatched'}), {context: LATER_PROPOSAL});
+    return {flow: 'small_talk_later_turn_hold', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
-  async det_writer_lane() {
+  async small_talk_writer_lane() {
     const q = question(12);
     const {snapshot, tickets, saved} = await runFlow(q, freshCatalog(q, writerLane), ticket =>
       completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
-    return {flow: 'det_writer_lane', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
+    return {flow: 'small_talk_writer_lane', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
       scope: saved?.plan?.nodes?.[0]?.scope ?? null};
   },
 };

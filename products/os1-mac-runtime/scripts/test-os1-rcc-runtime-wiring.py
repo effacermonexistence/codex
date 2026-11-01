@@ -1251,8 +1251,9 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "writerNextOf" not in RUNTIME and
       "if (gap && audit?.verdict === 'pass' && audit.admits === true) return {form: 'c', tiers: rows, gap: false, audit: audit.id, excess: 0};" in RUNTIME and
       "function lawHostNeedsTools(task, catalog) {" in RUNTIME and "function lawRateNote(why, task, catalog, now) {" in RUNTIME and
-      # Round 3 (decision 4): a class certificate never decides a law node.
-      "lawAdmission(node, task, catalog) === null)\n    return {class: 'certified'" in RUNTIME and
+      # Round 3 (decision 4), review of round 3: under the law (a valid
+      # routing_law) a class certificate decides no node at all.
+      "!validRoutingLaw(catalog?.routing_law))\n    return {class: 'certified'" in RUNTIME and
       "certifiedTupleRuns" not in RUNTIME and
       'node "$script_dir/routing-law-replay.mjs" --owner-gate "$script_dir/fixtures/routing-law-owner-questions.json"' in RELEASE and
       "family === 'P' ? null : family);" in RUNTIME and
@@ -1287,7 +1288,7 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
       "resolveRoutePlan(proposed, admitted, catalog, boundAt,\n        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy, lawLearned: this.lawLearned});" in RUNTIME and
       # Round 3 of the 448 review: the snapshot counts the structural screen
       # with Core's own rule too (lawScreenOutcome).
-      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
       "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
       (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
       (ROOT / "scripts/routing-law-ledger-20261030.json").is_file() and (ROOT / "scripts/routing-law-ledger-20261101.json").is_file(),
@@ -1295,7 +1296,11 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
 # Build 448 (lead order 2026-10-31, DESIGN-8 step 2 (a)): small talk's deterministic verifier.
 TABLE_COMPILER = (ROOT / "scripts/routing-law-table.mjs").read_text()
 check("export function lawDeterministicCheck(id, request, output, usage = null, draftMaxTokens = 512) {" in RUNTIME and
-      "no_claim_reply_v2: Object.freeze({family: 'small_talk', law_families: Object.freeze(['F1']), shape: 'answer'})" in RUNTIME and
+      "no_claim_reply_v2: Object.freeze({family: 'small_talk', law_families: Object.freeze(['F1']), shape: 'answer',\n    request_scope: 'small_talk_request_v2'})" in RUNTIME and
+      # Review of round 3: the verifier is evidence only inside its request
+      # scope (text, host profile, turn), at routing, for every row.
+      "export function lawSmallTalkScope(task, catalog) {" in RUNTIME and "export function lawSmallTalkLaterTurn(task) {" in RUNTIME and
+      "(scoped ? lawSmallTalkScope(task, catalog) : withoutConversation(task));" in RUNTIME and
       "no_claim_reply_v1" not in RUNTIME.split("// Review of 448 (fe01246c)")[0] and
       "if (entry && entry.check_outcome !== 'det_fail') entry.check_outcome = 'revas_no_verdict';" in RUNTIME and
       "local ? result.usage ?? null : null, local ? detVerifier.draft_max_tokens : null)" in RUNTIME and
@@ -1304,7 +1309,7 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       # Round 3 of the 448 review (decision 3): no F1 -> F2 re-read; a rejected
       # draft is repaired within the family with the verifier's findings.
       "lawRereadFamily" not in RUNTIME and "lawRereadAs" not in RUNTIME and
-      "const detVerifier = !writer && family !== 'P' ? lawDeterministicVerifier(table, family) : null;" in RUNTIME and
+      "const detVerifier = !writer && family !== 'P' && lawSmallTalkScope(task, catalog) ?\n      lawDeterministicVerifier(table, family) : null;" in RUNTIME and
       "export function lawDeterministicFindings(failures) {" in RUNTIME and
       "const detFindings = detFailed ? lawDeterministicFindings(det.failures) : null;" in RUNTIME and
       "const det = detVerifier && deliverable ? lawDeterministicCheck(detVerifier.id, node.instruction, result.output," in RUNTIME and
@@ -1320,7 +1325,7 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       (ROOT / "scripts/routing-law-det-outcomes-20261101.json").is_file() and
       "!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id)" in TABLE_COMPILER and
       "law_delivery_after_det_fail" in (ROOT / "scripts/route-replay.mjs").read_text() and
-      'coreFlow("det_full", root: root)' in HOST_FIXTURE and 'coreFlow("det_repair", root: root)' in HOST_FIXTURE,
+      '"small_talk_reference", "small_talk_later_turn", "small_talk_later_turn_proposal"' in HOST_FIXTURE,
       "448 (a): Core runs small talk's deterministic verifier on the law attempt before adoption; a rejected draft is repaired within F1; only Core's ids compile")
 # Round 2 of the 448 review (lead, 2026-10-31): (A) one det prior for every row
 # from the verifier's measured rejection rate on reference-quality replies;
@@ -1332,14 +1337,15 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
 check("export function lawDetPFail(table, candidate, family, learned = null) {" in RUNTIME and
       "classes = lawDetClassPFail(table, candidate, family, learned);" in RUNTIME and
       "export function compileDetReferencePrior(family, verifier, validation, pFailCells, references) {" in TABLE_COMPILER and
-      "basis: 'heldout_clean_replies_rejected'" in TABLE_COMPILER and
-      "ladder: 'one_escalation_within_family', on_fail: step ? 'repair_at_reference' : 'hold_draft_withheld'};" in RUNTIME and
+      "basis: 'heldout_clean_replies_rejected_in_scope'" in TABLE_COMPILER and
+      "on_fail: !step ? 'hold_draft_withheld' : step.mode === 'repair' ? 'repair_at_reference' : 'answer_at_reference'};" in RUNTIME and
+      "const mode = qr < qa ? 'repair' : 'answer';" in RUNTIME and
       "if (lawLocalDetStartRunnable(task, catalog, now)) return null;" in RUNTIME and
       "let escalationQ = laddered && target ? quotaOf(target.candidate)?.q ?? null : laddered ? null : 0;" in RUNTIME and
       "check_outcome: draftEntry.check_outcome === 'det_fail' ? 'det_fail' : 'revas_no_verdict'," in RUNTIME and
       "if (Number.isSafeInteger(draftMaxTokens) && ((Number.isSafeInteger(usage?.output_tokens) &&" in RUNTIME and
       "function eqVsDraw(perRow) {" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
-      'coreFlow("det_hold_fail", root: root)' in HOST_FIXTURE,
+      '"small_talk_hold", "small_talk_later_turn_hold"' in HOST_FIXTURE,
       "448 round 2: one det prior (A), small talk admissible with no runnable step (B), one pricing (C), local-only length cap and det_fail kept (D)")
 # Round 3 of the 448 review (lead, 2026-11-01): one request population for
 # the det prior (decision 1), the runtime's escalation event priced for every
@@ -1354,13 +1360,26 @@ check("throw new Error('det outcomes: every draft must name the held-out validat
       "function lawReadOnlySmallTalk(task, catalog) {" in RUNTIME and "function lawProfileFloor(profile) {" in RUNTIME and
       "    !lawProfileFloor(catalog.request_profile) &&" in RUNTIME and
       "(task.mode === 'auto' && lawReadOnlySmallTalk(task, catalog))" in RUNTIME and
-      "const anyTurn = lawDeterministicVerifier(table, admission.family) !== null;" in RUNTIME and
-      "LAW_FAMILY.test(revasChild.law_receipt.family) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and
+      "const scoped = lawDeterministicVerifier(table, admission.family) !== null;" in RUNTIME and
+      "lawSmallTalkScope(executionTask(snapshot), snapshot.catalog)) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and
       "return ticket.law_family === 'F1' ? 'small_talk' : 'conversational';" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
       "export const LOCAL_SMALL_TALK_SYSTEM = " in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
-      'coreFlow("det_later_turn", root: root)' in HOST_FIXTURE and 'coreFlow("det_writer_lane", root: root)' in HOST_FIXTURE and
-      'coreFlow("det_later_turn_hold", root: root)' in HOST_FIXTURE,
+      'coreFlow("small_talk_writer_lane", root: root)' in HOST_FIXTURE and
+      'async small_talk_later_turn_proposal() {' in (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").read_text(),
       "448 round 3: one population (1), the runtime's escalation event priced (2), repair within F1 (3), no certificate in the law path (4), small talk in every lane and turn (5), its own prompt (6)")
+# Review of round 3 (448): a provider tile filters the pool and the law
+# decides inside it, the certificate is retired under the law, a verified
+# start prices its structural screen event, the cheaper det step, the
+# routed-population validation and a no-drawable-pool regime is N/A.
+check("const LAW_TILES = new Map([" in RUNTIME and "(tile == null || tile.includes(row.candidate.surface));" in RUNTIME and
+      "const pScreen = Math.min(1, lawScreenPFail(table, item.candidate, null, learned));" in RUNTIME and
+      "const LAW_STATUS_SIGNALS = ['status_check_in', 'status_question'];" in RUNTIME and
+      "reason: answerMode ? 'answer_cheaper' : !fits ? 'draft_too_large' : 'no_finding'})};" in RUNTIME and
+      "export function detRequestInScope(id, request, context = null) {" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "const held = validation.sets.filter(set => set.role === 'heldout' && set.reference_prior === true);" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "'NOT_APPLICABLE_NO_DRAWABLE_POOL'" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
+      "catalog_population: catalogPopulation(perRow, rows)," in (ROOT / "scripts/routing-law-replay.mjs").read_text(),
+      "review of round 3: tile as pool filter, certificate retired, screen event priced, cheaper det step, scoped validation, N/A regime")
 check("public static func poolStates(codex: BackendHealth.QuotaSnapshot?, claude: BackendHealth.QuotaSnapshot?," in law_swift and
       "law.pools = RoutingLaw.poolStates(codex: input.codexQuota, claude: input.claudeQuota," in BUILDER and
       '"pools": .map(routingLawPoolShape)' in (ROOT / "Sources/OS1Context/RCCRuntimeContract.swift").read_text() and
