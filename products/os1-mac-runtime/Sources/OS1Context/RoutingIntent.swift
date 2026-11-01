@@ -384,8 +384,28 @@ extension RoutingIntent {
             if asksByWord, let embedded = after.range(of: #"(?:는지|은지|인지|던지|냐고)"#, options: .regularExpression) {
                 head = String(after[..<embedded.lowerBound])
             }
-            let requests = matches(head, #"줘|주세요|주실|줄래|주라|봐(?!서)|(?:하|가|쓰|돌리|해보|써보)자(?![가-힣])|(?<![a-z])(?:run|use|switch|please)(?![a-z])"#)
+            // Review of round 3: a polite or volitional request addressed to
+            // OS-1 is a request too, with or without the "?" ("astra로 돌려줄
+            // 수 있어?", "opus로 해볼래?", "codex로 할래?", "이거 opus로 하면
+            // 안 돼?", "claude로 부탁해도 될까요?"): a possibility (줄 수), a
+            // permission (해도 돼/될까, 하면 안 돼), a 부탁, or the volitional
+            // -ㄹ래 (any syllable closed by ㄹ before 래: 할래, 볼래, 쓸래, 갈래,
+            // 돌릴래). A bare propositive question (해볼까?) stays the lead's
+            // inquiry.
+            let requests = matches(head, #"줘|주세요|주실|줄래|주라|줄\s*수|봐(?!서)|(?:하|가|쓰|돌리|해보|써보)자(?![가-힣])|해도\s*(?:돼|되|될)|(?:하|쓰|돌리)면\s*안\s*(?:돼|되|될)|부탁|(?<![a-z])(?:run|use|switch|please)(?![a-z])"#) ||
+                volitional(head)
             return asks && !requests
+        }
+        /// Whether `text` holds the volitional ending -ㄹ래 (래 after a Hangul
+        /// syllable whose final consonant is ㄹ: 할래, 볼래, 돌릴래).
+        func volitional(_ text: String) -> Bool {
+            let scalars = Array(text.unicodeScalars)
+            guard scalars.count >= 2 else { return false }
+            for index in 1..<scalars.count where scalars[index] == "래" {
+                let value = scalars[index - 1].value
+                if value >= 0xAC00 && value <= 0xD7A3 && (value - 0xAC00) % 28 == 8 { return true }
+            }
+            return false
         }
         func informational(_ clause: String, _ span: SettingSpan) -> Bool {
             let ns = clause as NSString

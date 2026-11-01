@@ -1724,6 +1724,24 @@ func runRCCNativeCatalogBuilderFixtures() throws {
         try check(parsed.state == "resolved" && parsed.modelFamily == family,
                   "an imperative model choice stays explicit intent, a question in another segment does not: \(text)")
     }
+    // Review of round 3: a polite, permission or volitional request for a
+    // model stays the owner's explicit choice, with or without its "?" (the
+    // English "Can you run this on astra?" always did).
+    for (text, family) in [("astra로 돌려줄 수 있어?", "astra"), ("fable로 해줄 수 있어?", "fable"),
+                           ("opus로 답해줄 수 있나요?", "opus"), ("astra로 다시 돌려볼래?", "astra"),
+                           ("opus로 다시 해볼래?", "opus"), ("이거 opus로 하면 안 돼?", "opus"),
+                           ("claude로 부탁해도 될까요?", "claude"), ("opus로 해볼래", "opus"), ("opus로 해볼래?", "opus"),
+                           ("fable로 할래?", "fable"), ("fable로 써볼래?", "fable"), ("opus로 바꿔볼래?", "opus")] {
+        let parsed = v2(text)
+        let named = parsed.modelFamily == family || (family == "claude" && parsed.allowedSurfaces.contains("claude"))
+        try check(parsed.state == "resolved" && named,
+                  "a polite or volitional model request stays explicit intent: \(text)")
+    }
+    for text in ["codex로 할래?", "코덱스로 해볼래?", "codex로 할래"] {
+        try check(v2(text).allowedSurfaces == ["codex"], "a volitional surface request keeps its surface: \(text)")
+    }
+    try check(v2("Can you run this on astra?").modelFamily == "astra" && v2("Could you use opus for this?").modelFamily == "opus",
+              "the English polite requests stay directives")
     try check(v2("코덱스로 결과가 맞는지 확인해줘").allowedSurfaces == ["codex"] &&
               v2("코덱스로 가격을 설명해줘").allowedSurfaces == ["codex"],
               "an instrument whose request embeds a question (no question word) stays a directive")
