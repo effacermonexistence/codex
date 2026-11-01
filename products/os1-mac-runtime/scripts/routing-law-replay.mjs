@@ -357,7 +357,11 @@ export function armsOf(row, intent, headroom = null, table = routingLawTable()) 
     attempt(row.request, {...law, routing_law: {...law.routing_law, reference_request: true}});
   // The law's family (P for the owner's reference words) and the cost shape
   // the law priced the request with (the same work for every arm).
-  const family = mine.law?.family ?? lawFamily(law.routing_law.reading, table);
+  // A route that cannot bind (every pool exhausted) carries no receipt: its
+  // family is still the law's admission family (P for the owner's reference
+  // words, Core lawAdmission), never the bare reading's.
+  const family = mine.law?.family ?? (law.routing_law.reference_request === true ||
+    law.request_profile?.signals?.includes('quality_request') === true ? 'P' : lawFamily(law.routing_law.reading, table));
   const shape = mine.law?.shape ?? table.families[family]?.shape ?? 'answer';
   const rates = ratesOf(law);
   const price = (result, catalog, realized = null) => result.error ? {pool: 'none', q: null, unpriced: true, start: {Cw: 0, Px: 0},
@@ -558,9 +562,12 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
       reproduces_recorded_446: headroom ? null :
         rows.filter(r => r.build446.route === (r.route446_recorded ?? '').replace(/\/(?=[^/]*$)/, '@')).length,
       core_errors: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].route.startsWith('core_error')).length])),
-      // Round 3 (lead decision 4): the all-reference arm binds pool references only.
-      all_reference_non_reference: rows.filter(r => !['reference', 'calculator', 'ask_back'].includes(r.all_reference.kind) &&
-        !r.all_reference.route.startsWith('core_error')).map(r => ({index: r.index, route: r.all_reference.route, kind: r.all_reference.kind})),
+      // Round 3 (lead decision 4): the all-reference arm binds pool references
+      // only (an owner-constrained explicit route to a reference model included).
+      all_reference_non_reference: rows.filter(r => !['calculator', 'ask_back'].includes(r.all_reference.kind) &&
+        !r.all_reference.route.startsWith('core_error') &&
+        !Object.values(table.references).includes(r.all_reference.route.split(':')[1]?.split('@')[0]))
+        .map(r => ({index: r.index, route: r.all_reference.route, kind: r.all_reference.kind})),
       free: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].q === 0).length])),
       astra_starts: astra, astra_by_family: astraByFamily(rows), totals: rounded, gate: gateOf(totals, astra, rates),
       ...extrasOf(perRow, totals, astra, rates), eq_vs_draw: eqVsDraw(perRow)}};
