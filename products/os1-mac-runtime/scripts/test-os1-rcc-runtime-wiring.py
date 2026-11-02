@@ -1431,6 +1431,16 @@ check("function lawAuditScope(audit, task, catalog) {" in RUNTIME and
       "if (c.surface === 'local' && result.ladder?.reference_candidate_id && !result.ladder.verifier) {" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
       (ROOT / "scripts/routing-law-f1-sensitivity-20261101.json").is_file(),
       "448 round 5: form (c) scoped and screen-priced, uncleared status and reading floors keep the local row off, form (c) answers with no pool, pre-registered audit inputs, a reachable and accumulating audit with a locked grader, OS-1's harness on the reference arm")
+# Round 6 of the 448 review (2026-11-02): the shipped policy (and the table
+# compiled from it) no longer states round 3 decision 5's withdrawn rule (the
+# local start on any turn); the local start is a first-turn path in every family.
+SHIPPED_POLICY = json.loads((ROOT / "scripts/routing-law-policy.json").read_text())
+SHIPPED_TABLE_TEXT = (ROOT / "Resources/routing-law-table.json").read_text()
+check("any turn" not in json.dumps(SHIPPED_POLICY, ensure_ascii=False) and "any turn" not in SHIPPED_TABLE_TEXT and
+      "on its FIRST turn only in every family" in SHIPPED_POLICY["local_start"]["candidate_floor"] and
+      "the LOCAL start binds on its first turn only" in SHIPPED_POLICY["deterministic_verifiers_rule"] and
+      "the LOCAL start binds on its first turn only" in SHIPPED_TABLE_TEXT,
+      "448 round 6: the shipped policy and table state the first-turn local start only (round 3 decision 5's any-turn rule withdrawn)")
 # Review of round 3 (448): a provider tile filters the pool and the law
 # decides inside it, the certificate is retired under the law, a verified
 # start prices its structural screen event, the cheaper det step, the
