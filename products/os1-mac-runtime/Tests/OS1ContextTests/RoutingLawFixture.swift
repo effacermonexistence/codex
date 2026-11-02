@@ -200,6 +200,20 @@ func runRoutingLawFixtures() throws {
     var writer = light
     writer.ownerScope = .workspaceWrite
     try check(B.autoLocalRowEligible(writer), "a write grant alone does not remove the local row")
+    // Round 4 of the 448 review (lead decision 4, DESIGN-6 D3): under the law
+    // a provider tile is a pool filter, and the local row draws no pool: it
+    // stays a candidate (Core decides, first turn only). Under the rollback
+    // (no routing law) a tile is still 446's pin: no local row.
+    for tile in ["codex", "claude"] {
+        var tiled = light
+        tiled.providerPreference = tile
+        try check(B.autoLocalRowEligible(tiled), "the \(tile) tile keeps the local row a candidate under the law")
+        tiled.routingLaw = nil
+        try check(!B.autoLocalRowEligible(tiled), "under the rollback the \(tile) tile is a pin: no local row")
+        var tiledHeavy = heavy
+        tiledHeavy.providerPreference = tile
+        try check(!B.autoLocalRowEligible(tiledHeavy), "a standard reading under the \(tile) tile is not offered the local row")
+    }
 
     // ---- The intent call: only under the law, only for light tool-free chat/explain; strict schema.
     try check(L.needsIntent(.init(taskType: .chat, difficulty: .light, needsTools: .none), readsIntent: true) &&

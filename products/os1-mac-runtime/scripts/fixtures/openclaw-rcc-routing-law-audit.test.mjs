@@ -28,8 +28,16 @@ const OWNER = JSON.parse(readFileSync(join(ROOT, 'scripts/fixtures/routing-law-o
 const CORPUS = OWNER.questions.filter(q => !q.pending).map(q => ({index: q.n, request: q.request, catalog: q.catalog, receipt: q.receipt}));
 const INTENTS = Object.fromEntries(OWNER.questions.filter(q => !q.pending && q.intent).map(q => [q.n, q.intent]));
 const NOW = Date.parse('2026-10-30T05:00:00Z');
-const TRAFFIC = {requests: 44, explicit_excluded: 0, window_days: 7};
-const plan = () => planAudits({catalogs: CORPUS, intents: INTENTS, traffic: TRAFFIC, now: NOW});
+// Round 4 of the 448 review (lead decision 3): the traffic is a measured rate
+// and each cell's horizon its evidence's lifetime from the catalog history
+// (here a synthetic history: 20 days, one local model change, so 20 days).
+const TRAFFIC = {requests: 44, explicit_excluded: 0, span_days: 7, per_day: 44 / 7};
+const DAY = 86_400_000;
+const HISTORY = {schema: 1, rows: [0, 5, 10, 15, 20].map((d, i) => ({at_ms: NOW - (20 - d) * DAY,
+  pools: ['anthropic_shared', 'openai_codex'], models: {anthropic_shared: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5',
+    'claude-haiku-4-5-20251001'], openai_codex: ['gpt-6-astra', 'gpt-6-luna', 'gpt-6.1-sol']},
+  references: {anthropic_shared: 'claude-fable-5-1', openai_codex: 'gpt-6-astra'}, local: i < 2 ? 'qwen3.5:4b' : 'qwen3.5:9b'}))};
+const plan = () => planAudits({catalogs: CORPUS, intents: INTENTS, traffic: TRAFFIC, now: NOW, history: HISTORY});
 
 test('evidence (c): a passed PARITY audit admits a cell with a gap of evidence, never one with evidence against, never under P', () => {
   const pass = (id, n, admits) => ({verdict: 'pass', id, n, discordant: 0, n_parity: 2, admits});
@@ -98,7 +106,16 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
   assert.ok(f1.length > 0 && f1.some(a => a.id === 'qwen3.5:9b@none|F1'), 'F1 rows are gaps of evidence: audited by VOI');
   assert.ok(localF2.n > 0 && localF2.tau_excess_rate > 0);
   assert.equal(localF2.cost.Cw + localF2.cost.Px > 0, true, 'its reference answers are paid; the local answers draw nothing');
-  assert.ok(localF2.saving_7d_path > 0, 'admitted by (c) the local row needs no per-answer check');
+  assert.ok(localF2.saving_path > 0, 'admitted by (c) the local row needs no per-answer check');
+  // The horizon is the evidence's measured lifetime: the local cell's one
+  // model change in 20 days; a pool cell with no change seen, the span.
+  assert.equal(localF2.lifetime_days, 20);
+  assert.equal(localF2.lifetime_basis, 'mean_interval_between_changes');
+  assert.ok(result.audits.filter(a => a.cell !== 'qwen3.5:9b@none').every(a => a.lifetime_basis === 'censored_no_change_seen_span_lower_bound'));
+  // No catalog history: no lifetime, nothing can be scheduled.
+  const blind = planAudits({catalogs: CORPUS, intents: INTENTS, traffic: TRAFFIC, now: NOW, sensitivity: {s: 1}});
+  assert.equal(blind.scheduled.length, 0);
+  assert.ok(blind.audits.every(a => a.blockers.includes('no_lifetime_or_traffic_measurement')));
   // Until the grader's sensitivity is measured nothing is scheduled.
   assert.equal(result.scheduled.length, 0);
   assert.ok(Object.keys(result.totals.by_decision).every(d => !d.startsWith('scheduled')));
@@ -120,7 +137,8 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
   assert.match(spendWindow('anthropic_shared', {basis: 'observed_window', ttr: 0.5}, NOW), /^anthropic_shared@reset:2026-11-0/);
   assert.match(spendWindow('openai_codex', {basis: 'remaining_whole_window_ahead', ttr: 1}, NOW), /@iso-week:2026-10-26$/);
   // No traffic: no saving can pay for any audit.
-  const idle = planAudits({catalogs: CORPUS, intents: INTENTS, traffic: {...TRAFFIC, requests: 0}, now: NOW, sensitivity: {s: 1}});
+  const idle = planAudits({catalogs: CORPUS, intents: INTENTS, traffic: {...TRAFFIC, requests: 0, per_day: 0}, now: NOW,
+    sensitivity: {s: 1}, history: HISTORY});
   assert.equal(idle.scheduled.length, 0);
 });
 
@@ -297,4 +315,158 @@ test('grader sensitivity: planted failures per checklist item, graded locally', 
   const result = await measureSensitivity({checklistFile, ask});
   assert.deepEqual([result.planted, result.detected], [3, 2]);
   assert.ok(Math.abs(result.s - 2 / 3) < 1e-12);
+});
+
+// ---- Round 4 of the 448 review (lead decision 3): small talk's (F1) form (c)
+// through the law's own mechanism. Zero quota: a stub grader, the fake
+// dispatcher, temporary files.
+const f1 = await import('../routing-law-f1-audit.mjs');
+
+test('F1 audit: the pre-registered verdict: tau is the reference\'s own run-to-run spread, never set by hand', () => {
+  const q = (cell, a, b) => ({cell: {pass: cell}, references: [{pass: a}, {pass: b}]});
+  // 30 questions, the reference's runs disagree on 6 (tau 0.2), no discordant
+  // pair, 24 informative: n_parity(0.2, s 1, 0.9) = 11 -> PASS.
+  const graded = [...Array.from({length: 24}, () => q(true, true, true)), ...Array.from({length: 6}, (_, i) => q(i % 2 === 0, true, false))];
+  const pass = f1.checklistVerdict(graded, 1);
+  assert.deepEqual([pass.tau, pass.spread_pairs, pass.informative, pass.discordant, pass.n_parity, pass.verdict],
+    [0.2, 6, 24, 0, 11, 'pass']);
+  assert.deepEqual(pass.cell, {runs: 30, failures: 3});
+  assert.deepEqual(pass.reference, {runs: 60, failures: 6});
+  // One discordant pair (both reference runs pass, the cell fails): FAIL.
+  assert.equal(f1.checklistVerdict([...graded.slice(1), q(false, true, true)], 1).verdict, 'fail');
+  // A reference that never disagrees with itself: tau 0, no finite n: INCONCLUSIVE.
+  const steady = f1.checklistVerdict(Array.from({length: 18}, () => q(true, true, true)), 1);
+  assert.deepEqual([steady.tau, steady.n_parity, steady.verdict, steady.reason], [0, null, 'inconclusive', 'reference_spread_zero']);
+  // An unmeasured grader sensitivity: INCONCLUSIVE; a weaker grader needs more.
+  assert.equal(f1.checklistVerdict(graded, null).verdict, 'inconclusive');
+  assert.ok(f1.nParity(0.2, 0.5) > f1.nParity(0.2, 1));
+  // 3 informative with 1 spread pair in 4 (tau 0.25): n_parity 9 > 3.
+  assert.equal(f1.checklistVerdict(graded.slice(0, 3).concat(graded.slice(24, 25)), 1).verdict, 'inconclusive');
+});
+
+test('F1 audit: the compiler re-derives a checklist parity verdict from its counts and carries the p_fail counts', () => {
+  const rule = 'r', digest = 'a'.repeat(64);
+  const cell = {kind: 'checklist_parity', verdict: 'pass', answers_sha256: digest, checklist_sha256: 'b'.repeat(64), n: 30,
+    informative: 24, discordant: 0, tau: 0.2, spread_pairs: 6, grader_sensitivity: 1, confidence: 0.9, n_parity: 11,
+    sampling: 'stratified_random', reference: 'claude-fable-5-1@max', p_fail: {runs: 30, failures: 3}, reference_p_fail: {runs: 60, failures: 6}};
+  const compiled = compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': cell}}).cells['qwen3.5:9b@none|F1'];
+  assert.equal(compiled.admits, true);
+  assert.equal(compiled.kind, 'checklist_parity');
+  assert.deepEqual([compiled.p_fail, compiled.reference_p_fail], [{runs: 30, failures: 3}, {runs: 60, failures: 6}]);
+  // A verdict its counts do not support never compiles.
+  for (const bad of [{informative: 10}, {n_parity: 12}, {discordant: 1}, {spread_pairs: 0}, {grader_sensitivity: null},
+    {p_fail: {runs: 29, failures: 3}}, {sampling: 'corpus_order'}])
+    assert.throws(() => compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': {...cell, ...bad}}}), /checklist audit/, JSON.stringify(bad));
+  // An honest INCONCLUSIVE compiles and admits nothing.
+  const inconclusive = compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': {...cell, verdict: 'inconclusive',
+    informative: 10}}}).cells['qwen3.5:9b@none|F1'];
+  assert.equal(inconclusive.admits, false);
+});
+
+test('F1 audit: step 6 from data: the evidence lifetime, the traffic rate and the exhausted share', () => {
+  const life = f1.evidenceLifetime(HISTORY, {candidate: 'qwen3.5:9b', pool: 'none', references: ['anthropic_shared']});
+  assert.equal(life.lifetime_ms, 20 * DAY);
+  assert.deepEqual(life.changes.map(c => [c.key, c.from, c.to]), [['candidate', 'qwen3.5:4b', 'qwen3.5:9b']]);
+  const steady = f1.evidenceLifetime(HISTORY, {candidate: 'claude-opus-5-5', pool: 'anthropic_shared', references: ['anthropic_shared']});
+  assert.deepEqual([steady.lifetime_ms, steady.basis], [20 * DAY, 'censored_no_change_seen_span_lower_bound']);
+  // A reference change and a retired candidate are changes too.
+  const moved = {rows: HISTORY.rows.map((row, i) => ({...row, references: {...row.references, anthropic_shared: i < 3 ? 'claude-fable-5-1' :
+    'claude-fable-5-2'}, models: {...row.models, anthropic_shared: i < 4 ? row.models.anthropic_shared : ['claude-fable-5-2']}}))};
+  assert.equal(f1.evidenceLifetime(moved, {candidate: 'claude-opus-5-5', pool: 'anthropic_shared', references: ['anthropic_shared']})
+    .changes.length, 2);
+  assert.equal(f1.evidenceLifetime({rows: []}).lifetime_ms, null);
+  const line = (task, at, kind = 'law') => JSON.stringify({task_id: task, route_kind: kind, dispatched_at_ms: at});
+  const rate = f1.trafficRate([line('a', 0), line('a', DAY), line('b', 2 * DAY), line('c', 4 * DAY, 'explicit_route'), 'x'].join('\n'));
+  assert.deepEqual([rate.requests, rate.explicit_excluded, rate.span_days, rate.per_day], [2, 1, 4, 0.5]);
+  assert.deepEqual(f1.exhaustedShare({rows: [{pools: []}, {pools: ['openai_codex']}, {pools: []}, {pools: ['anthropic_shared']}]}),
+    {catalogs: 4, no_drawable_pool: 2, share: 0.5});
+});
+
+const F1_REQUESTS = f1.buildRequestSet({corpusF1: [{request: '오늘 하루 어땠어? 나는 좀 피곤했어'}, {request: '진행해'}],
+  fresh: ['나 승진했어!', 'I just got home', '오늘 하루 어땠어? 나는 좀 피곤했어', 'Good night!']});
+const AFTER_RESET = Date.parse('2026-11-02T09:00:00Z');
+const POOLS_AFTER = {anthropic_shared: {observed_at_ms: Date.parse('2026-11-01T22:52:33Z'), valid_until_ms: Date.parse('2026-11-01T23:02:33Z'),
+  windows: [{used_percent: 100, resets_at_ms: Date.parse('2026-11-02T07:59:59Z'), window_minutes: 10080}]},
+  openai_codex: {observed_at_ms: Date.parse('2026-11-01T22:00:00Z'), valid_until_ms: Date.parse('2026-11-01T22:10:00Z'),
+    windows: [{used_percent: 100, resets_at_ms: Date.parse('2026-11-05T07:08:27Z'), window_minutes: 10080}]}};
+const LEDGER = Array.from({length: 40}, (_, i) => JSON.stringify({task_id: 't' + i, route_kind: 'law',
+  dispatched_at_ms: AFTER_RESET - 20 * DAY + i * 12 * 3_600_000})).join('\n');
+const f1Plan = (sensitivity = {s: 0.9}, extra = {}) => f1.planF1Audit({requestSet: F1_REQUESTS, pools: POOLS_AFTER, at: AFTER_RESET,
+  history: HISTORY, ledgerText: LEDGER, mix: {corpus: 370, f1_first_turn: 54}, sensitivity, ...extra});
+
+test('F1 audit: the request set and the plan: the reference after the reset, the cost in pool units, the weekly cap, the VOI', () => {
+  // The frozen set: corpus F1 rows and fresh small talk, deduplicated; each
+  // with the local style the runtime gives it.
+  assert.deepEqual(F1_REQUESTS.items.map(i => [i.source, i.language, i.local_style]), [
+    ['corpus_f1_first_turn', 'ko', 'small_talk'], ['corpus_f1_first_turn', 'ko', 'conversational'],
+    ['fresh_small_talk', 'ko', 'small_talk'], ['fresh_small_talk', 'en', 'small_talk'], ['fresh_small_talk', 'en', 'small_talk']]);
+  const plan = f1Plan();
+  // After the Claude reset (Codex still exhausted) the audit reference is the
+  // Claude pool's reference at its ceiling, on the chat lane, at pace.
+  assert.equal(plan.reference.key, 'claude-chat:claude-fable-5-1@max');
+  assert.equal(plan.reference.price, 1);
+  const q = TABLE.quota['claude-chat:claude-fable-5-1@max'].answer.q;
+  // The cap (1% of the weekly allowance) bounds the questions: two reference
+  // answers each, the local answer draws nothing.
+  assert.equal(plan.n, Math.min(F1_REQUESTS.items.length, Math.floor(1 / (2 * q))));
+  assert.ok(Math.abs(plan.cost.Cw - plan.n * 2 * q) < 1e-6 && plan.cap.within);
+  // The VOI: the measured traffic over the measured lifetime; the
+  // availability value is reported, never priced.
+  const v = plan.value_of_information;
+  assert.equal(v.lifetime.lifetime_ms, 20 * DAY);
+  assert.ok(Math.abs(v.requests_over_lifetime - v.traffic.per_day * 20 * 54 / 370) < 1e-6);
+  assert.ok(Math.abs(v.voi - (0.5 * v.requests_over_lifetime * 0.5 * q - plan.n * 2 * q)) < 1e-6);
+  assert.equal(plan.decision, v.voi > 0 ? 'scheduled' : 'voi_below_cost');
+  assert.match(plan.availability.not_priced, /not in the objective's units/);
+  // No grader sensitivity: nothing is scheduled.
+  assert.equal(f1Plan(null).blockers.includes('grader_sensitivity_unmeasured'), true);
+  // Now (both pools exhausted): no reference can be drawn.
+  const now = f1.planF1Audit({requestSet: F1_REQUESTS, pools: POOLS_AFTER, at: Date.parse('2026-11-01T23:00:00Z'), history: HISTORY,
+    ledgerText: LEDGER, mix: {corpus: 370, f1_first_turn: 54}, sensitivity: {s: 0.9}});
+  assert.equal(now.reference, null);
+  assert.equal(now.decision, 'no_drawable_reference_at_the_planned_time');
+  // Spend already recorded in the window leaves fewer questions.
+  assert.ok(f1Plan({s: 0.9}, {spent: {anthropic_shared: 0.9}}).n < plan.n);
+});
+
+test('F1 audit: run refuses an unscheduled audit (unless the lead says so), a paid dispatcher without confirmation and a broken cap; grade locks the verdict', async t => {
+  const dir = await tempDir(t);
+  const spend = join(dir, 'spend.jsonl');
+  const plan = {...f1Plan(), decision: 'voi_below_cost'};
+  const planBytes = Buffer.from(JSON.stringify(plan));
+  const seen = [];
+  const dispatcher = {paid: false, dispatch: async args => { seen.push(args);
+    return {output: args.surface === 'local' ? '많이 피곤했구나, 고생 많았어.' : 'reference reply', draw: {pool: 'anthropic_shared', units: 0.02}}; }};
+  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher, spendPath: spend}), /did not schedule/);
+  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher: {...dispatcher, paid: true},
+    spendPath: spend, leadRunsUnscheduled: true}), /--confirm-paid yes/);
+  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: {...F1_REQUESTS, items: F1_REQUESTS.items.slice(1)}, dispatcher,
+    spendPath: spend, leadRunsUnscheduled: true}), /request set/);
+  const answers = await f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher, spendPath: spend, leadRunsUnscheduled: true});
+  assert.equal(answers.answers.length, plan.n);
+  assert.equal(answers.unscheduled_by_step6, true);
+  assert.ok(answers.answers.every(a => a.references.length === 2));
+  // The local arm gets the runtime's own prompt style per request.
+  assert.deepEqual(seen.filter(a => a.surface === 'local').map(a => a.style),
+    plan.questions.map(id => F1_REQUESTS.items[id].local_style));
+  const spent = readFileSync(spend, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(spent.length, 2 * plan.n);
+  assert.ok(spent.reduce((a, r) => a + r.units, 0) <= 1);
+  // A second run in the same window would exceed the cap.
+  const bigDraw = {...dispatcher, dispatch: async args => ({output: 'x', draw: {pool: 'anthropic_shared', units: 0.5}})};
+  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher: bigDraw, spendPath: spend, leadRunsUnscheduled: true}),
+    /cap/);
+  // Grading (stub grader): every item met for the cell and the reference's
+  // first run, the second run fails one question: tau = 1/n.
+  let call = 0;
+  const ask = async () => { call++; return {responsive: call % 3 !== 0 || call !== 3, no_invented_claim: true, same_language: true,
+    tone: true, no_refusal: true}; };
+  const verdict = await f1.gradeF1Audit({answersFile: answers, sensitivity: {s: 1}, ask});
+  assert.equal(verdict.n, plan.n);
+  assert.equal(verdict.spread_pairs, 1);
+  assert.equal(verdict.verdict, verdict.discordant > 0 ? 'fail' : verdict.informative >= verdict.n_parity ? 'pass' : 'inconclusive');
+  const [key, entry] = f1.auditCellOf(verdict);
+  assert.equal(key, 'qwen3.5:9b@none|F1');
+  assert.equal(compileAudits({schema: 1, rule: 'r', cells: {[key]: entry}}).cells[key].verdict, verdict.verdict);
+  await assert.rejects(f1.gradeF1Audit({answersFile: {...answers, answers: answers.answers.slice(1)}, sensitivity: {s: 1}, ask}), /locked/);
 });

@@ -741,10 +741,45 @@ export function compileFamilies(evidence, policy) {
  * confidence, with the measured grader sensitivity folded in), sampled at
  * random across the family's traffic. A cost-sized pass (fewer questions, or
  * corpus-order questions) is provisional: carried, never admitting. */
+/** Round 4 of the 448 review (lead decision 3): a checklist parity audit
+ * (scripts/routing-law-f1-audit.mjs grade: small talk F1, graded by the local
+ * model against a frozen checklist, the reference answered twice), re-derived
+ * here from its counts: tau is the reference's own run-to-run spread on the
+ * checklist (its two runs disagreeing), n_parity = ceil(ln(1 - confidence) /
+ * ln(1 - s * tau)) with the grader's measured sensitivity s, and a PASS
+ * admits only with zero discordant pairs in at least n_parity informative
+ * questions. The cell's and the reference's checklist failure counts are
+ * carried for Core's p_fail of the admitted row (lawAuditPFail). */
+function compileChecklistAudit(key, cell) {
+  const int = value => Number.isSafeInteger(value) && value >= 0;
+  const counts = value => value && int(value.runs) && int(value.failures) && value.failures <= value.runs;
+  if (!/^[a-f0-9]{64}$/.test(cell.answers_sha256 ?? '') || !/^[a-f0-9]{64}$/.test(cell.checklist_sha256 ?? '') ||
+      !int(cell.n) || cell.n < 1 || !int(cell.informative) || !int(cell.discordant) || !int(cell.spread_pairs) ||
+      cell.informative > cell.n || cell.spread_pairs > cell.n || !counts(cell.p_fail) || !counts(cell.reference_p_fail) ||
+      cell.p_fail.runs !== cell.n || cell.reference_p_fail.runs !== 2 * cell.n || typeof cell.reference !== 'string' ||
+      !(typeof cell.confidence === 'number' && cell.confidence > 0 && cell.confidence < 1) ||
+      !(cell.grader_sensitivity === null || (typeof cell.grader_sensitivity === 'number' && cell.grader_sensitivity > 0 &&
+        cell.grader_sensitivity <= 1)) || cell.sampling !== 'stratified_random')
+    throw new Error('bad checklist audit verdict ' + key);
+  const tau = cell.spread_pairs / cell.n;
+  const x = (cell.grader_sensitivity ?? 0) * tau;
+  const nParity = x > 0 ? (x >= 1 ? 1 : Math.ceil(Math.log(1 - cell.confidence) / Math.log(1 - x))) : null;
+  const verdict = cell.discordant > 0 ? 'fail' : nParity !== null && cell.informative >= nParity ? 'pass' : 'inconclusive';
+  if (cell.verdict !== verdict || cell.n_parity !== nParity) throw new Error('checklist audit verdict does not follow its counts ' + key);
+  return {kind: 'checklist_parity', verdict, id: 'audit-' + cell.answers_sha256.slice(0, 12), n: cell.n, discordant: cell.discordant,
+    informative: cell.informative, tau, n_parity: nParity, grader_sensitivity: cell.grader_sensitivity, reference: cell.reference,
+    checklist_sha256: cell.checklist_sha256, p_fail: {runs: cell.p_fail.runs, failures: cell.p_fail.failures},
+    reference_p_fail: {runs: cell.reference_p_fail.runs, failures: cell.reference_p_fail.failures}, admits: verdict === 'pass'};
+}
 export function compileAudits(audits) {
   if (audits.schema !== 1 || audits.cells === null || typeof audits.cells !== 'object') throw new Error('audits snapshot schema 1 required');
   const out = {};
   for (const [key, cell] of Object.entries(audits.cells)) {
+    if (cell?.kind === 'checklist_parity') {
+      if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(key)) throw new Error('bad audit verdict ' + key);
+      out[key] = compileChecklistAudit(key, cell);
+      continue;
+    }
     if (!/^[a-z0-9][a-z0-9._-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(key) || !['pass', 'fail', 'inconclusive'].includes(cell?.verdict) ||
         !/^[a-f0-9]{64}$/.test(cell?.answers_sha256 ?? '') || !Number.isSafeInteger(cell?.n) || cell.n < 1)
       throw new Error('bad audit verdict ' + key);

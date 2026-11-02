@@ -837,9 +837,15 @@ public enum RCCNativeCatalogBuilder {
     /// no material, under the Auto preference. Core binds it as a graded
     /// route below a runnable reference, never certified.
     public static func autoLocalRowEligible(_ input: Input) -> Bool {
-        input.explicitRouteSurfaces == nil && !input.hasMaterialRefs &&
-            normalizedPreference(input.providerPreference) == "auto" &&
-            (input.requestProfile?.answersLocally == true || lawMayAnswerLocally(input))
+        guard input.explicitRouteSurfaces == nil, !input.hasMaterialRefs else { return false }
+        if normalizedPreference(input.providerPreference) == "auto" {
+            return input.requestProfile?.answersLocally == true || lawMayAnswerLocally(input)
+        }
+        // Round 4 of the 448 review (lead decision 4, DESIGN-6 D3): under the
+        // law a provider tile is a pool filter and the local row draws no
+        // pool, so it stays a candidate the law may choose (Core: first turn
+        // only, with evidence or as a priced verified start).
+        return input.routingLaw != nil && lawMayAnswerLocally(input)
     }
     /// Build 447 (DESIGN-8): the law may choose the local row only for a
     /// tool-free light reading; Core decides, by the node's own scope (a

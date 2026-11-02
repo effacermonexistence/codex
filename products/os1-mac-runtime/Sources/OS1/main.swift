@@ -20096,7 +20096,13 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     let autoRequest = request.mode == .auto &&
         RCCNativeCatalogBuilder.normalizedPreference(host.providerPreference) == "auto"
     let profileConsults = autoRequest && !RequestProfile.railsDecide(keywordProfile, request: request.request)
-    let lawReads = autoRequest && lawSelection.policy == .law447
+    // Round 4 of the 448 review (lead decision 4, DESIGN-6 D3): a provider
+    // tile is a pool filter under the law, never a pin, so the law reads an
+    // Auto request under a tile too (Core decides inside the tile; without the
+    // catalog's routing_law, Core's rollback path bound the class certificate
+    // owner-chat-fast-20261027). The combined profile (permissions) is
+    // unchanged: it still adopts the reading only when build 446 would.
+    let lawReads = request.mode == .auto && lawSelection.policy == .law447
     let consultLocal = profileConsults || lawReads
     FileHandle.standardError.write(Data(("os1 rcc-catalog: " + lawSelection.receiptLine + "\n").utf8))
     let (readingTaskID, readingSHA256, readingText) = (request.taskID, request.requestSHA256, request.request)

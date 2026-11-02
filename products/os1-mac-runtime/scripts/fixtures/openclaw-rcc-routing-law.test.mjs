@@ -1555,3 +1555,97 @@ test('review of round 3 (decision 2): a verified start prices the structural scr
   assert.ok(Math.abs(priced.draw.Cw - ((1 - ps) * (qv + 0.5 * qr) + ps * qa)) < 1e-9);
   assert.ok(Math.abs(priced.start.Cw - qv) < 1e-12);
 });
+
+// ---- Round 4 of the 448 review ---------------------------------------------
+// Lead decision 1 (withdrawing round 3's decision 5): the reader and the local
+// worker are context-free, so the local start is a FIRST-turn path in every
+// family; a later short reply keeps the context-aware route the law computes.
+test('round 4 (decision 1): the local row is a first-turn candidate only; status check-ins never take it', () => {
+  const local = r => (r.law?.candidates ?? []).some(([key]) => key.startsWith('local:'));
+  for (const n of [12, 11]) {
+    const q = question(n);
+    const law = lawOf(q);
+    assert.ok(local(hostRoute(q, law)), `#${n}: first turn, the local row is a candidate`);
+    // A later turn, after an OS-1 turn that asks, proposes or simply answers:
+    // the request ("진행해", "응 그렇게 해줘", "계속 해", "아니" read as chat,
+    // or the small talk itself) is never the context-free local row's.
+    for (const os1 of ['테스트 통과했어요. 지금 푸시할까요?', '안녕하세요! 반가워요.', 'Here is the draft.'])
+      for (const request of [q.request, '진행해', '응 그렇게 해줘', '계속 해', '아니']) {
+        const r = hostRoute(q, law, {request, context: transcript('안녕', os1)});
+        assert.ok(!local(r), `#${n} later turn "${request}" after "${os1}": no local candidate`);
+        assert.notEqual(r.route, 'local:qwen3.5:9b@none');
+      }
+  }
+  // An OS-1 status check-in, status question or assistant-state subject needs
+  // the host's install-state card: never the local row, first turn included.
+  for (const signal of ['status_check_in', 'status_question', 'llm_subject_assistant_state']) {
+    const q = question(12);
+    const law = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
+      signals: [...new Set([...c.request_profile.signals.filter(s => s !== 'soft_status'), signal])].sort()}}));
+    assert.ok(!local(hostRoute(q, law)), signal);
+  }
+});
+
+// Lead decision 3: a checklist parity audit's own failure counts price an
+// audited row (lawAuditPFail): the reference's Laplace estimate on the
+// checklist, moved by the cell's graded answers at the prior's weight.
+test('round 4 (decision 3): an audited row\'s p_fail is the audit\'s own checklist measurement', async () => {
+  const {lawAuditPFail} = await import('../../Resources/openclaw-os1-bridge/rcc-runtime.mjs');
+  const audited = structuredClone(TABLE);
+  audited.audits.cells['qwen3.5:9b@none|F1'] = {kind: 'checklist_parity', verdict: 'pass', admits: true, id: 'audit-0123456789ab',
+    n: 40, p_fail: {runs: 40, failures: 3}, reference_p_fail: {runs: 80, failures: 4}};
+  const pRef = (4 + 1) / (80 + 2);
+  assert.ok(Math.abs(lawAuditPFail(audited, {model: 'qwen3.5:9b', effort: 'none'}, 'F1') - (3 + 2 * pRef) / (40 + 2)) < 1e-12);
+  assert.deepEqual(lawLocalEvidence(audited, 'qwen3.5:9b', 'F1'), {form: 'c', audit: 'audit-0123456789ab', tiers: [], excess: 0});
+  // Live judged outcomes of the cell move it further; a non-passing or a
+  // tier-evidence audit carries no checklist price.
+  const learned = new Map([['qwen3.5:9b@none|F1', {runs: 10, failures: 5}]]);
+  assert.ok(Math.abs(lawAuditPFail(audited, {model: 'qwen3.5:9b', effort: 'none'}, 'F1', learned) - (8 + 2 * pRef) / (50 + 2)) < 1e-12);
+  audited.audits.cells['qwen3.5:9b@none|F1'].admits = false;
+  assert.equal(lawAuditPFail(audited, {model: 'qwen3.5:9b', effort: 'none'}, 'F1'), null);
+  assert.equal(lawAuditPFail(TABLE, {model: 'qwen3.5:9b', effort: 'none'}, 'F1'), null, 'no audit has run: the shipped table has none');
+  // Until that evidence exists the law's output for F1 stands: the reference.
+  const q12 = question(12);
+  assert.equal(hostRoute(q12, lawOf(q12)).kind, 'reference');
+});
+
+// Lead decision 4: under the law a provider tile is a pool filter; the owner
+// decision certificate never binds, and the zero-model families stay local.
+function tiledTask(q, catalog, pref) {
+  const task = runtimeTask(q, catalog);
+  task.host_context = {...task.host_context, provider_preference: pref};
+  task.source_fingerprint = hostContextFingerprint(task.host_context);
+  return task;
+}
+for (const [n, kind, output] of [[1, 'deterministic_arithmetic', '0'], [13, 'deterministic_arithmetic', '55'], [8, 'local_ask_back', null]])
+  for (const pref of ['codex', 'claude'])
+    test(`round 4 (decision 4): with the ${pref} tile, question ${n} stays zero-model (${kind})`, async t => {
+      const q = question(n);
+      const catalog = lawOf(q);
+      const dir = await mkdtemp(join(tmpdir(), 'os1-law-tile-')); await chmod(dir, 0o700);
+      const tickets = [];
+      const task = tiledTask(q, catalog, pref);
+      const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true, catalog: async () => catalog,
+        execute: async ticket => { tickets.push(ticket); throw new Error('a zero-model family dispatched'); }});
+      t.after(async () => { await runtime.close(); await rm(dir, {recursive: true, force: true}); });
+      await runtime.submit(task);
+      const done = await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
+      assert.equal(tickets.length, 0);
+      assert.equal(done.state, kind === 'local_ask_back' ? 'returned_unverified' : 'completed', JSON.stringify(done.error ?? null));
+      assert.ok(runtime.events({schema: 1, task_id: task.task_id}).some(x => x.kind === kind), kind);
+      if (output !== null) assert.equal(done.result.output, output);
+      else assert.equal(done.result.output, TABLE.ask_back.ko);
+    });
+test('round 4 (decision 4): under the rollback (no routing_law) a tile stays 446\'s pin: no zero-model path after the catalog', async t => {
+  const q = question(8);
+  const {routing_law: _drop, ...catalog} = lawOf(q);
+  const dir = await mkdtemp(join(tmpdir(), 'os1-law-tile-446-')); await chmod(dir, 0o700);
+  const tickets = [];
+  const task = tiledTask(q, catalog, 'codex');
+  const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true, catalog: async () => catalog,
+    execute: async ticket => { tickets.push(ticket); return completed(ticket); }});
+  t.after(async () => { await runtime.close(); await rm(dir, {recursive: true, force: true}); });
+  await runtime.submit(task);
+  await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
+  assert.ok(!runtime.events({schema: 1, task_id: task.task_id}).some(x => x.kind === 'local_ask_back'));
+});

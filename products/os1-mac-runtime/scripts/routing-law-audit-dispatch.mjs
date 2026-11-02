@@ -48,11 +48,15 @@ function run(command, args, input, timeoutMs = 900_000) {
  * production local worker answers an Auto node (rcc-plugin's request: the
  * conversational system prompt, its 512-token cap, temperature 0, no
  * reasoning) on the local Ollama; it draws no pool quota. */
-async function dispatchLocal({model, request}) {
+async function dispatchLocal({model, request, style = 'conversational'}) {
   const plugin = await import('../Resources/openclaw-os1-bridge/rcc-plugin.mjs');
   const runtime = await import('../Resources/openclaw-os1-bridge/resource-usage.mjs');
   runtime.configureLocalModel(model);
-  const built = plugin.localWorkerCompletionRequest({instruction: request, style: 'conversational'});
+  // Round 4 of the 448 review (lead decision 3): the F1 audit's local arm gets
+  // the prompt the runtime gives the local ticket (small talk's own, or the
+  // conversational one).
+  if (!['conversational', 'small_talk'].includes(style)) throw new Error('local audit style ' + style);
+  const built = plugin.localWorkerCompletionRequest({instruction: request, style});
   const response = await fetch((process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434') + '/api/chat', {method: 'POST',
     headers: {'content-type': 'application/json'},
     body: JSON.stringify({model: built.model.replace(/^ollama\//, ''), stream: false, think: false,
@@ -63,8 +67,8 @@ async function dispatchLocal({model, request}) {
   return {output: plugin.normalizeLocalOutput(String(body?.message?.content ?? '')), draw: {pool: 'none', units: 0}};
 }
 
-export async function dispatch({surface, model, effort, request}) {
-  if (surface === 'local') return dispatchLocal({model, request});
+export async function dispatch({surface, model, effort, request, style}) {
+  if (surface === 'local') return dispatchLocal({model, request, style});
   if (surface === 'codex') {
     const dir = mkdtempSync(join(tmpdir(), 'os1-audit-'));
     try {

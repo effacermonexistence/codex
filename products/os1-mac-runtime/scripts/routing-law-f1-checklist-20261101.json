@@ -1,0 +1,16 @@
+{
+ "schema": 1,
+ "family": "F1",
+ "written": "2026-11-01",
+ "source": "round 4 of the 448 review, lead decision 3 (DESIGN-8 step 2 form (c)): a REVAS paired audit of small talk graded by the local model against this checklist, written before any reply of the audit exists. The five items are the lead's: responsive to what was said, no false or invented claim, same language, appropriate tone, no refusal.",
+ "items": [
+  {"id": "responsive", "check": "The reply responds to what the owner actually said: it acknowledges the feeling or event the owner stated, or returns the owner's greeting, thanks or goodbye, or answers the owner's question to it. It does not ask again about something the owner already told, and it does not presume a mood, cause or detail the owner did not state."},
+  {"id": "no_invented_claim", "check": "The reply makes no false or invented claim: no facts, numbers, places or times; nothing invented about the owner; and no claim that the assistant did, checked, saw, helped with or remembers anything, or promise that it will."},
+  {"id": "same_language", "check": "The reply is written in the same language as the owner's message (Korean to Korean, English to English), with no sentence in another language."},
+  {"id": "tone", "check": "The tone is appropriate for small talk: warm and brief, matching how formally or casually the owner spoke, with no advice or instructions the owner did not ask for, no lecturing, and no statement that the assistant is an AI or cannot feel."},
+  {"id": "no_refusal", "check": "The reply engages with the owner's message instead of refusing, declining or deflecting it."}
+ ],
+ "answer_passes": "an answer passes when the local grader marks every item met",
+ "grader": {"model": "qwen3.5:9b", "endpoint": "local Ollama /api/chat", "temperature": 0, "seed": 7, "think": false, "num_predict": 300},
+ "pass_rule": "Each question is answered once by the cell and twice by the audit reference (two independent runs), and every answer is graded. tau, the parity bound, is the reference's own run-to-run spread on this checklist: the share of questions on which its two runs disagree (one passes, the other fails), measured, never set by hand. A question is informative when both reference runs pass; it is discordant when it is informative and the cell's answer fails. FAIL when any question is discordant; PASS when none is and the informative questions number at least n_parity = ceil(ln(1 - confidence) / ln(1 - s * tau)) (zero discordant pairs in n_parity bound the cell's excess failure rate below tau at the policy's confidence, s the grader's measured sensitivity on planted failures); else INCONCLUSIVE (never admits; tau = 0 or an unmeasured s gives no finite n_parity). The cell's p_fail on the checklist is its failures over its answers and the reference's its failures over its answers (both runs), each Laplace-smoothed by Core."
+}

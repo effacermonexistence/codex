@@ -1300,7 +1300,8 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       # Review of round 3: the verifier is evidence only inside its request
       # scope (text, host profile, turn), at routing, for every row.
       "export function lawSmallTalkScope(task, catalog) {" in RUNTIME and "export function lawSmallTalkLaterTurn(task) {" in RUNTIME and
-      "(scoped ? lawSmallTalkScope(task, catalog) : withoutConversation(task));" in RUNTIME and
+      # Round 4 (lead decision 1): the local start is first-turn only.
+      "withoutConversation(task) && (!scoped || lawSmallTalkScope(task, catalog));" in RUNTIME and
       "no_claim_reply_v1" not in RUNTIME.split("// Review of 448 (fe01246c)")[0] and
       "if (entry && entry.check_outcome !== 'det_fail') entry.check_outcome = 'revas_no_verdict';" in RUNTIME and
       "local ? result.usage ?? null : null, local ? detVerifier.draft_max_tokens : null)" in RUNTIME and
@@ -1367,6 +1368,33 @@ check("throw new Error('det outcomes: every draft must name the held-out validat
       'coreFlow("small_talk_writer_lane", root: root)' in HOST_FIXTURE and
       'async small_talk_later_turn_proposal() {' in (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").read_text(),
       "448 round 3: one population (1), the runtime's escalation event priced (2), repair within F1 (3), no certificate in the law path (4), small talk in every lane and turn (5), its own prompt (6)")
+# Round 4 of the 448 review (lead, 2026-11-01): the local start (and every
+# zero-model path) is first-turn only (decision 1); small talk's prompt answers
+# what the owner said (2); F1's evidence only through a checklist parity audit
+# graded locally, its tau the reference's own run-to-run spread, step 6's
+# horizon the evidence's measured lifetime (3); under the law a tile is a pool
+# filter: the law reads under it and the zero-model families stay local (4).
+F1_AUDIT = (ROOT / "scripts/routing-law-f1-audit.mjs").read_text()
+AUDIT = (ROOT / "scripts/routing-law-audit.mjs").read_text()
+check("withoutConversation(task) && (!scoped || lawSmallTalkScope(task, catalog));" in RUNTIME and
+      "!lawProfileFloor(catalog.request_profile) && withoutConversation(task) &&" in RUNTIME and
+      "lawLocalEvidence(table, LOCAL_WORKER_MODEL, lawFamily(reading, table)) !== null &&" in RUNTIME and
+      "function lawTileKeepsZeroModel(task, catalog) {" in RUNTIME and
+      "const tiled = zeroModelShape && !autoPreference && lawTileKeepsZeroModel(task, catalog);" in RUNTIME and
+      "export function lawAuditPFail(table, candidate, family, learned = null) {" in RUNTIME and
+      "const auditPFail = evidence.form === 'c' ? lawAuditPFail(table, candidate, family, learned) : null;" in RUNTIME and
+      "function compileChecklistAudit(key, cell) {" in TABLE_COMPILER and
+      "export function checklistVerdict(graded, s, confidence = VOI.confidence) {" in F1_AUDIT and
+      "export function planF1Audit({" in F1_AUDIT and "export async function runF1Audit({" in F1_AUDIT and
+      "step 6 did not schedule this audit" in F1_AUDIT and
+      "export function evidenceLifetime(history, {candidate = null, pool = 'none', references = []} = {}) {" in AUDIT and
+      "export function trafficRate(ledgerText) {" in AUDIT and "horizon_days" not in AUDIT and
+      '"horizon_days"' not in (ROOT / "scripts/routing-law-policy.json").read_text() and
+      (ROOT / "scripts/routing-law-f1-checklist-20261101.json").is_file() and
+      (ROOT / "scripts/routing-law-catalog-history-20261101.json").is_file() and
+      "let lawReads = request.mode == .auto && lawSelection.policy == .law447" in MAIN and
+      "return input.routingLaw != nil && lawMayAnswerLocally(input)" in (ROOT / "Sources/OS1Context/RCCNativeCatalogBuilder.swift").read_text(),
+      "448 round 4: first-turn local start (1), F1 form (c) by a checklist parity audit with a measured tau and lifetime (3), a tile is a pool filter (4)")
 # Review of round 3 (448): a provider tile filters the pool and the law
 # decides inside it, the certificate is retired under the law, a verified
 # start prices its structural screen event, the cheaper det step, the
@@ -1394,7 +1422,8 @@ check((ROOT / "scripts/routing-law-audit.mjs").is_file() and (ROOT / "scripts/ro
 check('public static let environmentKey = "OS1_ROUTING_POLICY"' in law_swift and
       'home.appendingPathComponent(".os1/routing-policy.json")' in law_swift and
       "guard policy == .law447 else { return nil }" in law_swift and
-      "let lawReads = autoRequest && lawSelection.policy == .law447" in MAIN and
+      # Round 4 (lead decision 4): the law reads under a provider tile too.
+      "let lawReads = request.mode == .auto && lawSelection.policy == .law447" in MAIN and
       "let consultLocal = profileConsults || lawReads" in MAIN and
       "if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }" in MAIN and
       "capabilityRoutes: input.routingLaw == nil ? capabilityRoutes(input) : nil" in BUILDER and

@@ -5,7 +5,7 @@
  * (evidence form c).
  *
  *   plan        node scripts/routing-law-audit.mjs plan --catalogs <sw446c.json> --intents <intents.json>
- *                 [--pools <pools.json>] [--ledger <routing-ledger.jsonl>] [--spend <audit-spend.jsonl>]
+ *                 [--pools <pools.json>] [--ledger <routing-ledger.jsonl>] [--history <catalog-history.json>] [--spend <audit-spend.jsonl>]
  *                 [--sensitivity <grader-sensitivity.json>] [--now <ISO>] --out <audit-plan.json>
  *   checklists  node scripts/routing-law-audit.mjs checklists --plan <audit-plan.json> --catalogs <sw446c.json> --out <checklists.json>
  *                 [--model qwen3.5:9b] [--audits <id,id>]
@@ -24,9 +24,12 @@
  * (model@effort, law family), pooled over surfaces:
  *   saving   = the pool-unit saving on the family's corpus rows where admitting
  *              the cell moves the argmin at today's price, scaled to the
- *              measured weekly traffic, each pool priced ALONG ITS PATH over
- *              the 7-day horizon (spot until its reset, then a fresh window on
- *              pace, time-weighted)
+ *              measured traffic rate over the evidence's LIFETIME (round 4
+ *              of the 448 review, lead decision 3: the catalogs' measured
+ *              mean interval between changes of the candidate or reference
+ *              model, evidenceLifetime; no hand-chosen horizon), each pool
+ *              priced ALONG ITS PATH over that lifetime (spot until its reset,
+ *              then a fresh window on pace, time-weighted)
  *   P(pass)  = Laplace prior over the cell's own matched-tier evidence
  *   n        = the PARITY bound: ceil(ln(1 - confidence) / ln(1 - s * tau)),
  *              tau the family tiers' tightest percentage tau, s the grader's
@@ -85,10 +88,95 @@ const isoWeek = ms => {
   return new Date(monday).toISOString().slice(0, 10);
 };
 
+// ---- Round 4 of the 448 review (lead decision 3): step 6 from data ---------
+const DAY_MS = 86_400_000;
+/** OS-1's bound catalogs over time, from the runtime's task store: per bound
+ * catalog its time, the quota pools that had a dispatchable row, each pool's
+ * models and reference (the model the catalog's tiers rank frontier in it)
+ * and the local model. Model ids and times only: no task id, request or path
+ * is read into the output. */
+export function catalogHistoryFromSnapshots(snapshots) {
+  const rows = [];
+  for (const s of snapshots) {
+    const c = s?.catalog, at = s?.catalog_bound_at_ms;
+    if (!c || !Number.isSafeInteger(at) || !Array.isArray(c.candidates)) continue;
+    const tiers = c.model_tiers ?? {};
+    const pools = [...new Set(c.candidates.map(x => x.quota_pool).filter(p => p && p !== 'none' && p !== 'unknown'))].sort();
+    const models = Object.fromEntries(pools.map(pool => [pool, [...new Set(c.candidates.filter(x => x.quota_pool === pool)
+      .map(x => x.model))].sort()]));
+    const references = Object.fromEntries(pools.map(pool => [pool, models[pool].filter(m => tiers[m] === 'frontier')[0] ?? null]));
+    const local = c.candidates.find(x => x.quota_pool === 'none' && x.surface === 'local')?.model ?? null;
+    rows.push({at_ms: at, pools, models, references, local});
+  }
+  rows.sort((a, b) => a.at_ms - b.at_ms);
+  return {schema: 1, source: 'rcc-runtime task store (catalog_bound_at_ms; candidate quota pools and models; model_tiers)', rows};
+}
+/** DESIGN-8 step 6, round 4 (lead decision 3): the lifetime of evidence about
+ * a cell (candidate model) against its references, derived from data, never
+ * a hand-chosen horizon: the catalogs' measured mean interval between changes
+ * of the candidate or a reference model. A change is a bound catalog in which
+ * the local model differs from the last one seen (a local candidate), the
+ * candidate leaves or rejoins its pool's models while the pool is present (a
+ * pool candidate: retired, renamed), or a pool's reference differs from the
+ * last one seen. Exponential MLE: the observed span over the changes seen;
+ * with none seen the span itself, a lower bound (censored). */
+export function evidenceLifetime(history, {candidate = null, pool = 'none', references = []} = {}) {
+  const rows = history?.rows ?? [];
+  if (rows.length < 2) return {lifetime_ms: null, basis: 'no_catalog_history', changes: []};
+  const last = new Map(), changes = [];
+  const see = (key, value, at) => {
+    if (value === null || value === undefined) return;
+    if (last.has(key) && last.get(key) !== value) changes.push({at_ms: at, key, from: last.get(key), to: value});
+    last.set(key, value);
+  };
+  for (const row of rows) {
+    if (candidate !== null && pool === 'none') see('candidate', row.local, row.at_ms);
+    if (candidate !== null && pool !== 'none' && row.pools.includes(pool)) see('candidate', (row.models?.[pool] ?? []).includes(candidate), row.at_ms);
+    for (const ref of references) see('reference:' + ref, row.references?.[ref] ?? null, row.at_ms);
+  }
+  const span = rows.at(-1).at_ms - rows[0].at_ms;
+  return {lifetime_ms: changes.length ? span / changes.length : span, span_ms: span, changes,
+    basis: changes.length ? 'mean_interval_between_changes' : 'censored_no_change_seen_span_lower_bound',
+    from: new Date(rows[0].at_ms).toISOString(), to: new Date(rows.at(-1).at_ms).toISOString(), catalogs: rows.length};
+}
+/** The share of bound catalogs in which no quota pool could be drawn (the
+ * local row alone): when a local start is the only answer. */
+export function exhaustedShare(history) {
+  const rows = history?.rows ?? [];
+  if (!rows.length) return null;
+  const none = rows.filter(row => row.pools.length === 0).length;
+  return {catalogs: rows.length, no_drawable_pool: none, share: none / rows.length};
+}
+/** OS-1's measured Auto traffic over the ledger's whole span (round 4: a rate,
+ * not a trailing 7-day count): distinct tasks, an owner's explicit route
+ * excluded (the law never routes it), per day. Route kind and dispatch time
+ * only. */
+export function trafficRate(ledgerText) {
+  const first = new Map();
+  for (const line of String(ledgerText ?? '').split('\n')) {
+    if (!line.trim()) continue;
+    let r; try { r = JSON.parse(line); } catch { continue; }
+    const at = r.dispatched_at_ms ?? r.settled_at_ms;
+    if (typeof r.task_id !== 'string' || !Number.isFinite(at)) continue;
+    const prior = first.get(r.task_id);
+    if (!prior || at < prior.at) first.set(r.task_id, {at, kind: r.route_kind});
+  }
+  const tasks = [...first.values()];
+  const auto = tasks.filter(t => !(typeof t.kind === 'string' && t.kind.startsWith('explicit')));
+  if (tasks.length < 2) return {requests: auto.length, explicit_excluded: tasks.length - auto.length, per_day: null, span_days: null,
+    basis: 'routing ledger: too few tasks for a rate'};
+  const ats = tasks.map(t => t.at).sort((a, b) => a - b);
+  const span = (ats.at(-1) - ats[0]) / DAY_MS;
+  return {requests: auto.length, explicit_excluded: tasks.length - auto.length, span_days: span,
+    per_day: span > 0 ? auto.length / span : null, from: new Date(ats[0]).toISOString(), to: new Date(ats.at(-1)).toISOString(),
+    basis: 'routing ledger: distinct tasks over its whole span, explicit routes excluded'};
+}
+
 /** OS-1's measured Auto traffic: distinct tasks first dispatched in the
- * trailing 7 days, an owner's explicit route excluded (the law never routes
- * it). Reads route kind and dispatch time only. */
-export function weeklyTraffic(ledgerText, now, days = VOI.horizon_days) {
+ * trailing `days`, an owner's explicit route excluded (the law never routes
+ * it). Reads route kind and dispatch time only. Kept as a report (round 4:
+ * step 6 prices the rate over the evidence's lifetime, trafficRate). */
+export function weeklyTraffic(ledgerText, now, days = 7) {
   const first = new Map();
   for (const line of ledgerText.split('\n')) {
     if (!line.trim()) continue;
@@ -241,7 +329,7 @@ export function spendWindow(pool, rate, now) {
     3_600_000).toISOString().slice(0, 13);
 }
 
-export function planAudits({catalogs, intents, headroom = null, traffic, spent = {}, now, sensitivity = null}) {
+export function planAudits({catalogs, intents, headroom = null, traffic, spent = {}, now, sensitivity = null, history = null}) {
   const table = routingLawTable();
   const rows = [], mismatches = [];
   const familyCounts = {};
@@ -270,8 +358,11 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
       difficulty: r.reading?.difficulty ?? null, units: {Cw: bound.law_model.Cw, Px: bound.law_model.Px}});
   }
   const corpus = rows.length ? Object.values(familyCounts).reduce((a, b) => a + b, 0) : 0;
-  const scale = corpus ? traffic.requests / corpus : 0;
-  const horizon = VOI.horizon_days * 86_400_000;
+  // Round 4 of the 448 review (lead decision 3): the measured traffic is a
+  // rate (requests per day over the ledger's span), and each cell's horizon
+  // is its evidence's lifetime from the catalog history (evidenceLifetime),
+  // never a hand-chosen number of days.
+  const perDay = Number.isFinite(traffic?.per_day) ? traffic.per_day : null;
   // The candidates: (model@effort, family) inadmissible only for lack of evidence.
   const cells = new Map();
   for (const row of rows) {
@@ -313,9 +404,19 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
   const cap = {anthropic_shared: VOI.cap_pct_of_weekly_allowance_per_week - (spent.anthropic_shared ?? 0),
     openai_codex: VOI.cap_pct_of_weekly_allowance_per_week - (spent.openai_codex ?? 0)};
   const incumbent = new Map(rows.map(row => [row.index, {eq: row.current, units: row.units}]));
+  const lifetimes = new Map();
+  const lifetimeOf = cell => {
+    if (!lifetimes.has(cell.id)) lifetimes.set(cell.id, evidenceLifetime(history, {candidate: cell.model, pool: cell.pool,
+      references: [...new Set([...cell.rows.values()].map(d => d.target.pool).filter(p => p && p !== 'none'))].sort()}));
+    return lifetimes.get(cell.id);
+  };
   const evaluate = (cell, against = incumbent) => {
     // The saving on the rows where admitting the cell would move the law's
-    // argmin at today's price, in pool units, priced along each pool's path.
+    // argmin at today's price, in pool units, priced along each pool's path
+    // over the evidence's lifetime.
+    const life = lifetimeOf(cell);
+    const horizon = life.lifetime_ms;
+    const scale = corpus && perDay !== null && horizon !== null ? perDay * (horizon / 86_400_000) / corpus : 0;
     let units = {Cw: 0, Px: 0}, spot = 0;
     const helped = [];
     for (const [index, d] of cell.rows) {
@@ -326,7 +427,7 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
     }
     const rates = helped.length ? ratesAt(helped[0]) : ratesAt([...cell.rows.keys()][0]);
     const poolOfUnit = {Cw: 'anthropic_shared', Px: 'openai_codex'};
-    const along = Object.fromEntries(['Cw', 'Px'].map(unit => [unit, pathPrice(rates[poolOfUnit[unit]], horizon)]));
+    const along = Object.fromEntries(['Cw', 'Px'].map(unit => [unit, horizon ? pathPrice(rates[poolOfUnit[unit]], horizon) : 1]));
     const priceUnits = (u, price) => ['Cw', 'Px'].reduce((s, unit) => u[unit] === 0 ? s : s + u[unit] * price[unit], 0);
     const savingPath = priceUnits(units, along) * scale;
     const pass = passPrior([...cell.evidence][0] ?? 'x:');
@@ -351,11 +452,11 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
     const resets = drawn.map(unit => resetIn(rates[poolOfUnit[unit]]));
     const deferAt = resets.length && resets.every(r => r !== null) ? Math.max(...resets) : null;
     const costDefer = deferAt === null ? null : costUnits.Cw + costUnits.Px;
-    const savingDefer = deferAt === null ? null : Math.max(0, horizon - deferAt) / horizon *
+    const savingDefer = deferAt === null || !horizon ? null : Math.max(0, horizon - deferAt) / horizon *
       priceUnits(units, {Cw: 1, Px: 1}) * scale;
     const voiNow = pass * savingPath - costNow;
     const voiDefer = deferAt === null ? -Infinity : pass * savingDefer - costDefer;
-    return {spot_saving_7d: spot * scale, saving_units: units, saving_7d_path: savingPath, p_pass: pass, tau, n: nParity,
+    return {lifetime: life, scale, spot_saving: spot * scale, saving_units: units, saving_path: savingPath, p_pass: pass, tau, n: nParity,
       questions, cost: {Cw: costUnits.Cw, Px: costUnits.Px, priced_now: costNow, priced_after_reset: costDefer},
       rows_saving: helped.length, voi_now: voiNow, voi_defer: voiDefer, defer_after_ms: deferAt,
       voi: Math.max(voiNow, voiDefer), when: voiDefer > voiNow ? 'after_reset' : 'now', rates};
@@ -374,6 +475,7 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
       .filter(pool => best.rates[pool]?.rate === 'exhausted');
     // Every condition that blocks the audit, the first one its decision.
     const blockers = [
+      ...(best.lifetime.lifetime_ms === null || perDay === null ? ['no_lifetime_or_traffic_measurement'] : []),
       ...(best.rows_saving === 0 ? [alone.get(best.cell.id).rows_saving > 0 ? 'superseded_by_scheduled' : 'no_saving'] : []),
       ...(fam?.tools === 'agent' || shapes.includes('agentic') ? ['not_auditable_tool_surface'] : []),
       ...(exhausted.length ? ['pool_exhausted'] : []),
@@ -392,8 +494,10 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
     const solo = alone.get(best.cell.id);
     out.push({id: best.cell.id, cell: `${best.cell.model}@${best.cell.effort}`, family: best.cell.family, pool: best.cell.pool,
       surface, evidence_now: [...best.cell.evidence].sort(), rows_offered: best.cell.rows.size, rows_saving: best.rows_saving,
-      p_pass: r6(best.p_pass), saving_7d_spot: r6(best.spot_saving_7d), saving_7d_path: r6(best.saving_7d_path),
-      saving_units: {Cw: r6(best.saving_units.Cw * scale), Px: r6(best.saving_units.Px * scale)},
+      lifetime_days: best.lifetime.lifetime_ms === null ? null : r6(best.lifetime.lifetime_ms / 86_400_000),
+      lifetime_basis: best.lifetime.basis, lifetime_changes: best.lifetime.changes?.length ?? 0,
+      p_pass: r6(best.p_pass), saving_spot: r6(best.spot_saving), saving_path: r6(best.saving_path),
+      saving_units: {Cw: r6(best.saving_units.Cw * best.scale), Px: r6(best.saving_units.Px * best.scale)},
       tau_excess_rate: r6(best.tau), grader_sensitivity: grader, n: best.n, questions: best.questions ?? [],
       question_references: Object.fromEntries((best.questions ?? []).map(index => [index, best.cell.rows.get(index).target.key])),
       offered_rows: Object.fromEntries([...best.cell.rows].map(([index, d]) => [index, d.target.key])),
@@ -402,7 +506,7 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
         priced_after_reset: r6(best.cost.priced_after_reset)},
       voi_now: r6(best.voi_now), voi_after_reset: Number.isFinite(best.voi_defer) ? r6(best.voi_defer) : null,
       voi: r6(best.voi), when: best.when, decision, blockers,
-      alone: {saving_7d_path: r6(solo.saving_7d_path), rows_saving: solo.rows_saving, voi: r6(solo.voi)}});
+      alone: {saving_path: r6(solo.saving_path), rows_saving: solo.rows_saving, voi: r6(solo.voi)}});
   }
   const scheduled = out.filter(a => a.decision.startsWith('scheduled'));
   const rates = rows.find(row => row.receipt.rates)?.receipt.rates ?? null;
@@ -411,10 +515,11 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
     formula: {E_Q: 'Q(c)*price(pool c) + p_screen*Q(target)*price(target pool) for a read-only row below the reference ' +
         '(the runtime escalates it only on its structural screen; Core lawScreenPFail), Q(c)*price(pool c) for a writer ' +
         '(round 3 of the 448 review, decision 2; Core lawExpectedQuota)',
-      saving_7d_path: '(weekly measured traffic / corpus size) * sum over the family rows where admitting c moves the argmin at ' +
-        'today\'s price of the pool-unit saving, each pool priced along its path (spot until its reset, then a fresh window on ' +
-        'pace, 1, time-weighted over the horizon)',
-      voi: 'max(VOI now, VOI after the reset) with VOI now = P(pass) * saving_7d_path - cost at spot, VOI after reset = ' +
+      saving_path: '(measured traffic per day x the evidence lifetime in days / corpus size) * sum over the family rows where ' +
+        'admitting c moves the argmin at today\'s price of the pool-unit saving, each pool priced along its path (spot until its ' +
+        'reset, then a fresh window on pace, 1, time-weighted over the lifetime); the lifetime is the catalogs\' measured mean ' +
+        'interval between changes of the candidate or reference model (round 4 of the 448 review, lead decision 3)',
+      voi: 'max(VOI now, VOI after the reset) with VOI now = P(pass) * saving_path - cost at spot, VOI after reset = ' +
         'P(pass) * saving accrued after the later reset of the pools drawn at price 1 - cost at price 1',
       p_pass: 'Laplace prior over the cell\'s matched tiers in its pool: (scored within tau + 1) / (scored + 2)',
       n: 'parity: ceil(ln(1 - confidence) / ln(1 - s * tau)), tau = the family tiers\' tightest percentage tau as an excess ' +
@@ -433,7 +538,7 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
       ex === null && form.startsWith('b:')).length, 0), mismatches},
     pass_rule: VOI.pass_rule, audits: out, scheduled: scheduled.map(a => a.id),
     totals: {candidates: out.length, scheduled: scheduled.length,
-      saving_7d_path_scheduled: r6(scheduled.reduce((s, a) => s + a.saving_7d_path, 0)),
+      saving_path_scheduled: r6(scheduled.reduce((s, a) => s + a.saving_path, 0)),
       cost_scheduled: {Cw: r6(scheduled.reduce((s, a) => s + a.cost.Cw, 0)), Px: r6(scheduled.reduce((s, a) => s + a.cost.Px, 0))},
       by_decision: out.reduce((acc, a) => ({...acc, [a.decision]: (acc[a.decision] ?? 0) + 1}), {})}};
 }
@@ -683,14 +788,16 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const json = path => JSON.parse(readFileSync(path, 'utf8'));
   if (command === 'plan') {
     const now = o.now ? Date.parse(o.now) : Date.now();
-    const traffic = weeklyTraffic(o.ledger ? readFileSync(o.ledger, 'utf8') : '', now);
+    const traffic = trafficRate(o.ledger ? readFileSync(o.ledger, 'utf8') : '');
     const sensitivity = o.sensitivity ? json(o.sensitivity) : null;
-    const args = {catalogs: json(o.catalogs), intents: o.intents ? json(o.intents) : {}, headroom: headroomOf(o), traffic, now, sensitivity};
+    const history = o.history ? json(o.history) : null;
+    const args = {catalogs: json(o.catalogs), intents: o.intents ? json(o.intents) : {}, headroom: headroomOf(o), traffic, now,
+      sensitivity, history};
     // The spend of each pool's current reset window (the plan's own windows).
     const first = planAudits({...args, spent: {}});
     const plan = o.spend && first.spend_windows ? planAudits({...args, spent: spendInWindows(o.spend, first.spend_windows)}) : first;
     writeFileSync(o.out, JSON.stringify(plan, null, 1) + '\n');
-    process.stdout.write(JSON.stringify({rates: plan.rates, traffic: plan.traffic.requests, totals: plan.totals,
+    process.stdout.write(JSON.stringify({rates: plan.rates, traffic_per_day: plan.traffic.per_day, totals: plan.totals,
       derivation_mismatches: plan.derivation_check.mismatches.length, scheduled: plan.scheduled}, null, 1) + '\n');
   } else if (command === 'checklists') {
     const planBytes = readFileSync(o.plan);
