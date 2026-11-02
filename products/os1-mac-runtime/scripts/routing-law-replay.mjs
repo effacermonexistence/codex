@@ -242,6 +242,13 @@ function repairOf(result, catalog, table) {
  * on the same screen). */
 export function pFailOf(result, catalog, table) {
   const c = result.candidate;
+  // Round 5 of the 448 review: a local row admitted with evidence below a
+  // runnable reference (form c) starts from its target's screen rate, as Core
+  // prices it (lawScreenPFail with the target: its ladder's reference).
+  if (c.surface === 'local' && result.ladder?.reference_candidate_id && !result.ladder.verifier) {
+    const target = catalog.candidates.find(row => row.id === result.ladder.reference_candidate_id) ?? null;
+    return Math.min(1, lawScreenPFail(table, c, target));
+  }
   if (c.surface === 'local' || result.kind === 'reference' || c.model === table.references[c.quota_pool]) return lawScreenPFail(table, c);
   const own = catalog.candidates.filter(row => row.quota_pool === c.quota_pool && row.model === table.references[c.quota_pool] &&
     row.scope === c.scope).sort((a, b) => EFFORT_ORDER.indexOf(b.effort) - EFFORT_ORDER.indexOf(a.effort))[0] ??

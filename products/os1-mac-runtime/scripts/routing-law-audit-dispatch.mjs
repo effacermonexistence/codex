@@ -5,9 +5,12 @@
 // `--confirm-paid yes`, outside the weekly cap, or without frozen checklists.
 //
 // Build 448: the local model's arm runs on the local Ollama (dispatchLocal).
-// One answer-shaped call per arm on the exact (surface, model, effort), with
-// no tools, no MCP servers, no session persistence and the user's own config
-// and customizations off, so both arms run the same bare harness:
+// The family audits of routing-law-audit.mjs (a cloud cell against its
+// reference): one answer-shaped call per arm on the exact (surface, model,
+// effort), with no tools, no MCP servers, no session persistence and the
+// user's own config and customizations off, so both arms run the same bare
+// harness (a model comparison; the F1 checklist audit's reference arm runs
+// OS-1's own, below):
 //  - Codex:  codex exec --skip-git-repo-check --ephemeral --ignore-user-config
 //            --sandbox read-only -m <model> -c model_reasoning_effort="<effort>"
 //            --json -o <last message file> -  (the request on stdin)
@@ -18,9 +21,22 @@
 // list cost (Resources/model-price-table.json; Claude reports it, Codex is
 // priced from the token counts it reports) times the measured pool % per
 // dollar of the committed quota snapshot (scripts/routing-law-quota-*.json).
+//
+// Round 5 of the 448 review: the F1 checklist audit's REFERENCE arm
+// (`via: 'os1'`) runs through OS-1 itself, the harness the owner's reference
+// answer gets (the delegated envelope, the executor instructions and its
+// signed ticket, HarnessProfile.current), not the bare one above: `os1 run
+// --prompt <request> --output-format json --max-native-dispatches 1` on a
+// fresh empty workspace (a first turn), with the binary's version required to
+// be this source's (so its harness is this source's pinned profile). The run
+// must have bound exactly the plan's reference row (the law's F1 argmin at
+// the planned pools; anything else is no reference answer and stops the
+// audit); its output is the answer, its draw the routing ledger's usage of
+// that task priced as above. The cell arm is the production local ticket
+// (dispatchLocal), so both arms are what the owner would get.
 import {spawn} from 'node:child_process';
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {homedir, tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -67,7 +83,60 @@ async function dispatchLocal({model, request, style = 'conversational'}) {
   return {output: plugin.normalizeLocalOutput(String(body?.message?.content ?? '')), draw: {pool: 'none', units: 0}};
 }
 
-export async function dispatch({surface, model, effort, request, style}) {
+/** This source's runtime version string (SelfUpdateCommands.swift) and
+ * shipped harness (HarnessProfile.current). */
+export function sourceIdentity() {
+  const version = /^let os1RuntimeVersionString = "([^"]+)"$/m.exec(readFileSync(join(ROOT, 'Sources/OS1/SelfUpdateCommands.swift'), 'utf8'))?.[1];
+  if (!version) throw new Error('no runtime version in the source');
+  return {version};
+}
+/** The routing ledger's usage of one task, priced in its pool's units. */
+export function ledgerDraw(ledgerText, taskID) {
+  let usd = 0, pool = null, seen = 0, model = null;
+  for (const line of String(ledgerText).split('\n')) {
+    if (!line.includes(taskID)) continue;
+    let record; try { record = JSON.parse(line); } catch { continue; }
+    if (record.task_id !== taskID || !record.usage) continue;
+    const price = PRICES[record.model];
+    if (!price) return null;
+    const u = record.usage, write = u.cache_write_tokens ?? 0, read = u.cache_read_tokens ?? 0;
+    // OS-1's native usage counts cache writes inside input_tokens.
+    usd += (Math.max(0, (u.input_tokens ?? 0) - write) * price.input + write * (price.cache_write ?? price.input) +
+      read * price.cached_input + (u.output_tokens ?? 0) * price.output) / 1e6;
+    pool = record.quota_pool; model = record.model; seen++;
+  }
+  if (!seen || !pool) return null;
+  const units = pool === 'anthropic_shared' ? usd * QUOTA.anthropic_shared.all : pool === 'openai_codex' ? usd * codexConversion(model) : null;
+  return units === null ? null : {pool, units};
+}
+async function dispatchOS1({surface, model, effort, request}) {
+  const bin = process.env.OS1_BIN ?? 'os1';
+  const expected = sourceIdentity().version;
+  const version = (await run(bin, ['--version'], '', 60_000)).trim();
+  if (version !== expected) throw new Error(`os1 is ${version}, not this source's ${expected}`);
+  const workspace = mkdtempSync(join(tmpdir(), 'os1-f1-audit-'));
+  try {
+    const stdout = await run(bin, ['run', '--workspace', workspace, '--prompt', request, '--output-format', 'json',
+      '--max-native-dispatches', '1'], '');
+    const summary = JSON.parse(stdout);
+    const snapshot = summary.rccRuntime ?? null;
+    const done = (snapshot?.children ?? []).filter(child => child.state === 'completed');
+    const ran = done.map(child => child.selected_config).filter(Boolean)
+      .map(c => `${c.surface}:${c.model}@${c.effort}`);
+    const route = ran.length === 1 ? ran[0] : ran.join('+') || 'none';
+    const ledger = join(homedir(), '.os1/rcc-runtime/routing-ledger/routing-ledger.jsonl');
+    const draw = snapshot?.task_id && existsSync(ledger) ? ledgerDraw(readFileSync(ledger, 'utf8'), snapshot.task_id) : null;
+    return {output: String(snapshot?.result?.output ?? ''), route, task_id: snapshot?.task_id ?? null, draw,
+      expected: `${surface}:${model}@${effort}`, version};
+  } finally { rmSync(workspace, {recursive: true, force: true}); }
+}
+
+export async function dispatch({surface, model, effort, request, style, via}) {
+  if (via === 'os1') {
+    const result = await dispatchOS1({surface, model, effort, request});
+    const {harnessPin} = await import('./routing-law-table.mjs');
+    return {...result, harness: harnessPin()};
+  }
   if (surface === 'local') return dispatchLocal({model, request, style});
   if (surface === 'codex') {
     const dir = mkdtempSync(join(tmpdir(), 'os1-audit-'));

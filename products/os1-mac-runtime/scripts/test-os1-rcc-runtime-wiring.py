@@ -1275,8 +1275,8 @@ HOST_FIXTURE = (ROOT / "Tests/OS1ContextTests/RoutingLawHostFixture.swift").read
 LAW_FIXTURE = (ROOT / "Tests/OS1ContextTests/RoutingLawFixture.swift").read_text()
 check("snapshot.result = {output, execution_verified: !askBack, task_verified: !askBack," in RUNTIME and
       "'owner_order'" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
-      "export function lawLocalEvidence(table, model, family) {" in RUNTIME and
-      "lawLocalEvidence(table, candidate.model, family) ?? {form: 'v', tiers: []}" in RUNTIME and
+      "export function lawLocalEvidence(table, model, family, task = undefined, catalog = undefined) {" in RUNTIME and
+      "lawLocalEvidence(table, candidate.model, family, task, catalog) ?? {form: 'v', tiers: []}" in RUNTIME and
       "lawQuota(table, other.candidate, 'verify')" in RUNTIME and "lawQuota(table, other.candidate, 'repair')" in RUNTIME and
       "export function revasCheckInstruction(instruction, draft) {" in RUNTIME and
       "export function revasRepairInstruction(instruction, draft, findings) {" in RUNTIME and
@@ -1380,12 +1380,11 @@ F1_AUDIT = (ROOT / "scripts/routing-law-f1-audit.mjs").read_text()
 AUDIT = (ROOT / "scripts/routing-law-audit.mjs").read_text()
 check("withoutConversation(task) && (!scoped || lawSmallTalkScope(task, catalog));" in RUNTIME and
       "!lawProfileFloor(catalog.request_profile) && withoutConversation(task) &&" in RUNTIME and
-      "lawLocalEvidence(table, LOCAL_WORKER_MODEL, lawFamily(reading, table)) !== null &&" in RUNTIME and
+      "lawLocalEvidence(table, LOCAL_WORKER_MODEL, lawFamily(reading, table), task, catalog) !== null &&" in RUNTIME and
       "function lawTileKeepsZeroModel(task, catalog) {" in RUNTIME and
       "const tiled = zeroModelShape && !autoPreference && lawTileKeepsZeroModel(task, catalog);" in RUNTIME and
       "export function lawAuditPFail(table, candidate, family, learned = null) {" in RUNTIME and
-      "const auditPFail = evidence.form === 'c' ? lawAuditPFail(table, candidate, family, learned) : null;" in RUNTIME and
-      "function compileChecklistAudit(key, cell) {" in TABLE_COMPILER and
+      "function compileChecklistAudit(key, cell, context) {" in TABLE_COMPILER and
       "export function checklistVerdict(graded, s, confidence = VOI.confidence) {" in F1_AUDIT and
       "export function planF1Audit({" in F1_AUDIT and "export async function runF1Audit({" in F1_AUDIT and
       "step 6 did not schedule this audit" in F1_AUDIT and
@@ -1397,6 +1396,41 @@ check("withoutConversation(task) && (!scoped || lawSmallTalkScope(task, catalog)
       "let lawReads = request.mode == .auto && lawSelection.policy == .law447" in MAIN and
       "return input.routingLaw != nil && lawMayAnswerLocally(input)" in (ROOT / "Sources/OS1Context/RCCNativeCatalogBuilder.swift").read_text(),
       "448 round 4: first-turn local start (1), F1 form (c) by a checklist parity audit with a measured tau and lifetime (3), a tile is a pool filter (4)")
+# Round 5 of the 448 review (2026-11-01): a form (c) checklist audit admits only
+# in its request scope and is priced on the runtime's escalation event (its
+# structural screen); the host's uncleared status and its floors no local
+# reading lowers keep the local row off; a form (c) local row answers when no
+# pool can draw; the compiler binds a checklist audit to its pre-registered
+# inputs; the audit's PASS must be reachable, accumulates across pool windows,
+# draws its population from the checklist's scope minus the tuning sets, grades
+# behind Core's deterministic checks with a locked sensitivity, and runs its
+# reference arm through OS-1's own harness.
+DISPATCH = (ROOT / "scripts/routing-law-audit-dispatch.mjs").read_text()
+check("function lawAuditScope(audit, task, catalog) {" in RUNTIME and
+      "&& lawAuditScope(audit, task, catalog))" in RUNTIME and
+      "function lawReadingFloor(profile) {" in RUNTIME and
+      "!lawHostNeedsTools(task, catalog) && !lawReadingFloor(catalog?.request_profile) &&" in RUNTIME and
+      "&& !profile.signals.includes('soft_cleared_status'))));" in RUNTIME and
+      "status_check_in: ['soft_cleared_status'], status_question: ['soft_cleared_status']," in RUNTIME and
+      "const auditPFail = " not in RUNTIME and
+      "checklist_p_fail: round6(lawAuditPFail(table, pick.candidate, family, learned)), priced_on: 'structural_screen'}} : {})};" in RUNTIME and
+      "const holds = (evidence.form === 'a' && detStep === null) || (option.local && evidence.form === 'c' && target === null);" in RUNTIME and
+      "!['a', 'c'].includes(lawLocalEvidence(routingLawTable(), LOCAL_WORKER_MODEL, admission.family, task, catalog)?.form))" in RUNTIME and
+      "export function checklistAuditContext({policy, checklistBytes, sensitivities = [], quota = {}, harness}) {" in TABLE_COMPILER and
+      "export function harnessPin(text = null) {" in TABLE_COMPILER and
+      "f1_sensitivity: 'scripts/routing-law-f1-sensitivity-20261101.json'," in TABLE_COMPILER and
+      "export function passReachable(n, s, confidence = VOI.confidence) {" in F1_AUDIT and
+      "export function minimalAudit(available, s, confidence = VOI.confidence) {" in F1_AUDIT and
+      "export function stratifiedOrder(items, seed) {" in F1_AUDIT and
+      "export function deterministicFindings(request, reply) {" in F1_AUDIT and
+      "export function nearDuplicate(a, b) {" in F1_AUDIT and
+      "throw new Error('the sensitivity is not the one the plan locked');" in F1_AUDIT and
+      "via: 'os1'});" in F1_AUDIT and
+      "async function dispatchOS1({surface, model, effort, request}) {" in DISPATCH and
+      "'--max-native-dispatches', '1'], '');" in DISPATCH and
+      "if (c.surface === 'local' && result.ladder?.reference_candidate_id && !result.ladder.verifier) {" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
+      (ROOT / "scripts/routing-law-f1-sensitivity-20261101.json").is_file(),
+      "448 round 5: form (c) scoped and screen-priced, uncleared status and reading floors keep the local row off, form (c) answers with no pool, pre-registered audit inputs, a reachable and accumulating audit with a locked grader, OS-1's harness on the reference arm")
 # Review of round 3 (448): a provider tile filters the pool and the law
 # decides inside it, the certificate is retired under the law, a verified
 # start prices its structural screen event, the cheaper det step, the

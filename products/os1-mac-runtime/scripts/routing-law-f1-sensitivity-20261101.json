@@ -1,0 +1,138 @@
+{
+ "schema": 1,
+ "s": 0.3333333333333333,
+ "grader_version": "local_llm_with_det_prefilter_v1",
+ "checklist_sha256": "2571eb318633e98e09d5bd57541c38f0043dcad427ae8e8587d4d1ea4d4cc0a8",
+ "grader": "local_llm:qwen3.5:9b behind Core lawDeterministicCheck (language, refusal, action promise) and the register check",
+ "basis": "natural violations of the audited cell's own replies: the held-out set H replies of the small-talk prompt (written after the round-5 prompt freeze, labeled before grading) the round-5 grader fails, over those labeled violations; the conservative reading (O4): planted failures are blatant, and the pooled rate over both prompt styles is reported beside",
+ "cell_stratum": {
+  "violations": 18,
+  "detected": 6
+ },
+ "pooled": {
+  "s": 0.6041666666666666,
+  "violations": 48,
+  "detected": 29
+ },
+ "natural": {
+  "violations": 48,
+  "detected": 29,
+  "detected_ids": [
+   "small_talk|2",
+   "small_talk|12",
+   "small_talk|13",
+   "small_talk|29",
+   "small_talk|36",
+   "small_talk|37",
+   "conversational|0",
+   "conversational|1",
+   "conversational|2",
+   "conversational|3",
+   "conversational|4",
+   "conversational|5",
+   "conversational|6",
+   "conversational|7",
+   "conversational|8",
+   "conversational|9",
+   "conversational|10",
+   "conversational|13",
+   "conversational|20",
+   "conversational|21",
+   "conversational|23",
+   "conversational|27",
+   "conversational|28",
+   "conversational|30",
+   "conversational|31",
+   "conversational|32",
+   "conversational|33",
+   "conversational|34",
+   "conversational|41"
+  ],
+  "missed_ids": [
+   "small_talk|0",
+   "small_talk|3",
+   "small_talk|4",
+   "small_talk|6",
+   "small_talk|7",
+   "small_talk|8",
+   "small_talk|9",
+   "small_talk|10",
+   "small_talk|15",
+   "small_talk|24",
+   "small_talk|27",
+   "small_talk|32",
+   "conversational|11",
+   "conversational|12",
+   "conversational|16",
+   "conversational|19",
+   "conversational|29",
+   "conversational|35",
+   "conversational|38"
+  ],
+  "clean": 44,
+  "clean_failed": 0,
+  "clean_failed_ids": [],
+  "by_style_language": {
+   "small_talk|ko": {
+    "violations": 16,
+    "detected": 6,
+    "clean": 11,
+    "clean_failed": 0
+   },
+   "small_talk|en": {
+    "violations": 2,
+    "detected": 0,
+    "clean": 17,
+    "clean_failed": 0
+   },
+   "conversational|ko": {
+    "violations": 24,
+    "detected": 19,
+    "clean": 3,
+    "clean_failed": 0
+   },
+   "conversational|en": {
+    "violations": 6,
+    "detected": 4,
+    "clean": 13,
+    "clean_failed": 0
+   }
+  }
+ },
+ "sources": {
+  "set_sha256": "026faeb9464fed9602b616b16d13dff35d9de7f74acd2ef3d83ecb7aa14f3930",
+  "labels_sha256": "63a36f69e150cb607fbd15bb5729cad99b2f1eb5c935a08583c8db7ec1a79cd4",
+  "graded_small_talk_sha256": "d89c76241ceb872107a07fba503cdd9c73b865db3d7437692d502c6a9833ef83",
+  "graded_conversational_sha256": "f5e980bae9fc18088acfce4f3971853c1480eadbeb6bce84a1a86d037599126d"
+ },
+ "planted": {
+  "s": 0.95,
+  "planted": 40,
+  "detected": 38,
+  "clean": 10,
+  "clean_passed": 10,
+  "by_item": {
+   "responsive": {
+    "planted": 8,
+    "detected": 7
+   },
+   "no_invented_claim": {
+    "planted": 8,
+    "detected": 7
+   },
+   "same_language": {
+    "planted": 8,
+    "detected": 8
+   },
+   "tone": {
+    "planted": 8,
+    "detected": 8
+   },
+   "no_refusal": {
+    "planted": 8,
+    "detected": 8
+   }
+  },
+  "planted_sha256": "c30fb770766a9b16c30d662469aeac2b4097de5bdffe56caec2de103bf792828"
+ }
+}

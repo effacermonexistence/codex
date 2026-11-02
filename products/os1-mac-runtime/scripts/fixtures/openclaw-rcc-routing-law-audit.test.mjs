@@ -18,7 +18,7 @@ import {weeklyTraffic, planAudits, writeChecklists, runAudit, gradeAudit, spendT
   answerRequest, passPrior, pathPrice, stratifiedSample, spendWindow, measureSensitivity}
   from '../routing-law-audit.mjs';
 import {atHeadroom, gateOf, breakEven, lawCatalog, clockOf, routeOf} from '../routing-law-replay.mjs';
-import {compileAudits} from '../routing-law-table.mjs';
+import {checklistAuditContext, compileAudits, harnessPin} from '../routing-law-table.mjs';
 import * as fake from './routing-law-audit-fake-dispatcher.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -355,23 +355,43 @@ test('F1 audit: the pre-registered verdict: tau is the reference\'s own run-to-r
   assert.equal(f1.checklistVerdict(graded.slice(0, 3).concat(graded.slice(24, 25)), 1).verdict, 'inconclusive');
 });
 
-test('F1 audit: the compiler re-derives a checklist parity verdict from its counts and carries the p_fail counts', () => {
-  const rule = 'r', digest = 'a'.repeat(64);
-  const cell = {kind: 'checklist_parity', verdict: 'pass', answers_sha256: digest, checklist_sha256: 'b'.repeat(64), n: 30,
-    informative: 24, discordant: 0, tau: 0.2, spread_pairs: 6, grader_sensitivity: 1, confidence: 0.9, n_parity: 11,
-    sampling: 'stratified_random', reference: 'claude-fable-5-1@max', p_fail: {runs: 30, failures: 3}, reference_p_fail: {runs: 60, failures: 6}};
-  const compiled = compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': cell}}).cells['qwen3.5:9b@none|F1'];
+// Round 5: the compiler trusts nothing the cell says about itself.
+const F1_CHECKLIST_SHA = f1.loadChecklist().sha256;
+const SENSITIVITY = {schema: 1, s: 0.95, grader_version: f1.GRADER_VERSION, checklist_sha256: F1_CHECKLIST_SHA, basis: 'fixture'};
+const AUDIT_CONTEXT = checklistAuditContext({policy: JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8')),
+  checklistBytes: readFileSync(join(ROOT, f1.CHECKLIST_PATH)), sensitivities: [SENSITIVITY], quota: TABLE.quota, harness: harnessPin()});
+const goodCell = () => ({kind: 'checklist_parity', verdict: 'pass', answers_sha256: 'a'.repeat(64), checklist_sha256: F1_CHECKLIST_SHA,
+  sensitivity_sha256: f1.sensitivitySHA(SENSITIVITY), grader_version: f1.GRADER_VERSION, scope: 'small_talk_request_v2',
+  requests_sha256: 'c'.repeat(64), exclusion_sha256: 'd'.repeat(64), lineage: 'e'.repeat(64), reference_harness: harnessPin(),
+  n: 30, informative: 24, discordant: 0, tau: 0.2, spread_pairs: 6, grader_sensitivity: 0.95, confidence: 0.9,
+  n_parity: f1.nParity(0.2, 0.95), sampling: 'stratified_random', reference: 'claude-fable-5-1@max',
+  p_fail: {runs: 30, failures: 3}, reference_p_fail: {runs: 60, failures: 6}});
+
+test('F1 audit: the compiler re-derives a checklist parity verdict from its counts against its pre-registered inputs only', () => {
+  const rule = 'r';
+  const compile = cell => compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': cell}}, AUDIT_CONTEXT).cells['qwen3.5:9b@none|F1'];
+  // n_parity(0.2, 0.95, 0.9) = 11 <= 24 informative.
+  const compiled = compile(goodCell());
   assert.equal(compiled.admits, true);
   assert.equal(compiled.kind, 'checklist_parity');
+  assert.equal(compiled.scope, 'small_talk_request_v2');
   assert.deepEqual([compiled.p_fail, compiled.reference_p_fail], [{runs: 30, failures: 3}, {runs: 60, failures: 6}]);
   // A verdict its counts do not support never compiles.
   for (const bad of [{informative: 10}, {n_parity: 12}, {discordant: 1}, {spread_pairs: 0}, {grader_sensitivity: null},
     {p_fail: {runs: 29, failures: 3}}, {sampling: 'corpus_order'}])
-    assert.throws(() => compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': {...cell, ...bad}}}), /checklist audit/, JSON.stringify(bad));
+    assert.throws(() => compile({...goodCell(), ...bad}), /checklist audit/, JSON.stringify(bad));
+  // Nothing the cell says about itself is trusted (review of round 4: a
+  // pasted cell with confidence 0.05, s 1, any checklist and any reference
+  // compiled to PASS): the policy's confidence, the frozen checklist, a
+  // committed sensitivity of this grader, a pool reference at its ceiling,
+  // the shipped harness, the checklist's scope.
+  const forged = [{confidence: 0.05, n_parity: 1}, {checklist_sha256: 'b'.repeat(64)}, {grader_sensitivity: 1, n_parity: f1.nParity(0.2, 1)},
+    {sensitivity_sha256: 'f'.repeat(64)}, {grader_version: 'other'}, {reference: 'anything@max'}, {reference: 'claude-fable-5-1@high'},
+    {reference_harness: {profile: 'H1@1', rendering_sha256: '0'.repeat(64)}}, {scope: null}, {lineage: 'x'}];
+  for (const bad of forged) assert.throws(() => compile({...goodCell(), ...bad}), /checklist audit/, JSON.stringify(bad));
+  assert.throws(() => compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': goodCell()}}), /no pre-registered context/);
   // An honest INCONCLUSIVE compiles and admits nothing.
-  const inconclusive = compileAudits({schema: 1, rule, cells: {'qwen3.5:9b@none|F1': {...cell, verdict: 'inconclusive',
-    informative: 10}}}).cells['qwen3.5:9b@none|F1'];
-  assert.equal(inconclusive.admits, false);
+  assert.equal(compile({...goodCell(), verdict: 'inconclusive', informative: 10}).admits, false);
 });
 
 test('F1 audit: step 6 from data: the evidence lifetime, the traffic rate and the exhausted share', () => {
@@ -394,90 +414,189 @@ test('F1 audit: step 6 from data: the evidence lifetime, the traffic rate and th
 });
 
 const F1_REQUESTS = f1.buildRequestSet({corpusF1: [{request: '오늘 하루 어땠어? 나는 좀 피곤했어'}, {request: '진행해'}],
-  fresh: ['나 승진했어!', 'I just got home', '오늘 하루 어땠어? 나는 좀 피곤했어', 'Good night!']});
+  fresh: ['나 승진했어!', 'I just got home', '오늘 하루 어땠어? 나는 좀 피곤했어', 'Good night!', '고마워 덕분에 살았다', '퇴근했다!',
+    'Book recommendations for summer?', '방금 집 도착했어 ㅎㅎ', '오늘 너무 졸려', 'Long day today', '오늘 운동하고 왔어', '잘 자',
+    'Good morning!', '배고프다', 'I\'m so tired', '드디어 금요일이다'],
+  excluded: ['고마워 덕분에 살았어', '방금 집 도착했어']});
 const AFTER_RESET = Date.parse('2026-11-02T09:00:00Z');
-const POOLS_AFTER = {anthropic_shared: {observed_at_ms: Date.parse('2026-11-01T22:52:33Z'), valid_until_ms: Date.parse('2026-11-01T23:02:33Z'),
-  windows: [{used_percent: 100, resets_at_ms: Date.parse('2026-11-02T07:59:59Z'), window_minutes: 10080}]},
-  openai_codex: {observed_at_ms: Date.parse('2026-11-01T22:00:00Z'), valid_until_ms: Date.parse('2026-11-01T22:10:00Z'),
+const POOLS_AFTER = {anthropic_shared: {observed_at_ms: AFTER_RESET - 60_000, valid_until_ms: AFTER_RESET + 540_000,
+  windows: [{used_percent: 0, resets_at_ms: Date.parse('2026-11-09T07:59:59Z'), window_minutes: 10080}]},
+  openai_codex: {observed_at_ms: AFTER_RESET - 60_000, valid_until_ms: AFTER_RESET + 540_000,
     windows: [{used_percent: 100, resets_at_ms: Date.parse('2026-11-05T07:08:27Z'), window_minutes: 10080}]}};
 const LEDGER = Array.from({length: 40}, (_, i) => JSON.stringify({task_id: 't' + i, route_kind: 'law',
   dispatched_at_ms: AFTER_RESET - 20 * DAY + i * 12 * 3_600_000})).join('\n');
-const f1Plan = (sensitivity = {s: 0.9}, extra = {}) => f1.planF1Audit({requestSet: F1_REQUESTS, pools: POOLS_AFTER, at: AFTER_RESET,
-  history: HISTORY, ledgerText: LEDGER, mix: {corpus: 370, f1_first_turn: 54}, sensitivity, ...extra});
+const MIX = {corpus: 370, f1_offered_first_turn: 49, f1_in_scope_first_turn: 4};
+const f1Plan = (sensitivity = SENSITIVITY, extra = {}) => f1.planF1Audit({requestSet: F1_REQUESTS, pools: POOLS_AFTER, at: AFTER_RESET,
+  history: HISTORY, ledgerText: LEDGER, mix: MIX, sensitivity, ...extra});
 
-test('F1 audit: the request set and the plan: the reference after the reset, the cost in pool units, the weekly cap, the VOI', () => {
-  // The frozen set: corpus F1 rows and fresh small talk, deduplicated; each
-  // with the local style the runtime gives it.
-  assert.deepEqual(F1_REQUESTS.items.map(i => [i.source, i.language, i.local_style]), [
-    ['corpus_f1_first_turn', 'ko', 'small_talk'], ['corpus_f1_first_turn', 'ko', 'conversational'],
-    ['fresh_small_talk', 'ko', 'small_talk'], ['fresh_small_talk', 'en', 'small_talk'], ['fresh_small_talk', 'en', 'small_talk']]);
-  const plan = f1Plan();
-  // After the Claude reset (Codex still exhausted) the audit reference is the
-  // Claude pool's reference at its ceiling, on the chat lane, at pace.
-  assert.equal(plan.reference.key, 'claude-chat:claude-fable-5-1@max');
-  assert.equal(plan.reference.price, 1);
-  const q = TABLE.quota['claude-chat:claude-fable-5-1@max'].answer.q;
-  // The cap (1% of the weekly allowance) bounds the questions: two reference
-  // answers each, the local answer draws nothing.
-  assert.equal(plan.n, Math.min(F1_REQUESTS.items.length, Math.floor(1 / (2 * q))));
-  assert.ok(Math.abs(plan.cost.Cw - plan.n * 2 * q) < 1e-6 && plan.cap.within);
-  // The VOI: the measured traffic over the measured lifetime; the
-  // availability value is reported, never priced.
-  const v = plan.value_of_information;
-  assert.equal(v.lifetime.lifetime_ms, 20 * DAY);
-  assert.ok(Math.abs(v.requests_over_lifetime - v.traffic.per_day * 20 * 54 / 370) < 1e-6);
-  assert.ok(Math.abs(v.voi - (0.5 * v.requests_over_lifetime * 0.5 * q - plan.n * 2 * q)) < 1e-6);
-  assert.equal(plan.decision, v.voi > 0 ? 'scheduled' : 'voi_below_cost');
-  assert.match(plan.availability.not_priced, /not in the objective's units/);
-  // No grader sensitivity: nothing is scheduled.
-  assert.equal(f1Plan(null).blockers.includes('grader_sensitivity_unmeasured'), true);
-  // Now (both pools exhausted): no reference can be drawn.
-  const now = f1.planF1Audit({requestSet: F1_REQUESTS, pools: POOLS_AFTER, at: Date.parse('2026-11-01T23:00:00Z'), history: HISTORY,
-    ledgerText: LEDGER, mix: {corpus: 370, f1_first_turn: 54}, sensitivity: {s: 0.9}});
-  assert.equal(now.reference, null);
-  assert.equal(now.decision, 'no_drawable_reference_at_the_planned_time');
-  // Spend already recorded in the window leaves fewer questions.
-  assert.ok(f1Plan({s: 0.9}, {spent: {anthropic_shared: 0.9}}).n < plan.n);
+test('F1 audit: the population is the checklist\'s scope; tuning and inspection sets are excluded, near duplicates too', () => {
+  const kept = F1_REQUESTS.items.map(i => i.request);
+  assert.equal(F1_REQUESTS.scope, 'small_talk_request_v2');
+  // Outside small_talk_request_v2 (an approval, a recommendation request): dropped.
+  assert.ok(!kept.includes('진행해') && !kept.includes('Book recommendations for summer?'));
+  // A tuning example ("고마워 덕분에 살았어", edit distance 1) and a contained
+  // one: dropped and recorded; the exclusion list's digest is carried.
+  assert.ok(!kept.includes('고마워 덕분에 살았다') && !kept.includes('방금 집 도착했어 ㅎㅎ'));
+  assert.deepEqual(F1_REQUESTS.dropped.filter(d => d.reason === 'tuning_or_inspection_set').map(d => d.request),
+    ['고마워 덕분에 살았다', '방금 집 도착했어 ㅎㅎ']);
+  assert.match(F1_REQUESTS.exclusion.sha256, /^[a-f0-9]{64}$/);
+  assert.ok(F1_REQUESTS.items.every(i => i.local_style === 'small_talk'));
+  assert.deepEqual(F1_REQUESTS.items.map(i => i.scope_basis), ['text_profile_turn', ...Array(F1_REQUESTS.items.length - 1).fill('text_only')]);
+  // Near-duplicate rule: two short greetings differing by a letter are different.
+  assert.equal(f1.nearDuplicate(f1.normalizeRequest('잘 자'), f1.normalizeRequest('잘 가')), false);
+  assert.equal(f1.nearDuplicate(f1.normalizeRequest('오늘 너무 졸려'), f1.normalizeRequest('오늘 너무 졸려!!')), true);
+  // The prompt's own examples are tuning data.
+  assert.ok(f1.promptExampleInputs({ko: 'x\n\nExamples:\n피곤해 -> a\n잘 자 -> b'}).includes('잘 자'));
 });
 
-test('F1 audit: run refuses an unscheduled audit (unless the lead says so), a paid dispatcher without confirmation and a broken cap; grade locks the verdict', async t => {
+test('F1 audit: a PASS must be reachable; the minimal paired audit accumulates across pool windows', () => {
+  // Review of round 4: s 0.278 with 18 questions can pass at no reference
+  // spread; 36 can (at tau 1/3); s 0.95 with 18 can.
+  assert.equal(f1.passReachable(18, 0.2777777777777778, 0.9).reachable, false);
+  assert.equal(f1.passReachable(36, 0.2777777777777778, 0.9).reachable, true);
+  assert.equal(f1.passReachable(18, 0.95, 0.9).reachable, true);
+  // The minimal audit is the smallest n reachable at ANY spread (here 31, and
+  // only if the reference disagrees with itself on 15 of 31: tau 0.48, which
+  // the plan reports); 30 questions can never pass with this grader.
+  assert.equal(f1.minimalAudit(30, 0.2777777777777778, 0.9), null);
+  assert.deepEqual([f1.minimalAudit(94, 0.2777777777777778, 0.9).n, f1.minimalAudit(94, 0.2777777777777778, 0.9).spread], [31, 15]);
+  // A population too small for this grader: P(pass) 0, never run.
+  const weak = f1Plan({...SENSITIVITY, s: 0.2777777777777778});
+  assert.equal(weak.minimal_audit.n, null);
+  assert.equal(weak.value_of_information.p_pass, 0);
+  assert.equal(weak.decision, 'pass_unreachable_in_the_population');
+});
+
+test('F1 audit: the plan: the reference after the reset, a locked sensitivity, the cost of the whole audit, the cap per pool window, the VOI', () => {
+  const plan = f1Plan();
+  // After the Claude reset (Codex still exhausted) the audit reference is the
+  // Claude pool's reference at its ceiling, on the chat lane.
+  assert.equal(plan.reference.key, 'claude-chat:claude-fable-5-1@max');
+  const q = TABLE.quota['claude-chat:claude-fable-5-1@max'].answer.q;
+  // The sensitivity is locked by its digest; the harness is the shipped one.
+  assert.equal(plan.sensitivity_sha256, f1.sensitivitySHA(SENSITIVITY));
+  assert.deepEqual(plan.reference_harness, harnessPin());
+  // The window is the pool's reset window, not the ISO week.
+  assert.match(plan.cap.window, /^anthropic_shared@reset:2026-11-09T08$/);
+  // The minimal audit for s 0.95 in this population and how many questions
+  // this window's cap allows (two reference answers each, the local draws
+  // nothing).
+  const minimal = f1.minimalAudit(F1_REQUESTS.items.length, 0.95, 0.9);
+  assert.ok(minimal !== null);
+  assert.equal(plan.minimal_audit.n, minimal?.n ?? null);
+  if (minimal) {
+    assert.equal(plan.n, Math.min(minimal.n, Math.floor(1 / (2 * q))));
+    assert.ok(Math.abs(plan.cost.whole_audit_left.Cw - minimal.n * 2 * q) < 1e-6);
+  }
+  // The VOI prices Core's post-pass E[Q] (the screen) along the path,
+  // against the whole remaining audit; P(pass) is the shared prior.
+  const v = plan.value_of_information;
+  assert.ok(v.p_pass === 0.5 || v.p_pass === 0);
+  assert.ok(v.p_screen_if_admitted > 0 && v.p_screen_if_admitted < 1);
+  assert.equal(plan.decision === 'scheduled', v.voi > 0 && plan.blockers.length === 0);
+  assert.match(plan.availability.not_priced, /not in the objective's units/);
+  // No (or another grader's) sensitivity: nothing is scheduled.
+  assert.ok(f1Plan(null).blockers.includes('grader_sensitivity_unmeasured'));
+  assert.ok(f1Plan({...SENSITIVITY, grader_version: 'llm_only'}).blockers.includes('grader_sensitivity_unmeasured'));
+  // Spend already recorded in the window leaves fewer questions.
+  assert.ok(f1Plan(SENSITIVITY, {spent: {[plan.cap.window]: 0.99}}).n <= plan.n);
+  // Before the reset (both pools exhausted): no reference can be drawn.
+  const exhausted = {...POOLS_AFTER, anthropic_shared: {...POOLS_AFTER.anthropic_shared,
+    windows: [{used_percent: 100, resets_at_ms: AFTER_RESET + DAY, window_minutes: 10080}]}};
+  assert.equal(f1Plan(SENSITIVITY, {pools: exhausted}).decision, 'no_drawable_reference_at_the_planned_time');
+});
+
+test('F1 audit: the order is stratified, random and fixed by the lineage; earlier windows are never asked again', () => {
+  const items = Array.from({length: 40}, (_, id) => ({id, source: id < 10 ? 'a' : 'b', language: id % 2 ? 'ko' : 'en'}));
+  const order = f1.stratifiedOrder(items, 'lineage');
+  assert.deepEqual([...order].sort((x, y) => x - y), items.map(i => i.id));
+  assert.deepEqual(f1.stratifiedOrder(items, 'lineage'), order);
+  // Every prefix keeps the strata near their shares (source a: a quarter).
+  for (const k of [4, 8, 20]) assert.ok(Math.abs(order.slice(0, k).filter(id => id < 10).length - k / 4) <= 1, String(k));
+  const plan = f1Plan();
+  const earlier = {lineage: plan.lineage, answers: [{id: plan.questions[0]}], sha256: null};
+  earlier.sha256 = sha(f1.canonical(earlier.answers));
+  const next = f1Plan(SENSITIVITY, {earlier: [earlier]});
+  assert.ok(!next.questions.includes(plan.questions[0]));
+  assert.equal(next.minimal_audit.answered_earlier, 1);
+  assert.throws(() => f1Plan(SENSITIVITY, {earlier: [{...earlier, lineage: 'other'}]}), /lineage/);
+});
+
+test('F1 audit: run refuses an unreachable or stale plan, an unscheduled one unless the lead says so, a paid dispatcher without confirmation; partial answers lock; grade pools windows with the locked sensitivity', async t => {
   const dir = await tempDir(t);
   const spend = join(dir, 'spend.jsonl');
-  const plan = {...f1Plan(), decision: 'voi_below_cost'};
+  const base = f1Plan();
+  // A runnable plan in this fixture (s 0.95 makes the audit reachable).
+  const plan = {...base, decision: 'voi_below_cost', blockers: ['voi_below_cost']};
   const planBytes = Buffer.from(JSON.stringify(plan));
   const seen = [];
   const dispatcher = {paid: false, dispatch: async args => { seen.push(args);
-    return {output: args.surface === 'local' ? '많이 피곤했구나, 고생 많았어.' : 'reference reply', draw: {pool: 'anthropic_shared', units: 0.02}}; }};
-  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher, spendPath: spend}), /did not schedule/);
-  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher: {...dispatcher, paid: true},
-    spendPath: spend, leadRunsUnscheduled: true}), /--confirm-paid yes/);
-  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: {...F1_REQUESTS, items: F1_REQUESTS.items.slice(1)}, dispatcher,
-    spendPath: spend, leadRunsUnscheduled: true}), /request set/);
-  const answers = await f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher, spendPath: spend, leadRunsUnscheduled: true});
+    return args.surface === 'local' ? {output: '많이 피곤했구나, 고생 많았어.', draw: {pool: 'none', units: 0}} :
+      {output: 'reference reply', draw: {pool: 'anthropic_shared', units: 0.02}, route: plan.reference.key, harness: harnessPin()}; }};
+  const run = extra => f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher, spendPath: spend, pools: POOLS_AFTER,
+    now: AFTER_RESET, ...extra});
+  await assert.rejects(run(), /did not schedule/);
+  await assert.rejects(run({dispatcher: {...dispatcher, paid: true}, leadRunsUnscheduled: true}), /--confirm-paid yes/);
+  await assert.rejects(run({requestSet: {...F1_REQUESTS, items: F1_REQUESTS.items.slice(1)}, leadRunsUnscheduled: true}), /request set/);
+  // An unreachable plan never runs, whatever the lead passes.
+  await assert.rejects(run({plan: {...plan, blockers: ['pass_unreachable_in_the_population'], decision: 'pass_unreachable_in_the_population'},
+    leadRunsUnscheduled: true, confirmPaid: true}), /cannot run/);
+  // A plan the pools no longer match (another window, another price).
+  await assert.rejects(run({now: AFTER_RESET + 8 * DAY, leadRunsUnscheduled: true}), /plan again/);
+  // The reference arm must be the plan's reference, through the shipped harness.
+  await assert.rejects(run({leadRunsUnscheduled: true, dispatcher: {...dispatcher, dispatch: async args => args.surface === 'local' ?
+    {output: 'x'} : {output: 'y', draw: {pool: 'anthropic_shared', units: 0.01}, route: 'claude:claude-opus-5-5@max', harness: harnessPin()}}}),
+  /not claude-chat/);
+  const spend2 = join(dir, 'spend2.jsonl');
+  const answered = [];
+  const answers = await run({spendPath: spend2, leadRunsUnscheduled: true, onAnswer: a => answered.push(a.id)});
   assert.equal(answers.answers.length, plan.n);
+  assert.deepEqual(answered, plan.questions);
   assert.equal(answers.unscheduled_by_step6, true);
-  assert.ok(answers.answers.every(a => a.references.length === 2));
-  // The local arm gets the runtime's own prompt style per request.
-  assert.deepEqual(seen.filter(a => a.surface === 'local').map(a => a.style),
-    plan.questions.map(id => F1_REQUESTS.items[id].local_style));
-  const spent = readFileSync(spend, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(spent.length, 2 * plan.n);
-  assert.ok(spent.reduce((a, r) => a + r.units, 0) <= 1);
-  // A second run in the same window would exceed the cap.
-  const bigDraw = {...dispatcher, dispatch: async args => ({output: 'x', draw: {pool: 'anthropic_shared', units: 0.5}})};
-  await assert.rejects(f1.runF1Audit({plan, planBytes, requestSet: F1_REQUESTS, dispatcher: bigDraw, spendPath: spend, leadRunsUnscheduled: true}),
-    /cap/);
-  // Grading (stub grader): every item met for the cell and the reference's
-  // first run, the second run fails one question: tau = 1/n.
-  let call = 0;
-  const ask = async () => { call++; return {responsive: call % 3 !== 0 || call !== 3, no_invented_claim: true, same_language: true,
-    tone: true, no_refusal: true}; };
-  const verdict = await f1.gradeF1Audit({answersFile: answers, sensitivity: {s: 1}, ask});
+  assert.equal(answers.truncated, false);
+  assert.equal(answers.lineage, plan.lineage);
+  assert.ok(seen.filter(a => a.surface !== 'local').every(a => a.via === 'os1'), 'the reference arm runs through OS-1');
+  // A stopped run still locks what it paid for.
+  const spend3 = join(dir, 'spend3.jsonl');
+  let calls = 0;
+  const failing = {...dispatcher, dispatch: async args => { if (args.surface !== 'local' && ++calls === 3) throw new Error('provider down');
+    return dispatcher.dispatch(args); }};
+  const stopped = await run({spendPath: spend3, leadRunsUnscheduled: true, dispatcher: failing}).catch(error => error);
+  assert.match(stopped.message, /provider down/);
+  assert.equal(stopped.locked.answers.length, 1);
+  assert.equal(stopped.locked.truncated, true);
+  // The cap: a window already near its cap refuses.
+  const full = join(dir, 'full.jsonl');
+  await writeFile(full, JSON.stringify({window: plan.cap.window, pool: 'anthropic_shared', units: 0.99}) + '\n');
+  await assert.rejects(run({spendPath: full, leadRunsUnscheduled: true}), /cap/);
+  // Grading: the locked sensitivity only; windows pool by lineage.
+  const ask = async () => ({responsive: true, no_invented_claim: true, same_language: true, tone: true, no_refusal: true});
+  await assert.rejects(f1.gradeF1Audit({answersFiles: [answers], sensitivity: {...SENSITIVITY, s: 1}, ask}), /locked/);
+  const verdict = await f1.gradeF1Audit({answersFiles: [answers], sensitivity: SENSITIVITY, ask});
   assert.equal(verdict.n, plan.n);
-  assert.equal(verdict.spread_pairs, 1);
-  assert.equal(verdict.verdict, verdict.discordant > 0 ? 'fail' : verdict.informative >= verdict.n_parity ? 'pass' : 'inconclusive');
+  // 'reference reply' is English: Core's language check fails both reference
+  // runs on a Korean owner's question (not informative); on an English one
+  // the reference passes and the cell's Korean reply fails: discordant.
+  const english = plan.questions.filter(id => F1_REQUESTS.items[id].language === 'en').length;
+  assert.equal(verdict.informative, english);
+  assert.equal(verdict.discordant, english);
+  assert.equal(verdict.verdict, english ? 'fail' : 'inconclusive');
   const [key, entry] = f1.auditCellOf(verdict);
   assert.equal(key, 'qwen3.5:9b@none|F1');
-  assert.equal(compileAudits({schema: 1, rule: 'r', cells: {[key]: entry}}).cells[key].verdict, verdict.verdict);
-  await assert.rejects(f1.gradeF1Audit({answersFile: {...answers, answers: answers.answers.slice(1)}, sensitivity: {s: 1}, ask}), /locked/);
+  assert.equal(entry.scope, 'small_talk_request_v2');
+  assert.equal(entry.sensitivity_sha256, f1.sensitivitySHA(SENSITIVITY));
+  await assert.rejects(f1.gradeF1Audit({answersFiles: [{...answers, answers: answers.answers.slice(1)}], sensitivity: SENSITIVITY, ask}),
+    /locked/);
+  await assert.rejects(f1.gradeF1Audit({answersFiles: [answers, answers], sensitivity: SENSITIVITY, ask}), /twice/);
+});
+
+test('F1 audit: the grader\'s deterministic pre-filter (Core\'s checks and the register) fails an item on both arms alike', () => {
+  assert.deepEqual(f1.deterministicFindings('피곤해', '많이 피곤하셨겠어요.'), {tone: 'register'});
+  assert.deepEqual(f1.deterministicFindings('오늘 첫 출근했어요', '첫 출근 축하해!'), {tone: 'register'});
+  assert.deepEqual(f1.deterministicFindings('피곤해', '많이 피곤했구나, 고생 많았어.'), {});
+  assert.deepEqual(f1.deterministicFindings('안녕하세요', '안녕하세요! 반가워요.'), {});
+  assert.deepEqual(f1.deterministicFindings('피곤해', 'You sound tired.'), {same_language: 'language'});
+  assert.deepEqual(f1.deterministicFindings('이메일 초안 보내줘', '알겠습니다. 바로 보내드릴게요.').no_invented_claim, 'action_promise');
+  assert.deepEqual(f1.deterministicFindings('I am tired', 'As an AI, I cannot feel tired.').no_refusal, 'refusal');
+  assert.equal(f1.deterministicFindings('잘 자', '').responsive, 'empty');
 });

@@ -12,10 +12,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {chmod, mkdtemp, readFile, rm} from 'node:fs/promises';
-import {readFileSync} from 'node:fs';
+import {copyFileSync, mkdtempSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS, priceRoute, atHeadroom, regimeHeadroom} from '../routing-law-replay.mjs';
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
   lawJudgedOutcome, lawLearnedPFail, revasVerdict, revasCheckInstruction, revasRepairInstruction, revasPrefix,
@@ -1467,9 +1467,18 @@ test('review of round 3: no_claim_reply_v2 is evidence only inside small_talk_re
   const q = question(12);
   const profile = lawOf(q).request_profile;
   assert.equal(lawSmallTalkProfile(profile), true);
+  // Round 5: a status signal stands unless the host CLEARED it (the reader's
+  // subject 'other', soft_cleared_status, the status signals then re-read
+  // away): a profile carrying one is built without that clearance.
+  const uncleared = signals => signals.filter(s => s !== 'soft_cleared_status' && s !== 'llm_subject_other');
   for (const signal of ['approval', 'status_check_in', 'work_order', 'llm_subject_assistant_state', 'explanation_stem'])
-    assert.equal(lawSmallTalkProfile({...profile, signals: [...new Set([...profile.signals.filter(s => !s.startsWith('soft_') ||
+    assert.equal(lawSmallTalkProfile({...profile, signals: [...new Set([...uncleared(profile.signals).filter(s => !s.startsWith('soft_') ||
       signal !== 'work_order'), signal])].sort()}), false, signal);
+  // 'soft_status' alone says only that the host COULD clear the match (a
+  // subject read as assistant_state keeps it uncleared): out of scope.
+  for (const signal of ['status_check_in', 'status_question'])
+    assert.equal(lawSmallTalkProfile({...profile, signals: [...new Set([...uncleared(profile.signals), signal, 'soft_status'])].sort()}),
+      false, signal + ' + soft_status');
   // A later turn: only after an OS-1 turn that neither asks nor proposes, read
   // from the host's own transcript; unknown history is never small talk's.
   const later = context => lawSmallTalkLaterTurn({host_context: {context}});
@@ -1508,9 +1517,11 @@ test('review of round 3: with F1 unadmitted small talk binds a reference on ever
   };
   assert.equal(hostRoute(q, writerLane(law)).scope, 'workspace_write');
   assert.equal(hostRoute(q, writerLane(approve)).scope, 'workspace_write');
-  // A status check-in needs the host's install-state card: an agent row only.
+  // A status check-in needs the host's install-state card: an agent row only
+  // (an uncleared one: the host clears it only on the subject 'other').
   const status = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
-    signals: [...new Set([...c.request_profile.signals, 'status_check_in'])].sort()}}));
+    signals: [...new Set([...c.request_profile.signals.filter(s => s !== 'soft_cleared_status' && s !== 'llm_subject_other'),
+      'status_check_in'])].sort()}}));
   const checked = hostRoute(q, status);
   assert.notEqual(checked.route, 'local:qwen3.5:9b@none');
   assert.ok(!checked.route.startsWith('claude-chat:'), 'a status check-in binds a row the host hands its card');
@@ -1578,25 +1589,34 @@ test('round 4 (decision 1): the local row is a first-turn candidate only; status
   }
   // An OS-1 status check-in, status question or assistant-state subject needs
   // the host's install-state card: never the local row, first turn included.
-  for (const signal of ['status_check_in', 'status_question', 'llm_subject_assistant_state']) {
+  // Round 5 (review): 'soft_status' is no clearance: a soft status check-in
+  // the reader read as about OS-1 (assistant_state keeps it uncleared; the
+  // host attaches the card) is not the local row's, under Auto and under a
+  // provider tile (whose profile is the keyword one).
+  for (const signals of [['status_check_in'], ['status_question'], ['llm_subject_assistant_state'],
+      ['status_check_in', 'soft_status'], ['status_question', 'soft_status']]) {
     const q = question(12);
     const law = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
-      signals: [...new Set([...c.request_profile.signals.filter(s => s !== 'soft_status'), signal])].sort()}}));
-    assert.ok(!local(hostRoute(q, law)), signal);
+      signals: [...new Set([...c.request_profile.signals.filter(s => !['soft_status', 'soft_cleared_status', 'llm_subject_other'].includes(s)),
+        ...signals])].sort()}}));
+    for (const pref of ['auto', 'codex', 'gpt-chat', 'claude-chat', 'claude'])
+      assert.ok(!local(hostRoute(q, law, {pref})), signals.join('+') + ' under ' + pref);
   }
 });
 
-// Lead decision 3: a checklist parity audit's own failure counts price an
-// audited row (lawAuditPFail): the reference's Laplace estimate on the
-// checklist, moved by the cell's graded answers at the prior's weight.
-test('round 4 (decision 3): an audited row\'s p_fail is the audit\'s own checklist measurement', async () => {
+// Lead decision 3, round 5: a checklist parity audit's own failure counts
+// (lawAuditPFail: the reference's Laplace estimate on the checklist, moved by
+// the cell's graded answers at the prior's weight) are the evidence's REPORT;
+// the row is priced on its structural screen (round 5 tests above).
+test('round 4 (decision 3), round 5: an audited row\'s checklist failure rate is the audit\'s own measurement (a report)', async () => {
   const {lawAuditPFail} = await import('../../Resources/openclaw-os1-bridge/rcc-runtime.mjs');
   const audited = structuredClone(TABLE);
   audited.audits.cells['qwen3.5:9b@none|F1'] = {kind: 'checklist_parity', verdict: 'pass', admits: true, id: 'audit-0123456789ab',
-    n: 40, p_fail: {runs: 40, failures: 3}, reference_p_fail: {runs: 80, failures: 4}};
+    n: 40, scope: 'small_talk_request_v2', p_fail: {runs: 40, failures: 3}, reference_p_fail: {runs: 80, failures: 4}};
   const pRef = (4 + 1) / (80 + 2);
   assert.ok(Math.abs(lawAuditPFail(audited, {model: 'qwen3.5:9b', effort: 'none'}, 'F1') - (3 + 2 * pRef) / (40 + 2)) < 1e-12);
-  assert.deepEqual(lawLocalEvidence(audited, 'qwen3.5:9b', 'F1'), {form: 'c', audit: 'audit-0123456789ab', tiers: [], excess: 0});
+  // Its request scope needs the request: none given, nothing admits.
+  assert.equal(lawLocalEvidence(audited, 'qwen3.5:9b', 'F1'), null);
   // Live judged outcomes of the cell move it further; a non-passing or a
   // tier-evidence audit carries no checklist price.
   const learned = new Map([['qwen3.5:9b@none|F1', {runs: 10, failures: 5}]]);
@@ -1648,4 +1668,114 @@ test('round 4 (decision 4): under the rollback (no routing_law) a tile stays 446
   await runtime.submit(task);
   await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
   assert.ok(!runtime.events({schema: 1, task_id: task.task_id}).some(x => x.kind === 'local_ask_back'));
+});
+
+// ---- Round 5 of the 448 review -------------------------------------------
+// A Core copy whose embedded table carries one audits cell (a mirror: the
+// shipped table has none and none may be pasted into it by hand), so the
+// law's reading of a passed checklist parity audit is tested end to end.
+async function auditedCore(cell) {
+  const src = join(ROOT, 'Resources/openclaw-os1-bridge');
+  const dir = mkdtempSync(join(tmpdir(), 'os1-audited-core-'));
+  for (const name of readdirSync(src)) if (name.endsWith('.mjs')) copyFileSync(join(src, name), join(dir, name));
+  const table = structuredClone(TABLE);
+  table.audits.cells['qwen3.5:9b@none|F1'] = cell;
+  const text = JSON.stringify(table), digest = sha(text + '\n');
+  const core = readFileSync(join(src, 'rcc-runtime.mjs'), 'utf8')
+    .replace(/^const ROUTING_LAW_TABLE_TEXT = .*;$/m, () => `const ROUTING_LAW_TABLE_TEXT = ${JSON.stringify(text)};`)
+    .replace(/^export const ROUTING_LAW_TABLE_SHA256 = '[a-f0-9]{64}';$/m, () => `export const ROUTING_LAW_TABLE_SHA256 = '${digest}';`);
+  writeFileSync(join(dir, 'rcc-runtime.mjs'), core);
+  const mirror = await import(pathToFileURL(join(dir, 'rcc-runtime.mjs')).href);
+  mirror.configureLocalModel('qwen3.5:9b');
+  assert.equal(mirror.ROUTING_LAW_TABLE_SHA256, digest);
+  assert.equal(mirror.routingLawTable().audits.cells['qwen3.5:9b@none|F1'].admits, true);
+  const route = (q, catalog, {context = null, pref = 'auto', request = q.request} = {}) => {
+    const law = {...catalog, routing_law: {...catalog.routing_law, table_sha256: digest}};
+    const task = runtimeTask({...q, request}, law);
+    task.host_context = {...task.host_context, context, provider_preference: pref};
+    task.source_fingerprint = mirror.hostContextFingerprint(task.host_context);
+    const plan = mirror.hostPlan(task, law);
+    const at = Math.max(...law.candidates.map(c => c.availability_observed_at_ms ?? 0));
+    const {decisions, routes} = mirror.resolveRoutePlan(plan, task, law, at);
+    const id = plan.final_node_id ?? plan.nodes[0].id;
+    const c = law.candidates.find(x => x.id === decisions[id].resolved_candidate_id);
+    return {route: c ? `${c.surface}:${c.model}@${c.effort}` : null, kind: routes[id].kind, law: routes[id].law ?? null,
+      reason: decisions[id].reason, ladder: routes[id].ladder ?? null, candidate: c ?? null, catalog: law};
+  };
+  return {mirror, route, table: mirror.routingLawTable()};
+}
+const PASSED_F1_AUDIT = Object.freeze({kind: 'checklist_parity', verdict: 'pass', admits: true, id: 'audit-0123456789ab', n: 40,
+  discordant: 0, informative: 40, tau: 0.1, n_parity: 40, grader_sensitivity: 0.6, reference: 'claude-fable-5-1@max',
+  scope: 'small_talk_request_v2', p_fail: {runs: 40, failures: 3}, reference_p_fail: {runs: 80, failures: 4}});
+const localRow = r => (r.law?.candidates ?? []).find(([key]) => key.startsWith('local:')) ?? null;
+
+test('round 5: a passed checklist audit admits the local row only inside its request scope (small_talk_request_v2)', async () => {
+  const {route, table, mirror} = await auditedCore(PASSED_F1_AUDIT);
+  const q = question(12), law = lawOf(q);
+  // In scope (Q12, first turn): form (c), the argmin.
+  const inScope = route(q, law);
+  assert.equal(inScope.route, 'local:qwen3.5:9b@none');
+  assert.equal(localRow(inScope)[1], 'c:audit-0123456789ab');
+  // Out of the scope the checklist can judge, on the same F1 reading: a fact,
+  // advice, an approval, an action. At most a REVAS verified start; never
+  // form (c), and the reference wins.
+  for (const request of ['Book recommendations for summer?', '오래 생각해봤는데 이직할까?', '그대로 보내', '진행해']) {
+    const r = route(q, law, {request});
+    assert.notEqual(r.route, 'local:qwen3.5:9b@none', request);
+    assert.ok(!localRow(r) || localRow(r)[1].startsWith('v:'), request + ' ' + JSON.stringify(localRow(r)));
+  }
+  // The host's work floors (an external action, an approval) are a
+  // capability floor of the tool-free local row: not even a candidate.
+  for (const signals of [['external_action'], ['approval', 'work_order'], ['approval']]) {
+    // As the host combines them: an approval is a hard order (no soft_work).
+    const floored = lawOf(q, c => ({...c, request_profile: {...c.request_profile, answer_kind: 'work', difficulty: 'unknown',
+      task_type: 'action', signals: [...new Set([...c.request_profile.signals.filter(x => !x.startsWith('soft_')), ...signals])].sort()}}));
+    const r = route(q, floored, {request: '안녕 :) 그냥 잡담이야, 도구 필요 없어 — 그리고 택시 불러줘'});
+    assert.equal(localRow(r), null, signals.join('+'));
+  }
+  // A later turn: never the local row (lead decision 1).
+  assert.equal(localRow(route(q, law, {context: transcript('안녕', '안녕하세요! 반가워요.')})), null);
+  // Pure: without the request the scope cannot be judged, so nothing admits.
+  assert.equal(mirror.lawLocalEvidence(table, 'qwen3.5:9b', 'F1'), null);
+  assert.equal(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F1'), null, 'the shipped table carries no audit');
+});
+
+test('round 5: a form (c) row is priced on the event the runtime escalates it on (its structural screen), the checklist rate reported', async () => {
+  const {route, table, mirror} = await auditedCore(PASSED_F1_AUDIT);
+  const q = question(12);
+  const r = route(q, lawOf(q));
+  assert.equal(r.route, 'local:qwen3.5:9b@none');
+  // Its ladder binds no verifier: only the structural screen escalates it, to
+  // the full answer at its target (the cheapest runnable reference).
+  assert.equal(r.ladder.verifier, undefined);
+  const references = r.law.candidates.filter(([, form, , eq, excluded]) => form === 'reference' && excluded === null && eq !== null)
+    .sort((a, b) => a[3] - b[3]);
+  const target = references[0];
+  const [surface, rest] = [target[0].split(':')[0], target[0].slice(target[0].indexOf(':') + 1)];
+  const targetRow = {surface, model: rest.slice(0, rest.lastIndexOf('@')), effort: rest.slice(rest.lastIndexOf('@') + 1)};
+  const pScreen = mirror.lawScreenPFail(table, {model: 'qwen3.5:9b', effort: 'none'}, targetRow, null);
+  assert.ok(Math.abs(r.law.eq - pScreen * target[3]) < 2e-6, `${r.law.eq} vs ${pScreen} x ${target[3]}`);
+  assert.ok(r.reason.includes('law_p_fail_' + pScreen.toFixed(4)), r.reason);
+  // The gate's replay prices the same event: its draw equals the receipt's
+  // E[Q] (review of round 4: they diverged once an audit was embedded).
+  const priced = priceRoute({candidate: r.candidate, kind: r.kind, ladder: r.ladder, law: r.law}, r.catalog, r.law.shape, table, 'F1',
+    r.law.reading);
+  const rate = r.law.rates.anthropic_shared.rate;
+  assert.ok(Math.abs(priced.draw.Cw * rate + priced.draw.Px * (r.law.rates.openai_codex?.rate ?? 0) - r.law.eq) < 2e-6,
+    `${JSON.stringify(priced.draw)} x ${rate} vs ${r.law.eq}`);
+  // The audit's own checklist failure rate is the evidence's report.
+  const pRef = (4 + 1) / (80 + 2);
+  assert.equal(r.law.audit.priced_on, 'structural_screen');
+  assert.ok(Math.abs(r.law.audit.checklist_p_fail - (3 + 2 * pRef) / (40 + 2)) < 1e-6);
+});
+
+test('round 5: with every pool exhausted the form (c) local row answers in its scope (a failure holds); out of scope the request is held', async () => {
+  const {route} = await auditedCore(PASSED_F1_AUDIT);
+  const q = question(12);
+  const law = exhausted(lawOf(q));
+  const r = route(q, law);
+  assert.equal(r.route, 'local:qwen3.5:9b@none');
+  assert.equal(r.ladder.reference_candidate_id, null, 'no runnable step: a failure holds the request');
+  assert.ok(r.reason.includes('escalation_none_hold_on_fail'), r.reason);
+  assert.throws(() => route(q, law, {request: 'Book recommendations for summer?'}), /no_dispatchable_candidate/);
 });

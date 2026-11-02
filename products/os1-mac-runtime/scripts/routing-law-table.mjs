@@ -84,6 +84,13 @@ export const INPUTS = Object.freeze({
   policy: 'scripts/routing-law-policy.json',
   prices: 'Resources/model-price-table.json',
   profiles: 'Config/production.json',
+  // Round 5 of the 448 review: a checklist parity audit (small talk F1) is
+  // compiled only against its pre-registered inputs: the frozen checklist,
+  // the committed grader sensitivity (natural, on a held-out labeled set) and
+  // the reference harness OS-1 ships (its pinned rendering).
+  f1_checklist: 'scripts/routing-law-f1-checklist-20261101.json',
+  f1_sensitivity: 'scripts/routing-law-f1-sensitivity-20261101.json',
+  harness: 'Sources/OS1Context/HarnessProfile.swift',
 });
 export const TABLE_PATH = 'Resources/routing-law-table.json';
 export const CORE_PATH = 'Resources/openclaw-os1-bridge/rcc-runtime.mjs';
@@ -741,6 +748,31 @@ export function compileFamilies(evidence, policy) {
  * confidence, with the measured grader sensitivity folded in), sampled at
  * random across the family's traffic. A cost-sized pass (fewer questions, or
  * corpus-order questions) is provisional: carried, never admitting. */
+/** The harness OS-1 ships (Swift HarnessProfile.current): its id@version and
+ * pinned rendering sha256, read from the source. */
+export function harnessPin(text = null) {
+  const swift = text ?? readFileSync(join(ROOT, INPUTS.harness), 'utf8');
+  const current = /public static let current = (\w+)/.exec(swift)?.[1];
+  const block = current ? new RegExp(`public static let ${current} = Descriptor\\(\\s*id: "([^"]+)",\\s*version: (\\d+),` +
+    '[\\s\\S]*?renderingSHA256: "([a-f0-9]{64})"\\)').exec(swift) : null;
+  if (!block) throw new Error('HarnessProfile.current is not readable');
+  return {profile: `${block[1]}@${block[2]}`, rendering_sha256: block[3]};
+}
+/** The context a checklist parity audit compiles against (round 5): the
+ * policy's confidence, the frozen checklist's and the committed
+ * sensitivities' digests, the pool references at their ceilings (the table's
+ * quota), the shipped harness. */
+export function checklistAuditContext({policy, checklistBytes, sensitivities = [], quota = {}, harness}) {
+  const sensitivityDigest = value => sha(canonical(value).replace(/\n$/, ''));
+  const efforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const references = Object.values(policy.references).map(model => {
+    const keys = Object.keys(quota).filter(k => k.slice(k.indexOf(':') + 1, k.lastIndexOf('@')) === model);
+    const top = Math.max(-1, ...keys.map(k => efforts.indexOf(k.slice(k.lastIndexOf('@') + 1))));
+    return top < 0 ? null : model + '@' + efforts[top];
+  }).filter(Boolean);
+  return {confidence: policy.value_of_information.confidence, checklist_sha256: sha(checklistBytes),
+    sensitivities: new Map(sensitivities.map(value => [sensitivityDigest(value), value])), references, harness};
+}
 /** Round 4 of the 448 review (lead decision 3): a checklist parity audit
  * (scripts/routing-law-f1-audit.mjs grade: small talk F1, graded by the local
  * model against a frozen checklist, the reference answered twice), re-derived
@@ -749,8 +781,14 @@ export function compileFamilies(evidence, policy) {
  * ln(1 - s * tau)) with the grader's measured sensitivity s, and a PASS
  * admits only with zero discordant pairs in at least n_parity informative
  * questions. The cell's and the reference's checklist failure counts are
- * carried for Core's p_fail of the admitted row (lawAuditPFail). */
-function compileChecklistAudit(key, cell) {
+ * carried as the evidence's report (lawAuditPFail).
+ * Round 5: nothing the cell says about itself is trusted: its confidence is
+ * the policy's, its checklist the frozen one, its grader sensitivity a
+ * committed measurement of the same grader whose digest it carries, its
+ * reference a pool reference at its ceiling, its reference harness the one
+ * OS-1 ships, its scope the checklist's (small_talk_request_v2, where alone
+ * Core admits it). */
+function compileChecklistAudit(key, cell, context) {
   const int = value => Number.isSafeInteger(value) && value >= 0;
   const counts = value => value && int(value.runs) && int(value.failures) && value.failures <= value.runs;
   if (!/^[a-f0-9]{64}$/.test(cell.answers_sha256 ?? '') || !/^[a-f0-9]{64}$/.test(cell.checklist_sha256 ?? '') ||
@@ -761,6 +799,20 @@ function compileChecklistAudit(key, cell) {
       !(cell.grader_sensitivity === null || (typeof cell.grader_sensitivity === 'number' && cell.grader_sensitivity > 0 &&
         cell.grader_sensitivity <= 1)) || cell.sampling !== 'stratified_random')
     throw new Error('bad checklist audit verdict ' + key);
+  if (!context) throw new Error('checklist audit ' + key + ': no pre-registered context to compile against');
+  const hex = value => /^[a-f0-9]{64}$/.test(value ?? '');
+  const sensitivity = context.sensitivities.get(cell.sensitivity_sha256) ?? null;
+  const harnessOf = value => value && typeof value === 'object' ? `${value.profile}|${value.rendering_sha256}` : null;
+  if (cell.confidence !== context.confidence) throw new Error('checklist audit ' + key + ': confidence is not the policy\'s');
+  if (cell.checklist_sha256 !== context.checklist_sha256) throw new Error('checklist audit ' + key + ': not the frozen checklist');
+  if (sensitivity === null || sensitivity.s !== cell.grader_sensitivity || sensitivity.checklist_sha256 !== cell.checklist_sha256 ||
+      sensitivity.grader_version !== cell.grader_version)
+    throw new Error('checklist audit ' + key + ': grader sensitivity is no committed measurement of this grader');
+  if (!context.references.includes(cell.reference)) throw new Error('checklist audit ' + key + ': reference is no pool reference at its ceiling');
+  if (harnessOf(cell.reference_harness) !== harnessOf(context.harness))
+    throw new Error('checklist audit ' + key + ': reference harness is not the one OS-1 ships');
+  if (cell.scope !== 'small_talk_request_v2' || !hex(cell.requests_sha256) || !hex(cell.exclusion_sha256) || !hex(cell.lineage))
+    throw new Error('checklist audit ' + key + ': no request scope, request set or lineage');
   const tau = cell.spread_pairs / cell.n;
   const x = (cell.grader_sensitivity ?? 0) * tau;
   const nParity = x > 0 ? (x >= 1 ? 1 : Math.ceil(Math.log(1 - cell.confidence) / Math.log(1 - x))) : null;
@@ -768,16 +820,18 @@ function compileChecklistAudit(key, cell) {
   if (cell.verdict !== verdict || cell.n_parity !== nParity) throw new Error('checklist audit verdict does not follow its counts ' + key);
   return {kind: 'checklist_parity', verdict, id: 'audit-' + cell.answers_sha256.slice(0, 12), n: cell.n, discordant: cell.discordant,
     informative: cell.informative, tau, n_parity: nParity, grader_sensitivity: cell.grader_sensitivity, reference: cell.reference,
-    checklist_sha256: cell.checklist_sha256, p_fail: {runs: cell.p_fail.runs, failures: cell.p_fail.failures},
+    checklist_sha256: cell.checklist_sha256, sensitivity_sha256: cell.sensitivity_sha256, scope: cell.scope,
+    reference_harness: {profile: cell.reference_harness.profile, rendering_sha256: cell.reference_harness.rendering_sha256},
+    p_fail: {runs: cell.p_fail.runs, failures: cell.p_fail.failures},
     reference_p_fail: {runs: cell.reference_p_fail.runs, failures: cell.reference_p_fail.failures}, admits: verdict === 'pass'};
 }
-export function compileAudits(audits) {
+export function compileAudits(audits, context = null) {
   if (audits.schema !== 1 || audits.cells === null || typeof audits.cells !== 'object') throw new Error('audits snapshot schema 1 required');
   const out = {};
   for (const [key, cell] of Object.entries(audits.cells)) {
     if (cell?.kind === 'checklist_parity') {
       if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(key)) throw new Error('bad audit verdict ' + key);
-      out[key] = compileChecklistAudit(key, cell);
+      out[key] = compileChecklistAudit(key, cell, context);
       continue;
     }
     if (!/^[a-z0-9][a-z0-9._-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(key) || !['pass', 'fail', 'inconclusive'].includes(cell?.verdict) ||
@@ -926,11 +980,14 @@ export function compileTable(bytes) {
   const detValidation = json('det_validation'), detOutcomes = json('det_outcomes');
   const prices = json('prices'), profiles = json('profiles'), audits = json('audits');
   const tau = compileTau(evidence);
+  const quotaCompiled = compileQuota(quota, evidence, policy, prices, profiles);
+  const auditContext = checklistAuditContext({policy, checklistBytes: bytes.f1_checklist, sensitivities: [json('f1_sensitivity')],
+    quota: quotaCompiled.cells, harness: harnessPin(bytes.harness.toString('utf8'))});
   return {schema: 1, policy: 'routing_law_447', objective: policy.objective,
     inputs: Object.fromEntries(Object.entries(bytes).map(([name, value]) => [name, sha(value)])),
     references: policy.references, pool_units: policy.pool_units, exchange: policy.exchange,
     p_fail_inheritance: policy.p_fail_inheritance, value_of_information: policy.value_of_information,
-    audits: compileAudits(audits),
+    audits: compileAudits(audits, auditContext),
     local_start: (() => {
       if (Object.hasOwn(policy.local_start, 'deterministic_verifiers'))
         throw new Error('local_start.deterministic_verifiers moved to deterministic_verifiers (a family verifier admits any row)');
@@ -940,10 +997,8 @@ export function compileTable(bytes) {
       compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation), requestsOf(detValidation)).cells),
     deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
     tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
-    family_rules: policy.family_rules, ...(() => {
-      const compiled = compileQuota(quota, evidence, policy, prices, profiles);
-      return {quota: compiled.cells, quota_calibration: compiled.calibration, quota_anchors: compiled.anchors};
-    })(),
+    family_rules: policy.family_rules, quota: quotaCompiled.cells, quota_calibration: quotaCompiled.calibration,
+    quota_anchors: quotaCompiled.anchors,
     p_fail: compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation), requestsOf(detValidation)),
     p_screen: compileScreen(ledger, policy)};
 }
