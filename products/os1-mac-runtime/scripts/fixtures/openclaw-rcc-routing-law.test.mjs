@@ -1670,6 +1670,69 @@ test('round 4 (decision 4): under the rollback (no routing_law) a tile stays 446
   assert.ok(!runtime.events({schema: 1, task_id: task.task_id}).some(x => x.kind === 'local_ask_back'));
 });
 
+// Round 6 of the 448 review: under forbid_model_generation (os1 run
+// --forbid-model-generation) a zero-model family behaves the same with or
+// without a tile. The host then reads nothing with a model (Swift
+// rccNativeCatalog: the law's switch with reader 'none'); a tiled exact sum or
+// greeting asks only the catalog, which says whether the tile is the law's
+// pool filter (answered, as under Auto) or the rollback's pin (held).
+const forbiddenLaw = (q, request = q.request) => {
+  const c = lawOf(q);
+  return {...c, request_sha256: sha(request), routing_law: {...c.routing_law, reader: 'none', reading: null}};
+};
+async function forbiddenRun(t, q, catalog, pref, request = q.request) {
+  const dir = await mkdtemp(join(tmpdir(), 'os1-law-forbid-')); await chmod(dir, 0o700);
+  const calls = {intent: 0, catalog: 0, execute: 0};
+  const fail = key => async () => { calls[key]++; throw new Error('MUST_NOT_CALL_' + key); };
+  const task = pref === 'auto' ? runtimeTask({...q, request}, catalog) : tiledTask({...q, request}, catalog, pref);
+  task.budget = {...task.budget, forbid_model_generation: true};
+  const runtime = await createRCCRuntime({stateDir: dir, hostAutoPlan: true, resolveIntent: fail('intent'),
+    catalog: async () => { calls.catalog++; return catalog; }, execute: fail('execute')});
+  t.after(async () => { await runtime.close(); await rm(dir, {recursive: true, force: true}); });
+  await runtime.submit(task);
+  const done = await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
+  return {done, calls, saved: runtime._load(task.task_id),
+    kinds: runtime.events({schema: 1, task_id: task.task_id}).map(x => x.kind)};
+}
+for (const [n, request] of [[1, null], [13, null], [13, 'hello']])
+  test(`round 6: under forbid_model_generation "${request ?? question(n).request}" is answered zero-model alike with or without a tile`,
+    async t => {
+      const q = question(n), text = request ?? q.request;
+      const runs = {};
+      for (const pref of ['auto', 'codex', 'claude']) runs[pref] = await forbiddenRun(t, q, forbiddenLaw(q, text), pref, text);
+      const kind = text === 'hello' ? 'local_checkin' : 'deterministic_arithmetic';
+      for (const [pref, {done, calls, saved, kinds}] of Object.entries(runs)) {
+        assert.equal(done.state, 'completed', `${pref}: ${JSON.stringify(done.error ?? null)}`);
+        assert.equal(done.result.output, runs.auto.done.result.output, pref);
+        assert.ok(kinds.includes(kind), `${pref}: ${kind}`);
+        assert.equal(calls.intent + calls.execute, 0, `${pref}: no model hook`);
+        assert.equal(calls.catalog, pref === 'auto' ? 0 : 1, `${pref}: the tile is read from the catalog only`);
+        assert.equal(saved.native_dispatches ?? 0, 0);
+      }
+      if (n === 1 && request === null) assert.equal(runs.auto.done.result.output, '0');
+      if (n === 13 && request === null) assert.equal(runs.auto.done.result.output, '55');
+    });
+test('round 6: under forbid_model_generation the rollback\'s pin holds a tiled sum after the catalog; other tiled requests hold before it', async t => {
+  const q = question(13);
+  const {routing_law: _drop, ...rollback} = forbiddenLaw(q);
+  for (const pref of ['codex', 'claude']) {
+    const pinned = await forbiddenRun(t, q, rollback, pref);
+    assert.equal(pinned.done.state, 'held');
+    assert.equal(pinned.done.error, 'model_generation_forbidden');
+    assert.deepEqual(pinned.calls, {intent: 0, catalog: 1, execute: 0});
+    assert.ok(!pinned.kinds.includes('deterministic_arithmetic'));
+  }
+  // Small talk, an explanation, the ask-back's self-test: no zero-model
+  // family's request, so held before every hook, as under Auto.
+  for (const n of [12, 11, 8])
+    for (const pref of ['auto', 'codex']) {
+      const run = await forbiddenRun(t, question(n), forbiddenLaw(question(n)), pref);
+      assert.equal(run.done.state, 'held', `#${n} ${pref}`);
+      assert.equal(run.done.error, 'model_generation_forbidden');
+      assert.deepEqual(run.calls, {intent: 0, catalog: 0, execute: 0}, `#${n} ${pref}`);
+    }
+});
+
 // ---- Round 5 of the 448 review -------------------------------------------
 // A Core copy whose embedded table carries one audits cell (a mirror: the
 // shipped table has none and none may be pasted into it by hand), so the

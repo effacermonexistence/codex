@@ -20103,7 +20103,14 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
     // owner-chat-fast-20261027). The combined profile (permissions) is
     // unchanged: it still adopts the reading only when build 446 would.
     let lawReads = request.mode == .auto && lawSelection.policy == .law447
-    let consultLocal = profileConsults || lawReads
+    // Round 6 of the 448 review: under --forbid-model-generation (the task's
+    // hard zero) the host reads nothing with a model: no local reading, and
+    // the law's catalog carries its switch with reader "none" (below). Core
+    // asks such a catalog only for a tiled exact greeting or exact sum, to
+    // learn whether the tile is the law's pool filter (answered with no
+    // model, as under Auto) or the rollback's pin (held).
+    let forbidsModel = request.budget.forbidModelGeneration == true
+    let consultLocal = (profileConsults || lawReads) && !forbidsModel
     FileHandle.standardError.write(Data(("os1 rcc-catalog: " + lawSelection.receiptLine + "\n").utf8))
     let (readingTaskID, readingSHA256, readingText) = (request.taskID, request.requestSHA256, request.request)
     // Build 446 (DESIGN-5 §A.5): a status question the reading may clear
@@ -20262,6 +20269,10 @@ private func rccNativeCatalog(_ bytes: Data) async throws -> Data {
         }
         // Build 447: the law's switch and the raw local reading.
         if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }
+    } else if lawReads && forbidsModel {
+        // Round 6 of the 448 review: the switch without a reading (no model
+        // call under the hard zero).
+        input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: nil)
     }
     if request.mode != .explicitRoutingTest && !contractBackedWrite {
         input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)

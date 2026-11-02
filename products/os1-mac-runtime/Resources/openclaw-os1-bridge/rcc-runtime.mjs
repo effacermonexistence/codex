@@ -2318,6 +2318,18 @@ function lawTileKeepsZeroModel(task, catalog) {
   return Array.isArray(lawTile(task)) && validRoutingLaw(law) && routingLawTable() !== null &&
     law.table_sha256 === ROUTING_LAW_TABLE_SHA256;
 }
+/** Round 6 of the 448 review: a tiled request that is itself a zero-model
+ * family's (the exact greeting or an exact sum, which Core answers with no
+ * model call), on the shape R1 reads (a first-turn Auto request, the request
+ * its own objective, no explicit route, no material), under a tile the law
+ * reads as a pool filter. Whether the tile IS the law's filter is the
+ * catalog's (lawTileKeepsZeroModel). Pure. */
+function lawTiledZeroModelRequest(task) {
+  return task.mode === 'auto' && task.objective.trim() === task.request.trim() &&
+    task.host_context.explicit_routes == null && task.material_refs.length === 0 &&
+    withoutConversation(task, {bareEnvelopeIsFirstTurn: true}) && Array.isArray(lawTile(task)) &&
+    (exactLocalGreeting(task.request) !== null || zeroModelArithmetic(task.request) !== null);
+}
 function lawAdmission(node, task, catalog) {
   const law = catalog?.routing_law, table = routingLawTable();
   if (!validRoutingLaw(law) || table === null || law.table_sha256 !== ROUTING_LAW_TABLE_SHA256) return null;
@@ -5806,6 +5818,13 @@ class RCCRuntime {
     if (!TERMINAL.has(snapshot.state)) this._hold(taskID, 'model_generation_forbidden');
     return false;
   }
+  /** The same hard zero, read without holding (round 6 of the 448 review:
+   * the tiled zero-model path asks the catalog first). */
+  _modelGenerationForbidden(taskID) {
+    const snapshot = this._load(taskID);
+    return snapshot?.task?.budget?.forbid_model_generation === true ||
+      snapshot?.effective_task?.budget?.forbid_model_generation === true;
+  }
   _holdExplicitRoutes(taskID, reason) {
     return this._update(taskID, 'explicit_routes_held', snapshot => {
       if (TERMINAL.has(snapshot.state)) return;
@@ -7218,12 +7237,24 @@ class RCCRuntime {
         return;
       }
     }
-    if (!this._allowModelGeneration(taskID)) return;
-    task = await this._resolveTaskIntent(taskID);
-    if (task === null || this.closed || this.stopping || this.quiescing) return;
-    if (this._load(taskID)?.intent_resolution?.kind === 'local_response' &&
-        withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
-      this._completeLocalExact(taskID, 'local_checkin', localResponsePathOutput(task.request)); return;
+    // Round 6 of the 448 review: under forbid_model_generation a zero-model
+    // family behaves the same with or without a tile. Whether a tile is the
+    // law's pool filter (the zero-model family stays local) or the rollback's
+    // pin (routing_policy=law_446: no zero-model path) is the host's setting,
+    // carried only by the catalog's routing_law; under the flag the host reads
+    // nothing with a model (Swift rccNativeCatalog: no local reading, the law's
+    // reader 'none'), so a tiled exact greeting or exact sum asks the catalog
+    // (no intent resolution, no other hook) and is held after it, before any
+    // model call, unless the law keeps it local (below).
+    const tiledZeroModel = this._modelGenerationForbidden(taskID) && lawTiledZeroModelRequest(task);
+    if (!tiledZeroModel) {
+      if (!this._allowModelGeneration(taskID)) return;
+      task = await this._resolveTaskIntent(taskID);
+      if (task === null || this.closed || this.stopping || this.quiescing) return;
+      if (this._load(taskID)?.intent_resolution?.kind === 'local_response' &&
+          withoutConversation(task, {bareEnvelopeIsFirstTurn: true})) {
+        this._completeLocalExact(taskID, 'local_checkin', localResponsePathOutput(task.request)); return;
+      }
     }
     state = this._update(taskID, 'planning', snapshot => {
       assert(!snapshot.cancel_requested && !TERMINAL.has(snapshot.state), 'planning_raced_cancel');
@@ -7257,13 +7288,13 @@ class RCCRuntime {
     // draws no pool: with a tile the exact greeting, the calculator (both run
     // before the catalog under Auto, R1) and the ask-back stay local, on the
     // first turn only, as under Auto.
-    // Round 5: only after the catalog. Whether a tile is the law's pool
-    // filter or the rollback's pin (routing_policy=law_446) is the host's
-    // setting, carried only by the catalog's routing_law, and the host's
-    // catalog reads the request with the local model: under
-    // --forbid-model-generation (no model call at all) a tiled request is
-    // therefore held, as the rollback holds it; an Auto one is answered
-    // before the catalog (R1).
+    // Only after the catalog: whether a tile is the law's pool filter or the
+    // rollback's pin (routing_policy=law_446) is the host's setting, carried
+    // only by the catalog's routing_law. Round 6: under
+    // forbid_model_generation the same catalog decides a tiled exact greeting
+    // or sum (above: it reaches here with no intent resolution), so it is
+    // answered exactly as an Auto one is before the catalog (R1); under the
+    // rollback's pin it is held here, before any model call.
     const zeroModelShape = task.mode === 'auto' && task.objective.trim() === task.request.trim() &&
         task.host_context.explicit_routes == null && task.material_refs.length === 0 &&
         withoutConversation(task, {bareEnvelopeIsFirstTurn: true});
@@ -7276,6 +7307,7 @@ class RCCRuntime {
       const answer = zeroModelArithmetic(task.request);
       if (answer !== null) { this._completeLocalExact(taskID, 'deterministic_arithmetic', answer); return; }
     }
+    if (tiledZeroModel && !this._allowModelGeneration(taskID)) return;
     if (zeroModelShape && (autoPreference || tiled)) {
       const askBack = lawAskBack(task, catalog);
       if (askBack !== null) { this._completeLocalExact(taskID, 'local_ask_back', askBack.output, askBack.receipt); return; }

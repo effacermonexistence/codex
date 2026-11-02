@@ -701,9 +701,12 @@ check("const match = /^\\s*(-?\\d{1,15})\\s*([+*\\-])\\s*(-?\\d{1,15})\\s*$/.exe
       "!(tokens[0].int.length === 4 && tokens[2].int.length === 4);" in RUNTIME and
       "function withoutConversation(task, {bareEnvelopeIsFirstTurn = false} = {}) {" in RUNTIME and
       # Build 447 (DESIGN-8): the routing law's local ask-back is the third
-      # zero-model site (no dispatch, the same first-turn rule).
-      RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 3 and
-      RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 3 and
+      # zero-model site (no dispatch, the same first-turn rule). Round 6 of
+      # the 448 review: the tiled exact greeting or sum under the hard zero
+      # (lawTiledZeroModelRequest) is the fourth, the same R1 shape.
+      RUNTIME.count("bareEnvelopeIsFirstTurn: true") == 4 and
+      RUNTIME.count("withoutConversation(task, {bareEnvelopeIsFirstTurn: true})") == 4 and
+      "withoutConversation(task, {bareEnvelopeIsFirstTurn: true}) && Array.isArray(lawTile(task)) &&" in RUNTIME and
       "const askBack = lawAskBack(task, catalog);" in RUNTIME and
       "rcc-arithmetic-vectors.json" in ARITH_TEST and "zeroModelArithmetic" in ARITH_TEST and
       (ROOT / "scripts/fixtures/rcc-arithmetic-vectors.json").is_file() and
@@ -811,7 +814,9 @@ check("!RequestProfile.railsDecide(keywordProfile, request: request.request)" in
       # Build 447 (DESIGN-8): the law reads every Auto request; the profile
       # adopts the reading only where build 446 did (permissions unchanged).
       "let profileConsults = autoRequest && !RequestProfile.railsDecide(keywordProfile, request: request.request)" in catalog_profile and
-      "let consultLocal = profileConsults || lawReads" in catalog_profile and "if profileConsults {" in catalog_profile and
+      # Round 6 of the 448 review: nothing is read with a model under the
+      # task's hard zero (--forbid-model-generation).
+      "let consultLocal = (profileConsults || lawReads) && !forbidsModel" in catalog_profile and "if profileConsults {" in catalog_profile and
       "if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }" in catalog_profile and
       "input.ownerScope = RCCCatalogFacts.ownerScope(request, profile: requestProfile)" in catalog_profile and
       "if request.mode != .explicitRoutingTest && !contractBackedWrite {" in catalog_profile and
@@ -1441,6 +1446,23 @@ check("any turn" not in json.dumps(SHIPPED_POLICY, ensure_ascii=False) and "any 
       "the LOCAL start binds on its first turn only" in SHIPPED_POLICY["deterministic_verifiers_rule"] and
       "the LOCAL start binds on its first turn only" in SHIPPED_TABLE_TEXT,
       "448 round 6: the shipped policy and table state the first-turn local start only (round 3 decision 5's any-turn rule withdrawn)")
+# Round 6: under forbid_model_generation a zero-model family behaves the same
+# with or without a tile: the host reads nothing with a model (the law's switch
+# with reader "none"), and Core asks that catalog for a tiled exact greeting or
+# sum only, holding it after the catalog under the rollback's pin.
+MAIN_SWIFT = (ROOT / "Sources/OS1/main.swift").read_text()
+check("let forbidsModel = request.budget.forbidModelGeneration == true" in MAIN_SWIFT and
+      "let consultLocal = (profileConsults || lawReads) && !forbidsModel" in MAIN_SWIFT and
+      "} else if lawReads && forbidsModel {" in MAIN_SWIFT and
+      "input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: nil)" in MAIN_SWIFT and
+      "function lawTiledZeroModelRequest(task) {" in RUNTIME and
+      "const tiledZeroModel = this._modelGenerationForbidden(taskID) && lawTiledZeroModelRequest(task);" in RUNTIME and
+      "if (tiledZeroModel && !this._allowModelGeneration(taskID)) return;" in RUNTIME and
+      RUNTIME.index("const tiledZeroModel = this._modelGenerationForbidden(taskID)") <
+      RUNTIME.index("catalog = validateCatalog(await this.catalog(immutable(task)), task);") <
+      RUNTIME.index("if (tiledZeroModel && !this._allowModelGeneration(taskID)) return;") <
+      RUNTIME.index("const askBack = lawAskBack(task, catalog);"),
+      "448 round 6: under --forbid-model-generation a tiled exact greeting or sum is answered as under Auto (the law's pool filter) or held after the catalog (the rollback's pin); the host reads with no model")
 # Review of round 3 (448): a provider tile filters the pool and the law
 # decides inside it, the certificate is retired under the law, a verified
 # start prices its structural screen event, the cheaper det step, the
@@ -1470,7 +1492,7 @@ check('public static let environmentKey = "OS1_ROUTING_POLICY"' in law_swift and
       "guard policy == .law447 else { return nil }" in law_swift and
       # Round 4 (lead decision 4): the law reads under a provider tile too.
       "let lawReads = request.mode == .auto && lawSelection.policy == .law447" in MAIN and
-      "let consultLocal = profileConsults || lawReads" in MAIN and
+      "let consultLocal = (profileConsults || lawReads) && !forbidsModel" in MAIN and
       "if lawReads { input.routingLaw = RoutingLaw.catalogLaw(policy: lawSelection.policy, receipt: reading) }" in MAIN and
       "capabilityRoutes: input.routingLaw == nil ? capabilityRoutes(input) : nil" in BUILDER and
       "law.referenceRequest = RequestProfile.ownerAsksForReference(input.request," in BUILDER and
