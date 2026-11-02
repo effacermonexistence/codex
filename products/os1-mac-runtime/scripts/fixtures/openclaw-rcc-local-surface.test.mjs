@@ -254,7 +254,12 @@ test('an Auto chat ticket gets the conversational prompt; explicit routes and ar
   const english = seen.at(-1).systemPrompt;
   assert.match(english, /Reply in English only/);
   assert.doesNotMatch(english, /[가-힣]/u, 'no Korean example pulls an English reply into Korean');
-  assert.equal(createHash('sha256').update(english).digest('hex').slice(0, 12), '6c647a2b91cc');
+  // Round 5: the English prompt re-tuned on development rows (its own example
+  // no longer presumes a long day) and frozen before held-out set H
+  // (artifacts law448f8/prompt/FROZEN.json); the Korean one unchanged.
+  assert.doesNotMatch(english, /long day\./, 'no example teaches the presumption the rules forbid');
+  assert.match(english, /do not add a feeling, reason or detail they did not say/);
+  assert.equal(createHash('sha256').update(english).digest('hex').slice(0, 12), '06e523cbe038');
   // A conversational answer is an execution-only delivery, never task-verified.
   assert.equal(chat.output, '심심하면 퀴즈 하나 낼까요?'); assert.equal(chat.task_quality, 'execution_only');
   assert.equal(chat.task_verified, false);
