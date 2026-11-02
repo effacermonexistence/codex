@@ -9,8 +9,8 @@
  * can draw).
  *
  *   history      node scripts/routing-law-f1-audit.mjs history --sqlite <rcc-runtime.sqlite> --out <catalog-history.json>
- *   requests     node scripts/routing-law-f1-audit.mjs requests --catalogs <sw446c.json> [--intents <intents.json>]
- *                  --fresh <fresh.json> --out <requests.json>
+ *   requests     node scripts/routing-law-f1-audit.mjs requests --catalogs <sw446c.json> [--law-catalogs <sw448c.json>]
+ *                  [--intents <intents.json>] --fresh <fresh.json> --out <requests.json>
  *   sensitivity  node scripts/routing-law-f1-audit.mjs sensitivity --planted <planted.json> --out <sensitivity.json>
  *   plan         node scripts/routing-law-f1-audit.mjs plan --requests <requests.json> --pools <pools.json>
  *                  [--ledger <routing-ledger.jsonl>] [--history <catalog-history.json>] [--sensitivity <sensitivity.json>]
@@ -438,8 +438,18 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   } else if (command === 'requests') {
     const {armsOf} = await import(pathToFileURL(join(ROOT, 'scripts/routing-law-replay.mjs')).href);
     const table = routingLawTable(), intents = o.intents ? json(o.intents) : {};
-    const corpusF1 = json(o.catalogs).filter(row => row.catalog).filter(row =>
-      armsOf(row, intents[row.index] ?? null, null, table).family === 'F1');
+    // The routed first-turn F1 population where the local row is actually a
+    // candidate of the law's route (the corpus replays every row as a first
+    // turn; a status check-in or a named file never offers it), read on the
+    // current host's catalogs where given (--law-catalogs, as the corpus
+    // sweep: the recorded readings recombined under this build's Swift).
+    const lawCatalogs = o['law-catalogs'] ? new Map(json(o['law-catalogs']).filter(row => row.catalog)
+      .map(row => [String(row.index), row.catalog])) : new Map();
+    const corpusF1 = json(o.catalogs).filter(row => row.catalog).map(row => lawCatalogs.has(String(row.index)) ?
+      {...row, law_catalog: lawCatalogs.get(String(row.index))} : row).filter(row => {
+      const r = armsOf(row, intents[row.index] ?? null, null, table);
+      return r.family === 'F1' && (r.arms.law447.result.law?.candidates ?? []).some(([key]) => key.startsWith('local:'));
+    });
     const fresh = json(o.fresh);
     const set = buildRequestSet({corpusF1, fresh: Array.isArray(fresh) ? fresh : fresh.requests});
     writeNew(o.out, JSON.stringify(set, null, 1) + '\n');
