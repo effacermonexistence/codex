@@ -1364,7 +1364,9 @@ check("throw new Error('det outcomes: every draft must name the held-out validat
       "const scoped = lawDeterministicVerifier(table, admission.family) !== null;" in RUNTIME and
       "lawSmallTalkScope(executionTask(snapshot), snapshot.catalog)) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and
       "return ticket.law_family === 'F1' ? 'small_talk' : 'conversational';" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
-      "export const LOCAL_SMALL_TALK_SYSTEM = " in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
+      # Round 4 (lead decision 2): one responsive prompt per owner language.
+      "export const LOCAL_SMALL_TALK_SYSTEMS = Object.freeze({" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
+      "systemPrompt: style === 'small_talk' ? localSmallTalkSystem(instruction) :" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
       'coreFlow("small_talk_writer_lane", root: root)' in HOST_FIXTURE and
       'async small_talk_later_turn_proposal() {' in (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").read_text(),
       "448 round 3: one population (1), the runtime's escalation event priced (2), repair within F1 (3), no certificate in the law path (4), small talk in every lane and turn (5), its own prompt (6)")

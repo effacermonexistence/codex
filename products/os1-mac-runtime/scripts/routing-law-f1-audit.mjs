@@ -100,7 +100,10 @@ export async function localJSON({model, system, user, schema, numPredict = 300})
   const port = process.env.OLLAMA_PORT ?? '11434';
   const response = await fetch(`http://127.0.0.1:${port}/api/chat`, {method: 'POST', headers: {'content-type': 'application/json'},
     body: JSON.stringify({model, stream: false, think: false, keep_alive: '30m', format: schema,
-      options: {temperature: 0, seed: 7, num_predict: numPredict},
+      // OS1_LOCAL_NUM_CTX (optional): a smaller context window for a machine
+      // under memory pressure; it changes no output of these short prompts.
+      options: {temperature: 0, seed: 7, num_predict: numPredict,
+        ...(Number.isSafeInteger(Number(process.env.OS1_LOCAL_NUM_CTX)) ? {num_ctx: Number(process.env.OS1_LOCAL_NUM_CTX)} : {})},
       messages: [{role: 'system', content: system}, {role: 'user', content: user}]}), signal: AbortSignal.timeout(180_000)});
   if (!response.ok) throw new Error('local model HTTP ' + response.status);
   return JSON.parse((await response.json()).message.content);

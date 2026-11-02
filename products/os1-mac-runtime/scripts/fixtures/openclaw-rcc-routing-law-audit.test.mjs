@@ -285,6 +285,17 @@ test('the release gate: priced only at a DERIVED exchange, on the draw, against 
   const exhausted = {anthropic_shared: {price: Infinity, basis: 'observed_window'}, openai_codex: {price: Infinity, basis: 'observed_window'}};
   assert.equal(gateOf({law447: arm(0, 0, 0), build446: arm(0, 0, 0), all_reference: arm(0, 0, 0)}, {law447: 0, build446: 0}, exhausted).release,
     'NOT_APPLICABLE_NO_DRAWABLE_POOL');
+  // Round 4: a stale observation of a still-exhausted window is a derived
+  // price (Infinity until its reset; usage only rises in a window): the
+  // other pool's fresh rate prices the comparison. Any other stale
+  // observation is not.
+  const staleExhausted = {anthropic_shared: {price: 0.99, basis: 'observed_window'},
+    openai_codex: {price: Infinity, basis: 'stale_window_whole_window_ahead'}};
+  assert.equal(gateOf({law447: arm(5, 0, 4.95), build446: arm(6, 0, 5.94), all_reference: arm(7, 0, 6.93)}, {law447: 0, build446: 0},
+    staleExhausted).release, 'PASS');
+  const staleOpen = {...staleExhausted, openai_codex: {price: 2, basis: 'stale_window_whole_window_ahead'}};
+  assert.equal(gateOf({law447: arm(5, 0, 4.95), build446: arm(6, 0, 5.94), all_reference: arm(7, 0, 6.93)}, {law447: 0, build446: 0},
+    staleOpen).release, 'NO_DERIVED_EXCHANGE');
   const astra = gateOf({law447: arm(1, 1, 2), build446: arm(2, 2, 4), all_reference: arm(3, 3, 6)}, {law447: 4, build446: 3}, observed);
   // Owner, 2026-10-30: Astra starts are reported, never a gate; the objective decides.
   assert.deepEqual([astra.release, astra.astra.verdict], ['PASS', 'FAIL']);

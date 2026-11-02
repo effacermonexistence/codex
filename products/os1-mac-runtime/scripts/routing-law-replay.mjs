@@ -406,7 +406,12 @@ function paretoBelow(a, b) {
  * drawn). The recorded catalogs' 0.6/0.6 with no reset data price both pools
  * 1/0.6 by the conservative fallback: that is the 1:1 sum, not an exchange. */
 export function derivedExchange(rates) {
-  return rates !== null && POOLS.every(pool => rates[pool]?.basis === 'observed_window');
+  // Round 4 of the 448 review: a stale observation of a window that was
+  // EXHAUSTED and has not reset yet is as derived as a fresh one (plan usage
+  // only rises inside a window: Core prices it Infinity until its reset, with
+  // no 1:1 fallback); any other stale or missing observation is not.
+  return rates !== null && POOLS.every(pool => rates[pool]?.basis === 'observed_window' ||
+    (rates[pool]?.basis === 'stale_window_whole_window_ahead' && rates[pool]?.price === Infinity));
 }
 /** The exchange x = price(Cw) / price(Px) at which law447 and the other arm
  * cost the same with the routes held fixed: law447 is cheaper for x below it

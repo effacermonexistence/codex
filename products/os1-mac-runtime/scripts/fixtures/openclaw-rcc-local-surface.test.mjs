@@ -238,13 +238,23 @@ test('an Auto chat ticket gets the conversational prompt; explicit routes and ar
   assert.equal(localWorkerStyle({...autoArithmetic, law_family: 'F1'}), 'final_result');
   await execute({...auto, law_family: 'F1', instruction: '오늘 좀 피곤해', attempt_id: randomUUID()});
   const smallTalk = seen.at(-1).systemPrompt;
-  assert.match(smallTalk, /making small talk/);
-  assert.match(smallTalk, /one short, general question back/);
-  assert.match(smallTalk, /never say you are an AI or a language model/);
-  assert.match(smallTalk, /no advice or suggestions/);
+  // Round 4 (lead decision 2): responsive, not formulaic, one prompt per
+  // owner language, frozen before the fresh held-out set G.
+  assert.match(smallTalk, /Reply in Korean only, like a warm friend who listened/);
+  assert.match(smallTalk, /Never ask about anything they already told you/);
+  assert.match(smallTalk, /Never guess a feeling, cause or detail they did not state/);
+  assert.match(smallTalk, /no saying you are an AI or cannot feel/);
+  assert.match(smallTalk, /Never tell them what to do/);
+  assert.match(smallTalk, /ask one natural question back/);
   assert.doesNotMatch(smallTalk, /general knowledge/);
-  assert.equal(createHash('sha256').update(smallTalk).digest('hex').slice(0, 12), '2bd215b1454f',
-    'the prompt frozen before held-out set C (scripts/routing-law-det-validation-20261101.json)');
+  assert.doesNotMatch(smallTalk, /set acknowledgement|one short, general question back/, 'the round-3 template is gone');
+  assert.equal(createHash('sha256').update(smallTalk).digest('hex').slice(0, 12), 'abdaac627abb',
+    'the Korean prompt frozen before held-out set G (artifacts law448f7/prompt/FROZEN.json)');
+  await execute({...auto, law_family: 'F1', instruction: 'Long day at the office', attempt_id: randomUUID()});
+  const english = seen.at(-1).systemPrompt;
+  assert.match(english, /Reply in English only/);
+  assert.doesNotMatch(english, /[가-힣]/u, 'no Korean example pulls an English reply into Korean');
+  assert.equal(createHash('sha256').update(english).digest('hex').slice(0, 12), '6c647a2b91cc');
   // A conversational answer is an execution-only delivery, never task-verified.
   assert.equal(chat.output, '심심하면 퀴즈 하나 낼까요?'); assert.equal(chat.task_quality, 'execution_only');
   assert.equal(chat.task_verified, false);
