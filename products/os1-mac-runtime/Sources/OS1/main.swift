@@ -20345,9 +20345,12 @@ func rccLocalClassification(taskID: String, requestSHA256: String, request: Stri
     // when it is valid; an invalid file is ignored with this receipt line).
     let hints = LocalClassifierHints.load(home: home)
     FileHandle.standardError.write(Data(("os1 rcc-catalog: " + hints.receipt + "\n").utf8))
+    // Build 449 (DESIGN-9 section 4.1): under the routing law (`readsIntent`,
+    // the host's lawReads) the domain names the request's skills, so it is
+    // read for every reading but subjective small talk.
     let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() },
                                                         hints: hints.hints, statusHeard: statusHeard,
-                                                        readsIntent: readsIntent)
+                                                        readsIntent: readsIntent, readsSkills: readsIntent)
     LocalRequestClassifier.store(receipt, key: key, directory: directory)
     return receipt
 }

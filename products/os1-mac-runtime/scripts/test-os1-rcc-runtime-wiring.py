@@ -920,14 +920,15 @@ check("const local = profile.classifier.startsWith('local_llm:');" in capability
 check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
-check('public static let promptVersion = "local_cls_v2_dom1_sub2_int1"' in classifier_source and
+# Build 449 (DESIGN-9 section 3): v4's approved band definitions; dom2: under the routing law the domain call reads the skills.
+check('public static let promptVersion = "local_cls_v4_dom2_sub2_int1"' in classifier_source and
       # DESIGN-4 §9: the enum call is build 441's v2 schema; the domain is its own call (with the owner's ASR hints, §3).
       'public static let schemaJSON = #"{"type":"object","properties":{"task_type":{"type":"string","enum":["explain","design","write","action","chat"]},"difficulty":{"type":"string","enum":["light","standard","deep"]},"needs_tools":{"type":"string","enum":["none","current_facts","workspace","execution"]}},"required":["task_type","difficulty","needs_tools"]}"#' in classifier_source and
       'public static let domainSchemaJSON = #"{"type":"object","properties":{"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}},"required":["domain"]}"#' in classifier_source and
-      "if !needsDomain(answer, request: text) {" in classifier_source and
+      "if !needsDomain(answer, request: text, readsSkills: readsSkills) {" in classifier_source and
       "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints, statusHeard: statusHeard," in MAIN and
       # Build 447: the intent call under the routing law only.
-      "readsIntent: readsIntent)" in MAIN and "guard needsIntent(answer, readsIntent: readsIntent) else { return receipt }" in classifier_source and
+      "readsIntent: readsIntent, readsSkills: readsIntent)" in MAIN and "guard needsIntent(answer, readsIntent: readsIntent) else { return receipt }" in classifier_source and
       'home.appendingPathComponent(".os1/local-classifier/asr-hints.json")' in (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text() and
       "static let deepFloorPatterns = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
       # Review of 442: the floor reads a proof, derivation or rigour asked for, never 증명사진 or 전자기 유도.
