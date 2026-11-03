@@ -4,7 +4,7 @@
 // local grading, paid runs refused without explicit confirmation) and the
 // replay's headroom and release-gate arithmetic. Zero quota: a stub local
 // model, the fake dispatcher and temporary files only; no Ollama, provider,
-// network or real HOME. The corpus is the owner fixture's 14 recorded catalogs.
+// network or real HOME. The corpus is the owner fixture's recorded catalogs (build 449: 30).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -42,17 +42,22 @@ const plan = () => planAudits({catalogs: CORPUS, intents: INTENTS, traffic: TRAF
 test('evidence (c): a passed PARITY audit admits a cell with a gap of evidence, never one with evidence against, never under P', () => {
   const pass = (id, n, admits) => ({verdict: 'pass', id, n, discordant: 0, n_parity: 2, admits});
   const audited = {...TABLE, audits: {cells: {
-    'claude-sonnet-5-5@xhigh|F13': pass('audit-0123456789ab', 2, true),
-    'gpt-6.1-sol@max|F4': pass('audit-ba9876543210', 2, true),
-    'claude-sonnet-5-5@max|F13': {verdict: 'inconclusive', id: 'audit-aaaaaaaaaaaa', n: 2, discordant: 0, admits: false},
-    'claude-sonnet-5-5@high|F13': pass('audit-cccccccccccc', 2, false)}}};
-  assert.deepEqual([lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form,
-    lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form], ['none', 'c']);
-  assert.equal(lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').audit, 'audit-0123456789ab');
-  assert.equal(lawEvidence(audited, 'F4', 'openai_codex', 'gpt-6.1-sol', 'max').form, 'none'); // T1F fails tau
-  assert.equal(lawEvidence(audited, ['W2'], 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh', null).form, 'none'); // P passes no family
-  assert.equal(lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'max').form, 'none'); // inconclusive admits nothing
-  assert.equal(lawEvidence(audited, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'high').form, 'none'); // provisional admits nothing
+    'claude-haiku-4-5-20251001@none|F4': pass('audit-0123456789ab', 2, true),
+    'gpt-6-luna@low|F4': pass('audit-ba9876543210', 2, true),
+    'claude-haiku-4-5-20251001@none|F2': {verdict: 'inconclusive', id: 'audit-aaaaaaaaaaaa', n: 2, discordant: 0, admits: false},
+    'claude-haiku-4-5-20251001@none|F12': pass('audit-cccccccccccc', 2, false)}}};
+  // DESIGN-9: the request's tiers at its band (a standard knowledge answer:
+  // T1 + T1F). Haiku has no score on them (a gap of evidence, unscored): only
+  // a parity audit admits it.
+  const ev = (table, model, effort, family) => lawEvidence(table, ['T1', 'T1F'], model.startsWith('gpt') ? 'openai_codex' :
+    'anthropic_shared', model, effort, family, {band: 'standard'});
+  assert.deepEqual([ev(TABLE, 'claude-haiku-4-5-20251001', 'none', 'F4').form, ev(TABLE, 'claude-haiku-4-5-20251001', 'none', 'F4').gap,
+    ev(audited, 'claude-haiku-4-5-20251001', 'none', 'F4').form], ['none', true, 'c']);
+  assert.equal(ev(audited, 'claude-haiku-4-5-20251001', 'none', 'F4').audit, 'audit-0123456789ab');
+  assert.equal(ev(audited, 'gpt-6-luna', 'low', 'F4').form, 'none'); // T1 fails tau (MMMU-Pro 13.2 below Astra's best)
+  assert.equal(ev(audited, 'claude-haiku-4-5-20251001', 'none', null).form, 'none'); // P passes no family
+  assert.equal(ev(audited, 'claude-haiku-4-5-20251001', 'none', 'F2').form, 'none'); // inconclusive admits nothing
+  assert.equal(ev(audited, 'claude-haiku-4-5-20251001', 'none', 'F12').form, 'none'); // provisional admits nothing
   // The compiler carries only well-formed verdicts of the rule, and admits
   // only a parity audit: n_parity informative questions sampled at random.
   const rule = 'r', digest = 'a'.repeat(64);
@@ -97,16 +102,24 @@ test('value of information: gap cells only, never P; parity n, P(pass), the pric
   }
   // Build 448 (lead order): the local F2 audit is in the plan; its parity n
   // comes from its tiers' tau. Review of round 3: small talk's deterministic
-  // verifier failed its routed held-out set F, so F1 admits no row below the
-  // reference by (a): every F1 row is a gap of evidence (F1 publishes no
-  // tier), and step 6 prices its paired audit.
+  // verifier failed its routed held-out set F, so F1 admits no pool row below
+  // the reference by (a): F1's pool rows are gaps of evidence (F1 names no
+  // skill), and step 6 prices their paired audits. DESIGN-9 section 4.8: the
+  // owner judges small talk, so its local row is admitted (form o) and no
+  // audit of it is planned.
   const localF2 = result.audits.find(a => a.id === 'qwen3.5:9b@none|F2');
   assert.ok(localF2, 'the local F2 audit is planned');
   const f1 = result.audits.filter(a => a.family === 'F1');
-  assert.ok(f1.length > 0 && f1.some(a => a.id === 'qwen3.5:9b@none|F1'), 'F1 rows are gaps of evidence: audited by VOI');
+  assert.ok(f1.length > 0, 'F1 pool rows are gaps of evidence: audited by VOI');
+  assert.ok(!f1.some(a => a.id === 'qwen3.5:9b@none|F1'), 'the owner judges the local F1 row: no audit');
   assert.ok(localF2.n > 0 && localF2.tau_excess_rate > 0);
+  assert.equal(localF2.tau_excess_rate, TABLE.tau.pct.tau / 100, 'DESIGN-9: one percentage tau, 1.2 points');
   assert.equal(localF2.cost.Cw + localF2.cost.Px > 0, true, 'its reference answers are paid; the local answers draw nothing');
-  assert.ok(localF2.saving_path > 0, 'admitted by (c) the local row needs no per-answer check');
+  // DESIGN-9: the verified start's check now runs at an admissible Sonnet 5.5
+  // medium (the reference's result on a light knowledge answer), cheaper than
+  // a (c) admission's structural-screen escalation to the reference: on this
+  // fixture admitting the local row would save nothing.
+  assert.deepEqual([localF2.saving_path, localF2.decision], [0, 'no_saving']);
   // The horizon is the evidence's measured lifetime: the local cell's one
   // model change in 20 days; a pool cell with no change seen, the span.
   assert.equal(localF2.lifetime_days, 20);
@@ -153,8 +166,10 @@ const stubChecklist = async (model, system, user) => ({items: ['states the main 
 // each run against its own audit reference.
 async function frozen(t) {
   const base = plan();
-  const source = base.audits.find(a => Object.keys(a.offered_rows).length >= 2) ??
-    (() => { throw new Error('the fixture plan has no audit offered on two questions'); })();
+  // A pool cell's audit (both arms draw quota: the cap is per pool and per
+  // its reset window); build 449's plan lists the local F2 audit first.
+  const source = base.audits.find(a => a.pool !== 'none' && Object.keys(a.offered_rows).length >= 2) ??
+    (() => { throw new Error('the fixture plan has no pool audit offered on two questions'); })();
   const indices = Object.keys(source.offered_rows).map(Number).slice(0, 2);
   const audit = {...source, decision: 'scheduled', n: 2, questions: indices, grader_sensitivity: 1,
     question_references: Object.fromEntries(indices.map(index => [index, source.offered_rows[index]]))};
@@ -254,11 +269,12 @@ test('replay headroom: an exhausted pool\'s rows leave every arm; the pools\' wi
   const routed = routeOf(q.request, law);
   assert.deepEqual([routed.law.rates.anthropic_shared.basis, routed.law.rates.anthropic_shared.rate], ['observed_window', 8]);
   // Round 3 of the 448 review (decision 2): the reference is priced at Q
-  // alone (the top of the frontier); opus@max (form b) escalates only on the
-  // runtime's structural screen, priced Q + p_screen x Q(fable) with p_screen
-  // from the ledger's screened attempts: cheaper than fable@max at any rate.
+  // alone (the top of the frontier); opus@xhigh (form b: DESIGN-9, the same
+  // result on T1 + T1F at the standard band) escalates only on the runtime's
+  // structural screen, priced Q + p_screen x Q(fable) with p_screen from the
+  // ledger's screened attempts: cheaper than fable@max at any rate.
   assert.equal(routed.route, routed.law.argmin);
-  assert.equal(routed.route, 'claude-chat:claude-opus-5-5@max');
+  assert.equal(routed.route, 'claude-chat:claude-opus-5-5@xhigh');
   assert.ok(!atHeadroom(q.catalog, {kind: 'remaining', remaining: {openai_codex: 0}}).candidates.some(row => row.quota_pool === 'openai_codex'));
 });
 

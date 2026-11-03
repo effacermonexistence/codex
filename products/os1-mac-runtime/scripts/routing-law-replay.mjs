@@ -126,10 +126,14 @@ export function ownerAsksForReference(request, profile) {
   return asksForReference(request) && !(profile?.signals ?? []).includes('soft_cleared_quality');
 }
 
-export function lawCatalog(row, intent) {
+export function lawCatalog(row, intent = null) {
   const catalog = structuredClone(row.catalog);
   delete catalog.capability_routes;
   const answer = row.receipt?.outcome === 'adopted' ? row.receipt.answer : null;
+  // Build 449: a live reading under the law (prompt v4_dom2_sub2_int1)
+  // carries its own intent call's answer; an older recorded one takes it from
+  // the intents map.
+  intent ??= answer?.intent ?? null;
   const reading = answer ? {task_type: answer.task_type, difficulty: answer.difficulty, needs_tools: answer.needs_tools,
     domain: answer.domain ?? 'general', ...(intent ? {intent} : {})} : null;
   catalog.routing_law = {schema: 1, policy: 'law_447', table_sha256: ROUTING_LAW_TABLE_SHA256,
@@ -364,7 +368,11 @@ export function armsOf(row, intent, headroom = null, table = routingLawTable()) 
   // corpus catalogs the CURRENT host builds (`law_catalog`: the recorded
   // readings recombined under this build's Swift, --law-catalogs); build
   // 446's arm keeps its recorded catalog.
-  const law = atHeadroom(lawCatalog(row.law_catalog ? {...row, catalog: row.law_catalog} : row, intent), headroom);
+  // Build 449: a law catalog row carries its own live reading (prompt
+  // v4_dom2_sub2_int1, `law_receipt`): the law arms read it, with its own
+  // intent call's answer (never an older recorded intent).
+  const lawRow = row.law_catalog ? {...row, catalog: row.law_catalog, ...(row.law_receipt ? {receipt: row.law_receipt} : {})} : row;
+  const law = atHeadroom(lawCatalog(lawRow, row.law_receipt ? row.law_receipt.answer?.intent ?? null : intent), headroom);
   const b446 = atHeadroom(row.catalog, headroom);
   const attempt = (request, catalog) => {
     try { return routeOf(request, catalog); } catch (error) { return {route: 'core_error:' + error.message, candidate: null, error: true}; }
@@ -570,7 +578,8 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
     if (!row.catalog) continue;
     const draft = drafts?.get?.(String(row.index)) ?? null;
     const lawCatalogOf = lawCatalogs?.get?.(String(row.index)) ?? null;
-    const r = armsOf({...row, ...(draft ? {local_draft: draft} : {}), ...(lawCatalogOf ? {law_catalog: lawCatalogOf} : {})},
+    const r = armsOf({...row, ...(draft ? {local_draft: draft} : {}),
+      ...(lawCatalogOf ? {law_catalog: lawCatalogOf.catalog, ...(lawCatalogOf.receipt ? {law_receipt: lawCatalogOf.receipt} : {})} : {})},
       intents[row.index] ?? null, headroom, table);
     rates ??= r.rates;
     for (const arm of ALL_ARMS) addTo(totals[arm], r.arms[arm].priced, r.rates);
@@ -688,6 +697,49 @@ export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}, 
         recorded_446: typeof source === 'number' ? recorded446.get(source) ?? null : null, design7_route: design7};
     })};
 }
+/** Build 449 (DESIGN-9): the owner fixture from the corpus harness's rows of
+ * the 16 owner questions and the 14 DESIGN-9 section 5 examples (each a live
+ * local reading under the law, prompt v4_dom2_sub2_int1, and the catalog the
+ * current host builds for it, its rows the real host's breadth): as expected
+ * route the law's own output (never hand-set), with the band, skills and
+ * tiers that chose it; the DESIGN-9 example's own band, shape and tiers are
+ * kept beside it (a reference, never the expected route). */
+export function ownerFixtureFromRows(rows, examples = [], {readAt = null} = {}) {
+  const table = routingLawTable();
+  const owner = rows.filter(row => /^owner\d+$/.test(row.group ?? ''))
+    .map(row => ({n: Number(row.group.slice(5)), row})).sort((a, b) => a.n - b.n);
+  const design9 = rows.filter(row => /^design9_[A-Z]$/.test(row.group ?? '')).map(row => {
+    const id = row.group.slice(8), example = examples.find(e => e.id === id) ?? null;
+    return {id, row, example};
+  }).sort((a, b) => a.id < b.id ? -1 : 1);
+  const entries = [...owner.map(({n, row}) => ({n, row, design7: OWNER_QUESTIONS.find(([m]) => m === n)?.[2] ?? null})),
+    ...design9.map(({id, row, example}, i) => ({n: 17 + i, row, example: id, design9: example ?
+      {id, input: example.input, band: example.level, shape: example.shape, tiers: example.tiers} : {id}}))];
+  return {schema: 2, table_sha256: ROUTING_LAW_TABLE_SHA256,
+    note: 'DESIGN-9 (build 449): the 16 owner questions (DESIGN-7 §5) and the 14 DESIGN-9 section 5 examples, each with the ' +
+      'local model\'s live reading under the law (prompt v4_dom2_sub2_int1) and the catalog the current host builds for it ' +
+      '(the real host\'s breadth of rows). expected_route (and expected_check for a REVAS verified start, expected_det for a ' +
+      'deterministic verifier) is the routing law output (golden) at the recorded headroom (no derived exchange: both pools ' +
+      '1 / 0.6), never hand-set, with the band, skills and tiers that chose it; route_446 is build 446\'s route of the same ' +
+      'catalog (the rollback); design7_route and design9 are their documents\' own reference values, never expected',
+    questions: entries.map(({n, row, design7, design9: d9, example}) => {
+      const law = lawCatalog(row);
+      const routed = routeOf(row.request, law);
+      const route446 = routeOf(row.request, row.catalog).route;
+      const flags = [...(routed.route.includes('gpt-6-astra') ? ['astra_start'] : []),
+        ...(routed.route !== route446 ? ['differs_from_446'] : [])];
+      return {n, request: row.request, origin: (example ? 'DESIGN-9 example ' + example : 'owner question ' + n) +
+          '; live local reading ' + (readAt ?? 'qwen3.5:9b') + ' (harness449); host facts of the current host',
+        receipt: row.receipt, intent: row.receipt?.answer?.intent ?? null, catalog: row.catalog,
+        expected_route: routed.route, expected_kind: routed.kind ?? null,
+        expected_check: routed.ladder?.verifier?.kind === 'revas_check' ? routed.ladder.verifier.key : null,
+        expected_det: routed.ladder?.verifier?.kind === 'deterministic' ? routed.ladder.verifier.id : null, flags,
+        expected_family: routed.kind === 'calculator' ? 'F0' : routed.law?.family ?? lawFamily(law.routing_law.reading, table),
+        expected_band: routed.law?.band ?? null, expected_skills: routed.law?.skills ?? [], expected_tiers: routed.law?.tiers ?? [],
+        route_446: route446, ...(design7 !== undefined && !example ? {design7_route: design7} : {}),
+        ...(d9 ? {design9: d9} : {})};
+    })};
+}
 /** The 16 owner questions on the three arms at a headroom, in real pool units. */
 export function ownerTable(catalogRows, intents = {}, extras = {}, headroom = null, drafts = null) {
   const table = routingLawTable();
@@ -797,11 +849,19 @@ export function ownerGate(fixture, regimes) {
   const rows = live.map(q => ({index: q.n, request: q.request, catalog: q.catalog, receipt: q.receipt,
     ...(q.local_draft ? {local_draft: q.local_draft} : {})}));
   const intents = Object.fromEntries(live.filter(q => q.intent).map(q => [q.n, q.intent]));
+  // Build 449: the fixture's 30 questions (owner and DESIGN-9 examples).
   return sweep(rows, [], intents, regimes.filter(r => !Object.values(r).some(v => v?.from)));
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const o = options(process.argv.slice(2));
+  if (o['fixture-rows']) {
+    // Build 449: the owner fixture from the corpus harness's rows.
+    const rows = JSON.parse(readFileSync(o['fixture-rows'], 'utf8'));
+    const examples = o.examples ? JSON.parse(readFileSync(o.examples, 'utf8')) : [];
+    writeFileSync(o['owner-fixture'], JSON.stringify(ownerFixtureFromRows(rows, examples, {readAt: o['read-at'] ?? null})) + '\n');
+    process.exit(0);
+  }
   if (o['owner-gate']) {
     const result = ownerGate(JSON.parse(readFileSync(o['owner-gate'], 'utf8')), JSON.parse(readFileSync(o.regimes, 'utf8')).regimes);
     for (const [name, r] of Object.entries(result.regimes))
@@ -827,8 +887,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     [String(d.index), {draft: d.draft, output_tokens: d.output_tokens ?? null}])) : null;
   // Round 3 (lead decision 7): the current host's catalogs for the law arms
   // (the recorded readings recombined under this build's Swift).
+  // Build 449: and each row's own live reading (its receipt), when it has one.
   const lawCatalogs = o['law-catalogs'] ? new Map(JSON.parse(readFileSync(o['law-catalogs'], 'utf8'))
-    .filter(row => row.catalog).map(row => [String(row.index), row.catalog])) : null;
+    .filter(row => row.catalog).map(row => [String(row.index), {catalog: row.catalog,
+      ...(row.receipt?.outcome === 'adopted' ? {receipt: row.receipt} : {})}])) : null;
   if (o['owner-fixture']) {
     writeFileSync(o['owner-fixture'], JSON.stringify(ownerFixture(catalogs, routes446, intents, extras, drafts)) + '\n');
     process.exit(0);

@@ -1248,7 +1248,8 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "export function lawPoolPrice(catalog, pool, now, rowRemaining = null) {" in RUNTIME and
       "rates.set(pool, lawPoolPrice(catalog, pool, now, shares.length ? Math.min(...shares) : null));" in RUNTIME and
       "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
-      "export function lawTiers(table, family, reading = null, writer = false) {" in RUNTIME and
+      # Build 449 (DESIGN-9 section 4.1): the tiers are the reading's skills at its band (a long agentic build is C3).
+      "export function lawTiers(table, family, reading = null, agentic = false) {" in RUNTIME and
       "export function lawPFail(table, candidate, family, reference = null, learned = null) {" in RUNTIME and
       # Round 3 of the 448 review (decision 2): a read-only row with evidence is
       # priced on the runtime's structural screen, from its own pool reference.
@@ -1262,12 +1263,13 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "!validRoutingLaw(catalog?.routing_law))\n    return {class: 'certified'" in RUNTIME and
       "certifiedTupleRuns" not in RUNTIME and
       'node "$script_dir/routing-law-replay.mjs" --owner-gate "$script_dir/fixtures/routing-law-owner-questions.json"' in RELEASE and
-      "family === 'P' ? null : family);" in RUNTIME and
+      "family === 'P' ? null : family,\n            {band, learned});" in RUNTIME and
       "headroom_threshold" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
       "|| lawAnswersLocally(node, task, catalog)), 'local_agent_node_not_explicit');" in RUNTIME and
       "law.reference_request === true;" in RUNTIME and
       "snapshot.plan_provenance = askBack ? 'local_reading_ask_back' : 'deterministic_no_model';" in RUNTIME and
-      "const ranked = [...admissible].sort((a, b) => (a.eq - b.eq) ||" in RUNTIME and
+      # DESIGN-9 section 4.6: a tie goes to the lower effort.
+      "const ranked = [...admissible].sort((a, b) => (Math.abs(a.eq - b.eq) > 1e-12 ? a.eq - b.eq : 0) ||\n      (effortRank(a) - effortRank(b)) ||" in RUNTIME and
       "'law_argmin_reference'" in RUNTIME and "law:[A-Za-z0-9-]{1,16}" in RUNTIME and
       "...(routeClass !== null && plain(child.law_receipt) ? {law: child.law_receipt} : {})," in RUNTIME and
       "const askBack = lawAskBack(task, catalog);" in RUNTIME and
@@ -1281,8 +1283,8 @@ HOST_FIXTURE = (ROOT / "Tests/OS1ContextTests/RoutingLawHostFixture.swift").read
 LAW_FIXTURE = (ROOT / "Tests/OS1ContextTests/RoutingLawFixture.swift").read_text()
 check("snapshot.result = {output, execution_verified: !askBack, task_verified: !askBack," in RUNTIME and
       "'owner_order'" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
-      "export function lawLocalEvidence(table, model, family, task = undefined, catalog = undefined) {" in RUNTIME and
-      "lawLocalEvidence(table, candidate.model, family, task, catalog) ?? {form: 'v', tiers: []}" in RUNTIME and
+      "export function lawLocalEvidence(table, model, family, task = undefined, catalog = undefined, learned = null) {" in RUNTIME and
+      "lawLocalEvidence(table, candidate.model, family, task, catalog, learned) ?? {form: 'v', tiers: []}" in RUNTIME and
       "lawQuota(table, other.candidate, 'verify')" in RUNTIME and "lawQuota(table, other.candidate, 'repair')" in RUNTIME and
       "export function revasCheckInstruction(instruction, draft) {" in RUNTIME and
       "export function revasRepairInstruction(instruction, draft, findings) {" in RUNTIME and
@@ -1294,7 +1296,8 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
       "resolveRoutePlan(proposed, admitted, catalog, boundAt,\n        {verifierRegistry: this.verifierRegistry, descentPolicy: this.descentPolicy, lawLearned: this.lawLearned});" in RUNTIME and
       # Round 3 of the 448 review: the snapshot counts the structural screen
       # with Core's own rule too (lawScreenOutcome).
-      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      # Build 449 (DESIGN-9 sections 3 and 4.8): and the anchors' and the owner-judged runs' rules.
+      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn, lawAnchorOutcome, lawOwnerJudgedOutcome} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
       "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
       (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
       (ROOT / "scripts/routing-law-ledger-20261030.json").is_file() and (ROOT / "scripts/routing-law-ledger-20261101.json").is_file(),
@@ -1332,7 +1335,7 @@ check("export function lawDeterministicCheck(id, request, output, usage = null, 
       (ROOT / "scripts/routing-law-det-outcomes-20261101.json").is_file() and
       "!Object.hasOwn(LAW_DETERMINISTIC_VERIFIERS, entry.id)" in TABLE_COMPILER and
       "law_delivery_after_det_fail" in (ROOT / "scripts/route-replay.mjs").read_text() and
-      '"small_talk_reference", "small_talk_later_turn", "small_talk_later_turn_proposal"' in HOST_FIXTURE,
+      '"small_talk_later_turn", "small_talk_later_turn_proposal"' in HOST_FIXTURE,
       "448 (a): Core runs small talk's deterministic verifier on the law attempt before adoption; a rejected draft is repaired within F1; only Core's ids compile")
 # Round 2 of the 448 review (lead, 2026-10-31): (A) one det prior for every row
 # from the verifier's measured rejection rate on reference-quality replies;
@@ -1352,7 +1355,8 @@ check("export function lawDetPFail(table, candidate, family, learned = null) {" 
       "check_outcome: draftEntry.check_outcome === 'det_fail' ? 'det_fail' : 'revas_no_verdict'," in RUNTIME and
       "if (Number.isSafeInteger(draftMaxTokens) && ((Number.isSafeInteger(usage?.output_tokens) &&" in RUNTIME and
       "function eqVsDraw(perRow) {" in (ROOT / "scripts/routing-law-replay.mjs").read_text() and
-      '"small_talk_hold", "small_talk_later_turn_hold"' in HOST_FIXTURE,
+      # Build 449 (DESIGN-9 section 4.8): the owner-judged local row answers with no pool; an unsound draft is held.
+      'coreFlow("small_talk_hold", root: root)' in HOST_FIXTURE and 'coreFlow("small_talk_later_turn_hold", root: root)' in HOST_FIXTURE,
       "448 round 2: one det prior (A), small talk admissible with no runnable step (B), one pricing (C), local-only length cap and det_fail kept (D)")
 # Round 3 of the 448 review (lead, 2026-11-01): one request population for
 # the det prior (decision 1), the runtime's escalation event priced for every
@@ -1367,13 +1371,14 @@ check("throw new Error('det outcomes: every draft must name the held-out validat
       "function lawReadOnlySmallTalk(task, catalog) {" in RUNTIME and "function lawProfileFloor(profile) {" in RUNTIME and
       "    !lawProfileFloor(catalog.request_profile) &&" in RUNTIME and
       "(task.mode === 'auto' && lawReadOnlySmallTalk(task, catalog))" in RUNTIME and
-      "const scoped = lawDeterministicVerifier(table, admission.family) !== null;" in RUNTIME and
+      # Build 449 (DESIGN-9 section 4.8): the subjective family's local row is scoped too.
+      "const scoped = lawDeterministicVerifier(table, admission.family) !== null ||\n    table?.skills?.subjective?.family === admission.family;" in RUNTIME and
       "lawSmallTalkScope(executionTask(snapshot), snapshot.catalog)) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and
       "return ticket.law_family === 'F1' ? 'small_talk' : 'conversational';" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
       # Round 4 (lead decision 2): one responsive prompt per owner language.
       "export const LOCAL_SMALL_TALK_SYSTEMS = Object.freeze({" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
       "systemPrompt: style === 'small_talk' ? localSmallTalkSystem(instruction) :" in (PLUGIN_ROOT / "rcc-plugin.mjs").read_text() and
-      'coreFlow("small_talk_writer_lane", root: root)' in HOST_FIXTURE and
+      '"small_talk_local", "small_talk_no_pool", "small_talk_writer_lane"' in HOST_FIXTURE and
       'async small_talk_later_turn_proposal() {' in (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").read_text(),
       "448 round 3: one population (1), the runtime's escalation event priced (2), repair within F1 (3), no certificate in the law path (4), small talk in every lane and turn (5), its own prompt (6)")
 # Round 4 of the 448 review (lead, 2026-11-01): the local start (and every
@@ -1419,9 +1424,11 @@ check("function lawAuditScope(audit, task, catalog) {" in RUNTIME and
       "&& !profile.signals.includes('soft_cleared_status'))));" in RUNTIME and
       "status_check_in: ['soft_cleared_status'], status_question: ['soft_cleared_status']," in RUNTIME and
       "const auditPFail = " not in RUNTIME and
-      "checklist_p_fail: round6(lawAuditPFail(table, pick.candidate, family, learned)), priced_on: 'structural_screen'}} : {})};" in RUNTIME and
-      "const holds = (evidence.form === 'a' && detStep === null) || (option.local && evidence.form === 'c' && target === null);" in RUNTIME and
-      "!['a', 'c'].includes(lawLocalEvidence(routingLawTable(), LOCAL_WORKER_MODEL, admission.family, task, catalog)?.form))" in RUNTIME and
+      "checklist_p_fail: round6(lawAuditPFail(table, pick.candidate, family, learned)), priced_on: 'structural_screen'}} : {})," in RUNTIME and
+      # Build 449 (DESIGN-9 section 4.8): the owner-judged local row (form o) is priced on its screen too, and answers with no pool.
+      "...(pick?.evidence.form === 'o' ? {owner: {judge: 'owner', p_owner: round6(pick.evidence.p_owner ?? 0),\n        priced_on: 'structural_screen'}} : {})};" in RUNTIME and
+      "const holds = (evidence.form === 'a' && detStep === null) || (option.local && ['c', 'o'].includes(evidence.form) && target === null);" in RUNTIME and
+      "!['a', 'c', 'o'].includes(lawLocalEvidence(routingLawTable(), LOCAL_WORKER_MODEL, admission.family, task, catalog)?.form))" in RUNTIME and
       "export function checklistAuditContext({policy, checklistBytes, sensitivities = [], quota = {}, harness}) {" in TABLE_COMPILER and
       "export function harnessPin(text = null) {" in TABLE_COMPILER and
       "f1_sensitivity: 'scripts/routing-law-f1-sensitivity-20261101.json'," in TABLE_COMPILER and
@@ -1505,5 +1512,39 @@ check("if (operation === 'rcc-catalog' && ['law_446', 'law_447'].includes(proces
       "env.OS1_ROUTING_POLICY = process.env.OS1_ROUTING_POLICY;" in plugin_text and
       "['PATH', 'USER', 'LOGNAME', 'TMPDIR', 'LANG'].includes(key) || key.startsWith('LC_')" in plugin_text,
       "447 review: the OS1_ROUTING_POLICY override reaches the catalog builder (its two exact values only)")
+
+# Build 449 (DESIGN-9, owner approved 2026-11-02): the objective function and
+# the inductive routing law. Skills map to tiers by skill and band (never
+# 'always'); one tau per scale from the data (1.2 points, 6 Elo); scores
+# inferred only within a skill and marked; the light band saturated at the
+# learned anchor p_R(band, skill); the owner judges subjective small talk
+# (form o); the argmin ties to the lower effort; the reader asks the approved
+# band definitions and reads the skills. Release-gated by the routing-law tests.
+LAW_TABLE = json.loads(law_resource)
+check("export function lawSkills(spec, reading, {agentic = false, family = null} = {}) {" in RUNTIME and
+      "export function lawBand(reading) {" in RUNTIME and
+      "export function lawAnchor(table, band, skill, learned = null) {" in RUNTIME and
+      "export function lawDeficit(table, benchmark, score, pR = null) {" in RUNTIME and
+      "export function lawEvidence(table, tiers, pool, model, effort, family = null, {band = null, learned = null} = {}) {" in RUNTIME and
+      "export function lawAnchorOutcome(record, spec = routingLawTable()?.skills ?? null) {" in RUNTIME and
+      "export function lawOwnerJudgedOutcome(record) {" in RUNTIME and
+      "export function lawOwnerPFail(table, candidate, family, learned = null) {" in RUNTIME and
+      "return {form: 'o', judge: 'owner', tiers: [], p_owner: own};" in RUNTIME and
+      "'law_design_9', 'law_family_' + family, 'law_band_' + (band ?? 'none')," in RUNTIME and
+      "export function compileTau(evidence, policy = null) {" in TABLE_COMPILER and
+      "export function compileCapability(evidence, tau, policy, profiles) {" in TABLE_COMPILER and
+      "export function compileSkills(policy, evidence, capability) {" in TABLE_COMPILER and
+      "export function compileAnchors(ledger, policy) {" in TABLE_COMPILER and
+      "export function compileOwnerJudged(ledger, policy) {" in TABLE_COMPILER and
+      "conditions" not in SHIPPED_POLICY and "always" not in json.dumps(LAW_TABLE["skills"]["skills"]) and
+      "always" not in json.dumps(LAW_TABLE["skills"]["rules"]) and "always" not in json.dumps(LAW_TABLE["families"]) and
+      LAW_TABLE["tau"]["pct"]["tau"] == 1.2 and LAW_TABLE["tau"]["pct"]["n"] == 29 and LAW_TABLE["tau"]["elo"]["tau"] == 6 and
+      sorted(LAW_TABLE["tau"]) == ["elo", "pct"] and LAW_TABLE["anchors"]["prior"] == {"light": 0.99} and
+      LAW_TABLE["skills"]["subjective"]["judge"] == "owner" and LAW_TABLE["skills"]["subjective"]["family"] == "F1" and
+      LAW_TABLE["reference_efforts"] == {"anthropic_shared": ["max"], "openai_codex": ["max", "ultra"]} and
+      (ROOT / "scripts/routing-law-ledger-20261102.json").is_file() and
+      "Guiding question: would the top AI model almost certainly get this right from textbook knowledge?" in classifier_source and
+      "public static func needsDomain(_ answer: Answer, request: String, readsSkills: Bool = false) -> Bool {" in classifier_source,
+      "449: DESIGN-9's skills x band tiers, one tau per scale, inference within a skill, light saturation at the learned anchor, the owner as judge of small talk, ties to the lower effort, the approved band definitions")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

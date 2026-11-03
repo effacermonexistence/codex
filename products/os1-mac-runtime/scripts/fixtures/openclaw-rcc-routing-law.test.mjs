@@ -19,10 +19,12 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS, priceRoute, atHeadroom, regimeHeadroom} from '../routing-law-replay.mjs';
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
   lawJudgedOutcome, lawLearnedPFail, revasVerdict, revasCheckInstruction, revasRepairInstruction, revasPrefix,
-  lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
+  lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, lawSkills, lawBand, lawAnchor, lawDeficit, lawOwnerPFail,
+  lawAnchorOutcome, lawOwnerJudgedOutcome, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
   lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawDetPFail, lawDetClassPFail, lawScreenPFail, lawScreenOutcome, lawDeterministicFindings,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
-import {canonical, compileAdmission, compileFamilies, compilePFail, compileTable, compileTau, readInputs, snapshotLedger,
+import {canonical, compileAdmission, compileCapability, compileSkills, compileFamilies, compilePFail, compileTable, compileTau, tauOfUnit,
+  readInputs, snapshotLedger,
   compileDeterministicVerifiers, validateDeterministicVerifier, snapshotDetOutcomes} from '../routing-law-table.mjs';
 import {auditDeliveryPolicy} from '../route-replay.mjs';
 
@@ -63,61 +65,100 @@ test('the table is the compiler output of the committed inputs, pinned in Core, 
   assert.deepEqual([...ROUTING_POLICIES], ['law_446', 'law_447']);
 });
 
-test('tau is measured from the data, never chosen: tier drops (n >= 3), else pooled drops, Elo discrepancies, else 0', () => {
-  const tiers = {A: {pools: {anthropic: {benchmarks: [{alias: 'a', unit_kind: 'pct'}]}}},
-    B: {pools: {anthropic: {benchmarks: [{alias: 'b', unit_kind: 'pct'}, {alias: 'e', unit_kind: 'elo'}]}}},
-    C: {pools: {anthropic: {benchmarks: [{alias: 'c', unit_kind: 'other:x'}]}}}};
-  const inversions = [{tier: 'A', unit_kind: 'pct', magnitude: 0.5}, {tier: 'A', unit_kind: 'pct', magnitude: 0.7},
-    {tier: 'A', unit_kind: 'pct', magnitude: 3}, {tier: 'B', unit_kind: 'pct', magnitude: 2}];
-  const tau = compileTau({tiers, inversions, replicates: [], elo_discrepancies: [{abs_diff: 4}, {abs_diff: 6}, {abs_diff: 13}]});
-  assert.deepEqual([tau.A.pct.tau, tau.A.pct.basis], [0.7, 'tier_effort_adjacent_drops']);
-  assert.deepEqual([tau.B.pct.tau, tau.B.pct.basis], [1.35, 'pooled_effort_adjacent_drops']);
-  assert.deepEqual([tau.B.elo.tau, tau.B.elo.basis], [6, 'elo_publication_discrepancies']);
-  assert.deepEqual([tau.C['other:x'].tau, tau.C['other:x'].basis], [0, 'no_drop_delta0']);
-  // The compiled table: T1 (no own drop) pooled 1.2; T1F its own three drops.
-  assert.equal(TABLE.tau.T1.pct.tau, 1.2);
-  assert.equal(TABLE.tau.T1F.pct_error.basis, 'tier_effort_adjacent_drops');
-  assert.equal(TABLE.tau.C2.pct.n >= 3 && TABLE.tau.C2.pct.basis, 'tier_effort_adjacent_drops');
+test('DESIGN-9 tau: one tolerance per scale from the data (1.2 points pooled, 6 Elo); the per-tier taus are retired', () => {
+  const evidence = {inversions: [{tier: 'A', unit_kind: 'pct', magnitude: 0.5}, {tier: 'A', unit_kind: 'pct', magnitude: 0.7},
+    {tier: 'A', unit_kind: 'pct', magnitude: 3}, {tier: 'B', unit_kind: 'pct', magnitude: 2},
+    {tier: 'C', unit_kind: 'pct_error', magnitude: 0.09}],
+  replicates: [{unit_kind: 'pct', abs_diff: 0.5}, {unit_kind: 'pct', abs_diff: 1.1}],
+  elo_discrepancies: [{abs_diff: 4}, {abs_diff: 6}, {abs_diff: 13}]};
+  const tau = compileTau(evidence);
+  // The pooled pct drops price every percentage-scale benchmark (a tier's own
+  // drops no longer set its tau; the pct_error drops never price pct_error).
+  assert.deepEqual([tau.pct.tau, tau.pct.n, tau.pct.basis, tau.pct.units],
+    [1.35, 4, 'pooled_vendor_adjacent_effort_drops', ['pct', 'pct_error']]);
+  assert.equal(tau.pct.replicate_median, 0.8);
+  assert.deepEqual([tau.elo.tau, tau.elo.n, tau.elo.basis], [6, 3, 'elo_publication_discrepancies']);
+  assert.deepEqual([tauOfUnit(tau, 'pct_error'), tauOfUnit(tau, 'elo'), tauOfUnit(tau, 'other:findings')], [1.35, 6, null]);
+  assert.throws(() => compileTau({inversions: [], replicates: [], elo_discrepancies: []}), /no adjacent-effort drops/);
+  // The compiled table (DESIGN-9 section 2): 1.2 points over n = 29 drops,
+  // against 0.89 run-to-run noise; 6 Elo; nothing per tier (T1F's 3-sample
+  // 0.09 and C2's 1.25 / C3's 1.6 are retired).
+  assert.deepEqual([TABLE.tau.pct.tau, TABLE.tau.pct.n, TABLE.tau.pct.replicate_median], [1.2, 29, 0.89]);
+  assert.deepEqual([TABLE.tau.elo.tau, TABLE.tau.elo.n], [6, 3]);
+  assert.deepEqual(Object.keys(TABLE.tau).sort(), ['elo', 'pct']);
 });
 
-test('admission (b): within tau of the reference best at any effort, on every published tier, with at least one', () => {
+test('DESIGN-9 evidence (b): the request\'s tiers at its band, inferred within the skill and marked, saturated at light, covered', () => {
+  // The measured record (a report and the reference scripts' input): the
+  // reference's best at any effort, measured deficits at tau; a unit with no
+  // tau (other:findings) is no evidence either way.
   const policy = {pools: {anthropic: 'anthropic_shared'}, references: {anthropic_shared: 'ref'}};
+  const tau = {pct: {tau: 1.2, units: ['pct', 'pct_error']}, elo: {tau: 6, units: ['elo']}};
   const evidence = {tiers: {T: {pools: {anthropic: {reference: 'ref',
-    benchmarks: [{alias: 'x', unit_kind: 'pct', lower_better: false}, {alias: 'err', unit_kind: 'pct', lower_better: true}],
-    cells: [{model: 'ref', effort: 'low', scores: {x: 80, err: 5}}, {model: 'ref', effort: 'max', scores: {x: 82, err: 6}},
+    benchmarks: [{alias: 'x', unit_kind: 'pct', lower_better: false}, {alias: 'err', unit_kind: 'pct_error', lower_better: true},
+      {alias: 'f', unit_kind: 'other:findings', lower_better: false}],
+    cells: [{model: 'ref', effort: 'low', scores: {x: 80, err: 5, f: 3}}, {model: 'ref', effort: 'max', scores: {x: 82, err: 6, f: 4}},
       {model: 'm', effort: 'high', scores: {x: 80.8, err: 5.9}}, {model: 'm', effort: 'low', scores: {x: 80.7}},
       {model: 'm', effort: 'unspecified', scores: {x: 90}}]}}}}};
-  const admission = compileAdmission(evidence, {T: {pct: {tau: 1.2}}}, policy).T.anthropic_shared;
-  // Best: x 82 (max), err 5 (low; lower is better).
+  const admission = compileAdmission(evidence, tau, policy).T.anthropic_shared;
+  assert.deepEqual(admission.published, ['x', 'err']);
   assert.deepEqual(admission.cells['m@high'].benchmarks.map(row => row.slice(0, 4)), [['x', 80.8, 82, 1.2], ['err', 5.9, 5, 0.9]]);
   assert.equal(admission.cells['m@high'].pass, true);
-  assert.equal(admission.cells['m@low'].pass, false); // 1.3 > tau, and scored on one of two (coverage)
-  assert.deepEqual(admission.cells['m@low'].coverage, [1, 2]);
+  assert.deepEqual([admission.cells['m@low'].pass, admission.cells['m@low'].coverage], [false, [1, 2]]);
   assert.equal(admission.cells['m@unspecified'], undefined); // not a dispatchable effort
-  // Coverage (DESIGN-7 §1.2, review of 447): within tau on the ONE benchmark it
-  // is scored on is not the tier when the pool publishes two.
-  const one = compileAdmission({tiers: {T: {pools: {anthropic: {...evidence.tiers.T.pools.anthropic,
-    cells: [...evidence.tiers.T.pools.anthropic.cells, {model: 'n', effort: 'high', scores: {x: 81.9}}]}}}}},
-  {T: {pct: {tau: 1.2}}}, policy).T.anthropic_shared;
-  assert.deepEqual([one.cells['n@high'].pass, one.cells['n@high'].coverage], [false, [1, 2]]);
-  // On the compiled table: F4 = T1 + T1F.
-  assert.equal(lawEvidence(TABLE, 'F4', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'b');
-  assert.deepEqual(lawEvidence(TABLE, 'F4', 'anthropic_shared', 'claude-opus-5-5', 'max').tiers,
-    [['T1', 'pass'], ['T1F', 'unpublished']]);
-  assert.equal(lawEvidence(TABLE, 'F4', 'openai_codex', 'gpt-6.1-sol', 'max').form, 'none'); // T1F fails tau
-  assert.equal(lawEvidence(TABLE, 'F4', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form, 'none'); // unscored
-  assert.equal(lawEvidence(TABLE, 'F7', 'anthropic_shared', 'claude-opus-5-5', 'medium').form, 'b');
-  // W2 (four published): sonnet@xhigh is within tau on Briefcase alone: not admitted.
-  assert.equal(TABLE.admission.W2.anthropic_shared.cells['claude-sonnet-5-5@xhigh'].pass, false);
-  assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').form, 'none');
-  // A coverage shortfall within tau is a gap of evidence ('short'), never evidence against.
-  assert.deepEqual(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').tiers, [['W2', 'short']]);
-  assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-sonnet-5-5', 'xhigh').gap, true);
-  assert.equal(lawEvidence(TABLE, 'F4', 'openai_codex', 'gpt-6.1-sol', 'max').gap, false); // T1F fails tau
-  assert.equal(lawEvidence(TABLE, 'F13', 'anthropic_shared', 'claude-opus-5-5', 'xhigh').form, 'b');
-  // No evidence is never evidence: a family whose tiers the pool never publishes.
-  assert.equal(lawEvidence(TABLE, 'F5a', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'none');
-  assert.equal(lawEvidence(TABLE, 'F1', 'anthropic_shared', 'claude-opus-5-5', 'max').form, 'none');
+  // Section 4.3.1: another effort of the same model, one step = tau worse,
+  // never credit above a measured effort; every inferred value is marked.
+  const profiles = {execution_profiles: Object.fromEntries(['low', 'medium', 'high', 'xhigh', 'max'].flatMap(e =>
+    [['m-' + e, {provider: 'claude', model: 'm', effort: e}], ['r-' + e, {provider: 'claude', model: 'ref', effort: e}]]))};
+  const cap = compileCapability(evidence, tau, policy, profiles).tiers.T.anthropic_shared;
+  assert.deepEqual(cap.cells['m@high'].x, [80.8, 'm']);
+  assert.deepEqual(cap.cells['m@medium'].x, [79.6, 'e', 'high', 1]);
+  assert.deepEqual(cap.cells['m@low'].err, [8.3, 'e', 'high', 2]); // lower is better: + tau per step
+  assert.deepEqual(cap.cells['m@max'].x, [80.8, 'e', 'high', 0]); // only lower efforts measured: no credit
+  // Section 4.3.2: a missing benchmark of the same tier from the pool's own
+  // cross-benchmark relation (linear, n >= 5): gpt-6-sol has no FactErr-new.
+  assert.deepEqual(TABLE.capability.tiers.T1F.openai_codex.cells['gpt-6-sol@xhigh']['FactErr-new'], [8.485, 'x', 'FactErr-orig', 15]);
+  assert.equal(TABLE.capability.relations.T1F.openai_codex['FactErr-new<-FactErr-orig'].n, 15);
+  // Section 4.3.3: a missing tier from the nearest-difficulty tier of the
+  // SAME skill in the same pool, never across skills: Codex publishes no C1
+  // (C2 judges it), no W1 (W2); Claude no T1F (T1) and no U3 (U1); nothing
+  // judges math in Codex (no dispatchable T3M cell) or graduate science in Claude.
+  assert.deepEqual(TABLE.skills.substitutes, {anthropic_shared: {T1F: 'T1', T2: null, U3: 'U1'},
+    openai_codex: {C1: 'C2', T3M: null, U3: 'U1', W1: 'W2'}});
+  const ev = (tiers, pool, model, effort, band, learned = null) => lawEvidence(TABLE, tiers, pool, model, effort, null, {band, learned});
+  // Section 4.4: at the light band the deficit saturates at p_R(light, skill)
+  // (0.99 with no ledger counts): list vs tuple, Sonnet 5.5 at medium is the
+  // top model's result (GMMLU 88.5 inferred from max 92.1, three steps), at
+  // low it is not; at the standard band the same cell's measured 5.5 points fail.
+  const medium = ev(['T1', 'T1F'], 'anthropic_shared', 'claude-sonnet-5-5', 'medium', 'light');
+  assert.deepEqual([medium.form, medium.inferred, medium.tiers],
+    ['b', true, [['T1', 'pass', 'T1:GMMLU+1.01*'], ['T1F', 'pass', 'T1F<-T1:GMMLU+1.01*']]]);
+  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-sonnet-5-5', 'low', 'light').form, 'none');
+  assert.deepEqual(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-sonnet-5-5', 'medium', 'standard').tiers[0],
+    ['T1', 'fail', 'T1:GMMLU+5.5*']);
+  const pct = {alias: 'x', unit: 'pct', lower_better: false, ref: 94};
+  const logit = p => Math.log(p / (1 - p)), sigmoid = x => 1 / (1 + Math.exp(-x));
+  const saturated = (0.99 - sigmoid(logit(0.99) - (logit(0.94) - logit(0.885)))) * 100;
+  assert.ok(Math.abs(lawDeficit(TABLE, pct, 88.5, 0.99).deficit - saturated) < 1e-9);
+  assert.ok(saturated > 1 && saturated < 1.02); // 5.5 points at the standard band, 1.01 at light
+  assert.deepEqual(lawDeficit(TABLE, pct, 88.5, null), {deficit: 5.5, tau: 1.2});
+  assert.deepEqual(lawDeficit(TABLE, {alias: 'e', unit: 'elo', lower_better: false, ref: 1735}, 1730, 0.99), {deficit: 5, tau: 6});
+  assert.equal(lawDeficit(TABLE, {alias: 'f', unit: 'other:findings', lower_better: false, ref: 4}, 3, 0.99), null);
+  // The anchor is learned per (band, skill): light knowledge requests failing
+  // half the time drop p_R to 0.54 and move list vs tuple to a stronger cell.
+  const learned = new Map([['anchor|light|knowledge', {runs: 20, failures: 10}]]);
+  assert.deepEqual([lawAnchor(TABLE, 'light', 'knowledge'), lawAnchor(TABLE, 'standard', 'knowledge')], [0.99, null]);
+  assert.ok(Math.abs(lawAnchor(TABLE, 'light', 'knowledge', learned) - (10 + 2 * 0.99) / 22) < 1e-12);
+  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-sonnet-5-5', 'medium', 'light', learned).form, 'none');
+  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-opus-5-5', 'max', 'light', learned).form, 'b');
+  // The substituted tier: Luna on Codex C1 (judged on C2) at light.
+  assert.deepEqual(ev(['C1'], 'openai_codex', 'gpt-6-luna', 'high', 'light').tiers, [['C1', 'pass', 'C1<-C2:DeepSWE+0.95']]);
+  // No evidence is never evidence: a tier the pool cannot judge, a coverage
+  // shortfall within tau (a gap, never evidence against).
+  assert.deepEqual(ev(['T3M'], 'openai_codex', 'gpt-6-luna', 'high', 'light').tiers, [['T3M', 'unpublished', null]]);
+  const short = ev(['U1'], 'anthropic_shared', 'claude-sonnet-5-5', 'low', 'light');
+  assert.deepEqual([short.form, short.gap, short.tiers[0][1]], ['none', true, 'short']);
+  assert.equal(ev([], 'anthropic_shared', 'claude-opus-5-5', 'max', 'standard').form, 'none');
 });
 
 test('E[Q]: real quota per cost shape, priced at the derived exchange; p_fail inherited from the reference (corrections 1, 2)', () => {
@@ -235,21 +276,43 @@ test('p_fail evidence: only judged runs of a law family count; undispatched and 
       escalation_outcome: 'escalated'}), line({law: {family: 'F4'}, attempt_state: 'completed'}),
     line({law: {family: 'F4'}, attempt_state: 'verified_not_dispatched'}), line({route_kind: 'tier', check_outcome: 'pass'}),
     line({law: {family: 'F2'}, attempt_state: 'ladder_not_returned'}), line({escalated: true, law: {family: 'F4'}, check_outcome: 'pass',
-      settled_at_ms: 300})
+      settled_at_ms: 300}),
+    // DESIGN-9: a 449 receipt names its band and skills (the anchors), an
+    // older one is read from its reading; an owner correction is a failure.
+    line({law: {family: 'F4', band: 'light', skills: ['knowledge:answer', 'tools:web_research']}, check_outcome: 'screen_pass',
+      owner_correction: true, settled_at_ms: 200}),
+    line({law: {family: 'F2', reading: {task_type: 'explain', difficulty: 'light', needs_tools: 'none', domain: 'coding'}},
+      check_outcome: 'screen_pass', settled_at_ms: 210}),
+    line({law: {family: 'F1', band: 'light', skills: [], owner_judged: true}, surface: 'local', model: 'qwen3.5:9b', effort: 'none',
+      check_outcome: 'screen_pass', settled_at_ms: 220}),
+    line({law: {family: 'F1', band: 'light', skills: [], owner_judged: true}, surface: 'local', model: 'qwen3.5:9b', effort: 'none',
+      check_outcome: 'screen_pass', owner_correction: true, settled_at_ms: 230})
   ].join('\n')));
-  assert.deepEqual(ledger.excluded, {undispatched: 1, unjudged: 1, no_law_family: 1, local_screen_only: 0});
+  assert.deepEqual(ledger.excluded, {undispatched: 1, unjudged: 1, no_law_family: 1, local_screen_only: 1});
   // Round 3: a failure's class: no deliverable draft (not returned, a failed
   // screen) is 'full'.
-  assert.deepEqual(ledger.cells, [{model: 'm', effort: 'high', family: 'F2', runs: 1, failures: 1, full: 1},
-    {model: 'm', effort: 'high', family: 'F4', runs: 2, failures: 1, full: 1}]);
-  // Round 3 (decision 2): the structural screen beside it, keyed model@effort
-  // (pooled over families): screened descents only (a pass, a failed screen,
-  // a descent that did not return); a tier route, an escalation or an
-  // unscreened attempt says nothing about the screen.
-  assert.deepEqual(ledger.screen.cells, [{key: 'm@high', runs: 3, failures: 2, shadow: 0}]);
-  // Build 448: the snapshot ends at its latest settled record; Core learns after it.
-  assert.equal(ledger.schema, 4);
+  assert.deepEqual(ledger.cells, [{model: 'm', effort: 'high', family: 'F2', runs: 2, failures: 1, full: 1},
+    {model: 'm', effort: 'high', family: 'F4', runs: 3, failures: 2, full: 1},
+    {model: 'qwen3.5:9b', effort: 'none', family: 'F1', runs: 1, failures: 1, full: 0}]);
+  assert.deepEqual(ledger.screen.cells, [{key: 'm@high', runs: 5, failures: 2, shadow: 0},
+    {key: 'qwen3.5:9b@none', runs: 2, failures: 0, shadow: 0}]);
+  // DESIGN-9 section 3: the anchors p_R(band, skill), once per skill.
+  assert.deepEqual(ledger.anchors.cells, [{band: 'light', skill: 'knowledge', runs: 2, failures: 1},
+    {band: 'light', skill: 'tools', runs: 1, failures: 1}]);
+  // Section 4.8: the owner-judged outcomes of subjective requests.
+  assert.deepEqual(ledger.owner_judged.cells, [{key: 'qwen3.5:9b@none|F1', runs: 2, failures: 1}]);
+  assert.equal(ledger.schema, 5);
   assert.equal(ledger.through_ms, 300);
+  // A cutoff keeps an earlier snapshot's window.
+  assert.equal(snapshotLedger(Buffer.from(line({law: {family: 'F4'}, check_outcome: 'screen_pass', settled_at_ms: 500})), {through: 400})
+    .through_ms, null);
+  // The committed snapshot: 20261101's window (its judged runs and screens
+  // unchanged), with no anchor or owner-judged count yet.
+  const committed = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-ledger-20261102.json'), 'utf8'));
+  const before = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-ledger-20261101.json'), 'utf8'));
+  assert.deepEqual([committed.cells, committed.screen, committed.excluded, committed.through_ms],
+    [before.cells, before.screen, before.excluded, before.through_ms]);
+  assert.deepEqual([committed.anchors.cells, committed.owner_judged.cells, committed.source.cutoff_ms], [[], [], before.through_ms]);
 });
 
 test('build 448 p_fail rule (Core lawJudgedOutcome): a local draft counts only by its REVAS check, the check record judges the draft', () => {
@@ -282,7 +345,7 @@ test('build 448 p_fail rule (Core lawJudgedOutcome): a local draft counts only b
   assert.equal(lawPFail(TABLE, localRow, 'F2', null, learned), 1 / 4);
 });
 
-test('step 1: the family is the reading through the table\'s first-match rules', () => {
+test('step 1: the family is the reading through the table\'s first-match rules (its shape and tool need, never its tiers)', () => {
   const r = (task_type, difficulty, needs_tools, domain = 'general', intent) =>
     ({task_type, difficulty, needs_tools, domain, ...(intent ? {intent} : {})});
   assert.equal(lawFamily(null), 'U');
@@ -296,42 +359,73 @@ test('step 1: the family is the reading through the table\'s first-match rules',
   assert.equal(lawFamily(r('action', 'standard', 'execution', 'coding')), 'F7');
   assert.equal(lawFamily(r('design', 'deep', 'workspace', 'coding')), 'F6-code');
   assert.equal(lawFamily(r('write', 'standard', 'none', 'writing')), 'F13');
-  // Review of 447: the tool-use and document tiers have families.
   assert.equal(lawFamily(r('action', 'standard', 'execution', 'tool_use')), 'F8');
   assert.equal(lawFamily(r('explain', 'standard', 'workspace', 'writing')), 'F3x');
-  assert.deepEqual(TABLE.families.F8.tiers, ['U1']);
-  assert.deepEqual(TABLE.families.F3x.tiers, ['W1']);
+  // DESIGN-9: a family carries its shape and tool need; its tiers are the
+  // reading's skills at its band (U, F1 and F10 name their own).
+  assert.deepEqual([TABLE.families.F8.tier_basis, TABLE.families.F8.tiers, TABLE.families.F8.shape], ['skills', undefined, 'agentic']);
+  assert.deepEqual(lawTiers(TABLE, 'F8', r('action', 'standard', 'execution', 'tool_use')), ['U1']);
+  assert.deepEqual(lawTiers(TABLE, 'F3x', r('explain', 'standard', 'workspace', 'writing')), ['W1']);
+  assert.deepEqual(Object.entries(TABLE.families).filter(([, f]) => Array.isArray(f.tiers)).map(([id, f]) => [id, f.tiers]),
+    [['F1', []], ['F10', []], ['U', ['T1', 'T3', 'T3M', 'C2', 'U1']]]);
 });
 
-test('step 2: the matched tiers include every conditional tier whose condition the reading or a writer meets', () => {
+test('DESIGN-9 step 1: the reading\'s skills map to tiers by skill and band, never \'always\'', () => {
   const r = (task_type, difficulty, needs_tools, domain = 'general') => ({task_type, difficulty, needs_tools, domain});
-  // Every conditional tier of the evidence is compiled; none is dropped.
-  const evidence = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-evidence-20261029.json'), 'utf8'));
-  for (const [id, family] of Object.entries(TABLE.families)) {
-    const row = evidence.families.find(f => f.id === id);
-    if (!row || family.tier_basis === 'policy') continue;
-    for (const c of row.conditional) if (!family.tiers.includes(c.tier))
-      assert.ok(family.conditional.some(x => x.tier === c.tier && x.condition === c.when), `${id} ${c.tier}`);
-  }
-  assert.throws(() => compileFamilies({families: [{id: 'X', required: ['T1'], conditional: [{tier: 'T2', when: 'x'}], upper_bound: []}]},
-    {families: {X: {tiers: 'evidence'}}, conditions: {}, local_admission: {families: []}}), /unmapped conditional tier/);
-  // F7 / F6-code: C3 for a deep reading or a writer; C2 alone otherwise.
-  assert.deepEqual(lawTiers(TABLE, 'F7', r('action', 'standard', 'execution', 'coding'), false), ['C2']);
-  assert.deepEqual(lawTiers(TABLE, 'F7', r('action', 'deep', 'execution', 'coding'), false), ['C2', 'C3']);
-  assert.deepEqual(lawTiers(TABLE, 'F7', r('action', 'standard', 'execution', 'coding'), true), ['C2', 'C3']);
-  assert.deepEqual(lawTiers(TABLE, 'F6-code', r('design', 'standard', 'none', 'coding'), false), ['C2']);
-  assert.deepEqual(lawTiers(TABLE, 'F6-code', r('design', 'standard', 'workspace', 'coding'), true), ['C2', 'C3']);
-  // A condition no reading tells applies always (the floor); an unread request meets every clause.
-  assert.deepEqual(lawTiers(TABLE, 'F4', r('explain', 'standard', 'none', 'science'), false), ['T1', 'T1F', 'T2P']);
-  assert.deepEqual(lawTiers(TABLE, 'F4', r('chat', 'standard', 'none', 'science'), false), ['T1', 'T1F', 'T2', 'T2P']);
-  assert.deepEqual(lawTiers(TABLE, 'F7', null, false), ['C2', 'C3']);
-  // sol@medium: scored on one of Codex's two C2 benchmarks (coverage) and outside tau on C3: never admitted.
-  assert.equal(lawEvidence(TABLE, ['C2', 'C3'], 'openai_codex', 'gpt-6.1-sol', 'medium').form, 'none');
-  assert.equal(lawEvidence(TABLE, ['C2', 'C3'], 'anthropic_shared', 'claude-opus-5-5', 'medium').form, 'b');
+  const tiers = (reading, agentic = false, family = lawFamily(reading)) => lawTiers(TABLE, family, reading, agentic);
+  const skills = (reading, agentic = false) => lawSkills(TABLE.skills, reading, {agentic, family: lawFamily(reading)})
+    .map(({skill, variant}) => skill + ':' + variant);
+  // Knowledge or fact answers: T1 + T1F at every band (a programming concept
+  // explained with no workspace too: DESIGN-9's light example list vs tuple).
+  assert.deepEqual(tiers(r('explain', 'light', 'none', 'coding')), ['T1', 'T1F']);
+  assert.deepEqual(skills(r('explain', 'light', 'none', 'coding')), ['knowledge:answer']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none', 'science')), ['T1', 'T1F']); // Schrödinger: no T2 below deep
+  // Graduate science T2 at the deep band only; medicine T2P for a medical reading only (no T2P 'always').
+  assert.deepEqual(tiers(r('explain', 'deep', 'none', 'science')), ['T1', 'T1F', 'T2']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none', 'medicine')), ['T1', 'T1F', 'T2P']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none', 'knowledge')), ['T1', 'T1F']);
+  // Math T3M at every band.
+  assert.deepEqual(tiers(r('explain', 'light', 'none', 'math')), ['T3M']);
+  assert.deepEqual(tiers(r('design', 'deep', 'none', 'math')), ['T3M']);
+  // Coding: C1 light, C2 standard, C3 deep or long agentic (a new system
+  // built on the agentic shape); code read in the workspace is coding.
+  assert.deepEqual(tiers(r('action', 'light', 'workspace', 'coding')), ['C1']);
+  assert.deepEqual(tiers(r('action', 'standard', 'execution', 'coding')), ['C2']);
+  assert.deepEqual(tiers(r('action', 'deep', 'execution', 'coding')), ['C3']);
+  assert.deepEqual(tiers(r('design', 'standard', 'workspace', 'coding'), true), ['C3']);
+  assert.deepEqual(tiers(r('design', 'standard', 'none', 'coding'), false), ['C2']);
+  assert.deepEqual(tiers(r('explain', 'light', 'workspace', 'coding')), ['C1']);
+  // Writing: W1 documents (an answer about one), W2 deliverables.
+  assert.deepEqual(tiers(r('explain', 'standard', 'workspace', 'writing')), ['W1']);
+  assert.deepEqual(tiers(r('write', 'standard', 'none', 'writing')), ['W2']);
+  // Tools: U1 automation; current facts are knowledge plus web research (U3 only deep).
+  assert.deepEqual(tiers(r('action', 'standard', 'execution', 'tool_use')), ['U1']);
+  assert.deepEqual(tiers(r('explain', 'light', 'current_facts', 'knowledge')), ['T1', 'T1F', 'U1']);
+  assert.deepEqual(tiers(r('explain', 'deep', 'current_facts', 'knowledge')), ['T1', 'T1F', 'U3']);
+  // Hard reasoning T3: a design (theory, schema, proof) outside code, math and prose.
+  assert.deepEqual(tiers(r('design', 'deep', 'none', 'science')), ['T1', 'T1F', 'T2', 'T3']);
+  assert.deepEqual(skills(r('design', 'deep', 'workspace', 'science')),
+    ['graduate_science:answer', 'hard_reasoning:answer', 'knowledge:answer']);
+  // The subjective family (conversation with no facts) has no skill; U keeps
+  // its explicit floor; P (the owner's reference words) judges nothing.
+  assert.deepEqual([tiers(r('chat', 'light', 'none')), skills(r('chat', 'light', 'none'))], [[], []]);
+  assert.deepEqual(lawTiers(TABLE, 'U', null), ['T1', 'T3', 'T3M', 'C2', 'U1']);
+  assert.deepEqual(lawTiers(TABLE, 'P', r('explain', 'standard', 'none', 'science')), []);
+  // Nothing is 'always': the policy's conditions are gone, every rule names a
+  // skill's variant whose tiers are chosen by band.
+  const policy = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
+  assert.equal(policy.conditions, undefined);
+  assert.ok(!JSON.stringify(TABLE.families).includes('always') && !JSON.stringify(TABLE.skills.rules).includes('always'));
+  assert.throws(() => compileSkills({...policy, skill_rules: [{skill: 'knowledge', variant: 'answer', when: {domain: ['dance']}}]},
+    JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-evidence-20261029.json'), 'utf8')), {tiers: {}}), /bad skill rule key/);
+  // A cell judged on the request's tiers: sol@medium fails Codex's C2 on
+  // DeepSWE; Opus 5.5 at medium passes every published Claude C2 benchmark.
+  assert.equal(lawEvidence(TABLE, ['C2', 'C3'], 'openai_codex', 'gpt-6.1-sol', 'medium', null, {band: 'standard'}).form, 'none');
+  assert.equal(lawEvidence(TABLE, ['C2', 'C3'], 'anthropic_shared', 'claude-opus-5-5', 'medium', null, {band: 'standard'}).form, 'b');
 });
 
 // ---- The engine on the owner's own catalogs. -------------------------------
-test('every owner fixed question routes to the law\'s recorded output, with a receipt for every candidate', () => {
+test('every fixture question (16 owner questions, 14 DESIGN-9 examples) routes to the law\'s recorded output, with a receipt for every candidate and the band, skills and tiers that chose it', () => {
   for (const q of OWNER.questions) {
     if (q.pending) continue;
     const routed = routeOf(q.request, lawOf(q));
@@ -343,6 +437,10 @@ test('every owner fixed question routes to the law\'s recorded output, with a re
     assert.equal(receipt.family, q.expected_family, `#${q.n}`);
     if (routed.kind === 'ask_back') continue;
     assert.deepEqual(receipt.reading, lawOf(q).routing_law.reading);
+    // DESIGN-9: the receipt names the band and the skills that chose the
+    // tiers (never a family list, never 'always').
+    assert.equal(receipt.schema, 2);
+    assert.deepEqual([receipt.band, receipt.skills, receipt.tiers], [q.expected_band, q.expected_skills, q.expected_tiers], `#${q.n}`);
     // The argmin is the bound row, and no admissible candidate is cheaper.
     assert.equal(receipt.argmin, routed.route);
     const admissible = receipt.candidates.filter(([, , , eq, excluded]) => excluded === null && eq !== null);
@@ -351,9 +449,10 @@ test('every owner fixed question routes to the law\'s recorded output, with a re
     for (const [key, form, quota, eq, excluded] of receipt.candidates) {
       assert.match(key, /^[a-z-]+:[a-z0-9.:-]+@[a-z]+$/);
       // Build 448: owner_order is gone; a local row starts only as a REVAS
-      // verified start ('v:' its judge) or is admitted by an audit ('c:') or
-      // by its family's deterministic verifier ('a:' its id).
-      assert.match(form, /^(?:reference|b:.+|c:audit-[a-f0-9]{12}|a:[a-z0-9_]+|v:(?:none|[a-z-]+:[a-z0-9.:-]+@[a-z]+)|x:.*)$/);
+      // verified start ('v:' its judge) or is admitted by an audit ('c:'), by
+      // its family's deterministic verifier ('a:' its id) or, DESIGN-9
+      // section 4.8, by the owner as judge of a subjective request ('o:owner').
+      assert.match(form, /^(?:reference|b:.+|c:audit-[a-f0-9]{12}|a:[a-z0-9_]+|o:owner|v:(?:none|[a-z-]+:[a-z0-9.:-]+@[a-z]+)|x:.*)$/);
       // (Receipt values are rounded to 1e-6: a reference's E[Q] is exactly Q x rate.)
       assert.ok(excluded === null ? Number.isFinite(eq) && eq >= quota * receipt.rates[key.startsWith('codex') ? 'openai_codex' :
         'anthropic_shared']?.rate - 2e-6 || key.startsWith('local') : eq === null, `#${q.n} ${key}`);
@@ -361,8 +460,8 @@ test('every owner fixed question routes to the law\'s recorded output, with a re
     // The derived exchange of each pool is in every receipt (correction 2).
     for (const rate of Object.values(receipt.rates)) assert.ok(rate.rate === 'exhausted' || rate.rate > 0);
     assert.match(routed.reason, /;law_rate_(?:Cw|Px)_/);
-    assert.match(routed.reason, /;law_policy_447;/);
-    assert.match(routed.reason, new RegExp(`;law_family_${q.expected_family};`));
+    assert.match(routed.reason, /;law_policy_447;law_design_9;/);
+    assert.match(routed.reason, new RegExp(`;law_family_${q.expected_family};law_band_${q.expected_band ?? 'none'};`));
     assert.ok(routed.reason.length <= 1024, `#${q.n} reason ${routed.reason.length} chars`);
   }
 });
@@ -446,9 +545,10 @@ test('the derived exchange: a scarce pool is priced up by its own windows, never
 });
 
 test('one pricing (round 3 of the 448 review, decision 2): E[Q] prices the runtime\'s escalation event; the gate is the draw', () => {
-  // F4 (owner question 3). A pool reference is the top of the frontier and
-  // binds no ladder: nothing runs after it, so its E[Q] is Q alone (448
-  // priced a self-repair there that never runs).
+  // F4 (owner question 3, read as a standard knowledge answer: T1 + T1F). A
+  // pool reference is the top of the frontier and binds no ladder: nothing
+  // runs after it, so its E[Q] is Q alone (448 priced a self-repair there
+  // that never runs).
   const q = question(3);
   const routed = routeOf(q.request, lawOf(q));
   const cand = key => routed.law.candidates.find(([k]) => k === key);
@@ -464,17 +564,28 @@ test('one pricing (round 3 of the 448 review, decision 2): E[Q] prices the runti
   // ledger's screened attempts (the same screen for every row, pooled over
   // families), Laplace-smoothed, starting from its own pool reference's
   // screen rate; a tier gap never triggers the escalation and is not priced.
-  const [, form, qOpus, eqOpus] = cand('claude-chat:claude-opus-5-5@max');
+  const [key, form, qRow, eqRow] = cand(routed.route);
   assert.match(form, /^b:/);
-  const opus = {model: 'claude-opus-5-5', effort: 'max'}, fable = {model: 'claude-fable-5-1', effort: 'max'};
-  const pScreen = lawScreenPFail(TABLE, opus, fable);
-  const screenOf = key => TABLE.p_screen.cells[key] ?? {runs: 0, failures: 0};
+  const [model, effort] = key.slice(key.indexOf(':') + 1).split('@');
+  const fable = {model: 'claude-fable-5-1', effort: 'max'};
+  const pScreen = lawScreenPFail(TABLE, {model, effort}, fable);
+  const screenOf = k => TABLE.p_screen.cells[k] ?? {runs: 0, failures: 0};
   const pRef = (screenOf('claude-fable-5-1@max').failures + 1) / (screenOf('claude-fable-5-1@max').runs + 2);
-  assert.ok(Math.abs(pScreen - (screenOf('claude-opus-5-5@max').failures + 2 * pRef) / (screenOf('claude-opus-5-5@max').runs + 2)) < 1e-12);
-  assert.ok(Math.abs(eqOpus - (qOpus + pScreen * qFable) * rate('anthropic_shared')) < 1e-5, 'opus: Q + p_screen x Q(fable)');
-  // The argmin of the two prices is the route (and the fixture's golden).
-  assert.equal(routed.route, eqOpus < eqFable ? 'claude-chat:claude-opus-5-5@max' : 'claude-chat:claude-fable-5-1@max');
+  assert.ok(Math.abs(pScreen - (screenOf(model + '@' + effort).failures + 2 * pRef) / (screenOf(model + '@' + effort).runs + 2)) < 1e-12);
+  assert.ok(Math.abs(eqRow - (qRow + pScreen * qFable) * rate('anthropic_shared')) < 1e-5, key + ': Q + p_screen x Q(fable)');
+  // DESIGN-9 section 4.6: the argmin of the price-weighted E[Q] is the route
+  // (and the fixture's golden); no admissible row is cheaper.
   assert.equal(routed.route, q.expected_route);
+  assert.ok(routed.law.candidates.every(([, , , eq, excluded]) => excluded !== null || eq >= eqRow - 1e-9));
+  // A tie goes to the lower effort (latency is the owner's third priority):
+  // the README explanation's Sonnet 5.5 rows at medium, high, xhigh and max
+  // price the same, and medium binds.
+  const q10 = question(10);
+  const readme = routeOf(q10.request, lawOf(q10));
+  const tied = readme.law.candidates.filter(([k, , , eq, excluded]) => excluded === null && k.startsWith('claude:claude-sonnet-5-5@') &&
+    Math.abs(eq - readme.law.eq) < 1e-9).map(([k]) => k.split('@')[1]);
+  assert.deepEqual(tied, ['medium', 'high', 'xhigh', 'max']);
+  assert.equal(readme.route, 'claude:claude-sonnet-5-5@medium');
   // The gate is judged on the draw (what the runtime runs), and every owner
   // question's draw is the receipt's E[Q] at the recorded headroom; a
   // writer's next step (its pool reference, which the runtime never runs:
@@ -510,7 +621,9 @@ test('a writer that does work is priced on the agentic shape; the same reading a
   const routed = routeOf(q.request, lawOf(q));
   assert.equal(routed.scope, 'workspace_write');
   assert.equal(routed.law.shape, 'agentic');
-  assert.deepEqual(routed.law.tiers, ['C2', 'C3']); // a writer meets 'multi-step agentic work on a repository'
+  // DESIGN-9 section 4.1: a long agentic build (a new site on the agentic
+  // shape) is coding's C3, never a family's list.
+  assert.deepEqual([routed.law.skills, routed.law.tiers], [['coding:long_agentic'], ['C3']]);
   const opus = lawQuota(TABLE, {surface: 'claude', model: 'claude-opus-5-5', effort: 'medium'}, 'agentic').q;
   assert.equal(routed.law.candidates.find(([key]) => key === routed.route)[2], Math.round(opus * 1e6) / 1e6);
   // The same request answered by a read-only node (no write rows): its family's answer shape.
@@ -518,6 +631,8 @@ test('a writer that does work is priced on the agentic shape; the same reading a
   const answered = routeOf(q.request, readOnly);
   assert.equal(answered.scope, 'read_only');
   assert.equal(answered.law.shape, 'answer');
+  // ... a scoped design answer (C2 at the standard band), not a long build.
+  assert.deepEqual([answered.law.skills, answered.law.tiers], [['coding:scoped'], ['C2']]);
   // A writer whose reading is a plain explanation does no work: its family's shape.
   const explain = lawOf(q, c => ({...c, routing_law: {...c.routing_law,
     reading: {task_type: 'explain', difficulty: 'standard', needs_tools: 'none', domain: 'general'}}}));
@@ -525,32 +640,42 @@ test('a writer that does work is priced on the agentic shape; the same reading a
 });
 
 test('every pool reference is admissible for every family; current facts follow the derived exchange', () => {
-  const q = question(7); // F5a: T1F, published by Codex only
+  const q = question(7); // F5a: knowledge (T1 + T1F) plus web research (U1) at the light band
   const routed = routeOf(q.request, lawOf(q));
   assert.equal(routed.law.family, 'F5a');
-  // Review of 447 (DESIGN-8: 'The reference is always admissible'): Fable is
-  // admissible for F5a although Claude publishes no T1F, as all-reference admits it.
-  const fable = routed.law.candidates.find(([key]) => key === 'claude:claude-fable-5-1@max');
-  assert.deepEqual([fable[1], fable[4]], ['reference', null]);
-  const astra = routed.law.candidates.find(([key]) => key === 'codex:gpt-6-astra@ultra');
-  assert.deepEqual([astra[1], astra[4]], ['reference', null]);
-  assert.equal(routed.route, 'claude:claude-fable-5-1@max'); // the cheaper reference at the recorded exchange
-  // Price-monotone substitution: Claude scarce, Codex plentiful moves F5a to Codex.
+  assert.deepEqual(routed.law.tiers, ['T1', 'T1F', 'U1']);
+  // DESIGN-9 section 2: the reference is the newest top model at maximum
+  // reasoning, always admissible (Fable at max, Astra at max and ultra).
+  for (const key of ['claude:claude-fable-5-1@max', 'codex:gpt-6-astra@max', 'codex:gpt-6-astra@ultra']) {
+    const reference = routed.law.candidates.find(([k]) => k === key);
+    assert.deepEqual([reference[1], reference[4]], ['reference', null], key);
+  }
+  // Light current facts: Opus 5.5 at low gives the reference's result on
+  // every tier (saturated at p_R(light) = 0.99) and is the argmin (DESIGN-9
+  // section 5: exchange rate -> Opus low).
+  assert.equal(routed.route, 'claude:claude-opus-5-5@low');
+  assert.equal(routed.route, q.expected_route);
+  // Price-monotone substitution: Claude scarce, Codex plentiful moves F5a to
+  // Codex (DESIGN-9 section 5's Codex grid: light facts -> Sol 6.1 high).
   const scarce = lawOf(q, c => ({...c, routing_law: {...c.routing_law, pools: {
     anthropic_shared: {observed_at_ms: clockOf(c) - 1, valid_until_ms: clockOf(c) + 600_000,
       windows: [{used_percent: 95, resets_at_ms: clockOf(c) + 0.4 * 604_800_000, window_minutes: 10080}]},
     openai_codex: {observed_at_ms: clockOf(c) - 1, valid_until_ms: clockOf(c) + 600_000,
       windows: [{used_percent: 38, resets_at_ms: clockOf(c) + 0.4 * 604_800_000, window_minutes: 10080}]}}}}));
-  assert.equal(routeOf(q.request, scarce).route, 'codex:gpt-6-astra@ultra');
-  // A family no pool publishes a tier for (small talk on a later turn, F1):
+  assert.equal(routeOf(q.request, scarce).route, 'codex:gpt-6.1-sol@high');
+  // A family whose reading names no skill (small talk on a later turn, F1):
   // every pool reference stays admissible.
   const chat = lawOf(question(12), c => ({...c, candidates: c.candidates.filter(row => row.surface !== 'local')}));
   const talked = routeOf(question(12).request, chat);
   assert.equal(talked.law.family, 'F1');
   assert.ok(talked.law.candidates.filter(([, form]) => form === 'reference').length >= 2);
-  // With no Codex pool in the catalog, the Claude reference is the argmin (no fallback needed).
+  // With no Codex pool in the catalog the Claude rows decide alone; with only
+  // the Claude reference runnable it is the argmin (no fallback needed).
   const claudeOnly = lawOf(q, c => ({...c, candidates: c.candidates.filter(row => row.quota_pool !== 'openai_codex')}));
-  const only = routeOf(q.request, claudeOnly);
+  assert.equal(routeOf(q.request, claudeOnly).route, 'claude:claude-opus-5-5@low');
+  const referenceOnly = lawOf(q, c => ({...c, candidates: c.candidates.filter(row => row.quota_pool !== 'openai_codex')
+    .map(row => row.model === 'claude-fable-5-1' && row.effort === 'max' ? row : {...row, availability: 'unavailable'})}));
+  const only = routeOf(q.request, referenceOnly);
   assert.match(only.route, /claude-fable-5-1@max$/);
   assert.match(only.reason, /law_argmin_reference/);
 });
@@ -583,8 +708,8 @@ test('round 3 (decision 4): the owner-decision class certificate never decides a
   // codex gpt-6-luna@low for chat_explanatory) is an owner decision, not a
   // REVAS paired parity audit, so it is no form (c) evidence either: under
   // the law it is retired, whether or not its tuple can run. The law decides
-  // small talk (F1) by its argmin over every row its deterministic verifier
-  // admits; the certificate binds only where the law does not apply.
+  // small talk (F1): DESIGN-9 section 4.8, the owner judges a subjective
+  // request and the local row is admissible by the prior 'local accepted'.
   const q = question(12);
   const certificate = {certificate_id: 'owner-chat-fast-20261027', provider: 'codex', model: 'gpt-6-luna', effort: 'low',
     format_check: 'nonempty_text', measurement_sha256: 'a'.repeat(64)};
@@ -595,11 +720,10 @@ test('round 3 (decision 4): the owner-decision class certificate never decides a
     const routed = routeOf(q.request, catalog);
     assert.doesNotMatch(routed.reason, /admitted_certified_class/);
     assert.match(routed.reason, /admitted_law_F1/);
-    // The law's argmin (review of round 3: F1 has no admitted row below the
-    // reference: a reference binds).
+    // The law's argmin: the local row the owner judges.
     assert.equal(routed.route, routed.law.argmin);
     const pick = routed.law.candidates.find(([key]) => key === routed.law.argmin);
-    assert.equal(pick[1], 'reference');
+    assert.deepEqual([pick[0], pick[1]], ['local:qwen3.5:9b@none', 'o:owner']);
     for (const [key, , , eq, excluded] of routed.law.candidates)
       if (excluded === null && key !== pick[0]) assert.ok(eq >= pick[3] - 1e-9, key);
   }
@@ -637,13 +761,18 @@ test('review of 447: a request that names a file never takes the tool-less local
   assert.match(explicit.reason, /law_rate_Px_[0-9.]+;law_rate_Cw_[0-9.]+|law_rate_Px_[0-9.]+.*law_rate_Cw_/);
 });
 
-test('review of 447: a cell within tau but below its reference adds its measured gap to the inherited p_fail', () => {
-  // gpt-6.1-sol@high on T1 scores 0.9 points below Astra's best: excess 0.009.
-  const evidence = lawEvidence(TABLE, ['T1'], 'openai_codex', 'gpt-6.1-sol', 'high', 'F12');
+test('DESIGN-9: a cell within tau gives the reference\'s result on that tier (its deficit reported, never priced); an audit admits only at parity', () => {
+  // gpt-6.1-sol@high on T1 at the standard band: 0.9 points below Astra's
+  // best on MMMU-Pro, within tau (1.2): the same result, reported in tau
+  // units; the 447 excess (the gap added to p_fail) is retired with the
+  // per-tier taus.
+  const evidence = lawEvidence(TABLE, ['T1'], 'openai_codex', 'gpt-6.1-sol', 'high', 'F12', {band: 'standard'});
   assert.equal(evidence.form, 'b');
-  assert.ok(Math.abs(evidence.excess - 0.009) < 1e-9);
-  assert.equal(lawEvidence(TABLE, ['T1'], 'anthropic_shared', 'claude-opus-5-5', 'max', 'F12').excess, 0); // above the reference
-  assert.equal(TABLE.admission.T1F.openai_codex.cells['gpt-6.1-sol@max'].excess_fail, 0.0071);
+  assert.ok(evidence.worst > 0 && evidence.worst <= 1, String(evidence.worst));
+  assert.equal(evidence.excess, undefined);
+  assert.ok(lawEvidence(TABLE, ['T1'], 'anthropic_shared', 'claude-opus-5-5', 'max', 'F12', {band: 'standard'}).worst <= 0,
+    'above the reference');
+  assert.ok(Object.values(TABLE.admission.T1F.openai_codex.cells).every(cell => !('excess_fail' in cell)));
   // A provisional (cost-sized) audit pass admits nothing; a parity audit does.
   const provisional = {...TABLE, audits: {cells: {'claude-haiku-4-5-20251001@none|F4': {verdict: 'pass', id: 'audit-aaaaaaaaaaaa',
     n: 3, discordant: 0, n_parity: 2558, admits: false}}}};
@@ -710,13 +839,14 @@ test('the grant never picks the model: the same reading under a read-only and a 
       candidates: [...agentRows.filter(row => row.surface !== 'claude-chat'), ...writerRows]}));
     const read = routeOf(q.request, readOnly), wrote = routeOf(q.request, writer);
     assert.equal(read.scope, 'read_only', `#${n}`);
-    if (lawDeterministicVerifier(TABLE, read.law.family) !== null) {
-      // Round 3 (decision 5): small talk needs no tool and no write, so its
-      // node runs read-only in a writer lane too (a permission only narrows):
-      // the same rows, the same argmin, the verifier read on its answer.
+    const modelEffort = route => route.split(':').slice(1).join(':');
+    if (read.law.family === TABLE.skills.subjective.family) {
+      // Round 3 (decision 5), DESIGN-9 section 4.8: small talk needs no tool
+      // and no write, and on its first turn the local row has evidence (the
+      // owner as judge), so its node runs read-only in a writer lane too (a
+      // permission only narrows): the same model@effort.
       assert.equal(wrote.scope, 'read_only', `#${n}`);
-      assert.equal(wrote.route, read.route, `#${n}`);
-      assert.equal(wrote.ladder?.verifier?.kind, 'deterministic', `#${n}`);
+      assert.equal(modelEffort(wrote.route), modelEffort(read.route), `#${n}`);
       // Never past a deterministic work floor of the host's profile: a hard
       // order, shell or write beside a chat reading is DESIGN-6 G1 (a
       // side-effect disagreement), not small talk: the writer keeps its grant.
@@ -748,8 +878,13 @@ test('the grant never picks the model: the same reading under a read-only and a 
       assert.equal(wrote.law.eq, Math.min(...admissible.map(([, , , eq]) => eq)), `#${n}`);
       continue;
     }
-    const modelEffort = route => route.split(':').slice(1).join(':');
-    assert.equal(modelEffort(wrote.route), modelEffort(read.route), `#${n} ${read.route} vs ${wrote.route}`);
+    // A writer below its reference binds no ladder (Q alone) while the
+    // read-only row is priced with its structural-screen escalation
+    // (round 3 of the 448 review): the same admissible set, so a writer's
+    // argmin is the read-only argmin or a row the screen price kept dearer.
+    const readKeys = new Set(read.law.candidates.filter(([, , , , excluded]) => excluded === null).map(([key]) => modelEffort(key)));
+    assert.ok(readKeys.has(modelEffort(wrote.route)), `#${n} ${read.route} vs ${wrote.route}`);
+    if (read.kind === 'reference') assert.equal(modelEffort(wrote.route), modelEffort(read.route), `#${n}`);
   }
 });
 
@@ -893,7 +1028,7 @@ const Q2_FINDING = '"튜플은 ... 인덱스를 통해 접근하는 반면" is w
 const Q2_REPAIRED = '리스트와 튜플 모두 인덱스(t[0])와 슬라이싱으로 접근합니다. 차이는 변경 가능성입니다: 리스트는 수정할 수 있고 ' +
   '튜플은 생성 후 수정할 수 없으며, 그래서 튜플은 해시 가능해 딕셔너리 키로 쓸 수 있습니다.';
 
-test('build 448: the local row is admissible only by (a) or (c); otherwise it starts only as a priced REVAS verified start', () => {
+test('build 448, DESIGN-9: the local row is admissible only by (o), (a) or (c); otherwise it starts only as a priced REVAS verified start', () => {
   const q = question(11);
   const routed = routeOf(q.request, lawOf(q));
   assert.equal(routed.route, 'local:qwen3.5:9b@none');
@@ -929,21 +1064,26 @@ test('build 448: the local row is admissible only by (a) or (c); otherwise it st
   // F1 (small talk): Core's deterministic verifier would be evidence (a)
   // (lead order 2026-10-31) once its held-out validation passes; review of
   // round 3: it failed its frozen routed held-out set F (5 false passes), so
-  // it admits nothing and the local row has no (a) evidence there either.
+  // it admits nothing.
   const admitted = structuredClone(TABLE);
   admitted.deterministic_verifiers.F1.validation.admits = true;
   assert.deepEqual(lawLocalEvidence(admitted, 'qwen3.5:9b', 'F1'), {form: 'a', verifier: 'no_claim_reply_v2', tiers: [], excess: 0});
-  assert.equal(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F1'), null);
+  assert.equal(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F1'), null, 'no request: its subjective scope cannot be judged');
   assert.deepEqual(Object.keys(TABLE.deterministic_verifiers), ['F1']);
   assert.equal(TABLE.deterministic_verifiers.F1.id, 'no_claim_reply_v2');
   assert.equal(TABLE.deterministic_verifiers.F1.validation.admits, false);
+  // DESIGN-9 section 4.8: small talk is a subjective request: the owner is
+  // the judge, the prior 'local accepted' (form o), owner corrections the
+  // failures; priced on its structural screen like every evidence row.
   const q12 = question(12);
   const small = routeOf(q12.request, lawOf(q12));
   assert.equal(small.route, q12.expected_route);
+  assert.equal(small.route, 'local:qwen3.5:9b@none');
+  assert.equal(small.kind, 'law');
   assert.ok(!small.law.candidates.some(([, form]) => form.startsWith('a:')), 'no det admission');
-  // F1 publishes no tier: no row below the reference has evidence, and a
-  // verified start's check at a reference costs more than its answer.
-  assert.equal(small.kind, 'reference');
+  assert.equal(small.law.candidates.find(([key]) => key === small.route)[1], 'o:owner');
+  assert.deepEqual([small.law.owner_judged, small.law.owner], [true, {judge: 'owner', p_owner: 0, priced_on: 'structural_screen'}]);
+  assert.match(small.reason, /;law_evidence_owner_judged;/);
 });
 
 test('build 448: REVAS prompts and verdicts: one byte-identical prefix, a first-line verdict, numbered findings', () => {
@@ -1243,15 +1383,24 @@ test('build 448 (a): only an id Core runs, made for that law family and validate
     deterministic_verifiers: {F1: {id: 'no_claim_reply_v1'}}}, det), /not the verifier/);
 });
 
-test('round 3 (decisions 1-3), review of round 3: one prior per class on the in-scope population; small talk binds the reference while F1 is unadmitted', () => {
+test('round 3 (decisions 1-3), DESIGN-9 section 4.8: one prior per class on the in-scope population; the owner judges small talk while F1\'s verifier is unadmitted', () => {
   const q = question(12);
   assert.equal(q.expected_det, null);
   const law = lawOf(q);
   const routed = routeOf(q.request, law);
   assert.equal(routed.route, q.expected_route);
-  assert.equal(routed.kind, 'reference');
-  assert.ok(Object.values(TABLE.references).includes(routed.candidate.model));
+  // DESIGN-9 section 4.8: the owner is the judge of a subjective request; the
+  // local row is admitted by the prior 'local accepted' (form o), never by the
+  // unadmitted verifier.
+  assert.equal(routed.kind, 'law');
+  assert.equal(routed.candidate.surface, 'local');
   assert.ok(!routed.law.candidates.some(([, form]) => form.startsWith('a:')));
+  // Owner corrections are the failures: past tau of the references' (which
+  // the owner has not corrected) the local row is no longer admitted and
+  // small talk binds the argmin reference; no automated evidence admits it back.
+  const corrected = new Map([['owner|qwen3.5:9b@none|F1', {runs: 10, failures: 1}]]);
+  assert.ok(Math.abs(lawOwnerPFail(TABLE, {model: 'qwen3.5:9b', effort: 'none'}, 'F1', corrected) - 1 / 12) < 1e-12);
+  assert.equal(lawOwnerPFail(TABLE, {model: 'claude-fable-5-1', effort: 'max'}, 'F1', corrected), 0);
   // The prior (decision 1, review of round 3: B only, as the lead named it):
   // the verifier's measured rejection rate on reference-quality replies, B's
   // clean replies to requests inside its request scope, judged as a pool
@@ -1335,16 +1484,21 @@ test('build 448 p_fail rule: a deterministic verdict is the judged outcome of th
     attempt_state: 'completed', check_outcome: 'det_pass'}), {excluded: 'retired_verifier'});
 });
 
-test('review of round 3, Core: small talk binds the argmin reference in one dispatch; no local ticket carries F1 out of its scope', async t => {
+test('DESIGN-9 section 4.8, Core: small talk binds the local row the owner judges in one local dispatch; its record is an owner-judged run', async t => {
   const q = question(12);
   const {done, tickets, ledger, text, saved} = await harness(t, q, lawOf(q, referencesAndLocal), ticket => completed(ticket,
     {output: SMALL_TALK_PASS, usage: {input_tokens: 80, output_tokens: 30}}));
-  assert.equal(tickets.length, 1);
-  assert.notEqual(tickets[0].selected_config.surface, 'local');
-  assert.ok(Object.values(TABLE.references).includes(tickets[0].selected_config.model), tuple(tickets[0]));
-  assert.equal(tickets[0].law_family, undefined, 'a pool ticket never carries a law family');
+  assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none']);
+  assert.equal(tickets[0].law_family, 'F1', 'the local ticket carries its law family');
   assert.equal(done.result.output, SMALL_TALK_PASS);
-  assert.equal(ledger[0].check_outcome === 'det_pass', false, 'no deterministic verdict without admitted evidence');
+  // The structural screen delivers it (no REVAS check, no verifier verdict).
+  const [record] = ledger;
+  assert.deepEqual([record.check_outcome, record.delivery_basis], ['screen_pass', 'law:F1']);
+  assert.deepEqual([record.law.band, record.law.skills, record.law.owner_judged], ['light', [], true]);
+  // It counts as one owner-judged run of the local row; an owner correction
+  // of the same record would count as its failure.
+  assert.deepEqual(lawOwnerJudgedOutcome(record), {key: 'qwen3.5:9b@none|F1', failed: false});
+  assert.deepEqual(lawOwnerJudgedOutcome({...record, owner_correction: true}), {key: 'qwen3.5:9b@none|F1', failed: true});
   const snapshot = {task_id: saved.task.task_id, snapshot: JSON.stringify(saved)};
   assert.equal(auditDeliveryPolicy({ledgers: [{path: 'fixture', text}], snapshots: [snapshot]}).verdict, 'PASS');
 });
@@ -1355,23 +1509,31 @@ test('review of round 3, Core: small talk binds the argmin reference in one disp
 const exhausted = c => atHeadroom(c, regimeHeadroom({name: 'both_exhausted',
   anthropic_shared: {used_percent: 100, ttr: 0.2}, openai_codex: {used_percent: 100, ttr: 0.6}}, null, clockOf(c)));
 
-test('round 2 (B), review of round 3: with every pool exhausted small talk has no admissible row (no evidence below the reference)', () => {
+test('round 2 (B), DESIGN-9: with every pool exhausted the owner-judged local row answers small talk (a failure holds); a light explanation cannot bind', () => {
   const q = question(12);
   const law = exhausted(lawOf(q));
   assert.deepEqual(law.candidates.map(row => row.surface), ['local']);
-  // The local row has no (a) evidence (its verifier failed F) and a verified
-  // start needs a runnable judge: nothing can bind.
-  assert.throws(() => routeOf(q.request, law), /no_dispatchable_candidate|no runnable|unavailable/);
+  // The local row's admission (the owner as judge) is evidence by itself:
+  // with no runnable reference a structural failure holds the request.
+  const r = routeOf(q.request, law);
+  assert.equal(r.route, 'local:qwen3.5:9b@none');
+  assert.equal(r.ladder.reference_candidate_id, null);
+  assert.ok(r.reason.includes('escalation_none_hold_on_fail'), r.reason);
+  // A light explanation has no local evidence and a verified start needs a
+  // runnable judge: nothing can bind.
   assert.throws(() => routeOf(question(11).request, exhausted(lawOf(question(11)))));
 });
 
-test('round 2 (B), Core, review of round 3: pools exhausted, small talk is held with nothing dispatched', async t => {
+test('round 2 (B), Core, DESIGN-9: pools exhausted, the local row answers small talk; an unsound draft is held, the draft withheld', async t => {
   const q = question(12);
   const base = lawOf(q);
   const law = {...base, routing_law: {...base.routing_law, pools: exhausted(base).routing_law.pools},
     candidates: base.candidates.map(row => row.surface === 'local' ? row : {...row, availability: 'unavailable'})};
-  const held = await harness(t, q, law, () => { throw new Error('never dispatched'); });
-  assert.equal(held.tickets.length, 0, 'nothing can run');
+  const answered = await harness(t, q, law, ticket => completed(ticket, {output: SMALL_TALK_PASS}));
+  assert.deepEqual(answered.tickets.map(tuple), ['local:qwen3.5:9b@none']);
+  assert.equal(answered.done.result.output, SMALL_TALK_PASS);
+  const held = await harness(t, q, law, ticket => completed(ticket, {output: ''}));
+  assert.equal(held.tickets.length, 1, 'only the local row ran');
   assert.equal(held.saved.state, 'held');
   assert.equal(held.done.result?.output ?? null, null);
 });
@@ -1417,9 +1579,12 @@ test('round 3: across the gate regimes small talk escalates (if at all) to a poo
   }
 });
 
-test('the owner table covers DESIGN-7 §5\'s 16 questions', () => {
-  assert.deepEqual(OWNER.questions.map(q => q.n), OWNER_QUESTIONS.map(([n]) => n));
-  for (const q of OWNER.questions) if (!q.pending) assert.equal(typeof lawKey, 'function');
+test('the owner fixture covers DESIGN-7 §5\'s 16 questions and DESIGN-9 §5\'s 14 examples', () => {
+  assert.deepEqual(OWNER.questions.map(q => q.n), [...OWNER_QUESTIONS.map(([n]) => n), ...Array.from({length: 14}, (_, i) => 17 + i)]);
+  const examples = OWNER.questions.filter(q => q.design9).map(q => q.design9.id);
+  assert.deepEqual(examples, [...'ABCDEFGHIJKLMN']);
+  for (const q of OWNER.questions.filter(q => q.design9)) assert.equal(q.request, q.design9.input, q.design9.id);
+  assert.equal(OWNER.table_sha256, ROUTING_LAW_TABLE_SHA256);
 });
 
 // ---- Review of round 3: small talk's evidence covers small talk only --------
@@ -1491,11 +1656,16 @@ test('review of round 3: no_claim_reply_v2 is evidence only inside small_talk_re
   assert.equal(later('not json'), false);
 });
 
-test('review of round 3: with F1 unadmitted small talk binds a reference on every turn, keeps a writer grant, and a status check-in binds an agent row', () => {
+test('review of round 3, DESIGN-9: small talk is the local row\'s on its first turn only, a later turn binds a reference, an approval keeps a writer grant, and a status check-in binds an agent row', () => {
   const q = question(12);
   const law = lawOf(q);
   const isReference = r => Object.values(TABLE.references).includes(r.route.split(':')[1].split('@')[0]);
-  for (const context of [null, transcript('안녕', '안녕하세요! 반가워요.'), transcript('테스트 돌려봐', '테스트 통과했어요. 지금 푸시할까요?')]) {
+  // First turn: the owner judges it, the local row binds (DESIGN-9 section 4.8).
+  const first = hostRoute(q, law);
+  assert.equal(first.route, 'local:qwen3.5:9b@none');
+  // A later turn: the reader and the local worker are context-free (round 4,
+  // decision 1): a reference binds.
+  for (const context of [transcript('안녕', '안녕하세요! 반가워요.'), transcript('테스트 돌려봐', '테스트 통과했어요. 지금 푸시할까요?')]) {
     const r = hostRoute(q, law, {context});
     assert.ok(isReference(r), r.route);
     assert.ok(!(r.law?.candidates ?? []).some(([, form]) => form.startsWith('a:')), 'no det admission');
@@ -1505,9 +1675,9 @@ test('review of round 3: with F1 unadmitted small talk binds a reference on ever
   const approve = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
     signals: [...new Set([...c.request_profile.signals, 'approval'])].sort()}}));
   assert.ok(isReference(hostRoute(q, approve)));
-  // A writer lane: no admitted small-talk evidence, so the grant is never
-  // narrowed (decision 5's read-only small talk needs the verifier); an
-  // approval keeps it too.
+  // A writer lane: small talk's first turn needs no tool and no write, and the
+  // local row has evidence (the owner judges it), so the node runs read-only
+  // (round 3, decision 5); an approval keeps the grant.
   const writerLane = c => {
     const writers = c.candidates.filter(row => row.surface !== 'local' && row.surface !== 'claude-chat' && row.scope === 'read_only')
       .map(row => ({...row, scope: 'workspace_write', permission_profile: 'workspace_write', allowed_paths: ['**'],
@@ -1515,7 +1685,8 @@ test('review of round 3: with F1 unadmitted small talk binds a reference on ever
     return {...c, owner_scope: 'workspace_write', request_class: 'writer', chat_lane_eligible: false,
       candidates: [...c.candidates, ...writers]};
   };
-  assert.equal(hostRoute(q, writerLane(law)).scope, 'workspace_write');
+  const narrowed = hostRoute(q, writerLane(law));
+  assert.deepEqual([narrowed.scope, narrowed.route], ['read_only', 'local:qwen3.5:9b@none']);
   assert.equal(hostRoute(q, writerLane(approve)).scope, 'workspace_write');
   // A status check-in needs the host's install-state card: an agent row only
   // (an uncleared one: the host clears it only on the subject 'other').
@@ -1624,9 +1795,11 @@ test('round 4 (decision 3), round 5: an audited row\'s checklist failure rate is
   audited.audits.cells['qwen3.5:9b@none|F1'].admits = false;
   assert.equal(lawAuditPFail(audited, {model: 'qwen3.5:9b', effort: 'none'}, 'F1'), null);
   assert.equal(lawAuditPFail(TABLE, {model: 'qwen3.5:9b', effort: 'none'}, 'F1'), null, 'no audit has run: the shipped table has none');
-  // Until that evidence exists the law's output for F1 stands: the reference.
+  // DESIGN-9 section 4.8: the shipped table's F1 is the owner's to judge,
+  // with no audit: the local row binds by form o.
   const q12 = question(12);
-  assert.equal(hostRoute(q12, lawOf(q12)).kind, 'reference');
+  const small = hostRoute(q12, lawOf(q12));
+  assert.deepEqual([small.kind, small.route], ['law', 'local:qwen3.5:9b@none']);
 });
 
 // Lead decision 4: under the law a provider tile is a pool filter; the owner
@@ -1737,12 +1910,18 @@ test('round 6: under forbid_model_generation the rollback\'s pin holds a tiled s
 // A Core copy whose embedded table carries one audits cell (a mirror: the
 // shipped table has none and none may be pasted into it by hand), so the
 // law's reading of a passed checklist parity audit is tested end to end.
-async function auditedCore(cell) {
+// DESIGN-9 section 4.8: in the shipped table the owner judges small talk (a
+// subjective request) before any audit, so the audit's own machinery is
+// exercised on a mirror whose F1 has no owner judge (448's table), unless
+// `ownerJudge` keeps it (with the owner's own judged runs, `ownerCells`).
+async function auditedCore(cell, {ownerJudge = false, ownerCells = {}} = {}) {
   const src = join(ROOT, 'Resources/openclaw-os1-bridge');
   const dir = mkdtempSync(join(tmpdir(), 'os1-audited-core-'));
   for (const name of readdirSync(src)) if (name.endsWith('.mjs')) copyFileSync(join(src, name), join(dir, name));
   const table = structuredClone(TABLE);
   table.audits.cells['qwen3.5:9b@none|F1'] = cell;
+  if (!ownerJudge) table.skills.subjective.judge = 'none';
+  Object.assign(table.owner_judged.cells, ownerCells);
   const text = JSON.stringify(table), digest = sha(text + '\n');
   const core = readFileSync(join(src, 'rcc-runtime.mjs'), 'utf8')
     .replace(/^const ROUTING_LAW_TABLE_TEXT = .*;$/m, () => `const ROUTING_LAW_TABLE_TEXT = ${JSON.stringify(text)};`)
@@ -1801,6 +1980,23 @@ test('round 5: a passed checklist audit admits the local row only inside its req
   // Pure: without the request the scope cannot be judged, so nothing admits.
   assert.equal(mirror.lawLocalEvidence(table, 'qwen3.5:9b', 'F1'), null);
   assert.equal(lawLocalEvidence(TABLE, 'qwen3.5:9b', 'F1'), null, 'the shipped table carries no audit');
+});
+
+test('DESIGN-9 section 4.8: with the owner as judge, small talk is the owner\'s (form o) and no audit admits back a local row the owner corrected', async () => {
+  const q = question(12), law = lawOf(q);
+  // The owner judges it (no correction): form o, the audit not consulted.
+  const judged = await auditedCore(PASSED_F1_AUDIT, {ownerJudge: true});
+  const accepted = judged.route(q, law);
+  assert.deepEqual([accepted.route, localRow(accepted)[1]], ['local:qwen3.5:9b@none', 'o:owner']);
+  // The owner's corrections put it past tau of the references' (2 of 20 owner-
+  // judged runs: 2/22 > 1.2 points): no longer the same result, and the
+  // passed checklist audit does not admit it back; a reference answers.
+  const corrected = await auditedCore(PASSED_F1_AUDIT, {ownerJudge: true,
+    ownerCells: {'qwen3.5:9b@none|F1': {runs: 20, failures: 2}}});
+  const r = corrected.route(q, law);
+  assert.notEqual(r.route, 'local:qwen3.5:9b@none');
+  assert.ok(Object.values(TABLE.references).includes(r.candidate.model), r.route);
+  assert.ok(!localRow(r) || localRow(r)[1].startsWith('v:'), JSON.stringify(localRow(r)));
 });
 
 test('round 5: a form (c) row is priced on the event the runtime escalates it on (its structural screen), the checklist rate reported', async () => {

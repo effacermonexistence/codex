@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** OS-1 build 448: the terminal public snapshots the REAL durable Core
+/** OS-1 build 448 (small talk: build 449): the terminal public snapshots the REAL durable Core
  * (Resources/openclaw-os1-bridge/rcc-runtime.mjs) hands the host for routing
  * law flows, produced for the host-side regression fixture
  * (Tests/OS1ContextTests/RCCAskBackHostFixture.swift), which decodes each one
@@ -20,22 +20,26 @@
  *  - verified_pass / verified_repair: a law local verified start (build 448)
  *    whose REVAS check passes (the local draft is delivered) or fails (repair
  *    mode at the next frontier step). Prints {flow, dispatches, snapshot}.
- *  - small_talk_reference / small_talk_hold (review of round 3): owner
- *    question 12 (small talk, law F1). Its deterministic verifier
- *    (no_claim_reply_v2 inside small_talk_request_v2) failed its frozen
- *    routed held-out set F, so no row below the reference has evidence in
- *    F1: on a catalog of the pool references and the local row the argmin
- *    reference answers in one dispatch; with every pool exhausted nothing can
- *    answer it and the request is held, nothing dispatched.
+ *  - small_talk_local / small_talk_no_pool / small_talk_hold (DESIGN-9
+ *    section 4.8, build 449): owner question 12 (small talk, law F1) is a
+ *    subjective request: the owner is the judge and the local row is
+ *    admitted by the prior 'local accepted' (form o) on its first turn. On a
+ *    catalog of the pool references and the local row it answers in one local
+ *    dispatch; with every pool exhausted it still answers (its admission is
+ *    evidence by itself), and an unsound (empty) draft is then held, the
+ *    draft withheld (small_talk_hold, one local dispatch).
  *  - small_talk_later_turn / small_talk_later_turn_proposal / _hold: the same
  *    on a LATER turn (the host hands the conversation over in
  *    host_context.context, its own transcript blocks), after an OS-1 turn that
  *    neither asks nor proposes, and after OS-1's proposal ("지금 푸시할까요?"):
- *    a reference answers (it sees the turn); pools exhausted: held.
+ *    the reader and the local worker are context-free (round 4 of the 448
+ *    review, decision 1), so a reference answers (it sees the turn); pools
+ *    exhausted: held, nothing dispatched.
  *  - small_talk_writer_lane: small talk in a writer lane (owner scope
- *    workspace_write, request class writer, writer rows offered): with no
- *    admitted small-talk evidence its grant is not narrowed (DESIGN-6 §5:
- *    the grant never picks the row) and a writer reference answers. */
+ *    workspace_write, request class writer, writer rows offered): it needs no
+ *    tool and no write and the local row has evidence on its first turn (the
+ *    owner as judge), so its node runs read-only (a permission only narrows)
+ *    and the local row answers. */
 import {createHash} from 'node:crypto';
 import {chmod, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -158,17 +162,23 @@ export const FLOWS = {
     return {flow: 'verified_repair', dispatches: tickets.length, snapshot,
       routes: tickets.map(t => `${t.selected_config.surface}:${t.selected_config.model}@${t.selected_config.effort}`)};
   },
-  async small_talk_reference() {
+  async small_talk_local() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, smallTalkLocal), ticket =>
       completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
-    return {flow: 'small_talk_reference', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
+    return {flow: 'small_talk_local', dispatches: tickets.length, snapshot, routes: routesOf(tickets),
       law_family: tickets[0]?.law_family ?? null};
+  },
+  async small_talk_no_pool() {
+    const q = question(12);
+    const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
+      completed(ticket, {output: '오늘 하루 정말 고생 많으셨어요. 무슨 일 있으셨어요? 푹 쉬세요!'}));
+    return {flow: 'small_talk_no_pool', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
   async small_talk_hold() {
     const q = question(12);
     const {snapshot, tickets} = await runFlow(q, freshCatalog(q, poolsExhausted), ticket =>
-      completed(ticket, {output: 'never dispatched'}));
+      completed(ticket, {output: ''}));
     return {flow: 'small_talk_hold', dispatches: tickets.length, snapshot, routes: routesOf(tickets)};
   },
   async small_talk_later_turn() {

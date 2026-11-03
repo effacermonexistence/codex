@@ -63,13 +63,17 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
 // snapshot never keeps its own copy of it.
 const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,
-  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
+  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn, lawAnchorOutcome, lawOwnerJudgedOutcome} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
   // Round 3 of the 448 review: schema 4 (the structural screen counts beside
   // the judged outcomes, Core lawScreenOutcome).
-  ledger: 'scripts/routing-law-ledger-20261101.json',
+  // DESIGN-9 (build 449): schema 5, the same window (through_ms) as
+  // 20261101's judged runs and screens, plus the anchor p_R(band, skill)
+  // counts and the owner-judged outcomes (Core lawAnchorOutcome,
+  // lawOwnerJudgedOutcome).
+  ledger: 'scripts/routing-law-ledger-20261102.json',
   audits: 'scripts/routing-law-audits-20261029.json',
   // Build 448 (review of 448): a deterministic verifier's pre-registered
   // held-out validation (labeled replies, frozen before the verifier ran on
@@ -253,15 +257,33 @@ export function snapshotQuota(quotaDir, pricesBytes = readFileSync(join(ROOT, IN
  * the law (no law family) say nothing and are only counted as excluded.
  * Schema 3 (build 448) records `through_ms`, the latest settled record in the
  * snapshot: Core adds its own ledger's judged runs after it. */
-export function snapshotLedger(ledgerBytes) {
+export function snapshotLedger(ledgerBytes, {through: cutoff = null, policy = null} = {}) {
   const counts = new Map(), excluded = {undispatched: 0, unjudged: 0, no_law_family: 0, local_screen_only: 0};
-  const screens = new Map();
+  const screens = new Map(), anchors = new Map(), owners = new Map();
+  const spec = policy ?? JSON.parse(readFileSync(join(ROOT, INPUTS.policy), 'utf8'));
   let through = null;
   for (const line of ledgerBytes.toString('utf8').split('\n')) {
     if (!line.trim()) continue;
     let record;
     try { record = JSON.parse(line); } catch { continue; }
+    // DESIGN-9: a cutoff keeps a snapshot's window (the records settled at or
+    // before it); records after it are Core's live learning.
+    if (cutoff !== null && !(Number.isSafeInteger(record?.settled_at_ms) && record.settled_at_ms <= cutoff)) continue;
     if (Number.isSafeInteger(record?.settled_at_ms) && (through === null || record.settled_at_ms > through)) through = record.settled_at_ms;
+    // DESIGN-9 section 3: the anchors p_R(band, skill); section 4.8: the
+    // owner-judged outcomes (Core's own counting rules).
+    const anchor = lawAnchorOutcome(record, spec);
+    for (const skill of anchor?.skills ?? []) {
+      const key = anchor.band + '|' + skill, value = anchors.get(key) ?? {runs: 0, failures: 0};
+      value.runs++; if (anchor.failed) value.failures++;
+      anchors.set(key, value);
+    }
+    const owner = lawOwnerJudgedOutcome(record);
+    if (owner) {
+      const value = owners.get(owner.key) ?? {runs: 0, failures: 0};
+      value.runs++; if (owner.failed) value.failures++;
+      owners.set(owner.key, value);
+    }
     // Round 3 of the 448 review (lead decision 2): the structural screen,
     // keyed model@effort (the same screen for every row and family).
     const screen = lawScreenOutcome(record);
@@ -278,7 +300,8 @@ export function snapshotLedger(ledgerBytes) {
     value.runs++; if (outcome.failed) value.failures++; if (outcome.class === 'full') value.full++;
     counts.set(key, value);
   }
-  return {schema: 4, source: {sha256: sha(ledgerBytes), basis: 'Core lawJudgedOutcome over the routing ledger: judged ' +
+  return {schema: 5, source: {sha256: sha(ledgerBytes), ...(cutoff !== null ? {cutoff_ms: cutoff} : {}),
+      basis: 'Core lawJudgedOutcome over the routing ledger: judged ' +
       'laddered descents (route kinds tier, graded, capability, law), not escalated, keyed by the law family of their ' +
       'receipt; a local draft by its REVAS check verdict only; failure = escalated, not returned, verifier, check or ' +
       'REVAS fail (class full: no deliverable draft); success = verifier, check or REVAS pass'}, through_ms: through, excluded,
@@ -289,7 +312,14 @@ export function snapshotLedger(ledgerBytes) {
     screen: {basis: 'Core lawScreenOutcome over the routing ledger: the structural screen (descentStructurallySound) of ' +
       'every screened law, graded or capability descent and every law-bound reference answer\'s shadow screen, keyed ' +
       'model@effort, pooled over families and surfaces',
-    cells: [...screens].map(([key, value]) => ({key, ...value})).sort((a, b) => a.key < b.key ? -1 : 1)}};
+    cells: [...screens].map(([key, value]) => ({key, ...value})).sort((a, b) => a.key < b.key ? -1 : 1)},
+    anchors: {basis: 'Core lawAnchorOutcome over the routing ledger: each judged law outcome counted once per skill of its ' +
+      'receipt at its band (an older receipt read from its reading by the policy\'s skill rules)',
+    cells: [...anchors].map(([key, value]) => ({band: key.split('|')[0], skill: key.split('|')[1], ...value}))
+      .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)},
+    owner_judged: {basis: 'Core lawOwnerJudgedOutcome over the routing ledger: the delivered answers of requests the law ' +
+      'read as subjective (the owner the judge), failed when the owner corrected them or they were not delivered',
+    cells: [...owners].map(([key, value]) => ({key, ...value})).sort((a, b) => a.key < b.key ? -1 : 1)}};
 }
 
 /** Build 448: the det outcomes input from a drafts file. */
@@ -318,37 +348,60 @@ export function snapshotDetOutcomes(file, {verifier, family, model, effort, basi
 }
 
 // ---- compile: the law's inputs ---------------------------------------------
-/** tau per (tier, unit): the tier's own effort-adjacent drops (n >= 3) else
- * the pooled drops of the unit; Elo from the publication discrepancies; a unit
- * with no drop at all has tau 0 (delta 0, flagged). Never chosen by hand. */
-export function compileTau(evidence) {
-  const tau = {};
-  const pooled = unit => evidence.inversions.filter(x => x.unit_kind === unit).map(x => x.magnitude);
-  for (const [id, tier] of Object.entries(evidence.tiers)) {
-    const units = new Set(Object.values(tier.pools).flatMap(pool => pool.benchmarks.map(b => b.unit_kind)));
-    tau[id] = {};
-    for (const unit of [...units].sort()) {
-      const own = evidence.inversions.filter(x => x.tier === id && x.unit_kind === unit).map(x => x.magnitude);
-      const replicates = evidence.replicates.filter(x => x.unit_kind === unit).map(x => x.abs_diff);
-      let value, basis, n;
-      if (unit === 'elo') {
-        const d = evidence.elo_discrepancies.map(x => x.abs_diff);
-        value = median(d); basis = 'elo_publication_discrepancies'; n = d.length;
-      } else if (own.length >= 3) { value = median(own); basis = 'tier_effort_adjacent_drops'; n = own.length; }
-      else if (pooled(unit).length) { value = median(pooled(unit)); basis = 'pooled_effort_adjacent_drops'; n = pooled(unit).length; }
-      else { value = 0; basis = 'no_drop_delta0'; n = 0; }
-      tau[id][unit] = {tau: round(value ?? 0, 4), basis, n, replicate_median: round(median(replicates), 4)};
-    }
-  }
-  return tau;
+/** DESIGN-9 section 2 (owner approved 2026-11-02): ONE tau per unit scale,
+ * from the data, never chosen: every percentage-scale benchmark (pct and
+ * pct_error) the pooled vendor adjacent-effort drop (the evidence's
+ * inversions of unit pct: n = 29, median 1.2 points), reported against the
+ * replicate run-to-run noise (0.89); every Elo-scale one the Elo publication
+ * discrepancies (6 Elo). The 3-sample T1F tau (0.09) and the per-tier taus
+ * (C2 1.25, C3 1.6) are retired. A benchmark of any other unit has no tau: it
+ * is no evidence either way. */
+export function compileTau(evidence, policy = null) {
+  const pctUnits = policy?.tolerance?.percentage?.units ?? ['pct', 'pct_error'];
+  const source = policy?.tolerance?.percentage?.source_unit ?? 'pct';
+  const drops = evidence.inversions.filter(x => x.unit_kind === source).map(x => x.magnitude);
+  const replicates = evidence.replicates.filter(x => x.unit_kind === source).map(x => x.abs_diff);
+  const elo = evidence.elo_discrepancies.map(x => x.abs_diff);
+  if (!drops.length || !elo.length) throw new Error('tau: no adjacent-effort drops or Elo discrepancies in the evidence');
+  return {
+    pct: {tau: round(median(drops), 4), n: drops.length, units: [...pctUnits], basis: 'pooled_vendor_adjacent_effort_drops',
+      replicate_median: round(median(replicates), 4), replicate_n: replicates.length},
+    elo: {tau: round(median(elo), 4), n: elo.length, units: ['elo'], basis: 'elo_publication_discrepancies'}};
+}
+/** The tau of a benchmark's unit, or null (no tau: not evidence). */
+export function tauOfUnit(tau, unit) {
+  for (const scale of Object.values(tau ?? {})) if (Array.isArray(scale?.units) && scale.units.includes(unit)) return scale.tau;
+  return null;
 }
 
 const poolOf = (policy, provider) => policy.pools[provider];
-/** Evidence form (b): per tier and pool, each dispatchable (model, effort)'s
- * confirmed scores against the pool reference's best confirmed score at any
- * effort; within tau on every benchmark it is scored on, and scored on at
- * least min(2, benchmarks the pool publishes on the tier) (DESIGN-7 §1.2's
- * coverage rule: one benchmark of several is not the tier). */
+/** The reference's best confirmed score per benchmark of a tier and pool, at
+ * any effort (a non-dispatchable label included: the conservative top), and
+ * the benchmarks a dispatchable cell is scored on (DESIGN-7 §1.2: the tier's
+ * published benchmarks), restricted to the units with a tau. */
+function referenceBenchmarks(pool, reference, tau) {
+  const best = {};
+  for (const b of pool.benchmarks) {
+    const scores = pool.cells.filter(c => c.model === reference && Number.isFinite(c.scores[b.alias])).map(c => c.scores[b.alias]);
+    if (scores.length) best[b.alias] = b.lower_better ? Math.min(...scores) : Math.max(...scores);
+  }
+  const dispatchable = pool.cells.filter(c => DISPATCHABLE.has(c.effort));
+  return pool.benchmarks.filter(b => Object.hasOwn(best, b.alias) && tauOfUnit(tau, b.unit_kind) !== null &&
+    dispatchable.some(c => Number.isFinite(c.scores[b.alias])))
+    .map(b => ({alias: b.alias, unit: b.unit_kind, lower_better: b.lower_better === true, ref: best[b.alias]}));
+}
+/** The measured deficit of a score against the reference's, in the
+ * benchmark's own unit (positive: below the reference). */
+export function measuredDeficit(benchmark, score) {
+  return benchmark.lower_better ? score - benchmark.ref : benchmark.ref - score;
+}
+/** The matched-tier record of evidence form (b) at MEASURED deficits (the
+ * standard and deep bands, DESIGN-9 section 4.5), per tier and pool, for the
+ * cells the evidence measures: each benchmark's [alias, score, reference best,
+ * deficit, within tau], the coverage [scored, min(2, published)] and pass.
+ * A report and the reference scripts' input (DESIGN-9 section 5); Core judges
+ * every band itself from `capability` (inferred values and the light band's
+ * saturation included). */
 export function compileAdmission(evidence, tau, policy) {
   const out = {};
   for (const [id, tier] of Object.entries(evidence.tiers)) {
@@ -356,12 +409,7 @@ export function compileAdmission(evidence, tau, policy) {
     for (const [provider, pool] of Object.entries(tier.pools)) {
       const poolName = poolOf(policy, provider), reference = policy.references[poolName];
       if (!poolName || pool.reference !== reference || pool.benchmarks.length === 0) continue;
-      const best = {};
-      for (const b of pool.benchmarks) {
-        const scores = pool.cells.filter(c => c.model === reference && Number.isFinite(c.scores[b.alias])).map(c => c.scores[b.alias]);
-        if (scores.length) best[b.alias] = b.lower_better ? Math.min(...scores) : Math.max(...scores);
-      }
-      const benchmarks = pool.benchmarks.filter(b => Object.hasOwn(best, b.alias));
+      const benchmarks = referenceBenchmarks(pool, reference, tau);
       if (!benchmarks.length) continue;
       const cells = {};
       for (const cell of pool.cells) {
@@ -369,25 +417,198 @@ export function compileAdmission(evidence, tau, policy) {
         const rows = [];
         for (const b of benchmarks) {
           if (!Number.isFinite(cell.scores[b.alias])) continue;
-          const deficit = b.lower_better ? cell.scores[b.alias] - best[b.alias] : best[b.alias] - cell.scores[b.alias];
-          const t = tau[id][b.unit_kind]?.tau ?? 0;
-          rows.push([b.alias, cell.scores[b.alias], best[b.alias], round(deficit, 4), deficit <= t + 1e-9]);
+          const deficit = measuredDeficit(b, cell.scores[b.alias]);
+          rows.push([b.alias, cell.scores[b.alias], b.ref, round(deficit, 4), deficit <= tauOfUnit(tau, b.unit) + 1e-9]);
         }
         if (!rows.length) continue;
         const coverage = [rows.length, Math.min(2, benchmarks.length)];
-        // The measured gap below the reference (review of 447, correction 1):
-        // the largest deficit in percentage points on a percentage benchmark
-        // (accuracy or error rate), as an excess failure rate; 0 at or above
-        // the reference. Elo and other units carry none.
-        const pct = rows.filter((row, i) => ['pct', 'pct_error'].includes(benchmarks.find(b => b.alias === row[0])?.unit_kind));
-        const excess = pct.length ? round(Math.max(0, ...pct.map(row => row[3])) / 100, 6) : 0;
-        cells[cell.model + '@' + cell.effort] = {pass: rows.every(row => row[4]) && coverage[0] >= coverage[1],
-          coverage, benchmarks: rows, excess_fail: excess};
+        cells[cell.model + '@' + cell.effort] = {pass: rows.every(row => row[4]) && coverage[0] >= coverage[1], coverage, benchmarks: rows};
       }
       out[id][poolName] = {reference, published: benchmarks.map(b => b.alias), cells};
     }
   }
   return out;
+}
+
+/** DESIGN-9 section 4.3 (capability inference, within the same skill only):
+ * per tier and pool, every dispatchable cell's score on each published
+ * benchmark, measured or inferred, each marked:
+ *  - 'm' measured (the evidence's confirmed score at that effort);
+ *  - 'e' another effort of the same model: the nearest measured effort AT OR
+ *    ABOVE it, one effort step = tau of the benchmark's unit worse (never credit
+ *    above a measured effort: with only lower efforts measured, the highest of
+ *    them as it is), [score, 'e', from_effort, steps];
+ *  - 'x' a benchmark of the same tier the cell lacks, from the pool's own
+ *    cross-benchmark relation (linear, least squares over the pool's MEASURED
+ *    cells scored on both, n >= 5; the relation with the most cells, then the
+ *    alias, of the benchmarks the cell has a measured or 'e' score on),
+ *    [score, 'x', from_alias, n].
+ * A missing tier (section 4.3.3) is the skills' `substitutes` (Core reads it).
+ * The cells are the profiles' dispatchable model@effort tuples whose model the
+ * tier and pool measure at all; the effort order is the pool's profiles' own. */
+export function compileCapability(evidence, tau, policy, profiles) {
+  const tiers = {};
+  const efforts = {};
+  for (const [provider, poolName] of Object.entries(policy.pools)) {
+    const used = new Set(MODEL_EFFORTS(profiles, provider === 'anthropic' ? 'claude' : 'codex').map(t => t.split('@')[1]));
+    efforts[poolName] = EFFORTS.filter(e => e !== 'none' && e !== 'minimal' && used.has(e));
+  }
+  const relations = {};
+  for (const [id, tier] of Object.entries(evidence.tiers)) {
+    for (const [provider, pool] of Object.entries(tier.pools)) {
+      const poolName = poolOf(policy, provider), reference = policy.references[poolName];
+      if (!poolName || pool.reference !== reference) continue;
+      const benchmarks = referenceBenchmarks(pool, reference, tau);
+      if (!benchmarks.length) continue;
+      const order = efforts[poolName];
+      const measured = new Map(); // model@effort -> {alias: score}
+      for (const cell of pool.cells) {
+        if (!DISPATCHABLE.has(cell.effort)) continue;
+        const key = cell.model + '@' + cell.effort;
+        measured.set(key, {...(measured.get(key) ?? {}), ...cell.scores});
+      }
+      const measuredOf = (model, effort, alias) => measured.get(model + '@' + effort)?.[alias];
+      // The pool's cross-benchmark relations: target <- source over its measured cells.
+      const relation = {};
+      for (const target of benchmarks) for (const source of benchmarks) {
+        if (target.alias === source.alias) continue;
+        const points = [...measured.values()].filter(s => Number.isFinite(s[target.alias]) && Number.isFinite(s[source.alias]))
+          .map(s => [s[source.alias], s[target.alias]]);
+        if (points.length < 5) continue;
+        const mx = points.reduce((a, [x]) => a + x, 0) / points.length, my = points.reduce((a, [, y]) => a + y, 0) / points.length;
+        const vx = points.reduce((a, [x]) => a + (x - mx) ** 2, 0);
+        if (!(vx > 0)) continue;
+        const slope = points.reduce((a, [x, y]) => a + (x - mx) * (y - my), 0) / vx;
+        relation[target.alias + '<-' + source.alias] = {target: target.alias, source: source.alias, n: points.length,
+          slope: round(slope, 6), intercept: round(my - slope * mx, 6)};
+      }
+      if (Object.keys(relation).length) (relations[id] ??= {})[poolName] = relation;
+      // Effort-step inference of one model on one benchmark (or null).
+      const stepped = (model, effort, b) => {
+        const i = order.indexOf(effort);
+        if (i < 0) return null;
+        const got = order.map((e, j) => [e, j, measuredOf(model, e, b.alias)]).filter(([, , s]) => Number.isFinite(s));
+        if (!got.length) return null;
+        const above = got.filter(([, j]) => j >= i).sort((x, y) => x[1] - y[1])[0];
+        const step = tauOfUnit(tau, b.unit);
+        if (above) {
+          const steps = above[1] - i;
+          return [round(b.lower_better ? above[2] + step * steps : above[2] - step * steps, 4), 'e', above[0], steps];
+        }
+        const below = got.sort((x, y) => y[1] - x[1])[0];
+        return [below[2], 'e', below[0], 0];
+      };
+      const models = new Set([...measured.keys()].map(key => key.slice(0, key.lastIndexOf('@'))));
+      const tuples = MODEL_EFFORTS(profiles, provider === 'anthropic' ? 'claude' : 'codex')
+        .filter(tuple => models.has(tuple.slice(0, tuple.lastIndexOf('@'))) && order.includes(tuple.slice(tuple.lastIndexOf('@') + 1)));
+      const cells = {};
+      for (const tuple of [...new Set(tuples)].sort()) {
+        const at = tuple.lastIndexOf('@'), model = tuple.slice(0, at), effort = tuple.slice(at + 1);
+        const scores = {};
+        for (const b of benchmarks) {
+          const own = measuredOf(model, effort, b.alias);
+          if (Number.isFinite(own)) scores[b.alias] = [own, 'm'];
+          else { const value = stepped(model, effort, b); if (value) scores[b.alias] = value; }
+        }
+        for (const b of benchmarks) {
+          if (scores[b.alias]) continue;
+          const fills = Object.values(relation).filter(r => r.target === b.alias && scores[r.source] && scores[r.source][1] !== 'x')
+            .sort((x, y) => (y.n - x.n) || (x.source < y.source ? -1 : 1));
+          if (!fills.length) continue;
+          const r = fills[0];
+          scores[b.alias] = [round(r.intercept + r.slope * scores[r.source][0], 4), 'x', r.source, r.n];
+        }
+        if (Object.keys(scores).length) cells[tuple] = scores;
+      }
+      (tiers[id] ??= {})[poolName] = {reference, benchmarks, cells};
+    }
+  }
+  return {tau, efforts, tiers, relations};
+}
+
+/** DESIGN-9 section 4.1 and 4.3.3: the skills (policy.skills), each tier's
+ * skill (the partition: a tier belongs to one skill; one no skill names
+ * judges nothing), each tier's difficulty (the evidence's), and per pool the
+ * substitute of every skill tier the pool publishes nothing on: the
+ * nearest-difficulty tier of the SAME skill that it does (ties: the easier,
+ * then the id), else null (the tier then binds nothing in that pool). The
+ * skill rules are validated against the reading's values and the variants. */
+export function compileSkills(policy, evidence, capability) {
+  const skills = policy.skills ?? {};
+  const tierSkill = {};
+  for (const [skill, spec] of Object.entries(skills)) {
+    if (!Array.isArray(spec.tiers) || !spec.tiers.length || !plain(spec.variants)) throw new Error('bad skill ' + skill);
+    for (const tier of spec.tiers) {
+      if (!evidence.tiers[tier]) throw new Error('skill ' + skill + ': tier without evidence ' + tier);
+      if (tierSkill[tier]) throw new Error('tier ' + tier + ' in two skills');
+      tierSkill[tier] = skill;
+    }
+    for (const [variant, byBand] of Object.entries(spec.variants))
+      for (const band of ['light', 'standard', 'deep']) {
+        if (!Array.isArray(byBand[band]) || !byBand[band].every(tier => spec.tiers.includes(tier)))
+          throw new Error('skill ' + skill + ' variant ' + variant + ': band ' + band + ' names a tier outside the skill');
+      }
+  }
+  for (const rule of policy.skill_rules ?? []) {
+    if (!skills[rule.skill]?.variants?.[rule.variant]) throw new Error('skill rule names an unknown skill or variant: ' + JSON.stringify(rule));
+    validSkillWhen(rule.when, rule.skill);
+  }
+  const difficulty = Object.fromEntries(Object.entries(evidence.tiers).map(([id, t]) => [id, t.difficulty]));
+  const substitutes = {};
+  for (const pool of Object.values(policy.pools)) {
+    substitutes[pool] = {};
+    for (const [tier, skill] of Object.entries(tierSkill)) {
+      if (capability.tiers[tier]?.[pool]) continue;
+      const same = Object.entries(tierSkill).filter(([other, s]) => s === skill && other !== tier && capability.tiers[other]?.[pool])
+        .map(([other]) => other)
+        .sort((a, b) => (Math.abs(difficulty[a] - difficulty[tier]) - Math.abs(difficulty[b] - difficulty[tier])) ||
+          (difficulty[a] - difficulty[b]) || (a < b ? -1 : 1));
+      substitutes[pool][tier] = same[0] ?? null;
+    }
+  }
+  return {skills, rules: policy.skill_rules ?? [], tier_skill: tierSkill, difficulty, substitutes,
+    subjective: policy.subjective ?? null, bands: policy.bands ?? null};
+}
+const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function validSkillWhen(when, label) {
+  if (!plain(when) || !Object.keys(when).length) throw new Error('bad skill rule ' + label);
+  for (const [key, value] of Object.entries(when)) {
+    if (key === 'agentic') { if (value !== true) throw new Error('bad agentic clause ' + label); continue; }
+    if (!PREDICATE_KEYS[key] || !Array.isArray(value) || !value.length || !value.every(v => PREDICATE_KEYS[key].includes(v)))
+      throw new Error('bad skill rule key ' + key + ' ' + label);
+  }
+}
+/** DESIGN-9 section 3 and 4.8: the anchor p_R(band, skill) counts from the
+ * ledger snapshot (schema 5: Core lawAnchorOutcome over its judged
+ * outcomes), with the prior per band (light 0.99) at the Laplace weight. */
+/** DESIGN-9 section 4.8: the owner-judged outcome counts per
+ * model@effort|family (Core lawOwnerPFail) from the ledger snapshot. */
+export function compileOwnerJudged(ledger, policy) {
+  if (!plain(ledger.owner_judged) || !Array.isArray(ledger.owner_judged.cells)) throw new Error('ledger snapshot schema 5 (owner_judged) required');
+  const cells = {};
+  for (const cell of ledger.owner_judged.cells) {
+    if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(cell.key) || !Number.isSafeInteger(cell.runs) ||
+        !Number.isSafeInteger(cell.failures) || cell.failures < 0 || cell.failures > cell.runs)
+      throw new Error('bad owner-judged cell ' + cell.key);
+    cells[cell.key] = {runs: cell.runs, failures: cell.failures};
+  }
+  return {family: policy.subjective?.family ?? null, judge: policy.subjective?.judge ?? null, prior: policy.subjective?.prior ?? null,
+    weight: policy.laplace.runs, cells, through_ms: ledger.through_ms ?? null, rule: policy.subjective?.rule ?? null};
+}
+export function compileAnchors(ledger, policy) {
+  if (!plain(ledger.anchors) || !Array.isArray(ledger.anchors.cells)) throw new Error('ledger snapshot schema 5 (anchors) required');
+  const cells = {};
+  for (const cell of ledger.anchors.cells) {
+    if (!['light', 'standard', 'deep'].includes(cell.band) || !policy.skills?.[cell.skill] || !Number.isSafeInteger(cell.runs) ||
+        !Number.isSafeInteger(cell.failures) || cell.failures < 0 || cell.failures > cell.runs)
+      throw new Error('bad anchor cell ' + JSON.stringify(cell));
+    cells[cell.band + '|' + cell.skill] = {runs: cell.runs, failures: cell.failures};
+  }
+  const prior = policy.anchors?.prior ?? {};
+  for (const [band, value] of Object.entries(prior))
+    if (!['light', 'standard', 'deep'].includes(band) || !(value > 0 && value < 1)) throw new Error('bad anchor prior ' + band);
+  return {bands: policy.anchors?.bands ?? Object.keys(prior), prior, weight: policy.laplace.runs, cells,
+    through_ms: ledger.through_ms ?? null, basis: policy.anchors?.counting ?? null};
 }
 
 const MODEL_EFFORTS = (profiles, provider) => [...new Set(Object.values(profiles.execution_profiles)
@@ -623,7 +844,7 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
  * change the model through it). The judged runs the ledger could not
  * attribute to a law family are reported, never used. */
 export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = null, requestOf = null) {
-  if (ledger.schema !== 4) throw new Error('ledger snapshot schema 4 (Core lawJudgedOutcome and lawScreenOutcome, through_ms) required');
+  if (![4, 5].includes(ledger.schema)) throw new Error('ledger snapshot schema 4 or 5 (Core lawJudgedOutcome and lawScreenOutcome, through_ms) required');
   const out = {};
   for (const cell of ledger.cells) {
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
@@ -679,7 +900,7 @@ export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = n
  * from the ledger snapshot (schema 4); Core adds its live ledger after
  * through_ms. */
 export function compileScreen(ledger, policy) {
-  if (ledger.schema !== 4 || !ledger.screen || !Array.isArray(ledger.screen.cells)) throw new Error('ledger snapshot schema 4 required');
+  if (![4, 5].includes(ledger.schema) || !ledger.screen || !Array.isArray(ledger.screen.cells)) throw new Error('ledger snapshot schema 4 or 5 required');
   const cells = {};
   for (const cell of ledger.screen.cells) {
     if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+$/.test(cell.key) || !Number.isSafeInteger(cell.runs) || !Number.isSafeInteger(cell.failures) ||
@@ -692,49 +913,23 @@ export function compileScreen(ledger, policy) {
 
 const PREDICATE_KEYS = Object.freeze({task_type: ['chat', 'explain', 'design', 'write', 'action'],
   difficulty: ['light', 'standard', 'deep'], needs_tools: ['none', 'current_facts', 'workspace', 'execution'],
-  domain: ['knowledge', 'science', 'math', 'coding', 'writing', 'tool_use', 'general']});
-/** A conditional tier's predicate: 'always' (no reading can tell, so the
- * floor applies) or clauses (any matches) of reading values and `writer`
- * (the node runs as a workspace writer). Throws on anything else. */
-function validPredicate(when, label) {
-  if (when === 'always') return when;
-  if (!Array.isArray(when) || !when.length) throw new Error('bad condition predicate ' + label);
-  for (const clause of when) {
-    if (clause === null || typeof clause !== 'object' || !Object.keys(clause).length) throw new Error('bad clause ' + label);
-    for (const [key, value] of Object.entries(clause)) {
-      if (key === 'writer') { if (value !== true) throw new Error('bad writer clause ' + label); continue; }
-      if (!PREDICATE_KEYS[key] || !Array.isArray(value) || !value.length || !value.every(v => PREDICATE_KEYS[key].includes(v)))
-        throw new Error('bad clause key ' + key + ' ' + label);
-    }
-  }
-  return when;
-}
-/** The families' tier needs: the policy's explicit list, else the evidence's
- * required tiers, else (an easier family with no own tier) its upper bounds;
- * plus every conditional tier of the evidence with the reading predicate the
- * policy maps its condition to (review of 447: a conditional tier is never
- * dropped; a condition no reading can tell applies always, the floor). */
+  domain: ['knowledge', 'science', 'medicine', 'math', 'coding', 'writing', 'tool_use', 'general']});
+/** DESIGN-9: a family is the request's structural class: its cost shape, its
+ * tool need, whether the local row is a candidate (a tool-free answer family,
+ * build 448's capability floor, never an admission) and its p_fail key. Its
+ * benchmark tiers are the reading's skills at its band (Core lawSkills,
+ * lawTiers), never a family list and never 'always'; only U (no reading: its
+ * explicit floor), F1 (subjective conversation: the owner judges, no tier)
+ * and F10 (the ask-back) name theirs. */
 export function compileFamilies(evidence, policy) {
   const out = {};
   for (const [id, family] of Object.entries(policy.families)) {
-    let tiers = family.tiers, basis = 'policy', conditional = [];
-    if (tiers === 'evidence') {
-      const row = evidence.families.find(f => f.id === id);
-      if (!row) throw new Error('family without evidence row: ' + id);
-      tiers = row.required.length ? row.required : row.upper_bound;
-      basis = row.required.length ? 'evidence_required' : 'evidence_upper_bound';
-      const mapped = policy.conditions[id] ?? {};
-      for (const tier of Object.keys(mapped))
-        if (!row.conditional.some(c => c.tier === tier)) throw new Error('condition without evidence: ' + id + ' ' + tier);
-      conditional = row.conditional.filter(c => !tiers.includes(c.tier)).map(c => {
-        if (!Object.hasOwn(mapped, c.tier)) throw new Error('unmapped conditional tier: ' + id + ' ' + c.tier);
-        return {tier: c.tier, when: validPredicate(mapped[c.tier], id + ' ' + c.tier), condition: c.when};
-      });
-    }
-    // Build 448: whether the local row is a CANDIDATE (a capability floor: a
-    // tool-free answer family); never an admission (DESIGN-8 step 2).
-    out[id] = {tiers: [...tiers], tier_basis: basis, conditional, shape: family.shape, tools: family.tools,
-      local_candidate: family.tools === 'none' && family.shape === 'answer'};
+    if (!['answer', 'agentic'].includes(family.shape) || !['none', 'agent'].includes(family.tools))
+      throw new Error('bad family ' + id);
+    if (Object.hasOwn(family, 'tiers') && !(Array.isArray(family.tiers) && family.tiers.every(t => evidence.tiers[t])))
+      throw new Error('family ' + id + ': tiers must be evidence tiers');
+    out[id] = {...(Array.isArray(family.tiers) ? {tiers: [...family.tiers], tier_basis: 'policy'} : {tier_basis: 'skills'}),
+      shape: family.shape, tools: family.tools, local_candidate: family.tools === 'none' && family.shape === 'answer'};
   }
   return out;
 }
@@ -979,13 +1174,17 @@ export function compileTable(bytes) {
   const evidence = json('evidence'), quota = json('quota'), ledger = json('ledger'), policy = json('policy');
   const detValidation = json('det_validation'), detOutcomes = json('det_outcomes');
   const prices = json('prices'), profiles = json('profiles'), audits = json('audits');
-  const tau = compileTau(evidence);
+  const tau = compileTau(evidence, policy);
+  const capability = compileCapability(evidence, tau, policy, profiles);
   const quotaCompiled = compileQuota(quota, evidence, policy, prices, profiles);
   const auditContext = checklistAuditContext({policy, checklistBytes: bytes.f1_checklist, sensitivities: [json('f1_sensitivity')],
     quota: quotaCompiled.cells, harness: harnessPin(bytes.harness.toString('utf8'))});
-  return {schema: 1, policy: 'routing_law_447', objective: policy.objective,
+  for (const [pool, efforts] of Object.entries(policy.reference_efforts ?? {}))
+    if (!Object.values(policy.pools).includes(pool) || !Array.isArray(efforts) || !efforts.length || !efforts.every(e => DISPATCHABLE.has(e)))
+      throw new Error('bad reference_efforts ' + pool);
+  return {schema: 2, policy: 'routing_law_447', design: 'DESIGN-9', objective: policy.objective, constraint: policy.constraint,
     inputs: Object.fromEntries(Object.entries(bytes).map(([name, value]) => [name, sha(value)])),
-    references: policy.references, pool_units: policy.pool_units, exchange: policy.exchange,
+    references: policy.references, reference_efforts: policy.reference_efforts, pool_units: policy.pool_units, exchange: policy.exchange,
     p_fail_inheritance: policy.p_fail_inheritance, value_of_information: policy.value_of_information,
     audits: compileAudits(audits, auditContext),
     local_start: (() => {
@@ -996,7 +1195,11 @@ export function compileTable(bytes) {
     deterministic_verifiers: compileDeterministicVerifiers(policy, detValidation,
       compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation), requestsOf(detValidation)).cells),
     deterministic_verifiers_rule: policy.deterministic_verifiers_rule,
-    tau, admission: compileAdmission(evidence, tau, policy), families: compileFamilies(evidence, policy),
+    tau, admission: compileAdmission(evidence, tau, policy), capability: {efforts: capability.efforts, tiers: capability.tiers,
+      relations: capability.relations},
+    skills: compileSkills(policy, evidence, capability), anchors: compileAnchors(ledger, policy),
+    owner_judged: compileOwnerJudged(ledger, policy),
+    families: compileFamilies(evidence, policy),
     family_rules: policy.family_rules, quota: quotaCompiled.cells, quota_calibration: quotaCompiled.calibration,
     quota_anchors: quotaCompiled.anchors,
     p_fail: compilePFail(ledger, policy, detOutcomes, heldoutSetsOf(detValidation), requestsOf(detValidation)),
@@ -1054,7 +1257,11 @@ export function main(argv = process.argv.slice(2)) {
   if (command === 'snapshot-ledger') {
     // Build 448: the ledger input only (schema 3, Core's counting rule).
     for (const key of ['ledger', 'date', 'out-dir']) if (!options[key]) throw new Error('snapshot-ledger needs --' + key);
-    writeNew(join(options['out-dir'], `routing-law-ledger-${options.date}.json`), canonical(snapshotLedger(readFileSync(options.ledger))));
+    // DESIGN-9: --through <ms> keeps an earlier snapshot's window.
+    const through = options.through === undefined ? null : Number(options.through);
+    if (through !== null && !Number.isSafeInteger(through)) throw new Error('snapshot-ledger --through must be an integer ms');
+    writeNew(join(options['out-dir'], `routing-law-ledger-${options.date}.json`),
+      canonical(snapshotLedger(readFileSync(options.ledger), {through})));
     return 0;
   }
   if (command === 'snapshot-det-outcomes') {

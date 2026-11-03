@@ -393,11 +393,15 @@ export function planAudits({catalogs, intents, headroom = null, traffic, spent =
   // questions bound the cell's excess failure rate below it at the declared
   // confidence, the grader's measured sensitivity folded in (a grader that
   // catches a failure with probability s sees s x the excess).
+  // DESIGN-9 section 2 (build 449): one percentage tau (the pooled vendor
+  // adjacent-effort drop, 1.2 points) for every percentage-scale benchmark,
+  // so a family's tightest is that tau when its tiers publish one.
   const tauOf = family => {
     const row = rows.find(r => r.family === family);
-    const values = (row?.receipt.tiers ?? []).flatMap(tier => Object.entries(table.tau[tier] ?? {})
-      .filter(([unit]) => unit === 'pct' || unit === 'pct_error').map(([, v]) => v.tau)).filter(v => v > 0);
-    return values.length ? Math.min(...values) / 100 : null;
+    const pct = table.tau?.pct ?? null;
+    const percentage = (row?.receipt.tiers ?? []).some(tier => Object.values(table.capability?.tiers?.[tier] ?? {})
+      .some(pool => (pool.benchmarks ?? []).some(b => pct?.units?.includes(b.unit))));
+    return percentage && Number.isFinite(pct?.tau) && pct.tau > 0 ? pct.tau / 100 : null;
   };
   const grader = Number.isFinite(sensitivity?.s) && sensitivity.s > 0 && sensitivity.s <= 1 ? sensitivity.s : null;
   const nParityOf = tau => tau ? Math.ceil(Math.log(1 - VOI.confidence) / Math.log(1 - (grader ?? 1) * tau)) : null;
