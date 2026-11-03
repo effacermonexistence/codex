@@ -26,7 +26,7 @@ import Foundation
 /// catalog then carries no `routing_law` and Core keeps build 446's routes.
 public enum RoutingLaw {
     /// SHA-256 of `Resources/routing-law-table.json` (the compiled table).
-    public static let tableSHA256 = "8ee17745cb7697ecf430dcd7586d292fa31f1fecd07845ba3eb837c3010e7710"
+    public static let tableSHA256 = "223aaf533b4822ac760b506251c6fefe133a1181b108d15259309c385185c619"
 
     public enum Policy: String, Codable, Sendable, CaseIterable {
         case law446 = "law_446", law447 = "law_447"
@@ -113,7 +113,8 @@ public enum RoutingLaw {
 
     /// The catalog's `routing_law` for one request under `policy`: nil under
     /// law_446 (build 446's routes), else the local reading as read (the
-    /// enum call, the domain call and, build 447, the intent call), or
+    /// enum call, build 447's intent call and, review of 449, the skills call
+    /// that names DESIGN-9's skills; the domain is not read under the law), or
     /// `reader: none` with no reading when the local model gave none (Core's
     /// family U: only evidence across the broad tiers, or the reference).
     public static func catalogLaw(policy: Policy, receipt: LocalRequestClassifier.Receipt?) -> RCCRuntimeContract.RoutingLaw? {
@@ -125,6 +126,6 @@ public enum RoutingLaw {
         return RCCRuntimeContract.RoutingLaw(tableSHA256: tableSHA256, reader: "local_llm:" + adopted.model,
             reading: .init(taskType: answer.taskType.rawValue, difficulty: answer.difficulty.rawValue,
                            needsTools: answer.needsTools.rawValue, domain: answer.domain.rawValue,
-                           intent: answer.intent?.rawValue))
+                           intent: answer.intent?.rawValue, skills: answer.skills?.map(\.rawValue)))
     }
 }

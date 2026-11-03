@@ -446,22 +446,28 @@ public enum RCCRuntimeContract {
             public var domain: String
             /// The intent call's reading (`self_test` / `other`), nil when not read.
             public var intent: String?
-            public init(taskType: String, difficulty: String, needsTools: String, domain: String, intent: String? = nil) {
+            /// Review of 449: the skills call's reading (DESIGN-9 section 4.1),
+            /// nil when not read (absent from the wire).
+            public var skills: [String]?
+            public init(taskType: String, difficulty: String, needsTools: String, domain: String, intent: String? = nil,
+                        skills: [String]? = nil) {
                 self.taskType = taskType; self.difficulty = difficulty; self.needsTools = needsTools
-                self.domain = domain; self.intent = intent
+                self.domain = domain; self.intent = intent; self.skills = skills
             }
             enum CodingKeys: String, CodingKey {
-                case difficulty, domain, intent, taskType = "task_type", needsTools = "needs_tools"
+                case difficulty, domain, intent, skills, taskType = "task_type", needsTools = "needs_tools"
             }
             static let taskTypes: Set<String> = ["chat", "explain", "design", "write", "action"]
             static let difficulties: Set<String> = ["light", "standard", "deep"]
             static let toolNeeds: Set<String> = ["none", "current_facts", "workspace", "execution"]
             static let domains: Set<String> = ["knowledge", "science", "math", "coding", "writing", "tool_use", "general"]
             static let intents: Set<String> = ["self_test", "other"]
+            static let skillNames: Set<String> = Set(LocalRequestClassifier.Skill.allCases.map(\.rawValue))
             public var valid: Bool {
                 Self.taskTypes.contains(taskType) && Self.difficulties.contains(difficulty) &&
                     Self.toolNeeds.contains(needsTools) && Self.domains.contains(domain) &&
-                    (intent.map { Self.intents.contains($0) } ?? true)
+                    (intent.map { Self.intents.contains($0) } ?? true) &&
+                    (skills.map { (1...6).contains($0.count) && Set($0).count == $0.count && $0.allSatisfy(Self.skillNames.contains) } ?? true)
             }
         }
         /// Lead correction 2 (2026-10-29): one quota pool's latest rate-limit

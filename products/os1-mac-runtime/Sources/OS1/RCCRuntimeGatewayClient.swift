@@ -108,7 +108,8 @@ enum RCCRuntimeGatewayClient {
     }
     private static let maximumResponseBytes = 8_388_608
     private static let maximumRequestBytes = 8_388_608
-    private static let methodSet: Set<String> = ["health", "os1.rcc.submit", "os1.rcc.status", "os1.rcc.cancel", "os1.rcc.quiesce", "os1.rcc.recoverOwnerControl"]
+    private static let methodSet: Set<String> = ["health", "os1.rcc.submit", "os1.rcc.status", "os1.rcc.cancel", "os1.rcc.quiesce", "os1.rcc.recoverOwnerControl",
+                                                 "os1.rcc.correct"]
     // Params are read privately and put in the official CLI's in-memory argv.
     // Neither request material nor the gateway token enters kernel argv.
     private static let rpcShim = """
@@ -302,6 +303,39 @@ enum RCCRuntimeGatewayClient {
                 root: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime"),
                 limits: Limits(), fixture: false)
         }.value
+    }
+
+    /// Review of 449 (DESIGN-9 sections 3 and 4.8, "owner corrections count
+    /// as failures"): the owner's explicit correction of a completed task's
+    /// answer, sent to the core that ran it (`os1 rcc-task-correct`). It only
+    /// marks the task's law records corrected for the routing law's learning
+    /// (Core ownerCorrection); it never dispatches, replays or edits a result.
+    static func correct(taskID: String, requestSHA256: String, configuration: Configuration) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            guard taskID.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
+                  requestSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw Failure.invalidRequest }
+            let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".os1/rcc-runtime")
+            try checkInstallerMaintenance(root: root)
+            let paths = Paths(root: root), limits = Limits()
+            let owner = try ensureGateway(configuration: configuration, paths: paths, limits: limits,
+                                          fixture: false, cancelled: { false })
+            let query = try JSONSerialization.data(withJSONObject: ["schema": 1, "task_id": taskID, "request_sha256": requestSHA256],
+                                                   options: [.sortedKeys])
+            let raw = try rpc("os1.rcc.correct", parameters: query, owner: owner, configuration: configuration,
+                              paths: paths, timeout: limits.rpc, fixture: false)
+            return try correctionReceipt(raw, id: taskID, requestSHA256: requestSHA256)
+        }.value
+    }
+    /// The core's correction receipt, exactly: the same task and request, the
+    /// count of law records newly marked and the records it covers.
+    static func correctionReceipt(_ data: Data, id: String, requestSHA256: String) throws -> Data {
+        guard data.count > 2, data.count <= 65_536, let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(value.keys).isSubset(of: ["schema", "task_id", "request_sha256", "corrected", "attempt_ids", "reason"]),
+              value["schema"] as? Int == 1, value["task_id"] as? String == id, value["request_sha256"] as? String == requestSHA256,
+              let corrected = value["corrected"] as? Int, corrected >= 0,
+              let ids = value["attempt_ids"] as? [String], ids.count <= 64, corrected <= ids.count,
+              value["reason"].map({ $0 as? String == "law_record_absent" }) ?? true else { throw Failure.snapshotInvalid }
+        return data
     }
 
     static func statusForOfflineFixture(taskID: String, requestSHA256: String,

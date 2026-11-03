@@ -63,7 +63,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Build 448: the one judged-outcome rule is Core's (lawJudgedOutcome); the
 // snapshot never keeps its own copy of it.
 const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,
-  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn, lawAnchorOutcome, lawOwnerJudgedOutcome} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
+  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn, lawAnchorOutcome, lawOwnerJudgedOutcome,
+  LAW_READ_SKILLS} = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 export const INPUTS = Object.freeze({
   evidence: 'scripts/routing-law-evidence-20261029.json',
   quota: 'scripts/routing-law-quota-20261030.json',
@@ -73,7 +74,10 @@ export const INPUTS = Object.freeze({
   // 20261101's judged runs and screens, plus the anchor p_R(band, skill)
   // counts and the owner-judged outcomes (Core lawAnchorOutcome,
   // lawOwnerJudgedOutcome).
-  ledger: 'scripts/routing-law-ledger-20261102.json',
+  // Review of 449: schema 6, the same window, the anchor counts keyed by the
+  // row that ran (Core lawAnchor reads its implied failure rate) and the
+  // owner's corrections applied (none yet).
+  ledger: 'scripts/routing-law-ledger-20261103.json',
   audits: 'scripts/routing-law-audits-20261029.json',
   // Build 448 (review of 448): a deterministic verifier's pre-registered
   // held-out validation (labeled replies, frozen before the verifier ran on
@@ -257,24 +261,45 @@ export function snapshotQuota(quotaDir, pricesBytes = readFileSync(join(ROOT, IN
  * the law (no law family) say nothing and are only counted as excluded.
  * Schema 3 (build 448) records `through_ms`, the latest settled record in the
  * snapshot: Core adds its own ledger's judged runs after it. */
-export function snapshotLedger(ledgerBytes, {through: cutoff = null, policy = null} = {}) {
+export function snapshotLedger(ledgerBytes, {through: cutoff = null, policy = null, corrections = null} = {}) {
   const counts = new Map(), excluded = {undispatched: 0, unjudged: 0, no_law_family: 0, local_screen_only: 0};
   const screens = new Map(), anchors = new Map(), owners = new Map();
   const spec = policy ?? JSON.parse(readFileSync(join(ROOT, INPUTS.policy), 'utf8'));
+  // Review of 449: the owner's corrections (Core's owner-corrections.jsonl):
+  // attempt_id -> corrected_at_ms; a correction made after the cutoff is
+  // Core's live learning, never this window's.
+  const corrected = new Map();
+  for (const line of corrections ? corrections.toString('utf8').split('\n') : []) {
+    let entry = null;
+    try { entry = line.trim() ? JSON.parse(line) : null; } catch { continue; }
+    if (entry?.schema !== 1 || !Number.isSafeInteger(entry.corrected_at_ms) || !Array.isArray(entry.attempt_ids)) continue;
+    for (const id of entry.attempt_ids) if (typeof id === 'string' && !corrected.has(id)) corrected.set(id, entry.corrected_at_ms);
+  }
+  const rawLines = ledgerBytes.toString('utf8').split('\n');
   let through = null;
-  for (const line of ledgerBytes.toString('utf8').split('\n')) {
+  for (const line of rawLines) {
+    let record;
+    try { record = line.trim() ? JSON.parse(line) : null; } catch { continue; }
+    if (cutoff !== null && !(Number.isSafeInteger(record?.settled_at_ms) && record.settled_at_ms <= cutoff)) continue;
+    if (Number.isSafeInteger(record?.settled_at_ms) && (through === null || record.settled_at_ms > through)) through = record.settled_at_ms;
+  }
+  for (const line of rawLines) {
     if (!line.trim()) continue;
     let record;
     try { record = JSON.parse(line); } catch { continue; }
     // DESIGN-9: a cutoff keeps a snapshot's window (the records settled at or
     // before it); records after it are Core's live learning.
     if (cutoff !== null && !(Number.isSafeInteger(record?.settled_at_ms) && record.settled_at_ms <= cutoff)) continue;
-    if (Number.isSafeInteger(record?.settled_at_ms) && (through === null || record.settled_at_ms > through)) through = record.settled_at_ms;
-    // DESIGN-9 section 3: the anchors p_R(band, skill); section 4.8: the
-    // owner-judged outcomes (Core's own counting rules).
+    const at = typeof record?.attempt_id === 'string' ? corrected.get(record.attempt_id) ?? null : null;
+    if (at !== null && through !== null && at <= through) record = {...record, owner_correction: true};
+    // DESIGN-9 section 3: the anchors p_R(band, skill), keyed by the skill's
+    // variant and the row that ran (review of 449: Core lawAnchor reads the
+    // failure rate the anchor implies for it); section 4.8: the owner-judged
+    // outcomes (Core's own counting rules).
     const anchor = lawAnchorOutcome(record, spec);
-    for (const skill of anchor?.skills ?? []) {
-      const key = anchor.band + '|' + skill, value = anchors.get(key) ?? {runs: 0, failures: 0};
+    for (const {skill, variant} of anchor?.skills ?? []) {
+      const key = JSON.stringify([anchor.band, skill, variant, anchor.model, anchor.effort]);
+      const value = anchors.get(key) ?? {runs: 0, failures: 0};
       value.runs++; if (anchor.failed) value.failures++;
       anchors.set(key, value);
     }
@@ -300,7 +325,9 @@ export function snapshotLedger(ledgerBytes, {through: cutoff = null, policy = nu
     value.runs++; if (outcome.failed) value.failures++; if (outcome.class === 'full') value.full++;
     counts.set(key, value);
   }
-  return {schema: 5, source: {sha256: sha(ledgerBytes), ...(cutoff !== null ? {cutoff_ms: cutoff} : {}),
+  return {schema: 6, source: {sha256: sha(ledgerBytes), ...(cutoff !== null ? {cutoff_ms: cutoff} : {}),
+      corrections: corrections ? {sha256: sha(corrections), applied: [...corrected.values()].filter(at => through !== null && at <= through).length} :
+        null,
       basis: 'Core lawJudgedOutcome over the routing ledger: judged ' +
       'laddered descents (route kinds tier, graded, capability, law), not escalated, keyed by the law family of their ' +
       'receipt; a local draft by its REVAS check verdict only; failure = escalated, not returned, verifier, check or ' +
@@ -313,10 +340,14 @@ export function snapshotLedger(ledgerBytes, {through: cutoff = null, policy = nu
       'every screened law, graded or capability descent and every law-bound reference answer\'s shadow screen, keyed ' +
       'model@effort, pooled over families and surfaces',
     cells: [...screens].map(([key, value]) => ({key, ...value})).sort((a, b) => a.key < b.key ? -1 : 1)},
-    anchors: {basis: 'Core lawAnchorOutcome over the routing ledger: each judged law outcome counted once per skill of its ' +
-      'receipt at its band (an older receipt read from its reading by the policy\'s skill rules)',
-    cells: [...anchors].map(([key, value]) => ({band: key.split('|')[0], skill: key.split('|')[1], ...value}))
-      .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)},
+    anchors: {basis: 'Core lawAnchorOutcome over the routing ledger (owner corrections applied): each judged law outcome ' +
+      'counted once per skill of its receipt at its band, keyed by the skill variant and the row that ran (model@effort; ' +
+      'Core lawAnchor reads the failure rate the anchor implies for that row from its capability gap); an older receipt ' +
+      'read from its reading by the policy\'s skill rules',
+    cells: [...anchors].map(([key, value]) => {
+      const [band, skill, variant, model, effort] = JSON.parse(key);
+      return {band, skill, variant, model, effort, ...value};
+    }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)},
     owner_judged: {basis: 'Core lawOwnerJudgedOutcome over the routing ledger: the delivered answers of requests the law ' +
       'read as subjective (the owner the judge), failed when the owner corrected them or they were not delivered',
     cells: [...owners].map(([key, value]) => ({key, ...value})).sort((a, b) => a.key < b.key ? -1 : 1)}};
@@ -570,10 +601,10 @@ export function compileSkills(policy, evidence, capability) {
     subjective: policy.subjective ?? null, bands: policy.bands ?? null};
 }
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-function validSkillWhen(when, label) {
+function validSkillWhen(when, label, agentic = true) {
   if (!plain(when) || !Object.keys(when).length) throw new Error('bad skill rule ' + label);
   for (const [key, value] of Object.entries(when)) {
-    if (key === 'agentic') { if (value !== true) throw new Error('bad agentic clause ' + label); continue; }
+    if (key === 'agentic' && agentic) { if (value !== true) throw new Error('bad agentic clause ' + label); continue; }
     if (!PREDICATE_KEYS[key] || !Array.isArray(value) || !value.length || !value.every(v => PREDICATE_KEYS[key].includes(v)))
       throw new Error('bad skill rule key ' + key + ' ' + label);
   }
@@ -584,7 +615,7 @@ function validSkillWhen(when, label) {
 /** DESIGN-9 section 4.8: the owner-judged outcome counts per
  * model@effort|family (Core lawOwnerPFail) from the ledger snapshot. */
 export function compileOwnerJudged(ledger, policy) {
-  if (!plain(ledger.owner_judged) || !Array.isArray(ledger.owner_judged.cells)) throw new Error('ledger snapshot schema 5 (owner_judged) required');
+  if (!plain(ledger.owner_judged) || !Array.isArray(ledger.owner_judged.cells)) throw new Error('ledger snapshot schema 6 (owner_judged) required');
   const cells = {};
   for (const cell of ledger.owner_judged.cells) {
     if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+\|[A-Za-z0-9-]{1,16}$/.test(cell.key) || !Number.isSafeInteger(cell.runs) ||
@@ -596,13 +627,15 @@ export function compileOwnerJudged(ledger, policy) {
     weight: policy.laplace.runs, cells, through_ms: ledger.through_ms ?? null, rule: policy.subjective?.rule ?? null};
 }
 export function compileAnchors(ledger, policy) {
-  if (!plain(ledger.anchors) || !Array.isArray(ledger.anchors.cells)) throw new Error('ledger snapshot schema 5 (anchors) required');
+  if (!(ledger.schema >= 6) || !plain(ledger.anchors) || !Array.isArray(ledger.anchors.cells))
+    throw new Error('ledger snapshot schema 6 (anchors per row) required');
   const cells = {};
   for (const cell of ledger.anchors.cells) {
-    if (!['light', 'standard', 'deep'].includes(cell.band) || !policy.skills?.[cell.skill] || !Number.isSafeInteger(cell.runs) ||
+    if (!['light', 'standard', 'deep'].includes(cell.band) || !policy.skills?.[cell.skill]?.variants?.[cell.variant] ||
+        !/^[a-z0-9][a-z0-9._:-]*$/.test(cell.model ?? '') || !/^[a-z]+$/.test(cell.effort ?? '') || !Number.isSafeInteger(cell.runs) ||
         !Number.isSafeInteger(cell.failures) || cell.failures < 0 || cell.failures > cell.runs)
       throw new Error('bad anchor cell ' + JSON.stringify(cell));
-    cells[cell.band + '|' + cell.skill] = {runs: cell.runs, failures: cell.failures};
+    cells[cell.band + '|' + cell.skill + ':' + cell.variant + '|' + cell.model + '@' + cell.effort] = {runs: cell.runs, failures: cell.failures};
   }
   const prior = policy.anchors?.prior ?? {};
   for (const [band, value] of Object.entries(prior))
@@ -844,7 +877,7 @@ export function compileQuota(quota, evidence, policy, prices, profiles) {
  * change the model through it). The judged runs the ledger could not
  * attribute to a law family are reported, never used. */
 export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = null, requestOf = null) {
-  if (![4, 5].includes(ledger.schema)) throw new Error('ledger snapshot schema 4 or 5 (Core lawJudgedOutcome and lawScreenOutcome, through_ms) required');
+  if (![4, 5, 6].includes(ledger.schema)) throw new Error('ledger snapshot schema 4, 5 or 6 (Core lawJudgedOutcome and lawScreenOutcome, through_ms) required');
   const out = {};
   for (const cell of ledger.cells) {
     const key = cell.model + '@' + cell.effort + '|' + cell.family;
@@ -900,7 +933,7 @@ export function compilePFail(ledger, policy, detOutcomes = null, heldoutSets = n
  * from the ledger snapshot (schema 4); Core adds its live ledger after
  * through_ms. */
 export function compileScreen(ledger, policy) {
-  if (![4, 5].includes(ledger.schema) || !ledger.screen || !Array.isArray(ledger.screen.cells)) throw new Error('ledger snapshot schema 4 or 5 required');
+  if (![4, 5, 6].includes(ledger.schema) || !ledger.screen || !Array.isArray(ledger.screen.cells)) throw new Error('ledger snapshot schema 4, 5 or 6 required');
   const cells = {};
   for (const cell of ledger.screen.cells) {
     if (!/^[a-z0-9][a-z0-9._:-]*@[a-z]+$/.test(cell.key) || !Number.isSafeInteger(cell.runs) || !Number.isSafeInteger(cell.failures) ||
@@ -913,7 +946,10 @@ export function compileScreen(ledger, policy) {
 
 const PREDICATE_KEYS = Object.freeze({task_type: ['chat', 'explain', 'design', 'write', 'action'],
   difficulty: ['light', 'standard', 'deep'], needs_tools: ['none', 'current_facts', 'workspace', 'execution'],
-  domain: ['knowledge', 'science', 'medicine', 'math', 'coding', 'writing', 'tool_use', 'general']});
+  domain: ['knowledge', 'science', 'medicine', 'math', 'coding', 'writing', 'tool_use', 'general'],
+  // Review of 449: the skills the reader names (Core LAW_READ_SKILLS); null:
+  // a reading whose skills were not read.
+  skills: [...LAW_READ_SKILLS, null], intent: ['self_test', 'other']});
 /** DESIGN-9: a family is the request's structural class: its cost shape, its
  * tool need, whether the local row is a candidate (a tool-free answer family,
  * build 448's capability floor, never an admission) and its p_fail key. Its
@@ -923,13 +959,24 @@ const PREDICATE_KEYS = Object.freeze({task_type: ['chat', 'explain', 'design', '
  * and F10 (the ask-back) name theirs. */
 export function compileFamilies(evidence, policy) {
   const out = {};
+  // Review of 449: 'every_skill' (U, no reading): every skill's tiers at
+  // every band, derived from the skills (the request may need any of them).
+  const everySkill = [...new Set(Object.values(policy.skills ?? {}).flatMap(skill =>
+    Object.values(skill.variants ?? {}).flatMap(byBand => ['light', 'standard', 'deep'].flatMap(band => byBand[band] ?? []))))]
+    .sort((a, b) => (evidence.tiers[a].difficulty - evidence.tiers[b].difficulty) || (a < b ? -1 : 1));
   for (const [id, family] of Object.entries(policy.families)) {
     if (!['answer', 'agentic'].includes(family.shape) || !['none', 'agent'].includes(family.tools))
       throw new Error('bad family ' + id);
-    if (Object.hasOwn(family, 'tiers') && !(Array.isArray(family.tiers) && family.tiers.every(t => evidence.tiers[t])))
+    const tiers = family.tiers === 'every_skill' ? everySkill : family.tiers;
+    if (Object.hasOwn(family, 'tiers') && !(Array.isArray(tiers) && tiers.every(t => evidence.tiers[t])))
       throw new Error('family ' + id + ': tiers must be evidence tiers');
-    out[id] = {...(Array.isArray(family.tiers) ? {tiers: [...family.tiers], tier_basis: 'policy'} : {tier_basis: 'skills'}),
-      shape: family.shape, tools: family.tools, local_candidate: family.tools === 'none' && family.shape === 'answer'};
+    out[id] = {...(Array.isArray(tiers) ? {tiers: [...tiers], tier_basis: family.tiers === 'every_skill' ? 'every_skill' : 'policy'} :
+      {tier_basis: 'skills'}), shape: family.shape, tools: family.tools, local_candidate: family.tools === 'none' && family.shape === 'answer'};
+  }
+  for (const rule of policy.family_rules ?? []) {
+    if (!out[rule.family]) throw new Error('family rule names an unknown family ' + rule.family);
+    if (rule.when?.reading === 'absent') continue;
+    if (Object.keys(rule.when ?? {}).length) validSkillWhen(rule.when, 'family ' + rule.family, false);
   }
   return out;
 }
@@ -1260,8 +1307,11 @@ export function main(argv = process.argv.slice(2)) {
     // DESIGN-9: --through <ms> keeps an earlier snapshot's window.
     const through = options.through === undefined ? null : Number(options.through);
     if (through !== null && !Number.isSafeInteger(through)) throw new Error('snapshot-ledger --through must be an integer ms');
+    // Review of 449: --corrections <owner-corrections.jsonl> (Core's log of
+    // the owner's corrections), applied to the window's records.
     writeNew(join(options['out-dir'], `routing-law-ledger-${options.date}.json`),
-      canonical(snapshotLedger(readFileSync(options.ledger), {through})));
+      canonical(snapshotLedger(readFileSync(options.ledger), {through,
+        corrections: options.corrections ? readFileSync(options.corrections) : null})));
     return 0;
   }
   if (command === 'snapshot-det-outcomes') {

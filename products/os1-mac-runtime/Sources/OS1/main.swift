@@ -19353,6 +19353,17 @@ struct OS1Main {
                     ? try await RCCRuntimeGatewayClient.status(taskID: arguments[2], requestSHA256: arguments[4], configuration: configuration)
                     : try await RCCRuntimeGatewayClient.cancel(taskID: arguments[2], requestSHA256: arguments[4], configuration: configuration)
                 print(String(decoding: bytes, as: UTF8.self))
+            // Review of 449 (DESIGN-9 sections 3 and 4.8): the owner's explicit
+            // correction of a completed task's answer; learning only (Core
+            // ownerCorrection marks its law records; nothing is dispatched).
+            case "rcc-task-correct":
+                guard arguments.count == 5, arguments[1] == "--task-id", arguments[3] == "--request-sha256" else {
+                    throw OS1Error.message("RCC owner correction requires exact task and request identity")
+                }
+                let configuration = try await LocalRouterBridge.rccRuntimeConfiguration()
+                let bytes = try await RCCRuntimeGatewayClient.correct(taskID: arguments[2], requestSHA256: arguments[4],
+                                                                     configuration: configuration)
+                print(String(decoding: bytes, as: UTF8.self))
             case "rcc-stage", "rcc-install-status", "rcc-install-cancel":
                 guard arguments.count == 3, arguments[1] == "--ticket-file" else {
                     throw OS1Error.message("RCC installation operation accepts one private bound input")
@@ -20346,8 +20357,9 @@ func rccLocalClassification(taskID: String, requestSHA256: String, request: Stri
     let hints = LocalClassifierHints.load(home: home)
     FileHandle.standardError.write(Data(("os1 rcc-catalog: " + hints.receipt + "\n").utf8))
     // Build 449 (DESIGN-9 section 4.1): under the routing law (`readsIntent`,
-    // the host's lawReads) the domain names the request's skills, so it is
-    // read for every reading but subjective small talk.
+    // the host's lawReads) the local LLM names the request's skills (review of
+    // 449: the skills call replaces the domain call; the intent call runs
+    // first), for every reading but a light tool-free chat or a self-test.
     let receipt = await LocalRequestClassifier.classify(request, inventory: { LocalRouterBridge.installedModelNames() },
                                                         hints: hints.hints, statusHeard: statusHeard,
                                                         readsIntent: readsIntent, readsSkills: readsIntent)

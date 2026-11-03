@@ -920,15 +920,18 @@ check("const local = profile.classifier.startsWith('local_llm:');" in capability
 check("CAPABILITY_BASIS" in (ROOT / "scripts/route-replay.mjs").read_text() and
       "capability_delivery_without_screen_pass" in (ROOT / "scripts/route-replay.mjs").read_text(),
       "change 3: route-replay audits the capability basis (screened read-only, unchecked writer)")
-# Build 449 (DESIGN-9 section 3): v4's approved band definitions; dom2: under the routing law the domain call reads the skills.
-check('public static let promptVersion = "local_cls_v4_dom2_sub2_int1"' in classifier_source and
+# Build 449 (DESIGN-9 section 3): v4's approved band definitions; review of 449 (skl1): under the routing law the
+# skills call (the reader names DESIGN-9's skills) replaces the domain call; the intent call runs before it.
+check('public static let promptVersion = "local_cls_v4_skl1_sub2_int1"' in classifier_source and
       # DESIGN-4 §9: the enum call is build 441's v2 schema; the domain is its own call (with the owner's ASR hints, §3).
       'public static let schemaJSON = #"{"type":"object","properties":{"task_type":{"type":"string","enum":["explain","design","write","action","chat"]},"difficulty":{"type":"string","enum":["light","standard","deep"]},"needs_tools":{"type":"string","enum":["none","current_facts","workspace","execution"]}},"required":["task_type","difficulty","needs_tools"]}"#' in classifier_source and
       'public static let domainSchemaJSON = #"{"type":"object","properties":{"domain":{"type":"string","enum":["knowledge","science","math","coding","writing","tool_use","general"]}},"required":["domain"]}"#' in classifier_source and
-      "if !needsDomain(answer, request: text, readsSkills: readsSkills) {" in classifier_source and
+      "} else if !needsDomain(answer, request: text, readsSkills: readsSkills) {" in classifier_source and
       "let hints = LocalClassifierHints.load(home: home)" in MAIN and "hints: hints.hints, statusHeard: statusHeard," in MAIN and
       # Build 447: the intent call under the routing law only.
-      "readsIntent: readsIntent, readsSkills: readsIntent)" in MAIN and "guard needsIntent(answer, readsIntent: readsIntent) else { return receipt }" in classifier_source and
+      "readsIntent: readsIntent, readsSkills: readsIntent)" in MAIN and "if needsIntent(answer, readsIntent: readsIntent) {" in classifier_source and
+      classifier_source.index("if needsIntent(answer, readsIntent: readsIntent) {") <
+        classifier_source.index("if !needsSkills(answer, readsSkills: readsSkills) {") and
       'home.appendingPathComponent(".os1/local-classifier/asr-hints.json")' in (ROOT / "Sources/OS1Context/LocalClassifierHints.swift").read_text() and
       "static let deepFloorPatterns = [" in profile_source and "let difficulty: Difficulty = quality || deepFloor(request) ? .deep : read" in profile_source and
       # Review of 442: the floor reads a proof, derivation or rigour asked for, never 증명사진 or 전자기 유도.
@@ -1249,7 +1252,7 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "rates.set(pool, lawPoolPrice(catalog, pool, now, shares.length ? Math.min(...shares) : null));" in RUNTIME and
       "return Number.isFinite(price) ? q * price : null;" in RUNTIME and
       # Build 449 (DESIGN-9 section 4.1): the tiers are the reading's skills at its band (a long agentic build is C3).
-      "export function lawTiers(table, family, reading = null, agentic = false) {" in RUNTIME and
+      "export function lawTiers(table, family, reading = null, agentic = false, subjective = false) {" in RUNTIME and
       "export function lawPFail(table, candidate, family, reference = null, learned = null) {" in RUNTIME and
       # Round 3 of the 448 review (decision 2): a read-only row with evidence is
       # priced on the runtime's structural screen, from its own pool reference.
@@ -1263,7 +1266,7 @@ check("export const ROUTING_POLICIES = Object.freeze(['law_446', 'law_447']);" i
       "!validRoutingLaw(catalog?.routing_law))\n    return {class: 'certified'" in RUNTIME and
       "certifiedTupleRuns" not in RUNTIME and
       'node "$script_dir/routing-law-replay.mjs" --owner-gate "$script_dir/fixtures/routing-law-owner-questions.json"' in RELEASE and
-      "family === 'P' ? null : family,\n            {band, learned});" in RUNTIME and
+      "family === 'P' ? null : family, {band, learned}), candidate, listedReferenceOf(option.pool.pool)?.candidate ?? null);" in RUNTIME and
       "headroom_threshold" not in RUNTIME.replace(section(RUNTIME, "const ROUTING_LAW_TABLE_TEXT = ", "export const ROUTING_LAW_TABLE_SHA256"), "") and
       "|| lawAnswersLocally(node, task, catalog)), 'local_agent_node_not_explicit');" in RUNTIME and
       "law.reference_request === true;" in RUNTIME and
@@ -1297,7 +1300,7 @@ check("snapshot.result = {output, execution_verified: !askBack, task_verified: !
       # Round 3 of the 448 review: the snapshot counts the structural screen
       # with Core's own rule too (lawScreenOutcome).
       # Build 449 (DESIGN-9 sections 3 and 4.8): and the anchors' and the owner-judged runs' rules.
-      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn, lawAnchorOutcome, lawOwnerJudgedOutcome} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
+      "const {lawJudgedOutcome, lawScreenOutcome, LAW_DETERMINISTIC_VERIFIERS, LAW_DET_FINDINGS, lawDeterministicCheck,\n  revasRepairInstruction, lawSmallTalkText, lawSmallTalkLaterTurn, lawAnchorOutcome, lawOwnerJudgedOutcome,\n  LAW_READ_SKILLS} = await import(" in (ROOT / "scripts/routing-law-table.mjs").read_text() and
       "try runRoutingLawHostFixtures()" in LAW_FIXTURE and "RCCRuntimeContract.decodeSnapshot(bytes)" in HOST_FIXTURE and
       (ROOT / "scripts/fixtures/routing-law-host-snapshots.mjs").is_file() and
       (ROOT / "scripts/routing-law-ledger-20261030.json").is_file() and (ROOT / "scripts/routing-law-ledger-20261101.json").is_file(),
@@ -1350,7 +1353,7 @@ check("export function lawDetPFail(table, candidate, family, learned = null) {" 
       "basis: 'heldout_clean_replies_rejected_in_scope'" in TABLE_COMPILER and
       "on_fail: !step ? 'hold_draft_withheld' : step.mode === 'repair' ? 'repair_at_reference' : 'answer_at_reference'};" in RUNTIME and
       "const mode = qr < qa ? 'repair' : 'answer';" in RUNTIME and
-      "if (lawLocalDetStartRunnable(task, catalog, now)) return null;" in RUNTIME and
+      "if (lawLocalDetStartRunnable(task, catalog, now, learned)) return null;" in RUNTIME and
       "let escalationQ = laddered && target ? quotaOf(target.candidate)?.q ?? null : laddered ? null : 0;" in RUNTIME and
       "check_outcome: draftEntry.check_outcome === 'det_fail' ? 'det_fail' : 'revas_no_verdict'," in RUNTIME and
       "if (Number.isSafeInteger(draftMaxTokens) && ((Number.isSafeInteger(usage?.output_tokens) &&" in RUNTIME and
@@ -1368,9 +1371,9 @@ check("throw new Error('det outcomes: every draft must name the held-out validat
       "export function lawScreenOutcome(record) {" in RUNTIME and
       "...(shadowScreen === 'pass' || shadowScreen === 'fail' ? {shadow_screen: shadowScreen} : {})};" in RUNTIME and
       "export function lawDetClassPFail(table, candidate, family, learned = null) {" in RUNTIME and
-      "function lawReadOnlySmallTalk(task, catalog) {" in RUNTIME and "function lawProfileFloor(profile) {" in RUNTIME and
+      "function lawReadOnlySmallTalk(task, catalog, learned = null) {" in RUNTIME and "function lawProfileFloor(profile) {" in RUNTIME and
       "    !lawProfileFloor(catalog.request_profile) &&" in RUNTIME and
-      "(task.mode === 'auto' && lawReadOnlySmallTalk(task, catalog))" in RUNTIME and
+      "(task.mode === 'auto' && lawReadOnlySmallTalk(task, catalog, lawLearned))" in RUNTIME and
       # Build 449 (DESIGN-9 section 4.8): the subjective family's local row is scoped too.
       "const scoped = lawDeterministicVerifier(table, admission.family) !== null ||\n    table?.skills?.subjective?.family === admission.family;" in RUNTIME and
       "lawSmallTalkScope(executionTask(snapshot), snapshot.catalog)) ? {law_family: revasChild.law_receipt.family} : {})};" in RUNTIME and
@@ -1391,7 +1394,7 @@ F1_AUDIT = (ROOT / "scripts/routing-law-f1-audit.mjs").read_text()
 AUDIT = (ROOT / "scripts/routing-law-audit.mjs").read_text()
 check("withoutConversation(task) && (!scoped || lawSmallTalkScope(task, catalog));" in RUNTIME and
       "!lawProfileFloor(catalog.request_profile) && withoutConversation(task) &&" in RUNTIME and
-      "lawLocalEvidence(table, LOCAL_WORKER_MODEL, lawFamily(reading, table), task, catalog) !== null &&" in RUNTIME and
+      "lawLocalEvidence(table, LOCAL_WORKER_MODEL, lawFamily(reading, table), task, catalog, learned) !== null &&" in RUNTIME and
       "function lawTileKeepsZeroModel(task, catalog) {" in RUNTIME and
       "const tiled = zeroModelShape && !autoPreference && lawTileKeepsZeroModel(task, catalog);" in RUNTIME and
       "export function lawAuditPFail(table, candidate, family, learned = null) {" in RUNTIME and
@@ -1428,7 +1431,7 @@ check("function lawAuditScope(audit, task, catalog) {" in RUNTIME and
       # Build 449 (DESIGN-9 section 4.8): the owner-judged local row (form o) is priced on its screen too, and answers with no pool.
       "...(pick?.evidence.form === 'o' ? {owner: {judge: 'owner', p_owner: round6(pick.evidence.p_owner ?? 0),\n        priced_on: 'structural_screen'}} : {})};" in RUNTIME and
       "const holds = (evidence.form === 'a' && detStep === null) || (option.local && ['c', 'o'].includes(evidence.form) && target === null);" in RUNTIME and
-      "!['a', 'c', 'o'].includes(lawLocalEvidence(routingLawTable(), LOCAL_WORKER_MODEL, admission.family, task, catalog)?.form))" in RUNTIME and
+      "!['a', 'c', 'o'].includes(lawLocalEvidence(routingLawTable(), LOCAL_WORKER_MODEL, admission.family, task, catalog, learned)?.form))" in RUNTIME and
       "export function checklistAuditContext({policy, checklistBytes, sensitivities = [], quota = {}, harness}) {" in TABLE_COMPILER and
       "export function harnessPin(text = null) {" in TABLE_COMPILER and
       "f1_sensitivity: 'scripts/routing-law-f1-sensitivity-20261101.json'," in TABLE_COMPILER and
@@ -1521,7 +1524,7 @@ check("if (operation === 'rcc-catalog' && ['law_446', 'law_447'].includes(proces
 # (form o); the argmin ties to the lower effort; the reader asks the approved
 # band definitions and reads the skills. Release-gated by the routing-law tests.
 LAW_TABLE = json.loads(law_resource)
-check("export function lawSkills(spec, reading, {agentic = false, family = null} = {}) {" in RUNTIME and
+check("export function lawSkills(spec, reading, {agentic = false, subjective = false} = {}) {" in RUNTIME and
       "export function lawBand(reading) {" in RUNTIME and
       "export function lawAnchor(table, band, skill, learned = null) {" in RUNTIME and
       "export function lawDeficit(table, benchmark, score, pR = null) {" in RUNTIME and
@@ -1546,5 +1549,35 @@ check("export function lawSkills(spec, reading, {agentic = false, family = null}
       "Guiding question: would the top AI model almost certainly get this right from textbook knowledge?" in classifier_source and
       "public static func needsDomain(_ answer: Answer, request: String, readsSkills: Bool = false) -> Bool {" in classifier_source,
       "449: DESIGN-9's skills x band tiers, one tau per scale, inference within a skill, light saturation at the learned anchor, the owner as judge of small talk, ties to the lower effort, the approved band definitions")
+# Review of 449: the anchor learns only through each row's implied failure rate (its capability gap; the local
+# model none); an unpublished skill is a gap, never a pass; only a subjective request in scope has no skill and is
+# owner-judged; an inferred admission is withdrawn by the ledger; Core's live ledger reaches every small-talk
+# decision; the owner's explicit correction (os1 rcc-task-correct -> os1.rcc.correct -> Core ownerCorrection) is a
+# failure, learned at once and after a restart; the reader names the skills; the gate checks the constraint.
+PLUGIN = (ROOT / "Resources/openclaw-os1-bridge/rcc-plugin.mjs").read_text()
+GATEWAY = (ROOT / "Sources/OS1/RCCRuntimeGatewayClient.swift").read_text()
+REPLAY = (ROOT / "scripts/routing-law-replay.mjs").read_text()
+check("export function lawAnchorGap(table, band, skill, variant, model, effort) {" in RUNTIME and
+      "const ok = scoredAny && states.every(state => state === 'pass');" in RUNTIME and
+      "export function lawSubjective(table, family, task, catalog) {" in RUNTIME and
+      "const ownerJudged = family !== 'P' && lawSubjective(table, family, task, catalog);" in RUNTIME and
+      "const lawCorrectedEvidence = (evidence, candidate, reference) => {" in RUNTIME and
+      "const blocked = noDispatchableReason(task, catalog, boundAt, this.lawLearned);" in RUNTIME and
+      "{ownerExplicitParallel: ownerPartitionEnabled, lawLearned: this.lawLearned}" in RUNTIME and
+      "  ownerCorrection(value) {" in RUNTIME and "const LEDGER_CORRECTIONS_FILE = 'owner-corrections.jsonl';" in RUNTIME and
+      "export function lawOwnerCorrectionDelta(into, record) {" in RUNTIME and
+      "ledger.corrections?.() ?? null);" in RUNTIME and
+      "'recoverOwnerControl', 'correct']" in PLUGIN and "? runtime.ownerCorrection(params)" in PLUGIN and
+      '"os1.rcc.correct"]' in GATEWAY and "static func correct(taskID: String, requestSHA256: String, configuration: Configuration)" in GATEWAY and
+      'case "rcc-task-correct":' in MAIN and
+      "public static func needsSkills(_ answer: Answer, readsSkills: Bool) -> Bool {" in classifier_source and
+      "public static func decodeSkills(_ text: String) -> [Skill]? {" in classifier_source and
+      "export function constraintOf(result, labeled, table = routingLawTable()) {" in REPLAY and
+      "function withConstraint(gate, constraint) {" in REPLAY and
+      (ROOT / "scripts/fixtures/routing-law-owner-labels.json").is_file() and
+      (ROOT / "scripts/routing-law-ledger-20261103.json").is_file() and
+      LAW_TABLE["families"]["U"]["tier_basis"] == "every_skill" and "tiers" not in LAW_TABLE["families"]["F1"] and
+      "domain" not in json.dumps([rule["when"] for rule in LAW_TABLE["skills"]["rules"]]),
+      "review of 449: the anchor through implied rates, unpublished skill is a gap, subjective scope, ledger-corrected inference, live ledger everywhere, the owner's correction, the reader's skills, the gate's constraint")
 
 print(f"PASS: {checks} RCC Runtime source/resource advisory checks; no runtime/quality proof; model calls 0; network calls 0")

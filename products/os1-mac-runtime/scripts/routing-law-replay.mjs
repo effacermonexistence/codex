@@ -91,9 +91,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const core = await import(pathToFileURL(join(ROOT, 'Resources/openclaw-os1-bridge/rcc-runtime.mjs')).href);
 const {hostPlan, resolveRoutePlan, deliveryBasisOf, hostContextFingerprint, zeroModelArithmetic, configureLocalModel,
   routingLawTable, lawFamily, lawQuota, lawPFail, lawScreenPFail, lawAskBack, lawPoolPrice, dispatchable,
-  lawDeterministicCheck, lawDeterministicVerifier, ROUTING_LAW_TABLE_SHA256} = core;
+  lawDeterministicCheck, lawDeterministicVerifier, lawSkills, lawEvidence, ROUTING_LAW_TABLE_SHA256} = core;
 configureLocalModel(process.env.LOCAL_MODEL ?? 'qwen3.5:9b');
 const sha = text => createHash('sha256').update(text).digest('hex');
+// The local reader's prompt version (Swift LocalRequestClassifier.promptVersion).
+const LOCAL_PROMPT_VERSION = /public static let promptVersion = "([^"]+)"/.exec(readFileSync(join(ROOT,
+  'Sources/OS1Context/LocalRequestClassifier.swift'), 'utf8'))?.[1] ?? 'unknown';
 
 function options(argv) {
   const out = {};
@@ -130,12 +133,14 @@ export function lawCatalog(row, intent = null) {
   const catalog = structuredClone(row.catalog);
   delete catalog.capability_routes;
   const answer = row.receipt?.outcome === 'adopted' ? row.receipt.answer : null;
-  // Build 449: a live reading under the law (prompt v4_dom2_sub2_int1)
-  // carries its own intent call's answer; an older recorded one takes it from
-  // the intents map.
+  // Build 449: a live reading under the law carries its own intent call's
+  // answer; an older recorded one takes it from the intents map. Review of
+  // 449: and the skills call's skills (RoutingLaw.catalogLaw's mirror), when
+  // the reading has them.
   intent ??= answer?.intent ?? null;
   const reading = answer ? {task_type: answer.task_type, difficulty: answer.difficulty, needs_tools: answer.needs_tools,
-    domain: answer.domain ?? 'general', ...(intent ? {intent} : {})} : null;
+    domain: answer.domain ?? 'general', ...(intent ? {intent} : {}),
+    ...(Array.isArray(answer.skills) && answer.skills.length ? {skills: answer.skills} : {})} : null;
   catalog.routing_law = {schema: 1, policy: 'law_447', table_sha256: ROUTING_LAW_TABLE_SHA256,
     reader: reading ? 'local_llm:' + (row.receipt.model ?? 'qwen3.5:9b') : 'none', reading,
     reference_request: ownerAsksForReference(row.request, catalog.request_profile)};
@@ -407,6 +412,57 @@ export function armsOf(row, intent, headroom = null, table = routingLawTable()) 
       all_reference: {result: allRef, priced: price(allRef, law)}, law447_modeled: {result: mine, priced: price(mine, law)}}};
 }
 
+/** Review of 449 (DESIGN-9 section 2, the constraint half of the objective:
+ * P(success | chosen) >= P(success | reference) - tau on THIS request's
+ * skills and band): whether the row the law DREW gives the reference's
+ * result on the request's HAND-LABELED DESIGN-9 reading (the fixture's
+ * labels, written independently of the local reader: a misread that
+ * downgrades the route lowers its cost and so can only help the cost half;
+ * this half catches it). {ok, why}: ok true, false, or null (unjudged: a
+ * subjective request answered by a non-reference cloud row, which the
+ * owner's prior does not cover; reported, never gating). A pool reference
+ * always gives its own result; the calculator and the ask-back are exact
+ * zero-model paths; a REVAS verified start delivers what its judge accepts,
+ * so its judge is checked; every other row by Core lawEvidence on the
+ * labeled tiers at the labeled band. Pure. */
+export function constraintOf(result, labeled, table = routingLawTable()) {
+  if (!labeled) return null;
+  const route = result?.route ?? '';
+  if (labeled.kind === 'ask_back') return {ok: result.kind === 'ask_back', why: result.kind === 'ask_back' ? 'ask_back' : 'not_ask_back:' + route};
+  if (labeled.kind === 'calculator' && result.kind === 'calculator') return {ok: true, why: 'calculator'};
+  const reference = (model, effort) => Object.entries(table.references).some(([pool, ref]) =>
+    ref === model && (table.reference_efforts?.[pool] ?? []).includes(effort));
+  const split = key => {
+    const at = key.lastIndexOf('@'), colon = key.indexOf(':');
+    return colon < 0 || at < colon ? null : {surface: key.slice(0, colon), model: key.slice(colon + 1, at), effort: key.slice(at + 1)};
+  };
+  const row = split(route);
+  if (labeled.kind === 'subjective') {
+    if (row?.surface === 'local' && result.law?.owner) return {ok: true, why: 'owner_judged_local'};
+    if (row && reference(row.model, row.effort)) return {ok: true, why: 'reference'};
+    return {ok: null, why: 'unjudged:' + route};
+  }
+  const label = labeled.kind === 'calculator' ? {band: 'light', skills: ['math'], task_type: 'explain', needs_tools: 'none'} : labeled;
+  const reading = {task_type: label.task_type, difficulty: label.band, needs_tools: label.needs_tools, domain: 'general',
+    skills: label.skills};
+  const tiers = [];
+  for (const {skill, variant} of lawSkills(table.skills, reading, {agentic: result.law?.shape === 'agentic'}))
+    for (const tier of table.skills.skills[skill].variants[variant][label.band] ?? []) if (!tiers.includes(tier)) tiers.push(tier);
+  if (!tiers.length) return {ok: false, why: 'no_labeled_tier'};
+  let judged = row;
+  if (row?.surface === 'local') {
+    const judge = result.law?.revas?.judge ?? null;
+    if (judge === null) return {ok: false, why: 'local_without_judge:' + tiers.join('+')};
+    judged = split(judge);
+  }
+  if (judged === null) return {ok: false, why: 'unbound:' + route};
+  if (reference(judged.model, judged.effort)) return {ok: true, why: (row.surface === 'local' ? 'judge_' : '') + 'reference'};
+  const pool = judged.surface === 'codex' ? 'openai_codex' : 'anthropic_shared';
+  const evidence = lawEvidence(table, tiers, pool, judged.model, judged.effort, null, {band: label.band});
+  return {ok: evidence.form === 'b', why: (row.surface === 'local' ? 'judge ' : '') + label.band + ' ' + tiers.join('+') + ' ' +
+    evidence.tiers.map(([tier, state, detail]) => tier + '=' + state + (detail ? '[' + detail + ']' : '')).join(',')};
+}
+
 const ARMS = ['law447', 'build446', 'all_reference'];
 // Review of 448: the law at its prior-expected det price (no recorded draft
 // read), reported next to the gated (realized) law447.
@@ -573,6 +629,7 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
   const table = routingLawTable();
   const by446 = new Map(routes446.map(row => [row.index, row]));
   const rows = [], totals = Object.fromEntries(ALL_ARMS.map(arm => [arm, emptyTotals()])), perRow = [];
+  const constraint = {checked: 0, passed: 0, unjudged: [], failed: []};
   let rates = null;
   for (const row of catalogRows) {
     if (!row.catalog) continue;
@@ -584,6 +641,15 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
     rates ??= r.rates;
     for (const arm of ALL_ARMS) addTo(totals[arm], r.arms[arm].priced, r.rates);
     perRow.push(r);
+    // Review of 449: the constraint on the row's hand-labeled reading (the
+    // owner fixture's labels; the corpus carries none).
+    const held = constraintOf(r.arms.law447.result, row.labeled ?? null, table);
+    if (held) {
+      constraint.checked++;
+      if (held.ok === true) constraint.passed++;
+      else (held.ok === null ? constraint.unjudged : constraint.failed).push({index: row.index, request: row.request,
+        route: r.arms.law447.result.route, why: held.why});
+    }
     const recorded = by446.get(row.index)?.route ?? null;
     const view = arm => ({route: r.arms[arm].result.route, kind: r.arms[arm].result.kind ?? null, pool: POOL_UNIT[r.arms[arm].priced.pool],
       q: r.arms[arm].priced.q, draw: r.arms[arm].priced.draw, law_model: r.arms[arm].priced.law_model, p_fail: r.arms[arm].priced.p_fail});
@@ -612,9 +678,19 @@ export function replay(catalogRows, routes446, intents = {}, headroom = null, dr
         !Object.values(table.references).includes(r.all_reference.route.split(':')[1]?.split('@')[0]))
         .map(r => ({index: r.index, route: r.all_reference.route, kind: r.all_reference.kind})),
       free: Object.fromEntries(ARMS.map(arm => [arm, rows.filter(r => r[arm].q === 0).length])),
-      astra_starts: astra, astra_by_family: astraByFamily(rows), totals: rounded, gate: gateOf(totals, astra, rates),
+      astra_starts: astra, astra_by_family: astraByFamily(rows), totals: rounded,
+      gate: withConstraint(gateOf(totals, astra, rates), constraint), constraint,
       catalog_population: catalogPopulation(perRow, rows),
       ...extrasOf(perRow, totals, astra, rates), eq_vs_draw: eqVsDraw(perRow)}};
+}
+/** Review of 449: the release verdict holds the constraint half too: a
+ * labeled row whose drawn route fails it fails the gate (an applicable
+ * verdict only: a regime with no drawable pool or no derived exchange keeps
+ * its own); with no labeled row the constraint is reported as unchecked. */
+function withConstraint(gate, constraint) {
+  const part = constraint.checked === 0 ? 'UNCHECKED_NO_LABELS' : constraint.failed.length ? 'FAIL' : 'PASS';
+  const release = gate.release === 'PASS' && part === 'FAIL' ? 'FAIL' : gate.release;
+  return {...gate, release, release_parts: {...gate.release_parts, constraint: part}};
 }
 /** Review of round 3: the rows whose law catalog differs from build 446's
  * recorded one, and every arm's priced draw on them. */
@@ -704,7 +780,7 @@ export function ownerFixture(catalogRows, routes446, intents = {}, extras = {}, 
  * route the law's own output (never hand-set), with the band, skills and
  * tiers that chose it; the DESIGN-9 example's own band, shape and tiers are
  * kept beside it (a reference, never the expected route). */
-export function ownerFixtureFromRows(rows, examples = [], {readAt = null} = {}) {
+export function ownerFixtureFromRows(rows, examples = [], {readAt = null, labels = null} = {}) {
   const table = routingLawTable();
   const owner = rows.filter(row => /^owner\d+$/.test(row.group ?? ''))
     .map(row => ({n: Number(row.group.slice(5)), row})).sort((a, b) => a.n - b.n);
@@ -717,11 +793,12 @@ export function ownerFixtureFromRows(rows, examples = [], {readAt = null} = {}) 
       {id, input: example.input, band: example.level, shape: example.shape, tiers: example.tiers} : {id}}))];
   return {schema: 2, table_sha256: ROUTING_LAW_TABLE_SHA256,
     note: 'DESIGN-9 (build 449): the 16 owner questions (DESIGN-7 §5) and the 14 DESIGN-9 section 5 examples, each with the ' +
-      'local model\'s live reading under the law (prompt v4_dom2_sub2_int1) and the catalog the current host builds for it ' +
+      'local model\'s live reading under the law (prompt ' + LOCAL_PROMPT_VERSION + ') and the catalog the current host builds for it ' +
       '(the real host\'s breadth of rows). expected_route (and expected_check for a REVAS verified start, expected_det for a ' +
       'deterministic verifier) is the routing law output (golden) at the recorded headroom (no derived exchange: both pools ' +
       '1 / 0.6), never hand-set, with the band, skills and tiers that chose it; route_446 is build 446\'s route of the same ' +
-      'catalog (the rollback); design7_route and design9 are their documents\' own reference values, never expected',
+      'catalog (the rollback); design7_route and design9 are their documents\' own reference values, never expected; ' +
+      'labeled (review of 449) is the hand-labeled DESIGN-9 reading the release gate\'s constraint checks the drawn route on',
     questions: entries.map(({n, row, design7, design9: d9, example}) => {
       const law = lawCatalog(row);
       const routed = routeOf(row.request, law);
@@ -737,7 +814,7 @@ export function ownerFixtureFromRows(rows, examples = [], {readAt = null} = {}) 
         expected_family: routed.kind === 'calculator' ? 'F0' : routed.law?.family ?? lawFamily(law.routing_law.reading, table),
         expected_band: routed.law?.band ?? null, expected_skills: routed.law?.skills ?? [], expected_tiers: routed.law?.tiers ?? [],
         route_446: route446, ...(design7 !== undefined && !example ? {design7_route: design7} : {}),
-        ...(d9 ? {design9: d9} : {})};
+        ...(d9 ? {design9: d9} : {}), ...(labels?.[row.group] ? {labeled: labels[row.group]} : {})};
     })};
 }
 /** The 16 owner questions on the three arms at a headroom, in real pool units. */
@@ -812,6 +889,7 @@ export function sweep(catalogRows, routes446, intents, regimes, real = null, ext
       astra_by_family: corpus.astra_by_family, totals: corpus.totals, gate: corpus.gate, gate_modeled: corpus.gate_modeled,
       per_family_draw_vs_all_reference: corpus.per_family_draw_vs_all_reference, f1_routes: corpus.f1_routes,
       realized_det: corpus.realized_det, eq_vs_draw: corpus.eq_vs_draw, catalog_population: corpus.catalog_population,
+      constraint: corpus.constraint,
       ...(owner ? {owner_table: {astra_starts: owner.astra_starts, totals: owner.totals, gate: owner.gate,
         gate_modeled: owner.gate_modeled, per_family_draw_vs_all_reference: owner.per_family_draw_vs_all_reference,
         f1_routes: owner.f1_routes, realized_det: owner.realized_det, eq_vs_draw: owner.eq_vs_draw,
@@ -847,7 +925,7 @@ export function headroomOf(o) {
 export function ownerGate(fixture, regimes) {
   const live = fixture.questions.filter(q => !q.pending && q.catalog);
   const rows = live.map(q => ({index: q.n, request: q.request, catalog: q.catalog, receipt: q.receipt,
-    ...(q.local_draft ? {local_draft: q.local_draft} : {})}));
+    ...(q.labeled ? {labeled: q.labeled} : {}), ...(q.local_draft ? {local_draft: q.local_draft} : {})}));
   const intents = Object.fromEntries(live.filter(q => q.intent).map(q => [q.n, q.intent]));
   // Build 449: the fixture's 30 questions (owner and DESIGN-9 examples).
   return sweep(rows, [], intents, regimes.filter(r => !Object.values(r).some(v => v?.from)));
@@ -859,7 +937,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     // Build 449: the owner fixture from the corpus harness's rows.
     const rows = JSON.parse(readFileSync(o['fixture-rows'], 'utf8'));
     const examples = o.examples ? JSON.parse(readFileSync(o.examples, 'utf8')) : [];
-    writeFileSync(o['owner-fixture'], JSON.stringify(ownerFixtureFromRows(rows, examples, {readAt: o['read-at'] ?? null})) + '\n');
+    const labels = o.labels ? JSON.parse(readFileSync(o.labels, 'utf8')).labels : null;
+    writeFileSync(o['owner-fixture'], JSON.stringify(ownerFixtureFromRows(rows, examples, {readAt: o['read-at'] ?? null, labels})) + '\n');
     process.exit(0);
   }
   if (o['owner-gate']) {
@@ -872,7 +951,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         `${JSON.stringify(r.realized_det)}, at the prior: ${r.gate_modeled.release} vs all-reference draw ` +
         `${r.gate_modeled.draw.all_reference.ratio_priced}; receipt E[Q] = the gate's price: ` +
         `${r.eq_vs_draw.law447.consistent && r.eq_vs_draw.all_reference.consistent ? 'yes' : 'NO'} ` +
-        `(max gap ${Math.max(r.eq_vs_draw.law447.max_abs_gap, r.eq_vs_draw.all_reference.max_abs_gap)}))\n`);
+        `(max gap ${Math.max(r.eq_vs_draw.law447.max_abs_gap, r.eq_vs_draw.all_reference.max_abs_gap)}); constraint ` +
+        `${r.gate.release_parts.constraint} (${r.constraint.passed}/${r.constraint.checked} on the labeled tiers` +
+        `${r.constraint.unjudged.length ? ', ' + r.constraint.unjudged.length + ' unjudged' : ''}` +
+        `${r.constraint.failed.length ? '; failed: ' + r.constraint.failed.map(f => '#' + f.index + ' ' + f.route + ' ' + f.why).join(' | ') : ''}))\n`);
     process.stdout.write(`routing law gate (owner fixture, ${Object.keys(result.regimes).length} regimes): ${result.release.verdict}\n`);
     process.exit(result.release.verdict === 'PASS' ? 0 : 1);
   }

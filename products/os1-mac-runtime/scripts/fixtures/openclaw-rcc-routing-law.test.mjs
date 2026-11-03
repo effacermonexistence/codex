@@ -20,7 +20,8 @@ import {lawCatalog, routeOf, clockOf, OWNER_QUESTIONS, priceRoute, atHeadroom, r
 import {ROUTING_LAW_TABLE_SHA256, ROUTING_POLICIES, routingLawTable, lawFamily, lawEvidence, lawQuota, lawPFail,
   lawJudgedOutcome, lawLearnedPFail, revasVerdict, revasCheckInstruction, revasRepairInstruction, revasPrefix,
   lawPoolPrice, lawExpectedQuota, lawAskBack, lawKey, lawTiers, lawSkills, lawBand, lawAnchor, lawDeficit, lawOwnerPFail,
-  lawAnchorOutcome, lawOwnerJudgedOutcome, deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
+  lawAnchorOutcome, lawOwnerJudgedOutcome, lawAnchorGap, lawSubjective, lawOwnerCorrectionDelta, LAW_READ_SKILLS,
+  deliveryBasisOf, createRCCRuntime, hostPlan, resolveRoutePlan,
   lawLocalEvidence, openRoutingLedger, lawDeterministicCheck, lawDeterministicVerifier, lawDetPFail, lawDetClassPFail, lawScreenPFail, lawScreenOutcome, lawDeterministicFindings,
   hostContextFingerprint} from '../../Resources/openclaw-os1-bridge/rcc-runtime.mjs';
 import {canonical, compileAdmission, compileCapability, compileSkills, compileFamilies, compilePFail, compileTable, compileTau, tauOfUnit,
@@ -144,13 +145,43 @@ test('DESIGN-9 evidence (b): the request\'s tiers at its band, inferred within t
   assert.deepEqual(lawDeficit(TABLE, pct, 88.5, null), {deficit: 5.5, tau: 1.2});
   assert.deepEqual(lawDeficit(TABLE, {alias: 'e', unit: 'elo', lower_better: false, ref: 1735}, 1730, 0.99), {deficit: 5, tau: 6});
   assert.equal(lawDeficit(TABLE, {alias: 'f', unit: 'other:findings', lower_better: false, ref: 4}, 3, 0.99), null);
-  // The anchor is learned per (band, skill): light knowledge requests failing
-  // half the time drop p_R to 0.54 and move list vs tuple to a stronger cell.
-  const learned = new Map([['anchor|light|knowledge', {runs: 20, failures: 10}]]);
+  // The anchor is learned per (band, skill): light knowledge requests the TOP
+  // model fails half the time drop p_R to 0.54 and move list vs tuple to a
+  // stronger cell (with every outcome at the reference, gap 0, the estimate
+  // is the Laplace one, (n - f + w p0) / (n + w)).
+  const atRef = new Map([['anchor|light|knowledge:answer|claude-fable-5-1@max', {runs: 20, failures: 10}]]);
   assert.deepEqual([lawAnchor(TABLE, 'light', 'knowledge'), lawAnchor(TABLE, 'standard', 'knowledge')], [0.99, null]);
-  assert.ok(Math.abs(lawAnchor(TABLE, 'light', 'knowledge', learned) - (10 + 2 * 0.99) / 22) < 1e-12);
-  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-sonnet-5-5', 'medium', 'light', learned).form, 'none');
-  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-opus-5-5', 'max', 'light', learned).form, 'b');
+  assert.ok(Math.abs(lawAnchor(TABLE, 'light', 'knowledge', atRef) - (10 + 2 * 0.99) / 22) < 1e-9);
+  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-sonnet-5-5', 'medium', 'light', atRef).form, 'none');
+  assert.equal(ev(['T1', 'T1F'], 'anthropic_shared', 'claude-opus-5-5', 'max', 'light', atRef).form, 'b');
+  // Review of 449: an outcome moves p_R only through the failure rate the
+  // anchor IMPLIES for the row that ran, 1 - sigmoid(logit p_R - g), g its
+  // capability gap on the skill's tiers (lawAnchorGap). The local model has
+  // no gap: its REVAS-failed drafts never move p_R (they move its own p_fail).
+  const local = new Map([['anchor|light|knowledge:answer|qwen3.5:9b@none', {runs: 1, failures: 1}]]);
+  assert.equal(lawAnchorGap(TABLE, 'light', 'knowledge', 'answer', 'qwen3.5:9b', 'none'), null);
+  assert.equal(lawAnchor(TABLE, 'light', 'knowledge', local), 0.99);
+  // A failure of a cheaper row is partly explained by its own gap: p_R falls
+  // less than if the reference had failed, and the light band stays looser
+  // than the standard band (list vs tuple keeps a cell standard rejects).
+  const g = lawAnchorGap(TABLE, 'light', 'knowledge', 'answer', 'claude-sonnet-5-5', 'medium');
+  assert.ok(g > 0 && g < 1, `Sonnet medium's gap ${g}`);
+  const cheap = new Map([['anchor|light|knowledge:answer|claude-sonnet-5-5@medium', {runs: 10, failures: 1}]]);
+  const ref = new Map([['anchor|light|knowledge:answer|claude-fable-5-1@max', {runs: 10, failures: 1}]]);
+  const pCheap = lawAnchor(TABLE, 'light', 'knowledge', cheap), pRef = lawAnchor(TABLE, 'light', 'knowledge', ref);
+  assert.ok(Math.abs(pRef - (10 - 1 + 2 * 0.99) / 12) < 1e-9);
+  assert.ok(pCheap > pRef && pCheap < 0.99, `${pCheap} vs ${pRef}`);
+  // The estimate solves sum n_i (1 - sigmoid(L - g_i)) + w (1 - p) = sum f_i + w (1 - p0).
+  const logitOf = p => Math.log(p / (1 - p)), sigmoidOf = x => 1 / (1 + Math.exp(-x));
+  assert.ok(Math.abs(10 * (1 - sigmoidOf(logitOf(pCheap) - g)) + 2 * (1 - pCheap) - (1 + 2 * 0.01)) < 1e-9);
+  // Unpublished skill (review of 449): Claude publishes no graduate-science
+  // tier and no row infers one across skills, so on a deep science request
+  // (T1 + T1F + T2) no Claude row but its reference is evidenced, as for T2
+  // alone; adding a skill never makes the route cheaper.
+  const science = ev(['T1', 'T1F', 'T2'], 'anthropic_shared', 'claude-opus-5-5', 'xhigh', 'deep');
+  assert.deepEqual([science.form, science.gap, science.tiers[2]], ['none', true, ['T2', 'unpublished', null]]);
+  assert.equal(ev(['T2'], 'anthropic_shared', 'claude-opus-5-5', 'xhigh', 'deep').form, 'none');
+  assert.equal(ev(['T1', 'T1F', 'T3M'], 'openai_codex', 'gpt-6.1-sol', 'max', 'deep').form, 'none');
   // The substituted tier: Luna on Codex C1 (judged on C2) at light.
   assert.deepEqual(ev(['C1'], 'openai_codex', 'gpt-6-luna', 'high', 'light').tiers, [['C1', 'pass', 'C1<-C2:DeepSWE+0.95']]);
   // No evidence is never evidence: a tier the pool cannot judge, a coverage
@@ -296,23 +327,41 @@ test('p_fail evidence: only judged runs of a law family count; undispatched and 
     {model: 'qwen3.5:9b', effort: 'none', family: 'F1', runs: 1, failures: 1, full: 0}]);
   assert.deepEqual(ledger.screen.cells, [{key: 'm@high', runs: 5, failures: 2, shadow: 0},
     {key: 'qwen3.5:9b@none', runs: 2, failures: 0, shadow: 0}]);
-  // DESIGN-9 section 3: the anchors p_R(band, skill), once per skill.
-  assert.deepEqual(ledger.anchors.cells, [{band: 'light', skill: 'knowledge', runs: 2, failures: 1},
-    {band: 'light', skill: 'tools', runs: 1, failures: 1}]);
+  // DESIGN-9 section 3: the anchors p_R(band, skill), once per skill, keyed
+  // by its variant and the row that ran (review of 449: Core lawAnchor reads
+  // the failure rate the anchor implies for that row).
+  assert.deepEqual(ledger.anchors.cells, [
+    {band: 'light', skill: 'knowledge', variant: 'answer', model: 'm', effort: 'high', runs: 2, failures: 1},
+    {band: 'light', skill: 'tools', variant: 'web_research', model: 'm', effort: 'high', runs: 1, failures: 1}]);
   // Section 4.8: the owner-judged outcomes of subjective requests.
   assert.deepEqual(ledger.owner_judged.cells, [{key: 'qwen3.5:9b@none|F1', runs: 2, failures: 1}]);
-  assert.equal(ledger.schema, 5);
+  assert.equal(ledger.schema, 6);
   assert.equal(ledger.through_ms, 300);
   // A cutoff keeps an earlier snapshot's window.
   assert.equal(snapshotLedger(Buffer.from(line({law: {family: 'F4'}, check_outcome: 'screen_pass', settled_at_ms: 500})), {through: 400})
     .through_ms, null);
+  // Review of 449: the owner's corrections (Core's owner-corrections.jsonl)
+  // mark their attempts failed in the window; a correction made after the
+  // window's last record is Core's live learning, never the snapshot's.
+  const corrections = [{schema: 1, task_id: 't', attempt_ids: ['a1'], corrected_at_ms: 250},
+    {schema: 1, task_id: 't', attempt_ids: ['a2'], corrected_at_ms: 900}].map(e => JSON.stringify(e)).join('\n');
+  const owned = snapshotLedger(Buffer.from([
+    line({attempt_id: 'a1', law: {family: 'F1', band: 'light', skills: [], owner_judged: true}, surface: 'local', model: 'qwen3.5:9b',
+      effort: 'none', check_outcome: 'screen_pass', settled_at_ms: 220}),
+    line({attempt_id: 'a2', law: {family: 'F1', band: 'light', skills: [], owner_judged: true}, surface: 'local', model: 'qwen3.5:9b',
+      effort: 'none', check_outcome: 'screen_pass', settled_at_ms: 230}),
+    line({attempt_id: 'a3', law: {family: 'F4'}, check_outcome: 'screen_pass', settled_at_ms: 300})].join('\n')),
+  {corrections: Buffer.from(corrections)});
+  assert.deepEqual(owned.owner_judged.cells, [{key: 'qwen3.5:9b@none|F1', runs: 2, failures: 1}]);
+  assert.equal(owned.source.corrections.applied, 1);
   // The committed snapshot: 20261101's window (its judged runs and screens
-  // unchanged), with no anchor or owner-judged count yet.
-  const committed = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-ledger-20261102.json'), 'utf8'));
+  // unchanged), with no anchor, owner-judged count or correction yet.
+  const committed = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-ledger-20261103.json'), 'utf8'));
   const before = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-ledger-20261101.json'), 'utf8'));
   assert.deepEqual([committed.cells, committed.screen, committed.excluded, committed.through_ms],
     [before.cells, before.screen, before.excluded, before.through_ms]);
-  assert.deepEqual([committed.anchors.cells, committed.owner_judged.cells, committed.source.cutoff_ms], [[], [], before.through_ms]);
+  assert.deepEqual([committed.schema, committed.anchors.cells, committed.owner_judged.cells, committed.source.cutoff_ms,
+    committed.source.corrections], [6, [], [], before.through_ms, null]);
 });
 
 test('build 448 p_fail rule (Core lawJudgedOutcome): a local draft counts only by its REVAS check, the check record judges the draft', () => {
@@ -346,77 +395,99 @@ test('build 448 p_fail rule (Core lawJudgedOutcome): a local draft counts only b
 });
 
 test('step 1: the family is the reading through the table\'s first-match rules (its shape and tool need, never its tiers)', () => {
-  const r = (task_type, difficulty, needs_tools, domain = 'general', intent) =>
-    ({task_type, difficulty, needs_tools, domain, ...(intent ? {intent} : {})});
+  // Review of 449: the reader names the skills (the family's subject clauses
+  // read them; the domain is no longer read under the law).
+  const r = (task_type, difficulty, needs_tools, skills = null, intent) =>
+    ({task_type, difficulty, needs_tools, domain: 'general', ...(skills ? {skills} : {}), ...(intent ? {intent} : {})});
   assert.equal(lawFamily(null), 'U');
-  assert.equal(lawFamily(r('chat', 'light', 'none', 'general', 'self_test')), 'F10');
+  assert.equal(lawFamily(r('chat', 'light', 'none', null, 'self_test')), 'F10');
   assert.equal(lawFamily(r('chat', 'light', 'none')), 'F1');
-  assert.equal(lawFamily(r('explain', 'light', 'none')), 'F2');
-  assert.equal(lawFamily(r('explain', 'standard', 'none', 'science')), 'F4');
-  assert.equal(lawFamily(r('explain', 'standard', 'none', 'math')), 'F4m');
-  assert.equal(lawFamily(r('explain', 'light', 'current_facts')), 'F5a');
-  assert.equal(lawFamily(r('explain', 'deep', 'current_facts')), 'F5b');
-  assert.equal(lawFamily(r('action', 'standard', 'execution', 'coding')), 'F7');
-  assert.equal(lawFamily(r('design', 'deep', 'workspace', 'coding')), 'F6-code');
-  assert.equal(lawFamily(r('write', 'standard', 'none', 'writing')), 'F13');
-  assert.equal(lawFamily(r('action', 'standard', 'execution', 'tool_use')), 'F8');
-  assert.equal(lawFamily(r('explain', 'standard', 'workspace', 'writing')), 'F3x');
+  assert.equal(lawFamily(r('explain', 'light', 'none', ['knowledge'])), 'F2');
+  assert.equal(lawFamily(r('explain', 'standard', 'none', ['science'])), 'F4');
+  assert.equal(lawFamily(r('explain', 'standard', 'none', ['math'])), 'F4m');
+  assert.equal(lawFamily(r('explain', 'light', 'current_facts', ['web_research'])), 'F5a');
+  assert.equal(lawFamily(r('explain', 'deep', 'current_facts', ['knowledge'])), 'F5b');
+  assert.equal(lawFamily(r('action', 'standard', 'execution', ['coding'])), 'F7');
+  assert.equal(lawFamily(r('design', 'deep', 'workspace', ['coding'])), 'F6-code');
+  assert.equal(lawFamily(r('write', 'standard', 'none', ['writing_deliverable'])), 'F13');
+  assert.equal(lawFamily(r('action', 'standard', 'execution', ['tool_automation'])), 'F8');
+  assert.equal(lawFamily(r('action', 'standard', 'execution', ['tool_gui'])), 'F8');
+  assert.equal(lawFamily(r('explain', 'standard', 'workspace', ['writing_document'])), 'F3x');
   // DESIGN-9: a family carries its shape and tool need; its tiers are the
-  // reading's skills at its band (U, F1 and F10 name their own).
+  // reading's skills at its band; U (every skill at every band) and F10 name
+  // their own; F1 no longer does (review of 449: only a subjective request
+  // in scope has none).
   assert.deepEqual([TABLE.families.F8.tier_basis, TABLE.families.F8.tiers, TABLE.families.F8.shape], ['skills', undefined, 'agentic']);
-  assert.deepEqual(lawTiers(TABLE, 'F8', r('action', 'standard', 'execution', 'tool_use')), ['U1']);
-  assert.deepEqual(lawTiers(TABLE, 'F3x', r('explain', 'standard', 'workspace', 'writing')), ['W1']);
-  assert.deepEqual(Object.entries(TABLE.families).filter(([, f]) => Array.isArray(f.tiers)).map(([id, f]) => [id, f.tiers]),
-    [['F1', []], ['F10', []], ['U', ['T1', 'T3', 'T3M', 'C2', 'U1']]]);
+  assert.deepEqual(lawTiers(TABLE, 'F8', r('action', 'standard', 'execution', ['tool_automation'])), ['U1']);
+  assert.deepEqual(lawTiers(TABLE, 'F3x', r('explain', 'standard', 'workspace', ['writing_document'])), ['W1']);
+  assert.deepEqual(Object.entries(TABLE.families).filter(([, f]) => Array.isArray(f.tiers)).map(([id, f]) => [id, f.tier_basis]),
+    [['F10', 'policy'], ['U', 'every_skill']]);
 });
 
-test('DESIGN-9 step 1: the reading\'s skills map to tiers by skill and band, never \'always\'', () => {
-  const r = (task_type, difficulty, needs_tools, domain = 'general') => ({task_type, difficulty, needs_tools, domain});
+test('DESIGN-9 step 1: the skills the reader names map to tiers by skill and band, never \'always\'', () => {
+  const r = (task_type, difficulty, needs_tools, skills = null) =>
+    ({task_type, difficulty, needs_tools, domain: 'general', ...(skills ? {skills} : {})});
   const tiers = (reading, agentic = false, family = lawFamily(reading)) => lawTiers(TABLE, family, reading, agentic);
-  const skills = (reading, agentic = false) => lawSkills(TABLE.skills, reading, {agentic, family: lawFamily(reading)})
+  const skills = (reading, agentic = false) => lawSkills(TABLE.skills, reading, {agentic})
     .map(({skill, variant}) => skill + ':' + variant);
+  assert.deepEqual([...LAW_READ_SKILLS], ['knowledge', 'science', 'medicine', 'math', 'hard_reasoning', 'coding',
+    'writing_document', 'writing_deliverable', 'tool_automation', 'tool_gui', 'web_research']);
   // Knowledge or fact answers: T1 + T1F at every band (a programming concept
-  // explained with no workspace too: DESIGN-9's light example list vs tuple).
-  assert.deepEqual(tiers(r('explain', 'light', 'none', 'coding')), ['T1', 'T1F']);
-  assert.deepEqual(skills(r('explain', 'light', 'none', 'coding')), ['knowledge:answer']);
-  assert.deepEqual(tiers(r('explain', 'standard', 'none', 'science')), ['T1', 'T1F']); // Schrödinger: no T2 below deep
-  // Graduate science T2 at the deep band only; medicine T2P for a medical reading only (no T2P 'always').
-  assert.deepEqual(tiers(r('explain', 'deep', 'none', 'science')), ['T1', 'T1F', 'T2']);
-  assert.deepEqual(tiers(r('explain', 'standard', 'none', 'medicine')), ['T1', 'T1F', 'T2P']);
-  assert.deepEqual(tiers(r('explain', 'standard', 'none', 'knowledge')), ['T1', 'T1F']);
-  // Math T3M at every band.
-  assert.deepEqual(tiers(r('explain', 'light', 'none', 'math')), ['T3M']);
-  assert.deepEqual(tiers(r('design', 'deep', 'none', 'math')), ['T3M']);
+  // the reader calls knowledge: DESIGN-9's light example list vs tuple).
+  assert.deepEqual(tiers(r('explain', 'light', 'none', ['knowledge'])), ['T1', 'T1F']);
+  assert.deepEqual(skills(r('explain', 'light', 'none', ['knowledge'])), ['knowledge:answer']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none', ['science'])), ['T1', 'T1F']); // Schrödinger: no T2 below deep
+  // Graduate science T2 at the deep band only; medicine T2P for a medical
+  // reading only (no T2P 'always'): reachable now the reader names it.
+  assert.deepEqual(tiers(r('explain', 'deep', 'none', ['science'])), ['T1', 'T1F', 'T2']);
+  assert.deepEqual(tiers(r('explain', 'light', 'none', ['medicine'])), ['T1', 'T1F', 'T2P']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none', ['knowledge'])), ['T1', 'T1F']);
+  // Math T3M at every band, with knowledge when the reader names both.
+  assert.deepEqual(tiers(r('explain', 'light', 'none', ['math'])), ['T3M']);
+  assert.deepEqual(tiers(r('design', 'deep', 'none', ['math'])), ['T3M']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none', ['knowledge', 'math'])), ['T1', 'T1F', 'T3M']);
   // Coding: C1 light, C2 standard, C3 deep or long agentic (a new system
-  // built on the agentic shape); code read in the workspace is coding.
-  assert.deepEqual(tiers(r('action', 'light', 'workspace', 'coding')), ['C1']);
-  assert.deepEqual(tiers(r('action', 'standard', 'execution', 'coding')), ['C2']);
-  assert.deepEqual(tiers(r('action', 'deep', 'execution', 'coding')), ['C3']);
-  assert.deepEqual(tiers(r('design', 'standard', 'workspace', 'coding'), true), ['C3']);
-  assert.deepEqual(tiers(r('design', 'standard', 'none', 'coding'), false), ['C2']);
-  assert.deepEqual(tiers(r('explain', 'light', 'workspace', 'coding')), ['C1']);
-  // Writing: W1 documents (an answer about one), W2 deliverables.
-  assert.deepEqual(tiers(r('explain', 'standard', 'workspace', 'writing')), ['W1']);
-  assert.deepEqual(tiers(r('write', 'standard', 'none', 'writing')), ['W2']);
-  // Tools: U1 automation; current facts are knowledge plus web research (U3 only deep).
-  assert.deepEqual(tiers(r('action', 'standard', 'execution', 'tool_use')), ['U1']);
-  assert.deepEqual(tiers(r('explain', 'light', 'current_facts', 'knowledge')), ['T1', 'T1F', 'U1']);
-  assert.deepEqual(tiers(r('explain', 'deep', 'current_facts', 'knowledge')), ['T1', 'T1F', 'U3']);
-  // Hard reasoning T3: a design (theory, schema, proof) outside code, math and prose.
-  assert.deepEqual(tiers(r('design', 'deep', 'none', 'science')), ['T1', 'T1F', 'T2', 'T3']);
-  assert.deepEqual(skills(r('design', 'deep', 'workspace', 'science')),
-    ['graduate_science:answer', 'hard_reasoning:answer', 'knowledge:answer']);
-  // The subjective family (conversation with no facts) has no skill; U keeps
-  // its explicit floor; P (the owner's reference words) judges nothing.
-  assert.deepEqual([tiers(r('chat', 'light', 'none')), skills(r('chat', 'light', 'none'))], [[], []]);
-  assert.deepEqual(lawTiers(TABLE, 'U', null), ['T1', 'T3', 'T3M', 'C2', 'U1']);
-  assert.deepEqual(lawTiers(TABLE, 'P', r('explain', 'standard', 'none', 'science')), []);
-  // Nothing is 'always': the policy's conditions are gone, every rule names a
-  // skill's variant whose tiers are chosen by band.
+  // built on the agentic shape: a design or write task).
+  assert.deepEqual(tiers(r('action', 'light', 'workspace', ['coding'])), ['C1']);
+  assert.deepEqual(tiers(r('action', 'standard', 'execution', ['coding'])), ['C2']);
+  assert.deepEqual(tiers(r('action', 'deep', 'execution', ['coding'])), ['C3']);
+  assert.deepEqual(tiers(r('design', 'standard', 'workspace', ['coding']), true), ['C3']);
+  assert.deepEqual(tiers(r('design', 'standard', 'none', ['coding']), false), ['C2']);
+  // Writing: W1 for work on a supplied text (summary, edit, translation,
+  // analysis), W2 for a new deliverable; a task type never decides it
+  // (review of 449: an edit read 'write' is still W1).
+  assert.deepEqual(tiers(r('write', 'light', 'none', ['writing_document'])), ['W1']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'workspace', ['writing_document'])), ['W1']);
+  assert.deepEqual(tiers(r('write', 'standard', 'none', ['writing_deliverable'])), ['W2']);
+  assert.deepEqual(tiers(r('write', 'deep', 'none', ['writing_document', 'writing_deliverable'])), ['W2']);
+  // Tools: U1 automation, U2 GUI (reachable), web research U1 (U3 deep); the
+  // current-facts need is a fact answer found on the web (DESIGN-9 example L).
+  assert.deepEqual(tiers(r('action', 'standard', 'execution', ['tool_automation'])), ['U1']);
+  assert.deepEqual(tiers(r('action', 'standard', 'execution', ['tool_gui'])), ['U2']);
+  assert.deepEqual(tiers(r('explain', 'light', 'current_facts', ['knowledge'])), ['T1', 'T1F', 'U1']);
+  assert.deepEqual(tiers(r('explain', 'deep', 'current_facts', ['web_research'])), ['T1', 'T1F', 'U3']);
+  // Hard reasoning T3 only when the reader names it: a design task alone is
+  // never hard reasoning (review of 449: a meal plan or a trip plan read
+  // 'design' stays a knowledge answer).
+  assert.deepEqual(tiers(r('design', 'deep', 'none', ['science', 'hard_reasoning'])), ['T1', 'T1F', 'T2', 'T3']);
+  assert.deepEqual(tiers(r('design', 'light', 'none', ['knowledge'])), ['T1', 'T1F']);
+  // Skills NOT read (a chat, light, tool-free reading the host does not ask
+  // about; a failed call): an answer task is a knowledge answer, any other
+  // task names no skill (only the references answer it).
+  assert.deepEqual(tiers(r('chat', 'light', 'none')), ['T1', 'T1F']);
+  assert.deepEqual(tiers(r('explain', 'standard', 'none')), ['T1', 'T1F']);
+  assert.deepEqual(tiers(r('design', 'standard', 'none')), []);
+  // A subjective request in scope has no skill (lawSubjective); U is every
+  // skill's tiers at every band; P (the owner's reference words) judges nothing.
+  assert.deepEqual(lawTiers(TABLE, 'F1', r('chat', 'light', 'none'), false, true), []);
+  assert.deepEqual(lawSkills(TABLE.skills, r('chat', 'light', 'none'), {subjective: true}), []);
+  assert.deepEqual(lawTiers(TABLE, 'U', null), ['C1', 'T1', 'C2', 'T1F', 'T2', 'T2P', 'U1', 'U2', 'W1', 'C3', 'T3', 'T3M', 'U3', 'W2']);
+  assert.deepEqual(lawTiers(TABLE, 'P', r('explain', 'standard', 'none', ['science'])), []);
+  // Nothing is 'always'; a rule names a known skill and reading value.
   const policy = JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-policy.json'), 'utf8'));
   assert.equal(policy.conditions, undefined);
   assert.ok(!JSON.stringify(TABLE.families).includes('always') && !JSON.stringify(TABLE.skills.rules).includes('always'));
-  assert.throws(() => compileSkills({...policy, skill_rules: [{skill: 'knowledge', variant: 'answer', when: {domain: ['dance']}}]},
+  assert.throws(() => compileSkills({...policy, skill_rules: [{skill: 'knowledge', variant: 'answer', when: {skills: ['dance']}}]},
     JSON.parse(readFileSync(join(ROOT, 'scripts/routing-law-evidence-20261029.json'), 'utf8')), {tiers: {}}), /bad skill rule key/);
   // A cell judged on the request's tiers: sol@medium fails Codex's C2 on
   // DeepSWE; Opus 5.5 at medium passes every published Claude C2 benchmark.
@@ -1663,18 +1734,34 @@ test('review of round 3, DESIGN-9: small talk is the local row\'s on its first t
   // First turn: the owner judges it, the local row binds (DESIGN-9 section 4.8).
   const first = hostRoute(q, law);
   assert.equal(first.route, 'local:qwen3.5:9b@none');
-  // A later turn: the reader and the local worker are context-free (round 4,
-  // decision 1): a reference binds.
-  for (const context of [transcript('안녕', '안녕하세요! 반가워요.'), transcript('테스트 돌려봐', '테스트 통과했어요. 지금 푸시할까요?')]) {
-    const r = hostRoute(q, law, {context});
-    assert.ok(isReference(r), r.route);
+  // A later turn: the local worker is context-free (round 4, decision 1, the
+  // first-turn-only local start DESIGN-9 keeps): never the local row, never a
+  // det admission. Review of 449 (DESIGN-9 section 4.8): small talk after a
+  // turn that neither asks nor proposes stays subjective, owner-judged with no
+  // runnable local row, so a reference binds; after OS-1 asked or proposed it
+  // is outside small_talk_request_v2, so not subjective, and the law judges
+  // the reading's skills (knowledge at light) like any other chat reading.
+  const later = hostRoute(q, law, {context: transcript('안녕', '안녕하세요! 반가워요.')});
+  assert.ok(isReference(later), later.route);
+  assert.match(later.reason, /law_skills_none/);
+  const afterProposal = hostRoute(q, law, {context: transcript('테스트 돌려봐', '테스트 통과했어요. 지금 푸시할까요?')});
+  assert.match(afterProposal.reason, /law_skills_knowledge;law_tiers_T1\+T1F/, afterProposal.route);
+  for (const r of [later, afterProposal]) {
     assert.ok(!(r.law?.candidates ?? []).some(([, form]) => form.startsWith('a:')), 'no det admission');
+    assert.ok(!(r.law?.candidates ?? []).some(([key, form]) => key.startsWith('local:') && form.startsWith('o:')), 'no owner-judged local row');
     assert.notEqual(r.route, 'local:qwen3.5:9b@none');
   }
-  // An approval signal (a request the reader misread as chat): never small talk.
+  // An approval signal (a request the reader misread as chat): never small
+  // talk, never the local row (the host's approval floor); review of 449
+  // (DESIGN-9 section 4.8): not subjective, so the law judges the reading's
+  // skills like any other chat reading (448 bound a reference only because
+  // its small-talk family had no tiers outside the grammar).
   const approve = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
     signals: [...new Set([...c.request_profile.signals, 'approval'])].sort()}}));
-  assert.ok(isReference(hostRoute(q, approve)));
+  const approved = hostRoute(q, approve);
+  assert.notEqual(approved.route, 'local:qwen3.5:9b@none');
+  assert.match(approved.reason, /law_skills_knowledge;law_tiers_T1\+T1F/, approved.route);
+  assert.doesNotMatch(approved.reason, /owner_judged/);
   // A writer lane: small talk's first turn needs no tool and no write, and the
   // local row has evidence (the owner judges it), so the node runs read-only
   // (round 3, decision 5); an approval keeps the grant.
@@ -2037,4 +2124,133 @@ test('round 5: with every pool exhausted the form (c) local row answers in its s
   assert.equal(r.ladder.reference_candidate_id, null, 'no runnable step: a failure holds the request');
   assert.ok(r.reason.includes('escalation_none_hold_on_fail'), r.reason);
   assert.throws(() => route(q, law, {request: 'Book recommendations for summer?'}), /no_dispatchable_candidate/);
+});
+
+// ---- Review of 449. --------------------------------------------------------
+test('review of 449: only a subjective request inside its scope has no skill and is owner-judged; any other chat reading keeps its skills', () => {
+  const q = question(12), law = lawOf(q);
+  // In scope (small talk, first turn): the owner judges it, no skill, no tier.
+  const talk = hostRoute(q, law);
+  assert.deepEqual([talk.law.family, talk.law.skills, talk.law.tiers, talk.law.owner_judged], ['F1', [], [], true]);
+  assert.equal(lawSubjective(TABLE, 'F1', runtimeTask(q, law), law), true);
+  // The same F1 reading of a factual or advice question (outside the scope):
+  // knowledge (the enum call's answer task), T1 + T1F at its band, never only
+  // the references, never owner-judged.
+  for (const request of ['블랙홀 진짜 있어?', 'Book recommendations for summer?', '오래 생각해봤는데 이직할까?']) {
+    const r = hostRoute(q, law, {request});
+    assert.deepEqual([r.law.family, r.law.skills, r.law.tiers, r.law.owner_judged], ['F1', ['knowledge:answer'], ['T1', 'T1F'], undefined],
+      request);
+    assert.ok(r.law.candidates.some(([, form, , , excluded]) => form.startsWith('b:') && excluded === null), request);
+    assert.equal(lawSubjective(TABLE, 'F1', runtimeTask({...q, request}, law), law), false, request);
+  }
+  // A later turn of small talk is still the owner's (no skill), but never local.
+  const later = hostRoute(q, law, {context: transcript('안녕', '안녕하세요! 반가워요.')});
+  assert.deepEqual([later.law.skills, later.law.owner_judged], [[], true]);
+  assert.notEqual(later.route, 'local:qwen3.5:9b@none');
+  // An OS-1 status check-in the host did not clear is outside the scope: no
+  // owner-judged run is ever counted for it (it needs the install card).
+  const status = lawOf(q, c => ({...c, request_profile: {...c.request_profile,
+    signals: [...c.request_profile.signals.filter(s => !['soft_cleared_status', 'llm_subject_other'].includes(s)), 'status_check_in']
+      .sort()}}));
+  assert.notEqual(hostRoute(q, status).law.owner_judged, true);
+});
+
+test('review of 449: a row admitted on an inferred score keeps it only while the ledger shows it within tau of its reference', () => {
+  const q = question(11), law = lawOf(q);
+  const route = learned => {
+    const task = runtimeTask(q, law);
+    const plan = hostPlan(task, law, {lawLearned: learned});
+    const at = Math.max(...law.candidates.map(c => c.availability_observed_at_ms ?? 0));
+    const {routes} = resolveRoutePlan(plan, task, law, at, {lawLearned: learned});
+    return routes[plan.nodes[0].id].law;
+  };
+  const sonnet = receipt => receipt.candidates.find(([key]) => key === 'claude-chat:claude-sonnet-5-5@medium');
+  const before = route(null);
+  assert.match(sonnet(before)[1], /^b:.*\*/, 'admitted on inferred (marked) values');
+  // One judged failure of it in the family: its judged rate (from the
+  // reference's, moved at the prior's weight) leaves tau: withdrawn.
+  const failed = route(new Map([['claude-sonnet-5-5@medium|' + before.family, {runs: 1, failures: 1}]]));
+  assert.match(sonnet(failed)[1], /^x:.*ledger=fail\[\+\d/);
+  assert.equal(sonnet(failed)[4], 'no_evidence');
+  // Passes keep it.
+  assert.match(sonnet(route(new Map([['claude-sonnet-5-5@medium|' + before.family, {runs: 5, failures: 0}]])))[1], /^b:/);
+});
+
+test('review of 449, Core: the owner corrects a delivered small-talk reply; the correction is a failure, learned at once and after a restart', async t => {
+  const q = question(12), catalog = lawOf(q, referencesAndLocal);
+  const dir = await mkdtemp(join(tmpdir(), 'os1-law-correct-')); await chmod(dir, 0o700);
+  const workspace = await mkdtemp(join(tmpdir(), 'os1-law-correct-ws-')); await chmod(workspace, 0o700);
+  t.after(async () => { await rm(dir, {recursive: true, force: true}); await rm(workspace, {recursive: true, force: true}); });
+  const now = Date.now();
+  const fresh = {...catalog, candidates: catalog.candidates.map(row => ({...row,
+    ...(row.availability_observed_at_ms === null ? {} : {availability_observed_at_ms: now, availability_valid_until_ms: now + 600000}),
+    ...(row.quota_observed_at_ms === null ? {} : {quota_observed_at_ms: now, quota_valid_until_ms: now + 600000})}))};
+  const tickets = [];
+  const open = () => createRCCRuntime({stateDir: dir, hostAutoPlan: true, catalog: async () => fresh,
+    execute: async ticket => { tickets.push(ticket); return completed(ticket, {output: SMALL_TALK_PASS}); }});
+  let runtime = await open();
+  const task = runtimeTask(q, catalog, workspace);
+  await runtime.submit(task);
+  const done = await runtime.wait({schema: 1, task_id: task.task_id}, {timeoutMs: 6000});
+  assert.deepEqual([done.state, done.result.output], ['returned_unverified', SMALL_TALK_PASS]);
+  assert.deepEqual(tickets.map(tuple), ['local:qwen3.5:9b@none']);
+  const key = 'owner|qwen3.5:9b@none|F1';
+  assert.deepEqual(runtime.lawLearned.get(key), {runs: 1, failures: 0});
+  // Only exact identity; only a delivered answer.
+  assert.throws(() => runtime.ownerCorrection({schema: 1, task_id: task.task_id, request_sha256: 'f'.repeat(64)}),
+    /owner_correction_request_mismatch/);
+  assert.throws(() => runtime.ownerCorrection({schema: 1, task_id: 'no-such-task'}), /task_not_found/);
+  const receipt = runtime.ownerCorrection({schema: 1, task_id: task.task_id, request_sha256: task.request_sha256});
+  assert.deepEqual([receipt.corrected, receipt.attempt_ids.length], [1, 1]);
+  // Learned at once: the run is now a failure (never a second run).
+  assert.deepEqual(runtime.lawLearned.get(key), {runs: 1, failures: 1});
+  // Idempotent: a repeated correction changes nothing.
+  assert.equal(runtime.ownerCorrection({schema: 1, task_id: task.task_id}).corrected, 0);
+  assert.deepEqual(runtime.lawLearned.get(key), {runs: 1, failures: 1});
+  // The owner's correction puts the local row past tau (1/3 > 1.2 points): the
+  // next small talk binds a pool reference, the pre-plan check agrees.
+  const next = runtimeTask(q, catalog, workspace);
+  const plan = hostPlan(next, fresh, {lawLearned: runtime.lawLearned});
+  const {decisions, routes} = resolveRoutePlan(plan, next, fresh, now, {lawLearned: runtime.lawLearned});
+  const chosen = fresh.candidates.find(c => c.id === decisions[plan.nodes[0].id].resolved_candidate_id);
+  assert.ok(Object.values(TABLE.references).includes(chosen.model), chosen.model);
+  assert.ok((routes[plan.nodes[0].id].law.candidates.find(([k]) => k.startsWith('local:')) ?? ['', 'v:'])[1].startsWith('v:'));
+  // The log is private; a restart learns the correction from it.
+  const lines = (await readFile(join(dir, 'routing-ledger', 'owner-corrections.jsonl'), 'utf8')).trim().split('\n');
+  assert.deepEqual(lines.map(line => JSON.parse(line).attempt_ids), [receipt.attempt_ids]);
+  await runtime.close();
+  runtime = await open();
+  t.after(() => runtime.close());
+  assert.deepEqual(runtime.lawLearned.get(key), {runs: 1, failures: 1});
+  // The counting rules read the corrected record as a failure everywhere.
+  const record = JSON.parse((await readFile(join(dir, 'routing-ledger', 'routing-ledger.jsonl'), 'utf8')).trim().split('\n')[0]);
+  const delta = lawOwnerCorrectionDelta(new Map(), record);
+  assert.deepEqual(delta.get(key), {runs: 0, failures: 1});
+});
+
+test('review of 449: the release gate checks the constraint on hand-labeled readings: a downgraded route fails it', async () => {
+  const {constraintOf} = await import('../routing-law-replay.mjs');
+  const table = TABLE;
+  const result = (route, extra = {}) => ({route, kind: 'tier', law: {shape: 'answer', ...extra}});
+  const knowledge = {band: 'standard', skills: ['knowledge'], task_type: 'explain', needs_tools: 'none'};
+  // A pool reference gives its own result; a cell within tau on the labeled
+  // tiers passes; a cheaper one that is not the same result fails.
+  assert.equal(constraintOf(result('claude-chat:claude-fable-5-1@max'), knowledge, table).ok, true);
+  assert.equal(constraintOf(result('claude-chat:claude-opus-5-5@xhigh'), knowledge, table).ok, true);
+  const down = constraintOf(result('claude-chat:claude-sonnet-5-5@medium'), knowledge, table);
+  assert.deepEqual([down.ok, /T1=fail/.test(down.why)], [false, true]);
+  // A math question routed on a misread without math evidence fails (no
+  // T3M in Codex: only its reference).
+  assert.equal(constraintOf(result('codex:gpt-6.1-sol@high'), {band: 'light', skills: ['math'], task_type: 'explain',
+    needs_tools: 'none'}, table).ok, false);
+  // A REVAS verified start is held to its judge.
+  const light = {band: 'light', skills: ['knowledge'], task_type: 'explain', needs_tools: 'none'};
+  assert.equal(constraintOf(result('local:qwen3.5:9b@none', {revas: {judge: 'claude-chat:claude-sonnet-5-5@medium'}}), light, table).ok, true);
+  assert.equal(constraintOf(result('local:qwen3.5:9b@none', {revas: {judge: 'claude-chat:claude-sonnet-5-5@low'}}), light, table).ok, false);
+  // The exact paths and the owner-judged small talk.
+  assert.equal(constraintOf({route: 'local:calculator', kind: 'calculator'}, {kind: 'calculator'}, table).ok, true);
+  assert.equal(constraintOf({route: 'local:ask_back', kind: 'ask_back'}, {kind: 'ask_back'}, table).ok, true);
+  assert.equal(constraintOf(result('local:qwen3.5:9b@none', {owner: {judge: 'owner'}}), {kind: 'subjective'}, table).ok, true);
+  // The committed fixture carries a label for every question.
+  assert.equal(OWNER.questions.filter(q => q.labeled).length, OWNER.questions.length);
 });

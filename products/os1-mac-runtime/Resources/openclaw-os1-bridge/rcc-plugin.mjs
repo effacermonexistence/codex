@@ -845,7 +845,9 @@ export function registerRCCRuntime(api) {
       plannerScope?.emitDestroy(); plannerScope = undefined;
     },
   });
-  for (const name of ['submit', 'status', 'cancel', 'quiesce', 'recoverOwnerControl']) {
+  // Review of 449: 'correct' is the owner's explicit correction of a
+  // delivered answer (os1 rcc-task-correct; DESIGN-9 sections 3 and 4.8).
+  for (const name of ['submit', 'status', 'cancel', 'quiesce', 'recoverOwnerControl', 'correct']) {
     api.registerGatewayMethod('os1.rcc.' + name, async ({ params, respond }) => {
       try {
         if (!runtime && starting) await starting;
@@ -853,7 +855,8 @@ export function registerRCCRuntime(api) {
         const result = name === 'submit' ? await runtime.submit(params) : name === 'status'
           ? await runtime.statusWithInstallation(params) : name === 'cancel'
           ? await runtime.cancelWithInstallation(params) : name === 'recoverOwnerControl'
-          ? await runtime.recoverOwnerControl(params) : await runtime.quiesce(params);
+          ? await runtime.recoverOwnerControl(params) : name === 'correct'
+          ? runtime.ownerCorrection(params) : await runtime.quiesce(params);
         respond(true, result);
       } catch (error) { respond(false, undefined, { code: 'INVALID_REQUEST', message: error?.code ?? 'rcc_request_rejected' }); }
     }, { scope: 'operator.write', profileAccess: 'independent' });
