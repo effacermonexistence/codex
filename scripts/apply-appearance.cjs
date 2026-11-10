@@ -16,12 +16,15 @@ function applyAppearance(root) {
   const markup = '<link id="apply-appearance" rel="stylesheet" href="' + asset + '">';
   const runtime = '<script id="apply-background-runtime" defer src="' + script + '"></script>';
   const artwork = '<div id="apply-artwork" aria-hidden="true"><img src="' + source.url + '" alt="" decoding="async"><canvas></canvas></div>';
+  const booking = '<section id="sf-tattoo-appointments" aria-labelledby="sf-tattoo-appointments-title" lang="en" translate="no"><h4 id="sf-tattoo-appointments-title">Tattoo Appointments</h4><p>San Francisco, California</p></section>';
   return { css, asset, markup, runtime, artwork, assets:[{asset,bytes:css},{asset:script,bytes:js}], render(html, route) {
     if (route !== '/apply') return html;
     if (!html.includes('id="block-61b1bd79481c34f2f1bb"') || html.includes('id="apply-appearance"') || html.split('</head>').length !== 2 || html.split('</body>').length !== 2) throw Error('Unexpected application page identity');
     const anchor = /(<section\b[^>]*data-section-id="68656582e759892761381cbf"[\s\S]*?<div class="section-background">)/g;
     if ([...html.matchAll(anchor)].length !== 1) throw Error('Application background boundary');
-    return html.replace(anchor,'$1'+artwork).replace('</head>',markup+'</head>').replace('</body>',runtime+'</body>');
+    const formAnchor = 'id="block-61b1bd79481c34f2f1bb"><div class="sqs-block-content">';
+    if (html.split(formAnchor).length !== 2 || html.includes('id="sf-tattoo-appointments"')) throw Error('Application booking boundary');
+    return html.replace(formAnchor,formAnchor+booking).replace(anchor,'$1'+artwork).replace('</head>',markup+'</head>').replace('</body>',runtime+'</body>');
   }};
 }
 module.exports = { applyAppearance };

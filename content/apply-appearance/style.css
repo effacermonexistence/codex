@@ -1,4 +1,23 @@
 /* Native fields use a single fine rule over the accepted artwork. */
+/* Booking location experiment: a quiet introduction to the existing form. */
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb #sf-tattoo-appointments {
+  margin: 0 0 1.5rem;
+  text-align: left;
+  color: inherit;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb #sf-tattoo-appointments h4 {
+  margin: 0 0 .35rem;
+  font-family: var(--heading-font-font-family, "Gilda Display", serif);
+  font-size: 1.25rem !important;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: inherit;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb #sf-tattoo-appointments p {
+  margin: 0;
+  font-size: 1rem !important;
+  line-height: 1.5;
+}
 body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb {
   color-scheme: dark;
   --apply-field-ink: #eeeeef;
