@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "sourceCatalogHash": "b333c12ae049758c9d70c2b8a3867354cd59717816579efb8bdda75efc3acfaf",
+  "previousSourceCatalogHash": "cc550e94a40226ad42649c4ca08744a69aca4960354d93c6d8e1d71caa6bac93",
+  "reviewedEntries": [
+    {
+      "locale": "ar",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "على ثلاثة منحنيات عنقودية من ⟦P0000⟧-COP لم تُمس، نقل الإدراج المتعامد المباشر\nالمقتصر على الهالة، والمجمَّد في مرحلة التطوير، قيمة كاي تربيع للضغط الهيدروستاتيكي من\n⟦P0001⟧ إلى ⟦P0002⟧ (⟦P0003⟧؛ انخفاض في البواقي\nبمقدار ⟦P0004⟧)، مع فرق سالب في ⟦P0005⟧ من العناقيد ودون تدهور في الأداء على البيانات المحجوزة؛\nوهذا تشخيص بمعادلة مباشرة على منحنيات عامة، وليس برهانًا مستقلًا\nمن أرصاد خام أو برهانًا فيزيائيًا.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "da",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "På tre urørte ⟦P0000⟧-COP-galaksehobeprofiler flyttede den direkte,\nortogonale indsættelse alene i haloen, fastlåst under udviklingen, chi-i-anden for hydrostatisk tryk fra\n⟦P0001⟧ til ⟦P0002⟧ (⟦P0003⟧; ⟦P0004⟧ reduktion af residualet),\nmed negativ delta i ⟦P0005⟧ galaksehobe og ingen forringelse af ydeevnen på de tilbageholdte data;\ndette er en diagnostik med direkte ligningsindsættelse på offentlige profiler, ikke uafhængigt\nråobservationelt eller fysisk bevis.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "el",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "Σε τρία ανέγγιχτα προφίλ σμηνών ⟦P0000⟧-COP, η άμεση ορθογώνια εισαγωγή\nμόνο στην άλω, παγιωμένη κατά την ανάπτυξη, μετέβαλε το χι-τετράγωνο της υδροστατικής πίεσης από\n⟦P0001⟧ σε ⟦P0002⟧ (⟦P0003⟧· ⟦P0004⟧ μείωση\nυπολοίπων), με αρνητική μεταβολή σε ⟦P0005⟧ σμήνη και χωρίς υποβάθμιση της απόδοσης στο δεσμευμένο σύνολο ελέγχου·\nπρόκειται για διαγνωστικό έλεγχο άμεσης εισαγωγής στην εξίσωση με δημόσια προφίλ, όχι για ανεξάρτητη\nαπόδειξη από πρωτογενείς παρατηρήσεις ή φυσική απόδειξη.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "fr",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "Sur trois profils d’amas ⟦P0000⟧-COP restés intacts, l’insertion orthogonale directe,\nlimitée au halo et figée au terme du développement, a fait passer le chi carré de la pression hydrostatique de\n⟦P0001⟧ à ⟦P0002⟧ (⟦P0003⟧ ; réduction des résidus de ⟦P0004⟧),\navec un delta négatif dans ⟦P0005⟧ amas et aucune dégradation des performances sur les données réservées ;\nil s’agit d’un diagnostic par équation directe sur des profils publics, et non d’une preuve indépendante\nfondée sur des observations brutes ou d’une preuve physique.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "hu",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "Három érintetlen ⟦P0000⟧-COP-halmazprofilon a fejlesztés során rögzített, közvetlen,\ncsak a halóra alkalmazott ortogonális beillesztés a hidrosztatikus nyomás khi-négyzet értékét\n⟦P0001⟧ értékről ⟦P0002⟧ értékre módosította (⟦P0003⟧; ⟦P0004⟧ reziduumcsökkenés),\n⟦P0005⟧ halmazban negatív deltával, teljesítményromlás nélkül a visszatartott mintán;\nez nyilvános profilokon végzett, közvetlen egyenletdiagnosztika, nem független,\nnyers megfigyelési adatokon alapuló vagy fizikai bizonyítás.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "it",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "Su tre profili di ammassi ⟦P0000⟧-COP mai utilizzati prima, l'inserimento ortogonale diretto\nlimitato all'alone, congelato dopo lo sviluppo, ha portato il chi-quadrato della pressione idrostatica da\n⟦P0001⟧ a ⟦P0002⟧ (⟦P0003⟧; riduzione dei residui\ndel ⟦P0004⟧), con delta negativo in ⟦P0005⟧ ammassi e nessun peggioramento delle prestazioni sui dati riservati;\nsi tratta di una verifica diagnostica dell'equazione diretta su profili pubblici, non di una prova indipendente\nbasata su osservazioni grezze o di una prova fisica.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "lt",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "Trijuose nepaliestuose ⟦P0000⟧-COP spiečių profiliuose kūrimo etape užfiksuotas tiesioginis\nortogonalus įterpimas, taikomas tik halui, pakeitė hidrostatinio slėgio chi kvadratą nuo\n⟦P0001⟧ iki ⟦P0002⟧ (⟦P0003⟧; ⟦P0004⟧ liekanos\nsumažėjimas), su neigiama delta ⟦P0005⟧ spiečių ir be rezultatų pablogėjimo atidėtojoje imtyje;\ntai viešais profiliais pagrįsta tiesioginės lygties diagnostika, o ne nepriklausomas\npirminių stebėjimų ar fizikinis įrodymas.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "no",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "På tre urørte ⟦P0000⟧-COP-profiler for galaksehoper flyttet den direkte,\nortogonale innsettingen kun i haloen, frosset under utviklingen, hydrostatisk trykk-kjikvadrat fra\n⟦P0001⟧ til ⟦P0002⟧ (⟦P0003⟧; ⟦P0004⟧ reduksjon i residualet),\nmed negativ delta i ⟦P0005⟧ hoper og ingen forringelse av ytelsen på det tilbakeholdte utvalget;\ndette er en diagnostikk med direkte ligningsinnsetting på offentlige profiler, ikke uavhengig\nbevis fra råobservasjoner eller fysisk bevis.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "ro",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "Pe trei profiluri de roiuri ⟦P0000⟧-COP neatinse, inserția ortogonală directă,\nlimitată la halou și fixată în faza de dezvoltare, a modificat chi-pătrat al presiunii hidrostatice de la\n⟦P0001⟧ la ⟦P0002⟧ (⟦P0003⟧; reducere a reziduurilor de ⟦P0004⟧), cu o variație negativă în ⟦P0005⟧ roiuri și fără degradarea performanței pe setul rezervat;\nacesta este un diagnostic prin ecuație directă pe profiluri publice, nu o dovadă\nindependentă bazată pe observații brute sau o dovadă fizică.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "sv",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "På tre orörda klusterprofiler från ⟦P0000⟧-COP ändrade den direkta\nortogonala insättningen enbart i halon, fryst efter utvecklingsfasen, chi-två för hydrostatiskt tryck från\n⟦P0001⟧ till ⟦P0002⟧ (⟦P0003⟧; ⟦P0004⟧ minskning av residualen), med negativt delta i ⟦P0005⟧ kluster och ingen försämring av prestandan på undanhållna data;\ndetta är en diagnostik med offentliga profiler direkt i ekvationen, inte ett oberoende\nbevis från råa observationsdata eller ett fysikaliskt bevis.",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "zh-CN",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "在三个未经触碰的⟦P0000⟧-COP星系团剖面上，开发阶段冻结的、仅作用于暗晕的正交直接插入\n将流体静力学压力卡方值从\n⟦P0001⟧降至⟦P0002⟧（⟦P0003⟧；残差减少⟦P0004⟧），其中⟦P0005⟧个星系团的差值为负，且留出集上未出现性能下降；\n这是针对公开剖面的直接方程诊断，并非独立的\n原始观测证据或物理证明。",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "th",
+      "id": "s_0aa05f9e0aeb5185afbc",
+      "value": "บนโพรไฟล์กระจุกกาแล็กซี ⟦P0000⟧-COP สามชุดที่ยังไม่เคยถูกแตะต้อง การแทรกแบบตั้งฉากโดยตรง\nเฉพาะฮาโล ซึ่งตรึงไว้จากขั้นพัฒนา เปลี่ยนค่าไคสแควร์ของความดันอุทกสถิตจาก\n⟦P0001⟧ เป็น ⟦P0002⟧ (⟦P0003⟧; ค่าส่วนเหลือลดลง\n⟦P0004⟧) โดยมีผลต่างเป็นลบในกระจุกกาแล็กซี ⟦P0005⟧ และไม่มีการลดลงของประสิทธิภาพในชุดกันไว้ทดสอบ;\nนี่คือการวินิจฉัยสมการโดยตรงจากโพรไฟล์สาธารณะ ไม่ใช่หลักฐานอิสระ\nจากข้อมูลสังเกตดิบหรือหลักฐานทางกายภาพ",
+      "reason": "downlift = performance degradation, not lack of improvement",
+      "previousId": "s_0aa05f9e0aeb5185afbc"
+    },
+    {
+      "locale": "ja",
+      "id": "s_0ddda0e63b74bcc7d685",
+      "value": "ジーンズ検証系統では、ちょうこくしつ座とりゅうこつ座のデータを開く前に、\nろくぶんぎ座とろ座で共通アダプターを較正した。安全な開発方針が選択したのは⟦P0000⟧だった。\n別途凍結した非ゼロ強制のプラマー方針は、未採用の診断としてのみ保持した。\n採用された結果はベースラインの厳密な維持であるため、\nこの検証系統は採用結果の性能低下をもたらさない。",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_0ddda0e63b74bcc7d685"
+    },
+    {
+      "locale": "zh-CN",
+      "id": "s_0ddda0e63b74bcc7d685",
+      "value": "Jeans测试分支先在Sextans和Fornax上校准共享适配器，再\n开放Sculptor和Carina。安全开发策略选择了⟦P0000⟧。\n单独冻结的强制非零Plummer策略，仅作为\n未获采用的诊断方案保留。实际采用的结果是精确保留基线，因此\n该分支没有导致任何获采用结果的性能下降。",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_0ddda0e63b74bcc7d685"
+    },
+    {
+      "locale": "th",
+      "id": "s_0ddda0e63b74bcc7d685",
+      "value": "แนวทดสอบ Jeans สอบเทียบตัวปรับร่วมบน Sextans และ Fornax ก่อน\nเปิดข้อมูล Sculptor และ Carina นโยบายพัฒนาแบบปลอดภัยเลือก ⟦P0000⟧\nนโยบายพลัมเมอร์ที่บังคับค่าไม่เป็นศูนย์ ซึ่งตรึงไว้แยกต่างหาก ถูกเก็บไว้เพียงเป็น\nเครื่องมือวินิจฉัยที่ไม่ได้นำมาใช้ ผลที่นำมาใช้คือการคงค่าฐานไว้อย่างตรงกันทุกประการ ดังนั้น\nแนวทดสอบนี้จึงไม่ได้ทำให้ประสิทธิภาพของผลที่นำมาใช้ลดลง",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_0ddda0e63b74bcc7d685"
+    },
+    {
+      "locale": "zh-CN",
+      "id": "s_b61d4b3083ee2b5d8e58",
+      "value": "⟦P0000⟧证据支持的解读：⟦P0001⟧在所存储的指标下，插入冻结的再分布项，可以使选定的公开模型产物、参数化轮廓或共享适配器留出残差向有利方向移动。被采纳的 Jeans 共享适配器策略选择了精确基线（⟦P0002⟧），因此没有导致采纳结果的性能下降。直接作用于源项的 Jeans 运行将算子施加于所要求的暗晕密度源，使暴露后的两个差值都略微变为负值，但开发阶段仍选择了 ⟦P0003⟧，且总体降幅仅约为 ⟦P0004⟧。在 ⟦P0005⟧-COP 直接静水平衡测试路径中，冻结的共享插入使留出压力总体卡方降低了 ⟦P0006⟧，其中 ⟦P0007⟧ 的差值为负，同时匹配的通用平滑器也改善了 ⟦P0008⟧。SPARC 和 ⟦P0009⟧-COP 的 Plummer 总体排名在算术上仍然成立，但逐单元比较（⟦P0010⟧ 和 ⟦P0011⟧）及优势集中于主导单元这一事实，并不能确立 Plummer 特异性。",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_b61d4b3083ee2b5d8e58"
+    },
+    {
+      "locale": "zh-TW",
+      "id": "s_b61d4b3083ee2b5d8e58",
+      "value": "⟦P0000⟧有證據支持的解讀：⟦P0001⟧插入一個凍結的重分配項，可以使選定的公開模型產物、參數化剖面或共用轉接器的保留測試殘差，在已儲存的指標下朝有利方向移動。採用的 Jeans 共用轉接器策略選中了精確基準（⟦P0002⟧），因此未導致任何採用結果的表現下降。直接來源 Jeans 執行將算子施加於所要求的暈密度來源，使兩個曝露後差值都略為負值，儘管開發階段仍選擇了 ⟦P0003⟧，而總體降幅僅約 ⟦P0004⟧。在 ⟦P0005⟧-COP 直接靜水平衡路徑中，凍結的共用插入使保留測試壓力的總體卡方值降低了 ⟦P0006⟧，其中 ⟦P0007⟧ 個差值為負，而匹配的通用平滑器也改善了 ⟦P0008⟧。SPARC 與 ⟦P0009⟧-COP 的 Plummer 總體排名在算術上仍然成立，但逐單元比較（⟦P0010⟧ 與 ⟦P0011⟧）以及結果集中於主導單元的情況，並未確立 Plummer 的特異性。",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_b61d4b3083ee2b5d8e58"
+    },
+    {
+      "locale": "ko",
+      "id": "s_61f71e5e305daa2205b5",
+      "value": "채택된 결과: 성능 저하 없음",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_61f71e5e305daa2205b5"
+    },
+    {
+      "locale": "tr",
+      "id": "s_61f71e5e305daa2205b5",
+      "value": "Benimsenen sonuç: performans düşüşü yok",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_61f71e5e305daa2205b5"
+    },
+    {
+      "locale": "zh-CN",
+      "id": "s_61f71e5e305daa2205b5",
+      "value": "采用结果：未出现性能下降",
+      "reason": "Source no adopted downlift means no performance degradation, not no adopted improvement or no error reduction",
+      "previousId": "s_61f71e5e305daa2205b5"
+    }
+  ]
+}

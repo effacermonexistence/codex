@@ -1,0 +1,21 @@
+{
+  "version": "apply-email-v4-time-optional",
+  "formId": "68656582e759892761381cba",
+  "contextScriptId": "form-context-68656582e759892761381cba",
+  "afterFieldId": "text-yui_3_17_2_1_1663856203892_2072",
+  "beforeFieldId": "text-a468a4dc-03d5-4186-8e9e-73a82ce9c8b0",
+  "messageFieldId": "textarea-yui_3_17_2_1_1663856203892_2073",
+  "field": {
+    "id": "email-3e3f2732-55f0-454b-bc07-e19203a19d36",
+    "type": "email",
+    "email": true,
+    "title": "Email",
+    "description": "",
+    "placeholder": "",
+    "required": true,
+    "locked": false
+  },
+  "storage": "Append the supplied email to the existing native message field before the unchanged Squarespace submission. No newsletter enrollment or additional storage provider.",
+  "optionalFieldIds": ["text-yui_3_17_2_1_1663856203892_2072"],
+  "requirement": "Email required immediately before Instagram. Only Availabledates and Time changes from required to optional; Name, Phone Number and Instagram preserve their required state. Message stays optional."
+}

@@ -1,0 +1,293 @@
+{
+  "catalog_rows": {
+    "D631-7": {
+      "T": 10,
+      "distance_mpc": 7.72,
+      "galaxy": "D631-7",
+      "inclination_deg": 59.0,
+      "quality": 1,
+      "rdisk_kpc": 0.7,
+      "reff_kpc": 1.22,
+      "vflat_km_s": 57.7
+    },
+    "DDO064": {
+      "T": 10,
+      "distance_mpc": 6.8,
+      "galaxy": "DDO064",
+      "inclination_deg": 60.0,
+      "quality": 1,
+      "rdisk_kpc": 0.69,
+      "reff_kpc": 1.2,
+      "vflat_km_s": 46.1
+    },
+    "DDO161": {
+      "T": 10,
+      "distance_mpc": 7.5,
+      "galaxy": "DDO161",
+      "inclination_deg": 70.0,
+      "quality": 1,
+      "rdisk_kpc": 1.22,
+      "reff_kpc": 2.04,
+      "vflat_km_s": 66.3
+    },
+    "ESO116-G012": {
+      "T": 7,
+      "distance_mpc": 13.0,
+      "galaxy": "ESO116-G012",
+      "inclination_deg": 74.0,
+      "quality": 1,
+      "rdisk_kpc": 1.51,
+      "reff_kpc": 2.75,
+      "vflat_km_s": 109.1
+    },
+    "F568-3": {
+      "T": 7,
+      "distance_mpc": 82.4,
+      "galaxy": "F568-3",
+      "inclination_deg": 40.0,
+      "quality": 1,
+      "rdisk_kpc": 4.99,
+      "reff_kpc": 7.47,
+      "vflat_km_s": 0.0
+    },
+    "F568-V1": {
+      "T": 7,
+      "distance_mpc": 80.6,
+      "galaxy": "F568-V1",
+      "inclination_deg": 40.0,
+      "quality": 1,
+      "rdisk_kpc": 2.85,
+      "reff_kpc": 4.4,
+      "vflat_km_s": 112.3
+    },
+    "F574-1": {
+      "T": 7,
+      "distance_mpc": 96.8,
+      "galaxy": "F574-1",
+      "inclination_deg": 65.0,
+      "quality": 1,
+      "rdisk_kpc": 4.46,
+      "reff_kpc": 5.87,
+      "vflat_km_s": 97.8
+    },
+    "F583-1": {
+      "T": 9,
+      "distance_mpc": 35.4,
+      "galaxy": "F583-1",
+      "inclination_deg": 63.0,
+      "quality": 1,
+      "rdisk_kpc": 2.36,
+      "reff_kpc": 3.74,
+      "vflat_km_s": 85.8
+    },
+    "NGC3109": {
+      "T": 9,
+      "distance_mpc": 1.33,
+      "galaxy": "NGC3109",
+      "inclination_deg": 70.0,
+      "quality": 1,
+      "rdisk_kpc": 1.56,
+      "reff_kpc": 1.64,
+      "vflat_km_s": 66.2
+    },
+    "NGC3741": {
+      "T": 10,
+      "distance_mpc": 3.21,
+      "galaxy": "NGC3741",
+      "inclination_deg": 70.0,
+      "quality": 1,
+      "rdisk_kpc": 0.2,
+      "reff_kpc": 0.32,
+      "vflat_km_s": 50.1
+    },
+    "NGC5585": {
+      "T": 7,
+      "distance_mpc": 7.06,
+      "galaxy": "NGC5585",
+      "inclination_deg": 51.0,
+      "quality": 1,
+      "rdisk_kpc": 1.53,
+      "reff_kpc": 2.27,
+      "vflat_km_s": 90.3
+    },
+    "NGC7793": {
+      "T": 7,
+      "distance_mpc": 3.61,
+      "galaxy": "NGC7793",
+      "inclination_deg": 47.0,
+      "quality": 1,
+      "rdisk_kpc": 1.21,
+      "reff_kpc": 2.19,
+      "vflat_km_s": 0.0
+    },
+    "UGC00128": {
+      "T": 8,
+      "distance_mpc": 64.5,
+      "galaxy": "UGC00128",
+      "inclination_deg": 57.0,
+      "quality": 1,
+      "rdisk_kpc": 5.95,
+      "reff_kpc": 9.63,
+      "vflat_km_s": 129.3
+    },
+    "UGC00731": {
+      "T": 10,
+      "distance_mpc": 12.5,
+      "galaxy": "UGC00731",
+      "inclination_deg": 57.0,
+      "quality": 1,
+      "rdisk_kpc": 2.3,
+      "reff_kpc": 1.4,
+      "vflat_km_s": 73.3
+    },
+    "UGC05721": {
+      "T": 7,
+      "distance_mpc": 6.18,
+      "galaxy": "UGC05721",
+      "inclination_deg": 61.0,
+      "quality": 1,
+      "rdisk_kpc": 0.38,
+      "reff_kpc": 0.6,
+      "vflat_km_s": 79.7
+    },
+    "UGC06446": {
+      "T": 7,
+      "distance_mpc": 12.0,
+      "galaxy": "UGC06446",
+      "inclination_deg": 51.0,
+      "quality": 1,
+      "rdisk_kpc": 1.49,
+      "reff_kpc": 2.06,
+      "vflat_km_s": 82.2
+    },
+    "UGC07524": {
+      "T": 9,
+      "distance_mpc": 4.74,
+      "galaxy": "UGC07524",
+      "inclination_deg": 46.0,
+      "quality": 1,
+      "rdisk_kpc": 3.46,
+      "reff_kpc": 3.61,
+      "vflat_km_s": 79.5
+    },
+    "UGC07603": {
+      "T": 7,
+      "distance_mpc": 4.7,
+      "galaxy": "UGC07603",
+      "inclination_deg": 78.0,
+      "quality": 1,
+      "rdisk_kpc": 0.53,
+      "reff_kpc": 0.85,
+      "vflat_km_s": 61.6
+    },
+    "UGC08490": {
+      "T": 9,
+      "distance_mpc": 4.65,
+      "galaxy": "UGC08490",
+      "inclination_deg": 50.0,
+      "quality": 1,
+      "rdisk_kpc": 0.67,
+      "reff_kpc": 1.14,
+      "vflat_km_s": 78.6
+    },
+    "UGC12632": {
+      "T": 9,
+      "distance_mpc": 9.77,
+      "galaxy": "UGC12632",
+      "inclination_deg": 46.0,
+      "quality": 1,
+      "rdisk_kpc": 2.42,
+      "reff_kpc": 3.94,
+      "vflat_km_s": 71.7
+    },
+    "UGC12732": {
+      "T": 9,
+      "distance_mpc": 13.2,
+      "galaxy": "UGC12732",
+      "inclination_deg": 39.0,
+      "quality": 1,
+      "rdisk_kpc": 1.98,
+      "reff_kpc": 3.12,
+      "vflat_km_s": 0.0
+    }
+  },
+  "dev": [
+    "D631-7",
+    "UGC08490",
+    "ESO116-G012",
+    "F568-V1",
+    "UGC00128",
+    "NGC3741",
+    "NGC3109",
+    "UGC07603",
+    "NGC7793",
+    "DDO161",
+    "F568-3",
+    "UGC12732",
+    "F583-1",
+    "UGC07524"
+  ],
+  "eligibility": {
+    "bulgeless": true,
+    "hubble_type_min": 7,
+    "inclination_deg": [
+      30,
+      85
+    ],
+    "min_rotation_rows": 12,
+    "quality": 1,
+    "rdisk_positive": true
+  },
+  "eligible": [
+    "D631-7",
+    "UGC08490",
+    "ESO116-G012",
+    "F568-V1",
+    "UGC00128",
+    "NGC3741",
+    "NGC3109",
+    "UGC07603",
+    "NGC7793",
+    "DDO161",
+    "F568-3",
+    "UGC12732",
+    "F583-1",
+    "UGC07524",
+    "UGC00731",
+    "NGC5585",
+    "F574-1",
+    "UGC05721",
+    "UGC06446",
+    "DDO064",
+    "UGC12632"
+  ],
+  "heldout": [
+    "UGC00731",
+    "NGC5585",
+    "F574-1",
+    "UGC05721",
+    "UGC06446",
+    "DDO064",
+    "UGC12632"
+  ],
+  "prior_visibility": {
+    "NGC3109": "prior score visible; forced into dev by predeclared hash split",
+    "heldout_prior_score_visibility": false
+  },
+  "sample_ids_sha256": "d5bb9bb18b9bbbcea0d2e31aee592d275b0aa596d32be2ed145c2494c9a3b3b5",
+  "sample_lock_executor": {
+    "algorithm": "SHA-256 of newline-joined ordered sample IDs",
+    "callable": "sample_ids_sha256",
+    "input_sha256": "5018a7385a763a26aaa97fb33f5224befb6196a633556fb1d676372e161dccb4",
+    "output_sha256": "fd0ae8842ab3fb973c7b6f003adc563746df905ae45d6c82ced932d620706667",
+    "source_file": "benchmark_replay_harness.py",
+    "source_file_sha256": "5215e4e8a74b529c1355208c04e7323e09d93a63d332b26d67c9c7a50faba524"
+  },
+  "schema_version": "sparc-equation-adapter-sample-lock-v1",
+  "source": {
+    "catalog_sha256": "5aa0501f6b0d881fa579030e315e7b5b6ef561a5bd3a07472f9929c7e5728243",
+    "rotmod_zip_sha256": "0a80cc90714828cc28b7dd57923576714d209f2490328c087c4a4ad607faf588"
+  },
+  "split_rule": "eligible galaxies sorted by SHA256(galaxy); first 14 dev, remaining 7 heldout",
+  "status": "LOCKED_BEFORE_SCIENTIFIC_SCORING"
+}

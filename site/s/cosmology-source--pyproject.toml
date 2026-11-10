@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orthogonal-projection-term"
+version = "0.5.3"
+description = "Reproducible cosmology residual diagnostics for a frozen orthogonal redistribution term"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "OmarAGI"}]
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+hff = ["astropy>=5.3"]
+test = ["pytest>=7", "astropy>=5.3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

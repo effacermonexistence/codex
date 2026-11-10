@@ -1,0 +1,105 @@
+{
+  "aggregate_specificity_addendum": {
+    "adoption": "CONDITIONAL_AGGREGATE_ARITHMETIC_NOT_KERNEL_SPECIFICITY_EVIDENCE",
+    "aggregate_plummer_ranking_arithmetically_true": true,
+    "audit_file": "results/aggregate_specificity_audit.json",
+    "dominant_unit": "A644",
+    "dominant_unit_fraction_of_aggregate_gaussian_advantage": 1.4457119667086402,
+    "fraction_grid_boundary_hit": true,
+    "frozen_fraction": 1.0,
+    "plummer_beats_both_controls_count": 1,
+    "unit_count": 3
+  },
+  "artifact_hashes": {
+    "EXECUTED_SOURCE_RECEIPT.json": "7618106d13449b14e71ecf713988abc0ef438a72a5d673508aaae4e08f944413",
+    "FROZEN_POLICY.json": "02a63e2528bb3f314df6c02e5a7404921a7ab2b91eaa75183e79f86fc2842835",
+    "HELDOUT_RESULT.json": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065",
+    "HELDOUT_RESULT_REPLAY.json": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065",
+    "SAMPLE_LOCK.json": "762d2859b6d645dbf6d2c2cee7d341004a64920d8723eeb1cc66816f60861bab",
+    "TASK_SOURCE_SELECTION.json": "dfbb0aab55658efddd3876e0dbbc8c08c4e2f94033da7e0b1dab5e4480dbb46c"
+  },
+  "audit_authority": "INTERNAL_SELF_AUDIT_NOT_INDEPENDENT_EXTERNAL_REVIEW",
+  "checks": {
+    "all_selected_sources_hash_match": true,
+    "byte_identical_replay": true,
+    "control_arithmetic": true,
+    "direct_mass_insertion": true,
+    "exact_3d_plummer_formula": true,
+    "f0_exact": true,
+    "finite_grid_mass_receipts_within_contract": true,
+    "forced_arithmetic": true,
+    "halo_only_component_reconstruction": true,
+    "intended_equals_executed": true,
+    "no_heldout_row_fallback": true,
+    "operator_window_frozen": true,
+    "policy_frozen_before_heldout_file": true,
+    "policy_hash_match": true,
+    "pressure_score_nonzero_baseline": true,
+    "r2_post_gate_pass": true,
+    "r2_pre_gate_pass": true,
+    "row_delta_identity": true,
+    "row_percent_identity": true,
+    "safe_arithmetic": true,
+    "sample_identity_match": true,
+    "sample_overlap_zero": true,
+    "selection_hash_matches_receipt": true,
+    "source_selection_frozen": true
+  },
+  "direct_formal_equation_label": "PASS",
+  "evidence_class": "PUBLIC_XCOP_PROFILE_DIRECT_EQUATION_DIAGNOSTIC_WITH_PROCEDURAL_UNTOUCHED_CLUSTER_HELDOUT",
+  "executed_path_label": "PASS",
+  "heldout_directional_label": "DESCRIPTIVE_PASS_3_OF_3_NO_DOWNLIFT",
+  "invalid_claims": [
+    "new cosmological physics detected",
+    "orthogonal term required by the data",
+    "Plummer geometry uniquely validated",
+    "independent raw observational proof",
+    "universal no-downlift guarantee"
+  ],
+  "matched_controls": {
+    "gaussian": {
+      "delta_chi2_sum": -3.0530398649901898,
+      "downlift_count": 0,
+      "improved_count": 3,
+      "residual_reduction_pct": 2.104161674206944
+    },
+    "top_hat": {
+      "delta_chi2_sum": -2.288515267669652,
+      "downlift_count": 0,
+      "improved_count": 3,
+      "residual_reduction_pct": 1.5772496691861464
+    }
+  },
+  "material_limitations": [
+    "The X-COP NFW mass profiles were reconstructed from the same thermodynamic profile family; this is a profile-consistency diagnostic, not an independent raw observational likelihood.",
+    "The public files were physically accessible; heldout means no executed score before policy freeze, not secret or cryptographically sealed data.",
+    "The development optimum hit the upper f grid boundary (f=1.0). No extrapolation beyond the frozen domain was allowed.",
+    "All generic smoothers improved all three heldout clusters; generic low-pass redistribution explains a substantial part of the direction.",
+    "Plummer had the strongest aggregate reduction at the matched scale, but not on every cluster and with only three heldout targets; kernel uniqueness is not established.",
+    "Diagonal pressure errors and one shared-form boundary nuisance were used; covariance/full raw likelihood was not available in this lane.",
+    "Per-cluster specificity is 1/3. A644 supplies 144.57% of the aggregate Plummer-over-Gaussian advantage; A2029 and A1795 net favor Gaussian.",
+    "This artifact is an internal execution-path self-audit, not an independently authored external review."
+  ],
+  "plummer_specificity_label": "AGGREGATE_RANKING_ARITHMETICALLY_TRUE_PER_UNIT_SPECIFICITY_NOT_ESTABLISHED",
+  "safe_policy": {
+    "development_delta_macro_chi2_per_point": -0.059535335220015195,
+    "development_downlift_count": 2,
+    "development_improved_count": 2,
+    "development_objective_macro_chi2_per_point": 5.004179317043742,
+    "eta": 0.01,
+    "f": 1.0
+  },
+  "safe_result": {
+    "augmented_chi2_sum": 140.7377852116995,
+    "baseline_chi2_sum": 145.09530814170438,
+    "cluster_count": 3,
+    "delta_chi2_sum": -4.357522930004862,
+    "downlift_count": 0,
+    "improved_count": 3,
+    "point_count": 39,
+    "residual_reduction_pct": 3.003214222302206
+  },
+  "schema_version": "xcop-hse-direct-formal-adversarial-self-audit-v2",
+  "status": "PASS",
+  "valid_claim": "On three untouched X-COP cluster profiles, the development-frozen direct halo-only orthogonal insertion moved hydrostatic pressure chi-square from 145.0953 to 140.7378 (delta -4.3575; 3.00% residual reduction), with negative delta in 3/3 clusters and no heldout downlift. This is a public-profile diagnostic."
+}

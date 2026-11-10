@@ -1,0 +1,28 @@
+/* Header links only: replace Squarespace active/hover rules with subtle weight.
+   Body links, CTAs, the struck wordmark, focus outline and menu geometry stay native. */
+#header :is(.header-nav-item, .header-menu-nav-item) > a,
+#header :is(.header-nav-item, .header-menu-nav-item) > a :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content) {
+  text-decoration: none !important;
+  background-image: none !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+  font-weight: 400 !important;
+}
+#header :is(.header-nav-item, .header-menu-nav-item) > a::after,
+#header :is(.header-nav-item, .header-menu-nav-item) > a :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content)::after {
+  content: none !important;
+  display: none !important;
+}
+#header :is(.header-nav-item--active, .header-menu-nav-item--active) > a,
+#header :is(.header-nav-item, .header-menu-nav-item) > a:is(:hover, :focus-visible, :active, [aria-current="page"], [aria-current="true"]),
+#header :is(.header-nav-item--active, .header-menu-nav-item--active) > a :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content),
+#header :is(.header-nav-item, .header-menu-nav-item) > a:is(:hover, :focus-visible, :active, [aria-current="page"], [aria-current="true"]) :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content) {
+  font-weight: 600 !important;
+  /* The adopted Gilda family is a static regular face. Weight synthesis is
+     allowed here only; never swap the accepted family or alter body type. */
+  font-synthesis: weight !important;
+}
+#header :is(.header-nav-item, .header-menu-nav-item) > a:focus-visible {
+  outline: 1px solid currentColor !important;
+  outline-offset: 4px !important;
+}

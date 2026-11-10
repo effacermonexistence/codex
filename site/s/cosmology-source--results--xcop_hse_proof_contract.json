@@ -1,0 +1,47 @@
+{
+  "schema_version": "xcop-hse-direct-formal-proof-contract-v1",
+  "status": "FROZEN_BEFORE_SAMPLE_LOCK_AND_SCIENTIFIC_SCORING",
+  "task_family": "XCOP_HYDROSTATIC_DIRECT_FORMAL_ORTHOGONAL_TERM",
+  "proof_mode": "PUBLIC_XCOP_PROFILE_DEV_CALIBRATION_PLUS_UNTOUCHED_CLUSTER_HELDOUT_SHARED_OPERATOR_DIRECT_EQUATION_DIAGNOSTIC",
+  "baseline_equation": "dP_e/dr = -mu*m_p*n_e(r)*G*M_NFW,total(<r)/r^2",
+  "augmented_equation": "dP_e/dr = -mu*m_p*n_e(r)*G*[M_NFW,total(<r) + f*(M[K_d*rho_dm]-M[rho_dm])]/r^2",
+  "operator_object": "rho_dm = rho_NFW,total - rho_gas - rho_star",
+  "unchanged_components": ["electron density", "gas density", "stellar density"],
+  "kernel": "normalized 3D Plummer K_d",
+  "operator_radial_window_r_over_r500": [0.005, 3.0],
+  "operator_window_reason": "fixed pre-score component-validity window; outside it, extrapolated baryonic subtraction can become nonphysical although no scored pressure point requires that region",
+  "sample_rule": "eligible complete-component X-COP clusters sorted by SHA256('XCOP-HSE-v1:'+name); first 4 development, remaining 3 heldout",
+  "development_grid": {
+    "f": [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.75, 1.0],
+    "eta_d_over_r500": [0.005, 0.01, 0.02, 0.04, 0.08, 0.16]
+  },
+  "score": "diagonal X-COP X-ray electron-pressure chi2 after analytically profiling exactly one additive pressure-boundary nuisance per arm",
+  "safe_policy": "minimum development macro mean chi2/point including f=0",
+  "forced_nonzero_diagnostic": "minimum development macro mean chi2/point with f>0",
+  "heldout_controls": ["3D Gaussian half-mass matched to Plummer", "3D top-hat half-mass matched to Plummer"],
+  "heldout_rules": {
+    "parameter_update": false,
+    "cluster_exclusion": false,
+    "row_level_fallback": false,
+    "score_visible_tuning": false,
+    "same_nuisance_budget": true
+  },
+  "baseline_recovery": "f=0 exact mass and pressure-prediction identity",
+  "mass_conservation": "normalized convolution plus finite-grid leakage receipt; stop if absolute raw leakage exceeds 0.05; deterministic finite-grid renormalization recorded",
+  "gold_or_score_visibility": {
+    "development": "visible for calibration",
+    "heldout": "public source files physically accessible; no heldout scoring before policy freeze by executed path",
+    "claim": "procedural untouched-cluster holdout, not cryptographically hidden"
+  },
+  "claim_boundary": "public profile direct-equation diagnostic only; not raw observational-likelihood proof, unique-kernel evidence, Einstein-level proof, or physical-law validation",
+  "stop_conditions": [
+    "authority or source hash mismatch",
+    "sample overlap",
+    "nonpositive reconstructed dark-halo density",
+    "raw finite-grid mass leakage above threshold",
+    "intended/executed configuration mismatch",
+    "R2 pre/post gate failure",
+    "deterministic replay mismatch",
+    "independent audit failure"
+  ]
+}

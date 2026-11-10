@@ -1,0 +1,45 @@
+{
+  "development": [
+    "A2319",
+    "A85",
+    "ZW1215",
+    "A2142"
+  ],
+  "development_results_sha256": "f59a67c2bcbde8967882ce403b6b7f1774c122fa3137c2acf0159af2bdd2e407",
+  "forced_nonzero_diagnostic_policy": {
+    "development_delta_macro_chi2_per_point": -0.059535335220015195,
+    "development_downlift_count": 2,
+    "development_improved_count": 2,
+    "development_objective_macro_chi2_per_point": 5.004179317043742,
+    "eta": 0.01,
+    "f": 1.0
+  },
+  "generic_controls": "heldout forced-policy scale only; 3D Gaussian and 3D top-hat matched to the Plummer 3D half-mass radius",
+  "heldout": [
+    "A644",
+    "A2029",
+    "A1795"
+  ],
+  "heldout_rules": {
+    "cluster_exclusion": false,
+    "parameter_update": false,
+    "row_level_fallback": false,
+    "same_pressure_boundary_nuisance_budget_per_arm": true,
+    "score_visibility_before_freeze": false
+  },
+  "policy_content_sha256": "0f99b6042f0b6af2bfec9b9558d90918ebcbeb5f4c69fe603095834677cd8d37",
+  "safe_policy": {
+    "development_delta_macro_chi2_per_point": -0.059535335220015195,
+    "development_downlift_count": 2,
+    "development_improved_count": 2,
+    "development_objective_macro_chi2_per_point": 5.004179317043742,
+    "eta": 0.01,
+    "f": 1.0
+  },
+  "sample_ids_sha256": "8285acec7f246c2681deaaae007eb3f9f4e94cef33892d3fdd14e01171bd2538",
+  "sample_lock_file_sha256": "762d2859b6d645dbf6d2c2cee7d341004a64920d8723eeb1cc66816f60861bab",
+  "schema_version": "xcop-hse-direct-formal-frozen-policy-v1",
+  "selection_rule": "minimize unweighted development-cluster macro mean pressure chi2 per point; safe policy may choose f=0; forced diagnostic requires f>0",
+  "status": "FROZEN_BEFORE_HELDOUT_SCORING",
+  "timestamp_utc": "2026-07-25T21:50:51.740872+00:00"
+}

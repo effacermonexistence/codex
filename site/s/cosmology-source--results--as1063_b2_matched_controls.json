@@ -1,0 +1,63 @@
+{
+  "base_chi_total": 0.24715398203189592,
+  "checks": {
+    "coarse_points": 801,
+    "deterministic_no_rng_no_optimizer_no_fallback": true,
+    "f0_recovery_max_abs_density_error": 0.0,
+    "fine_points": 1601,
+    "identity_branch_recovery_max_abs_density_error": 0.0,
+    "max_coarse_fine_abs_chi_total": 1.2811195551631904e-07
+  },
+  "d_kpc": 16.0,
+  "decision_rule": {
+    "control_recovery_fraction_boundary": 0.8,
+    "fail": "any matched control matches or beats Plummer within tolerance",
+    "otherwise": "unresolved",
+    "pass": "Plummer beats both controls beyond tolerance and best control recovers <80% of Plummer improvement",
+    "score_tolerance_abs_chi_total": 1e-06
+  },
+  "evidence_class": "PUBLIC_MODEL_COMPONENT_MATCHED_CONTROL",
+  "f_perp": 0.3,
+  "interpretation": "All three matched kernels reduced the diagnostic residual. Plummer was slightly best here, but generic controls recovered more than 94% of its gain, so kernel specificity remained unresolved.",
+  "kernels": {
+    "gaussian_3d": {
+      "chi_total": 0.20016727607762905,
+      "coarse_fine_abs_chi_total": 1.2811195551631904e-07,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.04698670595426688,
+      "relative_augmented_mass_leakage": -0.0011631042481877053,
+      "residual_reduction_pct": 19.011106180843612
+    },
+    "plummer_3d": {
+      "chi_total": 0.19807652521504426,
+      "coarse_fine_abs_chi_total": 0.0,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.04907745681685166,
+      "relative_augmented_mass_leakage": -0.0011465024423729189,
+      "residual_reduction_pct": 19.857036659242688
+    },
+    "tophat_3d": {
+      "chi_total": 0.20098271329669615,
+      "coarse_fine_abs_chi_total": 4.8200399005438044e-08,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.04617126873519978,
+      "relative_augmented_mass_leakage": -0.0011676710657626405,
+      "residual_reduction_pct": 18.68117533677497
+    }
+  },
+  "matching": {
+    "criterion": "analytic three-dimensional half-mass radius",
+    "gaussian_r_half_kpc": 20.87625642406571,
+    "gaussian_sigma_kpc": 13.572118703611515,
+    "plummer_r_half_kpc": 20.87625642406571,
+    "tophat_r_half_kpc": 20.87625642406571,
+    "tophat_radius_kpc": 26.30243491168346
+  },
+  "operator": "rho_aug=(1-f_perp)rho_halo+f_perp(K*rho_halo)",
+  "record_id": "AS1063_B2_MATCHED_SMOOTHER_CONTROL",
+  "upstream_artifact_sha256": "7eb9faf704cf000e9dd5a16d46b563cd96d6fcde388e439af427e8b25bb340a6",
+  "verdict": "B2_3D_PLUMMER_SPECIFICITY_UNRESOLVED"
+}

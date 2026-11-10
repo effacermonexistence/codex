@@ -1,0 +1,69 @@
+/* Header links only. Keep the accepted type, labels, underline-free surface
+   and layout; animate the ink and optical scale instead of snapping a static
+   regular font between synthesized 400/600 faces. */
+#header :is(.header-nav-item, .header-menu-nav-item) > a,
+#header :is(.header-nav-item, .header-menu-nav-item) > a :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content) {
+  text-decoration: none !important;
+  background-image: none !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+  font-weight: 400 !important;
+}
+#header :is(.header-nav-item, .header-menu-nav-item) > a::after,
+#header :is(.header-nav-item, .header-menu-nav-item) > a :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content)::after {
+  content: none !important;
+  display: none !important;
+}
+#header :is(.header-nav-item, .header-menu-nav-item) > a {
+  transform-origin: 50% 50%;
+  transform: scale(1);
+  -webkit-text-stroke-width: 0;
+  -webkit-text-stroke-color: currentColor;
+  transition: transform 320ms cubic-bezier(.22,.61,.36,1),
+              -webkit-text-stroke-width 320ms cubic-bezier(.22,.61,.36,1) !important;
+}
+/* Selected-page emphasis remains the adopted 600 weight at rest. It is not
+   toggled by hover, so neither arrival nor departure changes the font face. */
+#header :is(.header-nav-item--active, .header-menu-nav-item--active) > a,
+#header :is(.header-nav-item, .header-menu-nav-item) > a:is([aria-current="page"], [aria-current="true"]),
+#header :is(.header-nav-item--active, .header-menu-nav-item--active) > a :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content),
+#header :is(.header-nav-item, .header-menu-nav-item) > a:is([aria-current="page"], [aria-current="true"]) :is(.header-menu-nav-item-content, .header-nav-folder-title-text, .header-nav-folder-item-content) {
+  font-weight: 600 !important;
+  font-synthesis: weight !important;
+}
+@media (hover: hover) {
+  #header :is(.header-nav-item, .header-menu-nav-item) > a:hover {
+    transform: scale(1.045);
+    -webkit-text-stroke-width: .012em;
+  }
+}
+#header :is(.header-nav-item, .header-menu-nav-item) > a:focus-visible {
+  transform: scale(1.045);
+  -webkit-text-stroke-width: .012em;
+  outline: 1px solid currentColor !important;
+  outline-offset: 4px !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  #header :is(.header-nav-item, .header-menu-nav-item) > a {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Same-origin document changes use native snapshot crossfades. No router,
+   click delay, fetch replacement, URL rewriting or media restart is added. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+  ::view-transition-group(root) { animation-duration: 280ms; }
+  ::view-transition-old(root) {
+    animation: none !important;
+    mix-blend-mode: normal;
+  }
+  ::view-transition-new(root) {
+    animation: effacer-page-arrive 280ms cubic-bezier(.2,.65,.3,1) both !important;
+    mix-blend-mode: normal;
+  }
+}
+@keyframes effacer-page-arrive { from { opacity: 0; } to { opacity: 1; } }
+/* Reduced-motion visitors keep instant navigation and static
+   emphasis. No blanket animation override touches any artwork or video. */

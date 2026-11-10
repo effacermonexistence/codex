@@ -1,0 +1,23 @@
+{
+  "delta_signs_preserved": true,
+  "direction_counts_preserved": true,
+  "heldout_identity_preserved": true,
+  "max_absolute_differences": {
+    "augmented_chi2": 1.1368683772161603e-12,
+    "baseline_chi2": 0.0,
+    "delta_chi2": 1.1368683772161603e-12,
+    "mass_leak_fraction": 7.808546647841781e-16,
+    "raw_mass_leak_fraction": 7.791076811480835e-16,
+    "residual_reduction_pct": 1.956435013994451e-12
+  },
+  "policy_identity_preserved": true,
+  "proof_boundary": "Public replay of already-published data and policy; not a new heldout run or new scientific result.",
+  "public_replay_audit_status": "PASS",
+  "public_replay_byte_identical_to_published_artifact": false,
+  "public_replay_internal_byte_identical": true,
+  "sample_identity_preserved": true,
+  "schema_version": "xcop-hse-public-reproduction-check-v1",
+  "scope": "PUBLIC_REPRODUCTION_NUMERICAL_PARITY_ONLY",
+  "status": "PASS_NUMERICAL_PARITY",
+  "within_numerical_tolerance_1e_10": true
+}

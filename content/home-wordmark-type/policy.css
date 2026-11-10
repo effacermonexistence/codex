@@ -1,0 +1,33 @@
+/* Original logo pixels, reflowed at word boundaries like a display heading.
+   Existing --cern-display-size supplies separate desktop, tablet and mobile scales. */
+body[data-home-cern-layout="1"] [data-home-cern-layout-content="698ccb7b40bdb1271700798c"] .home-wordmark-type,
+body[data-home-cern-layout="1"] [data-home-cern-layout-content="698cfbd93ed2b60dc83ee387"] .home-wordmark-type {
+  display:block;
+  width:min(100%,calc(var(--cern-display-size) * 5.6571831));
+  max-width:100%;
+  height:auto;
+  margin-top:0.08em;
+  font-size:var(--cern-display-size);
+  object-fit:contain;
+}
+
+/* mobile-center-wordmark-fit: the original 2500x350 bitmap stays intact.
+   Keep the authored 24px grid slot and center. Let the full proportional
+   image (including its transparent padding) paint without the native crop. */
+@media (max-width:767px) {
+#block-yui_3_17_2_1_1748918520282_1824 .fluid-image-container,
+#block-279ac5b619f6d10b8b7a .fluid-image-container,
+#block-yui_3_17_2_1_1748918520282_1824 .content-fill,
+#block-279ac5b619f6d10b8b7a .content-fill { overflow:visible !important; }
+#block-yui_3_17_2_1_1748918520282_1824 .fluid-image-container,
+#block-279ac5b619f6d10b8b7a .fluid-image-container { mask:none !important; -webkit-mask:none !important; }
+#block-yui_3_17_2_1_1748918520282_1824 .content-fill,
+#block-279ac5b619f6d10b8b7a .content-fill { position:relative !important; }
+#block-yui_3_17_2_1_1748918520282_1824 .content-fill img,
+#block-279ac5b619f6d10b8b7a .content-fill img {
+  position:absolute !important;
+  inset:auto !important; left:0 !important; top:50% !important;
+  width:100% !important; height:auto !important; max-height:none !important;
+  object-fit:contain !important; transform:translateY(-50%) !important;
+}
+}

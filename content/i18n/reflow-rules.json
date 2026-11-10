@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "englishUnchanged": true,
+  "scope": "Only source-verified recently inserted English layout breaks on the home variants; not math/code/list or new wording",
+  "rules": [
+    {
+      "route": "/",
+      "id": "s_d9150efc7651cb8ddf93",
+      "previousSourceId": "s_ccfd0f68b32a31e27d5b",
+      "sourceRawSha256": "9cc005433614368a1acab74beb5bd6c3d62c9456d98f6a0616d2b04cecf0dc83",
+      "raw": "It just hid the parts of reality <br>it couldn’t explain.",
+      "after": "It just hid the parts of reality it couldn’t explain.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_1c96e3b535f6bdef5dd1",
+      "previousSourceId": "s_768515000791d3577d04",
+      "sourceRawSha256": "248f295008fdbd0d47d40fb0b9e63bd6780a3905b41e9541be8b6cb57acbdff2",
+      "raw": "Those smooth curves <br>and clean averages?",
+      "after": "Those smooth curves and clean averages?",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_ae8a9c4367d740c897ff",
+      "previousSourceId": "s_67a8ae2340ff50467507",
+      "sourceRawSha256": "01cda453ffdfea6c323e825fad6538eabd89cc7d31f7c5dba0e6213a3723b778",
+      "raw": "just shortcuts we used <br>because they were easy.",
+      "after": "just shortcuts we used because they were easy.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_c0435f30445aebdca0f2",
+      "previousSourceId": "s_8deb7c5744463a480fa1",
+      "sourceRawSha256": "910fb03ad304bfa53613ad805d3cb312b4a40868b667a89992a660471968e9ba",
+      "raw": "A normal distribution only works <br>if the world follows five rules:",
+      "after": "A normal distribution only works if the world follows five rules:",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_faa0ef4db08fc7ed588f",
+      "previousSourceId": "s_00881178059758530237",
+      "sourceRawSha256": "46f362beed1245b1022e0281e6b41fffed3d8008f6ae5f406fa3438d91f48b7a",
+      "raw": "independence, sameness, <br>no change over time, <br>no feedback, no observer effect.",
+      "after": "independence, sameness, no change over time, no feedback, no observer effect.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_972a701b46255bb3edb4",
+      "previousSourceId": "s_3a57aeb7289c18138905",
+      "sourceRawSha256": "9a1054533ba7d48f926af788c95dbafca77ff6e6f4592e6b41a15167f82c5db2",
+      "raw": "Real life breaks all five <br>the moment someone interacts <br>with the system.",
+      "after": "Real life breaks all five the moment someone interacts with the system.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_82c1ae2e120ebbf7e96f",
+      "previousSourceId": "s_7c70b09460ca0670cd38",
+      "sourceRawSha256": "82241487707e660542b6c26d0a54bcb33aba8a935a36acdff1f48c28caef927c",
+      "raw": "it’s the system revealing <br>how it <em>actually</em> works.",
+      "after": "it’s the system revealing how it <em>actually</em> works.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_46330f79c7912a9ab1b3",
+      "previousSourceId": "s_7fd1159d43089e9a05ee",
+      "sourceRawSha256": "a64cb9af34d1fa514ed7799d42451eea04f630a982f6ba6fba220f9a2712e609",
+      "raw": "any system that reacts to us <br>cannot stay Gaussian.",
+      "after": "any system that reacts to us cannot stay Gaussian.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/",
+      "id": "s_62e21c05aa31101b217f",
+      "previousSourceId": "s_99c69fbf283b344eaf07",
+      "sourceRawSha256": "5cdf980e6db9b092160d5ae1a909610a8e5d480e6576f8d57583fe035d7c7790",
+      "raw": "Interaction alone is enough <br>to collapse the axiom.",
+      "after": "Interaction alone is enough to collapse the axiom.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_d9150efc7651cb8ddf93",
+      "previousSourceId": "s_ccfd0f68b32a31e27d5b",
+      "sourceRawSha256": "9cc005433614368a1acab74beb5bd6c3d62c9456d98f6a0616d2b04cecf0dc83",
+      "raw": "It just hid the parts of reality <br>it couldn’t explain.",
+      "after": "It just hid the parts of reality it couldn’t explain.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_1c96e3b535f6bdef5dd1",
+      "previousSourceId": "s_768515000791d3577d04",
+      "sourceRawSha256": "248f295008fdbd0d47d40fb0b9e63bd6780a3905b41e9541be8b6cb57acbdff2",
+      "raw": "Those smooth curves <br>and clean averages?",
+      "after": "Those smooth curves and clean averages?",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_ae8a9c4367d740c897ff",
+      "previousSourceId": "s_67a8ae2340ff50467507",
+      "sourceRawSha256": "01cda453ffdfea6c323e825fad6538eabd89cc7d31f7c5dba0e6213a3723b778",
+      "raw": "just shortcuts we used <br>because they were easy.",
+      "after": "just shortcuts we used because they were easy.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_c0435f30445aebdca0f2",
+      "previousSourceId": "s_8deb7c5744463a480fa1",
+      "sourceRawSha256": "910fb03ad304bfa53613ad805d3cb312b4a40868b667a89992a660471968e9ba",
+      "raw": "A normal distribution only works <br>if the world follows five rules:",
+      "after": "A normal distribution only works if the world follows five rules:",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_faa0ef4db08fc7ed588f",
+      "previousSourceId": "s_00881178059758530237",
+      "sourceRawSha256": "46f362beed1245b1022e0281e6b41fffed3d8008f6ae5f406fa3438d91f48b7a",
+      "raw": "independence, sameness, <br>no change over time, <br>no feedback, no observer effect.",
+      "after": "independence, sameness, no change over time, no feedback, no observer effect.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_972a701b46255bb3edb4",
+      "previousSourceId": "s_3a57aeb7289c18138905",
+      "sourceRawSha256": "9a1054533ba7d48f926af788c95dbafca77ff6e6f4592e6b41a15167f82c5db2",
+      "raw": "Real life breaks all five <br>the moment someone interacts <br>with the system.",
+      "after": "Real life breaks all five the moment someone interacts with the system.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_82c1ae2e120ebbf7e96f",
+      "previousSourceId": "s_7c70b09460ca0670cd38",
+      "sourceRawSha256": "82241487707e660542b6c26d0a54bcb33aba8a935a36acdff1f48c28caef927c",
+      "raw": "it’s the system revealing <br>how it <em>actually</em> works.",
+      "after": "it’s the system revealing how it <em>actually</em> works.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_46330f79c7912a9ab1b3",
+      "previousSourceId": "s_7fd1159d43089e9a05ee",
+      "sourceRawSha256": "a64cb9af34d1fa514ed7799d42451eea04f630a982f6ba6fba220f9a2712e609",
+      "raw": "any system that reacts to us <br>cannot stay Gaussian.",
+      "after": "any system that reacts to us cannot stay Gaussian.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    },
+    {
+      "route": "/exist",
+      "id": "s_62e21c05aa31101b217f",
+      "previousSourceId": "s_99c69fbf283b344eaf07",
+      "sourceRawSha256": "5cdf980e6db9b092160d5ae1a909610a8e5d480e6576f8d57583fe035d7c7790",
+      "raw": "Interaction alone is enough <br>to collapse the axiom.",
+      "after": "Interaction alone is enough to collapse the axiom.",
+      "bridge": "Exact same visible English wording and non-break protected markup; recent forced English line breaks reflow in translation only"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+/* Exact /uceq-1 repair: retain the original columns, fonts and diagram.
+   The diagram belongs to the article, not an unrelated fixed grid row. */
+.fe-6976d08c21f9967c4819c354 {
+  grid-template-rows:repeat(3,minmax(24px,auto)) auto auto auto!important;
+  min-height:0!important;
+  height:auto!important;
+}
+.fe-6976d08c21f9967c4819c354>.fe-block-ca90f515a454026e1f1e {
+  grid-area:4/2/5/10!important;
+  min-height:0!important;
+  height:auto!important;
+  align-self:start;
+}
+#block-ca90f515a454026e1f1e {min-height:0!important;height:auto!important}
+.fe-6976d08c21f9967c4819c354>.fe-block-7f3abeef82f5c85e2181 {
+  grid-area:5/2/6/10!important;
+  height:auto!important;
+  min-height:0!important;
+  aspect-ratio:5000/700;
+  margin-block:72px 28px;
+  align-self:start;
+}
+.fe-6976d08c21f9967c4819c354>.fe-block-91e7fd299834f7b319a7 {
+  grid-area:6/3/7/9!important;
+  min-height:0!important;
+  height:auto!important;
+  align-self:start;
+}
+.fe-6976d08c21f9967c4819c354 .uceq-flow-figure {
+  display:block;
+  position:relative;
+  inline-size:100%;
+  margin:clamp(32px,5vh,64px) 0;
+  padding:0;
+}
+.fe-6976d08c21f9967c4819c354 .uceq-flow-image {
+  display:block!important;
+  position:static!important;
+  inline-size:min(100%,calc((100vh - 112px)*0.6662312182))!important;
+  inline-size:min(100%,calc((100svh - 112px)*0.6662312182))!important;
+  block-size:auto!important;
+  aspect-ratio:1020/1531;
+  max-inline-size:100%!important;
+  max-block-size:calc(100vh - 112px)!important;
+  max-block-size:calc(100svh - 112px)!important;
+  object-fit:contain!important;
+  object-position:center!important;
+  margin-inline:auto!important;
+  transform:none!important;
+}
+@media(min-width:768px) {
+  .fe-6976d08c21f9967c4819c354 {
+    grid-template-rows:repeat(6,minmax(calc(var(--container-width)*var(--row-height-scaling-factor)),auto)) auto auto auto!important;
+  }
+  .fe-6976d08c21f9967c4819c354>.fe-block-ca90f515a454026e1f1e {grid-area:7/7/8/21!important}
+  .fe-6976d08c21f9967c4819c354>.fe-block-7f3abeef82f5c85e2181 {grid-area:8/7/9/21!important;margin-block-start:96px}
+  .fe-6976d08c21f9967c4819c354>.fe-block-91e7fd299834f7b319a7 {grid-area:9/11/10/17!important}
+}

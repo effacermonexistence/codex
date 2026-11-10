@@ -1,0 +1,85 @@
+{
+  "evidence_class": "OVERLAPPING_CHANNEL_DIAGNOSTIC_NOT_INDEPENDENT_LANES",
+  "interpretation": "These rows show where the term was inserted and how the stored objectives moved. Most cluster rows are overlapping views of one underlying likelihood, and the Friedmann row uses the separate Program C fluid term. They must not be counted as six independent validations.",
+  "invalid_claims": [
+    "six fully independent proof lanes",
+    "cosmology proof",
+    "Einstein equation proof",
+    "6/6 no downlift public claim",
+    "M1 Plummer improves H(z)"
+  ],
+  "lanes": [
+    {
+      "chi2_augmented": 22.52369165071748,
+      "chi2_baseline": 23.603414115910958,
+      "downlift": false,
+      "interpretation": "cluster component raw reduction",
+      "lane_id": "einstein_field_joint",
+      "neutral_or_saturated": false,
+      "objective_key": "cluster_joint_all_terms",
+      "raw_delta_chi2": -1.079722465193477
+    },
+    {
+      "chi2_augmented": 14.486527955464066,
+      "chi2_baseline": 14.495266300199905,
+      "downlift": false,
+      "interpretation": "Program C separate background-fluid lane",
+      "lane_id": "friedmann_background",
+      "neutral_or_saturated": false,
+      "objective_key": "hz_background_diagonal_cc",
+      "raw_delta_chi2": -0.00873834473583912
+    },
+    {
+      "chi2_augmented": 0.0776369443656671,
+      "chi2_baseline": 0.08160320518939561,
+      "downlift": false,
+      "interpretation": "cluster component raw reduction",
+      "lane_id": "poisson_mass_source",
+      "neutral_or_saturated": false,
+      "objective_key": "poisson_mass_constraints_lensing_plus_outer",
+      "raw_delta_chi2": -0.003966260823728515
+    },
+    {
+      "chi2_augmented": 0.012711217514786348,
+      "chi2_baseline": 0.013588216829900352,
+      "downlift": false,
+      "interpretation": "cluster component raw reduction",
+      "lane_id": "lensing_only",
+      "neutral_or_saturated": false,
+      "objective_key": "strong_lensing_aperture_mass_only",
+      "raw_delta_chi2": -0.0008769993151140042
+    },
+    {
+      "chi2_augmented": 1.6504756887461375e-15,
+      "chi2_baseline": 1.057365745132864e-16,
+      "downlift": false,
+      "interpretation": "neutral/saturated: no meaningful sign",
+      "lane_id": "outer_mass_nfw_only",
+      "neutral_or_saturated": true,
+      "objective_key": "nfw_concentration_prior_plus_outer_mass",
+      "raw_delta_chi2": 1.544739114232851e-15
+    },
+    {
+      "chi2_augmented": 2.765383154550254,
+      "chi2_baseline": 2.8398938327581336,
+      "downlift": false,
+      "interpretation": "cluster component raw reduction",
+      "lane_id": "jeans_dynamics_only",
+      "neutral_or_saturated": false,
+      "objective_key": "jeans_velocity_dispersion_only",
+      "raw_delta_chi2": -0.07451067820787971
+    }
+  ],
+  "record_id": "CANONICAL_EQUATION_CHANNEL_DIAGNOSTICS",
+  "summary": {
+    "cluster_component_lanes": 5,
+    "cluster_component_meaningful_downlifts": 0,
+    "cluster_component_raw_reductions_non_neutral": 4,
+    "neutral_saturated_lanes": [
+      "outer_mass_nfw_only"
+    ],
+    "nfw_outer_delta_now": 1.544739114232851e-15
+  },
+  "upstream_artifact_sha256": "35924b49ddb2f74370e8d5dfa506173cc363b954e553ee07abe7ef83d5ea647d",
+  "verdict": "NUMERICAL_CONDITION_RERUN_COMPLETED_NOT_PUBLIC_PROOF"
+}

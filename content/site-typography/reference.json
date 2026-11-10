@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "referenceRoute": "/",
+  "referenceTitle": "THIS WORLD HAS ALREADY BEEN RENDERED",
+  "referenceBody": "(The Logic of Rendering)",
+  "sourceStylesheet": "https://static1.squarespace.com/static/versioned-site-css/681a1e765491a2330ed19075/118/5c5a519771c10ba3470d8101/681a1e775491a2330ed1909d/1834/site.css?nocustom=true",
+  "sourceStylesheetSha256": "45d14b98258814e270e80d898307b6ad4c0487f609878ac5b02360cf2391959f",
+  "largeTextSizeValue": 1.4,
+  "normalTextSize": "1rem",
+  "referenceMaxPageWidth": "1800px",
+  "logoPolicy": "Only body logos within main use the first landing responsive width and original image ratio. The shared footer retains its frozen original /archive geometry.",
+  "scope": "First landing aliases retain brand size/position and native typography. The first hero moves copy/CTA to halve the brand-to-title gap and reduce Logic-to-CTA spacing by one third. Other main-page editorial headings and large paragraphs use the reference title size; narrative paragraphs and list items use the reference body size. Fonts, labels, controls, navigation, equations, code and tables retain their own treatment.",
+  "titleRoles": [
+    "h1-h6 editorial headings",
+    "p.sqsrte-large",
+    "p.cr-subtitle artwork names"
+  ],
+  "bodyRoles": [
+    "other narrative paragraphs",
+    "narrative list items"
+  ],
+  "editorialWordmarkException": {
+    "asset": "/s/wordmark-typeset-dba4d75f018b868a.svg",
+    "routes": [
+      "/",
+      "/exist",
+      "/exist-fr"
+    ],
+    "rule": "Retain original three word crops and native CERN editorial panel geometry. Exclude from horizontal home-logo normalization."
+  },
+  "footerException": {
+    "rule": "Footer is frozen at approved original shared-footer geometry and type. All body logo, typography, readability and layout normalization must exclude footer.",
+    "lock": "content/site-footer/LOCK.json",
+    "requiresNewExplicitOwnerRequestToChange": true
+  },
+  "sectionEntrances": {
+    "routes": [
+      "/code",
+      "/archive",
+      "/talek-1",
+      "/talek-1-2"
+    ],
+    "rule": "Full first-landing body wordmark width and original ratio; section names use the existing landing title size. No compact logo or independently enlarged section-name scale.",
+    "spacing": "Mobile entrances match the approved APPLY grid and typography; no arbitrary translate lifts. Desktop remains at approved landing-rhythm layout. Preserve main/APPLY and all footers.",
+    "desktopVisibleSectionNames": [
+      "/code",
+      "/archive",
+      "/talek-1",
+      "/talek-1-2"
+    ],
+    "mobileVisibleSectionNames": [],
+    "mobileOmittedSectionNames": [
+      "/code",
+      "/archive",
+      "/talek-1",
+      "/talek-1-2"
+    ],
+    "mobileReference": {
+      "route": "/apply",
+      "file": "content/section-identity/apply-reference.json",
+      "backgroundPolicy": "Keep each existing background",
+      "alignment": "left",
+      "headingFamily": "Gilda Display",
+      "bodyFamily": "PT Serif"
+    }
+  },
+  "landingSpacing": {
+    "routes": [
+      "/",
+      "/exist",
+      "/exist-fr"
+    ],
+    "brandToTitleGapFactor": 0.5,
+    "logicToActionGapFactor": 0.6666666666666666,
+    "rule": "Preserve brand geometry, native grid, DOM order and text sizes. Lift title/Logic copy together; lift SEE MORE/VOIR PLUS by the same amount plus one third of its original gap from Logic. Recover unshifted gaps before every resize measurement."
+  }
+}

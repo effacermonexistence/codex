@@ -1,0 +1,324 @@
+{
+  "audit_label": "CORRECT_FORMAL_SOURCE_DIRECTIONAL_DELTA_NEGATIVE_BUT_MATERIALITY_NOT_ESTABLISHED",
+  "boundaries": [
+    "Not fresh/unseen: Draco and Ursa Minor identities were already exposed during a superseded internal prototype.",
+    "Not adopted: the dev-safe policy selected f=0.",
+    "Not a best-fit augmented-model comparison: nuisance parameters are frozen at the baseline fit.",
+    "Not material uplift or physical evidence: the direct Plummer residual reduction is approximately 0.0051 percent.",
+    "Matched controls are smaller in this corrective sample, but the absolute effect is too small and the sample is post-exposure; kernel specificity is not established."
+  ],
+  "checks": [
+    {
+      "check": "R2 executed-source pre gate PASS",
+      "pass": true
+    },
+    {
+      "check": "R2 executed-source post gate PASS",
+      "pass": true
+    },
+    {
+      "check": "sample lock status",
+      "pass": true
+    },
+    {
+      "check": "development/evaluation identity overlap zero",
+      "pass": true
+    },
+    {
+      "check": "corrective evaluation identity locked",
+      "pass": true
+    },
+    {
+      "check": "policy frozen before corrective scoring",
+      "pass": true
+    },
+    {
+      "check": "policy binds sample manifest",
+      "pass": true
+    },
+    {
+      "check": "evaluation binds frozen policy",
+      "pass": true
+    },
+    {
+      "check": "evaluation binds sample manifest",
+      "pass": true
+    },
+    {
+      "check": "same direct formal-source formula in dev/policy/evaluation",
+      "pass": true
+    },
+    {
+      "check": "response projection explicitly disabled",
+      "pass": true
+    },
+    {
+      "check": "evaluation does not access dev scores",
+      "pass": true
+    },
+    {
+      "check": "post-exposure claim boundary preserved",
+      "pass": true
+    },
+    {
+      "check": "no response-adapter callable exists in corrected common module",
+      "pass": true
+    },
+    {
+      "check": "candidate halo mass is direct baseline/convolved mixture",
+      "pass": true
+    },
+    {
+      "check": "Jeans source uses augmented halo plus unchanged stellar component",
+      "pass": true
+    },
+    {
+      "check": "operator implements X+f(KX-X)",
+      "pass": true
+    },
+    {
+      "check": "baseline optimizer tolerance recorded at ftol 1e-12",
+      "pass": true
+    },
+    {
+      "check": "dev-safe policy preserves baseline f=0",
+      "pass": true
+    },
+    {
+      "check": "direct nonzero diagnostic frozen from dev",
+      "pass": true
+    },
+    {
+      "check": "development does not support adoption of nonzero term",
+      "pass": true
+    },
+    {
+      "check": "aggregate baseline arithmetic safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate candidate arithmetic safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate raw delta arithmetic safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate percent arithmetic safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "improved count safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "worsened count safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate baseline arithmetic direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate candidate arithmetic direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate raw delta arithmetic direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate percent arithmetic direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "improved count direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "worsened count direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "aggregate baseline arithmetic direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "aggregate candidate arithmetic direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "aggregate raw delta arithmetic direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "aggregate percent arithmetic direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "improved count direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "worsened count direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "aggregate baseline arithmetic direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "aggregate candidate arithmetic direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "aggregate raw delta arithmetic direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "aggregate percent arithmetic direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "improved count direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "worsened count direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "Plummer direction negative in both evaluation galaxies",
+      "pass": true
+    },
+    {
+      "check": "safe f=0 exactly preserves baseline",
+      "pass": true
+    },
+    {
+      "check": "f=0 prediction recovery exact",
+      "pass": true
+    },
+    {
+      "check": "renormalized finite-grid mass conservation gate",
+      "pass": true
+    },
+    {
+      "check": "raw finite-grid leakage within predeclared gate",
+      "pass": true
+    },
+    {
+      "check": "replay preserves safe policy identity",
+      "pass": true
+    },
+    {
+      "check": "replay preserves direct policy identity",
+      "pass": true
+    },
+    {
+      "check": "replay preserves aggregate delta sign safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "replay preserves direction counts safe_plummer",
+      "pass": true
+    },
+    {
+      "check": "replay preserves aggregate delta sign direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "replay preserves direction counts direct_nonzero_plummer",
+      "pass": true
+    },
+    {
+      "check": "replay preserves aggregate delta sign direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "replay preserves direction counts direct_nonzero_gaussian",
+      "pass": true
+    },
+    {
+      "check": "replay preserves aggregate delta sign direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "replay preserves direction counts direct_nonzero_top_hat",
+      "pass": true
+    },
+    {
+      "check": "Plummer sign exceeds aggregate replay drift by >1e5",
+      "pass": true
+    }
+  ],
+  "claim_allowed": false,
+  "development_verdict": {
+    "direct_nonzero_policy": {
+      "dev_improved_count": 1,
+      "dev_macro_chi2_per_point": 0.7861452976844371,
+      "dev_macro_delta_chi2_per_point": 9.70629179101179e-05,
+      "dev_worsened_count": 3,
+      "eta": 0.03125,
+      "f": 0.05,
+      "valid": true
+    },
+    "interpretation": "Development selects f=0. The nonzero formal-source candidate is retained only as a forced directional diagnostic.",
+    "safe_policy": {
+      "dev_improved_count": 0,
+      "dev_macro_chi2_per_point": 0.786048234766527,
+      "dev_macro_delta_chi2_per_point": 0.0,
+      "dev_worsened_count": 0,
+      "eta": 0.03125,
+      "f": 0.0,
+      "valid": true
+    }
+  },
+  "evaluation": {
+    "baseline_total_chi2": 22.835647795309153,
+    "galaxies": [
+      "Draco",
+      "Ursa Minor"
+    ],
+    "gaussian_raw_delta_chi2": -0.00016192564057249115,
+    "plummer_delta_magnitude_vs_gaussian": 7.1600697632947945,
+    "plummer_delta_magnitude_vs_top_hat": 9.507627673406214,
+    "plummer_improved_worsened": [
+      2,
+      0
+    ],
+    "plummer_raw_delta_chi2": -0.0011593988829652346,
+    "plummer_residual_reduction_pct": 0.005077144705320756,
+    "plummer_total_chi2": 22.834488396426188,
+    "top_hat_raw_delta_chi2": -0.00012194407719690048
+  },
+  "executed_object": {
+    "augmented": "same Jeans equation with M_halo_aug=(1-f)M_NFW+f*M[K_d*rho_NFW]",
+    "baseline": "standard spherical Jeans equation with fixed fitted stellar+NFW cumulative mass source",
+    "candidate_nuisance_refit": false,
+    "orthogonal_object": "rho_NFW only",
+    "response_space_adapter": false
+  },
+  "formula": "rho_perp=f*(K_d*rho_NFW-rho_NFW); M_perp=4*pi*integral(rho_perp*r^2 dr); Jeans RHS=-nu*G*(M_base+M_perp)/r^2",
+  "proof_mode": "POST_EXPOSURE_CORRECTIVE_FORMAL_SOURCE_REPRODUCTION",
+  "replay": {
+    "classification": "NUMERICALLY_EQUIVALENT_NON_BYTE_IDENTICAL",
+    "dev_byte_identical": false,
+    "evaluation_byte_identical": false,
+    "max_aggregate_delta_chi2_drift": 4.658406993485187e-09,
+    "plummer_delta_to_replay_drift_ratio": 248883.12347690138,
+    "policy_identity_preserved": true,
+    "sign_and_direction_counts_preserved": true
+  },
+  "schema_version": "jeans-formal-source-corrective-audit-v1",
+  "source_hashes": {
+    "common_code": "6ce3562e7850145ee4f3f182b574ef23405bec643e3316f2684f56528346fe76",
+    "dev": "6540fa83e8cf9ffd45b173faec6434b810bca8d1ecc249f1ca6e5b27029948bb",
+    "evaluation": "46f09a8c2694daccd9b2380e5a1efdc7b9651dbb102766c8dbb4da9b78572699",
+    "evaluation_code": "05d37450f0a59487a28736fdfc7d8aa034a0309c2c531100249ec0c81a2e6ac5",
+    "policy": "6d024ca4687f843f33bc1b1abd64b41832edb310ee13733f928790c2786ce13d",
+    "sample_lock": "0160ec91b790bc301bfe9b5ed9e3e99f95545c31e0809fde1ac0448352f7fc58"
+  },
+  "status": "PASS"
+}

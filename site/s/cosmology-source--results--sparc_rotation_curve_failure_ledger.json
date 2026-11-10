@@ -1,0 +1,96 @@
+{
+  "boundary": "All listed failures occurred before heldout access; none changed the equation, score, kernel, or sample rule.",
+  "entries": [
+    {
+      "error": "D512-2: too few rows",
+      "failure_family": "SAMPLE_LOCK_LOADER_ORDER_BUG",
+      "new_task_source_selection_sha256": "ffea9ad75c0a8158c09d8db69811247db4d3cca84453ce81ca54128296bc9e88",
+      "physics_changed": false,
+      "previous_task_source_selection_sha256": "be109dde16f519ae73a43b7f4f9f68dd0dcf6933d22fa33890108357641029f5",
+      "repaired_source_sha256": "b37466e7326d2ada4182c44a7247403403b23a56852cf6b358b72fce010cceb4",
+      "scientific_scoring_started": false,
+      "status": "STOPPED_AND_REPAIRED_BEFORE_SOURCE_INVOCATION",
+      "timestamp_utc": "2026-07-25T11:20:41.961874+00:00"
+    },
+    {
+      "dev_scores_partially_computed": true,
+      "error": "no valid nonzero policy because every f>0 row failed the mass-conservation gate",
+      "failure_family": "FINITE_GRID_KERNEL_NORMALIZATION_FAILURE",
+      "heldout_accessed": false,
+      "new_task_source_selection_sha256": "106a178ff8f70fcdc70b7e0048c605f54796a23f09c0b52285382e22b6e3ffe0",
+      "parameter_grid_changed": false,
+      "physics_changed": false,
+      "repair": "finite-grid convolution mass renormalization plus 3200-point radial grid; raw leakage preserved and hard-gated at 2%",
+      "status": "STOPPED_AND_REPAIRED_IN_DEV_BEFORE_HELDOUT",
+      "timestamp_utc": "2026-07-25T11:23:56.450325+00:00"
+    },
+    {
+      "error": "numpy bool boundary-hit values were not JSON serializable",
+      "failure_family": "ARTIFACT_SERIALIZATION_TYPE_ERROR",
+      "heldout_accessed": false,
+      "new_task_source_selection_sha256": "9a78faaa0bd4b6396c3902691969b969103335c4bf669a6fddd44ee86815dd46",
+      "physics_changed": false,
+      "repair": "native bool cast only",
+      "scoring_changed": false,
+      "status": "STOPPED_AFTER_DEV_COMPUTE_BEFORE_ARTIFACT_WRITE",
+      "timestamp_utc": "2026-07-25T11:28:13.523582+00:00"
+    },
+    {
+      "equation_changed": false,
+      "expanded_eta_grid": [
+        0.03125,
+        0.0625,
+        0.125,
+        0.25,
+        0.5,
+        1.0,
+        2.0,
+        4.0,
+        8.0
+      ],
+      "expanded_f_grid": [
+        0.0,
+        0.05,
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.75,
+        1.0
+      ],
+      "heldout_accessed": false,
+      "kernel_changed": false,
+      "objective_changed": false,
+      "old_dev_artifact_sha256": "0655ec4961b144ab6ded4d3eada034006cf5cf37e9d693a7c7a15aa469eaa2a6",
+      "old_forced_nonzero_optimum": {
+        "dev_improved_count": 9,
+        "dev_macro_chi2_per_point": 0.9561669547575327,
+        "dev_macro_delta_chi2_per_point": -0.04490769577379461,
+        "dev_worsened_count": 2,
+        "eta": 0.125,
+        "f": 0.5,
+        "valid": true
+      },
+      "old_safe_optimum": {
+        "dev_improved_count": 9,
+        "dev_macro_chi2_per_point": 0.9561669547575327,
+        "dev_macro_delta_chi2_per_point": -0.04490769577379461,
+        "dev_worsened_count": 2,
+        "eta": 0.125,
+        "f": 0.5,
+        "valid": true
+      },
+      "physical_fraction_bound": [
+        0.0,
+        1.0
+      ],
+      "reason": "safe and forced optima both hit f upper boundary 0.5 and eta lower boundary 0.125",
+      "sample_changed": false,
+      "status": "DEV_BOUNDARY_EXPANSION_AUTHORIZED_BEFORE_HELDOUT",
+      "timestamp_utc": "2026-07-25T11:32:57.797421+00:00"
+    }
+  ],
+  "schema_version": "sparc-equation-adapter-public-failure-ledger-v1"
+}

@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "masterSha256": "6117ab52fecc5feafd4c5fd49f3414863b2655f49a2be8f54f34bb915a856e8e",
+  "masterBytes": 36352537,
+  "profiles": {
+    "desktop": {
+      "url": "/s/hero-playback-original-6117ab52fecc5fea.mp4",
+      "bytes": 36352537,
+      "sha256": "6117ab52fecc5feafd4c5fd49f3414863b2655f49a2be8f54f34bb915a856e8e",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "duration": 18,
+      "sourceStreamCopied": true
+    },
+    "mobile": {
+      "url": "/s/hero-playback-original-6117ab52fecc5fea.mp4",
+      "bytes": 36352537,
+      "sha256": "6117ab52fecc5feafd4c5fd49f3414863b2655f49a2be8f54f34bb915a856e8e",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "duration": 18,
+      "sourceStreamCopied": true
+    }
+  },
+  "method": "Exact original fast-start H264 stream; first-party immutable Range delivery; accepted playback controller unchanged. No downscale or lossy re-encode.",
+  "previousProfiles": [
+    {
+      "url": "/s/hero-playback-desktop-369bfa8438cca63b.mp4",
+      "bytes": 11680768,
+      "sha256": "369bfa8438cca63b4fc5a493d9511390bbf7375814b9bf0edfb43e2db06a33cf",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "duration": 18
+    },
+    {
+      "url": "/s/hero-playback-mobile-f61f5826f84f771f.mp4",
+      "bytes": 4681368,
+      "sha256": "f61f5826f84f771f30147a3640a9b4d425f004ea2d44f80229ee19f2fd1d223c",
+      "width": 768,
+      "height": 432,
+      "fps": 30,
+      "duration": 18
+    }
+  ],
+  "poster": {
+    "url": "/s/hero-playback-poster-2246de29e3f0e9c3.png",
+    "bytes": 4726675,
+    "sha256": "2246de29e3f0e9c303dd470674e2eb9745d3029d6c0b94d9938e42d063cc0201",
+    "width": 1920,
+    "height": 1080,
+    "sourceFrame": 0,
+    "contentType": "image/png"
+  }
+}

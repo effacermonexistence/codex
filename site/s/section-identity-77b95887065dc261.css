@@ -1,0 +1,56 @@
+/* The first landing is the reference: full body wordmark, landing-size
+   title, then existing subtitle/body roles. Never resize the footer. */
+html body main .site-section-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 1rem;
+  text-align: center;
+}
+html body main .site-section-heading > .site-body-wordmark-link {
+  flex: none;
+  position: static;
+  transform: none !important;
+}
+html body main#page .site-section-heading .site-section-name[data-site-text-size="title"] {
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  font-family: "PT Serif", Georgia, serif;
+  font-size: var(--site-landing-title-size) !important;
+  font-weight: 400;
+  line-height: var(--body-font-line-height, 1.5em);
+  white-space: nowrap;
+}
+html body main [data-section-heading-grid] { height: auto; }
+html body main .cosmology > .site-section-heading { margin-bottom: clamp(3rem, 6vw, 5rem); }
+html body main [data-theory-acronym] { white-space: nowrap !important; }
+@media (max-width:767px) {
+  /* Entrance correction applies only to mobile. Desktop stays at the
+     approved landing-reference design from before this correction. */
+  html body main .site-section-heading { gap: .75rem; padding: 0; }
+  html body main .site-section-name[data-section-name-mobile-hide] { display: none; }
+  html body main .cosmology[data-section-entrance="cosmology"] {
+    padding-top: max(80px, calc(env(safe-area-inset-top) + 64px));
+  }
+  html body main .cosmology > .site-section-heading { margin-bottom: 24px; }
+  html body main [data-section-rise] { --section-content-lift: 0px; }
+  html body main [data-section-rise="theory"] { --section-content-lift: 35px; }
+  html body main [data-section-rise="code"] { --section-content-lift: 105px; }
+  html body main [data-section-content-rise] {
+    translate: 0 calc(-1 * var(--section-content-lift));
+  }
+  /* Fit the complete long names, including DLCA-U and ISEI, in their
+     existing eight-column button slots. Retain the shared pill and action. */
+  html body main#page a.sqs-block-button-element[data-theory-action] {
+    font-size: min(16px, 3.786vw) !important;
+    white-space: nowrap !important;
+    overflow-wrap: normal;
+    word-break: normal;
+    hyphens: none;
+  }
+}

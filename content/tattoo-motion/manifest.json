@@ -1,0 +1,2546 @@
+{
+  "version": "tattoo-recursive-v1",
+  "at": "2026-10-21T05:13:06.908488+00:00",
+  "sourceContract": "/Users/LUA/Documents/Codex/effacer-cta-recursion-20261020/sources.json",
+  "method": "Original source photos + accepted liquid field/soft feather +24depth in-frame recursion + per-source orbiting focus + stronger continuous blend",
+  "providerCalls": 0,
+  "newCharges": 0,
+  "works": [
+    {
+      "id": "cr-001",
+      "route": "/continuous-render-001",
+      "sourceSha256": "779ae60147ee0cb108ef65dc2a8fe49b12c3a942efa748c32b12af33e1406973",
+      "desktop": {
+        "file": "tattoo-cr-001-desktop-e1cd6c7a9a6cbeb9.mp4",
+        "url": "/s/tattoo-cr-001-desktop-e1cd6c7a9a6cbeb9.mp4",
+        "bytes": 5434683,
+        "sha256": "e1cd6c7a9a6cbeb986beea6cedf6b36195c182bac5dee97a6df173c36d5d60bc",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-001-desktop-d025c6a999e1c5bf.jpg",
+        "posterUrl": "/s/tattoo-cr-001-desktop-d025c6a999e1c5bf.jpg",
+        "posterBytes": 56830,
+        "posterSha256": "d025c6a999e1c5bf8aeff15b75152d5d1d5ad68e72cce5dc33f230bbe5b25b4b",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.123046875e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "a1062221ce8e3990d2c25583fd64e5a4172d6d0313b872193b7f4c64fe57d51b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-001/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "57fc42e08aba44275bf53b51252a39a3ea76a16a9f04eeefa24980348ef5184c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-001/desktop/001.bin"
+          },
+          {
+            "bytes": 1240379,
+            "sha256": "61ca25c6faa058223d4248a70298afb8e74018812670218d982db4317bd9f73f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-001/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-001-mobile-fd5bede71d271223.mp4",
+        "url": "/s/tattoo-cr-001-mobile-fd5bede71d271223.mp4",
+        "bytes": 3618482,
+        "sha256": "fd5bede71d27122346433fc00215354fde2018e9b4aa04783e15d180deb3afb9",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-001-mobile-19094267e80b828b.jpg",
+        "posterUrl": "/s/tattoo-cr-001-mobile-19094267e80b828b.jpg",
+        "posterBytes": 47173,
+        "posterSha256": "19094267e80b828b537c10271ac7ad4eb6dadc52054d3453856aa4056acc6218",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 8.138020833333333e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "770f1107061cb5aef1246d0dd390d077ea0c4aef3b14184d61bcb647f667f7aa",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-001/mobile/000.bin"
+          },
+          {
+            "bytes": 1521330,
+            "sha256": "a99f308bcdc29d2f3404249e4a5509a30e8bdf1473a2da52418d12303af23deb",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-001/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-002",
+      "route": "/continuous-render-002",
+      "sourceSha256": "2036ef262c04d60b442608eac3bd764a763c87a6ec455cc02d297274e00c4f36",
+      "desktop": {
+        "file": "tattoo-cr-002-desktop-9290602d70f9c797.mp4",
+        "url": "/s/tattoo-cr-002-desktop-9290602d70f9c797.mp4",
+        "bytes": 4808922,
+        "sha256": "9290602d70f9c7972ae7544bf2d2272ab00b6a993eff145de6de9bb5392cff2b",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-002-desktop-801425ab506518ae.jpg",
+        "posterUrl": "/s/tattoo-cr-002-desktop-801425ab506518ae.jpg",
+        "posterBytes": 39006,
+        "posterSha256": "801425ab506518ae7430e68d06b00108fc0326302a23583c54c3fe5cdd8099e1",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 6.591796875e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "6f0b80d97f08a3ad987054929dca16ec4b3cb4d2b05ee9e7121a7b8fd9f193d9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-002/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "9ee1e1fe6322b403c37e4bfca964fc19a22fb125a70f5b07bac337038d9c2bee",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-002/desktop/001.bin"
+          },
+          {
+            "bytes": 614618,
+            "sha256": "ab2ef7008923f9585b2f56866ee986996551278b28ff59e6ed650a012c278ab2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-002/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-002-mobile-3e748b23259336fa.mp4",
+        "url": "/s/tattoo-cr-002-mobile-3e748b23259336fa.mp4",
+        "bytes": 3605492,
+        "sha256": "3e748b23259336faa07422eedd019ce01aa6154e11a69b1dda717729ee5c85ec",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-002-mobile-1326d4010f7fb8eb.jpg",
+        "posterUrl": "/s/tattoo-cr-002-mobile-1326d4010f7fb8eb.jpg",
+        "posterBytes": 42358,
+        "posterSha256": "1326d4010f7fb8eb1aa2bfdd88aa10199ecf6d43300332eb12e23a2c07540ab0",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 9.494357638888889e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "8712d7f38fadeb99c632770a7f5aee5e7f2b224f102e0811d7a920974707e69b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-002/mobile/000.bin"
+          },
+          {
+            "bytes": 1508340,
+            "sha256": "0151684f490972fac3086e260756c18201dea8eb04a059169db263b1506e0c41",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-002/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-003",
+      "route": "/continuous-render-003",
+      "sourceSha256": "8c74c588e3d93f851d331d7bac988735f33817cdae605336abe985f052550055",
+      "desktop": {
+        "file": "tattoo-cr-003-desktop-df15d44db0a12780.mp4",
+        "url": "/s/tattoo-cr-003-desktop-df15d44db0a12780.mp4",
+        "bytes": 5440507,
+        "sha256": "df15d44db0a12780805c27be824693847a6b166b29b74795ae5ac2c60277c6ce",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-003-desktop-c4d61a989e04c235.jpg",
+        "posterUrl": "/s/tattoo-cr-003-desktop-c4d61a989e04c235.jpg",
+        "posterBytes": 69630,
+        "posterSha256": "c4d61a989e04c23593b5b8e5b4af709765dcaf23a85c0edf458979e44bf27017",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.7822265625e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "22a30ca4b6ae1d7451c8bf56592c9f57aaf159d9ff7ce68c386ba9a0af9901be",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-003/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "2eaf3af3f1b8d9da14b55cff32ab26afabbe64b204c170c8027eb7548edc9156",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-003/desktop/001.bin"
+          },
+          {
+            "bytes": 1246203,
+            "sha256": "45fac94118f5be203fca14ec9f790ff57d739b31cb255f6fe2a464648e36e134",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-003/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-003-mobile-54f09afe258948a0.mp4",
+        "url": "/s/tattoo-cr-003-mobile-54f09afe258948a0.mp4",
+        "bytes": 3612960,
+        "sha256": "54f09afe258948a095992b8e21240f525961bd0d4c28b94f19b39228821df468",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-003-mobile-4e3d562bca7e09e1.jpg",
+        "posterUrl": "/s/tattoo-cr-003-mobile-4e3d562bca7e09e1.jpg",
+        "posterBytes": 45050,
+        "posterSha256": "4e3d562bca7e09e1bd3f4a7ca2449bb35ece15ebd2e977d4108e589b12ec3c44",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.1664496527777778e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "8e29ecda9fee1d2b92d3c219363616e68c9e491a9ea1734f983cd1fab18c4325",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-003/mobile/000.bin"
+          },
+          {
+            "bytes": 1515808,
+            "sha256": "18a28122c3ad7c55c6dc033e025896190b6e153543f3e31aa8c0b49983df6dde",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-003/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-004",
+      "route": "/continuous-render-004",
+      "sourceSha256": "c1432d3d5986f8d59248ba686b9a4261a289912daf5810c93ee278ab7daf1a6c",
+      "desktop": {
+        "file": "tattoo-cr-004-desktop-c5954698095e26e3.mp4",
+        "url": "/s/tattoo-cr-004-desktop-c5954698095e26e3.mp4",
+        "bytes": 5417647,
+        "sha256": "c5954698095e26e3177f86b05775082e8c4857f95439540896edf893d16f0ad9",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-004-desktop-99044189e48ccf29.jpg",
+        "posterUrl": "/s/tattoo-cr-004-desktop-99044189e48ccf29.jpg",
+        "posterBytes": 57718,
+        "posterSha256": "99044189e48ccf294b3c83a3a1cda95a7c458f4326747f329cbf108cd66a9485",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.513671875e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "72c156ed10756c692c4d737ddef3ef0ebf9ffeff5bb4892675475658e08a3734",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-004/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "de1f7cabcfe179c122a57a9070ad014743998354561c516e5ba489400de8e4dc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-004/desktop/001.bin"
+          },
+          {
+            "bytes": 1223343,
+            "sha256": "1585b8e87195202f47464ecd0bff3117389dc0234de81cc14c1d290db6306d10",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-004/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-004-mobile-36c002527c65cadd.mp4",
+        "url": "/s/tattoo-cr-004-mobile-36c002527c65cadd.mp4",
+        "bytes": 3627255,
+        "sha256": "36c002527c65cadda27be1791bae15348d54e05d392978b67cea29ac299310ea",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-004-mobile-4ca9c4bfd8983465.jpg",
+        "posterUrl": "/s/tattoo-cr-004-mobile-4ca9c4bfd8983465.jpg",
+        "posterBytes": 79860,
+        "posterSha256": "4ca9c4bfd89834659e1054858aa220d6270aa40fd11abccabdd9abb84464237a",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 2.6312934027777778e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "fea3c9e304242a15005640da32a0899885cbb99e96df5b7d1ab81d464884f34c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-004/mobile/000.bin"
+          },
+          {
+            "bytes": 1530103,
+            "sha256": "c2be516d4e842b69f4096fb650baaee0940be413cc5eb3e6055ad39e86c26b34",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-004/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-005",
+      "route": "/continuous-render-005",
+      "sourceSha256": "d37d55ff03c8a65fcf2482f5351dedf8e4d3326b630378692d2267167819ce35",
+      "desktop": {
+        "file": "tattoo-cr-005-desktop-923b78fdce8d4933.mp4",
+        "url": "/s/tattoo-cr-005-desktop-923b78fdce8d4933.mp4",
+        "bytes": 5414401,
+        "sha256": "923b78fdce8d49332448af1104c6d7a696351cb63d1a202851c6fd1007fcff3e",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-005-desktop-e03a783db3f12ac6.jpg",
+        "posterUrl": "/s/tattoo-cr-005-desktop-e03a783db3f12ac6.jpg",
+        "posterBytes": 51365,
+        "posterSha256": "e03a783db3f12ac642f9b46f934ccaa972b1b405458611270a7987268cd5607e",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.07421875e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "d02eb314b400f6986ae2a43a2a106352fc9bd1fd871a045593ded7d4bf636e7c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-005/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "517d1ee7fbef6050595c4c20052b5f2fc7b251edc47717c8f163e58855725194",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-005/desktop/001.bin"
+          },
+          {
+            "bytes": 1220097,
+            "sha256": "ec0e85a55a0cb1571fe7bc7fe61dfba14c574ebd6108a57243f064b396eb3550",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-005/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-005-mobile-b77ab81d20e1e293.mp4",
+        "url": "/s/tattoo-cr-005-mobile-b77ab81d20e1e293.mp4",
+        "bytes": 3612319,
+        "sha256": "b77ab81d20e1e2939957ba1198db01a8617d1553618045c8d91f01c2b0c8635d",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-005-mobile-d64619621ea4382d.jpg",
+        "posterUrl": "/s/tattoo-cr-005-mobile-d64619621ea4382d.jpg",
+        "posterBytes": 45469,
+        "posterSha256": "d64619621ea4382d6fd13374d500fb265f6db87715c44958262eeed02469a516",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 9.765625e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "2f05fd8049ff3b0d5aa061303735902b6fb571764344765753ff59b0855da490",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-005/mobile/000.bin"
+          },
+          {
+            "bytes": 1515167,
+            "sha256": "643055e90c0b1be34c3a0fe61123dac52deb6b68700946edb1d76238d7d3630a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-005/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-006",
+      "route": "/continuous-render-006",
+      "sourceSha256": "576491770e1de74fb240c4a3a0022411a1ad19b41b492bbce99a9cc9f26ec660",
+      "desktop": {
+        "file": "tattoo-cr-006-desktop-8cb166a8abf74c41.mp4",
+        "url": "/s/tattoo-cr-006-desktop-8cb166a8abf74c41.mp4",
+        "bytes": 5103001,
+        "sha256": "8cb166a8abf74c41f93caff974bbfdb2bb67101e10b54de1c2bc929f305c42ce",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-006-desktop-4d7bf849849c4a89.jpg",
+        "posterUrl": "/s/tattoo-cr-006-desktop-4d7bf849849c4a89.jpg",
+        "posterBytes": 43471,
+        "posterSha256": "4d7bf849849c4a890a5adb8e2b47dddd7c28ffed85e44efcba5de685f24b6a93",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.07421875e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "81716ba778ebe8263ab9392af2b0d76b2de0938d46dae1ffcd0aeda57fbfdf3f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-006/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "e47a5236ca986f623d5482b24a231baea1bed21acda3fb5c964976d0009688da",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-006/desktop/001.bin"
+          },
+          {
+            "bytes": 908697,
+            "sha256": "2ece188e6f55460f5f71cce035b469ce97c91108b48bb25eb8b0f8d84f767b1c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-006/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-006-mobile-e9e522438c60579c.mp4",
+        "url": "/s/tattoo-cr-006-mobile-e9e522438c60579c.mp4",
+        "bytes": 3619991,
+        "sha256": "e9e522438c60579c98d5610aeda47eba61f7ac50bba79238130f40a61e466f0c",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-006-mobile-4d01160983ee5bf6.jpg",
+        "posterUrl": "/s/tattoo-cr-006-mobile-4d01160983ee5bf6.jpg",
+        "posterBytes": 39503,
+        "posterSha256": "4d01160983ee5bf6855bae4621ada676d03ce0dda64341ea2d31bc6f3f07f331",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.0036892361111111e-05
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "074abc63733286ffa6fb190bc5480541b409dbd5e2e93e0907ffe675b78e46aa",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-006/mobile/000.bin"
+          },
+          {
+            "bytes": 1522839,
+            "sha256": "867434e4be083bac5a12442778f7db2dc7f120a11b3719cd50ad69df8353a8bc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-006/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-007",
+      "route": "/continuous-render-007",
+      "sourceSha256": "46ee581941d2c0a75820e4295c468af3d84b7673a0ffc471ceba79b60d253000",
+      "desktop": {
+        "file": "tattoo-cr-007-desktop-88552d395f31c9cf.mp4",
+        "url": "/s/tattoo-cr-007-desktop-88552d395f31c9cf.mp4",
+        "bytes": 5105593,
+        "sha256": "88552d395f31c9cf89e1a25de3b3cf34cc0b41152f85416c8f1f287ad548c5db",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-007-desktop-df699550044ac0b8.jpg",
+        "posterUrl": "/s/tattoo-cr-007-desktop-df699550044ac0b8.jpg",
+        "posterBytes": 44435,
+        "posterSha256": "df699550044ac0b8a6e2d9975a9c4412774e16d89e3e772095e0b012d5185673",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 8.7890625e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "c083ba7dbcc9cb42d98e75a7ec41bc6a9d8c5a74068e7b8a520d4c3aa0c734db",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-007/desktop/000.bin"
+          },
+          {
+            "bytes": 2097152,
+            "sha256": "043b8c3b8391babb8daab80942df5f07fe43aa0c54009d83032dd9c5f14bf9d6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-007/desktop/001.bin"
+          },
+          {
+            "bytes": 911289,
+            "sha256": "18a35cecb230a2cd85fabd506843ee100d33c25b2d2cf2f7a51f1e3ced617b16",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-007/desktop/002.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-007-mobile-a7518d8db652b357.mp4",
+        "url": "/s/tattoo-cr-007-mobile-a7518d8db652b357.mp4",
+        "bytes": 3605420,
+        "sha256": "a7518d8db652b3572e3210d79648fe92e9d165408a74581e4d8c89467cbbadb2",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-007-mobile-ac7ad50e300d18f0.jpg",
+        "posterUrl": "/s/tattoo-cr-007-mobile-ac7ad50e300d18f0.jpg",
+        "posterBytes": 38633,
+        "posterSha256": "ac7ad50e300d18f0605780ef0908a2b80ab5d6e200251962cc89ffec1602bb6d",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 7.866753472222222e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "9400514b60c319c419e4d9626f5dd9f7fd19d1b36bed8a69dfe4f0981822eca0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-007/mobile/000.bin"
+          },
+          {
+            "bytes": 1508268,
+            "sha256": "d7fe56884e29e79ccafc25b31a8c0f8e34428b018cd08e5ae9426c1061b9ac91",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-007/mobile/001.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-008",
+      "route": "/continuous-render-008",
+      "sourceSha256": "7b0394712698c57d723742e0b63f9a1b596efd55df5ea295ebe1e917a99df2e8",
+      "desktop": {
+        "file": "tattoo-cr-008-desktop-ed8e01b6c049b7fa.mp4",
+        "url": "/s/tattoo-cr-008-desktop-ed8e01b6c049b7fa.mp4",
+        "bytes": 4802583,
+        "sha256": "ed8e01b6c049b7fae6725d2330010a3690b9a3c8a992e36ca1e93aa5bad3a141",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-008-desktop-49235796013477bd.jpg",
+        "posterUrl": "/s/tattoo-cr-008-desktop-49235796013477bd.jpg",
+        "posterBytes": 32590,
+        "posterSha256": "49235796013477bdfe5546ed25da5e7f7e5b4d4630b9968ae97396445fbf5ee8",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 6.103515625e-06
+        },
+        "parts": [
+          {
+            "bytes": 2097152,
+            "sha256": "7b27df765e5294f047f066032614f0ede6f5b61dec94c7617949ac455f0182aa",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f35630878f54e3aef4b6e4c34e3b217f3f98f7622af7e6c2081bf0818fd1b09e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "14ce78cd39892de1b1bde49fb782dfe554421a520fd43cdb940c39571009583c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1d5f3566e021072caa68b966665237bbb6cfc03fc78d9a1d6a3eaa52ccb126b6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1f40ed819a70b211e595aa9f4f9a0880cb1595c4bc53e8b66f5767d67e3c4082",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "09e12ae4a995c7af8f4e8c4cbd38b7e84ce34642f506ab5d259ea40aea4ea4ba",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2cc7663d0d3c002306c19c175a4ba8b9abb902a9202baf7685adb643a6b1d917",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "28740c6a62998fac16857e22c9e921daef01a9e9563cc3708ec065ad4882d96a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "66bbc5abb257a63713daf4c933d73712fc022f99497fbbdd1149cb14f247a8fb",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3076236cf5581339e66281c0b92d9b3241d3e834cb06aff4f68b80b66d053470",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1e19cbe6bfddd1bdf64cba8ce559b1090eaf8edcb6d3c1e0b0bf1a01fe56069f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1741d7422c11658b69f5f63684d58c0e8e1b22881965ff8070a4d1575afe3a48",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2ec99f597b795e420a9e922cc022d9e329c2c506c11e588762929fdd9f20a6b2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "42e44e705c23e70afd7efb45ccd7a7bd88096e60f0334e2982454d2ec0b4bb05",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f294b6d254eab2b076491a7f959be37753af7eb8f191b333ac735aa39f249076",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "62469bc1475dce034a0da8741971dff4cdcdb9965db739e6fb0eaba3b1855c52",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7e5d1ef327e2cffd7ca41399c7baba5304758d448cfffad59b7326e29075f9bc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "42cc7b1c422058b92c9d03da65229fb0f073bff8d4236e2d7dcf21280d74056d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "108ac1da5871279ea72cc817e9fa251ae06f9dfbc18270f46124c21c6d093251",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3ae5e89d7733c538bf9b3d16a00e626456b6b5a473c133c5cd52ea4cb6ac9398",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "8156c383f5b8965f945168f0ca82ef2ac379401bb2fcdf553993097803ac4796",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/020.bin"
+          },
+          {
+            "bytes": 83991,
+            "sha256": "edc68886836d1413fbbcd30b638e22da2ee4392cf8ff5b9c9ab54016c5ea4d7b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/desktop/021.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-008-mobile-7b51719cfee7ac9a.mp4",
+        "url": "/s/tattoo-cr-008-mobile-7b51719cfee7ac9a.mp4",
+        "bytes": 3203934,
+        "sha256": "7b51719cfee7ac9a6adf46c862a135007ee5f405f3c1b7416da37bb9861b1668",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-008-mobile-9971155c5b7ec294.jpg",
+        "posterUrl": "/s/tattoo-cr-008-mobile-9971155c5b7ec294.jpg",
+        "posterBytes": 26653,
+        "posterSha256": "9971155c5b7ec294a70e944ea409fc30ab75026562fd188352f639f0ccd73cce",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 4.611545138888889e-06
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "0de3824f609834c148131aa9b5f45bacc51f2c5933d8fab78c1e8e4611ba2c07",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "923688cda13592144beef7126a08abcb1f828443be9233bee1a0f5085919a349",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1e04afb8d797357508dcef4a85b42c4798e1f04921ec2571ec4ecdcb04a7ff38",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d91a0ffad925b748d38fdca53346f2a5d8c2a21beed1bad47d0078c2a8d66ba4",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9ab2c4ccb75223ce30a7e3575ec52b10d842ba95501668a1ded8ff3ac41f48ae",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "954c4147e142af70e57db4b2370a8907bdb1836b406629bc5e5457bb082f73c0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "081513738a7a45d35083ce3dc1a33865f40f05530f589e3db2163c0edc9ba3e7",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "faa006f0675e0016d5f3741580f76319b8a27ae31740a90f21cc0cfdd6df1181",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a341d057782d6573a0d579a9286ebf4b28a2db4ae6409f5e36c604927a04c9d0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "10d994d4164ae132ca0a38fc52b28ceabf27f0c6b7873c62c07ea24561941ff2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7cf6192096b0c74304503560485c70f6822ed2f90bf6aa303073342e710d4e9a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "43cac22aa4e84fcef9247da33f9a2704e3db13a1403dbab02903bfd9ff2382cf",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "61b62a86ae829be5ccd4dca377705fd4dcbfa37cd0bfbdd2cf50331498906b95",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0700a1c91002444aa974711096a25e8cf5dd918fc766a05d6f9b0a612f298eaa",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "cfa68add198dc63afc44ec7844364ac9462ddfeedebddb5e9832ce3501f3d00b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b551740890c22000bc57f093d0167a595aa1677fca443a046e2c37fd18de406b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5902ce74cb59f41012c5873ef680864ec0c2766e9bf25fe899ad8cb6b538332e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "cb0cf1fa71010a4bdb2a2bc9017e7d3efbe06470dc3fb3f316b823a969075367",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "10628b3b59a71d880c06091533d44b9865535416ac58cbdd104253d69a562c97",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "03224b9caa5c28d42baa93d9e8de7872d1c95823c3913487adc0281ac9cd599a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7526f4b933825dbf3a4bc7dca9343eb3ee5e408a03834e6dd508e59d766c7995",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "8325cf0ddc695c06c41e9940764cdfca9eefc29866cc777f2e9f330d2f849a75",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3c2a44a1da25775f3cbd86211d14afe0b1701e671096a7fc07cbb53b241c290f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f87d5c076a7b0f4360d2a14fc9f0b6557896c140d0de0e74b0c27898fbce0a5b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/023.bin"
+          },
+          {
+            "bytes": 58206,
+            "sha256": "b6fb5ab14f263c0f7d2e028b4a848e666d1d68b50c90c08434227af4412d2c19",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-008/mobile/024.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-009",
+      "route": "/continuous-render-009",
+      "sourceSha256": "1d0b8a20821b6e4129403b36fade54a3c584c4c2dd0a7867211947c6c31c925d",
+      "desktop": {
+        "file": "tattoo-cr-009-desktop-e9a0a986e942ff26.mp4",
+        "url": "/s/tattoo-cr-009-desktop-e9a0a986e942ff26.mp4",
+        "bytes": 5106138,
+        "sha256": "e9a0a986e942ff26e998b90b6990e0d97442a26c7a69adc4084ab40ca3f0a1b5",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-009-desktop-84884b2886b9120b.jpg",
+        "posterUrl": "/s/tattoo-cr-009-desktop-84884b2886b9120b.jpg",
+        "posterBytes": 41393,
+        "posterSha256": "84884b2886b9120b5df04f3efcd60e0953506ca5864fd2b115b40d0d0c0c8430",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.171875e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "6e398748f06cdc80c84a255f3c9f7cfb45e2d1892c4b93cb29297cd58293a523",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "95c69f86dac2970eec40f7ead955ba66521290b09a0cbd624c126a5124770977",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b2e1d59bca9d44931ded75cc43d90dffa833b85fcc902eb0076a93c4dfea2ba7",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2840657c5da7dae275a17ebe5e7c5afabc69b957982cadd6dd777ded7d950182",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "823a0a9cda5708a2ea0928791f26b6c5a3c23505c87ad0c176dae66c8d2cd845",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ea5898115528bed26cd622df89783e61b901598c115abe4863707fabaf06ea1e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ee414125ec8a5dad445caad70a55bdb62b77c217af9872fa872d6bb1537fa2bb",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2117b6f23c9142016aabca0efad819d56107bf092f23eff8c332977a935f651e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "33e572cde81850bd3c652c4aa8dbbc2e79516e8a1f224cdb302a890e4096aa06",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "571e8b5b0dc98145ff3f94fc92a80c502dc182684436250dfe9c48d371582a14",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "cebf9518ddce3777c26418eb2358ba28f84bb539935837d3572c2f452d0f348e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e65bdaeb7c1df1b052f05abfc7d9655afa2a111e3f37945b61d9f425f02b8b17",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1bb6375e700d15e062ccecd6dd3402e52fd8412ef3f4614256d4185c393c0f19",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f4ddbb413e2632dc01ade2039f194c7912d38a3fbc358eebc78efaefc1b01b65",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7ffa79e905ca4c58d987a1fae35e017105e005e269d23dd27633c1e2830a9c04",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "724253e059c3de143705519481cff574e4f68facea7326a18bb7deb0a0fdde5b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "6a2a4656c389cac034f9d9226fbf520f187cd52fbb2017c7fcddce4c928b4ac4",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a14312415d3470abdcfc940a1c6e030f5e803e7760ef292bb8926a009f0aff88",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "025d81549360e44c3a36ed8b362d3b7b7e849e03cf40baeef4de9b9de411ac4c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d786ebebc5e8a4e3c3339cf59fd4cb73ddc11e40fb7a25b90ad48dd9c6be9a11",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "16790bed973a27156a73e6dc4efe231b0fa9df70b969fb7f457902365f0a0feb",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7af7c6ea0d5ba561d1331a040ad31d748fa81564de991d87d15f858b7cb9f65f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "50143e64f7ca7e3d0edb52db840daf711c098bfc43791b7df34cd74aba774ca5",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "067f33509070befa8d0e462dffa83292895d3bfdf2875841146b49c010d6dd5a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5166c7116602b4ee8b5d53598143fb1cda853617f48c9b1138898d5cdb8d5699",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "84c9d947a1b54486f2bc177cdc961d045f66a161fa054a6aa3358e8d95f3e015",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "bba524a506edbcb7474609b49c2f4aea4c03ea867e96d3ce968e1809d146fadc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/026.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e40b648cbe6f543ad8cba0317475eae76105f66f99757635a6485bfd00353244",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/027.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7e1ee92dd61ed254d854907bcaf75608ca94edbe2b6b52d85c76d86a29363e19",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/028.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fec688ba31c349d1765bd7298715343f7cbc81922cdb45b52be478a81ee3ac64",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/029.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "46e196b5a7688d721d609821ea8db44eedb12f99174d1b23814768031e21466b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/030.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "dec748254bd22af8a7fb4bc8bbda0dbd7367ead7ea1197227e4e2a01ab92773d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/031.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "732f5bda1a4c6053486505abf8d97a1a2c27085b231ecc04a996a869a8b99e58",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/032.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fe9128664212577006dc652dc5bcb451197cbcc7461897d81e28c22a69fa9e94",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/033.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "72607e6285fd27f345d7be30e0ad08228d79a12e77e24ab9063c09c7d3a14688",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/034.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ed6063dad2e620388e242e078cb42b8c17b4cd63dbaa8b267416b3ff7d3a1c35",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/035.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "543782ac3e8375d16caa1b8b9e555120cc0b4faf8df32422ec0ec86c2c726ab7",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/036.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "685429db95c0aea1373279341a60bdc0bde24aa05768528fba55e2c2eef78b54",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/037.bin"
+          },
+          {
+            "bytes": 125402,
+            "sha256": "b647a2650f230b451f32bb12a7a0e3d3b45c5e64f3d64e9a3e000fc171e995f7",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/desktop/038.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-009-mobile-6748f31b95826fb2.mp4",
+        "url": "/s/tattoo-cr-009-mobile-6748f31b95826fb2.mp4",
+        "bytes": 3625632,
+        "sha256": "6748f31b95826fb2b3f9511cc01e472987aedef65083b1d40cc9c9a262830418",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-009-mobile-f76b550d73ddad11.jpg",
+        "posterUrl": "/s/tattoo-cr-009-mobile-f76b550d73ddad11.jpg",
+        "posterBytes": 43671,
+        "posterSha256": "f76b550d73ddad11f93f21eb579ade0ec0cb3004dad0bbd977e9661efbd4fb3e",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.7903645833333333e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "5e1af65460ee6a226afd95af604b657097507734dcbf7fdd7ca2a73a93f75dcc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e5870b1ed0573e43ec35378fc5bbee0bc3d321510a2db5b154a5dee27b316269",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "596d27d4d5c8c9ba20cb3b77a80f489bb1ce1f11bae879077adea00334309324",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "42d860c042ef1b90828bd9c982c95546591bc175131a743ded6454d176deebd8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "6fa73c0223957eb7c9ef810d76868a445d3a3fa34e7e4f1d4b7d5e724f4efcb8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "44d3f6e9679a1ff4a0b9efc7d5647208b3c3dd1d81a55436476d0e43b57d4b2c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d489bc24e31aedf0d2c912ab0d3eae6b2bde2ea13bfd4b11e3259554f2dcf01c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ffbdf23cba8d5414c7e3f168da752e3417379ed322d02e3ff8146b02e1990bb0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a8abfdcfac6bca57500b966b6ab8c4905675b52cd8871bf77f74d3f31bf103f8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "46af9b83aed6292b25540effc9b7eb9312719035b91f5bd2320fbf1d4bdd3d65",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "bd02334c6c357f5b8ffbec9904400529544bd204af19184f59f3a26daabce749",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "98f096f573387482255f1f74c097c4c92c44df5642d2186deefe478a203fa8b8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e9ebf0f8edfadeeafd42263b93d83aa5e429df3f736ea911f8fc970022039949",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2ee50cdef37f1bbd7c8ab83becdf5911e01e99578f4c3ace381b400fbfb1d1c3",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1ee8e3231c817ecf3f5a96bae24f204fdf769a2c171c570f3b68bcbfbfad3867",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d77d09a4db3eeea8c7eb6995f7cb6df1a2ca55baccfbdb4740a3f2fe7a692568",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "68b2bb1c83c81812baa337163996f2d15d2de42d756c2bcd20820651c7589d04",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "08ee6450ef3e07a46ca07ca8186d7bccf2665dc5989528b9c7a8271eb321de8f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "56cf2269f3328ce5bcf24d863cadb245276e8ff8e155b4062269a5150661e11c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a6244eaf214e132ddc6f54abd08613ff1425e049186839f38e0b89a696ed096b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "8a47793076608acd26103e04e4d2d86f13525a33df4395b4de9246cec300a83d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "45b5ead9a23f5473c288f59488894998e575e97b478c63886849722270038fc1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2b92daae90d34685a6cd91308efded10915545ba6b12df47a38fa48bfe8f4ebe",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9ed07c3665e42c2cf0ba6395797294594f9c7399af9f56aeefaa78397cf03923",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "42c261a31156eb1526e1782e895638ac67b318261658ee46488c491badc88351",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "30adc5ec2749f1d021e738dd4e6fbd016d4f3a275ceec5d2a49b833216fff999",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9aeff9cde184b9a11e6a063e79b6fa995cb3142e166264768973ad4fd82ad16a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/026.bin"
+          },
+          {
+            "bytes": 86688,
+            "sha256": "e920858b3b1cb8282c9af41ac263cafb98840a90fb903e60208b43730a84d3ae",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-009/mobile/027.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-010",
+      "route": "/continuous-render-010",
+      "sourceSha256": "bef9f6050eaec1fd1a78326cc47d1a0058d1f790d37ec4d4cae48a5d55ed9c6f",
+      "desktop": {
+        "file": "tattoo-cr-010-desktop-896fc146790aaab1.mp4",
+        "url": "/s/tattoo-cr-010-desktop-896fc146790aaab1.mp4",
+        "bytes": 5408810,
+        "sha256": "896fc146790aaab17e156a7fd11f133b3e65db0554bde526c8d27da459a5671b",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-010-desktop-16334e11f1578c55.jpg",
+        "posterUrl": "/s/tattoo-cr-010-desktop-16334e11f1578c55.jpg",
+        "posterBytes": 44383,
+        "posterSha256": "16334e11f1578c5566d026232309513efbde7dba0c64479a2e6fe9fe16f3d6c4",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.1962890625e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "a04bf9360eaf094b36e70a17b01aadbe70edb9fed069b060f5ab4d476a120ee8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "dd8f81ff31fe8bf72877006785bc27a462ac2ee8379e800d3aa14c7e63ffe933",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "da37dab5f1a790e8c72eecf40f8c654e5f4034c27a90e1729d24148bad049202",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d503de3cd01e685f68d0a2ae058cfa2a21f130147cea05db96d868ccf18c06da",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e4900e172eb0accd8b9d4655f475f85e9ea3b6b6b706ae282bacd537f04d3e4d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a16df632214b8c3de481d55f15e7d87d03c79d1e119d85f9c8d962da6019e464",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2fb4e960fc15cb302f5bad4e461b449e625bde1e0d0e4162a014b3f21daefb5d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b4d4115deff4df32464eceb306aec7de17048359f8cb655ccb57b5c551075063",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "6d8670b95e68cf8ebaf16b1b8b3b6227e389fb12b3ea73ae97affcb3fe8d6fa3",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "67d90d2ddf61ec80b948c22c460573e886ef59a63417c72eb6c858c3c98b8911",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b6e5349d20583dc5fe1f91db15e9e95acdd0bc9f6dadb42a2a8213d7d500c979",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "49613afd87f6e690603d399ebfe12a4f96ef63247864eccc6948fce1167d6523",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "261ede920b2a260475effe2d1ed67b6293b806513e77f233962f2e9630d59ef0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "32a5eaac6501a6d28f2d0b1c59ad3164d4b3d069a51f8ea0d12dc7dec42f8dfd",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b9e626789558d0d654853059b6abed8459adf922da2517d8ebf0928c36431f0a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "88717f482447e5be4f12652651b22b01dc18eb87ac23f772ebd0d2f436463e55",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "660841cc8f1028f049377a105132c99e3163e71ec3c08f3c81cc260c1a4c61b2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "8a058747dbcf82bd57565676718b426df9095bc810fce36ed55423ca070ba4a0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "6c349492c5347b792a087b25fd0b52523d795a91e915c40f3518230a2c65a7e1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0ea043841abefd7786ce152acd5ee49bca54430894ba0b93cc948057af3bdf47",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7e00c63dd974f13907a06e42e2b3c8f69cbf1a72bf640f38d4cb7f55947a87d6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2cd1a12479e25773e94364fc0db0f97fb8abedf145081ed0bdd0574ad2948032",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2a633eba633ef2cee604171eac36606ff9710aa80a1cc05fd637096ffff33e6a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2ab7f7b87a9226288bf195b237cdadddf7f956ce0cfb5183dec1f091f35c4af9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "867c2f9b611c9fbcc219cb98d611de5899ff0a4c818a2f6dbd187d07da6c9429",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b0f6a4b21880e3c13fe8691509ed3954e27c28a43fd72cd0c1ebfe91247739c7",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "db930ae5106361d3227e28f1271b2bd98e3ccfd57fa3eef0f4f3d6c80310f36b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/026.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3d7471c8f7ecb79b4c269e5febc3f303adda5ad916b27be101216e3c48e335b0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/027.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c367a4474ad3ac6c00f1b5ac1bf87cac4267c46062753b5493cc3a0b77fc2bbf",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/028.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f852fa9ab7fdd27c14ce11cf57be37c1f3fd11d3978c21b7a497ca195a71901e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/029.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "6b6d578523b1184b6bbeb12edc9ad74a115b5265a7c7b9b934e0eac35494a1ac",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/030.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "bef7bdb0abf106fec2cb7befbde22782deaacad759ccc897e51603b099a15938",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/031.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "56a09d29dba7e2e6b1a5459fdf06be51f4944e518a4eace2b60f8e10a2b61571",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/032.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9427990008f50ed025acf9ca0abbd5961ce298c933c3209565b59ff29f0766d8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/033.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f0eb3719796de0de2311d19f55dc1234a7e52049384d75a12dea3c806fdf3789",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/034.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "606015f288c72c132ab627acfce2bd04126a9f5725fac0181ba218b8ef3b0ff9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/035.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "084d5a94eb2ccd56f8c7162deeaae28f2d731acd93406e8f3997c9c7d4bf8e5e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/036.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "99627a994183657047b25c43fde0a008200b684565c2c9164a9879da90fd581f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/037.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "698e1668062411ed14879a66c8ae9e09f79164b5a972ec0c8c69a441722b3c71",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/038.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b7f55be1ec95030da5c285d5b6d4909a79b3ca85579cfdeed1dbde4a7e6385f5",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/039.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "53655792d14ea900a620e06589221da68b2fb2d204f93852c8406724f40b75b4",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/040.bin"
+          },
+          {
+            "bytes": 34858,
+            "sha256": "e89f0bb5c387edd6f382d9d117a3832d00e2010d2555ac49948e38a179b6fc2e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/desktop/041.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-010-mobile-4c5ddea81103425d.mp4",
+        "url": "/s/tattoo-cr-010-mobile-4c5ddea81103425d.mp4",
+        "bytes": 3626038,
+        "sha256": "4c5ddea81103425db4473a307dfeadf5a786bc502434ae265b1eaf4313002045",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-010-mobile-ecde916eeaf99264.jpg",
+        "posterUrl": "/s/tattoo-cr-010-mobile-ecde916eeaf99264.jpg",
+        "posterBytes": 44507,
+        "posterSha256": "ecde916eeaf99264f81a261a7cfb51b0ab20d73680fdc0e3ab7e7daa84d623af",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.0308159722222223e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "6aa5ce3d916ccdd01b6d5f02f92eebffdabaa2fa02344ec3b88857aa965bf919",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fd0a746ddbd514e789d6d86eae746e46d705ab574f7f6b0d86001ff16fc07f19",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "349f1232e4ef4eabe88ff005a878456a846b2e302b34bbec20135c4c0417e74d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2e106125eb9a58608ed0a9a18b702db913472c09ed95d28c87c588b76fa7fab1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7ba4699bf1ffe648e75ec186b8b2461220448753a3b505e2162ac7f0aed2ccac",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "341ec0f90b6cf47064b813a74fa0022be881aebc9b103d97fe2d52d165b81879",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e843c5ba07dc3adc0457a8d342df8855659c4996e4d0d2b17cd2acb5288dc52b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b159baae98f7b749894fa4ce647b66e88cbef48820cd3214198b5dedb910870b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "4a25469b868271b6f4b9bca17bddffda5778a6081ec4279e087cc3a1a794e586",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "648a0b2b0987c3ec13c9978ab21e917cc7946a63de2016bce0cf618991330922",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2e1c6bd467658cb8f9f049a585366297320274ef2540bb3251f1a160a1bf90ab",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2ed3ac16e2d6c3ec2f2e0a5b11025198451d90ff17ef3e6fae8d21eb8df60c03",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c895b12c2f0a27fbc2dfcc975e19ad83757c52bdec6fc93065c45a8fb348e1dc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c244194bc3db72c8224383df5bb5de3828e8d0e23b7f10d58fe17e243c1e57f6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9d75bfefe57a2274c73d61e0deb547a428f62ba29cf5096fabd30845922b2607",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3f217b506d8ce9b36f980ed6a5400db4944e3657838d572789ac7c71ec6c8794",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0ea8a3b93e22faa45c2dfa840a4b2ee57a473317b19f0a5f4c554294a858bf11",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "276ebcfb989505defa15fc08424ca611d418e725097b7e91f32ab7b3c576ba39",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d2238e3b02248db27cc397e8e57f428ef7b1bbd82ba7e8079ef8ba46f137c6c6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ca3c38a7f3c9f1380a4ddb1cbc85d781cbac997a1e590f22d69afe5b9f3ab647",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a154f77ff75b8c7c442eb36a89df90f69d70b56cd057367e3895c7ec52506cef",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e76a683d024edab2b281e8f859390dfcaab045b45b0db9adac776845e026f251",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "280dc09f111da95d7f461ac898b69dfbaf067bcd315432e14c2937455bd56cc9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ff496ec1c2d2eea91e2aa842b9029a90f85e52054a92984c40ee2f101f6f34de",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "582050ca67437fe8546e0c634e155a89e55f7003cead54acb9532895ad3aa588",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f5d567ff81cecc4c677001fe54e788706aad46d8bc97cdb8369d54c91dc79568",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "87e3403e39c805ca6bacfaff3e93a4a3c8918c760800f65c4e98152b3be66877",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/026.bin"
+          },
+          {
+            "bytes": 87094,
+            "sha256": "6ed111e0e5c40f4be0f0cf605236841f47ceabac0bc4c8215c7813df94433400",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-010/mobile/027.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-011",
+      "route": "/continuous-render-011",
+      "sourceSha256": "6f8a959ec54ec4985a7cbaf66d2ad8a2bed6e4e484caa380d55e174b64d3d2a9",
+      "desktop": {
+        "file": "tattoo-cr-011-desktop-80cb82b1d077ec8d.mp4",
+        "url": "/s/tattoo-cr-011-desktop-80cb82b1d077ec8d.mp4",
+        "bytes": 4804062,
+        "sha256": "80cb82b1d077ec8dd54ca79585f408b86d54b72fbc39d55991eb7e123f4747a9",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-011-desktop-be11e23460dae0fa.jpg",
+        "posterUrl": "/s/tattoo-cr-011-desktop-be11e23460dae0fa.jpg",
+        "posterBytes": 36777,
+        "posterSha256": "be11e23460dae0fa4ab7071eabe138ce2c300d4882df0f64980fb0d08526909c",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 8.544921875e-06
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "200223ea46da4f3bf4c64edd940ff9811dba3038ecbad7a3f1cf103c3626ad9f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b1a5cd348cbeb899e783c09aad0177f1098082bd0f1a5bbfb3cd4e23c36c3e7e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "dd81daa3edb42b1d033542c5ff77564f39e0b2f88e25c9b97cb9ebbfdc1c7290",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2799b3cc2eeda8de1e1264770674754d6968455a538ad4b9d7a820f2e1b709e9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "39399c8a3cfc8212ad7718db330ccd47740605e616ea1ea63e773b5543136954",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c91a79375d7e9d2843faead1bba3f7ac46eda11b23dc8df3d8d1fc1bf93eeaa2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "20c3281c976b3a4b3cd4bf5b2b3845e43b70e7bee85c64926ca2e05853973dfb",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0d3a7f44329e946e461b2eb3f92167db13ff1d9aa8721ca3b22471f119b7f336",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ff9c5e1807c3ab6922b22b336662edc4a500b0b498a78f82ee871018c32ea7f2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "13cc51d50236bef7520add919352bbc5077ff7ee26c91e3a6f32ad395fe3b609",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3876271952cd76b0493023cf03a71ba7d239e7afe90c4dd3305c34326b67c3ed",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "4f81a11d2244d5671a0d839610863ef59c31c7f26558d9e4247bcfe05f00b9a6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1b33ecf398a22e2e09635334706ab38cc7e71271737c0c3884e9b11445e5d3f6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0f50bb7ec8af4ab719dff1d4f71789c124369b83941004764b78f7c72440d2b1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "cb6bf23c069791cf5fe5f6a01579f74fc683aa16dd1fa44f189acc722ce224b9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "54e5a152ea9a1cb2dedb80518d1f4146d209e79b503e1761c0daa16b048bbeca",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3fd9e6fad86b5cf4ff8a10e5b23b9378e629fbbd0bdabccbf9a893887ed37791",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a7f7d38aed74709925ee28fb712962f668006caf187e13c53d451a8c2f444a8b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "59c67fb88b7736f3f53eef7725702f96526ccc3315bff0b4b34737ad1d0cef5a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "29ad683269cfda963a96c939e03b792475fa34af1098bdf198e1866ce337d2dd",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9dd7a5d0a0c17017ab1795b54567fd7c83bc3ffc9af92de5ad553647a06a8273",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "40aac0d6758e7a1cdb67b1d0637256117dde05632fb6b66d81c148ed08f7043f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b9d3440901efcb8edb4e671c966da93488f5e654ef32a3c9d891ff2faa87e517",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f8ed36748ef1d00b1ab9c877664b217dea141be433250ee94c1f45f01271a922",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "4fbd6504c6048e5d01f177358cf35eb91d4544f71217c9a8ece774a926d5d3ed",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d62b5682e7c094751d578aac38e61f39a62b582d2afc5bbca958da2767dd88e8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9a48fb419557a1a47a1df19032586ccf0c50ee8fc501bdd76eb50f0d2cb9eda0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/026.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2828477455801269c4c275de7d0e7d7386ed99526045ac1226f711712c24359a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/027.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "79b3f62933b0ae467749c7eac4a6bab5f11b5152f1e475c5871cd5baba668c19",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/028.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "eff96c7b2c7fd71484976d033be13924d568e2fde16c96647ac7a1bf1e9b74b1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/029.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f092fa3a252b5ad714535bd3a78a3dea24f838080ff6035061d2df062d70a883",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/030.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5556b253e7dcfec4943492ae929a15f192d6b3e5a21baec8fb106d67ec41d637",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/031.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c92eaa8bc0684fa122837850c3faeeecca40aaa5d12dde86df225fbe6f78bab2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/032.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "66ef8bd5858efc4c16089128b8f0771538bf48a39fb3ec761d87f8e2bc010d54",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/033.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "26ea47f3890c4b88dd10dc0339069ba991086396deb242d7bd3fdf142ab7ce03",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/034.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f62b2d38082f91992222ae9a94031faae4cf290879499375bf60610cfb08e131",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/035.bin"
+          },
+          {
+            "bytes": 85470,
+            "sha256": "2a21b5afd00d1d746abb71131530e0723ff8530f18414b1b0a1b13937376ebba",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/desktop/036.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-011-mobile-04dc9744502545be.mp4",
+        "url": "/s/tattoo-cr-011-mobile-04dc9744502545be.mp4",
+        "bytes": 3628176,
+        "sha256": "04dc9744502545be4db155e5c1028a28f3438a7c0f5d3b5aede323ba2fab0268",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-011-mobile-23b0b09518400c66.jpg",
+        "posterUrl": "/s/tattoo-cr-011-mobile-23b0b09518400c66.jpg",
+        "posterBytes": 41056,
+        "posterSha256": "23b0b09518400c66231fe1ba6fb5fb0386ff028e30e522372e98d7630b955a5f",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.220703125e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "7a4a018f6fffc2c604a966f67d7cc052ead86ec3389e3401ae09300c47f1903a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "7f6df573d5d001ac2b552d7bfa293f1dc27c660b124e89734d4b0c4508eb4c2b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3016f157e0ec357c693a671a54f917b39e9fa45875f5f2edcca3019f3858d8bd",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0f297775c76351c4d3daf984775430718a66b2510659cacfb5796eddcbad87ef",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9436ed405c11658adc58d34e17d446744178c69f2bbd8cdddeb2dbc18db5f191",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c68a9489d237daf41045999b27e12001299a0d5a2e7169f51798feac938abd27",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f6b9f0156e7d388489c04831a36a9ef3976d9b308c3cf051f1b2ee51fa6b04a1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fda3f4cc2e5db3e2cd407675cd48e287bec5d48e7159ae8ed2d1548c2c5eafb9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5b6f9ef7c264175291c30197d33e9484a583422fbb8253e73636f6dc76c358a9",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e12006f95653b10d4541c797ec5c6d10e12440dcd541da5ba965fef8673b37b0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "bf7f4cffa770a5bd1c92c4ca6f5d8f98fb3d28c9c7dfaa67313372bdd9873c81",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ee7ef61b0fe1e2dce2df5aedd58635979104add44db9dfc540630bcb8d9aefd0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "49f17de15c614bdd6ae51546cdafe04130bb5282ca17a67765aa06b63580f7cf",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b6d0642fa7af15b388e286da6a636e187fc31609cad5737cffbe27b8cf2c4e82",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5890e377d177bc9c4e72c87f8fa751e53f88d7eeca5588d6a39637f7299fb51d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a630f8202a161da41bdfa557efe33815e7a51e97a3a7e7b05e9a1e24ee2127d1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0c377408d24488309a9f9fbf899326870336aba53b301ba1f60d47c5816ed422",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e56eba68a9896740765682d4fccd3d118a98603517a4f0f89afc380a16239af2",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "755f230c9f36ff3b0ac7dfbe5033cd4487d2d7b260b9f7edef4ffd9fc7923dc6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "30570db479b3179156fc672b34fc424bbe03c39dde3f2effc7be7cb85d31c119",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "29c440ea532acf6aba95c3f783cf0a3592e764ae32757c54fe54314c990421d4",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fc2fb289008285a1e90a362bde9971a226f4341bf7c0c8371bf19021c6ecad48",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "34a686a4b36a65adeca7f9035590658588226864760e0d4d65aa8a29612aaa2c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3935666e419f58a0a4c3d100dbfd33353142b31198340884741423438f1cbe99",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "cfd9803a8f05ee2c3540575e5f44bc7e74e06171256752ba2bd2c3814291cb37",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "279337c4af5763c7e67d96ab34b3fdb8f718582e49df9e6f130293fc11b80ced",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "65c6c34145424c3d6d8f6ccc21e339a8551b07e3f32d5ff57443c27c81d3bc1f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/026.bin"
+          },
+          {
+            "bytes": 89232,
+            "sha256": "de6eda1526f7a2db99a5d0b925fb0aa9b59e21acf12c8a2c2dfb31a35b525933",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-011/mobile/027.bin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cr-012",
+      "route": "/continuous-render-012",
+      "sourceSha256": "fc9cc9273a09032d6735906d63f2b2b04f50329ae3cc98d5771cf5895c989d41",
+      "desktop": {
+        "file": "tattoo-cr-012-desktop-9020f68683fc8801.mp4",
+        "url": "/s/tattoo-cr-012-desktop-9020f68683fc8801.mp4",
+        "bytes": 5099936,
+        "sha256": "9020f68683fc8801be6b31aa2661d52c06e3a1ae28b1be1e74a879b750874dc0",
+        "width": 1280,
+        "height": 800,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-012-desktop-771f433a8d08e12e.jpg",
+        "posterUrl": "/s/tattoo-cr-012-desktop-771f433a8d08e12e.jpg",
+        "posterBytes": 42367,
+        "posterSha256": "771f433a8d08e12efb34010c61505d81de479633de9cb20f9e4db3a9cb6a15d6",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.3671875e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "76f06a2f5400b97202405a2e81e7861c3aae17d8f7c28613deaf8fa426848c63",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ca38ffef502caf6490c2c100b7b612a424b3888a20e12a0c4500ded61e24ca86",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9066b63e82e599781ef064c8efc952b96439772f8cd35bd0c390db7449521f58",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3676aa40530d2d60a60ff8dace66f6bde8705495305f231c10afdaba4ebe0805",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "cb90e63556419b284e0fd73ee310ef34f685d2d1120f4e0d360eab9cb6aa88c8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "0615395253c2a00351d8ae6c40c324c4a42f340f34e455e5fcc19abcb1f601d8",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9e61f212f910a2f4b255071543172554a8528070ba7ba35c074c39dda601bfc6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "3fcadcae6d5247bf6f8fc6b9895eda64640b995a586718661cec2863988fb2ff",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "2aee4d9c284603a068432b4d7621ffbe2f06ae95c251a9032bfafd97b2d94e34",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "464fe16397073e1832fb2ff2541ad923f0721d936ab42dc207269d92c1ce3ccf",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a43df9c163339ddcfe3c682a26f4add24ef135e656c77a119129f909e8b543ea",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "68998bdf36d19bd5dac64a664b0bb929b628b7aae9a7319136b74cac2a6c5ae0",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a2ab7a985e6b9512480a37b654cf179d1a2be9053fdc9b0476ec36566bd23ff3",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "557c9d7fba79346024cd97c6f28a73f0d9459629592f40c8f2a37dec32cf5fa6",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5f7491b706f28e53e88166318f18e0e5281bbae7a7af8aac6ddd1587bb5a977c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "49d8ff881b07b52d5ddbbc48201091c565cfd16ddf4af7b8e18eb9e7a6fdf030",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c68d8d82d8edc5c1b0d2647b86c23310cf16274b235cd02ad2842fbb86b519c1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ca51ba10a9e988e00f0f30c85661d82f3eb405d20b8c77e2c11a247b599e8c6f",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "f77b922f3573208f0248956d4e19d95f733db49f1807ffb9986bb2ebdbb6325a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "532e7f47e0a812b155594ef483f634fbf06868271203ae2f260461b072eba40e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c0f775a0fa2e5d5114a344298dc4a49b8036368fdf970e19d39d6e66ce811e26",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b50a9e3e9849aedf77c00b94f1fae24aeaf75956998a48027383e9d888c3a841",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "59bab1e4ebe482925497e106bc8f5f12f0122dae5a7cde3e13b197958c8db6ed",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d8950ca4e6ccc65ef5ccf9cab411855aa6f33e9e9dbc1edff3aafe3e42573634",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "8aedb3b7b962f2caedcc2b480012c1d559e41eb9e56070ca6ae8ebf8bcf0ed38",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b50da8b292d35dbd5838444b3a4db4f997b2e3357e9ebac393730bcf6d9fbb1e",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c8bc24bfed7832e9ddc364fdd541c672316012d3302fdfa3566b0a7fb7bd6b9b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/026.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "19745d5528f2db16e641698d52afbc5a919b5f6356f8f6d793c211c49b5d2cee",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/027.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ee3baf4df2a8bff02c88984b2ed39cb56bffe8fa558c9a1f2c197ae72c13a785",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/028.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fb78011d47f9673454d3f2d11e8619e29636acf7ecee0f474f2c74407ffe8936",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/029.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "876040bf657d97d39f48b0ea1d94987cbe86c0608350248cd1066a24eefe6a73",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/030.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "868b41ad22df9cb4dc56f1278f6e27396e45afaa6eb11f12343a31343de18203",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/031.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "89e007bcbfabe37292f77152bb4529fe9724e6d408cd0f33e824ba0775570410",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/032.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "701e04de9c635ff6d39e7bc4736674f340e9a209a7ce2cb0a371cb4e8e8c2c4d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/033.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "a721e37c8c1987455de3d25dd070dbf56a5ed95c326e9539642fa527d955be5b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/034.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "829b02c6ad91c544e6574c2c778e6bb3590adabe2be5836d78ba259eb5aca35c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/035.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "080a30f122cc583568de5187446b4f1b276d1bae260342171f61f4f5b83bfa66",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/036.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "bb2133e14ed043d4661e18dc51d874480cdd6a79a6f70ffd096b2892c10fbfed",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/037.bin"
+          },
+          {
+            "bytes": 119200,
+            "sha256": "c05a395256ad0fb3b1cb9ed877f28b491217359e4c9b67d22ee394de977a20d5",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/desktop/038.bin"
+          }
+        ]
+      },
+      "mobile": {
+        "file": "tattoo-cr-012-mobile-b8712fefc7260609.mp4",
+        "url": "/s/tattoo-cr-012-mobile-b8712fefc7260609.mp4",
+        "bytes": 3608883,
+        "sha256": "b8712fefc7260609dc0d6b5e67d76f272d99045f61d16d25b0db670930be97db",
+        "width": 720,
+        "height": 1280,
+        "fps": 24,
+        "duration": 18,
+        "posterFile": "tattoo-cr-012-mobile-a87371bb83d86157.jpg",
+        "posterUrl": "/s/tattoo-cr-012-mobile-a87371bb83d86157.jpg",
+        "posterBytes": 40424,
+        "posterSha256": "a87371bb83d86157f9804af18c5e16d21976568c914a752500a1679bfecbff59",
+        "decodedFrames": 432,
+        "uniqueFrames": 432,
+        "period": {
+          "max": 1,
+          "mean": 1.3563368055555555e-05
+        },
+        "parts": [
+          {
+            "bytes": 131072,
+            "sha256": "918bdf94cf3a9d61afc7c32bc313feb311aa69342601b24f239be9828899f4d5",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/000.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "783788071d2bf0efefa3c4e48d4a9d05d22d92f4124d23536ea9e0dd02a041db",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/001.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "9dfe1c11cde645e572bf4b31376bc4048c447aa6745e8e935aa31144fbb7028c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/002.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "ad1a2ab3331b439cb407002ec7f870d766db0a6b3b6f2898d239d245c9796117",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/003.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "66c66ed200d31da1abe760d599779e3b8f9b236c0ae49093f3068d1436dc8c6b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/004.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "d80f1c63fac9217719556fb0287fc57c0f8873902b74a61dd902e20ff838f7f7",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/005.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "da60798cbd72ff0b701fdeacd6f99392cb78949f53ecdcde3a9c7244f972e6fb",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/006.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "8c2dba3c08ae188cbcdb24db9ac8df6d5c91f49e26a95bbe938e7aa976eb8314",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/007.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "fca2672d76ac0274ba2f3232d2822fcdd3fa8a4f25bbc6539952a9b571ba6b14",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/008.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "751e34a20b202c9d02a417b0d328e66e30d4b9f8b20a5b1ceacd17b709c57351",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/009.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "6b879516a3db38bb72f19fd5482259f9dd5b9b9ad937bfb77ba3ccfceb2b54e1",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/010.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "39c1d174c3c4d4bc73973c185c34529a51ce0978e631bb838640f0ad23dbeff5",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/011.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "1d844de7662eb614a0c4b7f77466d82d7039e001437d402e15b7de1b382b5d59",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/012.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "36d36864cce2b799a7b954ec1053bc6a070b146d7208c258d80e01e45306fdd4",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/013.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "13845a5da98af6e6b1ee667d518288c6287df451f34aa9cb86b0d09888b9779d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/014.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e91f236354c1c507a4f1406962a1c4bc25d949bb37c04f19bc247d546560b50a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/015.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "786590a7095c300b7ce62ef2fc694504488938d927d9fe798a4071a490bf35ae",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/016.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "95b986e2575886df4d40bf0dbbe5c22a787d57bc6fa286c586395ef564300318",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/017.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "b364043acd18c65ab5e83c0b0a0d3f7edb70378768a8ceaf6670c1d5001f9f15",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/018.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "df2d8697598d493aa62ba871b594c844c15613dc3d6e50e188c92e3b85d840dc",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/019.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5356577cebe04260625b8c9f33593149567782386eadd02f31e110847b18b07a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/020.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "c20f99d5735baecfc72983688e2108fcf26acbdf727296c8f0197f1f90ef5e2b",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/021.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "94aa9654fbc73b5e1bd5b88667e306da5006003487052211c039b324613ea824",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/022.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "36fce72d017fa03a6bded87fd9766bcb0b487b5e6232b42097b6c6aeff53bb5a",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/023.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "e41b31a794405a55aa6adc13d60e4296d90a7c76ad199f953f2130ee86cee21c",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/024.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "4209a82adde6ee8d0e2de453f7ee24df1c47d95daa3c58c4c81fa120ce5b4cdf",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/025.bin"
+          },
+          {
+            "bytes": 131072,
+            "sha256": "5453894caff4e8a6278258185081e0f71940e8d132f898eb8511d51f26b46346",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/026.bin"
+          },
+          {
+            "bytes": 69939,
+            "sha256": "9019913e90d16b8f574360cff0ccd1482465cacada18addaccb232c29d61a89d",
+            "url": "https://raw.githubusercontent.com/effacermonexistence/codex/b8e6f0073c21f8f184b10b6bd07d39ce74faa632/chunks/tattoo-recursive-v1/cr-012/mobile/027.bin"
+          }
+        ]
+      }
+    }
+  ],
+  "delivery": {
+    "repository": "effacermonexistence/codex",
+    "branch": "media/tattoo-recursive-deep-20261020-b8e6f007",
+    "commit": "b8e6f0073c21f8f184b10b6bd07d39ce74faa632",
+    "maxPartBytes": 2097152,
+    "newPartBytes": 131072,
+    "mode": "Existing pinned GitHub media-chunk delivery; dedicated media-only orphan branch; main/permissions unchanged"
+  },
+  "cover": {
+    "id": "cover",
+    "version": "tattoo-cover-four-source-v1",
+    "sourceIds": [
+      "cr-001",
+      "cr-006",
+      "cr-009",
+      "cr-011"
+    ],
+    "sourceHashes": [
+      "779ae60147ee0cb108ef65dc2a8fe49b12c3a942efa748c32b12af33e1406973",
+      "576491770e1de74fb240c4a3a0022411a1ad19b41b492bbce99a9cc9f26ec660",
+      "1d0b8a20821b6e4129403b36fade54a3c584c4c2dd0a7867211947c6c31c925d",
+      "6f8a959ec54ec4985a7cbaf66d2ad8a2bed6e4e484caa380d55e174b64d3d2a9"
+    ],
+    "method": "Four simultaneously blended source-specific recursive fields with soft moving ribbons",
+    "providerCalls": 0,
+    "newCharges": 0,
+    "desktop": {
+      "file": "tattoo-cover-desktop-686299ecaea77f43.mp4",
+      "url": "/s/tattoo-cover-desktop-686299ecaea77f43.mp4",
+      "bytes": 5413904,
+      "sha256": "686299ecaea77f43f34df472c51cd84509c12b9eb591fc2272108b3ceda4e980",
+      "width": 1280,
+      "height": 800,
+      "fps": 24,
+      "duration": 18,
+      "posterFile": "tattoo-cover-desktop-c5663c58ab91c039.jpg",
+      "posterUrl": "/s/tattoo-cover-desktop-c5663c58ab91c039.jpg",
+      "posterBytes": 44880,
+      "posterSha256": "c5663c58ab91c0397a7586436147149c2a0e6c231f6cbf0bb6581d8ee30bcc80",
+      "decodedFrames": 432,
+      "uniqueFrames": 432,
+      "period": {
+        "max": 1,
+        "mean": 1.6845703125e-05
+      },
+      "delivery": "embedded_verified_source",
+      "blendEvidence": [
+        {
+          "time": 0,
+          "meanWeight": [
+            0.22181569393382353,
+            0.2649265969669118,
+            0.2733080461090686,
+            0.23994966299019607
+          ],
+          "dominantPixelFraction": [
+            0.21968359375,
+            0.2680322265625,
+            0.2790751953125,
+            0.233208984375
+          ]
+        },
+        {
+          "time": 4.5,
+          "meanWeight": [
+            0.2078272020526961,
+            0.2848798789828431,
+            0.2612614736519608,
+            0.2460314453125
+          ],
+          "dominantPixelFraction": [
+            0.2024580078125,
+            0.2967998046875,
+            0.2492158203125,
+            0.2515263671875
+          ]
+        },
+        {
+          "time": 9,
+          "meanWeight": [
+            0.1929302925857843,
+            0.2968557636335784,
+            0.30320903416053924,
+            0.20700490962009804
+          ],
+          "dominantPixelFraction": [
+            0.188255859375,
+            0.30539453125,
+            0.302244140625,
+            0.20410546875
+          ]
+        },
+        {
+          "time": 13.5,
+          "meanWeight": [
+            0.20722966069240195,
+            0.26876181449142156,
+            0.3067187921262255,
+            0.21728973268995097
+          ],
+          "dominantPixelFraction": [
+            0.205080078125,
+            0.2651279296875,
+            0.3194384765625,
+            0.210353515625
+          ]
+        }
+      ]
+    },
+    "mobile": {
+      "file": "tattoo-cover-mobile-80a52eca3cb99667.mp4",
+      "url": "/s/tattoo-cover-mobile-80a52eca3cb99667.mp4",
+      "bytes": 3609821,
+      "sha256": "80a52eca3cb996672fdb06193ab6ae14a6b7f00ae8bc974a73fdc84c5196651e",
+      "width": 720,
+      "height": 1280,
+      "fps": 24,
+      "duration": 18,
+      "posterFile": "tattoo-cover-mobile-26d4c8d92b921a89.jpg",
+      "posterUrl": "/s/tattoo-cover-mobile-26d4c8d92b921a89.jpg",
+      "posterBytes": 37230,
+      "posterSha256": "26d4c8d92b921a8975163da9dae3e87bd2e25071e8ff23fa911e6f441075969a",
+      "decodedFrames": 432,
+      "uniqueFrames": 432,
+      "period": {
+        "max": 1,
+        "mean": 1.4377170138888888e-05
+      },
+      "delivery": "embedded_verified_source",
+      "blendEvidence": [
+        {
+          "time": 0,
+          "meanWeight": [
+            0.09391836022603486,
+            0.36679283683959696,
+            0.4505694018927015,
+            0.08871940104166667
+          ],
+          "dominantPixelFraction": [
+            0.07550672743055556,
+            0.35220594618055556,
+            0.4958854166666667,
+            0.07640190972222222
+          ]
+        },
+        {
+          "time": 4.5,
+          "meanWeight": [
+            0.10066408377587147,
+            0.36128049257897604,
+            0.44561920870778865,
+            0.09243621493736383
+          ],
+          "dominantPixelFraction": [
+            0.08551866319444444,
+            0.38948893229166665,
+            0.47264105902777775,
+            0.05235134548611111
+          ]
+        },
+        {
+          "time": 9,
+          "meanWeight": [
+            0.12421558840550109,
+            0.26779389212282134,
+            0.5254602609272876,
+            0.08253025854438997
+          ],
+          "dominantPixelFraction": [
+            0.11330620659722222,
+            0.24210720486111112,
+            0.6031868489583333,
+            0.04139973958333333
+          ]
+        },
+        {
+          "time": 13.5,
+          "meanWeight": [
+            0.1106472758374183,
+            0.29947180095996734,
+            0.5252260944308279,
+            0.0646548287717865
+          ],
+          "dominantPixelFraction": [
+            0.09671875,
+            0.29250868055555557,
+            0.580107421875,
+            0.030665147569444443
+          ]
+        }
+      ]
+    }
+  }
+}

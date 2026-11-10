@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "audio": {
+    "file": "home-subpulse-08acb8d3dfb01d3d.m4a",
+    "url": "/s/home-subpulse-08acb8d3dfb01d3d.m4a",
+    "sha256": "08acb8d3dfb01d3d9498a94c3c41d40c5a42728380bd0581992b20fa81511be9",
+    "bytes": 1254146,
+    "durationSeconds": 81.47883333333333,
+    "origin": "Archive #FF0F6F No.13 original native AAC track, full length, stream-copy remux only",
+    "sourceWork": "Orthogonal Maze / The Moment of RCC Failure",
+    "sourceWindowSeconds": [
+      0,
+      81.47883333333333
+    ],
+    "playbackStartSeconds": 5.7,
+    "playbackStartBasis": "First sustained bass onset at approximately 4.70 s in original track; begin 1.00 s later",
+    "kickDrum": false,
+    "mixedWithOtherAudio": false
+  },
+  "defaultEnabled": false,
+  "defaultVolume": 1,
+  "maximumGain": 1,
+  "routes": [
+    "/",
+    "/exist",
+    "/exist-fr"
+  ]
+}

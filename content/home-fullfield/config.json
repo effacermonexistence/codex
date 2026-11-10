@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "version": "home-fullfield-marble-v1",
+  "ownerAdoption": "Owner approved deploy and explicitly requested woman+large+small merged into ONE section, three independent sources marbled together rather than two separate bands",
+  "adoptedAt": "2026-10-19T10:24:40.139611+00:00",
+  "sources": {
+    "large": {
+      "url": "/s/fullfield-large-29c4b0db7de2.png",
+      "sourceSha256": "29c4b0db7de26f4520c7b6f55f7615a94ec11c1bee3ac119ea5d6c4fd50119ed",
+      "center": [
+        1.6,
+        0.2
+      ],
+      "phase": 0.72,
+      "file": "fullfield-large-29c4b0db7de2.png",
+      "rate": 1
+    },
+    "small": {
+      "url": "/s/fullfield-small-ffe18521d06e.png",
+      "sourceSha256": "ffe18521d06ed2a05cf347289dfac8ce922fe7f6fdd4c8e3a9fb41bcc68472df",
+      "center": [
+        -0.7,
+        0.86
+      ],
+      "phase": 2.04,
+      "file": "fullfield-small-ffe18521d06e.png",
+      "rate": 0.82
+    },
+    "axiom": {
+      "url": "/s/fullfield-axiom-b9404bf108de.png",
+      "sourceSha256": "b9404bf108de86f1a698e562560f5f615339f42cb96d3ee0738a3f56572d2dec",
+      "center": [
+        -0.7,
+        0.18
+      ],
+      "phase": 0.37,
+      "file": "fullfield-axiom-b9404bf108de.png",
+      "rate": 1
+    },
+    "archive": {
+      "url": "/s/fullfield-archive-f072fcdc13e9.jpg",
+      "sourceSha256": "f072fcdc13e96ac0cdd40445d2944d795a1e2b75c0dab63c7e9b4d0fbd8e2af4",
+      "center": [
+        1.7,
+        0.78
+      ],
+      "phase": 1.48,
+      "file": "fullfield-archive-f072fcdc13e9.jpg",
+      "rate": 0.9
+    },
+    "entity": {
+      "url": "/s/fullfield-entity-0fee42235f06.png",
+      "sourceSha256": "0fee42235f068ca9762b8c4e01bc493fe16c072688db7e8bdece84960ea80489",
+      "center": [
+        0.25,
+        -0.85
+      ],
+      "phase": 2.83,
+      "file": "fullfield-entity-0fee42235f06.png",
+      "rate": 1.08
+    },
+    "woman": {
+      "url": "/s/fullfield-woman-25507cdd042a.jpg",
+      "file": "fullfield-woman-25507cdd042a.jpg",
+      "sourceSha256": "25507cdd042a23bd4332ddeb7122820fb65121ee24385f52db0a3cc9f75190f9",
+      "center": [
+        1.65,
+        -0.3
+      ],
+      "phase": 0.9,
+      "rate": 0.58
+    }
+  },
+  "mergedSectionPolicy": "woman section retains its text; lower pair section hidden only by the adopted runtime and merged into one three-texture canvas"
+}

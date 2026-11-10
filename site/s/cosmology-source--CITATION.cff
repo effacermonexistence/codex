@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this research record, please cite it as below."
+title: "Orthogonal Projection Term — Cosmology Residual Benchmarks"
+version: 0.5.3
+date-released: 2026-07-26
+authors:
+  - family-names: "OmarAGI"
+repository-code: "https://github.com/effacermonexistence/orthogonal-projection-term-benchmarks"
+license: MIT

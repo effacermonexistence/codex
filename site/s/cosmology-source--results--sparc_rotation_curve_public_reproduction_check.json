@@ -1,0 +1,77 @@
+{
+  "heldout_numeric_match": {
+    "absolute_tolerance": 1e-12,
+    "aggregate": {
+      "baseline_macro_chi2_per_point": 1.605504601332612,
+      "baseline_total_chi2": 208.84492834867459,
+      "candidate_macro_chi2_per_point": 1.4952751172651941,
+      "candidate_total_chi2": 199.58871533045263,
+      "data_point_count": 105,
+      "downlift": false,
+      "improved_count": 5,
+      "macro_delta_chi2_per_point": -0.11022948406741806,
+      "neutral_count": 0,
+      "raw_delta_chi2": -9.256213018221956,
+      "residual_reduction_pct": 4.432098539050158,
+      "stable_galaxy_count": 6,
+      "worsened_count": 1
+    },
+    "matched_control_aggregates": {
+      "gaussian_3d": {
+        "baseline_macro_chi2_per_point": 1.605504601332612,
+        "baseline_total_chi2": 208.84492834867459,
+        "candidate_macro_chi2_per_point": 1.5163412330996613,
+        "candidate_total_chi2": 203.37290149538316,
+        "data_point_count": 105,
+        "downlift": false,
+        "improved_count": 5,
+        "macro_delta_chi2_per_point": -0.08916336823295062,
+        "neutral_count": 0,
+        "raw_delta_chi2": -5.472026853291425,
+        "residual_reduction_pct": 2.6201387299938004,
+        "stable_galaxy_count": 6,
+        "worsened_count": 1
+      },
+      "top_hat_3d": {
+        "baseline_macro_chi2_per_point": 1.605504601332612,
+        "baseline_total_chi2": 208.84492834867459,
+        "candidate_macro_chi2_per_point": 1.5225362250680583,
+        "candidate_total_chi2": 203.80524713540981,
+        "data_point_count": 105,
+        "downlift": false,
+        "improved_count": 5,
+        "macro_delta_chi2_per_point": -0.08296837626455379,
+        "neutral_count": 0,
+        "raw_delta_chi2": -5.039681213264771,
+        "residual_reduction_pct": 2.4131211866686226,
+        "stable_galaxy_count": 6,
+        "worsened_count": 1
+      }
+    },
+    "relative_tolerance": 1e-12,
+    "status": "MATCH"
+  },
+  "policy_match": {
+    "eta": 0.125,
+    "f": 1.0,
+    "status": "MATCH"
+  },
+  "proof_boundary": "This verifies the published reproduction path against the stored result. It is not a new heldout run and does not upgrade the scientific claim.",
+  "public_reproduction_script_sha256": {
+    "scripts/sparc/evaluate_sparc_heldout.py": "e4f09595220bf1a02d9064c5a432f1b992718b008c9745f67ac3db6a4b4dad8e",
+    "scripts/sparc/freeze_sparc_policy_public.py": "3ed52323a7ce06837bc5696971f43a1ee5eb1e93ac82b2fab95d71d7923f5104",
+    "scripts/sparc/optimize_sparc_dev.py": "7e184ec0843d31d6705f9923aa016cc085a16f8d9c1b457c99d7e46572517b3e",
+    "scripts/sparc/prepare_public_reproduction.py": "3bc1165ca1f997180e52b71bf651a238d7ab924870fb1f425acb3ba8bea1eb7b",
+    "scripts/sparc/sparc_adapter_common.py": "4609393861001e828d3e4c7c3b4443fd56e598c17378c54702765694559b2f9d"
+  },
+  "schema_version": "sparc-public-reproduction-verification-v1",
+  "scope": "PUBLIC_REPRODUCTION_NUMERICAL_PARITY_ONLY",
+  "source_integrity": {
+    "catalog_sha256": "5aa0501f6b0d881fa579030e315e7b5b6ef561a5bd3a07472f9929c7e5728243",
+    "eligible_order_match": true,
+    "rotmod_zip_sha256": "0a80cc90714828cc28b7dd57923576714d209f2490328c087c4a4ad607faf588",
+    "sample_ids_sha256": "d5bb9bb18b9bbbcea0d2e31aee592d275b0aa596d32be2ed145c2494c9a3b3b5"
+  },
+  "status": "PASS",
+  "verified_at_utc": "2026-07-25T13:17:27.076637+00:00"
+}

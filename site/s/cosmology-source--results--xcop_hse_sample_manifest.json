@@ -1,0 +1,294 @@
+{
+  "dataset": "X-COP public profile release",
+  "development": [
+    "A2319",
+    "A85",
+    "ZW1215",
+    "A2142"
+  ],
+  "eligibility": "official X-COP cluster with X-ray pressure, electron-density, hydrostatic NFW mass, gas-mass, and stellar-mass profile files; >=8 rows in required profiles",
+  "heldout": [
+    "A644",
+    "A2029",
+    "A1795"
+  ],
+  "ordered_clusters": [
+    "A2319",
+    "A85",
+    "ZW1215",
+    "A2142",
+    "A644",
+    "A2029",
+    "A1795"
+  ],
+  "overlap_count": 0,
+  "sample_identity_receipt": {
+    "algorithm": "sha256(newline_join(sample_ids))",
+    "arm": "manifest",
+    "callable": "sample_ids_sha256",
+    "input_sha256": "c8a38e8c321734a30dffdbd32ea0a17bdd07a5eae7a381e028afb6c3eb5e5e97",
+    "outcome": "X-COP complete-component development and heldout identities locked",
+    "output_sha256": "753d2063fee37b04d0170040aaadf267b867529335fe64a4097e10c91993e497",
+    "r2_source_sha256": "5215e4e8a74b529c1355208c04e7323e09d93a63d332b26d67c9c7a50faba524"
+  },
+  "sample_ids": [
+    "XCOP_HSE_DEV:A2319",
+    "XCOP_HSE_DEV:A85",
+    "XCOP_HSE_DEV:ZW1215",
+    "XCOP_HSE_DEV:A2142",
+    "XCOP_HSE_HELDOUT:A644",
+    "XCOP_HSE_HELDOUT:A2029",
+    "XCOP_HSE_HELDOUT:A1795"
+  ],
+  "sample_ids_sha256": "8285acec7f246c2681deaaae007eb3f9f4e94cef33892d3fdd14e01171bd2538",
+  "schema_version": "xcop-hse-direct-formal-sample-lock-v1",
+  "source_archive": {
+    "bytes": 315080566,
+    "download_url": "https://drive.switch.ch/index.php/s/j3WUOYXWgv9Jbnz/download",
+    "path": "xcop_allfiles_download",
+    "sha256": "0edf5038b419b70d070b73b22f4801e27f318b0854db61eec52142c27c140d94"
+  },
+  "source_receipts": {
+    "A1795": {
+      "density_rows": 65,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "A1795/A1795_density_L1.fits",
+          "sha256": "e45a8f7bb1c28b3aaa0645684c8890d2471c717ed3454fed57c04fbfd5534e15"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "A1795/A1795_fgas_profile.fits",
+          "sha256": "4c033c037c56dada26e178ed8c0b0981dd5b0ed9fc110e65e22e344f05c1b90e"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "A1795/A1795_hydro_mass.fits",
+          "sha256": "66c48a3aadaa1858a04b094b748a32adcb9f4aad095d9b07d34ee7fa706f714a"
+        },
+        "mstar": {
+          "bytes": 40320,
+          "path": "A1795/A1795_mstar.fits",
+          "sha256": "18afc10ce2ba22630c3d2ad9a2c721e2734148e45da59532511109670e3acf27"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "A1795/A1795_pressure.fits",
+          "sha256": "1788e2e4f397f79b27642fda298f7a91a84063a5ad69af990303e7c32c2fbb8d"
+        }
+      },
+      "pressure_rows": 13,
+      "r500_kpc": 1153.0,
+      "stellar_rows": 606
+    },
+    "A2029": {
+      "density_rows": 63,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "A2029/A2029_density_L1.fits",
+          "sha256": "473594d299944c0f818a37f47f9810f50090de49cbc0e163cab26120f21fb84b"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "A2029/A2029_fgas_profile.fits",
+          "sha256": "eacb8e84fb5faa97db78cc8bf368b3c2da57f0b05631fbe5b5bef6d13c735153"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "A2029/A2029_hydro_mass.fits",
+          "sha256": "d3ec44af51eeaeefce21bbdfb7f08e9b0860fcb30b0b15250328ecb91d056884"
+        },
+        "mstar": {
+          "bytes": 40320,
+          "path": "A2029/A2029_mstar.fits",
+          "sha256": "f7bdabd23395254ad30615d6302cc24e2ea957982a14df03d1b271718645038d"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "A2029/A2029_pressure.fits",
+          "sha256": "ff2c2d369aed0a3e443645e9920016612a517d3362b87a607c04fd7b980dc108"
+        }
+      },
+      "pressure_rows": 14,
+      "r500_kpc": 1414.0,
+      "stellar_rows": 606
+    },
+    "A2142": {
+      "density_rows": 65,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "A2142/A2142_density_L1.fits",
+          "sha256": "f87274934034842c268f4da5e10ae7fd89310b8ea99a234b69dcb6b5b603f370"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "A2142/A2142_fgas_profile.fits",
+          "sha256": "0d2af4cf068aea3225c98cee51cb5ab5a50470cfcd0097e7bb589bcacbe77a42"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "A2142/A2142_hydro_mass.fits",
+          "sha256": "4eaaf679bbfccd29d3f45735487acff4aa8d64c18f3cacba04ddb8c8f7188b10"
+        },
+        "mstar": {
+          "bytes": 46080,
+          "path": "A2142/A2142_mstar.fits",
+          "sha256": "c46bb6a972707a1af52d0c5bfcee01efda409766dbb2a1536f6a68820af71bc1"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "A2142/A2142_pressure.fits",
+          "sha256": "87bd6fbe0cead2a705beed2004a493197d3a30c5ed291e3c547933c126419bcf"
+        }
+      },
+      "pressure_rows": 12,
+      "r500_kpc": 1424.0,
+      "stellar_rows": 740
+    },
+    "A2319": {
+      "density_rows": 69,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "A2319/A2319_density_L1.fits",
+          "sha256": "2d65480271b22801392c1fbf528bfc523e6f4ee1880f884db5846b54a43858b7"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "A2319/A2319_fgas_profile.fits",
+          "sha256": "36d767bb24e5b538cc66085c56123d42e92a6340611441e99df1ae46aa7f8262"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "A2319/A2319_hydro_mass.fits",
+          "sha256": "28faad37391faceb61a2c13b7231c79e1c3882a47923d8dfbb6c60211c25afe7"
+        },
+        "mstar": {
+          "bytes": 31680,
+          "path": "A2319/A2319_mstar.fits",
+          "sha256": "840f67549fb3806f423be363ff62c11549954ab93f363fc011e642630184c8b8"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "A2319/A2319_pressure.fits",
+          "sha256": "2bdc28bde58167a6b71bef5754fef9a9c4fffea8a6686ae0fbc1bb23ba7a923e"
+        }
+      },
+      "pressure_rows": 19,
+      "r500_kpc": 1368.0,
+      "stellar_rows": 404
+    },
+    "A644": {
+      "density_rows": 69,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "A644/A644_density_L1.fits",
+          "sha256": "767e51177201b19a7d0b90404bd480dad3769867ba13c6b01c437225aa8580d1"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "A644/A644_fgas_profile.fits",
+          "sha256": "3d80ee519875e827cf5767d4409fb0abb4133f95b021ae08aad499d95661d20f"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "A644/A644_hydro_mass.fits",
+          "sha256": "b110629caea5668086c29a9f73262901de9f847ce32ae82340413db3f0ca6bfa"
+        },
+        "mstar": {
+          "bytes": 40320,
+          "path": "A644/A644_mstar.fits",
+          "sha256": "68b7fb85bde0d73a970541ae87f556791a1d8fe0ddb4ac69ae87ff86c8c30920"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "A644/A644_pressure.fits",
+          "sha256": "ccff3af69346f9af5b8032ab8f388c00615ea679dab665bd1af739d820d82e54"
+        }
+      },
+      "pressure_rows": 12,
+      "r500_kpc": 1250.0,
+      "stellar_rows": 606
+    },
+    "A85": {
+      "density_rows": 69,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "A85/A85_density_L1.fits",
+          "sha256": "ee0ec85ca23bb06cf0c54304004523e84002c3ba26530a4f76b29bf26bece085"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "A85/A85_fgas_profile.fits",
+          "sha256": "b01ad8060b68565a82389bfeee3c0131c4f9dfad01dadb756d1786a64f7ecea9"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "A85/A85_hydro_mass.fits",
+          "sha256": "618a1829321fa70e4f3950552b1b395037aa91df5aa70590f46ab8ea3ca1daf0"
+        },
+        "mstar": {
+          "bytes": 34560,
+          "path": "A85/A85_mstar.fits",
+          "sha256": "e6992926deb67b4b8bc863f0585d31a5df74030e149abdff39f7398fe7e7e2be"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "A85/A85_pressure.fits",
+          "sha256": "8dbf06c943cc9808cd9a06151775a2c0377d0254d7ad9ea79b38dacacdede3eb"
+        }
+      },
+      "pressure_rows": 13,
+      "r500_kpc": 1235.0,
+      "stellar_rows": 496
+    },
+    "ZW1215": {
+      "density_rows": 61,
+      "files": {
+        "density": {
+          "bytes": 14400,
+          "path": "ZW1215/ZW1215_density_L1.fits",
+          "sha256": "6f5bfffe166c4bfc547ec25a442c4113a66dd76d28faa136f1bc37ffa7b74458"
+        },
+        "fgas": {
+          "bytes": 11520,
+          "path": "ZW1215/ZW1215_fgas_profile.fits",
+          "sha256": "80c9c053c249874dae45a0126bd15818ab7ff011e3b87030b20d68de9ab7f7aa"
+        },
+        "hydro_mass": {
+          "bytes": 20160,
+          "path": "ZW1215/ZW1215_hydro_mass.fits",
+          "sha256": "f1b6761e136a112757e67e91aa90a5bc98cc295fa068884905b127c27adad894"
+        },
+        "mstar": {
+          "bytes": 40320,
+          "path": "ZW1215/ZW1215_mstar.fits",
+          "sha256": "977bb510c54beb244b0a282d64fa711da930f30d03ff1d0dbb8b3b5cd28df605"
+        },
+        "pressure": {
+          "bytes": 14400,
+          "path": "ZW1215/ZW1215_pressure.fits",
+          "sha256": "dc92ccd3b4351f27905b469ff765840eb92c1ddd9d81ff7e8b6378a06d6671da"
+        }
+      },
+      "pressure_rows": 12,
+      "r500_kpc": 1358.0,
+      "stellar_rows": 606
+    }
+  },
+  "split_rule": "sort eligible cluster names by SHA256('XCOP-HSE-v1:'+name); first four development, remaining three heldout",
+  "status": "LOCKED_BEFORE_SCIENTIFIC_SCORING",
+  "timestamp_utc": "2026-07-25T21:47:11.566849+00:00",
+  "visibility": {
+    "development_scores_visible_for_shared_policy_selection": true,
+    "heldout_baseline_or_candidate_scores_visible_before_policy_freeze": false,
+    "heldout_names_locked_before_scoring": true,
+    "heldout_scores_accessed_by_this_script": false,
+    "source_profiles_and_schema_visible": true
+  }
+}

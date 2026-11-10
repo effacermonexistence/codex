@@ -1,0 +1,25 @@
+/* Only the first desktop body-brand entrance is calibrated. Authored mobile
+   rules, logo dimensions and all interior/footer marks remain untouched. */
+@media (min-width:768px) {
+  html body main .page-section[data-desktop-brand-section] {
+    align-items: flex-start !important;
+  }
+  html body main [data-desktop-brand-holder][data-desktop-brand-aligned="1"] {
+    padding-top: var(--desktop-brand-padding) !important;
+  }
+  html body main [data-desktop-brand-link-offset="1"] {
+    translate: 0 var(--desktop-brand-offset);
+  }
+  html body main [data-desktop-brand-reference] {
+    position: fixed;
+    left: -10000px;
+    top: 0;
+    visibility: hidden;
+    pointer-events: none;
+    contain: strict;
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
+    border: 0;
+  }
+}

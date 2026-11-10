@@ -1,0 +1,219 @@
+[
+  {
+    "code": "en",
+    "nativeName": "English",
+    "englishName": "English",
+    "htmlLang": "en",
+    "direction": "ltr"
+  },
+  {
+    "code": "fr",
+    "nativeName": "Français",
+    "englishName": "French",
+    "htmlLang": "fr",
+    "direction": "ltr"
+  },
+  {
+    "code": "ar",
+    "nativeName": "العربية",
+    "englishName": "Arabic",
+    "htmlLang": "ar",
+    "direction": "rtl"
+  },
+  {
+    "code": "bg",
+    "nativeName": "Български",
+    "englishName": "Bulgarian",
+    "htmlLang": "bg",
+    "direction": "ltr"
+  },
+  {
+    "code": "cs",
+    "nativeName": "Čeština",
+    "englishName": "Czech",
+    "htmlLang": "cs",
+    "direction": "ltr"
+  },
+  {
+    "code": "da",
+    "nativeName": "Dansk",
+    "englishName": "Danish",
+    "htmlLang": "da",
+    "direction": "ltr"
+  },
+  {
+    "code": "de",
+    "nativeName": "Deutsch",
+    "englishName": "German",
+    "htmlLang": "de",
+    "direction": "ltr"
+  },
+  {
+    "code": "el",
+    "nativeName": "Ελληνικά",
+    "englishName": "Greek",
+    "htmlLang": "el",
+    "direction": "ltr"
+  },
+  {
+    "code": "es",
+    "nativeName": "Español",
+    "englishName": "Spanish",
+    "htmlLang": "es",
+    "direction": "ltr"
+  },
+  {
+    "code": "et",
+    "nativeName": "Eesti",
+    "englishName": "Estonian",
+    "htmlLang": "et",
+    "direction": "ltr"
+  },
+  {
+    "code": "fi",
+    "nativeName": "Suomi",
+    "englishName": "Finnish",
+    "htmlLang": "fi",
+    "direction": "ltr"
+  },
+  {
+    "code": "hr",
+    "nativeName": "Hrvatski",
+    "englishName": "Croatian",
+    "htmlLang": "hr",
+    "direction": "ltr"
+  },
+  {
+    "code": "hu",
+    "nativeName": "Magyar",
+    "englishName": "Hungarian",
+    "htmlLang": "hu",
+    "direction": "ltr"
+  },
+  {
+    "code": "it",
+    "nativeName": "Italiano",
+    "englishName": "Italian",
+    "htmlLang": "it",
+    "direction": "ltr"
+  },
+  {
+    "code": "ja",
+    "nativeName": "日本語",
+    "englishName": "Japanese",
+    "htmlLang": "ja",
+    "direction": "ltr"
+  },
+  {
+    "code": "ko",
+    "nativeName": "한국어",
+    "englishName": "Korean",
+    "htmlLang": "ko",
+    "direction": "ltr"
+  },
+  {
+    "code": "lt",
+    "nativeName": "Lietuvių",
+    "englishName": "Lithuanian",
+    "htmlLang": "lt",
+    "direction": "ltr"
+  },
+  {
+    "code": "lv",
+    "nativeName": "Latviešu",
+    "englishName": "Latvian",
+    "htmlLang": "lv",
+    "direction": "ltr"
+  },
+  {
+    "code": "nl",
+    "nativeName": "Nederlands",
+    "englishName": "Dutch",
+    "htmlLang": "nl",
+    "direction": "ltr"
+  },
+  {
+    "code": "no",
+    "nativeName": "Norsk",
+    "englishName": "Norwegian",
+    "htmlLang": "no",
+    "direction": "ltr"
+  },
+  {
+    "code": "pl",
+    "nativeName": "Polski",
+    "englishName": "Polish",
+    "htmlLang": "pl",
+    "direction": "ltr"
+  },
+  {
+    "code": "pt",
+    "nativeName": "Português",
+    "englishName": "Portuguese",
+    "htmlLang": "pt",
+    "direction": "ltr"
+  },
+  {
+    "code": "ro",
+    "nativeName": "Română",
+    "englishName": "Romanian",
+    "htmlLang": "ro",
+    "direction": "ltr"
+  },
+  {
+    "code": "sk",
+    "nativeName": "Slovenčina",
+    "englishName": "Slovak",
+    "htmlLang": "sk",
+    "direction": "ltr"
+  },
+  {
+    "code": "sv",
+    "nativeName": "Svenska",
+    "englishName": "Swedish",
+    "htmlLang": "sv",
+    "direction": "ltr"
+  },
+  {
+    "code": "th",
+    "nativeName": "ไทย",
+    "englishName": "Thai",
+    "htmlLang": "th",
+    "direction": "ltr"
+  },
+  {
+    "code": "tr",
+    "nativeName": "Türkçe",
+    "englishName": "Turkish",
+    "htmlLang": "tr",
+    "direction": "ltr"
+  },
+  {
+    "code": "uk",
+    "nativeName": "Українська",
+    "englishName": "Ukrainian",
+    "htmlLang": "uk",
+    "direction": "ltr"
+  },
+  {
+    "code": "vi",
+    "nativeName": "Tiếng Việt",
+    "englishName": "Vietnamese",
+    "htmlLang": "vi",
+    "direction": "ltr"
+  },
+  {
+    "code": "zh-CN",
+    "nativeName": "简体中文",
+    "englishName": "Chinese, Simplified",
+    "htmlLang": "zh-Hans",
+    "direction": "ltr"
+  },
+  {
+    "code": "zh-TW",
+    "nativeName": "繁體中文",
+    "englishName": "Chinese, Traditional",
+    "htmlLang": "zh-Hant",
+    "direction": "ltr"
+  }
+]

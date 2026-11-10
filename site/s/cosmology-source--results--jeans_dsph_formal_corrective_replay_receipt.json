@@ -1,0 +1,35 @@
+{
+  "aggregate_delta_signs_preserved": true,
+  "aggregate_direction_counts_preserved": true,
+  "dev_byte_identical": false,
+  "dev_original_sha256": "6540fa83e8cf9ffd45b173faec6434b810bca8d1ecc249f1ca6e5b27029948bb",
+  "dev_replay_sha256": "2696e36d09084c0cb152e7d0255f2e0e8f6570692ff350ae6ee10874d23ea0d7",
+  "direct_policy_identity": {
+    "original": [
+      0.05,
+      0.03125
+    ],
+    "replay": [
+      0.05,
+      0.03125
+    ]
+  },
+  "evaluation_byte_identical": false,
+  "evaluation_original_sha256": "46f09a8c2694daccd9b2380e5a1efdc7b9651dbb102766c8dbb4da9b78572699",
+  "evaluation_replay_sha256": "49f36fd7cb6e44163c49d8eab82461c2f29077845d59ab8b7c00d82c79cc201b",
+  "max_aggregate_delta_chi2_drift": 4.658406993485187e-09,
+  "plummer_delta_to_replay_drift_ratio": 248883.12347690138,
+  "reason_not_byte_identical": "Fresh-process L-BFGS-B baseline refits differ at sub-micro parameter scale; policy identity, signs, row counts, and material interpretation are unchanged.",
+  "safe_policy_identity": {
+    "original": [
+      0.0,
+      0.03125
+    ],
+    "replay": [
+      0.0,
+      0.03125
+    ]
+  },
+  "schema_version": "jeans-formal-source-corrective-replay-v1",
+  "status": "PASS_NUMERICALLY_EQUIVALENT_NON_BYTE_IDENTICAL"
+}

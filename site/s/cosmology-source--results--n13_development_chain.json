@@ -1,0 +1,53 @@
+{
+  "M0_vs_M1": {
+    "chi2_M0": 23.60484151627778,
+    "chi2_M1": 22.350534526319247,
+    "d_hat_kpc": 16.0,
+    "f_hat": 0.44250000000000034,
+    "label": "WEAK_RAW_UPLIFT_WITHIN_NULL",
+    "null_percentile_lower_is_more_extreme": 20.0,
+    "raw_delta_chi2": -1.2543069899585326
+  },
+  "M2_countermodel": {
+    "M1_d_hat": 16.0,
+    "M1_f_hat": 0.44250000000000034,
+    "boundary": "fast fixed-grid adversarial smoke; not final matched-budget publication claim",
+    "chi2_M0": 23.60484151627778,
+    "chi2_M1": 22.350534526319247,
+    "chi2_M2_N13_fixed_fast": 5.5,
+    "delta_M1_M0": -1.2543069899585326,
+    "delta_M1_M2_N13": 16.850534526319247,
+    "delta_M2_N13_M0": -18.10484151627778,
+    "elapsed_seconds": 31.211,
+    "label": "N13_BARYONIC_COUNTERMODEL_ABSORBS_M1",
+    "run_id": "M2_N13_FIXED_FAST",
+    "status": "M2_N13_FIXED_FAST_SMOKE_NO_CLAIM"
+  },
+  "M3_M2_plus_orthogonal": {
+    "M3_downlift_clusters": 0,
+    "M3_improved_clusters": 0,
+    "boundary": "fast smoke; M3 profiles alpha/sigma only at fixed M2 beta/rs; not final paper-grade",
+    "chi2_M0": 23.60484151627778,
+    "chi2_M1": 22.350534526319247,
+    "chi2_M2_fixed_fast": 3.8581640122017715,
+    "chi2_M3": 3.6282288194135868,
+    "delta_M1_M0": -1.2543069899585326,
+    "delta_M2_M0": -19.746677504076008,
+    "delta_M3_M0": -19.976612696864194,
+    "delta_M3_M2": -0.22993519278818475,
+    "elapsed_seconds": 105.677,
+    "label": "M3_M2_DEGENERATE_SMOKE",
+    "run_id": "M3_M2_PLUS_ORTHOGONAL_FIXED_FAST",
+    "status": "M3_M2_PLUS_HIDDEN_PROJECTION_FAST_SMOKE_NO_CLAIM"
+  },
+  "claim_boundary": "Development ledger only; no physical detection, no public uplift proof.",
+  "evidence_class": "INTERNAL_DEVELOPMENT_AND_COUNTERMODEL_AUDIT",
+  "interpretation": "The M1 residual reduction was within the null distribution. An academic baryonic/cored-halo countermodel absorbed the residual much more strongly; M3 added only a small development-stage change. These rows are not independent proof lanes.",
+  "record_id": "N13_DEVELOPMENT_CHAIN",
+  "sample": "Five-cluster N13-style lensing+dynamics development likelihood; reused across multiple development views.",
+  "upstream_artifact_sha256": {
+    "m1": "33f5fa15c699199a14dbc3b5e2cd6d48a304bd3aa5d4aa72dab5b11b5bbec84d",
+    "m2": "eb83e068f68af8096b5e103a9257a5e960dc4fb27a45910f4e5e69f9f3971e33",
+    "m3": "97cfafc00f0040dda35da62872d6ab8eeef2572185adb7f0ea40cf704c7f105f"
+  }
+}

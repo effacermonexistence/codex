@@ -1,0 +1,293 @@
+{
+  "claim_boundary": "Model-product consistency diagnostic; not a raw observational likelihood or independent physical detection.",
+  "d_kpc": 16.0,
+  "evidence_class": "PUBLIC_LENS_MODEL_PRODUCT_DIAGNOSTIC",
+  "f_perp": 0.3,
+  "fallback": "none",
+  "interpretation": "All six target maps moved toward the two reference-team maps, but matched generic smoothers also improved all six and beat the Plummer-like kernel in five of six clusters. This supports a generic low-pass redistribution effect, not kernel-specific physics.",
+  "kernel_lineage_note": "The 2D map kernel used exponent -3/2 and is labeled Plummer-like; it is not the literal projected form of the 3D -5/2 Plummer density kernel.",
+  "operator": "kappa_aug=(1-f)kappa_target+f(P_d*kappa_target)",
+  "optimizer": "none",
+  "record_id": "HFF_MAP_TRANSFER_6_CLUSTER",
+  "rows": [
+    {
+      "baseline_mean_mse": 0.05847193538184311,
+      "cluster": "abell2744",
+      "cluster_redshift": 0.308,
+      "d_arcsec": 3.527529950041566,
+      "f0_recovery_max_abs_error": 0.0,
+      "fit_radius_arcsec": 60.0,
+      "gaussian_2d": {
+        "augmented_mean_mse": 0.04478222338823522,
+        "raw_delta_mse": -0.01368971199360789,
+        "residual_reduction_pct": 23.412448902553113
+      },
+      "matching": {
+        "criterion": "discrete kernel half-mass radius before score evaluation",
+        "gaussian_sigma_arcsec": 4.510065992977063,
+        "target_half_mass_arcsec": 5.310196902337401,
+        "tophat_radius_arcsec": 7.50975247815715
+      },
+      "pixel_scale_arcsec": 0.30015007503751834,
+      "plummer_like_2d": {
+        "augmented_mean_mse": 0.04523927877258335,
+        "raw_delta_mse": -0.013232656609259756,
+        "residual_reduction_pct": 22.630782652986724
+      },
+      "provenance_class": "PREEXISTING_PROJECT_TARGET",
+      "references": [
+        {
+          "sha256": "7b5c76cf7a3bbb7a316f04587ee229a557ce8e190f47c2fe57564b2bccc8aae5",
+          "team": "glafic"
+        },
+        {
+          "sha256": "bdcca55245099ee1b58d61715ff378a45767310c7a5e3e811af638a962d4dd4f",
+          "team": "williams"
+        }
+      ],
+      "target": {
+        "sha256": "bd1cf25162bd71ced4f8b75d063713b12d4054e83e409e8fd48e98205597d47b",
+        "team": "cats"
+      },
+      "top_hat_2d": {
+        "augmented_mean_mse": 0.04461252647909413,
+        "raw_delta_mse": -0.013859408902748976,
+        "residual_reduction_pct": 23.70266831812898
+      }
+    },
+    {
+      "baseline_mean_mse": 0.10818345520267769,
+      "cluster": "abell370",
+      "cluster_redshift": 0.375,
+      "d_arcsec": 3.0992610591768317,
+      "f0_recovery_max_abs_error": 0.0,
+      "fit_radius_arcsec": 60.0,
+      "gaussian_2d": {
+        "augmented_mean_mse": 0.07749527894169995,
+        "raw_delta_mse": -0.030688176260977737,
+        "residual_reduction_pct": 28.366792503978154
+      },
+      "matching": {
+        "criterion": "discrete kernel half-mass radius before score evaluation",
+        "gaussian_sigma_arcsec": 3.941288209349652,
+        "target_half_mass_arcsec": 4.640512239310349,
+        "tophat_radius_arcsec": 6.562675345191037
+      },
+      "pixel_scale_arcsec": 0.20006668889629725,
+      "plummer_like_2d": {
+        "augmented_mean_mse": 0.07790114607293819,
+        "raw_delta_mse": -0.030282309129739504,
+        "residual_reduction_pct": 27.991626883248202
+      },
+      "provenance_class": "NEWLY_ACQUIRED_BEFORE_FIRST_SCORE",
+      "references": [
+        {
+          "sha256": "0aec4486030210ebd22565ea6bdec71cf3788e7c680851b853ac11e6995f6fc3",
+          "team": "glafic"
+        },
+        {
+          "sha256": "c78380cd0629dd420d0a29a9545a6a4dcde1ee337c96051310d4c0ff86287fc9",
+          "team": "williams"
+        }
+      ],
+      "target": {
+        "sha256": "5eee21d023e80a04741cd54116272800211c720ea450dd7cc9ea121905ad915d",
+        "team": "cats"
+      },
+      "top_hat_2d": {
+        "augmented_mean_mse": 0.07732829623020396,
+        "raw_delta_mse": -0.030855158972473734,
+        "residual_reduction_pct": 28.52114393524198
+      }
+    },
+    {
+      "baseline_mean_mse": 0.02590308659650425,
+      "cluster": "abells1063",
+      "cluster_redshift": 0.348,
+      "d_arcsec": 3.2511089972289566,
+      "f0_recovery_max_abs_error": 0.0,
+      "fit_radius_arcsec": 60.0,
+      "gaussian_2d": {
+        "augmented_mean_mse": 0.024169572516113576,
+        "raw_delta_mse": -0.0017335140803906753,
+        "residual_reduction_pct": 6.692307011105855
+      },
+      "matching": {
+        "criterion": "discrete kernel half-mass radius before score evaluation",
+        "gaussian_sigma_arcsec": 4.114723922487985,
+        "target_half_mass_arcsec": 4.844717186221541,
+        "tophat_radius_arcsec": 6.851464750616523
+      },
+      "pixel_scale_arcsec": 0.2001334222815201,
+      "plummer_like_2d": {
+        "augmented_mean_mse": 0.024617596889206006,
+        "raw_delta_mse": -0.001285489707298245,
+        "residual_reduction_pct": 4.962689301558867
+      },
+      "provenance_class": "KNOWN_POSITIVE_TARGET",
+      "references": [
+        {
+          "sha256": "d7dc5b29026729f4f725175ae889f2c615c77e8e8099c8e87927bfae25a090c3",
+          "team": "glafic"
+        },
+        {
+          "sha256": "4bb13d8ae82ee2168341c8d5d7a6eff588aef9f0e38d39ced7b611835bb45d9a",
+          "team": "williams"
+        }
+      ],
+      "target": {
+        "sha256": "8bae5b69c2a6667b10a3c2fab065dccc8a87192b715be36ba4e869a39c537fe0",
+        "team": "cats"
+      },
+      "top_hat_2d": {
+        "augmented_mean_mse": 0.023964913771270982,
+        "raw_delta_mse": -0.001938172825233269,
+        "residual_reduction_pct": 7.482401056771494
+      }
+    },
+    {
+      "baseline_mean_mse": 0.06509525102491724,
+      "cluster": "macs0416",
+      "cluster_redshift": 0.396,
+      "d_arcsec": 2.996216161995375,
+      "f0_recovery_max_abs_error": 0.0,
+      "fit_radius_arcsec": 60.0,
+      "gaussian_2d": {
+        "augmented_mean_mse": 0.04704517561951943,
+        "raw_delta_mse": -0.01805007540539781,
+        "residual_reduction_pct": 27.72871311071307
+      },
+      "matching": {
+        "criterion": "discrete kernel half-mass radius before score evaluation",
+        "gaussian_sigma_arcsec": 3.825773875171239,
+        "target_half_mass_arcsec": 4.504504504504483,
+        "tophat_radius_arcsec": 6.37033136204094
+      },
+      "pixel_scale_arcsec": 0.30030030030029886,
+      "plummer_like_2d": {
+        "augmented_mean_mse": 0.047239404328685286,
+        "raw_delta_mse": -0.017855846696231956,
+        "residual_reduction_pct": 27.430336952532947
+      },
+      "provenance_class": "NEWLY_ACQUIRED_BEFORE_FIRST_SCORE",
+      "references": [
+        {
+          "sha256": "cd5609a2be4c6b031aea169d3636d228811af94d97480f78ab47e29e87929c76",
+          "team": "glafic"
+        },
+        {
+          "sha256": "a42f078077ffcd2fd5f238f8bf179f33997b2078187dd6800e5a3b9a210e1aa2",
+          "team": "williams"
+        }
+      ],
+      "target": {
+        "sha256": "890ebc82c47e38e7154db5221813bd64d48c9ba7baa55f5e2441e63ba1368296",
+        "team": "cats"
+      },
+      "top_hat_2d": {
+        "augmented_mean_mse": 0.04696548558759243,
+        "raw_delta_mse": -0.018129765437324814,
+        "residual_reduction_pct": 27.851133764558462
+      }
+    },
+    {
+      "baseline_mean_mse": 0.16602177528090134,
+      "cluster": "macs0717",
+      "cluster_redshift": 0.545,
+      "d_arcsec": 2.5068770186793143,
+      "f0_recovery_max_abs_error": 0.0,
+      "fit_radius_arcsec": 60.0,
+      "gaussian_2d": {
+        "augmented_mean_mse": 0.1577582784002844,
+        "raw_delta_mse": -0.00826349688061695,
+        "residual_reduction_pct": 4.977357257284766
+      },
+      "matching": {
+        "criterion": "discrete kernel half-mass radius before score evaluation",
+        "gaussian_sigma_arcsec": 3.4006878890411043,
+        "target_half_mass_arcsec": 4.004004004003988,
+        "tophat_radius_arcsec": 5.6625167662586176
+      },
+      "pixel_scale_arcsec": 0.8008008008007977,
+      "plummer_like_2d": {
+        "augmented_mean_mse": 0.1548924732140649,
+        "raw_delta_mse": -0.011129302066836433,
+        "residual_reduction_pct": 6.70351949194987
+      },
+      "provenance_class": "NEWLY_ACQUIRED_BEFORE_FIRST_SCORE",
+      "references": [
+        {
+          "sha256": "3c0f8b0ed0b9c7a04454c4b59640550479845b88ba47832b4cd539a19ff8319d",
+          "team": "glafic"
+        },
+        {
+          "sha256": "cc807a9a391246e911f8e0a54a52e35139360c41949bd678c0983e7c3a5a7a40",
+          "team": "williams"
+        }
+      ],
+      "target": {
+        "sha256": "6919ef95fd876a4a3d6a43a7cd1b7c35511533d3e7433fa986b7d94fca7af579",
+        "team": "cats"
+      },
+      "top_hat_2d": {
+        "augmented_mean_mse": 0.1590331483685827,
+        "raw_delta_mse": -0.006988626912318635,
+        "residual_reduction_pct": 4.209464029940768
+      }
+    },
+    {
+      "baseline_mean_mse": 0.07305613486125881,
+      "cluster": "macs1149",
+      "cluster_redshift": 0.544,
+      "d_arcsec": 2.5091866744708895,
+      "f0_recovery_max_abs_error": 0.0,
+      "fit_radius_arcsec": 60.0,
+      "gaussian_2d": {
+        "augmented_mean_mse": 0.0679003026199306,
+        "raw_delta_mse": -0.0051558322413282065,
+        "residual_reduction_pct": 7.057356991469187
+      },
+      "matching": {
+        "criterion": "discrete kernel half-mass radius before score evaluation",
+        "gaussian_sigma_arcsec": 3.195787283839644,
+        "target_half_mass_arcsec": 3.7627519778203027,
+        "tophat_radius_arcsec": 5.32133487887966
+      },
+      "pixel_scale_arcsec": 0.30030030030029886,
+      "plummer_like_2d": {
+        "augmented_mean_mse": 0.06800125962484904,
+        "raw_delta_mse": -0.005054875236409767,
+        "residual_reduction_pct": 6.919165989289606
+      },
+      "provenance_class": "NEWLY_ACQUIRED_BEFORE_FIRST_SCORE",
+      "references": [
+        {
+          "sha256": "9b616c33a75cb14460d4489be7b428681ce9b3ebcef30fa436ec9df92403d723",
+          "team": "glafic"
+        },
+        {
+          "sha256": "00216eb322ea9212f3f6d44166b0ff751ba9dfc7a09982df9f6988ae93e3e6c9",
+          "team": "williams"
+        }
+      ],
+      "target": {
+        "sha256": "37005861ec7a7af7fd137fd74c1c5fe382bbf28998f721b0b779c028145a1257",
+        "team": "cats"
+      },
+      "top_hat_2d": {
+        "augmented_mean_mse": 0.06788678877854154,
+        "raw_delta_mse": -0.005169346082717269,
+        "residual_reduction_pct": 7.0758548786277755
+      }
+    }
+  ],
+  "summary": {
+    "clusters": 6,
+    "plummer_better_than_gaussian_clusters": 1,
+    "plummer_better_than_tophat_clusters": 1,
+    "plummer_downlift": 0,
+    "plummer_improved": 6,
+    "plummer_neutral": 0
+  },
+  "upstream_artifact_sha256": "9da2e6bcb59dbf022f9aef2f31e1be1d9a0e77a99b8b77285726fd7104824afd"
+}

@@ -1,0 +1,8 @@
+/* Preserve the brand and native grid geometry. Move only the first hero's
+   copy and CTA by measured fractions of their original visible gaps. */
+html body main [data-landing-rhythm] [data-landing-copy] {
+  translate: 0 calc(-1 * var(--landing-copy-lift, 0px));
+}
+html body main [data-landing-rhythm] [data-landing-action] {
+  translate: 0 calc(-1 * var(--landing-action-lift, 0px));
+}

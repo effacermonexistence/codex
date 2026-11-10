@@ -1,0 +1,3251 @@
+{
+  "schemaVersion": 1,
+  "reference": "/archive",
+  "routes": {
+    "/": {
+      "remove": [
+        "footer.home-cern-layout-footer",
+        ".fe-block-f8cd4f2d52977002e113",
+        ".fe-block-4a6c5b13537bb93babc1"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6849261a520efa37a728ce1d",
+            "lastContentRow": 45,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6849261a520efa37a728ce1d",
+            "lastContentRow": 47,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/404": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/about-1-2-1": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/about-1-2": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/apply": {
+      "remove": [
+        ".fe-block-68280f1e6aa5a6b9c034",
+        ".fe-block-69f5f3af237e8c872ecc"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-68656582e759892761381cbe",
+            "lastContentRow": 36,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-68656582e759892761381cbe",
+            "lastContentRow": 34,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/archive-1": {
+      "remove": [
+        ".fe-block-49548f56836372ec9a7d",
+        ".fe-block-f0fb72c05c12625f63f3"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69740066e887d7485064b93d",
+            "lastContentRow": 3,
+            "auto": false,
+            "remaining": 1,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69740066e887d7485064b93d",
+            "lastContentRow": 60,
+            "auto": false,
+            "remaining": 1,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/archive-2": {
+      "remove": [
+        ".fe-block-8d2a6d187125e73365d8",
+        ".fe-block-7e23961650f4d5aa19d5"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69740068a545d5336675fc1f",
+            "lastContentRow": 3,
+            "auto": false,
+            "remaining": 1,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69740068a545d5336675fc1f",
+            "lastContentRow": 60,
+            "auto": false,
+            "remaining": 1,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/archive": {
+      "remove": [
+        ".fe-block-6635ca1028032b19727f",
+        ".fe-block-20023c9effa60ddbae63"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697d4d9da0afa94a2c8e778e",
+            "lastContentRow": 53,
+            "auto": false,
+            "remaining": 11,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697d4d9da0afa94a2c8e778e",
+            "lastContentRow": 381,
+            "auto": false,
+            "remaining": 11,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/axioms": {
+      "remove": [
+        ".fe-block-7c0d6fde94098f1b1f8d",
+        ".fe-block-ba5a4aa95e8735dd5b5e"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695c49634b319924f9f24421",
+            "lastContentRow": 20,
+            "auto": false,
+            "remaining": 7,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695c49634b319924f9f24421",
+            "lastContentRow": 26,
+            "auto": false,
+            "remaining": 7,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/cart": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/chapter-2": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/chapter-iii": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/chapter-ix": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-v-the-system-that-sustains-the-finite": {
+      "remove": [
+        ".fe-block-dc49c0222f804fe2e521",
+        ".fe-block-649b41ef5524881e0e83"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6910d68477deaf10a7a3d2d9",
+            "lastContentRow": 72,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6910d68477deaf10a7a3d2d9",
+            "lastContentRow": 58,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-vi": {
+      "remove": [
+        ".fe-block-6fa9319320ca79dac10c",
+        ".fe-block-1ced2c870bbf94fe25d2"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-691884f0de388c1387f4cf05",
+            "lastContentRow": 317,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-691884f0de388c1387f4cf05",
+            "lastContentRow": 235,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-vii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-viii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-x": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xi": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xiii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xiv": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xix": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xv": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xvi": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xvii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xviii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xx": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxi": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxiii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxiv": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxix": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxv": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxvi": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxvii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxviii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxx": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxxi": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxxii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxxiii": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxxiv": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter-xxxv": {
+      "remove": [
+        ".fe-block-17668d9d83de91ae588d",
+        ".fe-block-92cb287a1c1999e095b9"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6919371b5555170b1a4c60e4",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter1": {
+      "remove": [
+        ".fe-block-0eb1a70acde840b5ad08",
+        ".fe-block-48a262fac8e1f66134c0"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695ad93adabe874d374a7b10",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695ad93adabe874d374a7b10",
+            "lastContentRow": 89,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter2": {
+      "remove": [
+        ".fe-block-094d7a15f923762fc5fc",
+        ".fe-block-860d21188c1c7a64a65d"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-68ef0d09a27ace0b2fc1e7d1",
+            "lastContentRow": 74,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-68ef0d09a27ace0b2fc1e7d1",
+            "lastContentRow": 69,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter3": {
+      "remove": [
+        ".fe-block-cb9eeab9067ca367c9ee",
+        ".fe-block-2d7abdaa8bab59817f53"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-68f040c70d15a16b4216cb10",
+            "lastContentRow": 78,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-68f040c70d15a16b4216cb10",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/chapter5": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/chapter6-1": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/chapter6": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/chapterii": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/code-1": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/code-2": {
+      "remove": [
+        ".fe-block-9f42a76542b5f3768f67",
+        ".fe-block-6ec6c2b754923c8e8489"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695985924d0c6917419bd4b4",
+            "lastContentRow": 113,
+            "auto": false,
+            "remaining": 25,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695985924d0c6917419bd4b4",
+            "lastContentRow": 118,
+            "auto": false,
+            "remaining": 25,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/code": {
+      "remove": [
+        ".fe-block-fdba7d09a71963f913fb",
+        ".fe-block-f87bda38c46bd8a32b44"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-68eefd14a27ace0b2fbf3b2e",
+            "lastContentRow": 329,
+            "auto": false,
+            "remaining": 73,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-68eefd14a27ace0b2fbf3b2e",
+            "lastContentRow": 334,
+            "auto": false,
+            "remaining": 73,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/code1": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/collapse": {
+      "remove": [
+        ".fe-block-7dcb586d8d4639dfd4ff",
+        ".fe-block-f9811f3b21068e4f9c38"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69b3189078a91b3170a86dda",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69b3189078a91b3170a86dda",
+            "lastContentRow": 225,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/contact": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-001": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-002": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-003": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-004": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-005": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-006": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-007": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-008": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-009": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-010": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-011": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render-012": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/continuous-render": {
+      "remove": [
+        "footer.cr-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/core1": {
+      "remove": [
+        ".fe-block-212b8d31d27e1387122d",
+        ".fe-block-b90c2d9ca36e0c51d17d"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695ae98f93befa00945db267",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695ae98f93befa00945db267",
+            "lastContentRow": 92,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/core2": {
+      "remove": [
+        ".fe-block-9f48ec4e03965a07188a",
+        ".fe-block-d353bb1264f220278e62"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695aea5ed1c1822153f654e1",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695aea5ed1c1822153f654e1",
+            "lastContentRow": 90,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/core3": {
+      "remove": [
+        ".fe-block-3df277f8f9868c8de90e",
+        ".fe-block-271e2724b0a64db687f2"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695aeaefc610fe086a973e57",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695aeaefc610fe086a973e57",
+            "lastContentRow": 158,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/cosmology-audit": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-claim-boundaries": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-conceptual-origin": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-data-provenance": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-data-record": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-equation-insertions": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-experiment-registry": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-jeans-formal-source": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-jeans": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-operator": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-overview": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-reproduction": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-source-index": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-sparc": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/cosmology-xcop": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/dlca-u": {
+      "remove": [
+        ".fe-block-e1619bc51c816cb0814a",
+        ".fe-block-669f5ca502c6484b19ea"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69a47598dadbcd7b0e816d25",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69a47598dadbcd7b0e816d25",
+            "lastContentRow": 307,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/domain-sector": {
+      "remove": [
+        ".fe-block-18ba1fc21fc54f7ef32c",
+        ".fe-block-f4bd2643eae9fa0ea37e"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695c501b03e2ce2cbfa8da4f",
+            "lastContentRow": 64,
+            "auto": false,
+            "remaining": 9,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695c501b03e2ce2cbfa8da4f",
+            "lastContentRow": 57,
+            "auto": false,
+            "remaining": 9,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/esc-external-symmetry-collapse": {
+      "remove": [
+        ".fe-block-7a7b45a26a73e2c74922",
+        ".fe-block-18ac5480474ec27fa4b0"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69727277583da84ddd97e84c",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69727277583da84ddd97e84c",
+            "lastContentRow": 129,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/esl": {
+      "remove": [
+        ".fe-block-e11524c93b0a9399b3ca",
+        ".fe-block-1b36401e7d6c5cfcb575"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69726f69e7dc796d414bdc4b",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69726f69e7dc796d414bdc4b",
+            "lastContentRow": 141,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/exist-1": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/exist-2": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/exist-fr": {
+      "remove": [
+        "footer.home-cern-layout-footer",
+        ".fe-block-d2bf2d4a2545d6facbfd",
+        ".fe-block-d98233e3fb326eb28dea"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-692f889802e91f2fe3e501fb",
+            "lastContentRow": 45,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-692f889802e91f2fe3e501fb",
+            "lastContentRow": 42,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/exist": {
+      "remove": [
+        "footer.home-cern-layout-footer",
+        ".fe-block-f8cd4f2d52977002e113",
+        ".fe-block-4a6c5b13537bb93babc1"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6849261a520efa37a728ce1d",
+            "lastContentRow": 45,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6849261a520efa37a728ce1d",
+            "lastContentRow": 47,
+            "auto": false,
+            "remaining": 4,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/experimental-fit-layer": {
+      "remove": [
+        ".fe-block-eaec326869e3495cd304",
+        ".fe-block-b9eb44e0a5570076a62e"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697271769ebf734712b3b94e",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697271769ebf734712b3b94e",
+            "lastContentRow": 127,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/fep": {
+      "remove": [
+        ".fe-block-584bfe31248f04ab4b86",
+        ".fe-block-b49659aa2a4407342837"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69727336d0c9a1485ca6140d",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69727336d0c9a1485ca6140d",
+            "lastContentRow": 135,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/fivelayer": {
+      "remove": [
+        ".fe-block-7bdc4e4120307694ed68",
+        ".fe-block-a2fd576bb25b27c09a1d"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6972751be9c3cd003094dde6",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6972751be9c3cd003094dde6",
+            "lastContentRow": 160,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/four-domain": {
+      "remove": [
+        ".fe-block-2f26eaf1953fd42f7405",
+        ".fe-block-69994d91033efd68f544"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69727ff6a9dab60f68768355",
+            "lastContentRow": 12,
+            "auto": false,
+            "remaining": 5,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69727ff6a9dab60f68768355",
+            "lastContentRow": 55,
+            "auto": false,
+            "remaining": 5,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/frame": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/gagosian-1-1": {
+      "remove": [
+        ".fe-block-262f6d290c46267590fd",
+        ".fe-block-afabc5e28e226e5ae66b"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69b72cc697555d189e924be6",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69b72cc697555d189e924be6",
+            "lastContentRow": 187,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/gagosian-1": {
+      "remove": [
+        ".fe-block-f29e6e918124ac45a530",
+        ".fe-block-f2546ffcbc00dbe441b6"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-698cd5f40d43c83fb177c86e",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-698cd5f40d43c83fb177c86e",
+            "lastContentRow": 118,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/gagosian": {
+      "remove": [
+        ".fe-block-016d210c89df218f46b8",
+        ".fe-block-8303f10b6cede1e236d8"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-698b8f22dea154523eb020d2",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-698b8f22dea154523eb020d2",
+            "lastContentRow": 71,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/hilbert": {
+      "remove": [
+        ".fe-block-fd95f9514587cb379af5",
+        ".fe-block-85e741c43af26e31c349"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69726e2dfdbccd3a2ad0236b",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69726e2dfdbccd3a2ad0236b",
+            "lastContentRow": 158,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/history": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/icc": {
+      "remove": [
+        ".fe-block-3f7c30e896d58a6ecd92",
+        ".fe-block-f2f821b266dbd21b785d"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697138d448965b2fe70e9861",
+            "lastContentRow": 8,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697138d448965b2fe70e9861",
+            "lastContentRow": 195,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/isea-1": {
+      "remove": [
+        ".fe-block-f43775fede2d2f41460f",
+        ".fe-block-804d3cb39c10f884a0d4"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69b318119f1a0f289af7d3be",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69b318119f1a0f289af7d3be",
+            "lastContentRow": 235,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/isea-2": {
+      "remove": [
+        ".fe-block-c0111511ed085525a46f",
+        ".fe-block-c5fdd509eda203e8f8f2"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69b318145565333bd1ce08ce",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69b318145565333bd1ce08ce",
+            "lastContentRow": 235,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/isea-3": {
+      "remove": [
+        ".fe-block-940970baafb40f40ba4c",
+        ".fe-block-41626005598e79dc6958"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69b31817e56acc25dc28f999",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69b31817e56acc25dc28f999",
+            "lastContentRow": 235,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/isea": {
+      "remove": [
+        ".fe-block-5a2aeb65180899024ae5",
+        ".fe-block-909a18efcc5f4d6518b2"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69ac955e3e622b3b31ecab24",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69ac955e3e622b3b31ecab24",
+            "lastContentRow": 235,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/manifesto": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/new-page-1": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/new-page-2": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/new-page": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/observerembedded": {
+      "remove": [
+        ".fe-block-fce75e14d196a9e743f9",
+        ".fe-block-1e69225756b42e2dc6d5"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697270673f4bfb577f7bf611",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697270673f4bfb577f7bf611",
+            "lastContentRow": 132,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/ouft-1": {
+      "remove": [
+        ".fe-block-55e1ef2d4f319ff18bef",
+        ".fe-block-a61869bdefb8b86cbefc"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6980e3e463238034c8560639",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6980e3e463238034c8560639",
+            "lastContentRow": 38,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/ouft": {
+      "remove": [
+        ".fe-block-4c5bbc91519a65e3c6c0",
+        ".fe-block-6cf0a1cba07431488733"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697c37f6d186606552062672",
+            "lastContentRow": 216,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697c37f6d186606552062672",
+            "lastContentRow": 184,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/post-simulation-humanism": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/postsimulationhumanism": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/prompt-collapse": {
+      "remove": [
+        ".fe-block-1a67d15d9d7a957eaa8e",
+        ".fe-block-d5d2d6cf3417cdf70e71"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-690aa1c3fd1c5f4d567a1417",
+            "lastContentRow": 139,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-690aa1c3fd1c5f4d567a1417",
+            "lastContentRow": 101,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1-1-1-1-1-1": {
+      "remove": [
+        ".fe-block-7bf32bead540b325edbe",
+        ".fe-block-5135d2a375179724d7d7"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695af14c29787c37c3f8e1c8",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695af14c29787c37c3f8e1c8",
+            "lastContentRow": 276,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1-1-1-1-1": {
+      "remove": [
+        ".fe-block-a26430f710f0a599903e",
+        ".fe-block-0f8a8d1bf05750520f5f"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695af0f03b83987c50785c82",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695af0f03b83987c50785c82",
+            "lastContentRow": 263,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1-1-1-1": {
+      "remove": [
+        ".fe-block-39855398dbd9c5c67a41",
+        ".fe-block-61389839242780cea8cf"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695aef5a692dd4364e432f71",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695aef5a692dd4364e432f71",
+            "lastContentRow": 264,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1-1-1-2": {
+      "remove": [
+        ".fe-block-c81f5e1d9ba12ee6b999",
+        ".fe-block-bd8f15cc5627361fca42"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695af028fc05391c8fdea815",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695af028fc05391c8fdea815",
+            "lastContentRow": 296,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1-1-1": {
+      "remove": [
+        ".fe-block-4db2ec5aaa9e1de31a85",
+        ".fe-block-a080c5f5d82db5762cb2"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695aeeeab2d2a34033a20d9e",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695aeeeab2d2a34033a20d9e",
+            "lastContentRow": 266,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1-1": {
+      "remove": [
+        ".fe-block-29766764ebc8f4a22a26",
+        ".fe-block-41ecfd4c51b69f39cd01"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695aee5d776f54336043332a",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695aee5d776f54336043332a",
+            "lastContentRow": 212,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1-1-2-1-1": {
+      "remove": [
+        ".fe-block-486289f6375407e92747",
+        ".fe-block-59b0a9744a258a07fef6"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695aee11cf48475c0aafa440",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695aee11cf48475c0aafa440",
+            "lastContentRow": 253,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-1": {
+      "remove": [
+        ".fe-block-c70308c1540a48b6e18b",
+        ".fe-block-62e7c8ca45dbb55ca9b1"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695ae981ea11103014880174",
+            "lastContentRow": 91,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695ae981ea11103014880174",
+            "lastContentRow": 371,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-2": {
+      "remove": [
+        ".fe-block-d1b5c97155c374201141",
+        ".fe-block-ab1a47f4e0424dcf2510"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6976d044f1467c5e304ef07d",
+            "lastContentRow": 503,
+            "auto": false,
+            "remaining": 10,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6976d044f1467c5e304ef07d",
+            "lastContentRow": 477,
+            "auto": false,
+            "remaining": 10,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-fep": {
+      "remove": [
+        ".fe-block-ec516bb8801b8e9cd21b",
+        ".fe-block-00898cea80d926d17e98"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6a23c7bb28b33a593462593d",
+            "lastContentRow": 363,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6a23c7bb28b33a593462593d",
+            "lastContentRow": 278,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-hn-1-1": {
+      "remove": [
+        ".fe-block-51e17f3a3e4918072117",
+        ".fe-block-fb35485f17b57c4433de"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6983a086edfa503541a4425c",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6983a086edfa503541a4425c",
+            "lastContentRow": 251,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-hn-1": {
+      "remove": [
+        ".fe-block-9fba1b05ee0250d34f55",
+        ".fe-block-506e43fd128b5a410418"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-698229e06e30e6229b4d916a",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-698229e06e30e6229b4d916a",
+            "lastContentRow": 244,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc-hn": {
+      "remove": [
+        ".fe-block-dc39797b620bcc5bcc54",
+        ".fe-block-8ad5c31b400b9cbc8beb"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6980e4bf2650db7c0ece56ac",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6980e4bf2650db7c0ece56ac",
+            "lastContentRow": 99,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rcc": {
+      "remove": [
+        ".fe-block-7b9c22d7f40e0dd4d966",
+        ".fe-block-13745b4e939ccbb66375"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-68ef0cb9ed68f0505a4692cd",
+            "lastContentRow": 449,
+            "auto": false,
+            "remaining": 10,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-68ef0cb9ed68f0505a4692cd",
+            "lastContentRow": 384,
+            "auto": false,
+            "remaining": 10,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rod-1": {
+      "remove": [
+        ".fe-block-8bf21a42491a230af28f",
+        ".fe-block-9921894015e853ae6ec7"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69751d32069b2153ac95d78f",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69751d32069b2153ac95d78f",
+            "lastContentRow": 156,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/rod": {
+      "remove": [
+        ".fe-block-26a50e35de605069b975",
+        ".fe-block-b42ebc742887331b37fd"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6972736d8025261a9f6a0075",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6972736d8025261a9f6a0075",
+            "lastContentRow": 108,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/sectormap": {
+      "remove": [
+        ".fe-block-a61a4a0f9bf63eb4707c",
+        ".fe-block-f13c79cc8d24a4e71707"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-695c4d6a2a2bc323edd9ba6c",
+            "lastContentRow": 54,
+            "auto": false,
+            "remaining": 9,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-695c4d6a2a2bc323edd9ba6c",
+            "lastContentRow": 51,
+            "auto": false,
+            "remaining": 9,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/talek-1-1": {
+      "remove": [
+        ".fe-block-b22823705c8e0b678ba3"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69c788cef2bacc1355afda9c",
+            "lastContentRow": 35,
+            "auto": false,
+            "remaining": 15,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69c788cef2bacc1355afda9c",
+            "lastContentRow": 52,
+            "auto": false,
+            "remaining": 15,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/talek-1-2": {
+      "remove": [
+        "footer.cosmology-footer"
+      ],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/talek-1": {
+      "remove": [
+        ".fe-block-b9b1a8debcd5cfa61d79",
+        ".fe-block-90df71d715e15aa7a2b2"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697ac1b4120eac122a709fbe",
+            "lastContentRow": 46,
+            "auto": false,
+            "remaining": 19,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697ac1b4120eac122a709fbe",
+            "lastContentRow": 69,
+            "auto": false,
+            "remaining": 19,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/talek-2": {
+      "remove": [
+        ".fe-block-def8319348a770970d01",
+        ".fe-block-436f1b9199b0fe0121cf"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69b33d0319d43e73338a36ff",
+            "lastContentRow": 12,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69b33d0319d43e73338a36ff",
+            "lastContentRow": 227,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/talek-unified-teaser-page-draft": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/talek-unified-the-rhythm-that-refused-to-die": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/talek": {
+      "remove": [
+        ".fe-block-2b7b64cd1e512c001a10",
+        ".fe-block-880ed0c7139b22bc3118"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697abf5c78465d442d9abe66",
+            "lastContentRow": 12,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697abf5c78465d442d9abe66",
+            "lastContentRow": 226,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/tdr": {
+      "remove": [
+        ".fe-block-610d0d351751e899450d",
+        ".fe-block-3027a6d93a2e51c51adf"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69ab7d29c469fb34d34661db",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69ab7d29c469fb34d34661db",
+            "lastContentRow": 192,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uceq-1-1-1": {
+      "remove": [
+        ".fe-block-fa159dc23fc2f971d504",
+        ".fe-block-6c853d95c93ed4e0a3f8"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697a98bdf6be054df7b53644",
+            "lastContentRow": 12,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697a98bdf6be054df7b53644",
+            "lastContentRow": 243,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uceq-1-1-2": {
+      "remove": [
+        ".fe-block-700daf28b7314d7b7da9",
+        ".fe-block-2d171503f5fb412ffd6a"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697aa8caeb93470059acf7d5",
+            "lastContentRow": 12,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697aa8caeb93470059acf7d5",
+            "lastContentRow": 132,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uceq-1-1": {
+      "remove": [
+        ".fe-block-3d64c1e8e17f2fabc9e6",
+        ".fe-block-435b64db74de7e50c3f7"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697a443025277114202123c8",
+            "lastContentRow": 12,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697a443025277114202123c8",
+            "lastContentRow": 201,
+            "auto": false,
+            "remaining": 3,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uceq-1-2": {
+      "remove": [],
+      "views": {
+        "mobile": [],
+        "desktop": []
+      }
+    },
+    "/uceq-1-3": {
+      "remove": [
+        ".fe-block-33e1b71946c6d3b61266",
+        ".fe-block-830b842498813303af74"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697ab9189f4eb4231f16728f",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697ab9189f4eb4231f16728f",
+            "lastContentRow": 190,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uceq-1": {
+      "remove": [
+        ".fe-block-91e7fd299834f7b319a7",
+        ".fe-block-7f3abeef82f5c85e2181"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6976d08c21f9967c4819c354",
+            "lastContentRow": 5,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6976d08c21f9967c4819c354",
+            "lastContentRow": 8,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uceq": {
+      "remove": [
+        ".fe-block-6017a2fc903097ca47da",
+        ".fe-block-3096e6a30396c754abf7"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6976b2815f2535501c29cc1d",
+            "lastContentRow": 30,
+            "auto": false,
+            "remaining": 6,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6976b2815f2535501c29cc1d",
+            "lastContentRow": 242,
+            "auto": false,
+            "remaining": 6,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/unified-system-diagram-1": {
+      "remove": [
+        ".fe-block-c9b681303fb35e52486c",
+        ".fe-block-fd33fb704c44d408ec5d"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-6976e1fadaca890757c6de3c",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-6976e1fadaca890757c6de3c",
+            "lastContentRow": 217,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/unified-system": {
+      "remove": [
+        ".fe-block-d04073e734d30509eb08",
+        ".fe-block-3338889eb18405720b7b"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-69728b0d938dc57cffdbabfa",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-69728b0d938dc57cffdbabfa",
+            "lastContentRow": 151,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    },
+    "/uregt": {
+      "remove": [
+        ".fe-block-2f8b2527f3019889a133",
+        ".fe-block-32b79f3707fc334c7eaf"
+      ],
+      "views": {
+        "mobile": [
+          {
+            "selector": ".fe-697289dcf3ad7a5ee73c36b0",
+            "lastContentRow": 6,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ],
+        "desktop": [
+          {
+            "selector": ".fe-697289dcf3ad7a5ee73c36b0",
+            "lastContentRow": 158,
+            "auto": false,
+            "remaining": 2,
+            "display": "grid",
+            "gap": "11px"
+          }
+        ]
+      }
+    }
+  }
+}

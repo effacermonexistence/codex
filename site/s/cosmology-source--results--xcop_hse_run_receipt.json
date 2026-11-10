@@ -1,0 +1,54 @@
+{
+  "schema_version": "xcop-hse-direct-formal-sanitized-run-receipt-v1",
+  "status": "COMPLETE",
+  "task_class": "TASK_LOCAL_ADAPTER_OVER_R2_PRIMITIVES",
+  "proof_mode": "PUBLIC_XCOP_PROFILE_DEV_CALIBRATION_PLUS_UNTOUCHED_CLUSTER_HELDOUT_SHARED_OPERATOR_DIRECT_EQUATION_DIAGNOSTIC",
+  "source_authority": {
+    "r2_verifier": "PASS",
+    "executed_source_pre_gate": "PASS",
+    "executed_source_post_gate": "PASS",
+    "selected_r2_source": "benchmark_replay_harness.py",
+    "selected_r2_source_sha256": "5215e4e8a74b529c1355208c04e7323e09d93a63d332c26d67c9c7a50faba524",
+    "required_callable": "sample_ids_sha256",
+    "executed_arm": "manifest",
+    "task_source_selection_sha256": "dfbb0aab55658efddd3876e0dbbc8c08c4e2f94033da7e0b1dab5e4480dbb46c",
+    "executed_source_receipt_sha256": "7618106d13449b14e71ecf713988abc0ef438a72a5d673508aaae4e08f944413"
+  },
+  "source_data": {
+    "dataset": "X-COP public profile release",
+    "archive_sha256": "0edf5038b419b70d070b73b22f4801e27f318b0854db61eec52142c27c140d94",
+    "sample_ids_sha256": "8285acec7f246c2681deaaae007eb3f9f4e94cef33892d3fdd14e01171bd2538"
+  },
+  "executed_source_hashes": {
+    "xcop_hse_common.py": "a3bb22c8ff89db69854653fe27568250890877f6579e64ca8380022ef54e5619",
+    "lock_xcop_sample.py": "28b54b446d65c779cda81a8586c8b4de9f9d196cef1e4bcccc65f0aa591d52e1",
+    "optimize_xcop_dev.py": "24447276b2377e6ebcbf00d68e6ad03c83f0728fdd3b1f5ab6bdb3411f5db3d4",
+    "freeze_xcop_policy.py": "9c4eeea5f2a4bc36ce10d77ab1411281d5c00837202c032c0c1ca24f58c25422",
+    "evaluate_xcop_heldout.py": "ef969dce454413a5ab63235e1d846a9e6aa8ef122b9ee86f81291b7d413913ee",
+    "audit_xcop_run.py": "77ef501571838d7b8b308aefaba70d67439ddaf562d09a1603ec946ca50145b0",
+    "adversarial_audit_xcop.py": "4623965f18ee3823f8ad02d674661d89160e44ece9e066c65e0eea27b8bc9491"
+  },
+  "artifact_hashes": {
+    "proof_contract": "502e58ac35b1edc1b90faa1afc02605cbf0927a2a56937abe77fa4c5c45d0d8d",
+    "sample_lock": "762d2859b6d645dbf6d2c2cee7d341004a64920d8723eeb1cc66816f60861bab",
+    "frozen_policy": "02a63e2528bb3f314df6c02e5a7404921a7ab2b91eaa75183e79f86fc2842835",
+    "heldout_result": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065",
+    "heldout_replay": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065",
+    "independent_audit": "a89cf8c132a82a0b6a8bc0978ce4fa785a46916def348b24e7e9e5af2a5bfdbe",
+    "adversarial_audit": "ab151ce45d6f44ea9eb013521892c22a7238429a0e55f5d5ae58c6689ff07c05"
+  },
+  "deterministic_replay": {
+    "byte_identical": true,
+    "result_sha256": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065",
+    "replay_sha256": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065"
+  },
+  "heldout_result": {
+    "baseline_chi2": 145.09530814170438,
+    "augmented_chi2": 140.7377852116995,
+    "raw_delta_chi2": -4.357522930004862,
+    "residual_reduction_percent": 3.003214222302206,
+    "improved_count": 3,
+    "downlift_count": 0
+  },
+  "claim_boundary": "Public-profile direct-equation diagnostic only; not independent raw-observational likelihood, unique-kernel evidence, a required-term result, or a physical-law claim."
+}

@@ -1,0 +1,96 @@
+function createTattooSeams(states, info, config) {
+  if (!config || states.length < 2) return null;
+  const root=document.querySelector('.cr-motion-seam-page');
+  if(!root)return null;
+  const report=info.seams={version:'continuous-overlap-fields-v2',halfHeight:0,frames:0,joins:[],errors:[]};
+  const frame=document.createElement('canvas'),layer=document.createElement('canvas');
+  const out=frame.getContext('2d',{alpha:false}),blend=layer.getContext('2d');
+  const mask=document.createElement('canvas'),maskContext=mask.getContext('2d');
+  report.sourceModel='Two live films overlap across the transition; native contained artwork cores stay unchanged';
+  const joins=states.slice(0,-1).map((a,i)=>{
+    const b=states[i+1],top=document.createElement('canvas'),bottom=document.createElement('canvas');
+    top.className='cr-motion-seam cr-motion-seam-bottom';bottom.className='cr-motion-seam cr-motion-seam-top';
+    for(const c of[top,bottom]){c.setAttribute('aria-hidden','true');c.width=c.height=1;}
+    a.el.appendChild(top);b.el.appendChild(bottom);
+    const record={index:i,from:a.record.id,to:b.record.id,ready:false,frames:0,visible:false,gap:0};report.joins.push(record);
+    return{a,b,top,bottom,record,visible:0,band:null};
+  });
+  let half=0,raf=0,last=0,moving=false;
+  function geometry(){
+    const native=Math.max(150,Math.min(260,innerHeight*.22));
+    root.style.setProperty('--cr-native-half',native+'px');report.nativeHalfHeight=native;
+    const next=Math.max(220,Math.min(560,innerHeight*.46));
+    if(next!==half){half=next;root.style.setProperty('--cr-seam-half',half+'px');report.halfHeight=half;}
+    for(const j of joins){const a=j.a.el.getBoundingClientRect(),b=j.b.el.getBoundingClientRect();
+      const y=(a.bottom+b.top)/2;j.record.gap=b.top-a.bottom;
+      j.band={x:a.left,y:y-half,width:a.width,height:half*2};j.record.overlapHeight=half*2;
+      j.visible=Math.max(0,Math.min(y+half,innerHeight)-Math.max(y-half,0));j.record.visible=j.visible>0;
+      if(!j.visible&&j.record.ready){for(const c of[j.top,j.bottom]){c.style.opacity='0';c.width=c.height=1;}j.record.ready=false;}
+    }
+  }
+  function source(s){
+    const v=s.video;if(!s.record.failed&&v.readyState>=2&&v.videoWidth)return v;
+    const image=s.el.querySelector('.cr-motion-media picture img');return image?.complete&&image.naturalWidth?image:null;
+  }
+  function cover(ctx,media){
+    // Continue actual moving pixels into the full overlap, not the blurred
+    // letterbox fill between two independently contained native players.
+    const sw=media.videoWidth||media.naturalWidth,sh=media.videoHeight||media.naturalHeight;
+    const W=ctx.canvas.width,H=ctx.canvas.height,k=Math.max(W/sw,H/sh),w=sw*k,h=sh*k;
+    ctx.drawImage(media,(W-w)/2,(H-h)/2,w,h);
+  }
+  function prepareMask(W,H){
+    const w=Math.min(512,W),h=Math.min(1024,H);
+    if(mask.width===w&&mask.height===h)return;
+    mask.width=w;mask.height=h;const data=maskContext.createImageData(w,h);
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const u=x/Math.max(1,w-1),v=y/Math.max(1,h-1);
+      const ribbon=(.075*Math.sin(u*4.4+.45)+.035*Math.sin(u*9.1-1.15))*4*v*(1-v);
+      const t=Math.max(0,Math.min(1,(v-.1+ribbon)/.8));
+      const alpha=t*t*t*(t*(t*6-15)+10),i=(y*w+x)*4;
+      data.data[i]=data.data[i+1]=data.data[i+2]=255;data.data[i+3]=Math.round(alpha*255);
+    }
+    maskContext.putImageData(data,0,0);report.maskSize=[w,h];
+  }
+  function draw(){
+    const dpr=Math.min(devicePixelRatio||1,1.5);
+    for(const j of joins){if(!j.visible)continue;const a=source(j.a),b=source(j.b);if(!a||!b)continue;
+      if(Math.abs(j.record.gap)>2){j.record.ready=false;continue;}
+      const w=Math.max(1,Math.round(j.band.width*dpr)),h=Math.max(2,Math.round(half*dpr)),full=h*2;
+      if(frame.width!==w||frame.height!==full){frame.width=layer.width=w;frame.height=layer.height=full;}
+      out.setTransform(1,0,0,1,0,0);out.globalCompositeOperation='source-over';out.globalAlpha=1;
+      cover(out,a);
+      blend.clearRect(0,0,w,full);blend.globalCompositeOperation='source-over';cover(blend,b);
+      prepareMask(w,full);blend.globalCompositeOperation='destination-in';blend.drawImage(mask,0,0,w,full);
+      blend.globalCompositeOperation='source-over';out.drawImage(layer,0,0);
+      j.record.sources=[a===j.a.video?'live-video':'source-poster',b===j.b.video?'live-video':'source-poster'];
+      j.record.times=[j.a.video.currentTime,j.b.video.currentTime];
+
+      for(const [canvas,y]of[[j.top,0],[j.bottom,h]]){
+        if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
+        canvas.getContext('2d',{alpha:false}).drawImage(frame,0,y,w,h,0,0,w,h);canvas.style.opacity='1';
+      }
+      j.record.ready=true;j.record.frames++;report.frames++;
+    }
+  }
+  function tick(now){raf=0;if(document.hidden||!moving)return;if(now-last>=1000/30){draw();last=now;}if(joins.some(j=>j.visible))raf=requestAnimationFrame(tick);}
+  function update(motion){moving=motion;geometry();if(!document.hidden)draw();if(moving&&!document.hidden&&joins.some(j=>j.visible)){if(!raf)raf=requestAnimationFrame(tick);}else if(raf){cancelAnimationFrame(raf);raf=0;}}
+  for(const s of states)for(const image of s.el.querySelectorAll('.cr-motion-media picture img'))image.addEventListener('load',()=>update(moving));
+  function players(winner){
+    geometry();const active=new Set(winner?[winner]:[]);
+    // Both visible joins must keep moving when the screen straddles a scene.
+    // The existing native minimum scene height bounds this to nearby players.
+    for(const j of joins)if(j.visible>1){active.add(j.a);active.add(j.b);}
+    return active;
+  }
+  return{players,update};
+}
+
+function updateTattooFrameBoxes(states){
+  const mobile=matchMedia('(max-width:767px)').matches;
+  const plan=states.filter(s=>s.el.dataset.crLegible).map(s=>{
+    const scene=s.el.getBoundingClientRect(),media=s.el.querySelector('.cr-motion-media'),outer=media.getBoundingClientRect(),a=s.work[mobile?'mobile':'desktop'],k=Math.min(scene.width/a.width,scene.height/a.height);
+    return{media,left:scene.left-outer.left+(scene.width-a.width*k)/2,top:scene.top-outer.top+(scene.height-a.height*k)/2,width:a.width*k,height:a.height*k};
+  });
+  for(const p of plan)for(const key of ['left','top','width','height'])p.media.style.setProperty('--cr-frame-'+key,p[key]+'px');
+}

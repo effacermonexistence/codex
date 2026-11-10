@@ -1,0 +1,45 @@
+{
+  "checks": {
+    "all_f0_exact": true,
+    "all_mass_corrections_within_gate": true,
+    "dev_replay_byte_identical": true,
+    "forced_gaussian": {
+      "baseline_sum_match": true,
+      "candidate_sum_match": true,
+      "delta_match": true,
+      "improved_count_match": true,
+      "reduction_match": true,
+      "worsened_count_match": true
+    },
+    "forced_plummer": {
+      "baseline_sum_match": true,
+      "candidate_sum_match": true,
+      "delta_match": true,
+      "improved_count_match": true,
+      "reduction_match": true,
+      "worsened_count_match": true
+    },
+    "forced_top_hat": {
+      "baseline_sum_match": true,
+      "candidate_sum_match": true,
+      "delta_match": true,
+      "improved_count_match": true,
+      "reduction_match": true,
+      "worsened_count_match": true
+    },
+    "heldout_replay_byte_identical": true,
+    "safe_plummer": {
+      "baseline_sum_match": true,
+      "candidate_sum_match": true,
+      "delta_match": true,
+      "improved_count_match": true,
+      "reduction_match": true,
+      "worsened_count_match": true
+    }
+  },
+  "heldout_artifact_sha256": "43facbb7e5d0a4b12afa8b4927ca1e97910d0068f41ea80b15c8aa742521fd64",
+  "heldout_replay_sha256": "43facbb7e5d0a4b12afa8b4927ca1e97910d0068f41ea80b15c8aa742521fd64",
+  "schema_version": "jeans-dsph-independent-verification-v1",
+  "status": "PASS",
+  "timestamp_utc": "2026-07-25T13:33:53.455440+00:00"
+}

@@ -1,0 +1,192 @@
+name: Mirror Git repository to R2
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+  schedule:
+    - cron: "23 5 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: r2-git-backup-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  backup:
+    name: Create and upload verified Git bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out every branch and tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Create a verified Git bundle
+        env:
+          BUNDLE_PATH: ${{ runner.temp }}/repository.bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          git bundle create "$BUNDLE_PATH" --all
+          git bundle verify "$BUNDLE_PATH"
+
+      - name: Upload the bundle to Cloudflare R2
+        env:
+          BACKUP_ENDPOINT: https://omar-git-r2-backup.omar-git-r2-backup.workers.dev
+          BUNDLE_PATH: ${{ runner.temp }}/repository.bundle
+          OIDC_AUDIENCE: r2-git-backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          endpoint = os.environ["BACKUP_ENDPOINT"].rstrip("/")
+          bundle_path = os.environ["BUNDLE_PATH"]
+          audience = os.environ["OIDC_AUDIENCE"]
+          request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          request_token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+
+          def oidc_token():
+              separator = "&" if "?" in request_url else "?"
+              url = request_url + separator + urllib.parse.urlencode({"audience": audience})
+              request = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"bearer {request_token}"},
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  value = json.load(response).get("value")
+              if not isinstance(value, str) or not value:
+                  raise RuntimeError("GitHub did not issue an OIDC token")
+              return value
+
+          def request_json(method, path, payload=None, binary=None, attempts=5):
+              if payload is not None and binary is not None:
+                  raise ValueError("payload and binary are mutually exclusive")
+              if payload is not None:
+                  data = json.dumps(payload, separators=(",", ":")).encode()
+                  content_type = "application/json"
+              else:
+                  data = binary
+                  content_type = "application/octet-stream"
+
+              for attempt in range(1, attempts + 1):
+                  headers = {
+                      "Accept": "application/json",
+                      "Authorization": f"Bearer {oidc_token()}",
+                      "User-Agent": "github-actions-r2-backup/1.0",
+                  }
+                  if data is not None:
+                      headers["Content-Type"] = content_type
+                  request = urllib.request.Request(
+                      endpoint + path,
+                      data=data,
+                      headers=headers,
+                      method=method,
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=300) as response:
+                          response_body = response.read()
+                      return json.loads(response_body) if response_body else None
+                  except urllib.error.HTTPError as error:
+                      detail = error.read(4096).decode("utf-8", "replace")
+                      if error.code not in {408, 425, 429, 500, 502, 503, 504} or attempt == attempts:
+                          raise RuntimeError(
+                              f"Backup gateway returned HTTP {error.code}: {detail}"
+                          ) from error
+                  except urllib.error.URLError as error:
+                      if attempt == attempts:
+                          raise RuntimeError(f"Backup gateway request failed: {error}") from error
+                  time.sleep(min(2 ** attempt, 20))
+
+          start = request_json("POST", "/v1/uploads")
+          if not isinstance(start, dict):
+              raise RuntimeError("Backup gateway returned an invalid start response")
+          key = start.get("key")
+          upload_id = start.get("uploadId")
+          part_size = start.get("partSize")
+          if (
+              not isinstance(key, str)
+              or not isinstance(upload_id, str)
+              or not isinstance(part_size, int)
+              or part_size < 5 * 1024 * 1024
+          ):
+              raise RuntimeError("Backup gateway returned invalid multipart settings")
+
+          parts = []
+          digest = hashlib.sha256()
+          total_size = 0
+          try:
+              with open(bundle_path, "rb") as bundle:
+                  part_number = 1
+                  while chunk := bundle.read(part_size):
+                      digest.update(chunk)
+                      total_size += len(chunk)
+                      query = urllib.parse.urlencode(
+                          {
+                              "key": key,
+                              "uploadId": upload_id,
+                              "partNumber": part_number,
+                          }
+                      )
+                      result = request_json(
+                          "PUT",
+                          f"/v1/uploads/part?{query}",
+                          binary=chunk,
+                      )
+                      if not isinstance(result, dict):
+                          raise RuntimeError(f"Invalid response for part {part_number}")
+                      parts.append(
+                          {
+                              "partNumber": result["partNumber"],
+                              "etag": result["etag"],
+                          }
+                      )
+                      part_number += 1
+
+              manifest = request_json(
+                  "POST",
+                  "/v1/uploads/complete",
+                  payload={
+                      "key": key,
+                      "uploadId": upload_id,
+                      "parts": parts,
+                      "sha256": digest.hexdigest(),
+                      "size": total_size,
+                  },
+              )
+          except Exception:
+              try:
+                  request_json(
+                      "POST",
+                      "/v1/uploads/abort",
+                      payload={"key": key, "uploadId": upload_id},
+                      attempts=2,
+                  )
+              except Exception:
+                  pass
+              raise
+
+          if not isinstance(manifest, dict) or manifest.get("key") != key:
+              raise RuntimeError("Backup gateway returned an invalid manifest")
+          print(
+              f"Uploaded {total_size} bytes for {manifest['repository']} "
+              f"at {manifest['sha']} to R2 key {key}"
+          )
+          PY

@@ -1,0 +1,37 @@
+{
+  "augmented_equation": "∇²Φ = 4πG[ρ_b + ρ_gas + ρ_halo + f_perp(K_d*ρ_halo - ρ_halo)]",
+  "augmented_score": {
+    "chi_mass_log_mse": 0.2183357724582515,
+    "chi_rho_log_mse": 0.16045220890623077,
+    "chi_total": 0.19807652521504426
+  },
+  "base_score": {
+    "chi_mass_log_mse": 0.2775217583935729,
+    "chi_rho_log_mse": 0.19075668307449584,
+    "chi_total": 0.24715398203189592
+  },
+  "baseline_equation": "∇²Φ = 4πG(ρ_b + ρ_gas + ρ_halo); scored source object is halo-density component ρ_halo from no-bspline public model",
+  "checks": {
+    "f0_recovery_max_abs_error": 0.0,
+    "finite_grid_relative_mass_leakage": -0.0011465024423729189,
+    "identity_kernel_recovery_max_abs_error": 0.0
+  },
+  "d_kpc": 16.0,
+  "downlift": false,
+  "evidence_class": "PUBLIC_MODEL_COMPONENT_DIAGNOSTIC_NOT_OBSERVATIONAL_LIKELIHOOD",
+  "f_perp": 0.3,
+  "kernel": "3D Plummer kernel K_d via phase2_g1.plummer3d_conv; no 2D kappa kernel used",
+  "object_X": "ρ_halo only: no-bspline O1+O2 cluster-scale dPIE halo components; BCG/gas/potfile excluded",
+  "raw_delta_chi_total": -0.04907745681685166,
+  "record_id": "AS1063_TRUE_DENSITY_B2",
+  "reference_object": "bspline O2+O3 cluster-scale dPIE halo components; B-spline perturbation excluded from 3D dPIE density score",
+  "residual_reduction_pct": 19.857036659242688,
+  "score_function": "weighted log-MSE of 3D rho_halo and cumulative M_halo(<r) over 3-800 kpc against public bspline halo-component reference; not direct observation chi2",
+  "source": {
+    "github": "https://github.com/njzifjoiez/AS1063-model-Beauchesne-2023",
+    "github_commit": "f53a37f96d1122b1524d4b0b9caf1031311b9026",
+    "paper": "Beauchesne et al. 2024 MNRAS AS1063 public Lenstool mass model",
+    "zip_sha256": "0f57ff5c735b75a7b84d6316c741790f639d1c6b3aabd1fcdfa679162d042fa5"
+  },
+  "upstream_artifact_sha256": "1092c3193b3af4aabbcf14d4c009d1bbaaba17f0186da622efd9d4cebbd2410a"
+}

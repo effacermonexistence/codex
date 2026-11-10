@@ -1,0 +1,117 @@
+{
+  "base_chi_total": 0.06430745215227995,
+  "checks": {
+    "adoption_gate_present": false,
+    "coarse_points": 801,
+    "deterministic_no_rng_no_optimizer_no_fallback": true,
+    "f0_recovery_max_abs_density_error": 0.0,
+    "fine_points": 1601,
+    "gold_or_score_visible_to_adoption_gate": false,
+    "identity_branch_recovery_max_abs_density_error": 0.0,
+    "max_coarse_fine_abs_chi_total": 2.000485514047634e-08
+  },
+  "claim_boundary": "Simulation-parametric model-to-model diagnostic; not an observational likelihood or physical detection.",
+  "d_kpc": 16.0,
+  "decision_rule": {
+    "control_recovery_fraction_boundary": 0.8,
+    "fail": "either matched control matches or beats Plummer within tolerance",
+    "otherwise": "unresolved",
+    "pass": "Plummer beats both controls beyond tolerance and best control recovers <80% of Plummer improvement",
+    "score_tolerance_abs_chi_total": 1e-06
+  },
+  "direction_verdict": "INDEPENDENT_3D_DIRECTIONAL_TRANSFER_PASS",
+  "evidence_class": "INDEPENDENT_PUBLIC_SIMULATION_PARAMETRIC_3D_HALO_COMPONENT_DIAGNOSTIC_NOT_OBSERVATIONAL_LIKELIHOOD",
+  "f_perp": 0.3,
+  "interpretation": "This score-blind fresh target reproduced a large directional reduction. Gaussian and top-hat improved more than Plummer. Because the target is a cored profile and the baseline is cusped, the direction is mechanically favorable to low-pass redistribution; no operator-specific physics follows.",
+  "kernels": {
+    "gaussian_3d": {
+      "chi_total": 0.03721538328132527,
+      "coarse_fine_abs_chi_total": 2.000485514047634e-08,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.02709206887095468,
+      "relative_augmented_mass_leakage": -0.0009459650388761957,
+      "residual_reduction_pct": 42.12897255951099
+    },
+    "plummer_3d": {
+      "chi_total": 0.03794154343683144,
+      "coarse_fine_abs_chi_total": 0.0,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.026365908715448513,
+      "relative_augmented_mass_leakage": -0.0012855487838253385,
+      "residual_reduction_pct": 40.999771928475845
+    },
+    "tophat_3d": {
+      "chi_total": 0.03692478129118461,
+      "coarse_fine_abs_chi_total": 2.610771078492835e-09,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.027382670861095346,
+      "relative_augmented_mass_leakage": -0.0009500838003960909,
+      "residual_reduction_pct": 42.58086729396963
+    }
+  },
+  "matching": {
+    "criterion": "analytic three-dimensional half-mass radius",
+    "gaussian_r_half_kpc": 20.87625642406571,
+    "gaussian_sigma_kpc": 13.572118703611515,
+    "plummer_r_half_kpc": 20.87625642406571,
+    "tophat_r_half_kpc": 20.87625642406571,
+    "tophat_radius_kpc": 26.30243491168346
+  },
+  "object_X": "rho_halo only: Group_Halo352 primary-host CDM NFW density reconstructed from public cdmVmaxz0/cdmRmaxz0",
+  "operator": "rho_aug=(1-f_perp)rho_halo+f_perp(K*rho_halo)",
+  "prior_overlap": {
+    "current_target": "Group_Halo352",
+    "prior_development_target": "LCluster_Halo000",
+    "same_target": false
+  },
+  "proof_mode": "FRESH_SCORE_BLIND_SIMULATION_PARAMETRIC_KERNEL_SPECIFICITY_DIAGNOSTIC",
+  "record_id": "SIDM_CONCERTO_HALO352_FRESH_3D",
+  "reference_object": "matched Group_Halo352 primary-host public parametric SIDM 3D density prediction using rhoss1/rss1/rc1 and beta=4",
+  "score_function": "frozen B2 weighted log-MSE: 0.35*rho_log_MSE + 0.65*cumulative_mass_log_MSE over 3-800 kpc",
+  "source": {
+    "archive_md5_verified": true,
+    "dataset": "SIDM Concerto Group Halo352 public parametric release",
+    "doi": "10.5281/zenodo.14933624",
+    "official_archive_md5": "100863ce7e3284c5b39107e6e8a9f285",
+    "prior_repo_overlap_before_import": 0,
+    "source_table_sha256": "d8149f2883dd06c6e4fab464b712391b46c2a3d583a5f8953348851a6e4af380",
+    "source_tar_sha256": "950a5ca7840b1e8b003008fc7ac1024f2b40a487a3d008ce040b923cf7ec1430",
+    "target_ids": {
+      "cdmID": 1,
+      "vd100id": 1
+    },
+    "target_lock": {
+      "replacement_on_missing": "ABORT",
+      "target_locked_before_download": true
+    },
+    "zenodo_record": "https://zenodo.org/records/14933624"
+  },
+  "source_row": {
+    "cdmID": 1.0,
+    "cdmRmaxz0": 89.88357142857144,
+    "cdmRvirz0": 609.4957142857143,
+    "cdmVmaxz0": 361.25,
+    "mcdm": 12797142857142.857,
+    "mint": 12797534135874.984,
+    "msidm": 12720000000000.0,
+    "rc1": 17.0121255535864,
+    "rhoss1": 10613257.068419646,
+    "rmax": 89.5604053855214,
+    "rmax1": 89.91464192417449,
+    "rss1": 34.55070619886563,
+    "rt1": 10000000000.0,
+    "tr0": 0.07764206651876804,
+    "tr1": 0.05639302473869122,
+    "trx": 0.058800432385497,
+    "vd100Rmaxz0": 90.22628571428572,
+    "vd100Vmaxz0": 370.05,
+    "vd100id": 1.0,
+    "vmax": 365.6912841990707,
+    "vmax1": 364.73537722953637
+  },
+  "specificity_verdict": "INDEPENDENT_3D_PLUMMER_SPECIFICITY_FAIL",
+  "upstream_artifact_sha256": "47bca0415053ccdb14f5c66fcda4be1e3d2726adea098d87273dbbe5808357e9"
+}

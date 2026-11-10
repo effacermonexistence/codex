@@ -1,0 +1,69 @@
+/* Every action uses the accepted header's 320ms optical emphasis.
+   Individual scale preserves translations used to position gallery controls. */
+:where(body a[href]) { display: inline-block; }
+html body :is(a[href], button, [role="button"], summary, input[type="button"], input[type="submit"], input[type="reset"]):not(.header-skip-link):not(:disabled):not([aria-disabled="true"]) {
+  scale: 1;
+  transform-origin: 50% 50%;
+  -webkit-text-stroke-width: 0;
+  -webkit-text-stroke-color: currentColor;
+  transition: scale 320ms cubic-bezier(.22,.61,.36,1),
+              -webkit-text-stroke-width 320ms cubic-bezier(.22,.61,.36,1) !important;
+}
+/* Replace the header's transform with the common scale, without doubling it. */
+#header :is(.header-nav-item, .header-menu-nav-item) > a,
+html body :is(.sqs-block-button-element, .sqs-system-button, .cosmology .enter) {
+  transform: none !important;
+}
+#header :is(.header-nav-item, .header-menu-nav-item) > a {
+  transition: scale 320ms cubic-bezier(.22,.61,.36,1),
+              -webkit-text-stroke-width 320ms cubic-bezier(.22,.61,.36,1) !important;
+}
+/* Text actions retain their existing dimensions and hit targets. */
+html body :is(.sqs-block-button-element, .sqs-system-button, .cosmology .enter):not(.header-skip-link),
+html body :is(.sqs-block-button-element, .sqs-system-button, .cosmology .enter):not(.header-skip-link):is(:hover, :focus-visible, :active) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: inherit !important;
+  opacity: 1 !important;
+  text-decoration: none !important;
+  font-weight: inherit !important;
+}
+html body :is(.sqs-block-button-element, .sqs-system-button):not(.header-skip-link)::before,
+html body :is(.sqs-block-button-element, .sqs-system-button):not(.header-skip-link)::after {
+  content: none !important;
+  display: none !important;
+}
+/* These authored links previously faded or drew a separate underline. */
+html body :is(.cosmology, .cr-page) a[href],
+html body :is(.sqs-html-content, #site-shared-footer, #site-history-footnote) a[href] {
+  color: inherit !important;
+  text-decoration: none !important;
+  background-image: none !important;
+  border-bottom: 0 !important;
+}
+html body :is(.cosmology, .cr-page) a[href]:is(:hover, :focus-visible, :active),
+html body :is(.sqs-html-content, #site-shared-footer, #site-history-footnote) a[href]:is(:hover, :focus-visible, :active) {
+  opacity: 1 !important;
+  filter: none !important;
+}
+@media (hover: hover) {
+  html body :is(a[href], button, [role="button"], summary, input[type="button"], input[type="submit"], input[type="reset"]):not(.header-skip-link):not(:disabled):not([aria-disabled="true"]):hover {
+    scale: 1.045;
+    -webkit-text-stroke-width: .012em;
+  }
+}
+html body :is(a[href], button, [role="button"], summary, input[type="button"], input[type="submit"], input[type="reset"]):not(.header-skip-link):not(:disabled):not([aria-disabled="true"]):is(:focus-visible, :active) {
+  scale: 1.045;
+  -webkit-text-stroke-width: .012em;
+}
+html body :is(a[href], button, [role="button"], summary, input[type="button"], input[type="submit"], input[type="reset"]):not(.header-skip-link):not(:disabled):not([aria-disabled="true"]):focus-visible {
+  outline: 1px solid currentColor !important;
+  outline-offset: 4px !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html body :is(a[href], button, [role="button"], summary, input[type="button"], input[type="submit"], input[type="reset"]):not(.header-skip-link):not(:disabled):not([aria-disabled="true"]) {
+    transition: none !important;
+    scale: 1 !important;
+  }
+}

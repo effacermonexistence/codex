@@ -1,0 +1,34 @@
+{
+  "schema_version": "canonical-object-identity-audit-v1",
+  "status": "PASS",
+  "checks": {
+    "shared_adapter_safe_fraction_is_zero": true,
+    "shared_adapter_adopted_delta_is_zero": true,
+    "shared_adapter_adopted_downlift_is_false": true,
+    "direct_source_response_projection_is_false": true,
+    "direct_source_formula_names_rho_perp": true,
+    "direct_source_formula_names_jeans_rhs": true,
+    "direct_source_plummer_delta_is_negative": true,
+    "direct_source_plummer_downlift_is_false": true,
+    "direct_source_both_rows_improve": true
+  },
+  "canonical_public_records": {
+    "shared_adapter": {
+      "result_file": "results/jeans_dsph_heldout.json",
+      "adopted_fraction": 0.0,
+      "adopted_raw_delta_chi2": 0.0,
+      "adopted_downlift": false
+    },
+    "direct_formal_source": {
+      "result_file": "results/jeans_dsph_formal_corrective_evaluation.json",
+      "operator_object": "three-dimensional NFW halo density only",
+      "response_projection_used": false,
+      "direct_nonzero_raw_delta_chi2": -0.0011593988829652346,
+      "direct_nonzero_residual_reduction_pct": 0.005077144705320756,
+      "improved_count": 2,
+      "worsened_count": 0,
+      "downlift": false
+    }
+  },
+  "public_boundary": "The adopted shared-adapter result exactly preserves the baseline. The post-exposure direct-source diagnostic applies the operator to the canonical halo-density source and moves both row deltas negative."
+}

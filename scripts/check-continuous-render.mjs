@@ -1,0 +1,22 @@
+import {removeTattooMotion} from './tattoo-motion.mjs';
+import {removeHeaderNavEmphasis} from './header-nav-emphasis.mjs';
+import fs from'node:fs';import path from'node:path';import assert from'node:assert/strict';import{fileURLToPath}from'node:url';import{addContinuousCta,removeContinuousCta,readContinuousWorks,continuousRoutes,buildContinuousRender,addContinuousCatalogue,removeContinuousCatalogue}from'./continuous-render.mjs';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+export function checkContinuous(root){
+ const works=readContinuousWorks(root).works,routes=continuousRoutes(root),read=r=>removeHeaderNavEmphasis(removeTattooMotion(fs.readFileSync(path.join(root,'site',r==='/'?'index.html':'pages/'+r.slice(1)+'.html'),'utf8')));
+ assert.equal(routes.length,13);for(const r of['/','/exist','/exist-fr']){const h=read(r),base=removeContinuousCta(h);assert.notEqual(base,h);assert.equal(addContinuousCta(base,r),h);const m=h.match(/<!--effacer-continuous-cta:[\s\S]*?<!--effacer-continuous-cta-end-->/g);assert.equal(m.length,1);assert.ok(m[0].includes('href="/continuous-render"'));assert.ok(!m[0].includes('target="_blank"'));assert.throws(()=>removeContinuousCta(h.replace(m[0],m[0].replace('href="/continuous-render"','href="/wrong"'))));}
+ assert.equal(addContinuousCta('<p>unchanged</p>','/archive'),'<p>unchanged</p>');
+ for(const r of routes){const h=read(r);assert.equal((h.match(/id="continuous-render-viewport-v1"/g)||[]).length,1);const css=h.match(/<style id="continuous-render-viewport-v1">([\s\S]*?)<\/style>/)[1];assert.ok(css.includes('object-fit:contain'));assert.ok(css.includes('100svh - 116px'));assert.ok(!/font|text-transform|letter-spacing/.test(css.replace(/\/\*[\s\S]*?\*\//g,'')));}
+ const idx=read(routes[0]);assert.equal((idx.match(/class="cr-card cr-catalogue-work"/g)||[]).length,12);assert.equal((idx.match(/class="cr-footer"/g)||[]).length,1);
+ const originalIndex=removeContinuousCatalogue(idx);assert.notEqual(originalIndex,idx);assert.equal(addContinuousCatalogue(originalIndex,root,new Map(works.map(w=>[w.route,read(w.route)]))),idx);assert.throws(()=>addContinuousCatalogue(idx,root,new Map()),/duplicate/);assert.throws(()=>removeContinuousCatalogue(idx.replace('class="cr-grid cr-catalogue"','class="cr-grid changed"')),/identity/);
+ for(const w of works){const record=new RegExp('<article class="cr-card cr-catalogue-work" id="'+w.id+'"[\\s\\S]*?<\\/article>').exec(idx)?.[0];assert.ok(record,w.id);assert.equal((record.match(/<img\b/g)||[]).length,1);assert.ok(record.includes('src="'+w.image.url+'"'));for(const label of['Title','Year ','Medium ','Dimensions ','Palette ','Published ','Description'])assert.ok(record.includes('<strong>'+label),w.id+' '+label);assert.ok(record.includes(w.description));assert.ok(record.includes(w.statement));assert.ok(record.includes('href="'+w.route+'"'));assert.ok(record.includes('<strong>Year </strong>'+w.documentationYear+' (documentation)'));assert.ok(record.includes('<strong>Dimensions </strong>Not recorded'));}
+ for(const [i,w]of works.entries()){
+  const h=read(w.route),main=/<main\b[^>]*>([\s\S]*?)<\/main>/.exec(h)[1];
+  assert.equal((main.match(/<img\b/g)||[]).length,1);assert.ok(main.includes('src="'+w.image.url+'"'));assert.ok(main.includes('<time datetime="'+w.published+'">'));assert.ok(main.includes(w.description));
+  assert.ok(main.includes('href="'+works[(i+11)%12].route+'"'));assert.ok(main.includes('href="'+works[(i+1)%12].route+'"'));assert.ok(main.includes('href="/continuous-render"'));
+  assert.ok(!/cdninstagram|iframe|instagram\.com|data-archive-work=|archive-spacing-runtime|effacer-home-hero-runtime/.test(main));
+  assert.equal((h.match(/class="cr-footer"/g)||[]).length,1);assert.ok(main.includes('<strong>Year </strong>'+w.documentationYear+' (documentation)'));assert.equal(w.documentationYear,w.published.slice(0,4));assert.equal(w.creationYear,null);assert.ok(main.includes('<strong>Dimensions </strong>Not recorded'));assert.ok(main.includes(w.statement));assert.ok(!main.includes('<strong>Color Code'));
+ }
+ return{works:12,routes:13,ctaAliases:3,verified:'source-image hashes + route identity + reversible exact-target CTA + complete prev/next cycle + no CDN/iframe dependency + no invented year/dimensions/color attribution'};
+}
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))console.log(JSON.stringify(checkContinuous(root),null,2));

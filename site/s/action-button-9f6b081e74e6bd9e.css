@@ -1,0 +1,59 @@
+/* The native /talek-1 text-action style, shared by every page.
+   Keep media, menu, sound, gallery, form fields and inline prose links out. */
+html body :is(main,#page) {
+  --action-button-ink: #fff;
+  --action-button-fill-text: #000;
+}
+html body :is(main,#page) :is([data-section-theme="white"],[data-section-theme="light"],[data-section-theme="bright"],[data-section-theme="white-bold"],[data-section-theme="light-bold"]) {
+  --action-button-ink: #000;
+  --action-button-fill-text: #fff;
+}
+html body :is(main,#page) :is(a.sqs-block-button-element,button.sqs-system-button,input.sqs-system-button,.cosmology a.enter,button[type="submit"],input[type="submit"]) {
+  box-sizing: border-box !important;
+  align-items: center !important;
+  justify-content: center !important;
+  max-inline-size: 100% !important;
+  min-block-size: 1.6em !important;
+  block-size: auto !important;
+  padding: 0 1.2em !important;
+  border: 1px solid var(--action-button-ink) !important;
+  border-radius: 300px !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: var(--action-button-ink) !important;
+  font-family: "PT Serif",Georgia,serif !important;
+  font-size: 16px !important;
+  font-style: normal !important;
+  font-weight: 400 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0 !important;
+  text-align: center !important;
+  text-decoration: none !important;
+  text-transform: none !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  vertical-align: middle;
+  cursor: pointer;
+}
+html body :is(main,#page) :is(a.sqs-block-button-element,button.sqs-system-button,input.sqs-system-button,.cosmology a.enter,button[type="submit"],input[type="submit"])::before,
+html body :is(main,#page) :is(a.sqs-block-button-element,button.sqs-system-button,input.sqs-system-button,.cosmology a.enter,button[type="submit"],input[type="submit"])::after {
+  content: none !important;
+  display: none !important;
+}
+@media(hover:hover) {
+  html body :is(main,#page) :is(a.sqs-block-button-element,button.sqs-system-button,input.sqs-system-button,.cosmology a.enter,button[type="submit"],input[type="submit"]):not(:disabled):not([aria-disabled="true"]):hover {
+    background: var(--action-button-ink) !important;
+    color: var(--action-button-fill-text) !important;
+    opacity: 1 !important;
+  }
+}
+html body :is(main,#page) :is(a.sqs-block-button-element,button.sqs-system-button,input.sqs-system-button,.cosmology a.enter,button[type="submit"],input[type="submit"]):not(:disabled):not([aria-disabled="true"]):is(:focus-visible,:active) {
+  background: var(--action-button-ink) !important;
+  color: var(--action-button-fill-text) !important;
+  opacity: 1 !important;
+}
+html body :is(main,#page) :is(button.sqs-system-button,input.sqs-system-button,button[type="submit"],input[type="submit"]):disabled {
+  opacity: .5 !important;
+  cursor: not-allowed;
+}

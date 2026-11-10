@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const {ROOT_CANVAS_STYLE,withRootCanvas}=require('./root-canvas.cjs');
+const fixture='<html><head><title>Paint</title></head><body><main><section data-section-theme=""><svg><path d="M0 0C1 1 2 1 3 0"/></svg><img src="art.jpg"><span class="katex"><span class="frac-line"></span></span><video controls></video><input></section></main></body></html>';
+const after=withRootCanvas(fixture);
+assert.equal(after.replace(ROOT_CANVAS_STYLE,''),fixture);
+assert.equal(withRootCanvas(after),after);
+assert.equal(after.slice(after.indexOf('<body')),fixture.slice(fixture.indexOf('<body')));
+assert.throws(()=>withRootCanvas('missing head'));
+assert.throws(()=>withRootCanvas('<head><style id="site-root-canvas-v1">wrong</style></head>'));
+assert.throws(()=>withRootCanvas(null));
+assert.equal(ROOT_CANVAS_STYLE,'<style id="site-root-canvas-v1">html body{background-color:#000!important}</style>\n');
+assert.doesNotMatch(ROOT_CANVAS_STYLE,/font|margin|padding|height|width|position|clip|transform|border|display|opacity/);
+console.log('PASS root canvas: exact content inverse, idempotent, paint-only; artwork/curves/forms/math/media controls preserved');

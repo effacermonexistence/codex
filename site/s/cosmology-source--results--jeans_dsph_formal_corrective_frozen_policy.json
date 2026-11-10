@@ -1,0 +1,41 @@
+{
+  "dev_optimization_sha256": "6540fa83e8cf9ffd45b173faec6434b810bca8d1ecc249f1ca6e5b27029948bb",
+  "development_names": [
+    "Carina",
+    "Fornax",
+    "Sculptor",
+    "Sextans"
+  ],
+  "direct_nonzero_optimum": {
+    "dev_improved_count": 1,
+    "dev_macro_chi2_per_point": 0.7861452976844371,
+    "dev_macro_delta_chi2_per_point": 9.70629179101179e-05,
+    "dev_worsened_count": 3,
+    "eta": 0.03125,
+    "f": 0.05,
+    "valid": true
+  },
+  "evaluation_names": [
+    "Draco",
+    "Ursa Minor"
+  ],
+  "formula": "rho_perp=f*(K_d*rho_NFW-rho_NFW); M_perp=4*pi*integral(rho_perp*r^2 dr); Jeans RHS=-nu*G*(M_base+M_perp)/r^2",
+  "no_evaluation_parameter_update": true,
+  "no_evaluation_row_fallback": true,
+  "no_evaluation_subset_exclusion": true,
+  "proof_boundary": "Corrective post-exposure execution of a pre-existing direct formal-source family; not fresh/unseen proof.",
+  "response_projection_used": false,
+  "safe_optimum": {
+    "dev_improved_count": 0,
+    "dev_macro_chi2_per_point": 0.786048234766527,
+    "dev_macro_delta_chi2_per_point": 0.0,
+    "dev_worsened_count": 0,
+    "eta": 0.03125,
+    "f": 0.0,
+    "valid": true
+  },
+  "sample_manifest_sha256": "0160ec91b790bc301bfe9b5ed9e3e99f95545c31e0809fde1ac0448352f7fc58",
+  "schema_version": "jeans-formal-source-corrective-frozen-policy-v1",
+  "status": "FROZEN_BEFORE_CORRECTIVE_EVALUATION_SCORING",
+  "timestamp_utc": "2026-07-25T20:27:17.229129+00:00"
+}

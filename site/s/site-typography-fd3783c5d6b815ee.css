@@ -1,0 +1,28 @@
+/* Content headings share the owner-approved Apply title size.
+   Keep the original landing token intact: Apply already uses twice that token.
+   Families, weights, body text, controls, equations and the home hero are independent. */
+html body {
+  --site-landing-title-size: min(calc(.4 * 1.2vw + 1rem), max(calc(.4 * .012 * 1800px + 1rem), 1.4rem));
+  --site-reference-heading-size: calc(2 * var(--site-landing-title-size));
+  --site-landing-body-size: 1rem;
+}
+@media screen and (max-width:767px) and (orientation:portrait) {
+  html body { --site-landing-title-size: calc(.4 * (.012 * min(100vh, 900px)) + 1rem); }
+}
+html body :is(#page, main) [data-site-text-size="title"] {
+  font-size: var(--site-reference-heading-size) !important;
+}
+html body :is(#page, main) [data-site-text-size="body"] {
+  font-size: var(--site-landing-body-size) !important;
+}
+html body :is(#page, main) [data-site-text-size] :is(a, span, strong, em, b, i, small):not(:is(math, .katex, .MathJax, mjx-container, pre, code) *) {
+  font-size: inherit !important;
+}
+
+/* A readable mobile document retains authored line breaks and exact type sizes.
+   Long words wrap; literal code and wide equations scroll within their own lane. */
+@media (max-width:767px) {
+  html body :is(main,#page) [data-site-text-size] { min-inline-size:0; max-inline-size:100%; overflow-wrap:anywhere; }
+  html body main :is(pre,.katex-display,.MathJax_Display,.cosmology-equation) { max-inline-size:100%; overflow-x:auto; overscroll-behavior-inline:contain; }
+  html body main .sqs-html-content table { display:block; max-inline-size:100%; overflow-x:auto; }
+}

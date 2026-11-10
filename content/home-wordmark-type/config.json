@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "asset": "/s/wordmark-typeset-dba4d75f018b868a.svg",
+  "sha256": "dba4d75f018b868a6dab53e5b57c4c3b6c96558d2224bbb95ede63b1d54921ce",
+  "originalAsset": "/s/wordmark-original-6d82985cb5f1.png",
+  "originalSha256": "6d82985cb5f122fed5e9632731d71af5037688e0e11da60590dbe73cf2008b51",
+  "crops": [
+    {
+      "word": "effacer",
+      "x": 57,
+      "y": 95,
+      "w": 853,
+      "h": 158,
+      "outY": 0
+    },
+    {
+      "word": "mon",
+      "x": 910,
+      "y": 95,
+      "w": 470,
+      "h": 158,
+      "outY": 220
+    },
+    {
+      "word": "existence;",
+      "x": 1380,
+      "y": 95,
+      "w": 1057,
+      "h": 158,
+      "outY": 440
+    }
+  ],
+  "targets": {
+    "/": "698ccb7b40bdb1271700798c",
+    "/exist": "698ccb7b40bdb1271700798c",
+    "/exist-fr": "698cfbd93ed2b60dc83ee387"
+  },
+  "scope": "Only middle editorial wordmark between Archive of the Rendered and The Surface that Learned to Remember",
+  "glyphCapScale": 0.76,
+  "mobileCenterFitTargets": {
+    "/": "block-yui_3_17_2_1_1748918520282_1824",
+    "/exist": "block-yui_3_17_2_1_1748918520282_1824",
+    "/exist-fr": "block-279ac5b619f6d10b8b7a"
+  },
+  "mobileCenterFitScope": "Owner-requested mobile clipping repair of only the centered horizontal wordmark. Original pixel bytes, outer grid and all other landing content stay unchanged."
+}

@@ -1,0 +1,74 @@
+{
+  "delta_signs_preserved": true,
+  "direction_counts_preserved": true,
+  "max_raw_delta_chi2_difference": 0.0,
+  "policy_identity_preserved": true,
+  "proof_boundary": "Public replay of the same post-exposure corrective artifact; not a new fresh/unseen run.",
+  "published_evaluation_sha256": "46f09a8c2694daccd9b2380e5a1efdc7b9651dbb102766c8dbb4da9b78572699",
+  "replay_evaluation_sha256": "7b48e17bfdc99a909c09256c782827524d66e5735bbe05d7632696e45dcf7fb6",
+  "rows": [
+    {
+      "absolute_delta_difference": 0.0,
+      "kernel_key": "safe_plummer",
+      "published_counts": [
+        0,
+        0
+      ],
+      "published_raw_delta_chi2": 0.0,
+      "replay_counts": [
+        0,
+        0
+      ],
+      "replay_raw_delta_chi2": 0.0,
+      "sign_preserved": true
+    },
+    {
+      "absolute_delta_difference": 0.0,
+      "kernel_key": "direct_nonzero_plummer",
+      "published_counts": [
+        2,
+        0
+      ],
+      "published_raw_delta_chi2": -0.0011593988829652346,
+      "replay_counts": [
+        2,
+        0
+      ],
+      "replay_raw_delta_chi2": -0.0011593988829652346,
+      "sign_preserved": true
+    },
+    {
+      "absolute_delta_difference": 0.0,
+      "kernel_key": "direct_nonzero_gaussian",
+      "published_counts": [
+        2,
+        0
+      ],
+      "published_raw_delta_chi2": -0.00016192564057249115,
+      "replay_counts": [
+        2,
+        0
+      ],
+      "replay_raw_delta_chi2": -0.00016192564057249115,
+      "sign_preserved": true
+    },
+    {
+      "absolute_delta_difference": 0.0,
+      "kernel_key": "direct_nonzero_top_hat",
+      "published_counts": [
+        2,
+        0
+      ],
+      "published_raw_delta_chi2": -0.00012194407719690048,
+      "replay_counts": [
+        2,
+        0
+      ],
+      "replay_raw_delta_chi2": -0.00012194407719690048,
+      "sign_preserved": true
+    }
+  ],
+  "schema_version": "jeans-formal-source-public-reproduction-v1",
+  "scope": "PUBLIC_REPRODUCTION_NUMERICAL_PARITY_ONLY",
+  "status": "PASS_NUMERICAL_PARITY"
+}

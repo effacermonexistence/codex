@@ -1,0 +1,92 @@
+{
+  "augmented": {
+    "baseline_recovery": "Omega_perp -> 0 recovers flat LCDM exactly",
+    "bounds": {
+      "H0": [
+        50.0,
+        90.0
+      ],
+      "Om": [
+        0.05,
+        0.6
+      ],
+      "Operp": [
+        0.0,
+        0.5
+      ],
+      "q": [
+        0.0,
+        4.0
+      ]
+    },
+    "equation": "H(z)^2 = H0^2 [Omega_m(1+z)^3 + Omega_perp(1+z)^q + 1-Omega_m-Omega_perp]",
+    "fit": {
+      "aic": 22.486527955464066,
+      "bic": 28.22247677340465,
+      "chi2": 14.486527955464066,
+      "dof": 27,
+      "k": 4,
+      "message": "CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL",
+      "n": 31,
+      "name": "Program_E_effective_fluid",
+      "params": {
+        "H0": 68.46403028906695,
+        "Om": 0.05,
+        "Operp": 0.2476848937586014,
+        "q": 3.080860710350703
+      },
+      "success": true
+    },
+    "name": "flat_LCDM_plus_right_side_T_perp_eff_background",
+    "stress_energy_interpretation": "rho_perp(a)=rho_perp,0 a^-q, w_perp=-1+q/3",
+    "w_perp": 0.026953570116901027
+  },
+  "baseline": {
+    "bounds": {
+      "H0": [
+        50.0,
+        90.0
+      ],
+      "Om": [
+        0.05,
+        0.6
+      ]
+    },
+    "equation": "H(z)^2 = H0^2 [Omega_m(1+z)^3 + (1-Omega_m)]",
+    "fit": {
+      "aic": 18.495266300199905,
+      "bic": 21.3632407091702,
+      "chi2": 14.495266300199905,
+      "dof": 29,
+      "k": 2,
+      "message": "CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL",
+      "n": 31,
+      "name": "flat_LCDM",
+      "params": {
+        "H0": 68.14537551121245,
+        "Om": 0.3196427634537042
+      },
+      "success": true
+    },
+    "name": "flat_LCDM"
+  },
+  "claim_boundary": "No real uplift and no Einstein-level or cosmological proof.",
+  "delta": {
+    "delta_AIC_ProgramE_minus_LCDM": 3.991261655264161,
+    "delta_BIC_ProgramE_minus_LCDM": 6.859236064234452,
+    "delta_chi2_ProgramE_minus_LCDM": -0.00873834473583912,
+    "negative_delta_chi2_is_raw_uplift": true
+  },
+  "evidence_class": "REAL_DATA_BACKGROUND_FLUID_SMOKE_NOT_M1_LIFT",
+  "interpretation": "The four-parameter background-fluid model changed chi-square by only -0.00874 while AIC and BIC worsened. This is a distinct Program C effective-fluid test, not the cluster redistribution operator lifted into Einstein equations.",
+  "record_id": "PROGRAM_C_HZ_BACKGROUND_FLUID",
+  "source": {
+    "n_rows": 31,
+    "sha256": "bd36beac5c36d161437ee32d9a597195544a3a5c092e74bb58fca73998778f3b",
+    "source_compilation": "https://arxiv.org/abs/2111.08289",
+    "source_repo": "https://github.com/reggiebernardo/datasets",
+    "source_url": "https://raw.githubusercontent.com/reggiebernardo/datasets/main/Hdz_2020_CConly.txt"
+  },
+  "status": "NO_REAL_UPLIFT",
+  "upstream_artifact_sha256": "c2d6159ce99af1a345f170d5c4b463ae66998d8c4d530b33016df59bbdd5a9b9"
+}

@@ -1,0 +1,67 @@
+{
+  "boundary": "All three failures occurred before heldout access; all affected scientific scores were discarded and recomputed after repair.",
+  "failures": [
+    {
+      "candidate_generation_started": false,
+      "classification": "R2_DYNAMIC_IMPORT_SYS_MODULES_REGISTRATION_FAILURE",
+      "development_scores_accessed": false,
+      "failed_output_exists": false,
+      "failure": "Python 3.9 dataclass annotation resolution failed because the dynamically imported R2 module was not registered in sys.modules before exec_module",
+      "heldout_scores_accessed": false,
+      "physics_changed": false,
+      "repair": "register spec.name in sys.modules before executing the exact same content-addressed R2 source",
+      "sample_rule_changed": false,
+      "schema_version": "jeans-dsph-preflight-failure-v1",
+      "scoring_changed": false,
+      "status": "REPAIRED_BEFORE_SCIENTIFIC_SCORING",
+      "timestamp_utc": "2026-07-25T13:30:39.210596+00:00"
+    },
+    {
+      "candidate_generation_started": false,
+      "classification": "VIZIER_FIXED_WIDTH_TERMINAL_MEMBERSHIP_ROW_TRUNCATION",
+      "development_scores_accessed": false,
+      "expected_source_counts_mmb_ge_0_95": {
+        "Carina": 746,
+        "Fornax": 2279,
+        "Sculptor": 1349,
+        "Sextans": 397
+      },
+      "failure": "parser required line length >=99 although valid summary rows can end at byte 98 after Mmb; member samples were undercounted",
+      "heldout_scores_accessed": false,
+      "invalid_manifest_path": "internal-preflight/PREFLIGHT_INVALID_SAMPLE_MANIFEST_001.json (not published)",
+      "invalid_manifest_sha256": "32f48076ae7ca84b4df26bb086ca21bdc44e7aca91497366adddea73f5c5a355",
+      "observed_invalid_counts": {
+        "Carina": 219,
+        "Fornax": 411,
+        "Sculptor": 233,
+        "Sextans": 182
+      },
+      "physics_changed": false,
+      "repair": "accept lines of length >=98; preserve the fixed-width Mmb bytes 94-98 and existing velocity fallback rule",
+      "sample_split_rule_changed": false,
+      "schema_version": "jeans-dsph-preflight-failure-v1",
+      "scoring_changed": false,
+      "status": "REPAIRED_BEFORE_SCIENTIFIC_SCORING",
+      "timestamp_utc": "2026-07-25T13:31:18.784876+00:00"
+    },
+    {
+      "classification": "ANALYTIC_VS_QUADRATURE_BASELINE_PATH_MISMATCH",
+      "development_scores_partially_computed": true,
+      "failure": "adapter f=0 path used a numerically integrated NFW mass while the fitted baseline used the analytic NFW cumulative mass; exact floor differed by 3.7e-5 to 5.6e-5 km/s and all candidate policies failed the f=0 gate",
+      "heldout_accessed": false,
+      "objective_changed": false,
+      "observed_f0_max_abs_kms": {
+        "Fornax": 5.5936550392488016e-05,
+        "Sextans": 3.731848868504528e-05
+      },
+      "parameter_grid_changed": false,
+      "physics_changed": false,
+      "repair": "use the exact analytic NFW cumulative mass as the base mass inside the adapter path; retain numerical convolution only for the convolved branch",
+      "sample_changed": false,
+      "schema_version": "jeans-dsph-dev-failure-v1",
+      "status": "REPAIRED_BEFORE_HELDOUT",
+      "timestamp_utc": "2026-07-25T13:32:29.379122+00:00"
+    }
+  ],
+  "schema_version": "jeans-dsph-public-failure-ledger-v1"
+}

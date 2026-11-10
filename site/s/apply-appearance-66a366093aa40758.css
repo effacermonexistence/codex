@@ -1,0 +1,132 @@
+/* Native fields use a single fine rule over the accepted artwork. */
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb {
+  color-scheme: dark;
+  --apply-field-ink: #eeeeef;
+  --apply-field-border: #99999f;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb :is(input:where(:not([type="file"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"])), textarea, select) {
+  background: transparent !important;
+  color: var(--apply-field-ink) !important;
+  -webkit-text-fill-color: var(--apply-field-ink) !important;
+  caret-color: var(--apply-field-ink);
+  border: 0 !important;
+  border-bottom: 1px solid var(--apply-field-border) !important;
+  border-radius: 0 !important;
+  padding-inline: 0 !important;
+  box-shadow: none !important;
+  opacity: 1 !important;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb :is(input, textarea)::placeholder {
+  color: #929299 !important;
+  -webkit-text-fill-color: #929299 !important;
+  opacity: 1;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb :is(input, textarea, select):focus {
+  background: transparent !important;
+  border-bottom-color: #eeeeef !important;
+  outline: none !important;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb input:-webkit-autofill,
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb input:autofill {
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-box-shadow: none !important;
+  box-shadow: none !important;
+  -webkit-text-fill-color: #eeeeef !important;
+  caret-color: #eeeeef;
+}
+body.collection-68656582e759892761381cbc #apply-upload-v1 .apply-upload-chooser {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 44px;
+  gap: .7rem;
+  padding: .45rem 0;
+  background: transparent;
+  color: #eeeeef;
+  border: 0;
+  letter-spacing: .025em;
+}
+body.collection-68656582e759892761381cbc #apply-upload-v1 .apply-upload-chooser:hover {
+  background: transparent;
+}
+body.collection-68656582e759892761381cbc #apply-upload-v1 .apply-upload-chooser:focus-within {
+  outline: 1px solid currentColor;
+  outline-offset: 4px;
+}
+body.collection-68656582e759892761381cbc #apply-upload-v1 .apply-upload-plus {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb .form-submit-button,
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb .form-submit-button:is(:hover,:focus-visible,:active) {
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 1px solid #99999f !important;
+  border-radius: 0;
+  min-height: 44px;
+  padding: .45rem .15rem;
+  letter-spacing: .025em;
+  color: #eeeeef !important;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb .form-submit-button:is(:hover,:focus-visible) {
+  border-bottom-color: #eeeeef !important;
+}
+body.collection-68656582e759892761381cbc #block-61b1bd79481c34f2f1bb .form-submit-button:focus-visible {
+  outline: none !important;
+  border-bottom-width: 2px !important;
+}
+/* Same painting and recursive motion as AXIOM COLLAPSE, beneath the original
+   application layout. The image remains available without JavaScript/WebGL. */
+#apply-artwork {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #000;
+}
+#apply-artwork :is(img, canvas) {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 50%;
+  filter: brightness(1.14) contrast(1.25) saturate(.78);
+  opacity: .45;
+}
+#apply-artwork canvas { opacity: 0; }
+#apply-artwork canvas.is-ready { opacity: .45; }
+#apply-artwork:has(canvas.is-ready) img { opacity: 0; }
+/* A separate short veil protects the logo without darkening the form. */
+#apply-artwork::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--apply-logo-veil, linear-gradient(180deg, rgba(0,0,0,.18), transparent 280px));
+}
+#apply-artwork::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,.78), rgba(0,0,0,.3) 23%, rgba(0,0,0,.28) 43%, rgba(0,0,0,.58) 75%, #000 100%),
+              linear-gradient(90deg, rgba(0,0,0,.12), rgba(0,0,0,.26) 42%, rgba(0,0,0,.4) 72%, rgba(0,0,0,.2));
+}
+@media (max-width:767px) {
+  #apply-artwork::before {
+    background: var(--apply-logo-veil, linear-gradient(180deg, rgba(0,0,0,.6), rgba(0,0,0,.54) 110px, transparent 240px));
+  }
+  #apply-artwork::after {
+    background: linear-gradient(180deg, rgba(0,0,0,.7), rgba(0,0,0,.25) 17%, rgba(0,0,0,.38) 38%, rgba(0,0,0,.68) 76%, #000 100%);
+  }
+  #apply-artwork[data-intro-tone="mobile"] img,
+  #apply-artwork[data-intro-tone="mobile"] canvas.is-ready { opacity: 1; }
+  #apply-artwork[data-intro-tone="mobile"]:has(canvas.is-ready) img { opacity: 0; }
+  #apply-artwork[data-intro-tone="mobile"]::after {
+    background: var(--apply-intro-veil);
+  }
+  body.collection-68656582e759892761381cbc :is(#block-09429f6eb187d25e035b, #block-5f763f8b417eaf376549) .sqs-html-content {
+    text-shadow: 0 1px 3px rgba(0,0,0,.95), 0 2px 16px rgba(0,0,0,.75);
+  }
+}

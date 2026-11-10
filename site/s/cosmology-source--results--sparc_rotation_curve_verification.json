@@ -1,0 +1,101 @@
+{
+  "aggregate_checks": {
+    "forced_gaussian": {
+      "max_abs_difference": 2.842170943040401e-14,
+      "recomputed": {
+        "baseline_macro_chi2_per_point": 1.605504601332612,
+        "baseline_total_chi2": 208.84492834867456,
+        "candidate_macro_chi2_per_point": 1.5163412330996617,
+        "candidate_total_chi2": 203.37290149538316,
+        "data_point_count": 105,
+        "downlift": false,
+        "improved_count": 5,
+        "macro_delta_chi2_per_point": -0.08916336823295024,
+        "neutral_count": 0,
+        "raw_delta_chi2": -5.472026853291396,
+        "residual_reduction_pct": 2.620138729993787,
+        "stable_galaxy_count": 6,
+        "worsened_count": 1
+      }
+    },
+    "forced_plummer": {
+      "max_abs_difference": 2.842170943040401e-14,
+      "recomputed": {
+        "baseline_macro_chi2_per_point": 1.605504601332612,
+        "baseline_total_chi2": 208.84492834867456,
+        "candidate_macro_chi2_per_point": 1.4952751172651941,
+        "candidate_total_chi2": 199.58871533045263,
+        "data_point_count": 105,
+        "downlift": false,
+        "improved_count": 5,
+        "macro_delta_chi2_per_point": -0.11022948406741784,
+        "neutral_count": 0,
+        "raw_delta_chi2": -9.256213018221928,
+        "residual_reduction_pct": 4.432098539050146,
+        "stable_galaxy_count": 6,
+        "worsened_count": 1
+      }
+    },
+    "forced_top_hat": {
+      "max_abs_difference": 5.684341886080802e-14,
+      "recomputed": {
+        "baseline_macro_chi2_per_point": 1.605504601332612,
+        "baseline_total_chi2": 208.84492834867456,
+        "candidate_macro_chi2_per_point": 1.522536225068058,
+        "candidate_total_chi2": 203.80524713540984,
+        "data_point_count": 105,
+        "downlift": false,
+        "improved_count": 5,
+        "macro_delta_chi2_per_point": -0.08296837626455389,
+        "neutral_count": 0,
+        "raw_delta_chi2": -5.039681213264714,
+        "residual_reduction_pct": 2.413121186668596,
+        "stable_galaxy_count": 6,
+        "worsened_count": 1
+      }
+    },
+    "safe_plummer": {
+      "max_abs_difference": 2.842170943040401e-14,
+      "recomputed": {
+        "baseline_macro_chi2_per_point": 1.605504601332612,
+        "baseline_total_chi2": 208.84492834867456,
+        "candidate_macro_chi2_per_point": 1.4952751172651941,
+        "candidate_total_chi2": 199.58871533045263,
+        "data_point_count": 105,
+        "downlift": false,
+        "improved_count": 5,
+        "macro_delta_chi2_per_point": -0.11022948406741784,
+        "neutral_count": 0,
+        "raw_delta_chi2": -9.256213018221928,
+        "residual_reduction_pct": 4.432098539050146,
+        "stable_galaxy_count": 6,
+        "worsened_count": 1
+      }
+    }
+  },
+  "artifact_sha256": "ab92c3142a9498fcbe1583f225bbbc2d463442e65a81e565ba85f9e4cbe1d13b",
+  "byte_identical_replay": true,
+  "chronology": {
+    "heldout_mtime_utc": "2026-07-25T11:34:35.368525+00:00",
+    "policy_mtime_utc": "2026-07-25T11:34:13.595821+00:00",
+    "policy_precedes_heldout": true
+  },
+  "claim_boundary": "Held-out for shared adapter f/eta only. Per-galaxy NFW baseline nuisance parameters are fitted on each held-out rotation curve. Not a clean predictive or physical proof.",
+  "dev_heldout_overlap": 0,
+  "frozen_policy_hash_match": true,
+  "heldout_sign_test_context": {
+    "one_sided_binomial_p_if_independent_equal_signs": 0.109375,
+    "plummer_improved": 5,
+    "plummer_worsened": 1,
+    "warning": "six galaxies are a small, selected public-data diagnostic; no confirmatory significance claim"
+  },
+  "max_abs_post_renormalization_mass_leak_fraction": 3.204071125973187e-15,
+  "max_abs_raw_mass_leak_fraction": 0.0053465077638396126,
+  "max_f0_prediction_difference": 0.0,
+  "plummer_advantage_vs_gaussian_total_chi2": 3.7841861649305315,
+  "plummer_advantage_vs_top_hat_total_chi2": 4.216531804957185,
+  "replay_sha256": "ab92c3142a9498fcbe1583f225bbbc2d463442e65a81e565ba85f9e4cbe1d13b",
+  "sample_manifest_hash_match": true,
+  "schema_version": "sparc-heldout-independent-verification-v1",
+  "status": "PASS"
+}

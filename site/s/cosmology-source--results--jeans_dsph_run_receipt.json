@@ -1,0 +1,112 @@
+{
+  "claim_boundary": "Heldout for shared f/eta only. Each heldout galaxy fits its own NFW+constant-beta baseline nuisance parameters. This is a public-data equation-adapter diagnostic, not clean predictive or physical proof.",
+  "dev_replay_byte_identical": true,
+  "executed_adapter_source_sha256": {
+    "evaluate_jeans_heldout.py": "3b5ce14c7e2f59f3f2e19e81bf9e3e777504911cf9a2895f39b813b157a04991",
+    "jeans_adapter_common.py": "2e9d4aad63f813a9b264190e725a736b94223bf735937dba97503e09bbdddaf0",
+    "lock_jeans_sample.py": "bc2590a693545d4e4f2954d8d446cb8dc9f470db66e485713a28f310f4c0ce7a",
+    "optimize_jeans_dev.py": "9e1d95865f325057f3b437b9e46e00baaa19af5aaafff104660d56d5a4aa664f"
+  },
+  "forced_nonzero_policy": {
+    "dev_improved_count": 1,
+    "dev_macro_chi2_per_point": 0.43278307492574664,
+    "dev_macro_delta_chi2_per_point": 0.00014070730994297787,
+    "dev_worsened_count": 1,
+    "eta": 0.03125,
+    "f": 0.05,
+    "valid": true
+  },
+  "heldout_accessed_before_policy_freeze": false,
+  "heldout_aggregates": {
+    "forced_gaussian": {
+      "baseline_macro_chi2_per_bin": 1.1394541019222189,
+      "baseline_total_chi2": 35.35282684250496,
+      "candidate_macro_chi2_per_bin": 1.139463618345784,
+      "candidate_total_chi2": 35.35317122893528,
+      "data_bin_count": 32,
+      "downlift": true,
+      "improved_count": 1,
+      "macro_delta_chi2_per_bin": 9.516423565170129e-06,
+      "neutral_count": 0,
+      "raw_delta_chi2": 0.00034438643032075333,
+      "residual_reduction_pct": -0.0009741411397028513,
+      "stable_galaxy_count": 2,
+      "worsened_count": 1
+    },
+    "forced_plummer": {
+      "baseline_macro_chi2_per_bin": 1.1394541019222189,
+      "baseline_total_chi2": 35.35282684250496,
+      "candidate_macro_chi2_per_bin": 1.1395075155553853,
+      "candidate_total_chi2": 35.35473214950315,
+      "data_bin_count": 32,
+      "downlift": true,
+      "improved_count": 0,
+      "macro_delta_chi2_per_bin": 5.3413633166410346e-05,
+      "neutral_count": 0,
+      "raw_delta_chi2": 0.00190530699818936,
+      "residual_reduction_pct": -0.005389404945401978,
+      "stable_galaxy_count": 2,
+      "worsened_count": 2
+    },
+    "forced_top_hat": {
+      "baseline_macro_chi2_per_bin": 1.1394541019222189,
+      "baseline_total_chi2": 35.35282684250496,
+      "candidate_macro_chi2_per_bin": 1.1394612484946314,
+      "candidate_total_chi2": 35.35308549023193,
+      "data_bin_count": 32,
+      "downlift": true,
+      "improved_count": 1,
+      "macro_delta_chi2_per_bin": 7.146572412519703e-06,
+      "neutral_count": 0,
+      "raw_delta_chi2": 0.00025864772697303806,
+      "residual_reduction_pct": -0.0007316182327520809,
+      "stable_galaxy_count": 2,
+      "worsened_count": 1
+    },
+    "safe_plummer": {
+      "baseline_macro_chi2_per_bin": 1.1394541019222189,
+      "baseline_total_chi2": 35.35282684250496,
+      "candidate_macro_chi2_per_bin": 1.1394541019222189,
+      "candidate_total_chi2": 35.35282684250496,
+      "data_bin_count": 32,
+      "downlift": false,
+      "improved_count": 0,
+      "macro_delta_chi2_per_bin": 0.0,
+      "neutral_count": 2,
+      "raw_delta_chi2": 0.0,
+      "residual_reduction_pct": -0.0,
+      "stable_galaxy_count": 2,
+      "worsened_count": 0
+    }
+  },
+  "heldout_replay_byte_identical": true,
+  "independent_verification_status": "PASS",
+  "proof_mode": "PUBLIC_DATA_HELDOUT_SHARED_ADAPTER_WITH_PER_GALAXY_BASELINE_NUISANCE_FIT",
+  "r2_post_gate_before_scientific_scoring": "PASS",
+  "r2_pre_gate": "PASS",
+  "r2_selected_callable": "sample_ids_sha256",
+  "r2_selected_source_sha256": "5215e4e8a74b529c1355208c04e7323e09d93a63d332b26d67c9c7a50faba524",
+  "result_label": "NO_ADAPTER_UPLIFT_SAFE_FLOOR_SELECTED",
+  "safe_policy": {
+    "dev_improved_count": 0,
+    "dev_macro_chi2_per_point": 0.43264236761580366,
+    "dev_macro_delta_chi2_per_point": 0.0,
+    "dev_worsened_count": 0,
+    "eta": 0.03125,
+    "f": 0.0,
+    "valid": true
+  },
+  "sample_ids_sha256": "6891e5d5607edae47cc14196b0829cb05c4dd9d81abb3c15b9f61e26bfb12f15",
+  "schema_version": "jeans-dsph-public-run-receipt-v1",
+  "source_sha256": {
+    "ReadMe": "efb2d2f1040d1719b359d9490d4a6b5662cad1349faca5e701483166e97b7d80",
+    "lokas_2009_dsph_jeans_arxiv_source.tar": "6888ae71a5150da7e1ee9ae031fc6689fb5bbca7a46660e12f0fa3cb3594456d",
+    "table2.dat": "fe88e35c3d4626113e1c4e3af26de4adcb7c8b7ef927c9602054d050b9e3da02",
+    "table3.dat": "03835f7317e9665b026a8469756957c89f4352a508c5ecedc54e0cd0d01eb02e",
+    "table4.dat": "d7ed95def36543514f1896adc0dfbfcd183b44ccf2af7fb819b15dc70b6e0326",
+    "table5.dat": "da1fe06a1db5b95f1dc8b89468c5af6726022f909af565859eb1773d775cd45e",
+    "walker_2009_universal_mass_profile_arxiv_source.tar": "fbe10b9157115e465af431f326d24e5795c5388ee4b62ded7408843c0dd2bf42"
+  },
+  "status": "COMPLETE_NEGATIVE_RESULT",
+  "task_local_adapter_over_r2_primitives": true
+}

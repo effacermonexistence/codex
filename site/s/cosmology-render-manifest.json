@@ -1,0 +1,456 @@
+{
+  "source_commit": "57c8bef70e4cdb7ce33ea865dda852c17001925e",
+  "chapters": [
+    {
+      "file": "README.md",
+      "slug": "cosmology-overview",
+      "title": "Research record",
+      "roman": "I",
+      "sha256": "49cdf346089bdd91b97f36a3a28617569ecd3252308f43fe07165c69674e0a5d"
+    },
+    {
+      "file": "docs/CONCEPTUAL_ORIGIN.md",
+      "slug": "cosmology-conceptual-origin",
+      "title": "Conceptual origin",
+      "roman": "II",
+      "sha256": "e839e472efed049d1e25e318978c9331735f075d461900c72dcaa1c3c2962fd1"
+    },
+    {
+      "file": "docs/OPERATOR.md",
+      "slug": "cosmology-operator",
+      "title": "The redistribution operator",
+      "roman": "III",
+      "sha256": "9ee94431e4dd1a7bc8c902d9031649ecba98edb3b913bdafef5548eb55c52b91"
+    },
+    {
+      "file": "docs/EQUATION_INSERTIONS.md",
+      "slug": "cosmology-equation-insertions",
+      "title": "Equation insertions",
+      "roman": "IV",
+      "sha256": "6108d95cc7765655d2c8e6dc7b6161ed41137d36d19d90f162e3825c9fe08325"
+    },
+    {
+      "file": "docs/DATA_PROVENANCE.md",
+      "slug": "cosmology-data-provenance",
+      "title": "Data provenance",
+      "roman": "V",
+      "sha256": "4db9c230c40235ba2b8d7f6264252935302e15dbe73a33d54a2381f1dc321313"
+    },
+    {
+      "file": "docs/EXPERIMENT_REGISTRY.md",
+      "slug": "cosmology-experiment-registry",
+      "title": "Experiment registry",
+      "roman": "VI",
+      "sha256": "922a06fe77515f1bf3b50af36d93eb9fb979d4db91541134414522f9473e69a5"
+    },
+    {
+      "file": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "slug": "cosmology-sparc",
+      "title": "SPARC rotation curves",
+      "roman": "VII",
+      "sha256": "9ffbb6107c288467f5d541a48a3b177b2826caff344424026907b2387a164e92"
+    },
+    {
+      "file": "docs/JEANS_DSPH_ADAPTER.md",
+      "slug": "cosmology-jeans",
+      "title": "Dwarf-spheroidal Jeans adapter",
+      "roman": "VIII",
+      "sha256": "58de3ca9ac772a0cb9863ae7a9ccc4cac115793cf448151fe0f0478e12093b74"
+    },
+    {
+      "file": "docs/JEANS_DSPH_FORMAL_SOURCE_CORRECTIVE.md",
+      "slug": "cosmology-jeans-formal-source",
+      "title": "Direct Jeans source correction",
+      "roman": "IX",
+      "sha256": "7ed3d4a974f3237090a088a1e9db99e82feb3687176ffeccaf0edd1c96af492c"
+    },
+    {
+      "file": "docs/XCOP_HYDROSTATIC_DIRECT_FORMAL.md",
+      "slug": "cosmology-xcop",
+      "title": "X-COP hydrostatic insertion",
+      "roman": "X",
+      "sha256": "58ebed55fb938323df9398ee107097223fd9267f82641192f3b7dee700705bd6"
+    },
+    {
+      "file": "docs/CLAIM_BOUNDARIES.md",
+      "slug": "cosmology-claim-boundaries",
+      "title": "Claim boundaries",
+      "roman": "XI",
+      "sha256": "bf462ed519cfc113eefa4b53aa08e1bb665027a0ca774f6b29304988a058eb83"
+    },
+    {
+      "file": "audits/RED_TEAM_FINDINGS.md",
+      "slug": "cosmology-audit",
+      "title": "Adversarial findings",
+      "roman": "XII",
+      "sha256": "70c3acfd32e16cccbb6e6593d38d73acccd5c3db69dd2d15fad51539f4b64da4"
+    },
+    {
+      "file": "data/README.md",
+      "slug": "cosmology-data-record",
+      "title": "Public data record",
+      "roman": "XIII",
+      "sha256": "e0b94c64085ba550708de95141ee76872ff5dfd186cb0c2a42c22fb794cf9f1a"
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "slug": "cosmology-reproduction",
+      "title": "Reproduction & contribution",
+      "roman": "XIV",
+      "sha256": "4f57869d00c07c437599794757ff3ca27eec6bdbcbc2f4e7e6a3f8d78785af87"
+    }
+  ],
+  "rendered_equations": 70,
+  "equations": [
+    {
+      "source": "landing",
+      "display": true,
+      "tex": "\\mathcal O_\\perp[X]=f_\\perp(\\mathcal K_d[X]-X)"
+    },
+    {
+      "source": "README.md",
+      "display": true,
+      "tex": "\n\\mathcal O_\\perp[X] = f_\\perp\\left(\\mathcal K_d[X]-X\\right),\n\\qquad\nX_{\\mathrm{aug}}=(1-f_\\perp)X+f_\\perp\\mathcal K_d[X].\n"
+    },
+    {
+      "source": "docs/CONCEPTUAL_ORIGIN.md",
+      "display": true,
+      "tex": "\n\\mathcal O_\\perp[X]\n=\nf_\\perp\\left(\\mathcal K_d[X]-X\\right),\n"
+    },
+    {
+      "source": "docs/CONCEPTUAL_ORIGIN.md",
+      "display": true,
+      "tex": "\nX_{\\mathrm{aug}}\n=\nX+\\mathcal O_\\perp[X]\n=\n(1-f_\\perp)X+f_\\perp\\mathcal K_d[X].\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\n\\mathcal O_\\perp[X] = f_\\perp\\big(\\mathcal K_d[X]-X\\big),\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\nX_{\\rm aug}=X+\\mathcal O_\\perp[X]=(1-f_\\perp)X+f_\\perp\\mathcal K_d[X].\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\n\\int \\mathcal O_\\perp[X] \\, dV = 0.\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\nf=1.0,\\qquad d_g=0.125R_{{\\rm disk},g}.\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\nK_d(r)=\\frac{3}{4\\pi d^3}\\left(1+\\frac{r^2}{d^2}\\right)^{-5/2}.\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\nr_{1/2}=\\frac{d}{\\sqrt{2^{2/3}-1}}.\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\nP_d(R)\\propto\\left(1+\\frac{R^2}{d^2}\\right)^{-3/2}.\n"
+    },
+    {
+      "source": "docs/OPERATOR.md",
+      "display": true,
+      "tex": "\nR_{1/2}=\\sqrt{3}\\,d.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\\nabla^2\\Phi=4\\pi G(\\rho_b+\\rho_{\\rm gas}+\\rho_{\\rm halo})."
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\nabla^2\\Phi=4\\pi G\\left[\\rho_b+\\rho_{\\rm gas}+\\rho_{\\rm halo}\n+f_\\perp(K_d*\\rho_{\\rm halo}-\\rho_{\\rm halo})\\right].\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\kappa_{\\rm base}=\\kappa_b+\\kappa_{\\rm gas}+\\kappa_{\\rm halo},\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\kappa_{\\rm aug}=\\kappa_b+\\kappa_{\\rm gas}\n+(1-f_\\perp)\\kappa_{\\rm halo}+f_\\perp(P_d*\\kappa_{\\rm halo}).\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\rho_{\\rm aug}(r)=(1-f_\\perp)\\rho_{\\rm NFW}(r)+f_\\perp(K_d*\\rho_{\\rm NFW})(r).\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\frac{d(\\nu\\sigma_r^2)}{dr}+\\frac{2\\beta}{r}\\nu\\sigma_r^2\n=-\\nu\\frac{G M(<r)}{r^2}.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nd_g=\\eta r_{1/2,g},\n\\qquad\n\\rho_{h,\\rm aug}=(1-f)\\rho_{\\rm NFW}+f(K_{d_g}*\\rho_{\\rm NFW}),\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nM_{\\rm aug}(<r)=M_\\star(<r)+4\\pi\\int_0^r \\rho_{h,\\rm aug}(r')r'^2dr'.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\rho_\\perp=f(K_d*\\rho_{\\rm NFW}-\\rho_{\\rm NFW}),\\qquad\nM_\\perp(<r)=4\\pi\\int_0^r\\rho_\\perp(r')r'^2dr',\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nV_{\\rm bar}^2(R)=V_{\\rm gas}|V_{\\rm gas}|\n+0.5V_{\\rm disk}|V_{\\rm disk}|\n+0.7V_{\\rm bulge}|V_{\\rm bulge}|.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nV_{\\rm base}^2(R)=V_{\\rm bar}^2(R)\n+\\frac{G M_{\\rm NFW}(<R;V_{200},c)}{R}.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nd_g=\\eta R_{{\\rm disk},g},\n\\qquad\n\\rho_{{\\rm aug},g}=(1-f)\\rho_{{\\rm NFW},g}\n+f(K_{d_g}*\\rho_{{\\rm NFW},g}),\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nV_{\\rm aug}^2(R)=V_{\\rm bar}^2(R)+\\frac{G M_{\\rm aug}(<R)}{R}.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\frac{dP_e}{dr}\n=\n-\\mu m_p n_e(r)\\frac{G M_{\\rm total}(<r)}{r^2}.\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\rho_{\\rm dm}\n=\n\\rho_{\\rm NFW,total}-\\rho_{\\rm gas}-\\rho_\\star,\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\n\\rho_{\\rm dm,aug}\n=(1-f)\\rho_{\\rm dm}+f(K_d*\\rho_{\\rm dm}).\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nM_{\\rm aug}(<r)\n=\nM_{\\rm NFW,total}(<r)\n+f\\left[M[K_d*\\rho_{\\rm dm}](<r)-M[\\rho_{\\rm dm}](<r)\\right].\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nH^2(z)=H_0^2\\left[\\Omega_m(1+z)^3+\\Omega_\\perp(1+z)^q\n+1-\\Omega_m-\\Omega_\\perp\\right].\n"
+    },
+    {
+      "source": "docs/EQUATION_INSERTIONS.md",
+      "display": true,
+      "tex": "\nG_{\\mu\\nu}+\\Lambda g_{\\mu\\nu}=8\\pi G\\left(T^{\\rm known}_{\\mu\\nu}+T^{\\perp,\\rm eff}_{\\mu\\nu}\\right).\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "\nV_{\\rm bar}^2(R)=V_{\\rm gas}|V_{\\rm gas}|\n+0.5V_{\\rm disk}|V_{\\rm disk}|\n+0.7V_{\\rm bulge}|V_{\\rm bulge}|.\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "V_{200}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "c"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "\nV_{\\rm base}^2(R)=V_{\\rm bar}^2(R)\n+\\frac{G M_{\\rm NFW}(<R;V_{200},c)}{R}.\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "V_{200}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "c"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "\nd_g=\\eta R_{{\\rm disk},g},\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "\n\\rho_{{\\rm aug},g}=(1-f)\\rho_{{\\rm NFW},g}\n+f\\left(K_{d_g}*\\rho_{{\\rm NFW},g}\\right),\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "\nV_{\\rm aug}^2(R)=V_{\\rm bar}^2(R)\n+\\frac{G M_{\\rm aug}(<R)}{R}.\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "\nK_d(r)=\\frac{3}{4\\pi d^3}\\left(1+\\frac{r^2}{d^2}\\right)^{-5/2}.\n"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "f \\in \\{0,0.05,0.10,0.20,0.30,0.40,0.50,0.60,0.75,1.0\\}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\eta \\in \\{0.03125,0.0625,0.125,0.25,0.5,1,2,4,8\\}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": true,
+      "tex": "f=1.0,\\qquad \\eta=0.125."
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\chi^2"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\chi^2"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\Delta\\chi^2"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "f"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\eta"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "R_{\\rm disk}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "d"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\chi^2"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\chi^2"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "\\Delta\\chi^2"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "5.7\\times10^{-14}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "3.204\\times10^{-15}"
+    },
+    {
+      "source": "docs/SPARC_ROTATION_CURVE_ADAPTER.md",
+      "display": false,
+      "tex": "10^{-12}"
+    },
+    {
+      "source": "docs/JEANS_DSPH_ADAPTER.md",
+      "display": true,
+      "tex": "\n\\frac{d(\\nu\\sigma_r^2)}{dr}+\\frac{2\\beta}{r}\\nu\\sigma_r^2\n=-\\nu\\frac{G M_{\\rm base}(<r)}{r^2},\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_ADAPTER.md",
+      "display": true,
+      "tex": "\nM_{\\rm base}=M_{\\star,\\mathrm{Plummer}}+M_{\\mathrm{NFW}}.\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_ADAPTER.md",
+      "display": true,
+      "tex": "\nd_g=\\eta r_{1/2,g},\n\\qquad\n\\rho_{h,\\mathrm{aug}}=(1-f)\\rho_{\\mathrm{NFW}}+f(K_{d_g}*\\rho_{\\mathrm{NFW}}),\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_ADAPTER.md",
+      "display": true,
+      "tex": "\nM_{\\rm aug}(<r)=M_\\star(<r)+4\\pi\\int_0^r\\rho_{h,\\mathrm{aug}}(r')r'^2dr'.\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_FORMAL_SOURCE_CORRECTIVE.md",
+      "display": true,
+      "tex": "\n\\frac{d(\\nu\\sigma_r^2)}{dr}+\\frac{2\\beta}{r}\\nu\\sigma_r^2\n=-\\nu\\frac{G M_{\\rm base}(<r)}{r^2},\n\\qquad M_{\\rm base}=M_\\star+M_{\\rm NFW}.\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_FORMAL_SOURCE_CORRECTIVE.md",
+      "display": true,
+      "tex": "\n\\rho_\\perp(r)=f\\left[(K_d*\\rho_{\\rm NFW})(r)-\\rho_{\\rm NFW}(r)\\right],\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_FORMAL_SOURCE_CORRECTIVE.md",
+      "display": true,
+      "tex": "\nM_\\perp(<r)=4\\pi\\int_0^r\\rho_\\perp(r')r'^2dr'.\n"
+    },
+    {
+      "source": "docs/JEANS_DSPH_FORMAL_SOURCE_CORRECTIVE.md",
+      "display": true,
+      "tex": "\n\\frac{d(\\nu\\sigma_r^2)}{dr}+\\frac{2\\beta}{r}\\nu\\sigma_r^2\n=-\\nu\\frac{G\\left[M_{\\rm base}(<r)+M_\\perp(<r)\\right]}{r^2}.\n"
+    },
+    {
+      "source": "docs/XCOP_HYDROSTATIC_DIRECT_FORMAL.md",
+      "display": true,
+      "tex": "\n\\frac{dP_e}{dr}\n=\n-\\mu m_p n_e(r)\\frac{G M_{\\mathrm{NFW,total}}(<r)}{r^2}.\n"
+    },
+    {
+      "source": "docs/XCOP_HYDROSTATIC_DIRECT_FORMAL.md",
+      "display": true,
+      "tex": "\n\\rho_{\\rm dm}(r)\n=\n\\rho_{\\mathrm{NFW,total}}(r)\n-\\rho_{\\rm gas}(r)\n-\\rho_\\star(r).\n"
+    },
+    {
+      "source": "docs/XCOP_HYDROSTATIC_DIRECT_FORMAL.md",
+      "display": true,
+      "tex": "\n\\rho_{\\rm dm,aug}(r)\n=\n(1-f)\\rho_{\\rm dm}(r)\n+f(K_d*\\rho_{\\rm dm})(r).\n"
+    },
+    {
+      "source": "docs/XCOP_HYDROSTATIC_DIRECT_FORMAL.md",
+      "display": true,
+      "tex": "\n\\Delta M_\\perp(<r)\n=\nf\\left[\nM[K_d*\\rho_{\\rm dm}](<r)-M[\\rho_{\\rm dm}](<r)\n\\right],\n"
+    },
+    {
+      "source": "docs/XCOP_HYDROSTATIC_DIRECT_FORMAL.md",
+      "display": true,
+      "tex": "\n\\frac{dP_e}{dr}\n=\n-\\mu m_p n_e(r)\n\\frac{G\\left[M_{\\mathrm{NFW,total}}(<r)+\\Delta M_\\perp(<r)\\right]}{r^2}.\n"
+    }
+  ]
+}

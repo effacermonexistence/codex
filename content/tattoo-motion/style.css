@@ -1,0 +1,52 @@
+/* Continuous Render only: source-specific living fields, no frames or thumbnail grid. */
+.cr-page.cr-motion-page{padding:0!important;overflow:clip}
+.cr-motion-page .cr-catalogue{display:block;max-width:none;gap:0}
+.cr-motion-page .cr-motion-scene{position:relative;isolation:isolate;overflow:hidden;width:100%;min-height:100svh;display:flex;align-items:center;margin:0;background:#080506}
+.cr-motion-media,.cr-motion-wash{position:absolute;inset:0;z-index:-2;pointer-events:none}
+.cr-motion-media picture,.cr-motion-media img,.cr-motion-media video{display:block;position:absolute;inset:0;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:cover!important}
+.cr-motion-media video{opacity:0;transition:opacity .65s ease}
+.cr-motion-media video.is-ready{opacity:1}
+.cr-motion-wash{z-index:-1;background:linear-gradient(90deg,rgba(0,0,0,.9),rgba(0,0,0,.71) 30%,rgba(0,0,0,.32) 60%,rgba(0,0,0,.08))}
+.cr-motion-content{width:min(1280px,100%);padding:clamp(120px,12vh,176px) clamp(24px,7vw,112px);margin:auto}
+.cr-motion-content .cr-metadata{max-width:39rem;width:min(100%,52vw);margin:0!important;font-size:16px;line-height:1.65}
+.cr-motion-content .cr-metadata p{margin-bottom:22px}
+.cr-motion-content .cr-metadata h2{font-size:24px;margin:0 0 10px}
+.cr-motion-content .cr-subtitle{font-family:'Gilda Display',Georgia,serif;font-size:clamp(34px,4.5vw,66px);line-height:1.08;margin-bottom:38px!important}
+.cr-motion-content .cr-description{margin-top:32px!important}
+.cr-motion-page .cr-intro{min-height:100svh;max-width:none;margin:0;text-align:center;justify-content:center}
+.cr-motion-intro .cr-motion-content{padding:155px 24px 110px}
+.cr-motion-intro .cr-motion-wash{background:linear-gradient(180deg,rgba(0,0,0,.28),rgba(0,0,0,.42) 55%,rgba(0,0,0,.68))}
+.cr-motion-intro h1{font-size:clamp(42px,8vw,116px);line-height:1.02;max-width:1100px;margin:32px auto}
+.cr-motion-page .cr-breadcrumb{padding:128px 24px 32px;margin:0 auto}
+.cr-motion-page .cr-work{max-width:none}
+.cr-motion-page .cr-work .cr-motion-detail{min-height:calc(100svh - 96px);margin:0}
+.cr-motion-page .cr-motion-detail .cr-motion-wash{background:linear-gradient(180deg,rgba(0,0,0,.03),rgba(0,0,0,.08))}
+.cr-motion-page .cr-work>.cr-metadata{width:100%;max-width:48rem;padding:70px 24px 10px;margin:0 auto}
+.cr-motion-page .cr-bottom{padding-inline:24px}
+.cr-motion-page .cr-footer{padding:100px 24px 80px}
+.cr-motion-toggle{position:fixed;right:22px;bottom:22px;z-index:1000;display:grid;place-items:center;width:44px;height:44px;padding:0;color:white;background:rgba(0,0,0,.56);border:1px solid rgba(255,255,255,.42);border-radius:50%;cursor:pointer;font:16px/1 Arial,sans-serif;backdrop-filter:blur(8px)}
+.cr-motion-toggle:focus-visible{outline:2px solid white;outline-offset:4px}
+@media(max-width:767px){.cr-motion-content{padding:136px 24px 108px}.cr-motion-content .cr-metadata{width:100%;max-width:36rem}.cr-motion-wash{background:linear-gradient(180deg,rgba(0,0,0,.48),rgba(0,0,0,.64) 45%,rgba(0,0,0,.88))}.cr-motion-content .cr-subtitle{font-size:42px}.cr-motion-intro h1{font-size:clamp(42px,11vw,76px)}.cr-motion-page .cr-work .cr-motion-detail{min-height:90svh}.cr-motion-toggle{right:14px;bottom:14px}}
+
+/* One shared visual stream: paired moving fields crossfade at every join. */
+.cr-motion-seam-page{--cr-seam-half:198px}
+.cr-motion-seam-page .cr-motion-media{top:calc(-1 * var(--cr-seam-half));bottom:calc(-1 * var(--cr-seam-half))}
+.cr-motion-seam-page .cr-motion-media video{transition:none}
+.cr-motion-seam-page .cr-motion-wash{background:linear-gradient(90deg,rgba(0,0,0,.84),rgba(0,0,0,.56) 55%,rgba(0,0,0,.2))}
+.cr-motion-seam{position:absolute;left:0;width:100%;height:var(--cr-seam-half);z-index:-2;opacity:0;pointer-events:none;display:block}
+.cr-motion-seam-top{top:0}.cr-motion-seam-bottom{bottom:0}
+@media(max-width:767px){.cr-motion-seam-page .cr-motion-wash{background:rgba(0,0,0,.64)}}
+
+/* Same desktop editorial hierarchy, scaled for a phone rather than enlarging
+   each scene until the portrait movie is cropped behind a wall of text.
+   Desktop source geometry and the continuous moving seam system are untouched. */
+@media (max-width: 767px) {
+  .cr-motion-page .cr-catalogue-work .cr-motion-content { padding: 100px 24px 72px; }
+  .cr-motion-page .cr-catalogue-work .cr-metadata { width: 100%; max-width: 34ch; font-size: 14px; line-height: 1.6; }
+  .cr-motion-page .cr-catalogue-work .cr-metadata p { margin-bottom: 14px; }
+  .cr-motion-page .cr-catalogue-work .cr-metadata h2 { font-size: 21px; margin-bottom: 8px; }
+  .cr-motion-page .cr-catalogue-work .cr-subtitle { font-size: clamp(27px,7.2vw,34px); line-height: 1.12; margin-bottom: 24px !important; }
+  .cr-motion-page .cr-catalogue-work .cr-description { margin-top: 24px !important; }
+  .cr-motion-page .cr-catalogue-work .cr-motion-wash { background: linear-gradient(90deg,rgba(0,0,0,.84),rgba(0,0,0,.68) 48%,rgba(0,0,0,.22)); }
+  .cr-motion-page .cr-work > .cr-metadata { padding: 48px 24px 8px; font-size: 15px; line-height: 1.65; }
+}

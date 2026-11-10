@@ -1,0 +1,29 @@
+{
+  "id": "failed-rendering",
+  "number": 15,
+  "year": 2026,
+  "title": "Failed Rendering / Collapse of the Frame",
+  "images": [
+    {
+      "file": "/s/failed-rendering-main.png",
+      "bytes": 2311090,
+      "sha256": "cbed3fbf7a4143ee67ea3669587e78d3ba1349dd2841d9dc1e18830203027e36",
+      "width": 1280,
+      "height": 888
+    },
+    {
+      "file": "/s/failed-rendering-detail-crossing.jpg",
+      "bytes": 607648,
+      "sha256": "799aaed38bf13b60f082a16f43ae88ff34c54ec581c6a2a2812de7859a612a6c",
+      "width": 1600,
+      "height": 1200
+    },
+    {
+      "file": "/s/failed-rendering-detail-origin.jpg",
+      "bytes": 594472,
+      "sha256": "a6db391ca188fe8363f25e7e7b7009b108f06fb358de83644f4cc6301837624e",
+      "width": 1600,
+      "height": 1200
+    }
+  ]
+}

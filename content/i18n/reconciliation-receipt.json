@@ -1,0 +1,21 @@
+{
+  "at": "2026-11-03T08:59:22.730Z",
+  "pass": true,
+  "languageChoices": 31,
+  "nonEnglishLocales": 30,
+  "mainSegments": 12014,
+  "mainTranslations": 360420,
+  "formUiSegments": 327,
+  "formUiTranslations": 9810,
+  "currentFormSourcesVerified": true,
+  "oldDisplayLabelsPreserved": true,
+  "newDisplayLabel": "Email",
+  "reviewedPinsPreserved": 20,
+  "sourceCatalogHash": "b333c12ae049758c9d70c2b8a3867354cd59717816579efb8bdda75efc3acfaf",
+  "currentEnglishCatalogHash": "b333c12ae049758c9d70c2b8a3867354cd59717816579efb8bdda75efc3acfaf",
+  "source": "Explicit reconciliation of saved 20261018 translations with exact live 20261102 painted source",
+  "parentSourceCatalogHash": "cc550e94a40226ad42649c4ca08744a69aca4960354d93c6d8e1d71caa6bac93",
+  "mappingSha256": "0807490f63f6661127d859d39fedef3f30754493225e11f3f4a2fd1628b0f998",
+  "reflowRulesSha256": "4c131437757932039ab2c23ada11afa6e10a018aed7b609e46e13e9c3216bf80",
+  "linguisticReview": "Structural full-coverage verification and representative language review; not independent native review of every line"
+}

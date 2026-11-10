@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "variant": "no11-soft",
+  "adoption": "Current user requested approved soft-edge recursive video as homepage background",
+  "videoUrl": "https://raw.githubusercontent.com/effacermonexistence/codex/0477cb93c14979e2316113d1c47a0308653a757b/media/hero-recursive-soft-no11.mp4",
+  "videoSha256": "6117ab52fecc5feafd4c5fd49f3414863b2655f49a2be8f54f34bb915a856e8e",
+  "videoBytes": 36352537,
+  "videoWidth": 1920,
+  "videoHeight": 1080,
+  "videoDuration": 18,
+  "videoFps": 30,
+  "assetCommit": "0477cb93c14979e2316113d1c47a0308653a757b",
+  "posterFile": "recursive-soft-poster.jpg",
+  "posterSha256": "2d5d4f7875149422b32013c4997220c2c6064c6956e88ee399058308e70e0910",
+  "posterWidth": 1280,
+  "posterHeight": 720,
+  "focalPoint": {
+    "x": 0.5050847685734351,
+    "y": 0.5009790589178419,
+    "sourceWidth": 1920,
+    "sourceHeight": 1080,
+    "target": "hero-frame-center",
+    "method": "accepted projective recursion fixed-point mean across540frames"
+  }
+}

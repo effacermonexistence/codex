@@ -1,0 +1,37 @@
+/* Keep the whole authored tattoo movie visible. The already blurred poster
+   fills the surrounding field while adjacent fields keep their moving joins. */
+html body main [data-cr-legible] .cr-motion-media > picture:not(.cr-visible-ambient) img,
+html body main [data-cr-legible] .cr-motion-media > video {
+  object-fit: contain !important;
+  object-position: 50% 50% !important;
+}
+html body main [data-cr-legible] .cr-motion-media > picture.cr-visible-ambient { z-index: -1; }
+html body main [data-cr-legible] .cr-visible-ambient img { object-fit: cover !important; }
+html body main .cr-motion-seam-page [data-cr-legible] .cr-motion-media > picture:not(.cr-visible-ambient),
+html body main .cr-motion-seam-page [data-cr-legible] .cr-motion-media > video {
+  top: var(--cr-seam-half) !important;
+  bottom: auto !important;
+  height: calc(100% - 2 * var(--cr-seam-half)) !important;
+}
+/* The artwork is brighter; a feathered local veil protects only the copy. */
+html body main .cr-catalogue-work[data-cr-legible] > .cr-motion-wash {
+  background: linear-gradient(90deg,rgba(0,0,0,.42),rgba(0,0,0,.16) 48%,rgba(0,0,0,.03) 82%);
+}
+html body main .cr-catalogue-work[data-cr-legible] .cr-metadata {
+  position: relative;
+  isolation: isolate;
+}
+html body main .cr-catalogue-work[data-cr-legible] .cr-metadata::before {
+  content: "";
+  position: absolute;
+  inset: -10px -16px;
+  z-index: -1;
+  background: radial-gradient(ellipse at center,rgba(0,0,0,.52),rgba(0,0,0,.28) 58%,rgba(0,0,0,.08) 82%,transparent);
+  filter: blur(8px);
+  pointer-events: none;
+}
+@media (max-width:767px) {
+  html body main .cr-catalogue-work[data-cr-legible] > .cr-motion-wash {
+    background: linear-gradient(180deg,rgba(0,0,0,.16),rgba(0,0,0,.2) 60%,rgba(0,0,0,.3));
+  }
+}

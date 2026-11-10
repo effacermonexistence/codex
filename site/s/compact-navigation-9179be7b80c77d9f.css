@@ -1,0 +1,159 @@
+/* The same compact, left-hand menu on desktop and mobile. */
+body[data-compact-navigation] #header :is(.header-nav, .header-burger, .header-menu, .header-title) {
+  display: none !important;
+}
+body[data-compact-navigation] #header .header-display-desktop { position: relative; min-height: 39px; }
+body[data-compact-navigation] #header .header-display-desktop .header-title-nav-wrapper { position: static; }
+body[data-compact-navigation] #header .header-display-desktop .header-title {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max-content !important;
+  margin: 0 !important;
+  /* Keep positioning separate from Squarespace entrance transforms. */
+  transform: translate(-50%, -50%) !important;
+  animation: none !important;
+}
+#compact-navigation {
+  position: fixed;
+  top: max(18px, env(safe-area-inset-top));
+  left: max(22px, env(safe-area-inset-left));
+  z-index: 10000;
+  color: rgba(255,246,250,.9);
+  font-family: "Gilda Display", "PT Serif", Georgia, serif;
+}
+#compact-navigation .compact-menu-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 50px;
+  height: 50px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  box-shadow: none;
+}
+#compact-navigation .compact-menu-icon {
+  position: relative;
+  display: block;
+  width: 35px;
+  height: 35px;
+}
+#compact-navigation .compact-menu-line {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  width: 35px;
+  height: 1px;
+  margin: auto;
+  background: currentColor;
+  transition: transform 250ms cubic-bezier(.2,.6,.3,1), width 250ms cubic-bezier(.2,.6,.3,1);
+}
+#compact-navigation .compact-menu-line:first-child { transform: translateY(-5.5px); }
+#compact-navigation .compact-menu-line:last-child { transform: translateY(5.5px); }
+#compact-navigation.is-open .compact-menu-line:first-child { width: 28px; transform: translateX(3.5px) rotate(-135deg); }
+#compact-navigation.is-open .compact-menu-line:last-child { width: 28px; transform: translateX(3.5px) rotate(135deg); }
+#compact-primary-nav {
+  position: absolute;
+  top: 50%;
+  left: 54px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: max-content;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(-18px);
+  transition: opacity 240ms ease, transform 360ms cubic-bezier(.2,.6,.3,1), visibility 0s 360ms;
+}
+#compact-primary-nav::before {
+  content: "";
+  position: absolute;
+  inset: -5px -8px;
+  z-index: -1;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,.56), rgba(0,0,0,.26) 44%, rgba(0,0,0,.06) 72%, transparent 100%);
+  filter: blur(6px);
+  pointer-events: none;
+}
+#compact-navigation.is-open #compact-primary-nav {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(0);
+  transition-delay: 0s;
+}
+#compact-navigation .compact-menu-item {
+  display: block;
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: opacity 300ms ease, transform 440ms cubic-bezier(.2,.6,.3,1);
+}
+#compact-navigation.is-open .compact-menu-item {
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: calc(40ms + var(--menu-index) * 50ms);
+}
+#compact-primary-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  color: rgba(255,246,250,.84);
+  font-family: inherit;
+  font-size: .98rem;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-decoration: none;
+  border: 0;
+  background: transparent;
+}
+#compact-primary-nav a[aria-current="page"] { font-weight: 600; }
+/* Keep the same right-opening row on phones and intermediate widths. */
+@media (max-width: 1023px) {
+  #compact-primary-nav {
+    flex-direction: row;
+    gap: clamp(6px, 1.6vw, 12px);
+    padding: 0 6px;
+    max-width: calc(100vw - max(22px, env(safe-area-inset-left)) - 54px - max(12px, env(safe-area-inset-right)));
+  }
+  #compact-primary-nav::before {
+    inset: -8px -10px;
+    background: radial-gradient(ellipse at left, rgba(0,0,0,.82), rgba(0,0,0,.5) 60%, rgba(0,0,0,.14) 80%, transparent 100%);
+  }
+  #compact-primary-nav a {
+    min-height: 44px;
+    font-size: clamp(12px, 3.6vw, .98rem);
+  }
+}
+@media (max-width: 767px) {
+  #compact-navigation { top: max(14px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); }
+  body[data-compact-navigation] #header .header-display-mobile .header-title-nav-wrapper {
+    width: 100%;
+    flex: 1;
+    justify-content: center !important;
+  }
+  body[data-compact-navigation] #header .header-display-mobile .header-title {
+    flex: 0 1 auto;
+    width: auto !important;
+    max-width: calc(100vw - 144px);
+    text-align: center !important;
+  }
+  body[data-compact-navigation] #header .header-display-mobile .header-title-logo img { max-width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #compact-navigation *, #compact-primary-nav { transition: none !important; }
+}
+
+/* Squarespace may keep the mobile header active above 767px. */
+body[data-compact-navigation] #header .header-display-mobile .header-title-logo { text-align: center !important; }

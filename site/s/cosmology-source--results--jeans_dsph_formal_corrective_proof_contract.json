@@ -1,0 +1,98 @@
+{
+  "adapter_classification": "TASK_LOCAL_ADAPTER_OVER_R2_PRIMITIVES",
+  "adoption_gate": "safe shared development optimum only; direct nonzero policy reported separately; no evaluation-row adoption or fallback",
+  "augmented_equation": "d(nu sigma_r^2)/dr + 2 beta nu sigma_r^2/r = -nu G*(M_base(<r)+M_perp(<r))/r^2",
+  "baseline_equation": "d(nu sigma_r^2)/dr + 2 beta nu sigma_r^2/r = -nu G M_base(<r)/r^2; M_base=M_star,Plummer+M_NFW",
+  "baseline_nuisance": {
+    "candidate_refit": false,
+    "fixed_stellar_mass": "published luminosity times M/L=1",
+    "per_galaxy": [
+      "log10 rho_s",
+      "log10 r_s",
+      "constant beta"
+    ],
+    "reason": "Hold the fitted baseline nuisance state fixed so delta isolates direct source insertion."
+  },
+  "calibration": {
+    "d_definition": "d_g=eta*rhalf_g",
+    "direct_nonzero_policy": "best development policy with f>0, frozen before corrective evaluation",
+    "eta_grid": [
+      0.03125,
+      0.0625,
+      0.125,
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0,
+      8.0
+    ],
+    "f_grid": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.75,
+      1.0
+    ],
+    "objective": "macro mean chi-square per bin across four development galaxies",
+    "safe_floor": "f=0 allowed at development level",
+    "shared_parameters": [
+      "f",
+      "eta"
+    ]
+  },
+  "claim_boundary": "Valid for repairing executed-object identity and reporting the deterministic delta. Not fresh/unseen proof, physical-law proof, unique-kernel proof, or universal uplift.",
+  "contract_status": "FROZEN_BEFORE_DIRECT_FORMAL_CANDIDATE_GENERATION",
+  "controls": [
+    "half-mass-matched 3D Gaussian",
+    "half-mass-matched 3D top-hat"
+  ],
+  "corrective_evaluation": {
+    "direct_formal_candidate_scores_visible_before_policy_freeze": false,
+    "galaxies": [
+      "Draco",
+      "Ursa Minor"
+    ],
+    "prior_exposure": "Galaxy identities previously exposed during a superseded internal prototype; therefore not fresh/unseen for public-proof labeling.",
+    "source": "Spencer et al. 2018 CDS/VizieR J/AJ/156/257 with McConnachie 2012 structural metadata"
+  },
+  "development": {
+    "galaxies": [
+      "Carina",
+      "Fornax",
+      "Sculptor",
+      "Sextans"
+    ],
+    "role": "previously inspected development only"
+  },
+  "equivalent_halo_form": "rho_h,aug=(1-f)*rho_NFW+f*(K_d*rho_NFW)",
+  "failure_repaired": "FORMALISM_OBJECT_DRIFT: the public run uses the requested direct halo-density source insertion.",
+  "forbidden_methods": [
+    "nuisance-tangent projection",
+    "delta_sigma_perp response adapter",
+    "heldout row fallback",
+    "heldout subset exclusion"
+  ],
+  "goal": "Correct the executed object: compare the canonical spherical Jeans equation with the same equation augmented by a halo-only orthogonal density source.",
+  "kernel": "normalized 3D Plummer K_d(r)=3/(4*pi*d^3)*(1+r^2/d^2)^(-5/2)",
+  "numerical_gates": {
+    "baseline_optimizer_ftol": 1e-12,
+    "f0_max_abs_prediction_kms": 1e-09,
+    "post_renormalization_abs_mass_leak_max": 1e-12,
+    "radial_grid_points": 900,
+    "raw_abs_mass_leak_max": 0.02
+  },
+  "operator_object": "three-dimensional NFW halo density only; stellar mass and tracer are not convolved",
+  "orthogonal_density": "rho_perp(r)=f_perp*((K_d*rho_NFW)(r)-rho_NFW(r))",
+  "orthogonal_mass": "M_perp(<r)=4*pi*integral_0^r rho_perp(r_prime)*r_prime^2 dr_prime",
+  "primary_metric": "corrective-evaluation direct-nonzero Plummer aggregate raw delta chi-square",
+  "proof_mode": "POST_EXPOSURE_CORRECTIVE_FORMAL_SOURCE_REPRODUCTION",
+  "public_claim_allowed": false,
+  "response_projection_used": false,
+  "schema_version": "jeans-formal-source-corrective-proof-contract-v1"
+}

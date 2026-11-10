@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "variant": "circle-recursive-soft-v1",
+  "adoption": "Preserve recursion and liquid motion; move fixed point outside each circular viewport so no spiral center is visible; first main hero and woman unchanged",
+  "assetCommit": "ec3d330d83d98ceb4be32e6c54fc2b5c917e7aea",
+  "roles": {
+    "large": {
+      "videoUrl": "/s/motion-large-fff1b40e17e511a1.mp4",
+      "videoSha256": "fff1b40e17e511a1e8f46ff4e2b6a4dc1a7d433f37605ef6520ae76124a5c834",
+      "videoBytes": 27233434,
+      "width": 1080,
+      "height": 1080,
+      "duration": 18,
+      "fps": 30,
+      "sourceSha256": "29c4b0db7de26f4520c7b6f55f7615a94ec11c1bee3ac119ea5d6c4fd50119ed"
+    },
+    "small": {
+      "videoUrl": "/s/motion-small-05218dcc5d202616.mp4",
+      "videoSha256": "05218dcc5d20261688001f6378ed118bab0b36fc0605b09316258d8684d12d39",
+      "videoBytes": 27163963,
+      "width": 1080,
+      "height": 1080,
+      "duration": 18,
+      "fps": 30,
+      "sourceSha256": "ffe18521d06ed2a05cf347289dfac8ce922fe7f6fdd4c8e3a9fb41bcc68472df"
+    }
+  },
+  "renderMethod": "KEEP_RECURSION: 24-depth nonrotating affine recursive composition, fixedpoint(-.75,.5) outside viewport/circle at every frame, scale .88+.008sin, accepted nonradial .019 liquid field and .105 quintic feather; original ownsource bytes/crop/phase preserved"
+}

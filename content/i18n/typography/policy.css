@@ -1,0 +1,25 @@
+/* English retains its exact approved faces and size tokens. Other languages
+   keep the same display/body/control roles with real, self-hosted serif glyphs.
+   Typography changes do not translate text or alter math/code/brand artwork. */
+html[data-site-language] { --site-serif-fallback: "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language="ko"], .site-language-list [lang="ko"] { --site-serif-fallback: "Effacer Serif KR", "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language="ja"], .site-language-list [lang="ja"] { --site-serif-fallback: "Effacer Serif JP", "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language="zh-CN"], .site-language-list [lang="zh-Hans"] { --site-serif-fallback: "Effacer Serif SC", "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language="zh-TW"], .site-language-list [lang="zh-Hant"] { --site-serif-fallback: "Effacer Serif TC", "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language="ar"], .site-language-list [lang="ar"] { --site-serif-fallback: "Effacer Naskh", "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language="th"], .site-language-list [lang="th"] { --site-serif-fallback: "Effacer Serif Thai", "Effacer Serif", "Effacer Serif SC", "Effacer Serif KR", "Effacer Serif JP", "Effacer Serif TC", "Effacer Naskh", "Effacer Serif Thai"; }
+html[data-site-language]:not([data-site-language="en"]) body { font-family: "PT Serif", var(--site-serif-fallback), Georgia, serif; }
+html[data-site-language]:not([data-site-language="en"]) :is(main,#site-shared-footer) :is(h1,h2,h3,h4,h5,h6):not(pre,code,math,.katex,.MathJax,mjx-container):not(:is(pre,code,math,.katex,.MathJax,mjx-container) *) {
+  font-family: "Gilda Display", var(--site-serif-fallback), Georgia, serif !important;
+}
+html[data-site-language]:not([data-site-language="en"]) :is(main,#site-shared-footer) :is(p,li,dt,dd,blockquote,figcaption,td,th):not(pre,code,math,.katex,.MathJax,mjx-container):not(:is(pre,code,math,.katex,.MathJax,mjx-container) *) {
+  font-family: "PT Serif", var(--site-serif-fallback), Georgia, serif !important;
+}
+html[data-site-language]:not([data-site-language="en"]) body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content :is(h1,h2,h3,h4,h5,h6,p,li,blockquote):not(pre,code,math,.katex,.MathJax,mjx-container):not(:is(pre,code,math,.katex,.MathJax,mjx-container) *) {
+  font-family: "Effacer CERN", "Gilda Display", var(--site-serif-fallback), Georgia, serif !important;
+}
+html[data-site-language]:not([data-site-language="en"]) :is(main,#site-shared-footer) :is(h1,h2,h3,h4,h5,h6,p,li,dt,dd,blockquote,figcaption,td,th) :is(a,span,strong,em,b,i,small):not(pre,code,math,.katex,.MathJax,mjx-container):not(:is(pre,code,math,.katex,.MathJax,mjx-container) *) { font-family: inherit !important; }
+html[data-site-language]:not([data-site-language="en"]) :is(.header-nav,.header-menu-nav) :is(a,span,div) { font-family: "Gilda Display", var(--site-serif-fallback), Georgia, serif !important; }
+html[data-site-language]:not([data-site-language="en"]) :is(.sqs-block-button-element,.cosmology a.enter,.sqs-system-button,input,select,textarea,label,.site-language-trigger,.site-language-search) { font-family: "PT Serif", var(--site-serif-fallback), Georgia, serif !important; }
+.site-language-list a[lang] { font-family: "Gilda Display", var(--site-serif-fallback,"Effacer Serif"), Georgia, serif !important; }
+.site-language-list a[lang] > span { font-family: inherit !important; }

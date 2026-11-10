@@ -1,0 +1,28 @@
+/* A feathered tint, like the compact menu's veil, behind editorial text.
+   No backdrop-filter: the moving painting and the type remain sharp. */
+html body main [data-text-veil-tone] {
+  isolation: isolate;
+}
+html body main [data-text-veil-position="relative"] { position: relative; }
+html body main [data-text-veil-tone="dark"] { --text-veil-rgb: 0,0,0; }
+html body main [data-text-veil-tone="light"] { --text-veil-rgb: 255,255,255; }
+html body :is(#page, main) [data-text-veil-tone]::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  inset: -4px -8px;
+  z-index: -1;
+  border-radius: 24px;
+  background: rgba(var(--text-veil-rgb),.5);
+  box-shadow: 0 0 18px 12px rgba(var(--text-veil-rgb),.26);
+  filter: blur(6px);
+  opacity: 1;
+  transform: none;
+  pointer-events: none;
+}
+@media (max-width:767px) {
+  html body :is(#page, main) [data-text-veil-tone]::before {
+    inset: -3px -6px;
+    box-shadow: 0 0 14px 9px rgba(var(--text-veil-rgb),.26);
+  }
+}

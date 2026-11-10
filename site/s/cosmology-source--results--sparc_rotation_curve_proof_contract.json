@@ -1,0 +1,147 @@
+{
+  "augmented_equation": "d_g=eta R_disk,g; rho_aug=(1-f)rho_NFW+f(K_d*rho_NFW); V_aug^2=V_bar^2+G M_aug(<R)/R",
+  "baseline_equation": "V_base^2(R)=V_gas|V_gas|+0.5 V_disk|V_disk|+0.7 V_bulge|V_bulge|+G M_NFW(<R;V200,c)/R",
+  "baseline_stability": "optimizer success and no V200/concentration bound hit",
+  "contract_status": "REFROZEN_AFTER_DEV_NUMERICAL_PREFLIGHT_FAILURE_BEFORE_HELDOUT",
+  "controls": "half-mass-matched 3D Gaussian and top-hat at frozen forced-nonzero f/eta",
+  "development_boundary_expansion": {
+    "equation_changed": false,
+    "expanded_eta_grid": [
+      0.03125,
+      0.0625,
+      0.125,
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0,
+      8.0
+    ],
+    "expanded_f_grid": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.75,
+      1.0
+    ],
+    "heldout_accessed": false,
+    "kernel_changed": false,
+    "objective_changed": false,
+    "old_dev_artifact_sha256": "0655ec4961b144ab6ded4d3eada034006cf5cf37e9d693a7c7a15aa469eaa2a6",
+    "old_forced_nonzero_optimum": {
+      "dev_improved_count": 9,
+      "dev_macro_chi2_per_point": 0.9561669547575327,
+      "dev_macro_delta_chi2_per_point": -0.04490769577379461,
+      "dev_worsened_count": 2,
+      "eta": 0.125,
+      "f": 0.5,
+      "valid": true
+    },
+    "old_safe_optimum": {
+      "dev_improved_count": 9,
+      "dev_macro_chi2_per_point": 0.9561669547575327,
+      "dev_macro_delta_chi2_per_point": -0.04490769577379461,
+      "dev_worsened_count": 2,
+      "eta": 0.125,
+      "f": 0.5,
+      "valid": true
+    },
+    "physical_fraction_bound": [
+      0.0,
+      1.0
+    ],
+    "reason": "safe and forced optima both hit f upper boundary 0.5 and eta lower boundary 0.125",
+    "sample_changed": false,
+    "status": "DEV_BOUNDARY_EXPANSION_AUTHORIZED_BEFORE_HELDOUT",
+    "timestamp_utc": "2026-07-25T11:32:57.797421+00:00"
+  },
+  "development_exception": "Dev scores are intentionally visible for shared f/eta selection; heldout scores are inaccessible until policy freeze.",
+  "fallback_rule": "f=0 is allowed only in the safe shared policy; heldout rows are never post-hoc replaced",
+  "finite_grid_policy": "Analytically normalized 3D kernels are deterministically renormalized to the unchanged halo mass on the finite grid before augmentation. Raw leakage remains reported and is capped at 2%.",
+  "frozen_at_utc": "2026-07-25T11:20:01.584083+00:00",
+  "goal": "Test whether one galaxy-scaled 3D halo-density orthogonal adapter improves heldout SPARC circular-velocity fits after dev-only shared-parameter optimization.",
+  "gold_visibility_before_final_lock": false,
+  "kernel": "normalized 3D Plummer K_d(r)=3/(4*pi*d^3)*(1+r^2/d^2)^(-5/2)",
+  "numerical_gates": {
+    "f0_max_abs": 1e-12,
+    "post_renormalization_abs_mass_leak_max": 1e-12,
+    "radial_grid_points": 3200,
+    "raw_abs_mass_leak_max": 0.02
+  },
+  "operator": "O_perp[rho_NFW]=f(K_d*rho_NFW-rho_NFW)",
+  "primary_metric": "macro mean chi2-per-point across baseline-stable galaxies",
+  "proof_mode": "PUBLIC_DATA_DEV_OPTIMIZATION_PLUS_HELDOUT_SHARED_ADAPTER_DIAGNOSTIC",
+  "public_claim_allowed": false,
+  "refrozen_at_utc": "2026-07-25T11:23:56.449811+00:00",
+  "revision_boundary": "Revision followed a dev-only numerical failure. Heldout galaxy scores remained inaccessible. Equation, kernel, f/eta grids, sample split, and objective were unchanged.",
+  "sample_rule": {
+    "dev_count": 14,
+    "eligibility": {
+      "bulgeless": true,
+      "hubble_type_min": 7,
+      "inclination_deg": [
+        30,
+        85
+      ],
+      "min_rotation_rows": 12,
+      "quality": 1,
+      "rdisk_positive": true
+    },
+    "eta": [
+      0.03125,
+      0.0625,
+      0.125,
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0,
+      8.0
+    ],
+    "f": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.75,
+      1.0
+    ],
+    "heldout_count": 7,
+    "split": "eligible galaxies sorted by SHA256(galaxy); first 14 dev, remaining 7 heldout"
+  },
+  "schema_version": "sparc-equation-adapter-proof-contract-v1",
+  "scorer_visibility_before_final_lock": false,
+  "secondary_metrics": [
+    "total chi2",
+    "raw delta chi2",
+    "residual reduction percent",
+    "improved/worsened/neutral counts"
+  ],
+  "serialization_revisions": [
+    {
+      "heldout_accessed": false,
+      "physics_changed": false,
+      "repair": "NumPy bool -> native bool for boundary-hit receipt fields"
+    }
+  ],
+  "source_of_truth": [
+    {
+      "path": "source_data/Rotmod_LTG.zip",
+      "sha256": "0a80cc90714828cc28b7dd57923576714d209f2490328c087c4a4ad607faf588"
+    },
+    {
+      "path": "source_data/SPARC_Lelli2016c.mrt",
+      "sha256": "5aa0501f6b0d881fa579030e315e7b5b6ef561a5bd3a07472f9929c7e5728243"
+    }
+  ],
+  "stop_condition": "Stop after this one SPARC equation lane and report; do not start Jeans or X-COP."
+}

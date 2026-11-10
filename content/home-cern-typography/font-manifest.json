@@ -1,0 +1,19 @@
+{
+  "family": "Gilda Display",
+  "localAlias": "Effacer CERN",
+  "source": "Existing homepage CERN title embedded font-face URLs",
+  "faces": [
+    {
+      "file": "home-gilda-14198b8e661aabac.woff2",
+      "url": "https://file.squarespace-cdn.com/content/v2/namespaces/fonts/libraries/sqsp/assets/8554099a-41ed-4b73-ae3b-21167b6e70d0/latin-ext.woff2",
+      "sha256": "14198b8e661aabacd4aea3f6600d80a607f0bb71108653fcb23b7f35d9e7e0d8",
+      "bytes": 8004
+    },
+    {
+      "file": "home-gilda-e59c36e671452036.woff2",
+      "url": "https://file.squarespace-cdn.com/content/v2/namespaces/fonts/libraries/sqsp/assets/342b6876-7294-422c-b3b1-bbe9af792a7f/latin.woff2",
+      "sha256": "e59c36e6714520365d90ae634af1c45178a69b9127f4fb7d5a0024ef0491fe0a",
+      "bytes": 12696
+    }
+  ]
+}

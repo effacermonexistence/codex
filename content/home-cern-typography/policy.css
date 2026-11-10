@@ -1,0 +1,51 @@
+/* Reference: the existing CERN heading on this homepage, not the CERN website.
+   One source family; size varies only by explicit editorial role.
+   No section/grid, alignment, image, curve, animation or logo geometry changes. */
+body[data-home-cern-type="1"] {
+  --home-cern-family: "Effacer CERN", "Gilda Display", Georgia, serif;
+  --home-cern-section-title: clamp(1.75rem, 2.551111vw, 2.296rem);
+  --home-cern-body: 1rem;
+  --heading-font-font-family: var(--home-cern-family);
+  --body-font-font-family: var(--home-cern-family);
+  --meta-font-font-family: var(--home-cern-family);
+  --button-font-font-family: var(--home-cern-family);
+  font-family: var(--home-cern-family);
+}
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content,
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content :is(h1,h2,h3,h4,h5,h6,p,a,span,strong,em,b,i,small),
+body[data-home-cern-type="1"] :is(.header-nav,.header-menu-nav,.header-title-text),
+body[data-home-cern-type="1"] :is(.header-nav,.header-menu-nav,.header-title-text) :is(a,span,div),
+body[data-home-cern-type="1"] :is(.sqs-block-button-element,.skip-link,.site-language-select,.site-language-select option) {
+  font-family: var(--home-cern-family) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  font-synthesis: none;
+}
+body[data-home-cern-type="1"] main .sqs-html-content :is(h1,h2,h3,h4,h5,h6) {
+  line-height: 1.12 !important;
+  letter-spacing: -.02em !important;
+}
+/* CERN/MoMA retain their existing display scale; all other section headings
+   share one scale regardless of inconsistent source h2/h3 markup. */
+body[data-home-cern-type="1"] main .sqs-html-content :is(h2,h3,h4,h5,h6) {
+  font-size: var(--home-cern-section-title) !important;
+}
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content p:not(.sqsrte-large) {
+  font-size: var(--home-cern-body) !important;
+  line-height: 1.5 !important;
+  letter-spacing: normal !important;
+}
+body[data-home-cern-type="1"] main .sqs-html-content p.sqsrte-large {
+  line-height: 1.5 !important;
+  letter-spacing: normal !important;
+}
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content :is(h1,h2,h3,h4,h5,h6,p) :is(a,span,strong,em,b,i,small) {
+  font-size: inherit !important;
+  line-height: inherit !important;
+  letter-spacing: inherit !important;
+}
+body[data-home-cern-type="1"] .sqs-block-button-element {
+  font-size: 1rem !important;
+  line-height: 1.2 !important;
+  letter-spacing: normal !important;
+}

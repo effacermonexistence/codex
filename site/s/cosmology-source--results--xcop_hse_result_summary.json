@@ -1,0 +1,129 @@
+{
+  "aggregate_specificity": {
+    "aggregate_plummer_ranking_arithmetically_true": true,
+    "audit_file": "results/aggregate_specificity_audit.json",
+    "dominant_unit": "A644",
+    "dominant_unit_fraction_of_aggregate_gaussian_advantage": 1.4457119667086402,
+    "fraction_grid_boundary_hit": true,
+    "frozen_fraction": 1.0,
+    "operator_boundary": "FULL_SMOOTHED_PROFILE_REPLACEMENT_ENDPOINT_NOT_LEGACY_F0_30_MIXTURE",
+    "plummer_beats_both_controls_count": 1,
+    "specificity_status": "AGGREGATE_RANKING_ARITHMETICALLY_TRUE_PER_UNIT_SPECIFICITY_NOT_ESTABLISHED",
+    "unit_count": 3
+  },
+  "equations": {
+    "augmented": "dP_e/dr = -mu*m_p*n_e*G*[M_NFW,total(<r) + f*(M[K_d*rho_dm]-M[rho_dm])]/r^2",
+    "baseline": "dP_e/dr = -mu*m_p*n_e*G*M_NFW,total(<r)/r^2",
+    "dark_halo_definition": "rho_dm = rho_NFW,total - rho_gas - rho_star",
+    "kernel": "normalized true 3D Plummer kernel",
+    "operator_object": "reconstructed dark-halo density only",
+    "orthogonal_operator": "rho_dm,aug = (1-f)*rho_dm + f*(K_d*rho_dm)",
+    "unchanged_components": [
+      "electron-density data",
+      "gas density",
+      "stellar density"
+    ]
+  },
+  "evidence_class": "PUBLIC_XCOP_PROFILE_DIRECT_EQUATION_DIAGNOSTIC_WITH_PROCEDURAL_UNTOUCHED_CLUSTER_HELDOUT",
+  "frozen_policy": {
+    "eta_d_over_r500": 0.01,
+    "f": 1.0,
+    "heldout_parameter_update": false,
+    "heldout_row_fallback": false,
+    "upper_fraction_grid_boundary_hit": true
+  },
+  "heldout_result": {
+    "augmented_chi2": 140.7377852116995,
+    "baseline_chi2": 145.09530814170438,
+    "cluster_count": 3,
+    "downlift_count": 0,
+    "improved_count": 3,
+    "pressure_point_count": 39,
+    "raw_delta_chi2": -4.357522930004862,
+    "residual_reduction_percent": 3.003214222302206,
+    "rows": [
+      {
+        "augmented_chi2": 42.699543092601175,
+        "baseline_chi2": 46.162435400353345,
+        "cluster": "A644",
+        "raw_delta_chi2": -3.4628923077521705,
+        "residual_reduction_percent": 7.501537294814528
+      },
+      {
+        "augmented_chi2": 58.05388947114034,
+        "baseline_chi2": 58.10924373537942,
+        "cluster": "A2029",
+        "raw_delta_chi2": -0.05535426423908518,
+        "residual_reduction_percent": 0.09525896515046729
+      },
+      {
+        "augmented_chi2": 39.984352647958,
+        "baseline_chi2": 40.823629005971604,
+        "cluster": "A1795",
+        "raw_delta_chi2": -0.8392763580136062,
+        "residual_reduction_percent": 2.0558592620240557
+      }
+    ]
+  },
+  "matched_controls": {
+    "gaussian_3d": {
+      "augmented_chi2": 142.04226827671417,
+      "downlift_count": 0,
+      "improved_count": 3,
+      "raw_delta_chi2": -3.0530398649901898,
+      "residual_reduction_percent": 2.104161742650228
+    },
+    "top_hat_3d": {
+      "augmented_chi2": 142.80679287403473,
+      "downlift_count": 0,
+      "improved_count": 3,
+      "raw_delta_chi2": -2.288515267669652,
+      "residual_reduction_percent": 1.5772496619677805
+    }
+  },
+  "schema_version": "xcop-hse-direct-formal-public-summary-v2",
+  "source": {
+    "archive_sha256": "0edf5038b419b70d070b73b22f4801e27f318b0854db61eec52142c27c140d94",
+    "dataset": "X-COP public profile release",
+    "download_url": "https://drive.switch.ch/index.php/s/j3WUOYXWgv9Jbnz/download",
+    "eligible_cluster_count": 7
+  },
+  "split": {
+    "development": [
+      "A2319",
+      "A85",
+      "ZW1215",
+      "A2142"
+    ],
+    "heldout": [
+      "A644",
+      "A2029",
+      "A1795"
+    ],
+    "overlap_count": 0,
+    "sample_ids_sha256": "8285acec7f246c2681deaaae007eb3f9f4e94cef33892d3fdd14e01171bd2538"
+  },
+  "status": "PASS",
+  "unsupported_claims": [
+    "new cosmological physics detected",
+    "orthogonal term required by the data",
+    "Plummer geometry uniquely validated",
+    "independent raw observational proof",
+    "universal no-downlift guarantee"
+  ],
+  "valid_claim": "On three untouched X-COP cluster profiles, the development-frozen direct halo-only orthogonal insertion moved hydrostatic pressure chi-square from 145.0953 to 140.7378 (delta -4.3575; 3.00% residual reduction), with negative delta in 3/3 clusters and no heldout downlift. This is a public-profile diagnostic.",
+  "verification": {
+    "adversarial_audit": "INTERNAL_SELF_AUDIT_PASS",
+    "aggregate_specificity_audit": "PASS_CONDITIONAL_DOWNGRADE",
+    "deterministic_byte_identical_replay": true,
+    "direct_formal_equation": "PASS",
+    "f0_exact_recovery": true,
+    "f0_max_abs_mass_difference_msun": 0.0,
+    "f0_max_abs_pressure_difference_kev_cm3": 0.0,
+    "independent_audit": "NOT_ESTABLISHED",
+    "max_abs_corrected_mass_leak_fraction": 5.679681480007674e-16,
+    "max_abs_raw_finite_window_mass_leak_fraction": 0.0045079298889715074,
+    "r2_post_gate": "PASS",
+    "r2_pre_gate": "PASS"
+  }
+}

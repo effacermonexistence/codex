@@ -1,0 +1,105 @@
+{
+  "base_chi_total": 0.1300487195223951,
+  "checks": {
+    "adoption_gate_present": false,
+    "coarse_points": 801,
+    "deterministic_no_rng_no_optimizer_no_fallback": true,
+    "f0_recovery_max_abs_density_error": 0.0,
+    "fine_points": 1601,
+    "gold_or_score_visible_to_adoption_gate": false,
+    "identity_branch_recovery_max_abs_density_error": 0.0,
+    "max_coarse_fine_abs_chi_total": 9.485978566536879e-08
+  },
+  "claim_boundary": "Simulation-parametric model-to-model diagnostic; not an observational likelihood or physical detection.",
+  "d_kpc": 16.0,
+  "decision_rule": {
+    "control_recovery_fraction_boundary": 0.8,
+    "fail": "either matched control matches or beats Plummer within tolerance",
+    "otherwise": "unresolved",
+    "pass": "Plummer beats both controls beyond tolerance and best control recovers <80% of Plummer improvement",
+    "score_tolerance_abs_chi_total": 1e-06
+  },
+  "direction_verdict": "INDEPENDENT_3D_DIRECTIONAL_TRANSFER_PASS",
+  "evidence_class": "INDEPENDENT_PUBLIC_SIMULATION_PARAMETRIC_3D_HALO_COMPONENT_DIAGNOSTIC_NOT_OBSERVATIONAL_LIKELIHOOD",
+  "f_perp": 0.3,
+  "interpretation": "The frozen redistribution operator reduced the CDM-to-SIDM parametric profile discrepancy for all three kernels. Matched controls equaled or slightly exceeded Plummer, so the directional effect is generic rather than Plummer-specific.",
+  "kernels": {
+    "gaussian_3d": {
+      "chi_total": 0.09175056597211466,
+      "coarse_fine_abs_chi_total": 9.485978566536879e-08,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.03829815355028045,
+      "relative_augmented_mass_leakage": -0.001988771606895247,
+      "residual_reduction_pct": 29.44908161412946
+    },
+    "plummer_3d": {
+      "chi_total": 0.09185859731446157,
+      "coarse_fine_abs_chi_total": 0.0,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.03819012220793354,
+      "relative_augmented_mass_leakage": -0.0018091715751133094,
+      "residual_reduction_pct": 29.36601171329256
+    },
+    "tophat_3d": {
+      "chi_total": 0.09176427849219687,
+      "coarse_fine_abs_chi_total": 4.7811062192648635e-09,
+      "deterministic_replay_max_abs_density_error": 0.0,
+      "downlift": false,
+      "raw_delta_chi_total": -0.038284441030198235,
+      "relative_augmented_mass_leakage": -0.001997024172614572,
+      "residual_reduction_pct": 29.438537473339323
+    }
+  },
+  "matching": {
+    "criterion": "analytic three-dimensional half-mass radius",
+    "gaussian_r_half_kpc": 20.87625642406571,
+    "gaussian_sigma_kpc": 13.572118703611515,
+    "plummer_r_half_kpc": 20.87625642406571,
+    "tophat_r_half_kpc": 20.87625642406571,
+    "tophat_radius_kpc": 26.30243491168346
+  },
+  "object_X": "rho_halo only: L-Cluster Halo000 primary-host CDM NFW density reconstructed from public cdmVmaxz0/cdmRmaxz0",
+  "operator": "rho_aug=(1-f_perp)rho_halo+f_perp(K*rho_halo)",
+  "record_id": "SIDM_CONCERTO_HALO000_3D",
+  "reference_object": "matched primary-host public parametric SIDM 3D density prediction using rhoss1/rss1/rc1 and beta=4",
+  "score_function": "frozen B2 weighted log-MSE: 0.35*rho_log_MSE + 0.65*cumulative_mass_log_MSE over 3-800 kpc",
+  "source": {
+    "dataset": "SIDM Concerto LCluster Halo000 GroupSIDM parametric public release",
+    "doi": "10.5281/zenodo.14933624",
+    "prior_repo_overlap_before_import": 0,
+    "source_table_sha256": "27a7ebf05e98dff1b9c6144777e957c2352f3c073a71fd25422e5eef8eb473ae",
+    "source_tar_sha256": "af539d799bc1a340072a0300afa5784209aa243c71ad332ba0412bf0a6de0dbb",
+    "target_ids": {
+      "cdmID": 1,
+      "vd100id": 1
+    },
+    "zenodo_record": "https://zenodo.org/records/14933624"
+  },
+  "source_row": {
+    "cdmID": 1.0,
+    "cdmRmaxz0": 951.5757142857143,
+    "cdmRvirz0": 1697.1528571428573,
+    "cdmVmaxz0": 908.23,
+    "mcdm": 281571428571428.56,
+    "mint": 281553134580161.3,
+    "msidm": 281857142857142.9,
+    "rc1": 22.00697319471136,
+    "rhoss1": 382204.116394933,
+    "rmax": 951.5792065466287,
+    "rmax1": 953.4020753483356,
+    "rss1": 434.7503202851451,
+    "rt1": 10000000000.0,
+    "tr0": 0.0005055789908159717,
+    "tr1": 0.0004045204623557504,
+    "trx": 0.006972423608205257,
+    "vd100Rmaxz0": 958.4057142857143,
+    "vd100Vmaxz0": 906.26,
+    "vd100id": 1.0,
+    "vmax": 908.3116186364315,
+    "vmax1": 908.7261952549278
+  },
+  "specificity_verdict": "INDEPENDENT_3D_PLUMMER_SPECIFICITY_FAIL",
+  "upstream_artifact_sha256": "92362ba589cf96125404bf7fb4476fbb270db3abe2515265587a8e9646c91dd1"
+}

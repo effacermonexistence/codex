@@ -1,0 +1,133 @@
+/* The local CERN section is the composition reference, not just its family.
+   Native backgrounds, assets, SVG curves and source blocks remain mounted. */
+body[data-home-cern-layout="1"] [data-home-cern-layout-section] {
+  min-height: 0 !important;
+}
+body[data-home-cern-layout="1"] [data-home-cern-layout-section] > .content-wrapper {
+  width: 100% !important;
+  max-width: none !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+}
+body[data-home-cern-layout="1"] [data-home-cern-layout-section] > .content-wrapper > .content {
+  width: 100% !important;
+  max-width: none !important;
+  display: block !important;
+}
+body[data-home-cern-layout="1"] [data-home-cern-layout-section] > .content-wrapper > .content > [data-fluid-engine] {
+  display: none !important;
+}
+.home-cern-layout {
+  --cern-display-size: 4.24rem;
+  --cern-subtitle-size: 1.432rem;
+  --cern-body-size: 1rem;
+  --cern-reading-leading: 1.5;
+  width: min(64rem, calc(100% - 6rem));
+  margin-inline: auto;
+  padding-block: 8rem;
+  position: relative;
+  z-index: 3;
+}
+.home-cern-layout-panel {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  column-gap: 5rem;
+  align-items: start;
+}
+.home-cern-layout-panel + .home-cern-layout-panel { margin-top: 10rem; }
+.home-cern-layout-heading { grid-column: 1; grid-row: 1; min-width: 0; }
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-title,
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-title * {
+  font-family: var(--home-cern-family) !important;
+  font-size: var(--cern-display-size) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  line-height: 1.056 !important;
+  letter-spacing: -.02em !important;
+  text-align: left !important;
+  white-space: normal !important;
+  overflow-wrap: normal;
+  margin: 0 !important;
+}
+.home-cern-layout-wordmark {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  margin-top: .4rem;
+}
+.home-cern-layout-copy { grid-column: 2; grid-row: 1; min-width: 0; padding-top: 3rem; }
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-subtitle,
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-subtitle * {
+  font-family: var(--home-cern-family) !important;
+  font-size: var(--cern-subtitle-size) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  line-height: var(--cern-reading-leading) !important;
+  letter-spacing: normal !important;
+  text-align: left !important;
+  white-space: normal !important;
+}
+.home-cern-layout-subtitle { margin: 0 0 2.5rem; }
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-body,
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-body :is(p,a,span,strong,em,b,i) {
+  font-family: var(--home-cern-family) !important;
+  font-size: var(--cern-body-size) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  line-height: var(--cern-reading-leading) !important;
+  letter-spacing: normal !important;
+  text-align: left !important;
+  white-space: normal !important;
+}
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-body p {
+  margin: 0 0 2rem !important;
+}
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-body p:last-child { margin-bottom: 0 !important; }
+.home-cern-layout-action { grid-column: 1 / -1; grid-row: 2; text-align: center; margin-top: 8rem; }
+body[data-home-cern-layout="1"] .home-cern-layout-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: .75rem 1.5rem;
+  font-family: var(--home-cern-family) !important;
+  font-size: 1rem !important;
+  line-height: 1.2 !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  letter-spacing: normal !important;
+  text-decoration: none !important;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  transition: opacity .18s ease;
+}
+.home-cern-layout-link:hover { opacity: .65; }
+.home-cern-layout-link:focus-visible { outline: 1px solid currentColor; outline-offset: 4px; }
+.home-cern-layout-footer { margin-top: 10rem; text-align: center; }
+.home-cern-layout-footer > img { display: block; width: min(44rem,100%); height: auto; margin: 0 auto 3rem; }
+.home-cern-layout-footer > a { display: inline-flex; min-height: 44px; align-items: center; color: inherit; margin-bottom: 3rem; text-decoration: none; }
+.home-cern-layout-footer .sqs-html-content { max-width: 32rem; margin-inline: auto; }
+body[data-home-cern-layout="1"] .home-cern-layout-footer .sqs-html-content p { text-align: center !important; }
+@media (min-width: 768px) and (max-width: 1100px) {
+  .home-cern-layout { --cern-display-size: 3.5rem; width: calc(100% - 4rem); }
+  .home-cern-layout-panel { column-gap: 3rem; grid-template-columns: minmax(0,1fr) minmax(0,1.1fr); }
+}
+@media (max-width: 767px) {
+  .home-cern-layout { --cern-display-size: 2.899rem; --cern-subtitle-size: 1.2532rem; width: calc(100% - 3rem); padding-block: 3.5rem 5rem; }
+  .home-cern-layout-panel { grid-template-columns: minmax(0,1fr); row-gap: 0; }
+  .home-cern-layout-heading { grid-column: 1; grid-row: 1; margin-bottom: 4rem; }
+  .home-cern-layout-copy { grid-column: 1; grid-row: 2; padding-top: 0; }
+  .home-cern-layout-action { grid-column: 1; grid-row: 3; margin-top: 4rem; }
+  .home-cern-layout-panel + .home-cern-layout-panel { margin-top: 7rem; }
+  .home-cern-layout-footer { margin-top: 7rem; }
+}
+@media (max-width: 359px) { .home-cern-layout { --cern-display-size: 2.5rem; width: calc(100% - 2.5rem); } }
+
+/* Retain the accepted landing's full-viewport presence inside the new reading grid. */
+body[data-home-cern-layout="1"] main > .sections > [data-home-cern-layout-section]:first-child,
+body[data-home-cern-layout="1"] main > [data-home-cern-layout-section]:first-child { min-height: 100svh !important; }
+
+body[data-home-cern-layout="1"] main .home-cern-layout .home-cern-layout-subtitle p { margin: 0 !important; }

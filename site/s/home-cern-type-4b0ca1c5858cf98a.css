@@ -1,0 +1,67 @@
+@font-face {
+  font-family: 'Effacer CERN';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/s/home-gilda-14198b8e661aabac.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Effacer CERN';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/s/home-gilda-e59c36e671452036.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* Reference: the existing CERN heading on this homepage, not the CERN website.
+   One source family; size varies only by explicit editorial role.
+   No section/grid, alignment, image, curve, animation or logo geometry changes. */
+body[data-home-cern-type="1"] {
+  --home-cern-family: "Effacer CERN", "Gilda Display", Georgia, serif;
+  --home-cern-section-title: clamp(1.75rem, 2.551111vw, 2.296rem);
+  --home-cern-body: 1rem;
+  --heading-font-font-family: var(--home-cern-family);
+  --body-font-font-family: var(--home-cern-family);
+  --meta-font-font-family: var(--home-cern-family);
+  --button-font-font-family: var(--home-cern-family);
+  font-family: var(--home-cern-family);
+}
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content,
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content :is(h1,h2,h3,h4,h5,h6,p,a,span,strong,em,b,i,small),
+body[data-home-cern-type="1"] :is(.header-nav,.header-menu-nav,.header-title-text),
+body[data-home-cern-type="1"] :is(.header-nav,.header-menu-nav,.header-title-text) :is(a,span,div),
+body[data-home-cern-type="1"] :is(.sqs-block-button-element,.skip-link,.site-language-select,.site-language-select option) {
+  font-family: var(--home-cern-family) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  font-synthesis: none;
+}
+body[data-home-cern-type="1"] main .sqs-html-content :is(h1,h2,h3,h4,h5,h6) {
+  line-height: 1.12 !important;
+  letter-spacing: -.02em !important;
+}
+/* CERN/MoMA retain their existing display scale; all other section headings
+   share one scale regardless of inconsistent source h2/h3 markup. */
+body[data-home-cern-type="1"] main .sqs-html-content :is(h2,h3,h4,h5,h6) {
+  font-size: var(--home-cern-section-title) !important;
+}
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content p:not(.sqsrte-large) {
+  font-size: var(--home-cern-body) !important;
+  line-height: 1.5 !important;
+  letter-spacing: normal !important;
+}
+body[data-home-cern-type="1"] main .sqs-html-content p.sqsrte-large {
+  line-height: 1.5 !important;
+  letter-spacing: normal !important;
+}
+body[data-home-cern-type="1"] :is(main,footer) .sqs-html-content :is(h1,h2,h3,h4,h5,h6,p) :is(a,span,strong,em,b,i,small) {
+  font-size: inherit !important;
+  line-height: inherit !important;
+  letter-spacing: inherit !important;
+}
+body[data-home-cern-type="1"] .sqs-block-button-element {
+  font-size: 1rem !important;
+  line-height: 1.2 !important;
+  letter-spacing: normal !important;
+}

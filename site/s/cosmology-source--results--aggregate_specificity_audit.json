@@ -1,0 +1,153 @@
+{
+  "adoption_decision": {
+    "aggregate_directional_results_preserved": true,
+    "aggregate_plummer_ranking_preserved_as_arithmetic": true,
+    "plummer_specificity_claim": false,
+    "public_surface_requires_f1_boundary": true,
+    "public_surface_requires_per_unit_counts": true,
+    "xcop_prior_adversarial_audit_authority": "INTERNAL_SELF_AUDIT_NOT_INDEPENDENT_EXTERNAL_REVIEW"
+  },
+  "audit_scope": "Separate aggregate kernel ranking from per-unit kernel ranking and record the f=1 operator-boundary condition.",
+  "generated_at_utc": "2026-07-26T00:18:32.239211+00:00",
+  "r2_manifest_identity": {
+    "audit_unit_ids": [
+      "SPARC:UGC00731",
+      "SPARC:NGC5585",
+      "SPARC:F574-1",
+      "SPARC:UGC05721",
+      "SPARC:UGC06446",
+      "SPARC:UGC12632",
+      "XCOP:A644",
+      "XCOP:A2029",
+      "XCOP:A1795"
+    ],
+    "audit_unit_ids_sha256": "ad78c102841ada6185808f72f443e8aa1326706bdd8402ae644fa4dcf893f661",
+    "callable": "sample_ids_sha256",
+    "source_sha256": "5215e4e8a74b529c1355208c04e7323e09d93a63d332b26d67c9c7a50faba524"
+  },
+  "schema_version": "aggregate-specificity-audit-v1",
+  "source_files": {
+    "results/sparc_rotation_curve_frozen_policy.json": "134bbfd820ebf9c7a7573bd0c5fdcd1f96c67198c18de6830ee2bb29a4fc4d8b",
+    "results/sparc_rotation_curve_heldout.json": "ab92c3142a9498fcbe1583f225bbbc2d463442e65a81e565ba85f9e4cbe1d13b",
+    "results/xcop_hse_frozen_policy.json": "02a63e2528bb3f314df6c02e5a7404921a7ab2b91eaa75183e79f86fc2842835",
+    "results/xcop_hse_heldout.json": "a64fc7ed91078d796be9fa3be17e179c3e00b1c7d70ebae835c53aa760338065"
+  },
+  "sparc": {
+    "aggregate": {
+      "gaussian_delta_chi2": -5.472026853291425,
+      "plummer_best": true,
+      "plummer_delta_chi2": -9.256213018221956,
+      "top_hat_delta_chi2": -5.039681213264771
+    },
+    "claim_classification": "AGGREGATE_RANKING_ARITHMETICALLY_TRUE_PER_UNIT_SPECIFICITY_NOT_ESTABLISHED",
+    "fraction_grid_boundary_hit": true,
+    "frozen_fraction": 1.0,
+    "operator_boundary_interpretation": "f=1 is the full-smoothed-profile replacement endpoint of the declared operator family, not the legacy partial f=0.30 mixture.",
+    "per_unit": [
+      {
+        "baseline_chi2": 3.395909248261954,
+        "gaussian_delta_chi2": -0.8515433326978838,
+        "plummer_beats_both_controls": false,
+        "plummer_delta_chi2": -0.6139167399776806,
+        "top_hat_delta_chi2": -0.7001061534997244,
+        "unit": "UGC00731"
+      },
+      {
+        "baseline_chi2": 157.83832157292792,
+        "gaussian_delta_chi2": 6.096344172107166,
+        "plummer_beats_both_controls": true,
+        "plummer_delta_chi2": 2.1894389009380575,
+        "top_hat_delta_chi2": 5.619727757516529,
+        "unit": "NGC5585"
+      },
+      {
+        "baseline_chi2": 19.724808424496793,
+        "gaussian_delta_chi2": -8.348043115476244,
+        "plummer_beats_both_controls": false,
+        "plummer_delta_chi2": -7.385430633194314,
+        "top_hat_delta_chi2": -8.083645613161648,
+        "unit": "F574-1"
+      },
+      {
+        "baseline_chi2": 20.237618235001722,
+        "gaussian_delta_chi2": -1.4537800823354914,
+        "plummer_beats_both_controls": true,
+        "plummer_delta_chi2": -2.303406246708338,
+        "top_hat_delta_chi2": -1.1598623824284715,
+        "unit": "UGC05721"
+      },
+      {
+        "baseline_chi2": 3.2203463665740464,
+        "gaussian_delta_chi2": -0.3142005166866726,
+        "plummer_beats_both_controls": false,
+        "plummer_delta_chi2": -0.3096057259303242,
+        "top_hat_delta_chi2": -0.24585961929360378,
+        "unit": "UGC06446"
+      },
+      {
+        "baseline_chi2": 4.42792450141214,
+        "gaussian_delta_chi2": -0.6008039782022854,
+        "plummer_beats_both_controls": true,
+        "plummer_delta_chi2": -0.8332925733493495,
+        "top_hat_delta_chi2": -0.4699352023978358,
+        "unit": "UGC12632"
+      }
+    ],
+    "plummer_beats_both_controls_count": 3,
+    "unit_count": 6,
+    "weight_concentration": {
+      "aggregate_plummer_advantage_over_gaussian": 3.7841861649305315,
+      "dominant_baseline_chi2_fraction": 0.7557680371792932,
+      "dominant_unit": "NGC5585",
+      "dominant_unit_fraction_of_aggregate_gaussian_advantage": 1.0324294579838225,
+      "dominant_unit_plummer_advantage_over_gaussian": 3.9069052711691086
+    }
+  },
+  "status": "PASS",
+  "xcop": {
+    "aggregate": {
+      "gaussian_delta_chi2": -3.0530398649901898,
+      "plummer_best": true,
+      "plummer_delta_chi2": -4.357522930004862,
+      "top_hat_delta_chi2": -2.288515267669652
+    },
+    "aggregate_advantage_concentration": {
+      "aggregate_plummer_advantage_over_gaussian": 1.3044830650146721,
+      "dominant_unit": "A644",
+      "dominant_unit_fraction_of_aggregate_gaussian_advantage": 1.4457119667086402,
+      "dominant_unit_plummer_advantage_over_gaussian": 1.8859067774604767
+    },
+    "claim_classification": "AGGREGATE_RANKING_ARITHMETICALLY_TRUE_PER_UNIT_SPECIFICITY_NOT_ESTABLISHED",
+    "fraction_grid_boundary_hit": true,
+    "frozen_fraction": 1.0,
+    "operator_boundary_interpretation": "f=1 is the full-smoothed-profile replacement endpoint of the declared operator family, not the legacy partial f=0.30 mixture.",
+    "per_unit": [
+      {
+        "baseline_chi2": 46.162435400353345,
+        "gaussian_delta_chi2": -1.5769855302916937,
+        "plummer_beats_both_controls": true,
+        "plummer_delta_chi2": -3.4628923077521705,
+        "top_hat_delta_chi2": -1.2018910256139463,
+        "unit": "A644"
+      },
+      {
+        "baseline_chi2": 58.10924373537942,
+        "gaussian_delta_chi2": -0.37554664836860496,
+        "plummer_beats_both_controls": false,
+        "plummer_delta_chi2": -0.05535426423908518,
+        "top_hat_delta_chi2": -0.23630528429079334,
+        "unit": "A2029"
+      },
+      {
+        "baseline_chi2": 40.823629005971604,
+        "gaussian_delta_chi2": -1.100507686329891,
+        "plummer_beats_both_controls": false,
+        "plummer_delta_chi2": -0.8392763580136062,
+        "top_hat_delta_chi2": -0.8503189577649124,
+        "unit": "A1795"
+      }
+    ],
+    "plummer_beats_both_controls_count": 1,
+    "unit_count": 3
+  }
+}

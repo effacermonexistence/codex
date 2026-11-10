@@ -1,0 +1,62 @@
+{
+  "claim_allowed": false,
+  "dev_artifact_path": "results/jeans_dsph_dev_grid.json",
+  "dev_artifact_sha256": "bc98a8f258a9b07078e6d522ceeb018fc771a50bf542b0cd3dd11409397e1dfa",
+  "dev_names": [
+    "Sextans",
+    "Fornax"
+  ],
+  "dev_replay_byte_identical": true,
+  "dev_replay_sha256": "bc98a8f258a9b07078e6d522ceeb018fc771a50bf542b0cd3dd11409397e1dfa",
+  "forced_nonzero_optimum": {
+    "dev_improved_count": 1,
+    "dev_macro_chi2_per_point": 0.43278307492574664,
+    "dev_macro_delta_chi2_per_point": 0.00014070730994297787,
+    "dev_worsened_count": 1,
+    "eta": 0.03125,
+    "f": 0.05,
+    "valid": true
+  },
+  "formula": "d_g=eta*rhalf_g; rho_h,aug=(1-f)rho_NFW+f(K_d*rho_NFW); frozen baseline enters spherical Jeans equation",
+  "frozen_at_utc": "2026-07-25T13:33:11.073204+00:00",
+  "grids": {
+    "eta": [
+      0.03125,
+      0.0625,
+      0.125,
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0,
+      8.0
+    ],
+    "f": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.75,
+      1.0
+    ]
+  },
+  "heldout_rule": "no row-level fallback or parameter update; report signed deltas for safe, forced Plummer, matched Gaussian, matched top-hat",
+  "heldout_scores_accessed": false,
+  "objective": "minimize macro mean chi2-per-bin over dev galaxies",
+  "safe_optimum": {
+    "dev_improved_count": 0,
+    "dev_macro_chi2_per_point": 0.43264236761580366,
+    "dev_macro_delta_chi2_per_point": 0.0,
+    "dev_worsened_count": 0,
+    "eta": 0.03125,
+    "f": 0.0,
+    "valid": true
+  },
+  "schema_version": "jeans-dsph-frozen-adapter-policy-v1",
+  "selection_result": "SAFE_BASELINE_FLOOR_SELECTED_F0; FORCED_NONZERO_RETAINED_AS_DIAGNOSTIC_ONLY",
+  "status": "FROZEN_BEFORE_HELDOUT_SCORING"
+}

@@ -1,0 +1,38 @@
+{
+  "claim_allowed": false,
+  "dev_artifact_path": "results/sparc_rotation_curve_dev_grid.json",
+  "dev_artifact_sha256": "dd9f7eba5b75c55ebbe607f3bbab81b8a1ee812a36e5b503d23a9e55292de297",
+  "forced_nonzero_optimum": {
+    "dev_improved_count": 9,
+    "dev_macro_chi2_per_point": 0.9316796427798709,
+    "dev_macro_delta_chi2_per_point": -0.06939500775145635,
+    "dev_worsened_count": 2,
+    "eta": 0.125,
+    "f": 1.0,
+    "valid": true
+  },
+  "formula": "d_g=eta*Rdisk_g; rho_aug=(1-f)rho_NFW+f(K_d*rho_NFW)",
+  "frozen_at_utc": "2026-07-25T11:34:13.595231+00:00",
+  "generic_control_rule": "evaluate half-mass-matched 3D Gaussian and top-hat with the same frozen f/eta; no control-specific tuning",
+  "heldout_names_seen_by_optimizer": false,
+  "heldout_scores_seen": false,
+  "kernel": "normalized 3D Plummer",
+  "operator_object": "halo-only 3D density",
+  "public_derivative_note": "Machine-local paths were replaced by repository-relative paths; scientific values and upstream hashes are unchanged.",
+  "safe_optimum": {
+    "dev_improved_count": 9,
+    "dev_macro_chi2_per_point": 0.9316796427798709,
+    "dev_macro_delta_chi2_per_point": -0.06939500775145635,
+    "dev_worsened_count": 2,
+    "eta": 0.125,
+    "f": 1.0,
+    "valid": true
+  },
+  "sample_manifest_path": "results/sparc_rotation_curve_sample_manifest.json",
+  "sample_manifest_sha256": "4bb1107ec3f12566f4d1290cb4c8a76a6c92e2585d9a3fcd490362db3934c185",
+  "schema_version": "sparc-frozen-shared-adapter-policy-v1",
+  "selection_note": "eta=0.125 is an interior expanded-grid value; f=1.0 is the physically allowed full-projection fraction boundary and is not extended beyond 1.",
+  "selection_objective": "minimize macro mean chi2-per-point over stable dev baselines",
+  "source_selection_sha256": "eb729c2121db31f084895cf1cf6d9a8db4748a4e8ce34ec0e32a69ab28f541e2",
+  "status": "FROZEN_BEFORE_HELDOUT_ACCESS"
+}

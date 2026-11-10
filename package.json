@@ -1,0 +1,20 @@
+{
+  "name": "effacermonexistence-pixel-clone",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Full copy of effacermonexistence.com with the CODE chapter series continued in the site's own format",
+  "scripts": {
+    "start": "node server.js",
+    "sync": "node scripts/sync-live.mjs",
+    "build-site": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs",
+    "check-layout": "node scripts/check-layout.mjs",
+    "build": "node scripts/check-footer-lock.cjs && node scripts/assemble-motion-media.mjs && node scripts/assemble-tattoo-motion.mjs && node scripts/assemble-hero-original.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1156.0"
+  }
+}

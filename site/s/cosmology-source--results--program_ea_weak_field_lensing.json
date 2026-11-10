@@ -1,0 +1,107 @@
+{
+  "baseline_recovery": "f_perp -> 0 recovers kappa_eff = kappa_known and GR/LambdaCDM weak-field baseline",
+  "claim_boundary": "Design and same-sample diagnostic only.",
+  "einstein_container": "G_{mu nu}+Lambda g_{mu nu}=8piG(T_known + T_perp_eff)_{mu nu}",
+  "equation": "O_perp[kappa] = f_perp([P_d * kappa_halo] - kappa_halo); kappa_eff = kappa_known + O_perp[kappa]",
+  "evidence_class": "SAME_SAMPLE_WEAK_FIELD_DEVELOPMENT_SMOKE",
+  "fit": {
+    "best_source": "grid",
+    "chi2_M0": 23.60484151627778,
+    "chi2_M1": 22.728792536265438,
+    "clusters": [
+      "MS2137",
+      "A963",
+      "A611",
+      "A2667",
+      "A2390"
+    ],
+    "d_hat": 16.0,
+    "d_hat_at_bound": false,
+    "downlift": false,
+    "f_hat": 0.3,
+    "f_hat_at_bound": false,
+    "n_clusters": 5,
+    "n_data": 33,
+    "nested_fail": false,
+    "nested_gap": 0.1998725620783297,
+    "nested_refit": 0,
+    "per_d": [
+      {
+        "chi2_M1": 23.503772605356332,
+        "d": 2.0,
+        "f_hat": 0.3825000000000002,
+        "raw_dchi2_vs_M0": -0.10106891092144821,
+        "source": "nelder_mead"
+      },
+      {
+        "chi2_M1": 23.32430305259803,
+        "d": 4.0,
+        "f_hat": 0.4,
+        "raw_dchi2_vs_M0": -0.28053846367975055,
+        "source": "grid"
+      },
+      {
+        "chi2_M1": 22.907622040160803,
+        "d": 8.0,
+        "f_hat": 0.36750000000000016,
+        "raw_dchi2_vs_M0": -0.6972194761169774,
+        "source": "nelder_mead"
+      },
+      {
+        "chi2_M1": 22.728792536265438,
+        "d": 16.0,
+        "f_hat": 0.3,
+        "raw_dchi2_vs_M0": -0.8760489800123423,
+        "source": "grid"
+      },
+      {
+        "chi2_M1": 22.927392254455476,
+        "d": 30.0,
+        "f_hat": 0.19499999999999995,
+        "raw_dchi2_vs_M0": -0.6774492618223036,
+        "source": "nelder_mead"
+      },
+      {
+        "chi2_M1": 23.478998786174742,
+        "d": 50.0,
+        "f_hat": 0.10750000000000003,
+        "raw_dchi2_vs_M0": -0.12584273010303804,
+        "source": "nelder_mead"
+      }
+    ],
+    "raw_dchi2": -0.8760489800123423,
+    "uplift": true
+  },
+  "interpretation": "A weak-field/lensing development smoke on the same five-cluster likelihood. It is not an independent validation and does not implement or verify a full covariant effective stress-energy tensor.",
+  "mass_conservation_condition": "if P_d is normalized, integral O_perp dA = 0",
+  "per_cluster_at_global_fd": {
+    "A2390": {
+      "chi2_M0": 1.07,
+      "chi2_M1_at_global": 0.96,
+      "dchi2": -0.1
+    },
+    "A2667": {
+      "chi2_M0": 1.89,
+      "chi2_M1_at_global": 1.49,
+      "dchi2": -0.4
+    },
+    "A611": {
+      "chi2_M0": 5.75,
+      "chi2_M1_at_global": 5.56,
+      "dchi2": -0.19
+    },
+    "A963": {
+      "chi2_M0": 7.63,
+      "chi2_M1_at_global": 7.12,
+      "dchi2": -0.51
+    },
+    "MS2137": {
+      "chi2_M0": 7.26,
+      "chi2_M1_at_global": 7.39,
+      "dchi2": 0.13
+    }
+  },
+  "raw_delta_chi2": -0.8760489800123423,
+  "record_id": "PROGRAM_EA_WEAK_FIELD_LENSING",
+  "upstream_artifact_sha256": "a6c7f7c4c883d3dce3536ffe24f382aa86b78dc9234e1e68cfb421bbfe6d9ca2"
+}

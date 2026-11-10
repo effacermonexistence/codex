@@ -1,0 +1,175 @@
+{
+  "claim_boundary": "Held-out for shared adapter f/eta only. Per-galaxy NFW baseline nuisance parameters are fitted on each held-out rotation curve. Not a clean predictive or physical proof.",
+  "completed_at_utc": "2026-07-25T11:36:22.983786+00:00",
+  "dev_summary": {
+    "baseline_macro_chi2_per_point": 1.0010746505313273,
+    "candidate_macro_chi2_per_point": 0.9316796427798709,
+    "improved_count": 9,
+    "macro_delta_chi2_per_point": -0.06939500775145635,
+    "worsened_count": 2
+  },
+  "equations": {
+    "adapter_scale": "d_g=eta*Rdisk_g",
+    "augmented_density": "rho_aug,g=(1-f)rho_NFW,g+f(K_dg*rho_NFW,g)",
+    "augmented_velocity": "V_aug^2(R)=V_bar^2(R)+G M_aug(<R)/R",
+    "baseline": "V_base^2(R)=V_gas|V_gas|+0.5 V_disk|V_disk|+0.7 V_bulge|V_bulge|+G M_NFW(<R;V200,c)/R",
+    "kernel": "K_d(r)=3/(4*pi*d^3)*(1+r^2/d^2)^(-5/2)",
+    "operator_object": "halo-only 3D density rho_NFW"
+  },
+  "executed_code_sha256": {
+    "evaluate_sparc_heldout.py": "e4f09595220bf1a02d9064c5a432f1b992718b008c9745f67ac3db6a4b4dad8e",
+    "lock_sparc_sample.py": "8112104be9d1c6dad1237277c407a4da6049c208db394e9a3820d1fcfb9eabda",
+    "optimize_sparc_dev.py": "7e184ec0843d31d6705f9923aa016cc085a16f8d9c1b457c99d7e46572517b3e",
+    "sparc_adapter_common.py": "4609393861001e828d3e4c7c3b4443fd56e598c17378c54702765694559b2f9d"
+  },
+  "executed_lane": "SPARC circular velocity only",
+  "frozen_policy": {
+    "d_rule": "d_g=eta*Rdisk_g",
+    "eta": 0.125,
+    "f": 1.0,
+    "f_boundary_note": "f=1.0 is the physical fraction boundary; eta=0.125 is interior to the expanded dev grid.",
+    "heldout_scores_seen_before_freeze": false,
+    "selection_objective": "minimize macro mean chi2-per-point over stable dev baselines"
+  },
+  "heldout_aggregate": {
+    "baseline_macro_chi2_per_point": 1.605504601332612,
+    "baseline_total_chi2": 208.84492834867459,
+    "candidate_macro_chi2_per_point": 1.4952751172651941,
+    "candidate_total_chi2": 199.58871533045263,
+    "data_point_count": 105,
+    "downlift": false,
+    "improved_count": 5,
+    "macro_delta_chi2_per_point": -0.11022948406741806,
+    "neutral_count": 0,
+    "raw_delta_chi2": -9.256213018221956,
+    "residual_reduction_pct": 4.432098539050158,
+    "stable_galaxy_count": 6,
+    "worsened_count": 1
+  },
+  "interpretation": {
+    "not_supported": [
+      "clean predictive proof",
+      "physical-law proof",
+      "new source detection",
+      "replacement of NFW or standard gravity"
+    ],
+    "one_sided_equal_sign_null_p": 0.109375,
+    "supported": "The frozen shared adapter reduced aggregate heldout residuals and improved 5 of 6 baseline-stable heldout galaxies under the stored score.",
+    "unresolved": "Generic Gaussian and top-hat smoothers also improved 5 of 6; the sample is too small for a kernel-specific physical claim."
+  },
+  "matched_generic_controls": {
+    "gaussian_3d": {
+      "baseline_macro_chi2_per_point": 1.605504601332612,
+      "baseline_total_chi2": 208.84492834867459,
+      "candidate_macro_chi2_per_point": 1.5163412330996613,
+      "candidate_total_chi2": 203.37290149538316,
+      "data_point_count": 105,
+      "downlift": false,
+      "improved_count": 5,
+      "macro_delta_chi2_per_point": -0.08916336823295062,
+      "neutral_count": 0,
+      "raw_delta_chi2": -5.472026853291425,
+      "residual_reduction_pct": 2.6201387299938004,
+      "stable_galaxy_count": 6,
+      "worsened_count": 1
+    },
+    "plummer_advantage_vs_gaussian_total_chi2": 3.7841861649305315,
+    "plummer_advantage_vs_top_hat_total_chi2": 4.216531804957185,
+    "top_hat_3d": {
+      "baseline_macro_chi2_per_point": 1.605504601332612,
+      "baseline_total_chi2": 208.84492834867459,
+      "candidate_macro_chi2_per_point": 1.5225362250680583,
+      "candidate_total_chi2": 203.80524713540981,
+      "data_point_count": 105,
+      "downlift": false,
+      "improved_count": 5,
+      "macro_delta_chi2_per_point": -0.08296837626455379,
+      "neutral_count": 0,
+      "raw_delta_chi2": -5.039681213264771,
+      "residual_reduction_pct": 2.4131211866686226,
+      "stable_galaxy_count": 6,
+      "worsened_count": 1
+    }
+  },
+  "proof_mode": "PUBLIC_DATA_DEV_OPTIMIZATION_PLUS_HELDOUT_SHARED_ADAPTER_DIAGNOSTIC",
+  "raw_third_party_data_committed": false,
+  "run_id": "sparc_equation_adapted_devheldout_20260725_01",
+  "sample": {
+    "data_point_count": 105,
+    "dev": [
+      "D631-7",
+      "UGC08490",
+      "ESO116-G012",
+      "F568-V1",
+      "UGC00128",
+      "NGC3741",
+      "NGC3109",
+      "UGC07603",
+      "NGC7793",
+      "DDO161",
+      "F568-3",
+      "UGC12732",
+      "F583-1",
+      "UGC07524"
+    ],
+    "dev_count": 14,
+    "dev_heldout_overlap": 0,
+    "eligible_count": 21,
+    "heldout": [
+      "UGC00731",
+      "NGC5585",
+      "F574-1",
+      "UGC05721",
+      "UGC06446",
+      "DDO064",
+      "UGC12632"
+    ],
+    "heldout_count": 7,
+    "sample_ids_sha256": "d5bb9bb18b9bbbcea0d2e31aee592d275b0aa596d32be2ed145c2494c9a3b3b5",
+    "stable_dev_count": 11,
+    "stable_heldout_count": 6
+  },
+  "schema_version": "sparc-equation-adapter-public-run-receipt-v1",
+  "source_data": [
+    {
+      "name": "Rotmod_LTG.zip",
+      "official_md5": "e4c8b92766026770ed35e5889064e12b",
+      "redistributed": false,
+      "sha256": "0a80cc90714828cc28b7dd57923576714d209f2490328c087c4a4ad607faf588",
+      "url": "https://zenodo.org/records/16284118/files/Rotmod_LTG.zip?download=1"
+    },
+    {
+      "name": "SPARC_Lelli2016c.mrt",
+      "official_md5": "6181df386bfc05868a3700c196e800da",
+      "redistributed": false,
+      "sha256": "5aa0501f6b0d881fa579030e315e7b5b6ef561a5bd3a07472f9929c7e5728243",
+      "url": "https://zenodo.org/records/16284118/files/SPARC_Lelli2016c.mrt?download=1"
+    }
+  ],
+  "status": "COMPLETE_DIAGNOSTIC",
+  "upstream_artifact_sha256": {
+    "dev_optimization": "dd9f7eba5b75c55ebbe607f3bbab81b8a1ee812a36e5b503d23a9e55292de297",
+    "final_execution_receipt": "ef5d81ea89926757bb68bb8605579f1581e217481e3f28aa4a33621e7a494ee5",
+    "frozen_policy": "d177edb2dd2a19e4f1c7b803d9e908c901804c9932bfd87e4e0b528058218d95",
+    "heldout_evaluation": "ab92c3142a9498fcbe1583f225bbbc2d463442e65a81e565ba85f9e4cbe1d13b",
+    "independent_verification": "efa1e14b0412994315cc918122fa2b3a30b0505a8704f0992e143b67e291bb86",
+    "proof_contract": "c363790d0da9e1d2ef76da0d5b5822ad193874d922388ee9e3e834eba71ecddc",
+    "result_report": "10a420e34cd1f8105c67c28c7e5131bd7bae8e4fd153c852eb7cb279e6eddebc",
+    "sample_manifest": "4bb1107ec3f12566f4d1290cb4c8a76a6c92e2585d9a3fcd490362db3934c185",
+    "task_source_selection": "eb729c2121db31f084895cf1cf6d9a8db4748a4e8ce34ec0e32a69ab28f541e2"
+  },
+  "verification": {
+    "byte_identical_replay": true,
+    "heldout_artifact_sha256": "ab92c3142a9498fcbe1583f225bbbc2d463442e65a81e565ba85f9e4cbe1d13b",
+    "heldout_replay_sha256": "ab92c3142a9498fcbe1583f225bbbc2d463442e65a81e565ba85f9e4cbe1d13b",
+    "independent_recompute": "PASS",
+    "max_abs_post_renormalization_mass_leak_fraction": 3.204071125973187e-15,
+    "max_abs_raw_mass_leak_fraction": 0.0053465077638396126,
+    "max_f0_prediction_difference": 0.0,
+    "operator_tests": "8/8 PASS",
+    "r2_post_gate": "PASS",
+    "r2_pre_gate": "PASS",
+    "selected_r2_source": "benchmark_replay_harness.py:sample_ids_sha256",
+    "selected_r2_source_sha256": "5215e4e8a74b529c1355208c04e7323e09d93a63d332b26d67c9c7a50faba524"
+  }
+}

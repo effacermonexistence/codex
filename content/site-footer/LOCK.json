@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "reference": "Approved shared /archive footer before body-logo normalization",
+  "ownerInstruction": "Restore original footer size and never modify footer without a new explicit owner footer request.",
+  "files": [
+    {
+      "path": "scripts/site-shared-footer.cjs",
+      "sha256": "afa96204c926d7d2374f5e08078e5833503e9f8c4edbaf04655d72a250967438"
+    },
+    {
+      "path": "content/site-footer/style.css",
+      "sha256": "3ea08fe3b67893a18e36be94e1de5a2ad9fab06e1520d461c6efc75b3665c952"
+    },
+    {
+      "path": "content/site-footer/layout.json",
+      "sha256": "17d43c6c3617bfb44091d505bd67a79c7df021dd218c6210bd9d6618db2fbc89"
+    }
+  ],
+  "lastOwnerAuthorizedChange": {
+    "clientDate": "2026-11-06",
+    "at": "2026-11-07T00:01:23.240656+00:00",
+    "scope": "Footer wordmark becomes a same-tab main-landing link; geometry, style, image and copy stay locked",
+    "authority": "Explicit owner request in current conversation"
+  }
+}

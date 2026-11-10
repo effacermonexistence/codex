@@ -1,0 +1,45 @@
+/* These four section entrances use the owner's explicit hierarchy:
+   compact French logo, large section name, then existing subtitles/body.
+   Landing, APPLY and every footer retain their accepted typography. */
+html body main .site-section-heading {
+  --body-wordmark-width: clamp(200px, 25vw, 320px);
+  --section-name-size: clamp(2.5rem, 6vw, 5rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 1rem;
+  text-align: center;
+}
+html body main .site-section-heading > .site-body-wordmark-link {
+  flex: none;
+  position: static;
+  transform: none !important;
+}
+html body main#page .site-section-heading .site-section-name[data-site-text-size="title"] {
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  font-family: "PT Serif", Georgia, serif;
+  font-size: var(--section-name-size) !important;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+html body main [data-section-heading-grid] { height: auto; }
+html body main .cosmology > .site-section-heading { margin-bottom: clamp(3rem, 6vw, 5rem); }
+html body main [data-theory-acronym] { white-space: nowrap !important; }
+@media (max-width:767px) {
+  /* Fit the complete long names, including DLCA-U and ISEI, in their
+     existing eight-column button slots. Retain the shared pill and action. */
+  html body main#page a.sqs-block-button-element[data-theory-action] {
+    font-size: min(16px, 3.786vw) !important;
+    white-space: nowrap !important;
+    overflow-wrap: normal;
+    word-break: normal;
+    hyphens: none;
+  }
+}

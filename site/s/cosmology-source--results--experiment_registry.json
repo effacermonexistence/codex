@@ -1,0 +1,117 @@
+{
+  "counting_boundary": "Registry rows are experimental records, not independent scientific confirmations. Only canonical source insertions and separately labeled diagnostics appear in the current public registry.",
+  "records": [
+    {
+      "file": "results/n13_development_chain.json",
+      "headline_result": "M1 delta chi2 -1.2543; 20th percentile under null; M2 absorbs residual",
+      "independence": "development sample reused",
+      "record_id": "N13_DEVELOPMENT_CHAIN",
+      "status": "DEVELOPMENT_FAVORABLE_DIRECTION_WITHIN_NULL",
+      "unit_count": 1
+    },
+    {
+      "file": "results/program_c_hz_background_fluid.json",
+      "headline_result": "delta chi2 -0.00874; AIC/BIC worse",
+      "independence": "separate H(z) dataset; different term",
+      "record_id": "PROGRAM_C_HZ_BACKGROUND_FLUID",
+      "status": "NO_REAL_UPLIFT",
+      "unit_count": 31
+    },
+    {
+      "file": "results/program_ea_weak_field_lensing.json",
+      "headline_result": "delta chi2 -0.8760",
+      "independence": "same N13 development sample",
+      "record_id": "PROGRAM_EA_WEAK_FIELD_LENSING",
+      "status": "SAME_SAMPLE_DIAGNOSTIC",
+      "unit_count": 5
+    },
+    {
+      "file": "results/canonical_equation_channels.json",
+      "headline_result": "4 non-neutral cluster channels negative; NFW/outer neutral",
+      "independence": "overlapping channels, not six independent datasets",
+      "record_id": "CANONICAL_EQUATION_CHANNEL_DIAGNOSTICS",
+      "status": "CHANNEL_DIAGNOSTIC",
+      "unit_count": 6
+    },
+    {
+      "file": "results/as1063_b2_true_density.json",
+      "headline_result": "Plummer 3D residual reduction 19.857%",
+      "independence": "public model-component diagnostic",
+      "record_id": "AS1063_TRUE_DENSITY_B2",
+      "status": "DIRECTIONAL_DIAGNOSTIC",
+      "unit_count": 1
+    },
+    {
+      "file": "results/hff_six_cluster_transfer.json",
+      "headline_result": "Plummer-like 2D negative delta 6/6; generic controls also 6/6 and win 5/6",
+      "independence": "six cluster targets; shared map-team/systematics",
+      "record_id": "HFF_MAP_TRANSFER_6_CLUSTER",
+      "status": "GENERIC_SMOOTHING_EXPLANATION",
+      "unit_count": 6
+    },
+    {
+      "file": "results/sidm_halo000_3d.json",
+      "headline_result": "Plummer 29.366%; Gaussian/top-hat approximately 29.44%",
+      "independence": "new public simulation-parametric target",
+      "record_id": "SIDM_CONCERTO_HALO000_3D",
+      "status": "DIRECTION_PASS_SPECIFICITY_FAIL",
+      "unit_count": 1
+    },
+    {
+      "file": "results/sidm_halo352_fresh_3d.json",
+      "headline_result": "Plummer 41.000%; Gaussian 42.129%; top-hat 42.581%",
+      "independence": "score-blind fresh public simulation-parametric target",
+      "record_id": "SIDM_CONCERTO_HALO352_FRESH_3D",
+      "status": "DIRECTION_PASS_SPECIFICITY_FAIL",
+      "unit_count": 1
+    },
+    {
+      "aggregate_specificity_audit_file": "results/aggregate_specificity_audit.json",
+      "file": "results/sparc_rotation_curve_heldout.json",
+      "fraction_grid_boundary_hit": true,
+      "frozen_fraction": 1.0,
+      "headline_result": "heldout shared adapter: chi2 208.845\u2192199.589; delta -9.256; 4.432%; 5/6 stable galaxies improved; aggregate Plummer rank retained but per-unit specificity 3/6",
+      "independence": "new SPARC public-data domain; shared f/eta held out; per-galaxy baseline nuisances fitted",
+      "operator_boundary": "FULL_SMOOTHED_PROFILE_REPLACEMENT_ENDPOINT_NOT_LEGACY_F0_30_MIXTURE",
+      "plummer_beats_both_controls_count": 3,
+      "record_id": "SPARC_ROTATION_CURVE_SHARED_ADAPTER",
+      "specificity_status": "AGGREGATE_RANKING_ARITHMETICALLY_TRUE_PER_UNIT_SPECIFICITY_NOT_ESTABLISHED",
+      "specificity_unit_count": 6,
+      "status": "PUBLIC_DATA_DEV_OPTIMIZATION_PLUS_HELDOUT_SHARED_ADAPTER_DIAGNOSTIC",
+      "unit_count": 7
+    },
+    {
+      "file": "results/jeans_dsph_heldout.json",
+      "headline_result": "adopted safe calibration selected f=0; exact baseline recovery; no adopted downlift",
+      "independence": "new dSph public-data domain; shared f/eta held out; per-galaxy NFW/beta nuisances fitted",
+      "method_relevance": "CANONICAL_DIRECT_SOURCE_ADOPTED_POLICY_EXACT_BASELINE_FORCED_DIAGNOSTIC_NOT_ADOPTED",
+      "record_id": "DSPH_SPHERICAL_JEANS_SHARED_ADAPTER",
+      "status": "NO_ADAPTER_UPLIFT_SAFE_FLOOR_SELECTED",
+      "unit_count": 2
+    },
+    {
+      "file": "results/jeans_dsph_formal_corrective_evaluation.json",
+      "headline_result": "post-exposure direct source: chi2 22.835648\u219222.834488; delta -0.001159; 0.005077%; 2/0 negative direction",
+      "independence": "Draco/Ursa Minor identities previously exposed during a superseded internal prototype; direct-source scores new but not fresh/unseen",
+      "method_relevance": "CANONICAL_DIRECT_SOURCE_CORRECTIVE_POST_EXPOSURE",
+      "record_id": "DSPH_JEANS_DIRECT_FORMAL_SOURCE_CORRECTIVE",
+      "status": "CORRECT_FORMAL_SOURCE_DIRECTIONAL_DELTA_NEGATIVE_BUT_MATERIALITY_NOT_ESTABLISHED",
+      "unit_count": 2
+    },
+    {
+      "aggregate_specificity_audit_file": "results/aggregate_specificity_audit.json",
+      "file": "results/xcop_hse_heldout.json",
+      "fraction_grid_boundary_hit": true,
+      "frozen_fraction": 1.0,
+      "headline_result": "untouched-cluster heldout: pressure chi2 145.095308\u2192140.737785; delta -4.357523; 3.0032%; 3/3 negative direction; aggregate Plummer rank retained but per-unit specificity 1/3",
+      "independence": "new X-COP public-profile domain; shared f/eta frozen before heldout scores; source profiles public; profile-consistency diagnostic",
+      "operator_boundary": "FULL_SMOOTHED_PROFILE_REPLACEMENT_ENDPOINT_NOT_LEGACY_F0_30_MIXTURE",
+      "plummer_beats_both_controls_count": 1,
+      "record_id": "XCOP_HYDROSTATIC_DIRECT_FORMAL_SOURCE",
+      "specificity_status": "AGGREGATE_RANKING_ARITHMETICALLY_TRUE_PER_UNIT_SPECIFICITY_NOT_ESTABLISHED",
+      "specificity_unit_count": 3,
+      "status": "PUBLIC_XCOP_PROFILE_DIRECT_EQUATION_DIAGNOSTIC",
+      "unit_count": 3
+    }
+  ]
+}

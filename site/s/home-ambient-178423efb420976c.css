@@ -1,0 +1,68 @@
+#home-ambient-audio {
+  position: fixed;
+  z-index: 50;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(12,12,12,.72);
+  color: #fff;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 3px 18px rgba(0,0,0,.16);
+  font-family: var(--home-cern-family, Georgia, serif);
+}
+#home-ambient-audio button,
+#home-ambient-audio summary {
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  padding: 11px;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  background: transparent;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#home-ambient-audio summary::-webkit-details-marker { display: none; }
+#home-ambient-audio button:hover,
+#home-ambient-audio summary:hover { background: rgba(255,255,255,.1); }
+#home-ambient-audio :is(button,summary,input):focus-visible { outline: 1px solid #fff; outline-offset: 2px; }
+#home-ambient-audio svg { display: block; width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+#home-ambient-audio [data-sound-waves] { display: none; }
+#home-ambient-audio[data-state="playing"] [data-sound-waves] { display: block; }
+#home-ambient-audio[data-state="playing"] [data-sound-slash] { display: none; }
+#home-ambient-audio .home-sound-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#home-ambient-audio .home-sound-volume { position: relative; }
+#home-ambient-audio .home-sound-panel {
+  position: absolute;
+  right: -4px;
+  bottom: 56px;
+  width: 198px;
+  box-sizing: border-box;
+  padding: 14px 16px 6px;
+  background: rgba(12,12,12,.94);
+  border-radius: 14px;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 3px 18px rgba(0,0,0,.2);
+}
+#home-ambient-audio .home-sound-panel label { display: flex; justify-content: space-between; font: 400 13px/1.4 var(--home-cern-family,Georgia,serif); letter-spacing: 0; color: #fff; }
+#home-ambient-audio input { box-sizing: border-box; width: 100%; min-height: 44px; margin: 0; padding: 0; cursor: pointer; accent-color: #fff; }
+@media (max-width: 767px) { #home-ambient-audio { right: max(12px,env(safe-area-inset-right)); bottom: max(12px,env(safe-area-inset-bottom)); } }
+
+/* Keep the explicit sound action visible while audio is off or awaiting activation. */
+#home-ambient-audio[data-state="off"] [data-audio-toggle],
+#home-ambient-audio[data-state="waiting"] [data-audio-toggle],
+#home-ambient-audio[data-state="error"] [data-audio-toggle] { width: auto; gap: 7px; padding-inline: 10px; }
+#home-ambient-audio[data-state="off"] .home-sound-label,
+#home-ambient-audio[data-state="waiting"] .home-sound-label,
+#home-ambient-audio[data-state="error"] .home-sound-label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: nowrap; font: 400 12px/1.2 var(--home-cern-family,Georgia,serif); }

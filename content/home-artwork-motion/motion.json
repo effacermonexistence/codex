@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "variant": "home-artwork-recursive-soft-v1",
+  "assetCommit": "ec3d330d83d98ceb4be32e6c54fc2b5c917e7aea",
+  "adoption": "Preserve recursion and liquid motion; move fixed point outside each circular viewport so no spiral center is visible; first main hero and woman unchanged",
+  "roles": {
+    "axiom": {
+      "videoUrl": "/s/motion-axiom-ee26cff59c2920ea.mp4",
+      "videoSha256": "ee26cff59c2920ea3affd8baa271a0f4cf61d4405355993b2da803c830ec7987",
+      "videoBytes": 27176674,
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "duration": 18,
+      "sourceSha256": "b9404bf108de86f1a698e562560f5f615339f42cb96d3ee0738a3f56572d2dec"
+    },
+    "archive": {
+      "videoUrl": "/s/motion-archive-88d12d1a4333305f.mp4",
+      "videoSha256": "88d12d1a4333305f1ba05b45141aa66d1d02df4cd1dfb79123391373934c7212",
+      "videoBytes": 27244649,
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "duration": 18,
+      "sourceSha256": "f072fcdc13e96ac0cdd40445d2944d795a1e2b75c0dab63c7e9b4d0fbd8e2af4"
+    },
+    "entity": {
+      "videoUrl": "/s/motion-entity-cc754b30f1d1ed70.mp4",
+      "videoSha256": "cc754b30f1d1ed70de3de4391bafb5bfbe15ac6e7d6d5b9e8b2c6cca5aae0983",
+      "videoBytes": 27141011,
+      "width": 1080,
+      "height": 1080,
+      "fps": 30,
+      "duration": 18,
+      "sourceSha256": "0fee42235f068ca9762b8c4e01bc493fe16c072688db7e8bdece84960ea80489"
+    }
+  },
+  "renderMethod": "KEEP_RECURSION: 24-depth nonrotating affine recursive composition, fixedpoint(-.75,.5) outside viewport/circle at every frame, scale .88+.008sin, accepted nonradial .019 liquid field and .105 quintic feather; original ownsource bytes/crop/phase preserved"
+}

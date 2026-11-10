@@ -1,0 +1,186 @@
+/* The first landing is the reference: full body wordmark, landing-size
+   title, then existing subtitle/body roles. Never resize the footer. */
+html body main .site-section-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 1rem;
+  text-align: center;
+}
+html body main .site-section-heading > .site-body-wordmark-link {
+  flex: none;
+  position: static;
+  transform: none !important;
+}
+html body main#page .site-section-heading .site-section-name[data-site-text-size="title"] {
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  font-family: "PT Serif", Georgia, serif;
+  font-size: var(--site-reference-heading-size) !important;
+  font-weight: 400;
+  line-height: var(--body-font-line-height, 1.5em);
+  white-space: nowrap;
+}
+html body main [data-section-heading-grid] { height: auto; }
+html body main .cosmology > .site-section-heading { margin-bottom: clamp(3rem, 6vw, 5rem); }
+html body main [data-theory-acronym] { white-space: nowrap !important; }
+@media (max-width:767px) {
+  /* APPLY reference: the same native logo rows, heading row, gutters and type. */
+  html body main#page [data-apply-mobile-section] { display: block !important; }
+  html body main#page [data-apply-mobile-section] > .content-wrapper {
+    padding-top: 6.6vmax !important;
+    padding-bottom: 6.6vmax !important;
+  }
+  html body main#page [data-apply-mobile-grid] { grid-auto-rows: minmax(24px, auto); }
+  html body main#page [data-apply-mobile-grid] > [data-section-heading-grid] { grid-row: 2 / 4 !important; }
+  html body main#page [data-apply-mobile-grid] .site-section-heading {
+    display: block; position: relative; height: 100%; gap: 0; padding: 0; margin: 0;
+  }
+  html body main#page [data-apply-mobile-grid] .site-section-heading > .site-body-wordmark-link {
+    position: absolute;
+    left: calc((100% - var(--body-wordmark-width)) / 2);
+    top: 50%;
+    transform: translateY(-50%) !important;
+  }
+  html body main#page .site-section-heading .site-section-name { display: none; }
+  html body main#page [data-apply-mobile-type] :is(h1,h2,h3,h4,h5,h6,.sqsrte-large) {
+    font-family: var(--heading-font-font-family, "Gilda Display") !important;
+    font-size: var(--site-reference-heading-size) !important;
+    font-style: var(--heading-font-font-style, normal);
+    font-weight: var(--heading-font-font-weight, 400) !important;
+    line-height: calc(var(--heading-font-line-height, 1.2em) * (1 + (1 - var(--heading-3-size-value, 2.2)) / 25)) !important;
+    letter-spacing: var(--heading-font-letter-spacing, -.02em);
+  }
+  html body main#page [data-apply-mobile-type] :is(h1,h2,h3,h4,h5,h6,.sqsrte-large) :is(strong,b,a,span):not(.katex,.katex *,math,math *) {
+    font-family: inherit !important; font-weight: inherit !important; line-height: inherit; letter-spacing: inherit;
+  }
+  html body main#page [data-apply-mobile-type] :is(p:not(.sqsrte-large),li) {
+    font-family: var(--body-font-font-family, "PT Serif") !important;
+    font-size: 1rem !important;
+    line-height: var(--body-font-line-height, 1.5em) !important;
+  }
+  html body main#page [data-apply-mobile-action] { justify-self: stretch; width: 100%; max-width: 100%; }
+  html body main#page [data-apply-mobile-action] :is(.sqs-block-button-container,.sqs-block-alignment-wrapper) {
+    justify-content: center !important; align-items: center !important;
+  }
+  html body main#page [data-apply-mobile-action] .sqs-block-button-element { min-width: 0 !important; width: fit-content !important; }
+  html body main#page a.sqs-block-button-element[data-theory-action] {
+    font-size: min(16px, 3.786vw) !important; white-space: nowrap !important; overflow-wrap: normal; word-break: normal; hyphens: none;
+  }
+  /* Custom Cosmology intro uses the same APPLY grid coordinates without
+     changing its background, chapter DOM or the shared footer's container. */
+  html body main#page .cosmology[data-apply-mobile-cosmology] {
+    padding-top: calc(var(--header-height, 80.175px) + 6.6vmax);
+  }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .site-section-heading {
+    display: block; position: relative; height: 210px; padding: 0; margin: 0;
+  }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .site-section-heading > .site-body-wordmark-link {
+    position: absolute; left: calc((100% - var(--body-wordmark-width)) / 2); top: 64.5px;
+    transform: translateY(-50%) !important;
+  }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .hero {
+    display: grid; grid-template-rows: repeat(3,minmax(24px,auto)); grid-auto-rows: auto; row-gap: 11px;
+    margin: 0 auto 60px; width: 100%;
+  }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .hero > .eyebrow { display: none; }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .hero > h1 { grid-row: 1 / 3; margin: 0; align-self: start; }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .hero > p:first-of-type { grid-row: 4; margin: 0; }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .hero > .katex-display { grid-row: 5; }
+  html body main#page .cosmology[data-apply-mobile-cosmology] > .hero > p:last-child { grid-row: 6; margin: 0; }
+}
+
+/* Preserve the authored center/left alignment. Indexes use content height,
+   not old fixed row spans, so every title/action pair has the same whitespace.
+   Gap values follow the existing centered Cosmology chapter-card rhythm. */
+html body main#page [data-section-entry-flow] {
+  display:flex !important; flex-direction:column; align-items:center;
+  height:auto !important; min-height:0 !important; gap:0 !important;
+}
+html body main#page [data-section-entry-flow] > .fe-block {
+  flex:0 0 auto; grid-area:auto !important; height:auto !important; min-height:0 !important;
+}
+html body main#page [data-section-entry-flow] > [data-section-heading-grid] {
+  margin:0; align-self:center;
+}
+html body main#page [data-section-entry-flow] > [data-index-role] {
+  display:block; width:calc((min(1500px,92vw) - 22px)/3); max-width:100%;
+}
+html body main#page [data-section-entry-flow] [data-index-role] :is(.sqs-block,.sqs-block-content,.sqs-html-content) {
+  height:auto !important; min-height:0 !important; padding-block:0 !important;
+}
+html body main#page [data-section-entry-flow] [data-index-empty] { display:none !important; }
+html body main#page [data-section-entry-flow] > [data-index-role="heading"] { margin:164px 0 0; }
+html body main#page [data-section-entry-flow] > [data-index-first] { margin-top:128px; }
+html body main#page [data-section-entry-flow] [data-index-role="heading"] :is(h1,h2,h3,h4,h5,h6,.sqsrte-large) { margin:0; }
+html body main#page [data-section-entry-flow="code"] [data-index-role="heading"] h2 { margin-bottom:32px; }
+html body main#page [data-section-entry-flow] > [data-index-role="action"] { margin:32px 0 0; }
+html body main#page [data-section-entry-flow="code"] > [data-index-role="action"] { margin-top:44px; }
+html body main#page [data-section-entry-flow] [data-index-role="action"] :is(.sqs-block-button-container,.sqs-block-alignment-wrapper) {
+  justify-content:center !important; align-items:center !important; text-align:center;
+}
+html body main#page [data-section-entry-flow="archive"] > [data-index-role="heading"],
+html body main#page [data-section-entry-flow="archive"] > [data-index-role="support"] { width:min(1100px,92vw); }
+html body main#page [data-section-entry-flow="archive"] > [data-index-role="support"] { margin:32px 0 0; }
+html body main#page [data-section-entry-flow="archive"] [data-index-role="support"] p { margin-top:0; }
+html body main#page [data-archive-intro-type] > h2 { margin-top:0; margin-bottom:32px; }
+html body main#page [data-archive-intro-type] > :is(h1,h2,h3,h4,h5,h6,p):empty { display:none; }
+@media (max-width:767px) {
+  html body main#page [data-section-entry-flow] > [data-section-heading-grid] {
+    height:59px !important; margin-top:35px;
+  }
+  html body main#page [data-section-entry-flow] .site-section-heading {
+    display:flex; flex-direction:column; justify-content:center; align-items:center;
+    height:100%; gap:0; padding:0; margin:0;
+  }
+  html body main#page [data-section-entry-flow] .site-section-heading > .site-body-wordmark-link {
+    position:static; top:auto; left:auto; transform:none !important;
+  }
+  html body main#page [data-section-entry-flow] > [data-index-role] { width:88vw; max-width:100%; }
+  html body main#page [data-section-entry-flow] > [data-index-role="heading"] { margin-top:140px; }
+  html body main#page [data-section-entry-flow] > [data-index-first] { margin-top:116px; }
+  html body main#page [data-section-entry-flow] > [data-index-role="action"] { margin-top:24px; }
+  html body main#page [data-section-entry-flow="code"] > [data-index-role="action"] { margin-top:12px; }
+  html body main#page [data-section-entry-flow="archive"] > [data-index-role="heading"],
+  html body main#page [data-section-entry-flow="archive"] > [data-index-role="support"] { width:88vw; }
+}
+
+/* Explicit flow gaps avoid native paragraph-margin collapse in index entries. */
+html body main#page [data-section-entry-flow] [data-index-role="heading"] .sqs-html-content {
+  display:flex; flex-direction:column; gap:0;
+}
+html body main#page [data-section-entry-flow] [data-index-role="heading"] .sqs-html-content > :is(h1,h2,h3,h4,h5,h6,p) { margin:0 !important; }
+html body main#page [data-section-entry-flow="code"] [data-index-role="heading"] .sqs-html-content { gap:32px; }
+html body main#page [data-section-entry-flow="archive"] [data-index-role="support"] .sqs-html-content { display:flex; flex-direction:column; gap:8px; }
+html body main#page [data-section-entry-flow="archive"] [data-index-role="support"] p { margin:0 !important; }
+html body main#page [data-archive-intro-type] [data-index-empty] { display:none !important; }
+/* Only the three text-only field introductions, never artwork/media grids. */
+html body main#page [data-archive-intro-flow] {
+  display:flex !important; flex-direction:column; align-items:center; gap:32px !important;
+  height:auto !important; min-height:0 !important;
+}
+html body main#page [data-archive-intro-flow] > [data-archive-intro-block] {
+  display:block; grid-area:auto !important; flex:0 0 auto;
+  height:auto !important; min-height:0 !important; width:min(1100px,92vw); max-width:100%; margin:0;
+}
+html body main#page [data-archive-intro-flow] :is(.sqs-block,.sqs-block-content,.sqs-html-content) { height:auto !important; min-height:0 !important; padding-block:0 !important; }
+html body main#page [data-archive-intro-flow] [data-archive-intro-block="heading"] :is(h1,h2,h3,h4,h5,h6) { margin:0 !important; }
+html body main#page [data-archive-intro-flow] [data-archive-intro-block="support"] :is(p,pre):first-child { margin-top:0 !important; }
+@media (max-width:767px) {
+  html body main#page [data-archive-intro-flow] > [data-archive-intro-block] { width:88vw; }
+}
+
+/* Mobile chapter typography follows the same two-role hierarchy as the
+   accepted desktop lists. Keep the existing larger number tier and change
+   only CODE/Cosmology descriptions, not their families, weights or alignment. */
+@media (max-width:767px) {
+  html body main#page [data-section-entry-flow="code"] p.sqsrte-large[data-site-text-size="chapter-native"],
+  html body main#page .cosmology-toc .chapter-card .chapter-copy p.sqsrte-large {
+    font-size: var(--site-landing-title-size) !important;
+  }
+}

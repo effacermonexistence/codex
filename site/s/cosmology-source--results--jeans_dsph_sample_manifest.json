@@ -1,0 +1,722 @@
+{
+  "dev": [
+    "Sextans",
+    "Fornax"
+  ],
+  "dispersion_profiles": {
+    "Carina": {
+      "bin_count": 14,
+      "binning_method": "equal-count radial bins; n_bins=min(20,max(8,round(sqrt(N)/2)))",
+      "bins": [
+        {
+          "local_mean_residual_kms": -0.6009521156826767,
+          "member_count": 54,
+          "radius_kpc": 0.04702460920759029,
+          "radius_max_kpc": 0.07384539776447256,
+          "radius_min_kpc": 0.007469510125598314,
+          "sigma_error_kms": 0.7469368145670903,
+          "sigma_los_kms": 5.664847590877468
+        },
+        {
+          "local_mean_residual_kms": 0.19973196787932693,
+          "member_count": 54,
+          "radius_kpc": 0.08685163603811591,
+          "radius_max_kpc": 0.10161515497261998,
+          "radius_min_kpc": 0.07488584697040307,
+          "sigma_error_kms": 0.8315274654740799,
+          "sigma_los_kms": 7.28153168013056
+        },
+        {
+          "local_mean_residual_kms": -0.34605898182361133,
+          "member_count": 54,
+          "radius_kpc": 0.11134963375310053,
+          "radius_max_kpc": 0.12310342691486752,
+          "radius_min_kpc": 0.10226081096027365,
+          "sigma_error_kms": 0.6682085124037693,
+          "sigma_los_kms": 4.669431365466042
+        },
+        {
+          "local_mean_residual_kms": -0.1755790015522291,
+          "member_count": 54,
+          "radius_kpc": 0.134748825850235,
+          "radius_max_kpc": 0.15012298378470737,
+          "radius_min_kpc": 0.12334630805155009,
+          "sigma_error_kms": 0.7853595357560986,
+          "sigma_los_kms": 6.127872143512332
+        },
+        {
+          "local_mean_residual_kms": -0.15388957615005552,
+          "member_count": 53,
+          "radius_kpc": 0.15687985341068775,
+          "radius_max_kpc": 0.1659229765898589,
+          "radius_min_kpc": 0.150471289130939,
+          "sigma_error_kms": 0.8080820216578909,
+          "sigma_los_kms": 6.898260545137536
+        },
+        {
+          "local_mean_residual_kms": -1.063688383112464,
+          "member_count": 53,
+          "radius_kpc": 0.1779021824485838,
+          "radius_max_kpc": 0.18615740536314193,
+          "radius_min_kpc": 0.16600151852930098,
+          "sigma_error_kms": 0.7029238547555894,
+          "sigma_los_kms": 5.449930928780369
+        },
+        {
+          "local_mean_residual_kms": -0.5012774942865343,
+          "member_count": 53,
+          "radius_kpc": 0.19596778385025254,
+          "radius_max_kpc": 0.20859713554383677,
+          "radius_min_kpc": 0.18647188324661224,
+          "sigma_error_kms": 0.7102966986228324,
+          "sigma_los_kms": 5.703790874488694
+        },
+        {
+          "local_mean_residual_kms": -1.343352772071152,
+          "member_count": 53,
+          "radius_kpc": 0.21726433713197288,
+          "radius_max_kpc": 0.22589342148987965,
+          "radius_min_kpc": 0.20864202879855281,
+          "sigma_error_kms": 0.8909799748869349,
+          "sigma_los_kms": 7.509510622049491
+        },
+        {
+          "local_mean_residual_kms": 1.0688603009620115,
+          "member_count": 53,
+          "radius_kpc": 0.23703028409327984,
+          "radius_max_kpc": 0.2475769566077275,
+          "radius_min_kpc": 0.22733812043237075,
+          "sigma_error_kms": 0.9277305739379669,
+          "sigma_los_kms": 8.042933961033707
+        },
+        {
+          "local_mean_residual_kms": 0.9035427288304505,
+          "member_count": 53,
+          "radius_kpc": 0.2588135641909766,
+          "radius_max_kpc": 0.2707800092324156,
+          "radius_min_kpc": 0.2479010368707123,
+          "sigma_error_kms": 0.8543723600908245,
+          "sigma_los_kms": 7.173869992174175
+        },
+        {
+          "local_mean_residual_kms": 0.4950946990319272,
+          "member_count": 53,
+          "radius_kpc": 0.29275398078293746,
+          "radius_max_kpc": 0.3161375525778316,
+          "radius_min_kpc": 0.2724951390735834,
+          "sigma_error_kms": 0.687631475483652,
+          "sigma_los_kms": 5.544495344745676
+        },
+        {
+          "local_mean_residual_kms": -0.04050615865118787,
+          "member_count": 53,
+          "radius_kpc": 0.3418526034336541,
+          "radius_max_kpc": 0.3780327706932831,
+          "radius_min_kpc": 0.3164117653577,
+          "sigma_error_kms": 0.6568049761190453,
+          "sigma_los_kms": 5.435095711042494
+        },
+        {
+          "local_mean_residual_kms": 0.7741313604305549,
+          "member_count": 53,
+          "radius_kpc": 0.41429284078378453,
+          "radius_max_kpc": 0.4743002830312823,
+          "radius_min_kpc": 0.37897843767252787,
+          "sigma_error_kms": 0.7576287658176004,
+          "sigma_los_kms": 5.993131065326723
+        },
+        {
+          "local_mean_residual_kms": -1.341901416837411,
+          "member_count": 53,
+          "radius_kpc": 0.6419441323734363,
+          "radius_max_kpc": 1.4757225533250278,
+          "radius_min_kpc": 0.47663730667824017,
+          "sigma_error_kms": 0.8104318509433341,
+          "sigma_los_kms": 6.993414031887567
+        }
+      ],
+      "dispersion_method": "heteroscedastic Gaussian MLE with profile-curvature uncertainty",
+      "gradient_coefficients_kms": [
+        223.32441330555383,
+        0.893358678116771,
+        0.4634054339197321
+      ],
+      "gradient_method": "ordinary least squares v=intercept+gx*x+gy*y; residuals binned",
+      "member_count": 746
+    },
+    "Fornax": {
+      "bin_count": 20,
+      "binning_method": "equal-count radial bins; n_bins=min(20,max(8,round(sqrt(N)/2)))",
+      "bins": [
+        {
+          "local_mean_residual_kms": 2.104193678323245,
+          "member_count": 114,
+          "radius_kpc": 0.09973480493715489,
+          "radius_max_kpc": 0.14278116633528706,
+          "radius_min_kpc": 0.018708890769444642,
+          "sigma_error_kms": 0.6929068412828108,
+          "sigma_los_kms": 10.089933035306252
+        },
+        {
+          "local_mean_residual_kms": -0.6273929873225816,
+          "member_count": 114,
+          "radius_kpc": 0.1835308980209524,
+          "radius_max_kpc": 0.21121724184954654,
+          "radius_min_kpc": 0.14327201439357148,
+          "sigma_error_kms": 0.733196568520944,
+          "sigma_los_kms": 10.591201437188541
+        },
+        {
+          "local_mean_residual_kms": 0.38180643906901296,
+          "member_count": 114,
+          "radius_kpc": 0.23638183081869224,
+          "radius_max_kpc": 0.256141063190423,
+          "radius_min_kpc": 0.21325775072042055,
+          "sigma_error_kms": 0.722434040385525,
+          "sigma_los_kms": 10.343202692679832
+        },
+        {
+          "local_mean_residual_kms": -0.6442826505288591,
+          "member_count": 114,
+          "radius_kpc": 0.28059203261462484,
+          "radius_max_kpc": 0.30353340705162185,
+          "radius_min_kpc": 0.25645458172802355,
+          "sigma_error_kms": 0.7365174674139949,
+          "sigma_los_kms": 10.580825049942407
+        },
+        {
+          "local_mean_residual_kms": -2.245980384799047,
+          "member_count": 114,
+          "radius_kpc": 0.326086200773442,
+          "radius_max_kpc": 0.34351913908820847,
+          "radius_min_kpc": 0.3037456312236334,
+          "sigma_error_kms": 0.7129006949276858,
+          "sigma_los_kms": 10.207727152320976
+        },
+        {
+          "local_mean_residual_kms": 0.1438013597086512,
+          "member_count": 114,
+          "radius_kpc": 0.36388597422464775,
+          "radius_max_kpc": 0.390286612349394,
+          "radius_min_kpc": 0.34357126184508224,
+          "sigma_error_kms": 0.6405953500934144,
+          "sigma_los_kms": 9.211827686616791
+        },
+        {
+          "local_mean_residual_kms": 1.0000582674449086,
+          "member_count": 114,
+          "radius_kpc": 0.4109138086265295,
+          "radius_max_kpc": 0.4319335123252215,
+          "radius_min_kpc": 0.39078559465720397,
+          "sigma_error_kms": 0.7760728875255665,
+          "sigma_los_kms": 11.417276490926481
+        },
+        {
+          "local_mean_residual_kms": -1.6601390448289914,
+          "member_count": 114,
+          "radius_kpc": 0.45001215136255057,
+          "radius_max_kpc": 0.47320128286653784,
+          "radius_min_kpc": 0.43200023022305434,
+          "sigma_error_kms": 0.7186970293350055,
+          "sigma_los_kms": 10.474221026411449
+        },
+        {
+          "local_mean_residual_kms": 0.1813501546084794,
+          "member_count": 114,
+          "radius_kpc": 0.49164417281917405,
+          "radius_max_kpc": 0.5157744943590623,
+          "radius_min_kpc": 0.4733989302813477,
+          "sigma_error_kms": 0.6779829172922761,
+          "sigma_los_kms": 9.791672095093706
+        },
+        {
+          "local_mean_residual_kms": -0.9530444856772644,
+          "member_count": 114,
+          "radius_kpc": 0.5387673959024053,
+          "radius_max_kpc": 0.5601061219822029,
+          "radius_min_kpc": 0.5163413332643535,
+          "sigma_error_kms": 0.7175059367178481,
+          "sigma_los_kms": 10.320892661150987
+        },
+        {
+          "local_mean_residual_kms": -0.32106562080696155,
+          "member_count": 114,
+          "radius_kpc": 0.5838717715653012,
+          "radius_max_kpc": 0.6184328198307837,
+          "radius_min_kpc": 0.5616999119757015,
+          "sigma_error_kms": 0.7322277434718081,
+          "sigma_los_kms": 10.589958970189894
+        },
+        {
+          "local_mean_residual_kms": -1.088882014102721,
+          "member_count": 114,
+          "radius_kpc": 0.6434742177081197,
+          "radius_max_kpc": 0.6740466505534701,
+          "radius_min_kpc": 0.6192002547167295,
+          "sigma_error_kms": 0.6823473651615742,
+          "sigma_los_kms": 9.936546812302176
+        },
+        {
+          "local_mean_residual_kms": -0.8568262171321558,
+          "member_count": 114,
+          "radius_kpc": 0.7051174086492777,
+          "radius_max_kpc": 0.7356477532164275,
+          "radius_min_kpc": 0.674115484290813,
+          "sigma_error_kms": 0.6887970698731515,
+          "sigma_los_kms": 9.90346317813107
+        },
+        {
+          "local_mean_residual_kms": 0.5563005956871427,
+          "member_count": 114,
+          "radius_kpc": 0.761431485708099,
+          "radius_max_kpc": 0.7926894690016765,
+          "radius_min_kpc": 0.7359606225311475,
+          "sigma_error_kms": 0.7570185879421683,
+          "sigma_los_kms": 10.836560350089215
+        },
+        {
+          "local_mean_residual_kms": -1.5162200048005718,
+          "member_count": 114,
+          "radius_kpc": 0.8237910201780443,
+          "radius_max_kpc": 0.8534144767158787,
+          "radius_min_kpc": 0.793308822504071,
+          "sigma_error_kms": 0.641285152248687,
+          "sigma_los_kms": 9.345491019268469
+        },
+        {
+          "local_mean_residual_kms": 1.2369847292334135,
+          "member_count": 114,
+          "radius_kpc": 0.8886011733658898,
+          "radius_max_kpc": 0.9237269081105991,
+          "radius_min_kpc": 0.8542000270795255,
+          "sigma_error_kms": 0.6175982831497115,
+          "sigma_los_kms": 8.949047261232344
+        },
+        {
+          "local_mean_residual_kms": 1.5145470358688944,
+          "member_count": 114,
+          "radius_kpc": 0.9534824059903808,
+          "radius_max_kpc": 0.9979830919110063,
+          "radius_min_kpc": 0.9237381133935195,
+          "sigma_error_kms": 0.6256050912682092,
+          "sigma_los_kms": 9.20217811721405
+        },
+        {
+          "local_mean_residual_kms": 1.5065425583267484,
+          "member_count": 114,
+          "radius_kpc": 1.0540826623830695,
+          "radius_max_kpc": 1.1118657891915096,
+          "radius_min_kpc": 0.9981686789361581,
+          "sigma_error_kms": 0.6277277284721748,
+          "sigma_los_kms": 9.242578940458095
+        },
+        {
+          "local_mean_residual_kms": 1.0629106768206327,
+          "member_count": 114,
+          "radius_kpc": 1.1801485425718385,
+          "radius_max_kpc": 1.277010362894919,
+          "radius_min_kpc": 1.1124105161286924,
+          "sigma_error_kms": 0.592406498693888,
+          "sigma_los_kms": 8.78958768102183
+        },
+        {
+          "local_mean_residual_kms": 0.33803406250733914,
+          "member_count": 113,
+          "radius_kpc": 1.373673989404874,
+          "radius_max_kpc": 1.7851315874707296,
+          "radius_min_kpc": 1.277436846378099,
+          "sigma_error_kms": 0.5141139347704916,
+          "sigma_los_kms": 7.456202960503871
+        }
+      ],
+      "dispersion_method": "heteroscedastic Gaussian MLE with profile-curvature uncertainty",
+      "gradient_coefficients_kms": [
+        55.964619964289994,
+        2.0576249228091763,
+        -1.25926818367863
+      ],
+      "gradient_method": "ordinary least squares v=intercept+gx*x+gy*y; residuals binned",
+      "member_count": 2279
+    },
+    "Sculptor": {
+      "bin_count": 18,
+      "binning_method": "equal-count radial bins; n_bins=min(20,max(8,round(sqrt(N)/2)))",
+      "bins": [
+        {
+          "local_mean_residual_kms": -0.4741355693796262,
+          "member_count": 75,
+          "radius_kpc": 0.03749458036726635,
+          "radius_max_kpc": 0.0509912833479665,
+          "radius_min_kpc": 0.002897006992519587,
+          "sigma_error_kms": 0.7618873111736046,
+          "sigma_los_kms": 8.044091841242366
+        },
+        {
+          "local_mean_residual_kms": -0.28051165091288544,
+          "member_count": 75,
+          "radius_kpc": 0.06261705570575327,
+          "radius_max_kpc": 0.07629340314466734,
+          "radius_min_kpc": 0.051491994418748986,
+          "sigma_error_kms": 0.7491658973446167,
+          "sigma_los_kms": 7.564163206509225
+        },
+        {
+          "local_mean_residual_kms": -1.3607646732481464,
+          "member_count": 75,
+          "radius_kpc": 0.08457868970283933,
+          "radius_max_kpc": 0.09281355562312003,
+          "radius_min_kpc": 0.07632999517390296,
+          "sigma_error_kms": 0.7573289636003679,
+          "sigma_los_kms": 8.272522447959016
+        },
+        {
+          "local_mean_residual_kms": -0.17495629217756645,
+          "member_count": 75,
+          "radius_kpc": 0.1010174821164285,
+          "radius_max_kpc": 0.11055007644988042,
+          "radius_min_kpc": 0.09295748430705397,
+          "sigma_error_kms": 0.7363209498351816,
+          "sigma_los_kms": 8.112786961516782
+        },
+        {
+          "local_mean_residual_kms": -0.13717738288122985,
+          "member_count": 75,
+          "radius_kpc": 0.12170267289774186,
+          "radius_max_kpc": 0.1303744712109442,
+          "radius_min_kpc": 0.1110083628215539,
+          "sigma_error_kms": 0.712821608434542,
+          "sigma_los_kms": 7.560509690655169
+        },
+        {
+          "local_mean_residual_kms": -0.23349156289658168,
+          "member_count": 75,
+          "radius_kpc": 0.13634725310612253,
+          "radius_max_kpc": 0.14581170665903212,
+          "radius_min_kpc": 0.1305106602187068,
+          "sigma_error_kms": 0.6763223521621792,
+          "sigma_los_kms": 6.9740606034751735
+        },
+        {
+          "local_mean_residual_kms": 1.5867438608438238,
+          "member_count": 75,
+          "radius_kpc": 0.15221809250415033,
+          "radius_max_kpc": 0.1618798765916169,
+          "radius_min_kpc": 0.145850167769193,
+          "sigma_error_kms": 0.8481074865951846,
+          "sigma_los_kms": 9.810555237515485
+        },
+        {
+          "local_mean_residual_kms": -1.374565836020587,
+          "member_count": 75,
+          "radius_kpc": 0.16956502549370767,
+          "radius_max_kpc": 0.17879276419157028,
+          "radius_min_kpc": 0.1619852765604456,
+          "sigma_error_kms": 0.8470436951438711,
+          "sigma_los_kms": 9.502646418747043
+        },
+        {
+          "local_mean_residual_kms": 1.3109779800129606,
+          "member_count": 75,
+          "radius_kpc": 0.18728155904746546,
+          "radius_max_kpc": 0.19871272364121997,
+          "radius_min_kpc": 0.17882731428894102,
+          "sigma_error_kms": 0.7063584200507397,
+          "sigma_los_kms": 8.06163881845259
+        },
+        {
+          "local_mean_residual_kms": -0.9276177634883558,
+          "member_count": 75,
+          "radius_kpc": 0.20780978664341643,
+          "radius_max_kpc": 0.2158245821449212,
+          "radius_min_kpc": 0.19900310810073993,
+          "sigma_error_kms": 0.7610874074314117,
+          "sigma_los_kms": 8.514521484377076
+        },
+        {
+          "local_mean_residual_kms": -0.11787764578239912,
+          "member_count": 75,
+          "radius_kpc": 0.22530258429062514,
+          "radius_max_kpc": 0.2360061403648017,
+          "radius_min_kpc": 0.21611705459596692,
+          "sigma_error_kms": 0.8071672490921444,
+          "sigma_los_kms": 8.900776002101178
+        },
+        {
+          "local_mean_residual_kms": 0.8973980758566923,
+          "member_count": 75,
+          "radius_kpc": 0.25140631353835297,
+          "radius_max_kpc": 0.26840311737822997,
+          "radius_min_kpc": 0.23628832618544057,
+          "sigma_error_kms": 0.8412409096590474,
+          "sigma_los_kms": 9.770357343695308
+        },
+        {
+          "local_mean_residual_kms": -0.23788473381821928,
+          "member_count": 75,
+          "radius_kpc": 0.2821663309313692,
+          "radius_max_kpc": 0.29458668247460057,
+          "radius_min_kpc": 0.26844870429072776,
+          "sigma_error_kms": 0.7706860612990695,
+          "sigma_los_kms": 8.762853861423546
+        },
+        {
+          "local_mean_residual_kms": 0.49101577702433796,
+          "member_count": 75,
+          "radius_kpc": 0.31588621024657726,
+          "radius_max_kpc": 0.33338461412188375,
+          "radius_min_kpc": 0.2952324373261217,
+          "sigma_error_kms": 0.8404909016425869,
+          "sigma_los_kms": 9.703966585390686
+        },
+        {
+          "local_mean_residual_kms": -0.444368407533017,
+          "member_count": 75,
+          "radius_kpc": 0.3596390838442525,
+          "radius_max_kpc": 0.3892069388181511,
+          "radius_min_kpc": 0.3345369268915725,
+          "sigma_error_kms": 0.7545411944996114,
+          "sigma_los_kms": 8.428357918651722
+        },
+        {
+          "local_mean_residual_kms": -0.2158129175949922,
+          "member_count": 75,
+          "radius_kpc": 0.4314210240819305,
+          "radius_max_kpc": 0.479121462642203,
+          "radius_min_kpc": 0.3893542225838623,
+          "sigma_error_kms": 0.7175844744177498,
+          "sigma_los_kms": 8.288786815347148
+        },
+        {
+          "local_mean_residual_kms": -0.37042639765975655,
+          "member_count": 75,
+          "radius_kpc": 0.5649719272361174,
+          "radius_max_kpc": 0.6612470857254941,
+          "radius_min_kpc": 0.4798953126549436,
+          "sigma_error_kms": 0.8473383395896409,
+          "sigma_los_kms": 9.775426623607894
+        },
+        {
+          "local_mean_residual_kms": 2.787427256552204,
+          "member_count": 74,
+          "radius_kpc": 0.8262681356915875,
+          "radius_max_kpc": 1.3366113138827909,
+          "radius_min_kpc": 0.661375776810175,
+          "sigma_error_kms": 0.8156383307196216,
+          "sigma_los_kms": 9.54338786692483
+        }
+      ],
+      "dispersion_method": "heteroscedastic Gaussian MLE with profile-curvature uncertainty",
+      "gradient_coefficients_kms": [
+        111.4508560277386,
+        -1.6563632187625035,
+        -3.1513610954190376
+      ],
+      "gradient_method": "ordinary least squares v=intercept+gx*x+gy*y; residuals binned",
+      "member_count": 1349
+    },
+    "Sextans": {
+      "bin_count": 10,
+      "binning_method": "equal-count radial bins; n_bins=min(20,max(8,round(sqrt(N)/2)))",
+      "bins": [
+        {
+          "local_mean_residual_kms": -1.9844197579086857,
+          "member_count": 40,
+          "radius_kpc": 0.05949376938453538,
+          "radius_max_kpc": 0.0965305771472048,
+          "radius_min_kpc": 0.006017012950279896,
+          "sigma_error_kms": 0.8206520861275242,
+          "sigma_los_kms": 5.902831609141887
+        },
+        {
+          "local_mean_residual_kms": 0.49812022761755315,
+          "member_count": 40,
+          "radius_kpc": 0.12290783056543958,
+          "radius_max_kpc": 0.1466007317307362,
+          "radius_min_kpc": 0.09657135454732015,
+          "sigma_error_kms": 0.9174480248642294,
+          "sigma_los_kms": 7.408691367791427
+        },
+        {
+          "local_mean_residual_kms": 0.6196817812264308,
+          "member_count": 40,
+          "radius_kpc": 0.1722981300550484,
+          "radius_max_kpc": 0.19260336727812516,
+          "radius_min_kpc": 0.14792895547064353,
+          "sigma_error_kms": 0.8375632907683412,
+          "sigma_los_kms": 6.35654818466512
+        },
+        {
+          "local_mean_residual_kms": 2.2339121083086417,
+          "member_count": 40,
+          "radius_kpc": 0.2123110593935169,
+          "radius_max_kpc": 0.2232733889012613,
+          "radius_min_kpc": 0.19358973674288335,
+          "sigma_error_kms": 0.9101777719652179,
+          "sigma_los_kms": 7.118316600462267
+        },
+        {
+          "local_mean_residual_kms": 1.810031086379507,
+          "member_count": 40,
+          "radius_kpc": 0.24242829254181725,
+          "radius_max_kpc": 0.26692258792407864,
+          "radius_min_kpc": 0.22365439253648056,
+          "sigma_error_kms": 0.9037208210942969,
+          "sigma_los_kms": 7.210724293694699
+        },
+        {
+          "local_mean_residual_kms": -0.054140544341523135,
+          "member_count": 40,
+          "radius_kpc": 0.2911043511507564,
+          "radius_max_kpc": 0.32439688739514666,
+          "radius_min_kpc": 0.2676473965066212,
+          "sigma_error_kms": 0.8739354063424698,
+          "sigma_los_kms": 6.675280198277665
+        },
+        {
+          "local_mean_residual_kms": -0.7584635849565623,
+          "member_count": 40,
+          "radius_kpc": 0.3542855774657219,
+          "radius_max_kpc": 0.37434612055037436,
+          "radius_min_kpc": 0.32489525507309963,
+          "sigma_error_kms": 0.8638245528190274,
+          "sigma_los_kms": 6.770006893335215
+        },
+        {
+          "local_mean_residual_kms": 1.0946848270937293,
+          "member_count": 39,
+          "radius_kpc": 0.4085531694258698,
+          "radius_max_kpc": 0.4486352367810199,
+          "radius_min_kpc": 0.37504083175748726,
+          "sigma_error_kms": 0.8529027830979196,
+          "sigma_los_kms": 6.552694730070397
+        },
+        {
+          "local_mean_residual_kms": -2.0756281731907715,
+          "member_count": 39,
+          "radius_kpc": 0.5034341778965816,
+          "radius_max_kpc": 0.5804468893885399,
+          "radius_min_kpc": 0.4545221906332179,
+          "sigma_error_kms": 0.8088675499395717,
+          "sigma_los_kms": 6.284395914512878
+        },
+        {
+          "local_mean_residual_kms": -1.6739535160453165,
+          "member_count": 39,
+          "radius_kpc": 0.7644671487026616,
+          "radius_max_kpc": 1.5793563899370737,
+          "radius_min_kpc": 0.5936184894713619,
+          "sigma_error_kms": 0.7503440974484622,
+          "sigma_los_kms": 6.023524730921057
+        }
+      ],
+      "dispersion_method": "heteroscedastic Gaussian MLE with profile-curvature uncertainty",
+      "gradient_coefficients_kms": [
+        224.57913309823203,
+        -1.1327593613163716,
+        0.2520406371709624
+      ],
+      "gradient_method": "ordinary least squares v=intercept+gx*x+gy*y; residuals binned",
+      "member_count": 397
+    }
+  },
+  "galaxy_meta": {
+    "Carina": {
+      "dec_deg": -50.96666666666667,
+      "distance_kpc": 101.0,
+      "global_sigma_kms": 6.6,
+      "luminosity_lsun": 240000.0,
+      "ra_deg": 100.40416666666667,
+      "rhalf_err_kpc": 0.023,
+      "rhalf_kpc": 0.241,
+      "table": "table2.dat"
+    },
+    "Fornax": {
+      "dec_deg": -34.516666666666666,
+      "distance_kpc": 138.0,
+      "global_sigma_kms": 11.7,
+      "luminosity_lsun": 14000000.0,
+      "ra_deg": 40.016666666666666,
+      "rhalf_err_kpc": 0.034,
+      "rhalf_kpc": 0.668,
+      "table": "table3.dat"
+    },
+    "Sculptor": {
+      "dec_deg": -33.708333333333336,
+      "distance_kpc": 79.0,
+      "global_sigma_kms": 9.2,
+      "luminosity_lsun": 1400000.0,
+      "ra_deg": 15.0375,
+      "rhalf_err_kpc": 0.039,
+      "rhalf_kpc": 0.26,
+      "table": "table4.dat"
+    },
+    "Sextans": {
+      "dec_deg": -1.615,
+      "distance_kpc": 86.0,
+      "global_sigma_kms": 7.9,
+      "luminosity_lsun": 410000.0,
+      "ra_deg": 153.2625,
+      "rhalf_err_kpc": 0.117,
+      "rhalf_kpc": 0.682,
+      "table": "table5.dat"
+    }
+  },
+  "heldout": [
+    "Sculptor",
+    "Carina"
+  ],
+  "membership_rule": "use unique summary row with Mmb >= 0.95",
+  "ordered": [
+    "Sextans",
+    "Fornax",
+    "Sculptor",
+    "Carina"
+  ],
+  "prior_visibility": {
+    "all_four_raw_catalogs": "public source available before split",
+    "heldout_model_scores_visible_before_policy_freeze": false
+  },
+  "r2_invocation": {
+    "arm": "manifest",
+    "call_site": "lock_jeans_sample.py:main",
+    "callable": "sample_ids_sha256",
+    "input_sha256": "c845b8a600a8d9220abdd83fd409d6e53f6ebb19bdfaf3e6362312d807157518",
+    "outcome": "dev/heldout galaxy identities and public-data profiles locked before scientific scoring",
+    "output_sha256": "1f9bdb6d55aad3bf9d5bb6f3b3bd3c0d9a4694d1d74b62b2f3a6fa513a21747b",
+    "source_path": "not-redistributed/benchmark_replay_harness.py",
+    "timestamp_utc": "2026-07-25T13:32:40.161443+00:00"
+  },
+  "sample_ids_sha256": "6891e5d5607edae47cc14196b0829cb05c4dd9d81abb3c15b9f61e26bfb12f15",
+  "schema_version": "jeans-dsph-equation-adapter-sample-lock-v1",
+  "source_catalog": "CDS/VizieR J/AJ/137/3100 Walker et al. 2009",
+  "source_readme": {
+    "path": "external-source/ReadMe",
+    "sha256": "efb2d2f1040d1719b359d9490d4a6b5662cad1349faca5e701483166e97b7d80"
+  },
+  "sources": {
+    "Carina": {
+      "member_count_mmb_ge_0_95": 746,
+      "path": "external-source/table2.dat",
+      "sha256": "fe88e35c3d4626113e1c4e3af26de4adcb7c8b7ef927c9602054d050b9e3da02"
+    },
+    "Fornax": {
+      "member_count_mmb_ge_0_95": 2279,
+      "path": "external-source/table3.dat",
+      "sha256": "03835f7317e9665b026a8469756957c89f4352a508c5ecedc54e0cd0d01eb02e"
+    },
+    "Sculptor": {
+      "member_count_mmb_ge_0_95": 1349,
+      "path": "external-source/table4.dat",
+      "sha256": "d7ed95def36543514f1896adc0dfbfcd183b44ccf2af7fb819b15dc70b6e0326"
+    },
+    "Sextans": {
+      "member_count_mmb_ge_0_95": 397,
+      "path": "external-source/table5.dat",
+      "sha256": "da1fe06a1db5b95f1dc8b89468c5af6726022f909af565859eb1773d775cd45e"
+    }
+  },
+  "split_rule": "four galaxy names sorted by SHA256(name); first two dev, remaining two heldout",
+  "status": "LOCKED_BEFORE_SCIENTIFIC_SCORING",
+  "timestamp_utc": "2026-07-25T13:32:40.161242+00:00",
+  "velocity_rule": "weighted mean <HV> when present, otherwise row HV"
+}
