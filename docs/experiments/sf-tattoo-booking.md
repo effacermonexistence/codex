@@ -41,7 +41,8 @@ Branch: `experiment/sf-tattoo-booking`, based on the backup commit above.
 
 The existing `/apply` booking form has no appointment-specific heading. A small heading and city line are added immediately above the existing form:
 
-> Tattoo Appointments  
+> Tattoo Appointments
+>
 > San Francisco, California
 
 The original Gilda Display heading family, PT Serif body role, 1rem body size, left-aligned form column, artwork, navigation, animations and booking schema remain. The new heading is 1.25rem, regular weight. The two requested English strings are explicitly marked `lang="en" translate="no"`; existing translations and translation status remain identical in all 31 supported languages. No client-side JavaScript, booking backend, gallery, homepage, footer or Instagram changes.
